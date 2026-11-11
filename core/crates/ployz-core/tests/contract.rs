@@ -2015,6 +2015,7 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
     let request = RequestMachineUpgradeRequest {
         attempt_id,
         release: MachineRelease::parse("beta").unwrap(),
+        channel: None,
     };
     assert_eq!(
         op::RequestMachineUpgrade::into_request(request.clone())

@@ -1367,6 +1367,14 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             }),
         )),
         LocalMachineError::IngressRefused { capability } => Err(build_refused(&error, capability)),
+        LocalMachineError::UpgradeChannelRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
+                "next": "ployz server upgrade-policy set --channel stable from an approved device",
+            }),
+        )),
         LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,
@@ -1594,6 +1602,18 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, St
                 serde_json::json!({
                     "capability": ployz_core::UPGRADE_EXACT_CAPABILITY,
                     "next": "ployz device request",
+                }),
+            ));
+        }
+        Error::OffApprovedChannel { requested, .. } => {
+            return Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
+                    "next": format!(
+                        "ployz server upgrade-policy set --channel {requested} from an approved device"
+                    ),
                 }),
             ));
         }

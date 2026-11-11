@@ -22,6 +22,7 @@ pub mod rule_draft;
 pub mod session;
 pub mod starting_set;
 pub mod trusted_key;
+pub mod upgrade;
 pub mod validity;
 pub mod volume;
 
@@ -54,4 +55,5 @@ pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
     TrustedPasskey,
 };
+pub use upgrade::UpgradeChannel;
 pub use volume::{VolumeApproval, VolumeApproved, VolumeFacts, VolumeStep, VolumeWorkflow};

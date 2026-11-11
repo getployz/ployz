@@ -23,7 +23,7 @@ use ployz_core::{
     SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
     TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    UPGRADE_CHANNEL_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
     WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
@@ -69,6 +69,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (MANAGEMENT_SCOPE_CAPABILITY, "ployz.management.scope.v1"),
         (UPGRADE_EXACT_CAPABILITY, "ployz.machine.upgrade.exact.v1"),
+        (UPGRADE_CHANNEL_CAPABILITY, "ployz.machine.upgrade.channel.v1"),
         (ENV_SEALED_CAPABILITY, "ployz.env.sealed.v1"),
         (BUILD_SEALED_CAPABILITY, "ployz.build.sealed.v1"),
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),
@@ -208,6 +209,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.storage-observation.v1",
             "ployz.management.scope.v1",
             "ployz.machine.upgrade.exact.v1",
+            "ployz.machine.upgrade.channel.v1",
             "ployz.env.sealed.v1",
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
@@ -445,6 +447,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.preview.review.v1",
         "gated: Cloud relays a review at grant only to a Machine that advertises it, and the dashboard offers a review only when every enforcing Machine does. An older daemon refuses every reviewed preview build and deploy, naming a reviewed preview, so one there fails closed",
+    ),
+    (
+        "ployz.machine.upgrade.channel.v1",
+        "falls back: an older daemon ignores `channel` on RequestMachineUpgrade and resolves the requested channel as before, since it enforces no channel",
     ),
     (
         "ployz.image.pull.v1",

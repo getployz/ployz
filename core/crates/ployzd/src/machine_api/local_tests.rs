@@ -169,6 +169,7 @@ async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
             op::RequestMachineUpgrade::into_request(RequestMachineUpgradeRequest {
                 attempt_id: MachineUpgradeAttemptId::parse("a".repeat(32)).unwrap(),
                 release: MachineRelease::parse("1.2.3").unwrap(),
+                channel: None,
             })
             .encode()
             .unwrap(),
@@ -220,6 +221,7 @@ async fn upgrade_rpc_rejects_nonstandard_machine_paths_before_acceptance() {
             op::RequestMachineUpgrade::into_request(RequestMachineUpgradeRequest {
                 attempt_id: MachineUpgradeAttemptId::parse("b".repeat(32)).unwrap(),
                 release: MachineRelease::parse("1.2.3").unwrap(),
+                channel: None,
             })
             .encode()
             .unwrap(),

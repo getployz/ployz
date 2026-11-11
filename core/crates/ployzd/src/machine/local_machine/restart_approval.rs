@@ -11,12 +11,13 @@ use std::{
 
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey,
-    LocalMachinePhase, ManagementScope, Namespace, OperationId, RunTarget, Sealing, ServiceName,
+    LocalMachinePhase, ManagementScope, Namespace, OperationId, RunTarget, Sealing,
+    SealingPublicKey, ServiceName,
     SetDeviceEnforcementRequest,
     authority::{
         AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule, DeployApproval,
         PreviewKey, Purpose, RestartApproval, RestartFacts, RestartStep, RuleId, RuleIdentity,
-        Signed, StartingSet, Timestamp, restart, starting_set,
+        Signed, StartingSet, Timestamp, UpgradeChannel, restart, starting_set, upgrade,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -261,6 +262,10 @@ struct Consumption {
     /// The hook each rule's Service last ran here, one per push.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rule_hooks: BTreeMap<String, RuleHook>,
+    /// The highest generation of the Release Channel approval this Machine has accepted,
+    /// per Cluster Sealing key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    upgrade_channels: BTreeMap<SealingPublicKey, u64>,
     /// Volume operations, grants and withdrawals, none ever pruned.
     #[serde(default, skip_serializing_if = "VolumeRecords::is_empty")]
     volumes: VolumeRecords,
@@ -803,6 +808,30 @@ impl ConsumptionLog {
         }
         let mut updated = consumption.clone();
         updated.raise_mark(rule);
+        self.write(&mut guard, updated)
+    }
+
+    /// Record that a verified Release Channel approval of `channel.generation` exists for
+    /// its Cluster, synced before the upgrade it admits writes its receipt. Writes only
+    /// when the mark rises, so a resend after a crash between this write and the receipt
+    /// is admitted again.
+    ///
+    /// # Errors
+    /// Returns [`Error::UpgradeChannelRefused`] for a generation below the mark, and
+    /// [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn mark_upgrade_channel(&self, channel: &UpgradeChannel) -> Result<(), Error> {
+        let mut guard = self.loaded()?;
+        let consumption = guard.as_ref().expect("loaded above");
+        let newest = consumption.upgrade_channels.get(&channel.cluster).copied();
+        upgrade::admit_generation(channel.generation, newest)
+            .map_err(Error::UpgradeChannelRefused)?;
+        if newest == Some(channel.generation) {
+            return Ok(());
+        }
+        let mut updated = consumption.clone();
+        updated
+            .upgrade_channels
+            .insert(channel.cluster, channel.generation);
         self.write(&mut guard, updated)
     }
 

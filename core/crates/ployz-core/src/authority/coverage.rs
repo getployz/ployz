@@ -30,7 +30,7 @@ use crate::{
     SET_INGRESS_DOORS_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
     SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
     SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_CHANNEL_CAPABILITY,
     WRAP_SEALING_KEY_CAPABILITY,
 };
 
@@ -60,7 +60,8 @@ impl Statement {
             Self::Restart => &[RESTART_APPROVAL_CAPABILITY],
             Self::Proposal => &[PROPOSAL_APPROVAL_CAPABILITY, DEPLOY_PROPOSAL_CAPABILITY],
             Self::Rule => &[DEPLOY_RULE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY],
-            Self::Volume | Self::Upgrade | Self::Teardown | Self::PrivateAccess => &[],
+            Self::Upgrade => &[UPGRADE_CHANNEL_CAPABILITY],
+            Self::Volume | Self::Teardown | Self::PrivateAccess => &[],
         }
     }
 }
@@ -85,7 +86,7 @@ pub enum Authorization {
 }
 
 use Authorization::{Bound, Full, Pending, Read, Signed};
-use Statement::{Deploy, Join, Proposal, Restart, Rule, Volume};
+use Statement::{Deploy, Join, Proposal, Restart, Rule, Upgrade, Volume};
 
 const IMAGE_BOUND: &str = "content-addressed; checked at creation by C";
 
@@ -118,10 +119,7 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         UPDATE_MACHINE_CAPABILITY,
         Bound("residual: mislabel; approvals bind IDs"),
     ),
-    (
-        REQUEST_MACHINE_UPGRADE_CAPABILITY,
-        Bound("signed releases only, forward only"),
-    ),
+    (REQUEST_MACHINE_UPGRADE_CAPABILITY, Signed(&[Upgrade])),
     (
         GENERATE_SEALING_KEY_CAPABILITY,
         Bound("the key never leaves the Machine"),
@@ -345,19 +343,19 @@ pub const CASES: &[Case] = &[
         REQUEST_MACHINE_UPGRADE_CAPABILITY,
         "a release channel",
         "a RequestMachineUpgrade to stable",
-        Expected::Served,
+        Expected::Refused(&[UPGRADE_CHANNEL_CAPABILITY]),
     ),
     case(
         REQUEST_MACHINE_UPGRADE_CAPABILITY,
         "an exact version no channel resolves to",
         "a RequestMachineUpgrade to an exact version neither channel resolves to",
-        Expected::Refused(&[UPGRADE_EXACT_CAPABILITY]),
+        Expected::Refused(&[UPGRADE_CHANNEL_CAPABILITY]),
     ),
     case(
         REQUEST_MACHINE_UPGRADE_CAPABILITY,
         "a downgrade",
         "a RequestMachineUpgrade to a release older than the installed one, which no channel resolves to",
-        Expected::Refused(&[UPGRADE_EXACT_CAPABILITY]),
+        Expected::Refused(&[UPGRADE_CHANNEL_CAPABILITY]),
     ),
     case(
         GENERATE_SEALING_KEY_CAPABILITY,

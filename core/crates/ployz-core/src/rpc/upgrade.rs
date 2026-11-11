@@ -10,6 +10,11 @@ pub struct RequestMachineUpgradeRequest {
     pub attempt_id: crate::MachineUpgradeAttemptId,
     /// Exact version or supported release channel to resolve once.
     pub release: crate::MachineRelease,
+    /// The Release Channel a person approved for the Cluster. A Machine that enforces
+    /// Device approval admits an Operator's upgrade only along it; others ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub channel: Option<crate::authority::Signed<crate::authority::UpgradeChannel>>,
 }
 
 crate::value::open_string_enum!(MachineUpgradeStage, Unknown {

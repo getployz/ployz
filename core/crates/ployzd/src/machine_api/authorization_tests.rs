@@ -23,21 +23,6 @@ use crate::docker::test_support::FakeDocker;
 use crate::machine::{LocalMachineStore, RecordOwner};
 use crate::sealing_key::SealingKey;
 
-/// Cases only a live lane answers, with the lane. A test daemon refuses an upgrade from a
-/// non-system install path before either check runs.
-const LIVE_ONLY: &[(&str, &str, &str)] = &[
-    (
-        ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY,
-        "an exact version no channel resolves to",
-        "F1 lane 9: a test daemon refuses non-system paths before it resolves a release",
-    ),
-    (
-        ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY,
-        "a downgrade",
-        "F1 lane 9: a test daemon refuses non-system paths before it reads the installed release",
-    ),
-];
-
 /// Cases this harness can't reach over TCP, with the unit test that proves each. Cloud's
 /// own connection is an iroh connection, and a rule grant needs GitHub's signed token.
 const UNIT_ONLY: &[(&str, &str, &str)] = &[
@@ -312,7 +297,7 @@ enum Sample {
     Unary(&'static str, Box<RpcRequest>),
     Exec,
     Build,
-    /// On [`LIVE_ONLY`] or [`UNIT_ONLY`].
+    /// On [`UNIT_ONLY`].
     Elsewhere,
     Unparsed(String),
 }
@@ -328,9 +313,8 @@ where
 }
 
 fn proven_elsewhere(case: &Case) -> bool {
-    LIVE_ONLY
+    UNIT_ONLY
         .iter()
-        .chain(UNIT_ONLY)
         .any(|(capability, branch, _)| *capability == case.capability && *branch == case.branch)
 }
 
@@ -399,9 +383,14 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::UPDATE_MACHINE_CAPABILITY, _) => {
             unary::<op::UpdateMachine>(json!({"update": {"name": "renamed"}}))
         }
-        (ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY, _) => {
+        (ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY, branch) => {
+            let release = match branch {
+                "an exact version no channel resolves to" => "999.0.0",
+                "a downgrade" => "0.0.1",
+                _ => "stable",
+            };
             unary::<op::RequestMachineUpgrade>(json!({
-                "attempt_id": "a".repeat(32), "release": "stable",
+                "attempt_id": "a".repeat(32), "release": release,
             }))
         }
         (ployz_core::GENERATE_SEALING_KEY_CAPABILITY, "the Cluster already publishes one") => {
@@ -694,9 +683,8 @@ async fn every_case_gets_its_expected_answer_from_an_enforcing_machine() {
             Outcome::Failed(failure) => failures.push(format!("{case:?}: {failure}")),
         }
     }
-    let frozen: BTreeSet<_> = LIVE_ONLY
+    let frozen: BTreeSet<_> = UNIT_ONLY
         .iter()
-        .chain(UNIT_ONLY)
         .map(|(capability, branch, _)| (*capability, *branch))
         .collect();
     assert_eq!(elsewhere, frozen, "the cases proven elsewhere changed");

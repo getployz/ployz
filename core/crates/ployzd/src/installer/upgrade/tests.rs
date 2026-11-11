@@ -184,6 +184,7 @@ async fn run_contract_case(case: &str) {
     let request = RequestMachineUpgradeRequest {
         attempt_id,
         release: MachineRelease::parse("1.2.3").unwrap(),
+        channel: None,
     };
     let guard = admission.try_installation().unwrap();
     if case.starts_with("cancelled-launch") {
@@ -266,6 +267,7 @@ async fn run_contract_case(case: &str) {
             let conflict = RequestMachineUpgradeRequest {
                 attempt_id,
                 release: MachineRelease::parse("1.2.4").unwrap(),
+                channel: None,
             };
             assert!(matches!(
                 replay(&conflict, &data, &run).await,
@@ -290,6 +292,7 @@ async fn run_contract_case(case: &str) {
             let other = RequestMachineUpgradeRequest {
                 attempt_id: MachineUpgradeAttemptId::parse("b".repeat(32)).unwrap(),
                 release: MachineRelease::parse("1.2.3").unwrap(),
+                channel: None,
             };
             assert!(matches!(
                 super::request(
@@ -787,4 +790,59 @@ async fn a_channel_that_fails_to_resolve_does_not_hide_the_other() {
         matches!(&refused, Err(Error::OffChannel { .. })),
         "an unresolvable channel did not refuse by capability: {refused:?}"
     );
+}
+
+#[tokio::test]
+async fn an_approved_channel_admits_only_itself_and_what_it_resolves_to() {
+    let version = |rest: &str| {
+        MachineVersion::parse(format!("{}.{rest}", env!("CARGO_PKG_VERSION_MAJOR"))).unwrap()
+    };
+    let root = tempfile::tempdir().unwrap();
+    let line = root
+        .path()
+        .join(concat!("v", env!("CARGO_PKG_VERSION_MAJOR")));
+    fs::create_dir_all(&line).unwrap();
+    fs::write(line.join("stable"), format!("v{}\n", version("3.16"))).unwrap();
+    fs::write(line.join("beta"), format!("v{}\n", version("3.17-beta.2"))).unwrap();
+    let source = ReleaseSource::Local(root.path().to_owned());
+    let installed = version("3.15");
+    let stable = ReleaseChoice::Signed(ployz_core::ReleaseChannel::Stable);
+    let admit = async |requested: &MachineRelease, target: &str| {
+        stable
+            .admit(requested, &version(target), &source, Some(&installed))
+            .await
+    };
+
+    for (requested, target) in [
+        (MachineRelease::Stable, "3.16"),
+        (MachineRelease::Exact(version("3.16")), "3.16"),
+    ] {
+        assert!(
+            admit(&requested, target).await.is_ok(),
+            "the approved channel refused {requested}"
+        );
+    }
+    for (requested, target) in [
+        (MachineRelease::Beta, "3.17-beta.2"),
+        (MachineRelease::Exact(version("3.17-beta.2")), "3.17-beta.2"),
+        (MachineRelease::Exact(version("3.15")), "3.15"),
+    ] {
+        let refused = admit(&requested, target).await;
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::OffApprovedChannel {
+                    approved: ployz_core::ReleaseChannel::Stable,
+                    requested: named,
+                }) if *named == requested
+            ),
+            "a Stable-approved Machine took {requested}: {refused:?}"
+        );
+        assert!(
+            refused
+                .unwrap_err()
+                .to_string()
+                .starts_with(ployz_core::UPGRADE_CHANNEL_CAPABILITY)
+        );
+    }
 }

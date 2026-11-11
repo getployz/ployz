@@ -644,6 +644,7 @@ async fn run_one(
     let request = RequestMachineUpgradeRequest {
         attempt_id,
         release,
+        channel: None,
     };
     // A Server that cannot take the request within a minute is down, not busy.
     let requested = tokio::select! {
