@@ -64,7 +64,10 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .conflicts_with_all(["service", "plan", "skip-deploy"])
                 .hide(true),
         )
-        .arg(crate::cli::yes("Does nothing; kept for older scripts").hide(true))
+        .arg(crate::cli::yes(
+            "Sign without asking when your servers enforce device approval; still prints \
+             what it signs",
+        ))
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(

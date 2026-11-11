@@ -249,8 +249,10 @@ have an owner or admin approve the code. See
 [Approve a device](../servers/manage-servers.md#approve-a-device). With
 [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts) on,
 `service restart` signs each restart with your device key, and a server refuses a restart no
-approved device signed. Signing never asks: `service restart`, `service stop`, `service start` and
-`deploy` show no prompt on an approved device.
+approved device signed. `service restart`, `service stop` and `service start` sign without asking.
+`deploy` prints every setting it signs and asks first; a script or CI job on an approved device
+adds `--yes`. See
+[Deploy to servers that enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval).
 
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`

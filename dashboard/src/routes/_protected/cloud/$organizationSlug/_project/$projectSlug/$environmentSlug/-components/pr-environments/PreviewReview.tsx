@@ -6,7 +6,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { Spinner } from "#/components/ui/spinner";
 import { deployScope, type DeployScope } from "#/modules/approval-session/approval-session";
 import { previewReviewQuery, useStoreView } from "#/modules/config-store/store-view.queries";
-import { answerReview, draftReview, REVIEW_CAPABILITIES, ReviewRefused } from "#/modules/github/preview-review";
+import { answerReview, draftReview, REVIEW_CAPABILITIES, ReviewRefused, shownText } from "#/modules/github/preview-review";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useEnvironmentMachines } from "#/providers/runtime-provider";
 
@@ -97,16 +97,10 @@ function ReviewDialog({ view, scope, number, head, approve, onClose }: {
           <DialogTitle>Review #{number} at <span className="font-mono">{view.commit.slice(0, 7)}</span></DialogTitle>
           <DialogDescription>
             Read this commit's changes on GitHub first. Your servers build and run only this commit, with these settings,
-            in {view.environment.name}.
+            in {shownText(view.environment.name)}.
           </DialogDescription>
         </DialogHeader>
-        {lines.length > 0 ? (
-          <ul className="flex flex-col gap-1 text-sm">
-            {lines.map((line, at) => line.startsWith("  ")
-              ? <li key={`${at}:${line}`} className="pl-4 font-mono text-xs break-all">{line.trimStart()}</li>
-              : <li key={`${at}:${line}`} className="break-words">{line}</li>)}
-          </ul>
-        ) : null}
+        <ReviewLines lines={lines} />
         {problem !== null ? <p role="alert" className="text-sm text-destructive">{problem}</p>
           : failed !== null ? <p role="alert" className="text-sm text-destructive">{failed}</p> : null}
         <DialogFooter>
@@ -117,5 +111,20 @@ function ReviewDialog({ view, scope, number, head, approve, onClose }: {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * The review's lines as ployz-core wrote them: each Service, then its settings indented. Spacing shows as written, so
+ * `X="a b"` and `X="a  b"` read apart.
+ */
+export function ReviewLines({ lines }: { lines: readonly string[] }) {
+  if (lines.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-1 text-sm">
+      {lines.map((line, at) => line.startsWith("  ")
+        ? <li key={`${at}:${line}`} className="pl-4 font-mono text-xs whitespace-pre-wrap break-all">{line.slice(2)}</li>
+        : <li key={`${at}:${line}`} className="whitespace-pre-wrap break-words">{line}</li>)}
+    </ul>
   );
 }

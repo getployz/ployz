@@ -143,7 +143,7 @@ ployz deploy
 With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
 on, a server creates a container only from a spec an approved device signed. Run `ployz deploy`
 on that device. It works out what each service will run, prints what it signs for each service,
-signs it with your device key, and deploys, with no prompt:
+and asks before it signs with your device key:
 
 ```text
 Approved web: nginx:1.29-alpine → @sha256:3f1c2a9b8e7d…
@@ -154,6 +154,7 @@ Approved web: nginx:1.29-alpine → @sha256:3f1c2a9b8e7d…
 Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b (adds NET_ADMIN, host port 9000)
   cap_add ["NET_ADMIN"]
   ...
+Approve web, worker? [y/N]
 ```
 
 The first line of each service names the image and anything the service asks of the server:
@@ -165,9 +166,16 @@ hook and the rest. A setting added to Ployz later shows there too, and so does a
 value that overrides one the hook would inherit. A text value with anything but letters, digits
 and `-_./:@+` shows in double quotes. A sealed value shows by the name it was sealed as, never
 its value, and a value built from text and sealed parts shows its text, quoted.
-Ployz Cloud relays the plan, so read these lines before you rely on the deploy: a setting you
-didn't make shows here even if Cloud put it there. A control character in a value prints as
-its escape, such as `\u{1b}`, so a value can't redraw the lines around it.
+Ployz Cloud relays the plan, so read these lines before you answer: a setting you didn't make
+shows here even if Cloud put it there. A control character in a value prints as its escape,
+such as `\u{1b}`, so a value can't redraw the lines around it. Answer no and nothing is signed
+or deployed, and the command exits with 130.
+
+A script or CI job on an approved device has no terminal to ask in, so `ployz deploy` refuses
+before it signs and tells you to add `--yes`. With `--yes`, or `PLOYZ_AUTO_CONFIRM=1`, it prints
+the same lines and signs without asking. `--json` never asks either, so it needs `--yes` too.
+Use `--yes` only where you trust the plan Ployz Cloud sends. Without device enforcement,
+`ployz deploy` signs nothing and never asks.
 
 Each server checks every container it creates against what you signed: the image, command,
 variables and sealed values, mounts, config files, ports, privileges and hook. Ployz Cloud

@@ -4,7 +4,7 @@ use ployz_core::authority::{ApprovedChange, PayloadDigest};
 use ployz_core::{Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
-use super::{Enforcing, Probe, enforced, pin_tags, signable, unpinnable};
+use super::{Enforcing, Probe, consent, enforced, pin_tags, signable, unpinnable};
 use crate::image::PinError;
 
 const PINNED: &str =
@@ -265,4 +265,61 @@ fn an_enforcing_cluster_signs_for_every_server_listed() {
     assert_eq!(cluster, ployz_core::SealingPublicKey::from_bytes([9; 32]));
     assert_eq!(machines.len(), 2);
     assert!(machines.is_sorted());
+}
+
+/// `--yes` signs without asking, for a run nobody watches.
+#[test]
+fn yes_signs_without_asking() {
+    let approved = [approved(&spec(PINNED))];
+    consent(&approved, true, |question, _, _| {
+        panic!("--yes asked {question:?}")
+    })
+    .unwrap();
+}
+
+/// Without a terminal, and without `--yes`, nothing is signed: the refusal names the
+/// `--yes` retry.
+#[test]
+fn no_terminal_refuses_before_signing_and_names_yes() {
+    let approved = [approved(&spec(PINNED))];
+    let error = consent(&approved, false, |question, refusal, declined| {
+        crate::ui::confirm(question, || refusal, declined)
+    })
+    .unwrap_err();
+    let rpc = error.report();
+    assert_eq!(rpc.code, ployz_core::RpcErrorCode::ConfirmationRequired);
+    assert!(rpc.message.contains("add --yes"), "{}", rpc.message);
+    assert!(
+        rpc.message.ends_with("Nothing deployed."),
+        "{}",
+        rpc.message
+    );
+    assert!(
+        error.hints().iter().any(|hint| matches!(
+            hint,
+            crate::ui::Hint::Retry(retry) if retry.ends_with(" --yes")
+        )),
+        "{:?}",
+        error.hints()
+    );
+}
+
+/// A person asked names each Service, and their no fails the deploy before it signs.
+#[test]
+fn declining_signs_nothing_and_fails() {
+    let approved = [approved(&spec(PINNED))];
+    let mut asked = None;
+    let error = consent(&approved, false, |question, _, declined| {
+        asked = Some((question.to_owned(), declined));
+        Err(crate::handlers::Error::cancelled())
+    })
+    .unwrap_err();
+    assert_eq!(
+        asked,
+        Some((
+            "Approve web?".to_owned(),
+            "Cancelled. Nothing signed or deployed."
+        ))
+    );
+    assert!(error.is_interrupted(), "a no exits 130, not 0");
 }
