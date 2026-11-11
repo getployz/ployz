@@ -583,7 +583,9 @@ impl LocalMachine {
     /// Move approval it carries, before the transition runs. A Create must be the Service
     /// the Move approves, by its [`deploy::PayloadDigest`] in the approved Namespace, the
     /// check a Deploy's creation gets. A Kept start must name a Container this operation's
-    /// cut stopped on this Machine, whatever it mounts.
+    /// cut stopped on this Machine, whatever it mounts. With `handed`, the source's receipt
+    /// for the Writer at its snapshot and epoch, the start is admitted after the window too,
+    /// as the promotion it comes with is.
     ///
     /// # Errors
     /// Returns [`Error::VolumeStepRefused`] for no approval, a workflow that is not a Move,
@@ -595,6 +597,7 @@ impl LocalMachine {
         approval: Option<&Signed<VolumeApproval>>,
         volume: &DockerVolumeName,
         start: &Start,
+        handed: Option<(&HandoffReceiptEnvelope, &SnapshotGuid, WriterEpoch)>,
     ) -> Result<(), Error> {
         if !self.record().device_enforcement() {
             return Ok(());
@@ -637,7 +640,13 @@ impl LocalMachine {
             )
             .map_err(refused)?;
         }
-        let operation = self.admit_volume_step(approval, volume, &VolumeStep::Start)?;
+        let handed = handed
+            .map(|(receipt, at, epoch)| {
+                self.checked_receipt(approval, volume, receipt, Lands::Writer { at, epoch })
+            })
+            .transpose()?;
+        let operation =
+            self.admit_handed_step(approval, volume, &VolumeStep::Start, handed.as_ref())?;
         if let Start::Kept { container_id } = start {
             let stopped = self
                 .approvals

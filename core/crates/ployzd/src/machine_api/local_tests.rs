@@ -4369,6 +4369,49 @@ mod set_volume_copy {
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
+        /// A target that never admitted the Move starts the Service after the window on its
+        /// source's receipt, as it promotes on it: the receipt proves the Move began in time.
+        #[tokio::test]
+        async fn a_receipt_admits_the_targets_start_after_the_window() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-late").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let device = enforce_approving(&store, &data_dir, &service).await;
+            let spec = pinned_spec();
+            let mut body = device
+                .moving(VOLUME, (elsewhere(), device.this), &spec)
+                .open()
+                .unwrap();
+            body.issued_at = Timestamp::from_millis(
+                Timestamp::now().as_millis() - MAX_LIFETIME_MILLIS - 600_000,
+            )
+            .unwrap();
+            body.expires_at = body.issued_at.plus(MAX_LIFETIME_MILLIS);
+            let approval = Signed::sign(&body, &device.signer).unwrap();
+
+            let status = operator_set_copy(&service, approved(create_of(&spec), &approval))
+                .await
+                .expect_err("an expired approval with no receipt");
+            refused_step(&status, AuthorityRefusal::Expired);
+            reply(
+                &operator_set_copy(
+                    &service,
+                    receipted(
+                        approved(create_of(&spec), &approval),
+                        &approval,
+                        &data_dir,
+                        (elsewhere(), device.this),
+                    ),
+                )
+                .await
+                .unwrap(),
+            );
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
         /// Lane 4's attack, and the start it guards: a spec with one environment value changed
         /// is refused under the Move's approval, and the approved spec then starts.
         #[tokio::test]

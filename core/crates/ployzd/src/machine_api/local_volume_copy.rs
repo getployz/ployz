@@ -203,11 +203,14 @@ impl MachineService {
         if operator
             && transition.is_some()
             && let WantedCopy::Writer {
-                start: Some(start), ..
+                at,
+                epoch,
+                start: Some(start),
             } = &want
         {
+            let handed = receipt.as_ref().map(|receipt| (receipt, at, *epoch));
             self.local
-                .admit_operator_volume_start(approval.as_ref(), &name, start)?;
+                .admit_operator_volume_start(approval.as_ref(), &name, start, handed)?;
         }
         let admitted = match approved_step(&want, transition, receipt.as_ref()) {
             Some(step) if operator => {
