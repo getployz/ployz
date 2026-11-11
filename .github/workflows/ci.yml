@@ -77,7 +77,13 @@ jobs:
       - name: Keep generated SDK files out of git
         run: test -z "$(git ls-files -- core/crates/ployz-sdk/generated)"
       - run: bash core/scripts/check-layer3-runner.sh
-      - run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Install minisign from its signed release
+        run: |
+          curl -fsSL --retry 3 -o /tmp/minisign.tar.gz https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-linux.tar.gz
+          echo "f0a0954413df8531befed169e447a66da6868d79052ed7e892e50a4291af7ae0  /tmp/minisign.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/minisign.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
+          minisign -v
       - run: bash core/scripts/test-cli-installer.sh
       - run: bash core/scripts/test-release-packaging.sh
       - run: bash core/scripts/test-daemon-lifecycle.sh
