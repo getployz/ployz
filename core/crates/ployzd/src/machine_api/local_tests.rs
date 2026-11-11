@@ -7272,8 +7272,8 @@ mod cluster_doors {
         };
         assert_eq!(error.code, RpcErrorCode::InvalidArgument);
         assert_eq!(
-            error.details["capability"],
-            ployz_core::SET_CLUSTER_DOORS_CAPABILITY
+            error.details.get("capability"),
+            Some(&serde_json::json!(ployz_core::SET_CLUSTER_DOORS_CAPABILITY))
         );
         task.abort();
         std::fs::remove_dir_all(dir).ok();
