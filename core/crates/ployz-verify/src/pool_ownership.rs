@@ -7,7 +7,7 @@
 //! (:77-83). `install_at` holds the installation gate's exclusive guard throughout
 //! (installer/mod.rs:259-264, :286). The plugin's `VolumeStorage::create`
 //! (volume_plugin/pool.rs:96-124) takes that gate's shared guard (`admit_mutation`,
-//! :103, volume_plugin/storage.rs:178-188), then the Pool mutation lock (pool.rs:103), then
+//! :102, volume_plugin/storage.rs:178-188), then the Pool mutation lock (pool.rs:103), then
 //! runs `one_usable` (:213), `recover` (:276) and, when both find nothing, `create`
 //! (:391), which builds the root-backed `ployz` Pool on a backing file. Copy's `first_pool`
 //! takes the same path (volume_plugin/copy.rs:146-160, :175-196). Meanwhile the disk can go
@@ -38,10 +38,10 @@
 //! the installer runs: `List`, which is `one_usable`, then `ListRecover`, which is `recover`
 //! when `one_usable` found nothing. The installer is another process (`ployzd install`),
 //! so it can step between any two of a List's reads, not only at an await. In
-//! `one_usable`, a `Record` between `zpool list` (:221) and the marker read or write
-//! (:239-245) leaves the CONFIRMED marker the List would have written. In `recover`, the
-//! `zpool import` scan (:287) never lists `ployz-device` while the installer runs, since
-//! the disk is blank or `zpool create` imported it, and the backing-file reads (:278-279)
+//! `one_usable`, a `Record` between `zpool list` (:220) and the marker read or write
+//! (:238-244) leaves the CONFIRMED marker the List would have written. In `recover`, the
+//! `zpool import` scan (:286) never lists `ployz-device` while the installer runs, since
+//! the disk is blank or `zpool create` imported it, and the backing-file reads (:277-278)
 //! see no file, which the installer never writes. So an installer step between the scan
 //! and the marker read (:308) changes only that read: the List refuses with the device
 //! imported, as a `ListRecover` placed after `Record` does
@@ -63,7 +63,7 @@
 //! `ployz-device` label and the host has no marker. Once the disk is missing, `recover`
 //! finds no importable device Pool and no marker and returns `Ok(None)` (pool.rs:313),
 //! `create` passes its marker-only refusal (:391-395), and the plugin builds a root-backed
-//! `ployz` beside the labelled disk (:401, :422). That `zpool create` rewrites the cache file
+//! `ployz` beside the labelled disk (:400, :421). That `zpool create` rewrites the cache file
 //! from the imported Pools alone, so no boot imports `ployz-device` again, and `admit`
 //! returns `ployz` from `one_usable` without reaching `recover` (pool.rs:255-260). And
 //! `local_storage` reads Ready while a recorded device Pool's disk is missing
@@ -162,7 +162,7 @@ enum Plugin {
     Admitting,
     /// `one_usable` found nothing imported; `recover` (:276) is next.
     Recovering,
-    /// `recover` returned `Ok(None)`; `PoolStorage::create` (:391) is next.
+    /// `recover` returned `Ok(None)`; `PoolStorage::create` (:390) is next.
     Creating,
     /// A List's or Inspect's `one_usable` found nothing imported; its `recover` is next,
     /// under the Pool mutation lock and without the installation gate (pool.rs:255-260,
@@ -981,7 +981,7 @@ fn reads_as(model: &PoolOwnership, before: &State, action: Action, after: &State
         ),
         Action::Assess => match after.took {
             Some(Branch::InstallerBusy) => {
-                "Installer: install_at's try_installation finds a Volume create holding the gate and returns \"another Ployz installation is active\" at once (installer/mod.rs install_at :257, mutation.rs try_installation)".to_owned()
+                "Installer: install_at's try_installation finds a Volume create holding the gate and returns \"another Ployz installation is active\" at once (installer/mod.rs install_at :260, mutation.rs try_installation)".to_owned()
             }
             Some(Branch::InstallerRefusesRoot) => {
                 "Installer: install_at takes the installation gate; a file-backed Machine Pool already exists; refuses (installer/storage.rs prepare_storage :48)".to_owned()
@@ -1073,10 +1073,10 @@ fn reads_as(model: &PoolOwnership, before: &State, action: Action, after: &State
         }
         Action::CreateRoot => match after.took {
             Some(Branch::CreateRefusesOwned) => {
-                "Plugin: create finds the marker and refuses (pool.rs create :392)".to_owned()
+                "Plugin: create finds the marker and refuses (pool.rs create :391)".to_owned()
             }
             _ => format!(
-                "Plugin: create {} (:392), creates the backing file (:401), runs zpool create ployz on it (:422){}, and its one_usable returns ployz (pool.rs create :444); the Volume is created on it (pool.rs VolumeStorage::create :113-120)",
+                "Plugin: create {} (:391), creates the backing file (:400), runs zpool create ployz on it (:421){}, and its one_usable returns ployz (pool.rs create :444); the Volume is created on it (pool.rs VolumeStorage::create :112-119)",
                 if before.host.marker {
                     "skips the marker refusal (under Broken)"
                 } else {
