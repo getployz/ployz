@@ -169,7 +169,6 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     if (start.kind === "approved") {
       // A commit a person approved or reviewed under a rule builds on the rule's workflow, on its branch, at that
       // commit; the grant Machine checks the commit is the one the person signed for.
-      // The rule's workflow names Cloud's origin itself, and declares only the commit input.
       const run = yield* dispatchApprovedGithubBuild({
         access, repositoryId: target.repositoryId, branch: start.branch, workflow: start.workflow, commit: start.commit,
       });

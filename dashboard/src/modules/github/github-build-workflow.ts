@@ -1,7 +1,10 @@
 /** Where the GitHub build workflow lives in a repository. Cloud dispatches it by this file name. */
 export const GITHUB_BUILD_WORKFLOW_FILE = "ployz-build.yml";
 
-/** The `getployz/build` commit every dispatched build runs. A tag can move; a commit can't. */
+/**
+ * The `getployz/build` commit every build runs, its action or its reusable workflow. A tag can move; a commit can't.
+ * Each Server checks a rule build ran this commit's reusable workflow, so it is also ployz-core's `BUILDER_SHA`.
+ */
 export const GITHUB_BUILDER_COMMIT = "a19b4fca3adea371c25ec29f181e8c7d21037d1e";
 
 /**
@@ -29,12 +32,41 @@ jobs:
           cloud: \${{ inputs.cloud }}
 `;
 
+/**
+ * The workflow a repository under an automatic deploy rule or a preview rule runs. A push to any branch builds, since
+ * a preview builds on its own push run, and each Server checks the branch against the rule. A dispatch builds an
+ * approved or reviewed `commit`. No file names a customer's branch or Cloud: on a dispatch the minter fills `cloud`;
+ * on a push it comes from the repository's `PLOYZ_CLOUD` variable, which only the repository's admins can set.
+ * Setting `PLOYZ_BRANCH` skips pushes to other branches.
+ */
+export const GITHUB_RULE_WORKFLOW = `name: Ployz build
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      cloud: { required: false, type: string }
+      commit: { required: false, type: string }
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    if: github.event_name != 'push' || vars.PLOYZ_BRANCH == '' || github.ref_name == vars.PLOYZ_BRANCH
+    uses: getployz/build/.github/workflows/build.yml@${GITHUB_BUILDER_COMMIT}
+    with:
+      cloud: \${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}
+      commit: \${{ inputs.commit }}
+`;
+
+/** Every `ployz-build.yml` Ployz offers and dispatches, byte for byte up to line endings. */
+export const GITHUB_WORKFLOW_TEMPLATES = { build: GITHUB_BUILD_WORKFLOW, rule: GITHUB_RULE_WORKFLOW } as const;
+
+/** Which of Ployz's workflows a repository needs: `rule` when pushes build under a rule. */
+export type GithubWorkflowTemplate = keyof typeof GITHUB_WORKFLOW_TEMPLATES;
+
 export function githubBuildId(deploymentId: string, service: string) {
   return `${deploymentId}.${service}`;
 }
-
-/** Every `ployz-build.yml` Ployz dispatches, byte for byte up to line endings. */
-export const GITHUB_BUILD_WORKFLOWS: readonly string[] = [GITHUB_BUILD_WORKFLOW];
 
 /**
  * Readiness of one repository for GitHub builds, as Cloud last checked it. `outdated`: the default branch holds a
@@ -49,6 +81,8 @@ export type GithubBuildRepository = {
   fullName: string;
   defaultBranch: string | null;
   readiness: GithubBuildReadiness;
+  /** The file Ployz offers this repository. */
+  template: GithubWorkflowTemplate;
 };
 
 /** Whether the person can still commit Ployz's workflow here: the browser that sent them to GitHub waits for it. */
@@ -68,10 +102,10 @@ function repositoryPage(input: GithubBuildWorkflowPage, page: "new" | "edit") {
 }
 
 /** GitHub's new-file page with the workflow filled in. The user commits it or opens a PR; Cloud never writes. */
-export function githubBuildWorkflowUrl(input: GithubBuildWorkflowPage) {
+export function githubBuildWorkflowUrl(input: GithubBuildWorkflowPage & { template: GithubWorkflowTemplate }) {
   const params = new URLSearchParams({
     filename: `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
-    value: GITHUB_BUILD_WORKFLOW,
+    value: GITHUB_WORKFLOW_TEMPLATES[input.template],
   });
   return `${repositoryPage(input, "new")}?${params.toString()}`;
 }

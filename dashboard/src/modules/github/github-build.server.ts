@@ -1,10 +1,13 @@
 import "@tanstack/react-start/server-only";
 
+import type { AutoDeployRule } from "@ployz/sdk";
+import { and, eq, inArray } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import {
   GITHUB_BUILD_WORKFLOW_FILE,
   type GithubBuildReadiness,
   type GithubBuildRepository,
+  type GithubWorkflowTemplate,
 } from "#/modules/github/github-build-workflow";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "#/modules/github/github-ingestion.contracts";
@@ -15,6 +18,8 @@ import {
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { callStoreAsMember } from "#/modules/config-store/config-store.server";
+import { githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
+import { Database } from "#/server/database.server";
 
 const repositoryIdSchema = Schema.Struct({ id: githubIdSchema, full_name: githubRepositoryFullNameSchema });
 
@@ -43,16 +48,19 @@ const cannotRun = (error: GithubReadError) => isGithubObservationNotFound(error)
  * Whether GitHub will run the build workflow in this repository now. Cloud calls it for the
  * Servers page and again right before dispatching a build. The Actions API only lists
  * workflows on the default branch, so `active` means committed there and not disabled. `outdated` means active, but
- * not a file Ployz offers. `dispatchable` says whoever holds the App's authority dispatches the file there.
+ * not a file Ployz offers; `template` names the one it is. `dispatchable` says whoever holds the App's authority
+ * dispatches the file there.
  */
 export const checkGithubBuildWorkflow = Effect.fn("Github.checkBuildWorkflow")(
   function* (access: GithubAccess, repositoryId: number) {
     const workflow = yield* (yield* GithubAuthority).buildWorkflow(yield* repositoryOf(access, repositoryId)).pipe(
       Effect.catchIf(cannotRun, () => Effect.succeed(null)),
     );
-    if (workflow === null) return { fullName: null, defaultBranch: null, readiness: "no_permission" as const, dispatchable: false };
-    const readiness: GithubBuildReadiness = workflow.state !== "active" ? "setup_needed" : workflow.canonical ? "ready" : "outdated";
-    return { fullName: workflow.fullName, defaultBranch: workflow.defaultBranch, readiness, dispatchable: workflow.dispatchable };
+    if (workflow === null) return { fullName: null, defaultBranch: null, readiness: "no_permission" as const, template: null, dispatchable: false };
+    const readiness: GithubBuildReadiness = workflow.state !== "active" ? "setup_needed" : workflow.template !== null ? "ready" : "outdated";
+    return {
+      fullName: workflow.fullName, defaultBranch: workflow.defaultBranch, readiness, template: workflow.template, dispatchable: workflow.dispatchable,
+    };
   },
 );
 
@@ -70,7 +78,7 @@ export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkfl
 
 /**
  * Dispatch the rule's build workflow on `branch` to build `commit`, a commit a person approved or reviewed under the
- * rule. The rule's workflow names Cloud's origin itself, and declares only the commit input.
+ * rule. Its only input from Cloud is `commit`: a rule's file declares no `build`.
  */
 export const dispatchApprovedGithubBuild = Effect.fn("Github.dispatchApprovedBuild")(function* (input: {
   access: GithubAccess; repositoryId: number; branch: string; workflow: string; commit: string;
@@ -127,37 +135,118 @@ export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (in
   return run.status === "completed";
 });
 
-/** The GitHub repositories the Organization's Services build from: each Project's PR plans list its repositories. */
-const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(function* (actor: Actor, organizationSlug: string) {
+export type StoreRepository = { installationId: number; repositoryId: number; fullName: string; underRule: boolean };
+
+/** Whether the Environment's automatic deploy rule is on, and the repository it builds from. */
+const ruleSource = (view: { rule: { body: string } | null }) => {
+  if (view.rule === null) return null;
+  try {
+    // SAFETY: the Store keeps only a rule body it parsed as an `AutoDeployRule`.
+    const rule = JSON.parse(view.rule.body) as AutoDeployRule;
+    return rule.ended ? null : rule.source;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The GitHub repositories the Organization's Services build from: each Project's PR plans list theirs, and each
+ * Environment's automatic deploy rule its own. A rule's repository takes the installation Cloud last saw reach it.
+ */
+const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(function* (actor: Actor, organizationId: string, organizationSlug: string) {
   const projects = yield* callStoreAsMember(actor, organizationSlug, { operation: "read", query: { query: "projects" } });
   if (!projects.ok) return [];
-  const plans = yield* Effect.forEach(projects.value.projects, (project) =>
-    callStoreAsMember(actor, organizationSlug, { operation: "read", query: { query: "pr_plans", project: project.name } }), { concurrency: 4 });
-  const found = new Map<string, { installationId: number; repositoryId: number; fullName: string }>();
+  const read = { concurrency: 4 } as const;
+  const [plans, rules] = yield* Effect.all([
+    Effect.forEach(projects.value.projects, (project) =>
+      callStoreAsMember(actor, organizationSlug, { operation: "read", query: { query: "pr_plans", project: project.name } }), read),
+    Effect.forEach(projects.value.projects.flatMap((project) => project.environments.map((environment) => ({ project: project.name, environment }))),
+      (environment) => callStoreAsMember(actor, organizationSlug, { operation: "read", query: { query: "rule", environment } }), read),
+  ], { concurrency: 2 });
+  const found = new Map<number, StoreRepository>();
   for (const result of plans) {
     if (!result.ok) continue;
     for (const plan of result.value.plans) {
-      found.set(`${plan.installation_id}:${plan.repository_id}`,
-        { installationId: plan.installation_id, repositoryId: plan.repository_id, fullName: plan.repository });
+      found.set(plan.repository_id, { installationId: plan.installation_id, repositoryId: plan.repository_id, fullName: plan.repository, underRule: false });
     }
   }
+  const ruled = new Map<number, string>();
+  for (const result of rules) {
+    const source = result.ok ? ruleSource(result.value) : null;
+    if (source !== null) ruled.set(source.repository_id, source.repository);
+  }
+  const unplanned = [...ruled.keys()].filter((repositoryId) => !found.has(repositoryId));
+  const { drizzle } = yield* Database;
+  const installed = unplanned.length === 0 ? [] : yield* drizzle
+    .select({ installationId: githubRepositoryCache.installationId, repositoryId: githubRepositoryCache.repositoryId })
+    .from(githubRepositoryCache)
+    .innerJoin(organizationGithubInstallation, and(
+      eq(organizationGithubInstallation.installationId, githubRepositoryCache.installationId),
+      eq(organizationGithubInstallation.organizationId, organizationId),
+    ))
+    .where(inArray(githubRepositoryCache.repositoryId, unplanned))
+    .orderBy(githubRepositoryCache.installationId);
+  for (const { installationId, repositoryId } of installed) {
+    if (!found.has(repositoryId)) found.set(repositoryId, { installationId, repositoryId, fullName: ruled.get(repositoryId) ?? "", underRule: true });
+  }
+  for (const repositoryId of ruled.keys()) {
+    const repository = found.get(repositoryId);
+    if (repository !== undefined) repository.underRule = true;
+  }
   return [...found.values()];
+});
+
+const contentsSchema = Schema.Struct({ content: Schema.String, encoding: Schema.Literal("base64") });
+
+/**
+ * Whether the repository's build workflow calls a reusable workflow, as a rule's does: its pushes may build under a
+ * rule Cloud can't read, such as a preview rule, which the build template would stop.
+ */
+const callsReusableWorkflow = Effect.fn("Github.callsReusableWorkflow")(function* (access: GithubAccess, repositoryId: number) {
+  const file = yield* (yield* GithubApi).json({
+    access, path: `/repositories/${repositoryId}/contents/.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`, operation: "fetch_contents", schema: contentsSchema,
+  });
+  return /^\s*uses:\s*\S+\/\.github\/workflows\/\S+@/m.test(Buffer.from(file.content, "base64").toString("utf8"));
+});
+
+/**
+ * The file Ployz offers a repository: the rule template when its pushes build under a rule, which an automatic deploy
+ * rule names, its file already is, or its file looks like; else the build template. Offering the build template there
+ * would stop its push builds.
+ */
+const offeredTemplate = Effect.fn("Github.offeredTemplate")(function* (
+  access: GithubAccess, repository: StoreRepository, checked: { readiness: GithubBuildReadiness; template: GithubWorkflowTemplate | null },
+) {
+  if (repository.underRule || checked.template === "rule") return "rule";
+  if (checked.readiness !== "outdated") return "build";
+  const reusable = yield* callsReusableWorkflow(access, repository.repositoryId).pipe(Effect.orElseSucceed(() => false));
+  return reusable ? "rule" : "build";
+});
+
+const disconnected = { fullName: null, defaultBranch: null, readiness: "no_permission" as const, template: null, dispatchable: false };
+
+/** One repository's row on Organization → Builds: the file Ployz offers it, and whether it holds that file. */
+export const checkGithubBuildRepository = Effect.fn("Github.checkBuildRepository")(function* (organizationId: string, repository: StoreRepository) {
+  const access = organizationAccess(organizationId, repository.installationId);
+  const checked = yield* checkGithubBuildWorkflow(access, repository.repositoryId).pipe(
+    Effect.catchTag("GithubDisconnected", () => Effect.succeed(disconnected)),
+  );
+  const template = yield* offeredTemplate(access, repository, checked);
+  return {
+    installationId: repository.installationId,
+    repositoryId: repository.repositoryId,
+    fullName: checked.fullName ?? repository.fullName,
+    defaultBranch: checked.defaultBranch,
+    // The other template is one Ployz offers, but not to this repository.
+    readiness: checked.readiness === "ready" && checked.template !== template ? "outdated" : checked.readiness,
+    template,
+  } satisfies GithubBuildRepository;
 });
 
 export const listGithubBuildRepositories = Effect.fn("Github.listBuildRepositories")(
   function* (actor: Actor, input: { organizationSlug: string }) {
     const { organization } = yield* requireAccess(actor, input.organizationSlug, "project:read");
-    const repositories = yield* listStoreGithubRepositories(actor, input.organizationSlug);
-    return yield* Effect.forEach(repositories, (repository) =>
-      checkGithubBuildWorkflow(organizationAccess(organization.id, repository.installationId), repository.repositoryId).pipe(
-        Effect.catchTag("GithubDisconnected", () => Effect.succeed({ fullName: null, defaultBranch: null, readiness: "no_permission" as const, dispatchable: false })),
-        Effect.map((checked): GithubBuildRepository => ({
-          installationId: repository.installationId,
-          repositoryId: repository.repositoryId,
-          fullName: checked.fullName ?? repository.fullName,
-          defaultBranch: checked.defaultBranch,
-          readiness: checked.readiness,
-        })),
-      ), { concurrency: 4 });
+    const repositories = yield* listStoreGithubRepositories(actor, organization.id, input.organizationSlug);
+    return yield* Effect.forEach(repositories, (repository) => checkGithubBuildRepository(organization.id, repository), { concurrency: 4 });
   },
 );

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { READ_SET } from "./policy.js";
+import { READ_SET, workflowDigest } from "./policy.js";
 import {
   API,
   APP_ID,
@@ -157,7 +157,6 @@ describe("/v1/dispatch", () => {
     ["an input outside the allowed set", { ...valid, inputs: { ...valid.inputs, image: "evil" } }],
     ["a caller-set cloud", { ...valid, inputs: { ...valid.inputs, cloud: "https://evil.test" } }],
     ["a commit that is not 40 hex", { ...valid, inputs: { ...valid.inputs, commit: "abc123" } }],
-    ["no build input", { ...valid, inputs: { runner: "ubuntu-latest" } }],
   ];
 
   it.each(refusedBodies)("refuses %s", async (_, body) => {
@@ -173,7 +172,15 @@ describe("/v1/dispatch", () => {
     expect(response).toMatchObject({ status: 400, body: { reason: "branch not found" } });
   });
 
-  it("refuses everything with the shipped placeholder set until M4 fills it", async () => {
+  it("dispatches a canonical rule file with only the commit, and fills cloud", async () => {
+    const rule = CANONICAL_WORKFLOW.replace("on:\n", "on:\n  push:\n");
+    const minter = harness(dispatchRoutes(rule), { canonical: new Set([workflowDigest(Buffer.from(rule))]) });
+    const body = { ...valid, inputs: { commit: HEAD } };
+    expect((await minter.call("/v1/dispatch", body)).status).toBe(200);
+    expect(sent(minter.calls, "POST", DISPATCH)[0]?.body).toEqual({ ref: "refs/heads/main", inputs: { commit: HEAD, cloud: CLOUD }, return_run_details: true });
+  });
+
+  it("refuses the stand-in template, which the shipped set doesn't list", async () => {
     const { CANONICAL_DIGESTS } = await import("./policy.js");
     const minter = harness(dispatchRoutes(CANONICAL_WORKFLOW), { canonical: CANONICAL_DIGESTS });
     expect((await minter.call("/v1/dispatch", valid)).status).toBe(400);
@@ -466,6 +473,17 @@ describe("the minter's own tokens", () => {
     expect(tokenRequests(minter.calls)).toHaveLength(1);
     now += 2 * 60_000;
     await ask(minter);
+    expect(tokenRequests(minter.calls)).toHaveLength(2);
+  });
+
+  it("mints again after GitHub refuses the kept token", async () => {
+    let revoked = false;
+    const minter = harness({ [`GET ${repo}`]: () => revoked ? json({ message: "Bad credentials" }, 401) : json({ full_name: "lab/app", default_branch: "main" }) });
+    expect((await ask(minter)).status).toBe(200);
+    revoked = true;
+    expect((await ask(minter)).status).toBe(502);
+    revoked = false;
+    expect((await ask(minter)).status).toBe(200);
     expect(tokenRequests(minter.calls)).toHaveLength(2);
   });
 

@@ -14,8 +14,8 @@ import { requireView, useStoreView } from "#/modules/config-store/store-view.que
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import {
   awaitsWorkflowCommit,
-  GITHUB_BUILD_WORKFLOW,
   GITHUB_BUILD_WORKFLOW_FILE,
+  GITHUB_WORKFLOW_TEMPLATES,
   githubBuildRepositoryKey,
   githubBuildWorkflowEditUrl,
   githubBuildWorkflowUrl,
@@ -106,7 +106,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
 
   return (
     <SettingsSection id="github-actions" title="GitHub Actions" description={repositories
-      ? `${ready} of ${repositories.length} repositories set up. Each needs one small workflow file. It only runs when Ployz starts a build, and build secrets are sent to the runner.`
+      ? `${ready} of ${repositories.length} repositories set up. Each needs one small workflow file. It runs when Ployz starts a build, or on each push under an automatic deploy rule. Build secrets are sent to the runner.`
       : "Could not check the repositories on GitHub."}>
       <SettingsList label="Repositories">
         {repositories?.map((repository) => (
@@ -131,7 +131,9 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
                 nativeButton={false}
                 render={
                   <a
-                    href={githubBuildWorkflowUrl({ web: githubWeb, fullName: repository.fullName, defaultBranch: repository.defaultBranch })}
+                    href={githubBuildWorkflowUrl({
+                      web: githubWeb, fullName: repository.fullName, defaultBranch: repository.defaultBranch, template: repository.template,
+                    })}
                     target="_blank"
                     rel="noreferrer"
                   />
@@ -148,6 +150,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
         <UpdateWorkflowDialog
           editUrl={githubBuildWorkflowEditUrl({ web: githubWeb, fullName: updating.fullName, defaultBranch: updating.defaultBranch })}
           defaultBranch={updating.defaultBranch}
+          workflow={GITHUB_WORKFLOW_TEMPLATES[updating.template]}
           onOpened={() => {
             open(updating);
             setUpdating(null);
@@ -160,8 +163,8 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
 }
 
 /** The new file to copy, and GitHub's editor on the old one: Cloud never writes to the repository. */
-function UpdateWorkflowDialog({ editUrl, defaultBranch, onOpened, onClose }: {
-  editUrl: string; defaultBranch: string; onOpened: () => void; onClose: () => void;
+function UpdateWorkflowDialog({ editUrl, defaultBranch, workflow, onOpened, onClose }: {
+  editUrl: string; defaultBranch: string; workflow: string; onOpened: () => void; onClose: () => void;
 }) {
   return (
     <Dialog open onOpenChange={(next) => !next && onClose()}>
@@ -170,14 +173,14 @@ function UpdateWorkflowDialog({ editUrl, defaultBranch, onOpened, onClose }: {
           <DialogTitle>Update workflow</DialogTitle>
           <DialogDescription>
             Replace <span className="font-mono">.github/workflows/{GITHUB_BUILD_WORKFLOW_FILE}</span> on{" "}
-            <span className="font-mono">{defaultBranch}</span> with this file. Ployz builds on GitHub only with this exact file.
+            <span className="font-mono">{defaultBranch}</span> with this file. It runs Ployz's builder at a fixed commit, so a change to the builder can't reach your builds.
           </DialogDescription>
         </DialogHeader>
         <pre aria-label="New workflow file" className="max-h-80 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-5">
-          {GITHUB_BUILD_WORKFLOW}
+          {workflow}
         </pre>
         <DialogFooter>
-          <CopyButton value={GITHUB_BUILD_WORKFLOW} label="Copy file" showLabel variant="outline" />
+          <CopyButton value={workflow} label="Copy file" showLabel variant="outline" />
           <Button nativeButton={false} render={<a href={editUrl} target="_blank" rel="noreferrer" />} onClick={onOpened}>
             Open in GitHub ↗
           </Button>

@@ -51,8 +51,8 @@ function oidcToken(claims: Partial<RunnerClaims> = {}, key: crypto.KeyObject = s
   return `${body}.${crypto.sign("RSA-SHA256", Buffer.from(body), key).toString("base64url")}`;
 }
 
-const activeWorkflow: GithubBuildWorkflowFile = { fullName: "acme/web", defaultBranch: "main", state: "active", canonical: true, dispatchable: true };
-const noWorkflow: GithubBuildWorkflowFile = { fullName: "acme/web", defaultBranch: "main", state: null, canonical: false, dispatchable: false };
+const activeWorkflow: GithubBuildWorkflowFile = { fullName: "acme/web", defaultBranch: "main", state: "active", template: "build", dispatchable: true };
+const noWorkflow: GithubBuildWorkflowFile = { fullName: "acme/web", defaultBranch: "main", state: null, template: null, dispatchable: false };
 const dispatchedRun = (runId: number): GithubDispatchedBuild =>
   ({ runId, runUrl: `https://github.com/acme/web/actions/runs/${runId}`, headSha: HEAD, workflowRef: WORKFLOW });
 
@@ -76,7 +76,7 @@ function acmeGithub(answers: { workflow: () => GithubBuildWorkflowFile; dispatch
 /** `acme/web`, whose build workflow is missing, then edited away from Ployz's, then Ployz's own, as `workflowNow` says. */
 let workflowNow: "missing" | "edited" | "ready" = "missing";
 const github = acmeGithub({
-  workflow: () => workflowNow === "ready" ? activeWorkflow : workflowNow === "edited" ? { ...activeWorkflow, canonical: false, dispatchable: false } : noWorkflow,
+  workflow: () => workflowNow === "ready" ? activeWorkflow : workflowNow === "edited" ? { ...activeWorkflow, template: null, dispatchable: false } : noWorkflow,
 });
 
 it.live(
@@ -535,7 +535,7 @@ it.live("a retry that skips GitHub after its first hand-off commits late follows
 it.live("a rule build follows its push, and an approved build dispatches, under the rule's own workflow file", () =>
   Effect.gen(function* () {
     // The rule's branch holds the rule's template, not the one the dashboard offers.
-    const ruleTemplate = { ...activeWorkflow, canonical: false, dispatchable: false };
+    const ruleTemplate = { ...activeWorkflow, template: null, dispatchable: false };
     const authority = fakeGithubAuthority({
       buildWorkflow: () => Effect.succeed(ruleTemplate),
       buildRuns: () => Effect.succeed([{ id: RUN, url: dispatchedRun(RUN).runUrl, headSha: HEAD, event: "push", status: "in_progress", conclusion: null }]),

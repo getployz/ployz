@@ -1,8 +1,10 @@
 import { ConfigProvider, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GITHUB_BUILD_WORKFLOW, GITHUB_BUILDER_COMMIT } from "./github-build-workflow";
-import { GITHUB_READ_SET, GithubAuthority, GithubAuthorityLive, type GithubAuthorityService } from "./github-authority.server";
+import { GITHUB_BUILD_WORKFLOW, GITHUB_BUILDER_COMMIT, GITHUB_RULE_WORKFLOW } from "./github-build-workflow";
+import {
+  GITHUB_READ_SET, GithubAuthority, GithubAuthorityLive, githubBuildWorkflowDigest, type GithubAuthorityService,
+} from "./github-authority.server";
 import { testConfigEnvironment, testConfigLayer } from "#/test/config-environment";
 import { AppConfig } from "#/server/config.server";
 
@@ -148,13 +150,14 @@ describe("the App's authority held in Cloud", () => {
       return local((authority) => authority.buildWorkflow({ installationId: 7, repositoryId: 42 })).then((found) => ({ found, sent }));
     };
     const pinned = await workflow(GITHUB_BUILD_WORKFLOW);
-    expect(pinned.found).toEqual({ fullName: "acme/web", defaultBranch: "main", state: "active", canonical: true, dispatchable: true });
+    expect(pinned.found).toEqual({ fullName: "acme/web", defaultBranch: "main", state: "active", template: "build", dispatchable: true });
     expect(minted(pinned.sent)).toEqual([{ permissions: { contents: "read", actions: "read" }, repository_ids: [42] }]);
     expect(pinned.sent.find((request) => request.url.pathname.includes("/contents/"))?.headers.get("accept")).toBe("application/vnd.github.raw");
-    expect((await workflow(GITHUB_BUILD_WORKFLOW.replaceAll("\n", "\r\n"))).found.canonical).toBe(true);
+    expect((await workflow(GITHUB_BUILD_WORKFLOW.replaceAll("\n", "\r\n"))).found.template).toBe("build");
+    expect((await workflow(GITHUB_RULE_WORKFLOW)).found.template).toBe("rule");
     const tagged = GITHUB_BUILD_WORKFLOW.replace(`getployz/build@${GITHUB_BUILDER_COMMIT}`, "getployz/build@v1");
-    expect((await workflow(tagged)).found).toMatchObject({ state: "active", canonical: false, dispatchable: true });
-    expect((await workflow(`\uFEFF${GITHUB_BUILD_WORKFLOW}`)).found.canonical).toBe(false);
+    expect((await workflow(tagged)).found).toMatchObject({ state: "active", template: null, dispatchable: true });
+    expect((await workflow(`\uFEFF${GITHUB_BUILD_WORKFLOW}`)).found.template).toBe(null);
   });
 
   it("dispatches a commit a person approved on the rule's branch, with a token that can only run Actions there", async () => {
@@ -244,13 +247,16 @@ describe("the App's authority held by the minter", () => {
     ]);
   });
 
-  it("reads a build workflow as dispatchable only when the minter found it canonical", async () => {
-    const workflow = (canonical: boolean) => {
-      serve(() => Response.json({ full_name: "acme/web", default_branch: "main", state: "active", digest: "d", canonical }));
+  it("reads a build workflow as dispatchable only when the minter found it canonical, and names its template by digest", async () => {
+    const workflow = (digest: string, canonical: boolean) => {
+      serve(() => Response.json({ full_name: "acme/web", default_branch: "main", state: "active", digest, canonical }));
       return viaMinter((authority) => authority.buildWorkflow({ installationId: 7, repositoryId: 42 }));
     };
-    expect(await workflow(true)).toEqual({ fullName: "acme/web", defaultBranch: "main", state: "active", canonical: true, dispatchable: true });
-    expect(await workflow(false)).toMatchObject({ canonical: false, dispatchable: false });
+    const rule = githubBuildWorkflowDigest(Buffer.from(GITHUB_RULE_WORKFLOW));
+    expect(await workflow(rule, true)).toEqual({ fullName: "acme/web", defaultBranch: "main", state: "active", template: "rule", dispatchable: true });
+    expect(await workflow(githubBuildWorkflowDigest(Buffer.from(GITHUB_BUILD_WORKFLOW)), true)).toMatchObject({ template: "build" });
+    expect(await workflow(rule, false)).toMatchObject({ template: null, dispatchable: false });
+    expect(await workflow("d", true)).toMatchObject({ template: null, dispatchable: true });
   });
 
   it("leaves the Cloud input of a dispatch to the minter", async () => {
@@ -285,12 +291,19 @@ describe("the App's authority held by the minter", () => {
     await expect(cancel(403, { message: "Forbidden" })).rejects.toMatchObject({ code: "request_failed", retriable: false });
   });
 
-  it("runs no build again, and dispatches no rule's workflow", async () => {
+  it("runs no build again", async () => {
     const sent = serve(() => undefined);
     await expect(viaMinter((authority) => authority.rerunBuild({ installationId: 7, repositoryId: 42, runId: 9001 })))
       .rejects.toMatchObject({ code: "refused", operation: "rerun_run" });
-    await expect(viaMinter((authority) => authority.dispatchApprovedBuild({ installationId: 7, repositoryId: 42, branch: "main", commit: HEAD })))
-      .rejects.toMatchObject({ code: "refused", operation: "dispatch_workflow" });
     expect(sent).toEqual([]);
+  });
+
+  it("asks the minter to dispatch an approved commit on the rule's branch with only the commit", async () => {
+    const sent = serve(() => Response.json({ run_id: 9001, run_url: "https://github.com/acme/web/actions/runs/9001", head_sha: HEAD, workflow_ref: "w" }));
+    const run = await viaMinter((authority) => authority.dispatchApprovedBuild({ installationId: 7, repositoryId: 42, branch: "main", commit: HEAD }));
+    expect(run).toEqual({ runId: 9001, runUrl: "https://github.com/acme/web/actions/runs/9001" });
+    expect(sent.map((request) => [request.url.pathname, request.body])).toEqual([
+      ["/v1/dispatch", { installation_id: 7, repository_id: 42, branch: "main", inputs: { commit: HEAD } }],
+    ]);
   });
 });

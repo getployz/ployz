@@ -153,7 +153,11 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
     own: { contents: "read", actions: "write" },
     async handle(body, { github, config, facts, own }) {
       facts.ref = body.branch;
-      const inputs = strict(body.inputs, { build: text(256, BUILD_ID), runner: optional(text(100, RUNNER)), commit: optional(sha) }, "inputs");
+      // The build template takes `build` and `runner`, the rule template only `commit`. GitHub refuses inputs a file
+      // doesn't declare.
+      const inputs = strict(body.inputs, {
+        build: optional(text(256, BUILD_ID)), runner: optional(text(100, RUNNER)), commit: optional(sha),
+      }, "inputs");
       const token = await own();
       const repository = await github.json("resolve_repository", token, "GET", `/repositories/${body.repository_id}`);
       const fullName = field(repository, "full_name", "string", "resolve_repository");
@@ -344,10 +348,18 @@ const OWN_TOKENS = 1024;
  * The minter's own tokens, one per repository and permission set, kept until shortly before they expire. They never
  * leave the process. A mint that fails is forgotten, so the next request mints again.
  */
+type OwnTokens = ReturnType<typeof ownTokens>;
+
 function ownTokens(github: Github, now: () => number) {
   const kept = new Map<string, Promise<MintedToken>>();
-  return async (installationId: number, repositoryId: number, permissions: TokenPermissions): Promise<string> => {
-    const key = `${installationId}:${repositoryId}:${JSON.stringify(Object.entries(permissions).sort())}`;
+  const keyOf = (installationId: number, repositoryId: number, permissions: TokenPermissions) =>
+    `${installationId}:${repositoryId}:${JSON.stringify(Object.entries(permissions).sort())}`;
+  /** Drop a kept token GitHub no longer takes, so the next request mints again. */
+  const forget = (installationId: number, repositoryId: number, permissions: TokenPermissions) => {
+    kept.delete(keyOf(installationId, repositoryId, permissions));
+  };
+  const token = async (installationId: number, repositoryId: number, permissions: TokenPermissions): Promise<string> => {
+    const key = keyOf(installationId, repositoryId, permissions);
     const held = kept.get(key);
     if (held !== undefined) {
       const token = await held.catch(() => null);
@@ -364,6 +376,7 @@ function ownTokens(github: Github, now: () => number) {
       throw error;
     }
   };
+  return { token, forget };
 }
 
 /** Serves one request and writes its one audit line, whatever happens. */
@@ -426,9 +439,7 @@ export function createMinter(deps: { github: Github; config: MinterConfig; audit
   };
 }
 
-async function serve(row: AnyRoute, raw: unknown, deps: {
-  github: Github; config: MinterConfig; own: (installationId: number, repositoryId: number, permissions: TokenPermissions) => Promise<string>;
-}, facts: AuditFacts) {
+async function serve(row: AnyRoute, raw: unknown, deps: { github: Github; config: MinterConfig; own: OwnTokens }, facts: AuditFacts) {
   const body = strict(raw, row.body);
   const installationId = body["installation_id"];
   const repositoryId = body["repository_id"];
@@ -438,7 +449,16 @@ async function serve(row: AnyRoute, raw: unknown, deps: {
     if (row.own === undefined || typeof installationId !== "number" || typeof repositoryId !== "number") {
       throw new Error("this route mints no token of its own");
     }
-    return deps.own(installationId, repositoryId, row.own);
+    return deps.own.token(installationId, repositoryId, row.own);
   };
-  return row.handle(body, { github: deps.github, config: deps.config, facts, own });
+  try {
+    return await row.handle(body, { github: deps.github, config: deps.config, facts, own });
+  } catch (error) {
+    // GitHub revoked the kept token, as when the installation was suspended: the next request mints again.
+    if (error instanceof GithubError && error.failure.kind === "status" && error.failure.status === 401
+      && row.own !== undefined && typeof installationId === "number" && typeof repositoryId === "number") {
+      deps.own.forget(installationId, repositoryId, row.own);
+    }
+    throw error;
+  }
 }

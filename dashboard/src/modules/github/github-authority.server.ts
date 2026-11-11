@@ -2,7 +2,9 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { AwsClient } from "aws4fetch";
 import { Cache, Context, Duration, Effect, Exit, Layer, Redacted, Schema } from "effect";
-import { GITHUB_BUILD_WORKFLOW_FILE, GITHUB_BUILD_WORKFLOWS } from "#/modules/github/github-build-workflow";
+import {
+  GITHUB_BUILD_WORKFLOW_FILE, GITHUB_WORKFLOW_TEMPLATES, type GithubWorkflowTemplate,
+} from "#/modules/github/github-build-workflow";
 import { githubIdSchema, githubTimestampSchema } from "#/modules/github/github-ingestion.contracts";
 import { GithubObservationError, githubResponseError, type GithubObservationOperation } from "#/modules/github/github-observation.api";
 import { AppConfig, type GithubMinterAuth } from "#/server/config.server";
@@ -30,9 +32,11 @@ export function githubBuildWorkflowDigest(bytes: Uint8Array): string {
   return crypto.createHash("sha256").update(Buffer.from(text, "latin1")).digest("hex");
 }
 
-/** The digests of every workflow Ployz offers: what `minter/src/canonical-workflows.json` must list. */
-export function githubBuildWorkflowDigests(): ReadonlySet<string> {
-  return new Set(GITHUB_BUILD_WORKFLOWS.map((workflow) => githubBuildWorkflowDigest(Buffer.from(workflow, "utf8"))));
+/** Each workflow Ployz offers, by digest. Its keys are what `minter/src/canonical-workflows.json` must list. */
+export function githubWorkflowTemplates(): ReadonlyMap<string, GithubWorkflowTemplate> {
+  return new Map(Object.entries(GITHUB_WORKFLOW_TEMPLATES).map(([template, workflow]) =>
+    // SAFETY: the keys of `GITHUB_WORKFLOW_TEMPLATES` are its templates.
+    [githubBuildWorkflowDigest(Buffer.from(workflow, "utf8")), template as GithubWorkflowTemplate]));
 }
 
 /** What each operation's own token may do, for that one repository. */
@@ -87,14 +91,14 @@ export type GithubBuildRun = {
 
 /**
  * The build workflow on the repository's default branch: `state` is null when GitHub lists no such workflow.
- * `canonical` says the file there is one Ployz offers, byte for byte up to line endings. `dispatchable` says whoever
+ * `template` names the file Ployz offers that it is, byte for byte up to line endings, or null. `dispatchable` says whoever
  * holds the authority dispatches it: the minter only a canonical file, and Cloud holding the key any file.
  */
 export type GithubBuildWorkflowFile = {
   readonly fullName: string;
   readonly defaultBranch: string;
   readonly state: string | null;
-  readonly canonical: boolean;
+  readonly template: GithubWorkflowTemplate | null;
   readonly dispatchable: boolean;
 };
 
@@ -150,9 +154,9 @@ export interface GithubAuthorityService {
   /** Refused unless the branch head's `ployz-build.yml` is one Ployz offers. */
   readonly dispatchBuild: (input: GithubBuildDispatch) => Effect.Effect<GithubDispatchedBuild, Failure>;
   /**
-   * Dispatch the rule's `ployz-build.yml` on its branch with only `commit` as input. The file is the rule's own
-   * template, which names its Cloud and builder, so no digest is checked: the grant Machine checks the commit against
-   * what the person signed. The minter has no such route: it is refused there.
+   * Dispatch the rule's `ployz-build.yml` on its branch with `commit` as input; the grant Machine checks the commit
+   * against what the person signed. Cloud holding the key dispatches any file there, as a hand-written rule file names
+   * its own Cloud. The minter dispatches only the rule template, and fills `cloud` itself.
    */
   readonly dispatchApprovedBuild: (input: GithubApprovedDispatch) => Effect.Effect<{ readonly runId: number; readonly runUrl: string }, Failure>;
   /** A run that already finished can't be cancelled; that's fine. */
@@ -251,7 +255,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   const config = yield* AppConfig;
   const { origins, appId, appClientId } = config.github;
   const cloud = config.app.url.origin;
-  const canonicalDigests = githubBuildWorkflowDigests();
+  const templates = githubWorkflowTemplates();
 
   /** GitHub's answer when it succeeded. */
   const respond = Effect.fn("GithubAuthority.respond")(function* (input: {
@@ -372,7 +376,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
       fullName: repository.full_name,
       defaultBranch: repository.default_branch,
       state: workflow !== null && workflow.path === BUILD_WORKFLOW_PATH ? workflow.state : null,
-      canonical: file !== null && canonicalDigests.has(githubBuildWorkflowDigest(file)),
+      template: file === null ? null : templates.get(githubBuildWorkflowDigest(file)) ?? null,
       dispatchable: true,
     };
   });
@@ -577,6 +581,7 @@ function minterRequest(auth: GithubMinterAuth): (url: string, body: string) => P
 /** The App's authority held by the minter. Cloud holds only the credential that asks it. */
 export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly auth: GithubMinterAuth }): GithubAuthorityService {
   const request = minterRequest(minter.auth);
+  const templates = githubWorkflowTemplates();
 
   const post = <S extends Schema.ConstraintDecoder<unknown>>(route: `/v1/${string}`, operation: GithubObservationOperation, body: MinterBody, schema: S) =>
     Effect.gen(function* () {
@@ -606,7 +611,11 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
     installation,
     buildWorkflow: (input) => post("/v1/workflow", "fetch_workflow", { installation_id: input.installationId, repository_id: input.repositoryId }, minterWorkflowSchema).pipe(
       Effect.map((found) => ({
-        fullName: found.full_name, defaultBranch: found.default_branch, state: found.state, canonical: found.canonical, dispatchable: found.canonical,
+        fullName: found.full_name,
+        defaultBranch: found.default_branch,
+        state: found.state,
+        template: found.canonical && found.digest !== null ? templates.get(found.digest) ?? null : null,
+        dispatchable: found.canonical,
       })),
     ),
     buildRuns: (input) => post("/v1/runs", "list_push_runs", {
@@ -620,7 +629,9 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
     dispatchBuild: (input) => post("/v1/dispatch", "dispatch_workflow", {
       installation_id: input.installationId, repository_id: input.repositoryId, branch: input.branch, inputs: input.inputs,
     }, minterDispatchSchema).pipe(Effect.map((run) => ({ runId: run.run_id, runUrl: run.run_url, headSha: run.head_sha, workflowRef: run.workflow_ref }))),
-    dispatchApprovedBuild: () => Effect.fail(refused("dispatch_workflow", "the minter dispatches only the build workflow Ployz offers")),
+    dispatchApprovedBuild: (input) => post("/v1/dispatch", "dispatch_workflow", {
+      installation_id: input.installationId, repository_id: input.repositoryId, branch: input.branch, inputs: { commit: input.commit },
+    }, minterDispatchSchema).pipe(Effect.map((run) => ({ runId: run.run_id, runUrl: run.run_url }))),
     cancelBuild: (input) => post("/v1/cancel", "cancel_run", { installation_id: input.installationId, repository_id: input.repositoryId, run_id: input.runId }, Schema.Struct({})).pipe(
       Effect.asVoid,
     ),
