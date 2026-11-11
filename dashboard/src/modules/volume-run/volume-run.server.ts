@@ -142,10 +142,11 @@ export function laneInputOf(lane: Pick<VolumeRunRow, "kind" | "args">): VolumeLa
 
 /**
  * The approval and spec a Move carries, or the release that carried them on. One approval covers the Move and the
- * release that undoes or finishes it, so a user's release takes them over with the run it ends or the commitment it
- * inherits; the Servers still check every step against them.
+ * release or Deploy that undoes or finishes it, so a user's release takes them over with the run it ends or the
+ * commitment it inherits, and a Deploy that follows a commitment starts B under them; the Servers still check every
+ * step against them.
  */
-const carriedApproval = (row: Pick<VolumeRunRow, "kind" | "args">) => {
+export const carriedApproval = (row: Pick<VolumeRunRow, "kind" | "args">) => {
   const lane = laneInputOf(row);
   return lane.kind === "move" || lane.kind === "release" ? moveApproved(lane.args) : undefined;
 };

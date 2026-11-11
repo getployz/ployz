@@ -5064,6 +5064,22 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["writer@fsn-2(create)"]);
     });
 
+    it("on an approved committed lane: it starts B under the Move's approval, spec and receipt", async () => {
+      const cut = afterCut();
+      const receipt = receiptFor(idOf("fsn-2"), cut.guid, 1);
+      const service = asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+      const run = await requested({ kind: "move", args: { to: "fsn-2", approval: APPROVAL, service } });
+      await harness.pool.query(
+        "update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = 'committed', current = $2, receipt = $3 where id = $1",
+        [run.id, idOf("fsn-2"), receipt]);
+      send.mockClear();
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-2" });
+
+      expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, receipt, want: { kind: "writer", at: cut.guid, epoch: 1, start: { kind: "create", resolved_spec: service } } });
+    });
+
     it("on a committed Move whose run failed: a Deploy that targets nothing on a Volume a mirror removal holds follows the commitment to B without waiting, and refuses to start B once a run admitted after that removal settled the Volume", async () => {
       const cut = afterCut();
       const taken = await moving("committed");
