@@ -309,8 +309,9 @@ async fn declaration_of(client: &mut Client) -> Result<Declaration, Failure> {
 }
 
 /// Declare `doors` as the Cluster's Doors on the entry Machine, so a joiner, a restart
-/// and every reader follow them. Nothing is written when they are already declared, or
-/// when the entry can't keep a declaration.
+/// and every reader follow them. It writes even when the entry already shows them, since
+/// another operator's declaration may not have reached it yet. Nothing is written when
+/// the entry can't keep a declaration.
 ///
 /// # Errors
 ///
@@ -337,7 +338,6 @@ async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Res
                 Ok(())
             }
         },
-        Declaration::Supported if observed.declared.as_ref() == Some(doors) => Ok(()),
         Declaration::Supported => {
             client
                 .call_shared::<op::SetClusterDoors>(

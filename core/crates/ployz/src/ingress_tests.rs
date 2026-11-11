@@ -618,8 +618,12 @@ async fn a_switch_declares_the_final_doors_once_before_it_sets_any_server() {
         .unwrap();
     assert_eq!(
         commands_of(&fleet, "set_cluster_doors"),
-        1,
-        "a rerun that finds the Doors declared writes nothing"
+        2,
+        "a rerun declares again, since another operator's declaration may not have reached the entry yet"
+    );
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(IngressDoors::tunnel())
     );
 }
 

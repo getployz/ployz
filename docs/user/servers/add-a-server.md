@@ -172,7 +172,7 @@ ports. A server whose `ployz` predates this can't start closed, and enrolling it
 
 A Cluster remembers the doors you chose: `ployz server add --ingress-closed` and `ployz ingress use`
 record them on the Cluster. A server joins with them whichever way you add it, and a server that
-restarts doesn't start a door the Cluster left closed. A server whose `ployz` is too old to follow
+restarts doesn't start a tunnel connector the Cluster left closed. A server whose `ployz` is too old to follow
 them can't join a Cluster that is closed or uses the tunnel, with or without the ports. Adding it says
 to update `ployz` on it and run the join command again. A Cluster that never recorded its doors works
 as it did: new servers copy the doors the servers already run. So does one whose entry server runs an

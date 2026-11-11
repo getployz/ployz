@@ -317,13 +317,13 @@ struct DoorsHeld {
 }
 
 impl DoorsHeld {
-    /// Whether every Door these doors open is one the Cluster declares. A holder that
-    /// publishes the host ports opens the Public Door, and a connector the Tunnel Door.
-    fn within(&self, declared: &IngressDoors) -> bool {
-        let public = !self.specs.holder.ports.is_empty();
-        let tunnel = self.specs.tunnel.is_some();
-        (!public || declared.has(IngressDoor::Public))
-            && (!tunnel || declared.has(IngressDoor::Tunnel))
+    /// Whether this Machine holds a connector for a Tunnel Door the Cluster doesn't
+    /// declare. The connector is the one door a restart has to bring up, since Docker
+    /// starts the holder and Caddy by its own restart policy. The Public Door is not
+    /// narrowed here: placing it only starts a holder that is at rest, and leaving it
+    /// out would keep the connector of a declared Tunnel Door down.
+    fn tunnel_left_closed(&self, declared: &IngressDoors) -> bool {
+        self.specs.tunnel.is_some() && !declared.has(IngressDoor::Tunnel)
     }
 }
 
@@ -454,10 +454,12 @@ impl LocalMachine {
     /// and a Machine with no doors places none. A connector left from a closed Tunnel
     /// Door, which Docker refused to remove, is retired again instead of started.
     ///
-    /// The Cluster's declared Doors can only narrow this. Doors that open one the
-    /// declaration lacks stay at rest, as `ployz ingress use` left them, and nothing is
-    /// created, replaced or stopped here. With no declaration, or one this Machine
-    /// can't read, the doors it held are placed as above.
+    /// The Cluster's declared Doors can only narrow this, and only the connector: a
+    /// Tunnel Door the declaration lacks stays at rest with no token written, as
+    /// `ployz ingress use` left it, and nothing is created, replaced or stopped here.
+    /// Every other door is placed, so a Machine part way through a switch that still
+    /// holds both Doors gets its declared connector back. With no declaration, or one
+    /// this Machine can't read, the doors it held are placed as above.
     ///
     /// # Errors
     ///
@@ -476,11 +478,11 @@ impl LocalMachine {
                 return Ok(None);
             };
             if let Some(declared) = local.declared_doors().await
-                && !held.within(&declared)
+                && held.tunnel_left_closed(&declared)
             {
                 tracing::warn!(
                     declared = ?declared.names(),
-                    "the Ingress doors this Machine held open more than the Cluster declares; they stay at rest until the next `ployz ingress use`"
+                    "this Machine held the Tunnel Door open but the Cluster doesn't declare it; the connector stays at rest until the next `ployz ingress use`"
                 );
                 return Ok(None);
             }
@@ -1347,7 +1349,7 @@ mod tests {
         assert_eq!(plan.retire_caddys, vec![retiree('b', false)]);
     }
     #[test]
-    fn restore_follows_a_declaration_only_inward() {
+    fn restore_leaves_only_an_undeclared_connector_at_rest() {
         let proxy = ServiceId::parse("c".repeat(32)).unwrap();
         let held = |ports: IngressPorts, tunnel: bool| {
             let mut specs = DoorSpecs::new(proxy, ports, None);
@@ -1371,14 +1373,14 @@ mod tests {
         ];
         let expected = [
             // closed, public, tunnel, both
-            (&closed, [true, true, true, true]),
-            (&public, [false, true, false, true]),
-            (&tunnel, [false, false, true, true]),
-            (&both, [false, false, false, true]),
+            (&closed, [false, false, false, false]),
+            (&public, [false, false, false, false]),
+            (&tunnel, [true, true, false, false]),
+            (&both, [true, true, false, false]),
         ];
         for (held, answers) in expected {
             for (declared, answer) in sets.iter().zip(answers) {
-                assert_eq!(held.within(declared), answer, "{declared:?}");
+                assert_eq!(held.tunnel_left_closed(declared), answer, "{declared:?}");
             }
         }
     }

@@ -1386,6 +1386,21 @@ mod ingress_doors {
         assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
         assert!(connector_running().await);
 
+        // Part way through a switch to tunnel the Machine still holds both Doors. Docker
+        // brings the holder back, so the declared connector must come back too.
+        let both = json!({"doors": ["public", "tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let switching = set_doors(&service, both, false).await.unwrap().unwrap();
+        assert_eq!(switching.failure, None, "{switching:?}");
+        let connector = switching.tunnel.unwrap().now.container_id;
+        runtime.stop(&connector, None, None).await.unwrap();
+        runtime.remove_tunnel_token().unwrap();
+        assert!(!connector_running().await);
+        let restored = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        assert_eq!(restored.tunnel.unwrap().change, DoorChange::Started);
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        assert!(connector_running().await);
+
         task.abort();
         runtime.remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -7252,6 +7267,11 @@ mod cluster_doors {
             let declared = response
                 .decode::<op::SetClusterDoors>()
                 .unwrap_or_else(|error| panic!("{error:?}: {shown}"));
+            assert_eq!(
+                service.local.declared_doors().await,
+                Some(doors.clone()),
+                "the key holds what was declared"
+            );
             assert_eq!(declared, ClusterDoorsDeclared { doors });
         }
         task.abort();
@@ -7275,6 +7295,7 @@ mod cluster_doors {
             error.details.get("capability"),
             Some(&serde_json::json!(ployz_core::SET_CLUSTER_DOORS_CAPABILITY))
         );
+        assert_eq!(service.local.declared_doors().await, None);
         task.abort();
         std::fs::remove_dir_all(dir).ok();
     }
