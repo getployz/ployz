@@ -571,12 +571,6 @@ impl LocalMachine {
             .place_doors(containers, specs, &plan, &mut set, &mut effects)
             .await
         {
-            if reopening && let Err(marker) = containers.mark_tunnel_door_closed() {
-                tracing::warn!(
-                    error = %ployz_core::error_chain::inline(&marker),
-                    "could not record that the Tunnel Door is still closed"
-                );
-            }
             let undo = stage == IngressStage::Holder
                 || (plan.creates_at(stage) && plan.retirees().next().is_some());
             let error = if undo {
@@ -589,6 +583,16 @@ impl LocalMachine {
             } else {
                 error
             };
+            let connector_may_run = stage == IngressStage::Tunnel && !undo;
+            if reopening
+                && !connector_may_run
+                && let Err(marker) = containers.mark_tunnel_door_closed()
+            {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&marker),
+                    "could not record that the Tunnel Door is still closed"
+                );
+            }
             set.failure = Some(stage_failure(stage, &error));
             return Ok(set);
         }
