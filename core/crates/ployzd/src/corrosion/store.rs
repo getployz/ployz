@@ -16,7 +16,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
-    IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
+    IngressDoors, IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
     RecoverySeed, SealingPublicKey, forgotten_key,
 };
 use serde_json::json;
@@ -26,6 +26,35 @@ use super::{
     Statement, Subscription,
 };
 use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner};
+
+/// The Cluster's declared Doors as this replica holds them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DeclaredDoors {
+    Undeclared,
+    Declared(IngressDoors),
+    /// Not JSON, not a set of Doors, or a Door this release doesn't know.
+    Unreadable,
+}
+
+impl DeclaredDoors {
+    fn parse(stored: Option<&str>) -> Self {
+        match stored {
+            None => Self::Undeclared,
+            Some(stored) => {
+                ployz_core::declared_doors(stored).map_or(Self::Unreadable, Self::Declared)
+            }
+        }
+    }
+
+    /// The declaration readers follow. An unreadable one reads as undeclared, so
+    /// readers infer the Doors from what runs, never Public from a bad value.
+    pub(crate) fn followed(&self) -> Option<IngressDoors> {
+        match self {
+            Self::Declared(doors) => Some(doors.clone()),
+            Self::Undeclared | Self::Unreadable => None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ReplicatedStore {
@@ -546,6 +575,21 @@ impl ReplicatedStore {
         Ok(())
     }
 
+    /// Declare the Cluster's Doors. The last write wins, here and across replicas.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion write fails.
+    pub async fn publish_cluster_doors(&self, doors: &IngressDoors) -> Result<(), Error> {
+        let stored = serde_json::to_string(doors).expect("a set of Doors serializes");
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES ('doors', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [json!(stored)],
+            )])
+            .await?;
+        Ok(())
+    }
+
     pub async fn publish_sealing_public_key(&self, key: SealingPublicKey) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
@@ -698,6 +742,25 @@ impl ReplicatedStore {
                     error = ployz_core::error_chain::inline(&error),
                 ))
             })
+    }
+
+    /// The Cluster's declared Doors on this replica.
+    ///
+    /// # Errors
+    /// Only when the Corrosion query fails. A stored value that isn't a set of known
+    /// Doors is [`DeclaredDoors::Unreadable`], not an error.
+    pub(crate) async fn cluster_doors(&self) -> Result<DeclaredDoors, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = 'doors'",
+                [],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        Ok(DeclaredDoors::parse(
+            rows.first().map(|[value]| value.as_str().unwrap_or_default()),
+        ))
     }
 
     pub async fn machine(&self, id: &str) -> Result<Option<Machine>, Error> {

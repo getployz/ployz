@@ -39,6 +39,7 @@ import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.loc
 import { type RedeployPorts, redeployMoved, runSwitch } from "#/modules/ingress/doors.run";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { createIngressDoorsRequestedEvent, type IngressDoorsRequestedEventData } from "#/modules/inngest/events";
+import { observeClusterEnrollment } from "#/modules/machines/enrollment.server";
 import { offlineServers } from "#/modules/machines/server-status";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -133,11 +134,23 @@ function observationOf(frame: RuntimeWatchView): ClusterIngressObservation {
 }
 
 /**
- * Whether Cloudflare setup may open only the tunnel: the Cluster was founded closed and, seen whole, no Server holds the
+ * The Door set the Cluster declares, as a Server's replica carries it in the enrollment snapshot: null when the Cluster
+ * never declared one, runs a Ployz that predates the declaration, or can't be read now. Null is never an empty set.
+ */
+const declaredDoors = Effect.fn("IngressDoors.declared")(function* (organizationId: string) {
+  const observed = yield* observeClusterEnrollment(organizationId).pipe(Effect.scoped, Effect.catch(() => Effect.succeed(null)));
+  return observed?.kind === "joined" ? observed.snapshot.doors ?? null : null;
+});
+
+/**
+ * Whether Cloudflare setup may open only the tunnel. The Cluster's declared Door set decides when it has one: without
+ * Public is closed, with Public is open. Otherwise the Cluster was founded closed and, seen whole, no Server holds the
  * Public Door, whether or not it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports,
  * or while none takes web traffic yet.
  */
 export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
+  const declared = yield* declaredDoors(organizationId);
+  if (declared !== null) return declared.includes("public") ? { kind: "open" } as const : { kind: "closed" } as const;
   if (!(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
   if (frame === null) return { kind: "unknown" } as const;

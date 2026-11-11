@@ -28,6 +28,7 @@ import {
   hashEnrollmentToken,
   mintCliMachineEnrollment,
   CLUSTER_NOT_FRESH,
+  CANNOT_KEEP_DOORS,
   CLUSTER_UNREACHABLE,
   mintMachineEnrollment,
   readMachineEnrollment,
@@ -73,6 +74,12 @@ const snapshot: EnrollmentSnapshot = { network: "10.42.0.0/16", machines: [], ta
 const joinedSnapshot = (assignment: EnrollmentAssignment | undefined): EnrollmentSnapshot => {
   if (!assignment) throw new Error("Assignment missing");
   return { ...snapshot, machines: [{ ...assignment.machine, runtime: { ...assignment.machine.runtime, daemon_version: "0.3.15" } }] };
+};
+/** An assignment as Cloud saves it: without the claims it adds only to the Register it dispatches. */
+const asSaved = (assignment: EnrollmentAssignment | undefined): EnrollmentAssignment => {
+  if (!assignment) throw new Error("Assignment missing");
+  const { capabilities: _capabilities, join_confirmation: _confirmation, ...request } = assignment.request;
+  return { ...assignment, request };
 };
 const enrollmentSettings = {
   encryption: makeSecretEncryption("test-app-encryption-secret-1234567890"),
@@ -541,7 +548,7 @@ describe("organization enrollment coordinator", () => {
     expect(fake.registerCalls()).toBe(1);
     expect(fake.closed()).toBe(3);
     const saved = await harness.pool.query("select assignments from enrollment_allocation");
-    expect(saved.rows[0].assignments).toEqual(fake.published);
+    expect(saved.rows[0].assignments).toEqual(fake.published.map(asSaved));
     fake.fail.publish = false;
     // A fresh coordinator has no worker-local retry state.
     const fresh = fakeSession(harness.database);
@@ -556,7 +563,7 @@ describe("organization enrollment coordinator", () => {
     expect(fresh.published[1]?.machine).toEqual(fresh.published[0]?.machine);
     expect(fresh.published[1]?.request.storage).toBe("zfs");
     const replaced = await harness.pool.query("select assignments from enrollment_allocation");
-    expect(replaced.rows[0].assignments).toEqual([fresh.published[1]]);
+    expect(replaced.rows[0].assignments).toEqual([asSaved(fresh.published[1])]);
   });
 
   it("relays a joiner's confirmation in Register and keeps it out of the saved assignment", async () => {
@@ -571,7 +578,36 @@ describe("organization enrollment coordinator", () => {
     expect(confirmed).toMatchObject({ success: { kind: "join" } });
     expect(fake.published.map((assignment) => assignment.request.join_confirmation)).toEqual([undefined, confirmation]);
     const saved = await harness.pool.query("select assignments from enrollment_allocation");
-    expect(saved.rows[0].assignments).toEqual([fake.published[0]]);
+    expect(saved.rows[0].assignments).toEqual([asSaved(fake.published[0])]);
+  });
+
+  it("relays a joiner's capability claim in Register, claims nothing when absent, and keeps it out of the saved assignment", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await fake.coordinator.enroll({ token: (tokens[0] ?? ""), identity: identity(0) });
+    if (Result.isFailure(founder) || founder.success.kind !== "initialize") throw new Error("Founder missing");
+    await fake.coordinator.publish({ token: tokens[0] ?? "", machineId: identity(0).machineId, pairingCredential: founder.success.pairing.secret, capability });
+    await fake.coordinator.completeFounding({ token: (tokens[0] ?? ""), machineId: founderMachineId, pairingCredential: founder.success.pairing.secret });
+    expect(await fake.coordinator.enroll({ token: (tokens[1] ?? ""), identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+    const claim = ["ployz.cluster.doors.v1"];
+    expect(await fake.coordinator.enroll({ token: (tokens[1] ?? ""), identity: { ...identity(1), capabilities: claim } })).toMatchObject({ success: { kind: "join" } });
+    expect(fake.published.map((assignment) => assignment.request.capabilities)).toEqual([[], claim]);
+    const saved = await harness.pool.query("select assignments from enrollment_allocation");
+    expect(saved.rows[0].assignments).toEqual([asSaved(fake.published[0])]);
+    expect(saved.rows[0].assignments[0].request).not.toHaveProperty("capabilities");
+  });
+
+  it("tells a joiner whose Ployz can't keep the Cluster's Doors to upgrade it and rerun", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    await fake.coordinator.completeFounding(founder);
+    fake.connection.beforeRegister = async () => {
+      throw new RpcError({ code: "unsupported", message: "Server node-1 needs a newer Ployz.", details: { target: "node-1", capability: "ployz.cluster.doors.v1" } });
+    };
+    expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({
+      failure: { _tag: "Conflict", userFacing: true, message: CANNOT_KEEP_DOORS },
+    });
+    expect(CANNOT_KEEP_DOORS).toBe("This Server's Ployz can't keep the Cluster's Doors. Upgrade ployz on it and rerun the join command.");
   });
 
   it("refuses a joined Server's rerun with other options, and says how to proceed", async () => {

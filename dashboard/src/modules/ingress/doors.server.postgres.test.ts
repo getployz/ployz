@@ -1,11 +1,11 @@
 import { Effect } from "effect";
 import { Inngest } from "inngest";
-import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { ConfigStore } from "@ployz/sdk";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
-import { closeDoorsRun, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
+import { closeDoorsRun, closedFounding, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
@@ -23,6 +23,9 @@ const RUN = "run-1";
 let harness: PostgresTestHarness;
 let session: ScopedRuntimeClientSession = { status: "no_connection" };
 const sets: string[][] = [];
+/** What a Server's replica answers the enrollment read with: no declaration unless a test says so. */
+const SNAPSHOT = { network: "10.42.0.0/16", machines: [], target_versions: {} };
+let enrollment: Effect.Effect<unknown, Error> = Effect.succeed(SNAPSHOT);
 
 /** A Cluster publishing no hostname, so a switch finds nothing to move and starts nothing. */
 const EMPTY_FRAME = { machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] }, unanswered: [] };
@@ -40,6 +43,7 @@ const answering = (held: (doors: readonly string[]) => readonly string[] = (door
   status: "connected",
   connected: asTestDouble<PloyzSession>()({
     watchFirstFrame: () => frame,
+    observeEnrollment: () => enrollment,
     setIngressDoors: (doors: readonly string[]) => {
       sets.push([...doors]);
       return Effect.succeed({ machines: [{ server: "s1", doors: held(doors) }], failures: [] });
@@ -106,6 +110,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   sets.length = 0;
+  enrollment = Effect.succeed(SNAPSHOT);
   session = answering();
   storeViews = noOwners;
   storeRead = () => Promise.resolve();
@@ -413,4 +418,52 @@ it.each(["public", "tunnel"] as const)("never lets a %s switch still running at 
   expect(await old).toMatchObject({ state: "failed" });
   expect(await stateNow()).toBe("set_up");
   expect(await attempts()).toMatchObject([{ state: "failed", failure: "The Cluster was removed." }]);
+});
+
+describe("a Cluster's declared Door set", () => {
+  const declaring = (doors: readonly string[] | undefined) => {
+    enrollment = Effect.succeed(doors === undefined ? SNAPSHOT : { ...SNAPSHOT, doors });
+  };
+  const founding = () => run(closedFounding(ORG));
+
+  it.each([[[]], [["tunnel"]]] as const)("reads %j as closed, without founding instruction or a look at the Servers", async (doors) => {
+    declaring(doors);
+    session = answering((held) => held, Effect.succeed(PARTIAL_FRAME));
+    expect(await founding()).toEqual({ kind: "closed" });
+  });
+
+  it.each([[["public"]], [["public", "tunnel"]]] as const)("reads %j as open, whatever the founder was told", async (doors) => {
+    await foundedClosed();
+    declaring(doors);
+    session = answering((held) => held, Effect.succeed(CLOSED_FRAME));
+    expect(await founding()).toEqual({ kind: "open" });
+  });
+
+  it("falls back to what the founder was told and the Servers show when none is declared", async () => {
+    session = answering((held) => held, Effect.succeed(CLOSED_FRAME));
+    expect(await founding()).toEqual({ kind: "open" });
+    await foundedClosed();
+    expect(await founding()).toEqual({ kind: "closed" });
+    session = answering((held) => held, Effect.succeed(PARTIAL_FRAME));
+    expect(await founding()).toEqual({ kind: "unknown" });
+  });
+
+  it("falls back the same way when the snapshot can't be read, never reading it as closed", async () => {
+    await foundedClosed();
+    session = answering((held) => held, Effect.succeed(CLOSED_FRAME));
+    enrollment = Effect.fail(new Error("Server didn't answer"));
+    expect(await founding()).toEqual({ kind: "closed" });
+    session = answering((held) => held, Effect.succeed(PARTIAL_FRAME));
+    enrollment = Effect.fail(new Error("Server didn't answer"));
+    expect(await founding()).toEqual({ kind: "unknown" });
+    await harness.pool.query("truncate table server_enrollment cascade");
+    enrollment = Effect.fail(new Error("Server didn't answer"));
+    expect(await founding()).toEqual({ kind: "open" });
+  });
+
+  it("falls back when no Server is connected", async () => {
+    await foundedClosed();
+    session = { status: "unreachable", error: null };
+    expect(await founding()).toEqual({ kind: "unknown" });
+  });
 });

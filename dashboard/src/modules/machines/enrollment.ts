@@ -148,11 +148,16 @@ export const enrollmentIdentitySchema = Schema.Struct({
   recoverySupport: Schema.optionalKey(Schema.Literal(1)),
   /** The joiner's proof that it opened its approved capsule. Cloud relays it in Register; it opens nothing. */
   joinConfirmation: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
+  /** What the client that runs this joiner's catch-up honors, as capability names. Absent claims nothing. Cloud relays it in Register. */
+  capabilities: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export type EnrollmentIdentity = typeof enrollmentIdentitySchema.Type;
 
-/** HTTP enroll identity → SDK RegisterRequest. CLI does not POST runtime. */
+/**
+ * HTTP enroll identity → SDK RegisterRequest. CLI does not POST runtime. The joiner's `capabilities` and
+ * `joinConfirmation` are left out: they ride only the Register Cloud dispatches, never the saved assignment a retry compares.
+ */
 export function registerRequestFromEnrollmentIdentity(
   identity: EnrollmentIdentity,
 ): RegisterRequest {

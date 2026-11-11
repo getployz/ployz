@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
-import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
+import { allocateEnrollment, type EnrollmentAssignment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Cause, Effect, Option, Schema } from "effect";
 import {
@@ -65,6 +65,11 @@ export const CLUSTER_UNREACHABLE = "This Organization's Servers can't be reached
   + "or use Forget Servers in the dashboard.";
 
 const unreachable = () => new Conflict({ message: CLUSTER_UNREACHABLE, userFacing: true });
+
+/** The capability whose refusal says a joiner's Ployz can't keep a Cluster's declared Doors. */
+const DOORS_CAPABILITY = "ployz.cluster.doors.v1";
+
+export const CANNOT_KEEP_DOORS = "This Server's Ployz can't keep the Cluster's Doors. Upgrade ployz on it and rerun the join command.";
 
 /** A founding stage's answer while Cloud can't reach the Server; the Server retries it until its own wait ends. */
 const cantReachServer = (cause: unknown) => new Unavailable({
@@ -784,9 +789,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       // The assignment commits before dispatch; a lost response is never replayed.
       const registration = joined
         ? { assigned_machine: joined, visible_peers: snapshot.machines.filter((machine) => machine !== joined), target_versions: snapshot.target_versions }
-        : yield* session.register(input.identity.joinConfirmation === undefined
-          ? assignment
-          : { ...assignment, request: { ...assignment.request, join_confirmation: input.identity.joinConfirmation } }).pipe(Effect.catchTag("PloyzProviderError", (error) => {
+        : yield* session.register(dispatched(assignment, input.identity)).pipe(Effect.catchTag("PloyzProviderError", (error) => {
           const needsApproval = Schema.is(Schema.Struct({
             code: Schema.Literal("forbidden"),
             details: Schema.Struct({ capability: Schema.Literal("ployz.machine.join.device-approval.v1") }),
@@ -794,6 +797,10 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           const alreadyAdmitted = Schema.is(Schema.Struct({
             details: Schema.Struct({ reason: Schema.Literal("join_already_admitted") }),
           }))(error.cause);
+          const cannotKeepDoors = Schema.is(Schema.Struct({
+            details: Schema.Struct({ capability: Schema.Literal(DOORS_CAPABILITY) }),
+          }))(error.cause);
+          if (cannotKeepDoors) return Effect.fail(new Conflict({ message: CANNOT_KEEP_DOORS, userFacing: true }));
           const message = alreadyAdmitted
             ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
             : "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command.";
@@ -805,6 +812,16 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
     }));
   },
 );
+
+/**
+ * The assignment as Register carries it: the joiner's capability claim (empty when it claims nothing) and its join
+ * confirmation. Neither is part of the saved assignment, so a retry compares what Cloud allocated, not what the joiner says.
+ */
+const dispatched = (assignment: EnrollmentAssignment, identity: EnrollmentIdentity): EnrollmentAssignment => {
+  const request: RegisterRequest = { ...assignment.request, capabilities: [...identity.capabilities ?? []] };
+  if (identity.joinConfirmation !== undefined) request.join_confirmation = identity.joinConfirmation;
+  return { ...assignment, request };
+};
 
 /** The Organization's Cluster lists this Machine under the key it registered with, running its daemon: it joined. */
 const joinedOrganizationCluster = (snapshot: EnrollmentSnapshot, machineId: MachineId, claimedPublicKey: string) =>

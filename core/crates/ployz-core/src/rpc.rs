@@ -384,6 +384,12 @@ pub struct RegisterRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
+    /// The capabilities the client that runs this joiner's catch-up honors, such as
+    /// [`SET_CLUSTER_DOORS_CAPABILITY`] when it follows the Cluster's declared Doors.
+    /// Empty claims nothing. Not part of the retry identity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub capabilities: Vec<String>,
 }
 
 /// Read the join requests waiting for a Device's approval on this Machine.
@@ -1836,6 +1842,22 @@ pub struct ClusterNamed {
     pub name: Option<crate::ClusterName>,
 }
 
+/// Declare the Doors every ingress Server of the Cluster holds. The target Machine
+/// writes them to its replica, and the last write wins across the Cluster. A daemon
+/// that serves this route also carries the declaration in
+/// [`EnrollmentSnapshot::doors`](crate::EnrollmentSnapshot::doors), and refuses a
+/// Register whose client can't follow it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SetClusterDoorsRequest {
+    pub doors: IngressDoors,
+}
+
+/// The Doors the target Machine's replica declares after the write.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterDoorsDeclared {
+    pub doors: IngressDoors,
+}
+
 /// A listed Machine whose proxy has not acked the copies a reader waits for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Unacked {
@@ -2054,6 +2076,7 @@ define_responses! {
     IngressDoorsSet(IngressDoorsSet) => "ingress_doors_set";
     PrivateAccessSet(PrivateAccessSet) => "private_access_set";
     ClusterNamed(ClusterNamed) => "cluster_named";
+    ClusterDoorsDeclared(ClusterDoorsDeclared) => "cluster_doors_declared";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     SealingKeyHeld(SealingKeyHeld) => "sealing_key_held";

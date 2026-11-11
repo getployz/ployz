@@ -28,7 +28,7 @@ use super::{
 
 use crate::{
     corrosion::{
-        AdminClient, ClusterSealing, MembershipState, ReplicatedStore, membership_states_by_address,
+        AdminClient, ClusterSealing, DeclaredDoors, MembershipState, ReplicatedStore, membership_states_by_address,
     },
     docker::{ContainerRuntime, LocalDocker},
     host_capacity,
@@ -300,6 +300,15 @@ pub enum Error {
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
     MissingAssignment,
+    /// The Cluster declares Doors the client running this joiner's catch-up can't
+    /// follow, or a declaration this Machine can't read.
+    #[error(
+        "Server {joiner} needs a newer Ployz. It cannot serve {capability}.",
+        capability = ployz_core::SET_CLUSTER_DOORS_CAPABILITY
+    )]
+    JoinerCannotFollowDoors { joiner: MachineName },
+    #[error("could not read the Cluster's declared Doors")]
+    DeclaredDoorsUnread(#[source] crate::corrosion::Error),
     #[error(transparent)]
     Admission(#[from] crate::mutation::Error),
     #[error(transparent)]
@@ -923,11 +932,17 @@ impl LocalMachine {
 
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let replicated = self.replicated()?;
+        let declared = replicated
+            .cluster_doors()
+            .await
+            .map_err(Error::DeclaredDoorsUnread)?;
+        admit_joiner(&declared, &request)?;
         let publication = replicated.machine_publication().await;
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: published_network(&self.record(), replicated).await?,
             machines: replicated.machines().await?.observations,
             target_versions: replicated.version().await?,
+            doors: declared.followed(),
         };
         let mut assignment = ployz_core::allocate_enrollment(
             &request,
@@ -1045,11 +1060,23 @@ impl LocalMachine {
         let machines = replicated.machines().await?.observations;
         let states = self.membership_states().await?;
         let entry_id = local.id();
+        // A listing never fails for the declaration: without it, readers infer the Doors.
+        let doors = match replicated.cluster_doors().await {
+            Ok(declared) => declared.followed(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "could not read the Cluster's declared Doors; listing without them"
+                );
+                None
+            }
+        };
         Ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
                 network,
                 machines: machines.clone(),
                 target_versions: replicated.version().await?,
+                doors,
             }),
             machines: RuntimeWatchTelemetry {
                 states,
@@ -1380,6 +1407,29 @@ async fn published_network(
         return Err(Error::ClusterStoreEmpty);
     }
     Err(Error::ClusterNetworkUnpublished)
+}
+
+/// Refuse a joiner whose client can't follow the Cluster's declared Doors, judged on
+/// this Machine's own replica. Such a client would open the Public Door, so only an
+/// undeclared Cluster or one declared Public admits it.
+fn admit_joiner(declared: &DeclaredDoors, request: &RegisterRequest) -> Result<(), Error> {
+    let follows = request
+        .capabilities
+        .iter()
+        .any(|claimed| claimed == ployz_core::SET_CLUSTER_DOORS_CAPABILITY);
+    let admitted = follows
+        || match declared {
+            DeclaredDoors::Undeclared => true,
+            DeclaredDoors::Declared(doors) => doors.is_public_only(),
+            DeclaredDoors::Unreadable => false,
+        };
+    if admitted {
+        Ok(())
+    } else {
+        Err(Error::JoinerCannotFollowDoors {
+            joiner: request.name.clone(),
+        })
+    }
 }
 
 fn registered(

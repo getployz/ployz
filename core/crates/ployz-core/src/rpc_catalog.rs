@@ -99,6 +99,7 @@ macro_rules! rpc_catalog {
                 SetPrivateAccess: (set_private_access, "SetPrivateAccess", SetPrivateAccessRequest, "set_private_access", PrivateAccessSet, SET_PRIVATE_ACCESS_CAPABILITY, "ployz.private-access.v1", Cluster, Operator),
                 ReadClusterName: (read_cluster_name, "ReadClusterName", ReadClusterNameRequest, "read_cluster_name", ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1", Cluster, Operator),
                 SetClusterName: (set_cluster_name, "SetClusterName", SetClusterNameRequest, "set_cluster_name", ClusterNamed, SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1", Cluster, Operator),
+                SetClusterDoors: (set_cluster_doors, "SetClusterDoors", SetClusterDoorsRequest, "set_cluster_doors", ClusterDoorsDeclared, SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1", Cluster, Operator),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container, Operator),
                 RetainedEnv: (retained_env, "RetainedEnv", RetainedEnvRequest, "retained_env", RetainedEnvReply, RETAINED_ENV_CAPABILITY, "ployz.logs.retained-env.v1", Container, Operator),
             }
