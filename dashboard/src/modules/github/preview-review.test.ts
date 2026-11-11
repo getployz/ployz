@@ -1,7 +1,7 @@
 import type { PreviewReviewView } from "@ployz/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canonicalJson, hex } from "#/modules/approval-session/approval-session";
-import { answerReview, draftReview, ReviewRefused } from "./preview-review";
+import { answerReview, draftReview, ReviewRefused, shownText } from "./preview-review";
 
 const CLUSTER = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
 const COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
@@ -73,7 +73,8 @@ describe("draftReview", () => {
       generation: 2, issued_at: 1_000, key: "fork:7", rule: "1".repeat(32), services: [{ digest: TEMPLATE, name: "web" }],
     });
     expect(draft.secrets).toBe(true);
-    expect(draft.lines).toEqual([expect.stringMatching(/^Review web at fedcba987654 \(reads DATABASE_URL from the parent/)]);
+    expect(draft.lines[0]).toMatch(/^Review web at fedcba987654 \(reads DATABASE_URL from the parent/);
+    expect(draft.lines.slice(1).every((line) => line.startsWith("  "))).toBe(true);
   });
 
   it("says why a preview can't be reviewed", () => {
@@ -108,5 +109,16 @@ describe("answerReview", () => {
     vi.stubGlobal("location", { hostname: "localhost" });
     vi.stubGlobal("navigator", { credentials: { get: async () => null } });
     await expect(answerReview(draftReview(view(), CLUSTER, 1_000))).rejects.toThrow("Your passkey didn't answer. Try again.");
+  });
+});
+
+describe("shownText", () => {
+  it("quotes and escapes a name as ployz-core's Shown does", () => {
+    expect(shownText("production")).toBe("production");
+    expect(shownText("a b")).toBe('"a b"');
+    expect(shownText('say "hi"\\')).toBe('"say \\"hi\\"\\\\"');
+    expect(shownText("\u001b[2Kok")).toBe('"\\u{1b}[2Kok"');
+    expect(shownText("evil\u202etxt")).toBe('"evil\\u{202e}txt"');
+    expect(shownText("")).toBe('""');
   });
 });
