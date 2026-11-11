@@ -14,7 +14,7 @@ const To = Schema.Literals(PRIVATE_ACCESS_WANTS).annotate({
   description: "on or off. On waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud.",
 });
 
-/** A running router may still be one Tailscale refused, so only the approver's Connect, in Ployz Cloud, says it took. */
+/** A running router from a daemon that predates the probe may still be one Tailscale refused, so only the approver's Connect, in Ployz Cloud, says it took. */
 const onMessage = (routers: number, servers: number) => routers === servers && servers > 0
   ? `${routers} ${routers === 1 ? "router" : "routers"} running. Integrations in Ployz Cloud shows whether Tailscale took the key.`
   : `Servers are still connecting: ${routers} of ${servers} run a router. Integrations in Ployz Cloud shows each one.`;

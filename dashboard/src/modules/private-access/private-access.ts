@@ -30,7 +30,7 @@ export const ApprovePrivateAccessInput = Schema.Struct({ organizationSlug: Slug,
 
 export type RouterRow = { readonly id: string; readonly name: string; readonly router: boolean };
 
-/** A stopped router was placed but isn't running, such as one Tailscale refused the key for. */
+/** A stopped router was placed but isn't serving: it exited, or its node never joined the tailnet, as when Tailscale refused the key. */
 export type RouterState = "running" | "stopped" | "none";
 
 export type ObservedServer = { readonly id: string; readonly name: string; readonly router: RouterState };
@@ -56,11 +56,15 @@ type RouterFrame = Pick<RuntimeWatchView, "services">;
 const routerContainers = (frame: RouterFrame): readonly ContainerObservation[] =>
   frame.services.find((service) => service.identity === TAILSCALE)?.containers ?? [];
 
+/** A running container isn't a joined node: one Tailscale refused the key for runs between restarts. A router with no probe is from a daemon that predates it, so it counts as it did. */
+const joined = (runtime: ContainerObservation["runtime"]) =>
+  runtime.state === "running" && (runtime.health === "healthy" || runtime.health === "not_configured");
+
 export function routersOn(frame: RouterFrame): Map<string, RouterState> {
   const states = new Map<string, RouterState>();
   for (const container of routerContainers(frame)) {
     const { state } = container.runtime;
-    if (state === "running") states.set(container.machine_id, "running");
+    if (joined(container.runtime)) states.set(container.machine_id, "running");
     else if (state !== "removing" && state !== "dead" && !states.has(container.machine_id)) states.set(container.machine_id, "stopped");
   }
   return states;

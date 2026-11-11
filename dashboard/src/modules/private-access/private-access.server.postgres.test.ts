@@ -48,7 +48,7 @@ let unanswered = false;
 let unreadable = false;
 let disconnected = false;
 const routers: ContainerObservation[] = [];
-const placeRouter = (runtime: ContainerObservation["runtime"] = { state: "running", health: "none" }) => {
+const placeRouter = (runtime: ContainerObservation["runtime"] = { state: "running", health: "healthy" }) => {
   routers.push({ ...runtimeWatchContainerFixture(SERVER, `router-${routers.length + 1}`), created_at_unix_nanos: Date.now() * 1e6, runtime });
 };
 const frame = () => runtimeWatchFrameFixture({
