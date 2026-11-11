@@ -1290,3 +1290,151 @@ async fn a_step_left_installing_is_redone_and_recorded() {
     assert_eq!(state.docker.outcome(), Some(&DockerOutcome::Ready));
     assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Off));
 }
+
+const GOLDEN_WRITTEN_PRETTY: &str = r#"{
+  "docker": {
+    "finished_at": "2026-10-16T00:01:00Z",
+    "started_at": "2026-10-16T00:00:00Z",
+    "state": "ready"
+  },
+  "zfs": {
+    "finished_at": null,
+    "started_at": "2026-10-16T00:02:00Z",
+    "state": "installing"
+  },
+  "added_packages": [
+    "dkms",
+    "perl"
+  ],
+  "zfs_build": {
+    "route": "dkms",
+    "module": "zfs",
+    "version": "2.2.2",
+    "source_dir": "/usr/src/zfs-2.2.2"
+  },
+  "added_contrib_source": true,
+  "interrupted": [
+    "zfs"
+  ]
+}"#;
+
+fn golden_state() -> PrepState {
+    PrepState {
+        docker: PrepStep::Finished {
+            started_at: Some("2026-10-16T00:00:00Z".to_owned()),
+            finished_at: "2026-10-16T00:01:00Z".to_owned(),
+            outcome: DockerOutcome::Ready,
+        },
+        zfs: PrepStep::Running {
+            started_at: "2026-10-16T00:02:00Z".to_owned(),
+        },
+        added_packages: vec!["dkms".to_owned(), "perl".to_owned()],
+        zfs_build: Some(ZfsBuild::Dkms {
+            module: "zfs".to_owned(),
+            version: "2.2.2".to_owned(),
+            source_dir: PathBuf::from("/usr/src/zfs-2.2.2"),
+        }),
+        added_contrib_source: true,
+        interrupted: vec!["zfs".to_owned()],
+    }
+}
+
+#[test]
+fn the_state_file_ployzd_writes_is_these_bytes() {
+    assert_eq!(
+        String::from_utf8(serde_json::to_vec_pretty(&golden_state()).unwrap()).unwrap(),
+        GOLDEN_WRITTEN_PRETTY
+    );
+    assert_eq!(
+        serde_json::from_str::<PrepState>(GOLDEN_WRITTEN_PRETTY).unwrap(),
+        golden_state()
+    );
+    let ubuntu = PrepState {
+        zfs_build: Some(ZfsBuild::Ubuntu {
+            downloaded: vec!["zfsutils-linux".to_owned()],
+        }),
+        ..PrepState::default()
+    };
+    let text = serde_json::to_string(&ubuntu).unwrap();
+    assert_eq!(
+        text,
+        r#"{"docker":{"finished_at":null,"started_at":null,"state":"installing"},"zfs":{"finished_at":null,"started_at":null,"state":"installing"},"added_packages":[],"zfs_build":{"route":"ubuntu","downloaded":["zfsutils-linux"]},"added_contrib_source":false,"interrupted":[]}"#
+    );
+}
+
+#[test]
+fn a_state_file_an_older_daemon_wrote_reads_with_the_later_fields_defaulted() {
+    let older = r#"{
+        "docker": {"state": "ready", "started_at": "2026-10-16T00:00:00Z", "finished_at": "2026-10-16T00:01:00Z"},
+        "zfs": {"state": "installing", "started_at": null, "finished_at": null},
+        "added_packages": ["dkms"],
+        "zfs_build": {"route": "ubuntu", "downloaded": ["zfsutils-linux"]}
+    }"#;
+    let state: PrepState = serde_json::from_str(older).unwrap();
+    assert!(!state.added_contrib_source);
+    assert!(state.interrupted.is_empty());
+    assert_eq!(state.added_packages, ["dkms"]);
+    assert_eq!(
+        state.zfs_build,
+        Some(ZfsBuild::Ubuntu {
+            downloaded: vec!["zfsutils-linux".to_owned()]
+        })
+    );
+    assert_eq!(state.zfs, PrepStep::NotStarted);
+}
+
+/// Every shape of `state.json` as ployzd's own `load` takes it: what it accepts, and what it
+/// refuses by starting from nothing. The CLI's check-in reads the same bytes more loosely, and
+/// pins that beside this table.
+#[test]
+fn the_state_file_shapes_ployzd_accepts_and_refuses() {
+    const STEPS: &str = r#""docker": {"state": "ready", "finished_at": "2026-10-16T00:00:00Z"}, "zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}"#;
+    let accepted = [
+        format!("{{{STEPS}, \"added_packages\": []}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": null}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"future\": {{\"nested\": [1]}}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"interrupted\": [\"docker\"]}}"),
+        r#"{"docker": {"state": "paused"}, "zfs": {"state": "installing"}, "added_packages": []}"#
+            .to_owned(),
+    ];
+    for text in &accepted {
+        assert!(serde_json::from_str::<PrepState>(text).is_ok(), "{text}");
+    }
+    let refused = [
+        format!("{{{STEPS}}}"),
+        format!("{{{STEPS}, \"added_packages\": \"dkms\"}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": {{\"route\": \"rpm\"}}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"added_contrib_source\": null}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"interrupted\": 3}}"),
+        r#"{"zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}, "added_packages": []}"#
+            .to_owned(),
+        r#"{"docker": null, "zfs": {"state": "off"}, "added_packages": []}"#.to_owned(),
+        "{}".to_owned(),
+        "[]".to_owned(),
+        String::new(),
+    ];
+    for text in &refused {
+        assert!(serde_json::from_str::<PrepState>(text).is_err(), "{text}");
+    }
+
+    let fixture = fixture("state-shapes");
+    let paths = InstallPaths::at(fixture.path());
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    for text in &refused {
+        fs::write(state_path(&paths), text).unwrap();
+        assert_eq!(load(&paths), PrepState::default(), "{text}");
+    }
+    assert_eq!(
+        load(&InstallPaths::at(&fixture.path().join("nowhere"))),
+        PrepState::default()
+    );
+    let paused = &accepted[4];
+    fs::write(state_path(&paths), paused).unwrap();
+    let loaded = load(&paths);
+    assert!(matches!(loaded.docker, PrepStep::Unknown(_)));
+    let rewritten = serde_json::to_value(&loaded).unwrap();
+    assert_eq!(
+        rewritten["docker"],
+        serde_json::from_str::<serde_json::Value>(paused).unwrap()["docker"]
+    );
+}

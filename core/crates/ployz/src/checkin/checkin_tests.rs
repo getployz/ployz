@@ -7,6 +7,7 @@ use std::{
 
 use chrono::{DateTime, SubsecRound, TimeDelta, Utc};
 use iroh::SecretKey;
+use ployz_core::host_preparation::{DockerOutcome, PrepStep};
 use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -3633,4 +3634,108 @@ async fn a_preparation_whose_unit_and_lock_cannot_be_read_is_neither_restarted_n
     let host = unreadable();
     assert!(!restart_preparation(&host, &paths, written + TimeDelta::minutes(90)).await);
     assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
+}
+
+/// The bytes ployzd writes to `prepare/state.json` today, as the check-in reads them. The same
+/// literal is pinned from the writing side in ployzd's `installer::prepare` tests.
+const WRITTEN_BY_PLOYZD: &str = r#"{
+  "docker": {
+    "finished_at": "2026-10-16T00:01:00Z",
+    "started_at": "2026-10-16T00:00:00Z",
+    "state": "ready"
+  },
+  "zfs": {
+    "finished_at": null,
+    "started_at": "2026-10-16T00:02:00Z",
+    "state": "installing"
+  },
+  "added_packages": [
+    "dkms",
+    "perl"
+  ],
+  "zfs_build": {
+    "route": "dkms",
+    "module": "zfs",
+    "version": "2.2.2",
+    "source_dir": "/usr/src/zfs-2.2.2"
+  },
+  "added_contrib_source": true,
+  "interrupted": [
+    "zfs"
+  ]
+}"#;
+
+#[test]
+fn the_check_in_reads_the_steps_in_the_bytes_ployzd_writes() {
+    let read = state(WRITTEN_BY_PLOYZD);
+    assert_eq!(
+        read.docker,
+        PrepStep::Finished {
+            started_at: Some("2026-10-16T00:00:00Z".to_owned()),
+            finished_at: "2026-10-16T00:01:00Z".to_owned(),
+            outcome: DockerOutcome::Ready,
+        }
+    );
+    assert_eq!(
+        read.zfs,
+        PrepStep::Running {
+            started_at: "2026-10-16T00:02:00Z".to_owned()
+        }
+    );
+    // A daemon from before `added_contrib_source` and `interrupted` wrote neither.
+    let older = r#"{
+        "docker": {"state": "ready", "started_at": "2026-10-16T00:00:00Z", "finished_at": "2026-10-16T00:01:00Z"},
+        "zfs": {"state": "installing", "started_at": null, "finished_at": null},
+        "added_packages": ["dkms"],
+        "zfs_build": {"route": "ubuntu", "downloaded": ["zfsutils-linux"]}
+    }"#;
+    assert_eq!(state(older).zfs, PrepStep::NotStarted);
+}
+
+/// The check-in reads only `docker` and `zfs`: what ployzd refuses in the rest of the file, the
+/// check-in doesn't look at. ployzd's own table of the same shapes is in its `installer::prepare`
+/// tests.
+#[test]
+fn the_check_in_reads_the_state_file_shapes_ployzd_refuses_and_refuses_only_bad_steps() {
+    const STEPS: &str = r#""docker": {"state": "ready", "finished_at": "2026-10-16T00:00:00Z"}, "zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}"#;
+    let accepted = [
+        format!("{{{STEPS}, \"added_packages\": []}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": null}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"future\": {{\"nested\": [1]}}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"interrupted\": [\"docker\"]}}"),
+        r#"{"docker": {"state": "paused"}, "zfs": {"state": "installing"}, "added_packages": []}"#
+            .to_owned(),
+        format!("{{{STEPS}}}"),
+        format!("{{{STEPS}, \"added_packages\": \"dkms\"}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": {{\"route\": \"rpm\"}}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"added_contrib_source\": null}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"interrupted\": 3}}"),
+    ];
+    for text in &accepted {
+        assert!(serde_json::from_str::<PrepState>(text).is_ok(), "{text}");
+    }
+    let refused = [
+        r#"{"zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}, "added_packages": []}"#,
+        r#"{"docker": null, "zfs": {"state": "off"}, "added_packages": []}"#,
+        "{}",
+        "[]",
+        "",
+    ];
+    for text in refused {
+        assert!(serde_json::from_str::<PrepState>(text).is_err(), "{text}");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    assert!(read_prep_state(&paths.prepare_state).is_none());
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    for text in &accepted {
+        fs::write(&paths.prepare_state, text).unwrap();
+        let (_, written) = read_prep_state(&paths.prepare_state).expect(text);
+        assert!(written.is_some(), "{text}");
+    }
+    for text in refused {
+        fs::write(&paths.prepare_state, text).unwrap();
+        assert!(read_prep_state(&paths.prepare_state).is_none(), "{text}");
+    }
 }
