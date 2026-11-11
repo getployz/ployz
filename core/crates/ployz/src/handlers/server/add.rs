@@ -88,7 +88,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 public_ip: token.public_ip,
                 advertised_endpoints: token.advertised_endpoints,
                 runtime: token.runtime,
-                capabilities: Vec::new(),
+                // This CLI runs the joiner's catch-up, so it claims what it honors.
+                capabilities: vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY.to_owned()],
             },
             &snapshot,
         )?;

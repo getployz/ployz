@@ -4,7 +4,8 @@ pub mod local;
 use crate::cluster::{Call, Deadline};
 use crate::connect::{Client, ConnectError};
 use ployz_core::{
-    EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, Registered, RpcError, op,
+    EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, RegisterRequest, Registered,
+    RpcError, op,
 };
 
 /// Observe the Entry Machine's enrollment facts before taking an operator lock.
@@ -17,6 +18,16 @@ pub async fn observe_enrollment(entry: &mut Client) -> Result<EnrollmentSnapshot
         .await?
         .enrollment
         .ok_or_else(|| RpcError::unavailable("Entry Machine returned no enrollment snapshot"))
+}
+
+/// The Register request for a saved assignment: what the joiner asked, with the subnet
+/// and runtime the Cluster assigned. The capabilities are the joiner's own claim, which
+/// the caller that runs its catch-up sets and Cloud relays; nothing here adds one.
+fn registration(assignment: &EnrollmentAssignment) -> RegisterRequest {
+    let mut request = assignment.request.clone();
+    request.assigned_subnet = Some(assignment.machine.subnet);
+    request.runtime.clone_from(&assignment.machine.runtime);
+    request
 }
 
 /// Publish a durably saved assignment before bootstrapping the joining Machine.
@@ -34,10 +45,7 @@ pub async fn publish_enrollment(
         std::slice::from_ref(assignment),
     )
     .map_err(|error| RpcError::conflict(error.to_string()))?;
-    let mut request = assignment.request.clone();
-    request.assigned_subnet = Some(assignment.machine.subnet);
-    request.runtime.clone_from(&assignment.machine.runtime);
-    request.capabilities = vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY.to_owned()];
+    let request = registration(assignment);
     entry
         .call_shared::<op::Register>(
             request,
@@ -58,4 +66,59 @@ pub async fn publish_enrollment(
                 error
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::{
+        EnrollmentAssignment, Machine, MachineId, MachineName, RegisterRequest,
+        SET_CLUSTER_DOORS_CAPABILITY, WireGuardPublicKey,
+    };
+
+    fn assignment(capabilities: Vec<String>) -> EnrollmentAssignment {
+        let id = MachineId::parse("a".repeat(32)).unwrap();
+        let name = MachineName::parse("machine-2").unwrap();
+        let public_key = WireGuardPublicKey([7; 32]);
+        EnrollmentAssignment {
+            request: RegisterRequest {
+                join_approval: None,
+                join_confirmation: None,
+                machine_id: id,
+                assigned_subnet: None,
+                initial_policy: Default::default(),
+                name: name.clone(),
+                storage: ployz_core::StorageChoice::None,
+                public_key,
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                capabilities,
+            },
+            network: "10.210.0.0/16".parse().unwrap(),
+            machine: Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                id,
+                name,
+                subnet: "10.210.1.0/24".parse().unwrap(),
+                public_key,
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                join_approval: None,
+                build_concurrency: None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_register_carries_the_joiners_own_capability_claim_and_never_adds_one() {
+        let claimed =
+            super::registration(&assignment(vec![SET_CLUSTER_DOORS_CAPABILITY.to_owned()]));
+        assert_eq!(claimed.capabilities, [SET_CLUSTER_DOORS_CAPABILITY]);
+        let silent = super::registration(&assignment(Vec::new()));
+        assert!(silent.capabilities.is_empty(), "{silent:?}");
+    }
 }
