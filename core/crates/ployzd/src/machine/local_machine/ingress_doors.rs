@@ -583,7 +583,8 @@ impl LocalMachine {
             } else {
                 error
             };
-            let connector_may_run = stage == IngressStage::Tunnel && !undo;
+            let undone = undo && !matches!(error, Error::Cleanup(_));
+            let connector_may_run = stage == IngressStage::Tunnel && !undone;
             if reopening
                 && !connector_may_run
                 && let Err(marker) = containers.mark_tunnel_door_closed()
