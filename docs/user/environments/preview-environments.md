@@ -94,7 +94,7 @@ Approving previews of production:
   trusted     alice (1109914), bob (2207431)
   servers     2 in the cluster
   web
-    builds    Dockerfile in ., for linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
+    builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
     reads     DATABASE_URL from production
     variables DATABASE_URL (sealed), LOG_LEVEL=info
     mode {"mode":"replicated","replicas":1}
@@ -102,7 +102,7 @@ Approving previews of production:
     restart {"name":"unless-stopped"}
     setup     runs once, on each preview's first deploy, with
       pre-deploy ["/bin/sh","-c","pnpm db:seed"]
-    generated SESSION_SECRET, new in each preview
+    generated SESSION_SECRET=${{ secret(32, "a-zA-Z0-9") }}, new in each preview
 Approved. Pull requests to acme/web by the accounts shown now open a preview of web.
 ```
 
