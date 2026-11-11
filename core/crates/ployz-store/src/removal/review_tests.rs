@@ -166,3 +166,21 @@ fn servers_that_did_not_answer_are_named_and_one_never_deployed_keeps_its_id() {
         )
     );
 }
+
+#[test]
+fn the_digest_a_volume_loss_confirmation_binds_keeps_its_text() {
+    let who = Actor::system(crate::id::OrganizationId::parse("org").unwrap());
+    let environment = EnvironmentId::parse("00000000-0000-4000-8000-000000000002").unwrap();
+    let machine: MachineId = "67fc9e737c7045bfbbb96bf9e3c9c6cc".parse().unwrap();
+    let removed = removing_data().remove(0);
+    let deletes = vec![DockerVolumeId {
+        machine_id: machine,
+        name: removed.docker_volume.clone(),
+    }];
+    let loss = VolumeLoss {
+        volume: removed,
+        deletes,
+    };
+
+    assert_eq!(digest(&who, &environment, &[&loss]), "e729210af70c8760");
+}
