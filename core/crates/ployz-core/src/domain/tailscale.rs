@@ -9,10 +9,11 @@ use std::collections::BTreeMap;
 use ipnet::Ipv4Net;
 
 use crate::{
-    Ciphertext, ConfiguredHealthcheck, ContainerLabels, ContainerPath, HealthcheckCommand,
-    HealthcheckSpec, MachinePath, PrivateAccessStateId, QualifiedService, RawVolumeSource,
-    RequestedServiceSpec, ServiceMode, ServiceMount, ServiceMountGraph, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig, caddy_container,
+    Ciphertext, ConfiguredHealthcheck, ContainerLabels, ContainerPath, ContainerRuntimeObservation,
+    HealthObservation, HealthcheckCommand, HealthcheckSpec, MachinePath, PrivateAccessStateId,
+    QualifiedService, RawVolumeSource, RequestedServiceSpec, ServiceMode, ServiceMount,
+    ServiceMountGraph, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig,
+    caddy_container,
 };
 
 /// The label on the router's spec that carries the sealed auth key, so every
@@ -100,6 +101,19 @@ pub fn private_access_service_spec(
         pre_deploy: None,
         update: UpdateConfig::default(),
     }
+}
+
+/// Whether a router in this state has joined the tailnet. A running container isn't
+/// enough: one Tailscale refused the key for runs between restarts. A router with no
+/// probe is from a daemon that predates it, so its container running is all there is.
+#[must_use]
+pub fn private_access_router_joined(runtime: &ContainerRuntimeObservation) -> bool {
+    matches!(
+        runtime,
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy | HealthObservation::NotConfigured
+        }
+    )
 }
 
 /// The sealed auth key a router spec carries, when it is one.

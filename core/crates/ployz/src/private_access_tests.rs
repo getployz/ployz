@@ -87,7 +87,10 @@ async fn a_daemon_that_predates_the_route_is_named_on_on_and_has_nothing_to_remo
     assert_eq!(off.machines.len(), 2);
 }
 
-fn router_on(machine: char, runtime: ContainerRuntimeObservation) -> ServiceObservation {
+fn router_on(
+    machine: char,
+    runtime: ployz_core::ContainerRuntimeObservation,
+) -> ServiceObservation {
     let identity = QualifiedService::system_tailscale();
     let service_id = ployz_core::ServiceId::parse("c".repeat(32)).unwrap();
     let observation =
@@ -128,15 +131,18 @@ fn router_on(machine: char, runtime: ContainerRuntimeObservation) -> ServiceObse
 // from a daemon that predates the probe says nothing either way, so it still counts.
 #[test]
 fn a_router_counts_as_running_only_once_its_node_joined_the_tailnet() {
-    let health = |health| ContainerRuntimeObservation::Running { health };
+    let health = |health| ployz_core::ContainerRuntimeObservation::Running { health };
     let services = [
         router_on('1', health(ployz_core::HealthObservation::Healthy)),
         router_on('2', health(ployz_core::HealthObservation::NotConfigured)),
         router_on('3', health(ployz_core::HealthObservation::Starting)),
         router_on('4', health(ployz_core::HealthObservation::Unhealthy)),
         router_on('5', health(ployz_core::HealthObservation::Failing)),
-        router_on('6', ContainerRuntimeObservation::Restarting),
-        router_on('7', ContainerRuntimeObservation::Exited { code: 0 }),
+        router_on('6', ployz_core::ContainerRuntimeObservation::Restarting),
+        router_on(
+            '7',
+            ployz_core::ContainerRuntimeObservation::Exited { code: 0 },
+        ),
     ];
     let id = |digit: &str| MachineId::parse(digit.repeat(32)).unwrap();
     assert_eq!(running(&services), [id("1"), id("2")].into());

@@ -18,7 +18,8 @@ use std::time::Duration;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DoorChange,
     DoorOutcome, Namespace, PrivateAccessFailure, PrivateAccessProblem, PrivateAccessSet,
-    ResolvedServiceSpec, SetPrivateAccessRequest, private_access_sealed_key, private_access_state,
+    ResolvedServiceSpec, SetPrivateAccessRequest, private_access_router_joined,
+    private_access_sealed_key, private_access_state,
 };
 use zeroize::Zeroizing;
 
@@ -447,8 +448,9 @@ impl LocalMachine {
         Ok(Some(DoorOutcome { now, change }))
     }
 
-    /// Watch a placed router until it has joined the tailnet, has died, or the settle
-    /// time ends with it running and saying nothing wrong. A router that already ran is
+    /// Watch a placed router until it has joined the tailnet, which is its start-up line and
+    /// then its probe passing, has died, or the settle time ends with it running and
+    /// saying nothing wrong. A router that already ran is
     /// read once, from the last two minutes, and not waited on.
     async fn watch_router(
         &self,
@@ -482,7 +484,8 @@ impl LocalMachine {
                     detail: format!("the router is {runtime}: {}", detail(&output, key)),
                 });
             }
-            if !settles || output.contains(ROUTER_UP) || tokio::time::Instant::now() >= deadline {
+            let joined = output.contains(ROUTER_UP) && private_access_router_joined(&runtime);
+            if !settles || joined || tokio::time::Instant::now() >= deadline {
                 return None;
             }
             tokio::time::sleep(ROUTER_POLL).await;
