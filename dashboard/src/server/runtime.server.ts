@@ -8,6 +8,7 @@ import { PolarLive } from "#/modules/billing/polar-provider.server";
 import { PostHogLive } from "#/modules/analytics/posthog.server";
 import { MailerLive } from "#/modules/mail/mailer.server";
 import { SupportStaffLive } from "#/modules/organization/access.server";
+import { GithubAuthorityLive } from "#/modules/github/github-authority.server";
 import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApiLive } from "#/modules/github/github-observation.api";
 import { GithubOidcKeysLive } from "#/modules/github/github-oidc.server";
@@ -34,6 +35,7 @@ const InfrastructureLive = Layer.mergeAll(
 ).pipe(
   Layer.provideMerge(GithubApiLive),
   Layer.provideMerge(GithubTokensLive),
+  Layer.provideMerge(GithubAuthorityLive),
   Layer.provideMerge(DatabaseLive),
   Layer.provideMerge(PloyzLive),
   Layer.provideMerge(AppConfig.layer),

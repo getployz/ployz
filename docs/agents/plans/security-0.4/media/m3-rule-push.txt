@@ -1,0 +1,32 @@
+Lane 2: a push to Ployz-test/lab-service main under an automatic deploy rule, Cloud in minter mode (no App key in its env), 2026-11-11T00:38:31Z
+
+$ ployz github rule approve web --builder Ployz-test/build/.github/workflows/build.yml@<lab builder>
+This rule pins a builder other than Ployz's own release.
+Approving automatic deploys for production:
+  repository  Ployz-test/lab-service on main
+  workflow    .github/workflows/ployz-build.yml, on push
+  builder     Ployz-test/build/.github/workflows/build.yml@<hex>
+  servers     2 in the cluster
+  web
+    builds    Railpack in /, for linux/amd64, with the Actions cache
+    variables PORT=8080
+Approved. Every push to main now deploys web with these settings.
+
+Pushed 1ef791d383c590712e87e246f8cb2328d6955237. GitHub run 42932426348 (push, the rule's ployz-build.yml):
+  push completed success head 1ef791d383c590712e87e246f8cb2328d6955237
+
+$ ployz deployment show 4 --project svc
+Deployment #4 of svc/production: applied
+  web: serves its new copies
+  web: deployed
+  build web from 1ef791d: built 
+
+The web container on each Machine (machine-2 is 593b6f33…, machine-1 is 6591cd2c…):
+   593b6f33081c 863648af docker.io/ployz-build/web@sha256:cec73a33aeb15d40d56926657d6daaff51f122c4d32491b177a2e879c3e3e1e9
+   6591cd2cb0b8 863648af docker.io/ployz-build/web@sha256:cec73a33aeb15d40d56926657d6daaff51f122c4d32491b177a2e879c3e3e1e9
+
+The minter's audit from the push on (repository sync's whole-installation read tokens left out). Cloud found the push run through /v1/runs, and minted contents: read for that one repository:
+{"time":"2026-11-11T00:34:37.604Z","caller":"local-bearer","route":"/v1/workflow","outcome":"granted","installation_id":180070163,"repository_ids":[1450985696],"ref":"main","workflow_digest":"368d552096ab3d5443af66292ff3b092a1c4069d18c584e80c48923c80c4a311","duration_ms":4113}
+{"time":"2026-11-11T00:34:42.187Z","caller":"local-bearer","route":"/v1/runs","outcome":"granted","installation_id":180070163,"repository_ids":[1450985696],"head_sha":"1ef791d383c590712e87e246f8cb2328d6955237","duration_ms":1341}
+{"time":"2026-11-11T00:34:45.358Z","caller":"local-bearer","route":"/v1/token","outcome":"granted","installation_id":180070163,"repository_ids":[1450985696],"permissions_asked":{"contents":"read"},"permissions_granted":{"contents":"read","metadata":"read"},"token_expires_at":"2026-11-11T01:34:45Z","duration_ms":587}
+{"time":"2026-11-11T00:36:54.595Z","caller":"local-bearer","route":"/v1/token","outcome":"granted","installation_id":180070163,"repository_ids":[1450985696],"permissions_asked":{"contents":"read"},"permissions_granted":{"contents":"read","metadata":"read"},"token_expires_at":"2026-11-11T01:36:55Z","duration_ms":1133}

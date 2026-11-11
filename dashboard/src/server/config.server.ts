@@ -25,6 +25,8 @@ const GITHUB_ORIGINS: GithubOrigins = {
   oidc: "https://token.actions.githubusercontent.com",
 };
 const NonEmptySecret = Schema.Redacted(Schema.NonEmptyString);
+/** An OAuth client ID as GitHub issues it, taken exactly: padding or other characters are refused, never trimmed. */
+const GithubClientId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._-]+$/));
 const EncryptionSecret = Schema.Redacted(
   Schema.String.check(Schema.isMinLength(32)),
 );
@@ -69,13 +71,17 @@ const rawFields = {
   ),
   // Railway injects this; its edge sets X-Real-IP to the client's address.
   railwayEnvironmentId: optional(Config.nonEmptyString("RAILWAY_ENVIRONMENT_ID")),
-  githubClientId: Config.nonEmptyString("GITHUB_CLIENT_ID"),
+  githubClientId: Config.schema(GithubClientId, "GITHUB_CLIENT_ID"),
   githubClientSecret: Config.schema(NonEmptySecret, "GITHUB_CLIENT_SECRET"),
   githubAppId: Config.nonEmptyString("GITHUB_APP_ID"),
-  githubAppPrivateKey: Config.schema(NonEmptySecret, "GITHUB_APP_PRIVATE_KEY"),
+  githubAppPrivateKey: optional(Config.schema(NonEmptySecret, "GITHUB_APP_PRIVATE_KEY")),
   githubAppSlug: Config.nonEmptyString("GITHUB_APP_SLUG"),
-  githubAppClientId: Config.nonEmptyString("GITHUB_APP_CLIENT_ID"),
-  githubAppClientSecret: Config.schema(NonEmptySecret, "GITHUB_APP_CLIENT_SECRET"),
+  githubAppClientId: Config.schema(GithubClientId, "GITHUB_APP_CLIENT_ID"),
+  githubAppClientSecret: optional(Config.schema(NonEmptySecret, "GITHUB_APP_CLIENT_SECRET")),
+  githubMinterUrl: optional(Config.url("GITHUB_MINTER_URL")),
+  githubMinterAccessKeyId: optional(Config.nonEmptyString("GITHUB_MINTER_ACCESS_KEY_ID")),
+  githubMinterSecretAccessKey: optional(Config.schema(NonEmptySecret, "GITHUB_MINTER_SECRET_ACCESS_KEY")),
+  verifyGithubMinterBearer: optional(Config.schema(NonEmptySecret, "PLOYZ_VERIFY_GITHUB_MINTER_BEARER")),
   githubAppWebhookSecret: Config.schema(
     NonEmptySecret,
     "GITHUB_APP_WEBHOOK_SECRET",
@@ -223,6 +229,70 @@ const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* 
   return { api: origin, web: origin, codeload: origin, oidc: origin } satisfies GithubOrigins;
 });
 
+/**
+ * Who holds the GitHub App's private key and client secret. Local: this Cloud, as a Self-hosted Cloud does. Minter:
+ * a service outside Cloud, which Cloud asks for read tokens and narrow operations, so Cloud's env holds neither.
+ */
+export type GithubAuthorityConfiguration =
+  | { readonly mode: "local"; readonly appPrivateKey: Redacted.Redacted<string>; readonly appClientSecret: Redacted.Redacted<string> }
+  | { readonly mode: "minter"; readonly url: URL; readonly auth: GithubMinterAuth };
+
+/** SigV4 for the Lambda Function URL; a bearer only for a verify lab's local minter. */
+export type GithubMinterAuth =
+  | { readonly kind: "sigv4"; readonly accessKeyId: string; readonly secretAccessKey: Redacted.Redacted<string>; readonly region: string }
+  | { readonly kind: "bearer"; readonly token: Redacted.Redacted<string> };
+
+/** An OAuth App's client ID: `Ov23…`, or 20 hex digits from before GitHub prefixed them. A GitHub App's is `Iv1.…` or `Iv23…`. */
+const OAUTH_APP_CLIENT_ID = /^(Ov23[A-Za-z0-9]+|[0-9a-f]{20})$/;
+
+const LAMBDA_FUNCTION_URL = /^[a-z0-9]+\.lambda-url\.([a-z0-9-]+)\.on\.aws$/;
+
+const resolveGithubAuthority = Effect.fn("Config.resolveGithubAuthority")(function* (
+  input: Effect.Success<typeof loadRawConfig>,
+) {
+  const invalid = (message: string) => new InvalidConfiguration({ message });
+  const { githubMinterUrl: url, githubMinterAccessKeyId: accessKeyId, githubMinterSecretAccessKey: secretAccessKey } = input;
+  const bearer = input.verifyGithubMinterBearer;
+  if (url === undefined) {
+    if (accessKeyId !== undefined || secretAccessKey !== undefined || bearer !== undefined) {
+      return yield* invalid("GITHUB_MINTER_ACCESS_KEY_ID, GITHUB_MINTER_SECRET_ACCESS_KEY and PLOYZ_VERIFY_GITHUB_MINTER_BEARER need GITHUB_MINTER_URL");
+    }
+    if (input.githubAppPrivateKey === undefined || input.githubAppClientSecret === undefined) {
+      return yield* invalid("GITHUB_APP_PRIVATE_KEY and GITHUB_APP_CLIENT_SECRET are required unless GITHUB_MINTER_URL is set");
+    }
+    return { mode: "local", appPrivateKey: input.githubAppPrivateKey, appClientSecret: input.githubAppClientSecret } satisfies GithubAuthorityConfiguration;
+  }
+  if (input.githubAppPrivateKey !== undefined || input.githubAppClientSecret !== undefined) {
+    return yield* invalid("GITHUB_APP_PRIVATE_KEY and GITHUB_APP_CLIENT_SECRET must be unset when GITHUB_MINTER_URL is set: the minter holds them");
+  }
+  // Sign-in through the App's own client would put the App's client secret, and user tokens with the App's authority,
+  // back in Cloud. Comparing against GITHUB_APP_CLIENT_ID trusts another value Cloud supplies, so sign-in's own ID must
+  // have an OAuth App's shape, which no GitHub App client ID has.
+  if (!OAUTH_APP_CLIENT_ID.test(input.githubClientId)) {
+    return yield* invalid("GITHUB_CLIENT_ID must be a separate OAuth App's client ID (Ov23… or 20 hex digits) when GITHUB_MINTER_URL is set: sign-in can't use the GitHub App");
+  }
+  if (url.search !== "" || url.hash !== "" || url.username !== "" || url.password !== "" || url.pathname !== "/") {
+    return yield* invalid("GITHUB_MINTER_URL must be an origin with no path, query or credentials");
+  }
+  if (bearer !== undefined) {
+    if (accessKeyId !== undefined || secretAccessKey !== undefined) {
+      return yield* invalid("Set GITHUB_MINTER_ACCESS_KEY_ID and GITHUB_MINTER_SECRET_ACCESS_KEY, or PLOYZ_VERIFY_GITHUB_MINTER_BEARER, not both");
+    }
+    if (input.nodeEnv === "production") {
+      return yield* invalid("PLOYZ_VERIFY_GITHUB_MINTER_BEARER is for verify labs and is refused when NODE_ENV is production");
+    }
+    return { mode: "minter", url, auth: { kind: "bearer", token: bearer } } satisfies GithubAuthorityConfiguration;
+  }
+  if (accessKeyId === undefined || secretAccessKey === undefined) {
+    return yield* invalid("GITHUB_MINTER_URL needs GITHUB_MINTER_ACCESS_KEY_ID and GITHUB_MINTER_SECRET_ACCESS_KEY");
+  }
+  const region = url.protocol === "https:" ? LAMBDA_FUNCTION_URL.exec(url.hostname)?.[1] : undefined;
+  if (region === undefined) {
+    return yield* invalid("GITHUB_MINTER_URL must be the minter's Lambda Function URL, like https://<id>.lambda-url.<region>.on.aws");
+  }
+  return { mode: "minter", url, auth: { kind: "sigv4", accessKeyId, secretAccessKey, region } } satisfies GithubAuthorityConfiguration;
+});
+
 /** Comma-separated user ids, taken exactly: no email or domain matching. */
 const parseUserIds = (value: string | undefined): ReadonlyArray<string> =>
   value === undefined ? [] : value.split(",").map((id) => id.trim()).filter((id) => id !== "");
@@ -232,6 +302,7 @@ const makeAppConfig = Effect.gen(function* () {
   const polar = yield* resolvePolarConfiguration(raw);
   const mail = yield* resolveMailConfiguration(raw);
   const githubOrigins = yield* resolveGithubOrigins(raw);
+  const githubAuthority = yield* resolveGithubAuthority(raw);
 
   return {
     nodeEnv: raw.nodeEnv,
@@ -248,10 +319,9 @@ const makeAppConfig = Effect.gen(function* () {
       clientId: raw.githubClientId,
       clientSecret: raw.githubClientSecret,
       appId: raw.githubAppId,
-      appPrivateKey: raw.githubAppPrivateKey,
       appSlug: raw.githubAppSlug,
       appClientId: raw.githubAppClientId,
-      appClientSecret: raw.githubAppClientSecret,
+      authority: githubAuthority,
       appWebhookSecret: raw.githubAppWebhookSecret,
       origins: githubOrigins,
     },
