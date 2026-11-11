@@ -164,6 +164,7 @@ fn paths(dir: &tempfile::TempDir) -> Paths {
     Paths {
         checkin_dir: dir.path().join("checkin"),
         prepare_state: dir.path().join("prepare/state.json"),
+        prepare_lock: dir.path().join("prepare/lock"),
         token_file: dir.path().join("fleet-token"),
     }
 }
@@ -2826,10 +2827,10 @@ mod mark {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(&dir);
         fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
-        if !locks_stay_local(&paths.prepare_lock()) {
+        if !locks_stay_local(&paths.prepare_lock) {
             return;
         }
-        let _run = run_marking(&paths.prepare_lock());
+        let _run = run_marking(&paths.prepare_lock);
         let unit_unreadable = FakeHost {
             unit_unreadable: true,
             ..FakeHost::default()
@@ -2855,10 +2856,10 @@ mod mark {
         let paths = paths(&dir);
         let written = at("2026-10-16T00:00:00Z");
         stopped_mid_step(&paths, written, written);
-        if !locks_stay_local(&paths.prepare_lock()) {
+        if !locks_stay_local(&paths.prepare_lock) {
             return;
         }
-        let _run = run_marking(&paths.prepare_lock());
+        let _run = run_marking(&paths.prepare_lock);
         let mut unused = client("http://127.0.0.1:9");
         let mut prepares = 0;
         for minute in (20..80).step_by(10) {
@@ -2888,10 +2889,10 @@ mod mark {
         let paths = paths(&dir);
         let written = at("2026-10-16T00:00:00Z");
         stopped_mid_step(&paths, written, written);
-        if !locks_stay_local(&paths.prepare_lock()) {
+        if !locks_stay_local(&paths.prepare_lock) {
             return;
         }
-        let _run = run_marking(&paths.prepare_lock());
+        let _run = run_marking(&paths.prepare_lock);
         let unit_stopped = FakeHost::default();
         assert!(!restart_preparation(&unit_stopped, &paths, written + TimeDelta::hours(1)).await);
         assert_eq!(unit_stopped.prepares.load(Ordering::SeqCst), 0);
@@ -3368,8 +3369,24 @@ fn ago_reads_in_the_largest_whole_unit() {
 }
 
 #[test]
+fn check_in_files_stay_where_installed_machines_keep_them() {
+    let paths = Paths::production();
+    assert_eq!(paths.checkin_dir, Path::new("/var/lib/ployz-checkin"));
+    assert_eq!(paths.token_file, Path::new("/etc/ployz/fleet-token"));
+    assert_eq!(
+        paths.prepare_state,
+        Path::new("/var/lib/ployz/prepare/state.json")
+    );
+    assert_eq!(paths.prepare_lock, Path::new("/var/lib/ployz/prepare/lock"));
+    assert_eq!(
+        MachineLayout::production().socket(),
+        Path::new("/run/ployz/ployz.sock")
+    );
+}
+
+#[test]
 fn checkin_state_stays_out_of_the_daemon_data_dir() {
-    let paths = Paths::system(PathBuf::from(Paths::TOKEN_FILE));
+    let paths = Paths::production();
     for path in [paths.key(), paths.status(), paths.checkin_dir] {
         assert!(
             !path.starts_with("/var/lib/ployz"),
@@ -3563,7 +3580,7 @@ async fn a_host_never_prepared_starts_when_its_mark_cannot_be_read() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
-    fs::write(paths.prepare_lock(), "").unwrap();
+    fs::write(&paths.prepare_lock, "").unwrap();
     let host = FakeHost {
         probe_hangs: true,
         mark_unreadable: true,

@@ -7,8 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(test)]
-use ployzd::machine::DEFAULT_DATA_DIR;
+use ployz_core::MachineLayout;
 use ployzd::machine_pool::{self, MachinePool};
 
 use super::{
@@ -133,7 +132,7 @@ impl PoolStorage {
             fallocate: "fallocate".into(),
             stat: "stat".into(),
             df: "df".into(),
-            backing: machine_pool::BACKING_FILE.into(),
+            backing: MachineLayout::production().machine_pool_file(),
             volume_root: super::MOUNT_ROOT.into(),
             host_root: "/".into(),
             sys_dev_block: "/sys/dev/block".into(),
@@ -836,7 +835,11 @@ mod tests {
     fn default_backing_file_survives_machine_state_reset() {
         let storage = PoolStorage::new("zpool");
 
-        assert!(!storage.backing.starts_with(DEFAULT_DATA_DIR));
+        assert!(
+            !storage
+                .backing
+                .starts_with(MachineLayout::production().data_dir())
+        );
     }
 
     fn device_recovery_storage(root: &Path, scan: &str, import: &str) -> PoolStorage {

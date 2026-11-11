@@ -8,14 +8,6 @@ use ployz_build::{
 
 use super::{CapturedBuild, CapturedTarget, Error, invalid};
 
-/// Variables through which a GitHub Actions runner exposes its build cache service.
-const ACTIONS_CACHE_VARIABLES: [&str; 4] = [
-    "ACTIONS_CACHE_URL",
-    "ACTIONS_RESULTS_URL",
-    "ACTIONS_RUNTIME_TOKEN",
-    "ACTIONS_CACHE_SERVICE_V2",
-];
-
 /// One completed image and the Docker repository its Service names.
 pub struct LocalImage {
     pub image: BuiltImage,
@@ -128,7 +120,7 @@ impl CapturedBuild {
             super::LocalCache::Pinned(scope) => (scope.is_some(), scope.as_deref()),
         };
         // Only the cache service's own variables: the run's token credentials stay here.
-        for name in ACTIONS_CACHE_VARIABLES {
+        for name in ployz_build::GITHUB_CACHE_ENV {
             if let Ok(value) = std::env::var(name)
                 && cache
             {

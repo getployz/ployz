@@ -339,6 +339,7 @@ fn a_rollback_reads_back_the_services_it_ships_as_admitted() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -662,6 +663,7 @@ fn planned_restarts(store: &ConfigStore, who: &Actor, services: &[&str]) -> Opti
                 environment: EnvironmentRef::default(),
                 services: services.iter().map(|service| name(service)).collect(),
                 target: false,
+                deployment: None,
             },
         )
         .unwrap()

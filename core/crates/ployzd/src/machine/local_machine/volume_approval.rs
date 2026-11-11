@@ -10,7 +10,7 @@ use std::net::IpAddr;
 
 use ployz_core::{
     ContainerId, ContainerKind, CopyTransition, DockerVolumeName, MachineId, ManagementAddress,
-    OperationId, SEED_VOLUME_CAPABILITY, Sealing, SnapshotName, Start,
+    OperationId, Sealing, SnapshotName, Start,
     authority::{
         Approver, AuthorityRefusal, Purpose, Signed, StepDigest, Timestamp, VolumeApproval,
         VolumeFacts, VolumeStep, VolumeWorkflow,
@@ -470,20 +470,6 @@ impl LocalMachine {
                     field: "a Container",
                 }));
             }
-        }
-        Ok(())
-    }
-
-    /// Under Device enforcement an Operator's `SeedVolume` is refused before the switch
-    /// lock. It writes a copy's data into a Volume name the caller picks.
-    ///
-    /// # Errors
-    /// Returns [`Error::VolumeRefused`] naming `SeedVolume` under enforcement.
-    pub(crate) fn admit_operator_seed(&self) -> Result<(), Error> {
-        if self.record().device_enforcement() {
-            return Err(Error::VolumeRefused {
-                capability: SEED_VOLUME_CAPABILITY,
-            });
         }
         Ok(())
     }

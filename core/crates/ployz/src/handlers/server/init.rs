@@ -1,12 +1,12 @@
 use clap::ArgMatches;
 use ployz_core::{
-    ClusterName, EnrollAs, EnrollRequest, LocalMachinePhase, MachineRelease, RpcErrorCode,
+    ClusterName, EnrollAs, EnrollRequest, LocalMachinePhase, MachineLayout, MachineRelease,
+    RpcErrorCode,
 };
 
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
 use crate::{
-    connect::DEFAULT_LOCAL_SOCKET,
     context::{Connection, Context},
     handlers::{Error, leaf_matches},
     ui::Hint,
@@ -38,7 +38,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     }
     let destination = matches.get_one::<String>("destination");
     let connection = match destination {
-        None => Connection::unix(DEFAULT_LOCAL_SOCKET)?,
+        None => Connection::unix(MachineLayout::production().socket())?,
         Some(dest) => helpers::configure_ssh_key(
             dest.parse()?,
             matches.get_one::<String>("ssh-key").map(String::as_str),

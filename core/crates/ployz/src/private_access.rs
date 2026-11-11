@@ -4,16 +4,15 @@
 
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    Ciphertext, ContainerRuntimeObservation, EnvironmentValues, Machine, MachineFailure, MachineId,
-    MachineName, MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem,
-    PrivateAccessSet, QualifiedService, RowStanding, RpcError, RpcErrorCode,
-    SET_PRIVATE_ACCESS_CAPABILITY, Sealing, SealingPublicKey, ServiceObservation,
-    SetPrivateAccessRequest,
+    Ciphertext, EnvironmentValues, Machine, MachineFailure, MachineId, MachineName,
+    MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem, PrivateAccessSet,
+    QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_PRIVATE_ACCESS_CAPABILITY, Sealing,
+    SealingPublicKey, ServiceObservation, SetPrivateAccessRequest,
     authority::{
         KeyApproval, PrivateAccessApproval, PrivateAccessTerms, Signed, Signer, SignerKey,
         Timestamp,
     },
-    private_access_sealed_key, seal_platform,
+    private_access_router_joined, private_access_sealed_key, seal_platform,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -87,13 +86,13 @@ pub(crate) fn cluster_sealed_key(services: &[ServiceObservation]) -> Option<Ciph
     .and_then(|router| private_access_sealed_key(&router.resolved_spec.container.labels))
 }
 
-/// The Machines whose router runs now.
+/// The Machines whose router has joined the tailnet.
 fn running(services: &[ServiceObservation]) -> std::collections::BTreeSet<MachineId> {
     services
         .iter()
         .filter(|service| service.identity == QualifiedService::system_tailscale())
         .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation()))
-        .filter(|copy| matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }))
+        .filter(|copy| private_access_router_joined(&copy.runtime))
         .map(|copy| copy.machine_id)
         .collect()
 }

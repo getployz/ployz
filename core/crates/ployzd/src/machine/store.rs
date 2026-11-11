@@ -11,8 +11,9 @@ use std::{
 
 use ployz_core::{
     DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId,
-    MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel, PinnedAddresses,
-    PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint, apply_machine_update,
+    MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel, PREPARE_DIR_NAME,
+    PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint,
+    apply_machine_update,
 };
 use reqwest::Url;
 use thiserror::Error;
@@ -940,8 +941,7 @@ impl LocalMachineStore {
         for entry in fs::read_dir(&self.data_dir)? {
             let entry = entry?;
             let name = entry.file_name();
-            if name == STATE_FILE_NAME || name == LOCK_FILE_NAME || name == super::PREPARE_DIR_NAME
-            {
+            if name == STATE_FILE_NAME || name == LOCK_FILE_NAME || name == PREPARE_DIR_NAME {
                 continue;
             }
             if entry.file_type()?.is_dir() {
@@ -952,7 +952,7 @@ impl LocalMachineStore {
         }
         File::open(&self.data_dir)?.sync_all()?;
         fs::remove_file(path(&self.data_dir))?;
-        if self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
+        if self.data_dir.join(PREPARE_DIR_NAME).exists() {
             fs::remove_file(self.data_dir.join(LOCK_FILE_NAME))?;
             return Ok(());
         }
@@ -981,7 +981,7 @@ fn claim_data_dir(data_dir: &Path) -> Result<(), StoreError> {
                 || names.iter().all(|name| {
                     name == TEMPORARY_FILE_NAME
                         || name == LOCK_FILE_NAME
-                        || name == super::PREPARE_DIR_NAME
+                        || name == PREPARE_DIR_NAME
                 });
             if owns_directory {
                 Ok(())

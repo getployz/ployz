@@ -178,7 +178,10 @@ the agent never sees it. The card seals it in the browser, as **Connect** does. 
 approves it before the key goes out, so it can't be denied afterwards. If Tailscale refuses the key, the approval stays approved: try another key, or turn
 Private Access off, in **Integrations**.
 
-`ployz private-access` shows which servers run a router. A server added later runs one too,
+`ployz private-access` shows which servers run a router, meaning one whose node joined your
+tailnet. A router Tailscale refused the key for isn't one, though its container keeps
+restarting. A router placed before this check existed counts while its container runs, until
+you run `on` again. A server added later runs one too,
 and joins with the key, so keep the key reusable. If Tailscale refuses the key,
 `ployz private-access on` names the server. Run it again with a new key. **Integrations**
 marks that server **Key refused** and offers **Try another key**. A router that stopped

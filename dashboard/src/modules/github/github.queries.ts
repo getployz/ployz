@@ -1,5 +1,5 @@
 import { queryOptions, useQuery, useSuspenseQuery } from "@tanstack/react-query";
-import { githubBuildRepositoryKey } from "#/modules/github/github-build-workflow";
+import { awaitsWorkflowCommit, githubBuildRepositoryKey } from "#/modules/github/github-build-workflow";
 import {
   listGithubBuildRepositoriesServerFn,
   getGithubRepoAccessStateServerFn,
@@ -98,7 +98,7 @@ export function useGithubBuildRepositories(organizationSlug: string, opened: Rea
   return useQuery({
     ...githubBuildRepositoriesQueryOptions(organizationSlug),
     refetchInterval: (query) =>
-      query.state.data?.some((repository) => repository.readiness === "setup_needed" && opened.has(githubBuildRepositoryKey(repository)))
+      query.state.data?.some((repository) => awaitsWorkflowCommit(repository) && opened.has(githubBuildRepositoryKey(repository)))
         ? 10_000
         : false,
   });

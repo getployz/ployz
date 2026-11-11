@@ -2,12 +2,6 @@
 
 use std::num::NonZeroU64;
 
-/// The file a root-backed Machine Pool lives in, on the host root filesystem.
-pub const BACKING_FILE: &str = "/var/lib/ployz-machine-pool";
-
-/// Survives a missing device so recovery cannot replace its Pool with a root-backed Pool.
-pub const DEVICE_POOL_MARKER: &str = "/var/lib/ployz-machine-pool.device";
-
 /// Ownership written only after the device Pool has been verified.
 pub const CONFIRMED_DEVICE_POOL_MARKER: &str = "ployz-device\nconfirmed\n";
 

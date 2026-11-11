@@ -18,6 +18,7 @@ use super::{
     proposal::StepDigest,
     refusal::{AuthorityRefusal, field, first_mismatch},
     restart::SignerKey,
+    shown::Shown,
     trusted_key::TrustedKeys,
 };
 use crate::{
@@ -83,8 +84,8 @@ pub enum VolumeWorkflow {
         at: SnapshotGuid,
         loses_after: Timestamp,
     },
-    /// Each of `machines` bounds the Volume at `maximum_bytes`, below the bound it holds
-    /// only when `shrink`.
+    /// Each of `machines` bounds the Volume at `maximum_bytes`. With `shrink` each request
+    /// may lower a bound, and without it none may.
     Resize {
         /// Sorted and distinct.
         #[serde(deserialize_with = "canonical::sorted_distinct")]
@@ -175,9 +176,7 @@ impl VolumeWorkflow {
                     maximum_bytes: wanted,
                     allow_shrink,
                 },
-            ) => {
-                machines.contains(machine) && wanted == maximum_bytes && (*shrink || !allow_shrink)
-            }
+            ) => machines.contains(machine) && wanted == maximum_bytes && shrink == allow_shrink,
             (
                 Self::Seed {
                     machine: owner,
@@ -283,6 +282,14 @@ impl VolumeWorkflow {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ApprovedVolumeChange {
+    /// Each Server in `servers` holds `volume` at `size`, and with `shrink` lowers a bigger
+    /// copy to it. `size` reads as `ployz volume set --size` takes it, such as `20GB`.
+    Resize {
+        volume: String,
+        servers: Vec<String>,
+        size: String,
+        shrink: bool,
+    },
     /// `mirror` keeps a copy of `volume` from `writer`, and takes every later sync of it
     /// without another approval until the Mirror is removed. With `replace` it first
     /// destroys the copy it holds.
@@ -323,10 +330,19 @@ impl ApprovedVolumeChange {
                 mirror: name(mirror),
                 replace: *replace,
             }),
+            VolumeWorkflow::Resize {
+                machines,
+                maximum_bytes,
+                shrink,
+            } => Some(Self::Resize {
+                volume: volume.to_owned(),
+                servers: machines.iter().map(name).collect(),
+                size: maximum_bytes.to_string().replace(' ', ""),
+                shrink: *shrink,
+            }),
             VolumeWorkflow::Move { .. }
             | VolumeWorkflow::MirrorRemoval { .. }
             | VolumeWorkflow::Restore { .. }
-            | VolumeWorkflow::Resize { .. }
             | VolumeWorkflow::Seed { .. } => None,
         }
     }
@@ -367,17 +383,40 @@ impl ApprovedVolumeChange {
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let started = match self {
-            Self::Mirror { .. } => Vec::new(),
+            Self::Resize { .. } | Self::Mirror { .. } => Vec::new(),
             Self::Move { service, .. } => service.lines(),
         };
         std::iter::once(self.line()).chain(started).collect()
     }
 
     /// One line a person reads: the Volume, both Servers, and that later syncs need no
-    /// approval, or what stops and starts where.
+    /// approval, or what stops and starts where. A resize names the Volume, its size, every
+    /// Server and whether a copy may shrink. The Volume and Server names are relayed, so a
+    /// resize's show through [`Shown`].
     #[must_use]
     pub fn line(&self) -> String {
         match self {
+            Self::Resize {
+                volume,
+                servers,
+                size,
+                shrink,
+            } => {
+                let servers = Shown::list(servers.iter().map(|server| Shown::text(server)));
+                let change = Shown::words("Approved: set ")
+                    .and_text(volume)
+                    .and_words(" to ")
+                    .and_text(size)
+                    .and_words(" on ")
+                    .and(servers);
+                change
+                    .and_words(if *shrink {
+                        ", lowering any copy above it."
+                    } else {
+                        ". No copy shrinks."
+                    })
+                    .into()
+            }
             Self::Mirror {
                 volume,
                 writer,

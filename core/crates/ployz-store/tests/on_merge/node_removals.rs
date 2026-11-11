@@ -1212,6 +1212,7 @@ fn retry(
             accept_volume_loss: Vec::new(),
             approvals: Vec::new(),
             awaits_approval: false,
+            approval: None,
         }),
         &Trusted::default(),
     )?;
@@ -1422,6 +1423,7 @@ fn a_deploy_that_takes_over_a_teardown_takes_the_config_it_removes_too() {
                     environment: at("production"),
                     services: Vec::new(),
                     target: false,
+                    deployment: None,
                 },
             )
             .unwrap()

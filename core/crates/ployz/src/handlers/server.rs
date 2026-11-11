@@ -117,7 +117,7 @@ pub(super) async fn connect_full(
         &config,
         direct,
         context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     ) {
         Ok(mut selected) => {
             selected.connections = as_device(selected.connections, &key)?;
@@ -495,7 +495,7 @@ pub(super) async fn reach_or_silent(
         &config,
         direct,
         context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     )
     .is_ok_and(|selected| by_socket(&selected.connections));
     match connect_or_none(matches, context).await {
@@ -603,7 +603,7 @@ async fn entries(
         &super::config_path(matches)?,
         direct,
         context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     )
     .map_err(|error| signed_out_unless_configured(error, signed_out))
 }

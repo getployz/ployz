@@ -11,6 +11,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The only platforms the pinned Railpack frontend produces.
+pub const PLATFORMS: [&str; 2] = ["linux/amd64", "linux/arm64"];
+/// Names with this prefix are Railpack settings, read while it plans.
+pub const SETTING_PREFIX: &str = "RAILPACK_";
+/// The setting that overrides Railpack's build command.
+pub const BUILD_CMD: &str = "RAILPACK_BUILD_CMD";
+/// The setting that names Railpack's config file.
+pub const CONFIG_FILE: &str = "RAILPACK_CONFIG_FILE";
+/// The config file Railpack reads when [`CONFIG_FILE`] is unset.
+pub const DEFAULT_PLAN_FILE: &str = "railpack.json";
+
 // Railpack 0.39.0: the frontend image also ships the matching /railpack CLI.
 const IMAGE: &str = "ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103";
 
@@ -169,7 +180,7 @@ struct FrontendInputs {
 /// A Railpack setting steers the plan, so it is planned with its value; any
 /// other Sealed value reaches only the steps that mount it.
 pub(crate) fn planned(name: &str) -> bool {
-    name.starts_with("RAILPACK_")
+    name.starts_with(SETTING_PREFIX)
 }
 
 /// Text values ride in the script's environment and as secret files written
@@ -344,6 +355,31 @@ fn input_error(error: std::io::Error) -> BuildError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_names_railpack_and_the_runner_define_are_the_ones_builds_read() {
+        assert_eq!(
+            (SETTING_PREFIX, BUILD_CMD, CONFIG_FILE, DEFAULT_PLAN_FILE),
+            (
+                "RAILPACK_",
+                "RAILPACK_BUILD_CMD",
+                "RAILPACK_CONFIG_FILE",
+                "railpack.json"
+            )
+        );
+        assert_eq!(PLATFORMS, ["linux/amd64", "linux/arm64"]);
+        assert!(planned(BUILD_CMD) && planned(CONFIG_FILE));
+        assert_eq!(
+            crate::GITHUB_CACHE_ENV,
+            [
+                "ACTIONS_CACHE_URL",
+                "ACTIONS_RESULTS_URL",
+                "ACTIONS_RUNTIME_TOKEN",
+                "ACTIONS_CACHE_SERVICE_V2",
+            ]
+        );
+        assert!(crate::GITHUB_CACHE_ENV.contains(&crate::GITHUB_CACHE_TOKEN));
+    }
 
     fn recipe(variables: &[(&str, &str)], sealed: &[(&str, &str)]) -> crate::Railpack {
         let pairs = |pairs: &[(&str, &str)]| {

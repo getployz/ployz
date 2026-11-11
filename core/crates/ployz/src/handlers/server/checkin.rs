@@ -15,7 +15,7 @@ use std::{
 
 use chrono::Utc;
 use clap::{ArgMatches, Command, parser::ValueSource};
-use ployz_core::RpcErrorCode;
+use ployz_core::{MachineLayout, RpcErrorCode};
 
 use super::super::{Error, leaf_matches, runtime};
 use crate::checkin::{
@@ -37,7 +37,7 @@ pub(crate) fn command(command: Command) -> Command {
         .arg(
             value("token-file", None)
                 .value_parser(clap::value_parser!(PathBuf))
-                .default_value(Paths::TOKEN_FILE)
+                .default_value(MachineLayout::production().fleet_token().into_os_string())
                 .help("Read the Fleet Token from this file. The running check-in loop deletes it once Cloud enrolls or rejects this host, or the token is revoked or expires; an --install that ends with an error keeps it"),
         )
         .arg(
@@ -63,7 +63,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     let token_file = matches
         .get_one::<PathBuf>("token-file")
         .cloned()
-        .unwrap_or_else(|| PathBuf::from(Paths::TOKEN_FILE));
+        .unwrap_or_else(|| MachineLayout::production().fleet_token());
     // The unit runs from /, so a path relative to here would name another file there.
     let token_file = std::path::absolute(&token_file).map_err(|error| {
         Error::caused(

@@ -800,7 +800,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
 const LOCAL_INSPECT: Duration = Duration::from_secs(3);
 
 fn this_server() -> Option<ThisServer> {
-    let path = Path::new(Paths::CHECKIN_DIR).join("status.json");
+    let path = Paths::production().status();
     let checkin = LocalCheckin::read(&path)
         .inspect_err(|error| {
             crate::ui::warn(format!("Could not read {}: {error}", path.display()));
@@ -818,7 +818,7 @@ fn this_server() -> Option<ThisServer> {
                     )
                 })
         });
-    let stopped = crate::checkin::loop_stopped(Path::new(Paths::CHECKIN_DIR));
+    let stopped = crate::checkin::loop_stopped(&Paths::production().checkin_dir);
     Some(ThisServer::read(checkin, left, stopped))
 }
 
@@ -1218,7 +1218,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     if token || CredentialStore::beside(config).organization()?.is_some() {
         return Ok(via("cloud", None));
     }
-    let local = Path::new(crate::connect::DEFAULT_LOCAL_SOCKET);
+    let local = ployz_core::MachineLayout::production().socket();
     let config = match Config::load(config) {
         Ok(config) => config,
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
@@ -1232,7 +1232,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     // A config file sends commands to its current context, never the local socket, so
     // without one they reach no Server: say what they say.
     Ok(
-        match select_connections(None, Some(&config), None, false, local) {
+        match select_connections(None, Some(&config), None, false, &local) {
             Err(ContextError::NoCurrentContext(_)) => none(
                 "no current context",
                 Some(super::context::retry_use(matches)),

@@ -4,9 +4,9 @@ import { hex } from "#/modules/approval-session/approval-session";
 import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "./auto-deploy-rule";
 
 /** `rule_draft_tests::GOLDEN`: the CLI and the Servers draft these bytes from the same view and terms. */
-const GOLDEN = "9c041c83758d801e0350725886e31596384b655d7edb2f66189bdb542a32ae63";
+const GOLDEN = "b90fce2595824dea529a4a32b03fcb9576a160e0d623fbbf6c1cdbf5ceb546a4";
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
-const BUILDER_SHA = "5f35eaa8e1372d0d86ff82788adadf308e5f3f97";
+const BUILDER_SHA = "a19b4fca3adea371c25ec29f181e8c7d21037d1e";
 
 const spec = (name: string, plain: string) => ({
   name,

@@ -869,6 +869,73 @@ fn a_stale_revision_is_refused_with_a_fresh_read() {
 }
 
 #[test]
+fn every_expect_revision_check_refuses_a_moved_environment_with_the_same_read() {
+    let store = shop();
+    call(
+        &store,
+        "service_add",
+        json!({ "name": "web", "image": "traefik/whoami" }),
+        "add-1",
+    )
+    .ok();
+    let environment_show = Call::new("environment_show", json!({ "project": "shop" }));
+    let service_inspect = Call::new(
+        "service_inspect",
+        json!({ "project": "shop", "service": "web" }),
+    );
+    for (tool, input, next) in [
+        (
+            "environment_pr",
+            json!({ "enabled": true, "repository": "acme/api" }),
+            &environment_show,
+        ),
+        (
+            "domain_add",
+            json!({ "service": "web", "hostname": "app.example.com" }),
+            &service_inspect,
+        ),
+        (
+            "domain_update",
+            json!({ "domain": "whoami-2", "prefix": "whoami" }),
+            &environment_show,
+        ),
+        (
+            "domain_remove",
+            json!({ "domain": "app.example.com" }),
+            &environment_show,
+        ),
+        (
+            "volume_remove",
+            json!({ "volume": "data" }),
+            &environment_show,
+        ),
+        (
+            "service_rename",
+            json!({ "service": "web", "to": "frontend" }),
+            &service_inspect,
+        ),
+        (
+            "service_remove",
+            json!({ "service": "web" }),
+            &service_inspect,
+        ),
+    ] {
+        let mut input = input;
+        input["project"] = json!("shop");
+        input["expect_revision"] = json!(0);
+        let stale = call(&store, tool, input, "stale-1").refused();
+        assert_eq!(stale.code, RpcErrorCode::Conflict, "{tool}");
+        assert_eq!(
+            stale.message,
+            "The Environment changed since you read it; read it again before writing",
+            "{tool}"
+        );
+        assert_eq!(stale.writes, Writes::None, "{tool}");
+        assert_eq!(stale.next, std::slice::from_ref(next), "{tool}");
+    }
+}
+
+#[test]
 fn config_write_sets_permissions_and_a_later_write_keeps_them() {
     let store = shop();
     let file = |store: &ConfigStore| {
@@ -2716,6 +2783,7 @@ fn store_retry(
                 accept_volume_loss: serde_json::from_value(accept.clone()).unwrap(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             trusted,
         )

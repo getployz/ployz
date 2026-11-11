@@ -32,7 +32,10 @@ use crate::{
     },
     docker::{ContainerRuntime, LocalDocker},
     host_capacity,
-    network::{Leftover, NetworkError, NetworkPlane, discover_network},
+    network::{
+        DOCKER_NETWORK_NAME, Leftover, NetworkError, NetworkPlane, WIREGUARD_INTERFACE_NAME,
+        discover_network,
+    },
     sealing_key::{KeyFile, SealingKey},
 };
 
@@ -84,9 +87,11 @@ mod management_client;
 pub(crate) mod preview_deploy;
 pub(crate) mod preview_grant;
 mod push_target;
+mod resize_seed_approval;
 pub(super) mod restart_approval;
 pub(crate) mod rule_deploy;
 pub(crate) mod rule_grant;
+pub(crate) use resize_seed_approval::Landing;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
@@ -1479,23 +1484,26 @@ fn leftovers_refusal(leftovers: &[Leftover]) -> String {
     for leftover in leftovers {
         match leftover {
             Leftover::WireGuardDevice(reason) => {
-                found.push(format!("WireGuard interface ployz-wg remains: {reason}"));
-                steps.push("run `ip link delete ployz-wg`".to_owned());
+                found.push(format!(
+                    "WireGuard interface {WIREGUARD_INTERFACE_NAME} remains: {reason}"
+                ));
+                steps.push(format!("run `ip link delete {WIREGUARD_INTERFACE_NAME}`"));
             }
             Leftover::AttachedNetwork(names) => {
                 found.push(format!(
-                    "Docker network ployz remains with containers {} attached; they belong to this Server's earlier enrollment, and removing them stops them while Volume data stays",
+                    "Docker network {DOCKER_NETWORK_NAME} remains with containers {} attached; they belong to this Server's earlier enrollment, and removing them stops them while Volume data stays",
                     names.join(", "),
                 ));
                 steps.push(format!("run `docker rm -f {}`", names.join(" ")));
-                steps.push("run `docker network rm ployz`".to_owned());
+                steps.push(format!("run `docker network rm {DOCKER_NETWORK_NAME}`"));
             }
             Leftover::UnownedNetwork => {
-                found.push(
-                    "Docker network ployz exists without the `ployzd.managed` label, so Ployz can't prove it made it"
-                        .to_owned(),
-                );
-                steps.push("once nothing else needs it, run `docker network rm ployz`".to_owned());
+                found.push(format!(
+                    "Docker network {DOCKER_NETWORK_NAME} exists without the `ployzd.managed` label, so Ployz can't prove it made it"
+                ));
+                steps.push(format!(
+                    "once nothing else needs it, run `docker network rm {DOCKER_NETWORK_NAME}`"
+                ));
             }
         }
     }

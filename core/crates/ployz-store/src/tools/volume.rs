@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Effect, Stop, Tool, at, stale, written};
+use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -268,12 +268,7 @@ impl Tool for VolumeRemove {
         let volumes = cx.one(&VolumesQuery {
             environment: scope.clone(),
         })?;
-        if self
-            .expect_revision
-            .is_some_and(|expect| volumes.environment.revision.0 != expect)
-        {
-            return Err(stale(cx.call()));
-        }
+        cx.fresh(&volumes.environment, self.expect_revision)?;
         let asks_approval = volumes
             .volumes
             .iter()

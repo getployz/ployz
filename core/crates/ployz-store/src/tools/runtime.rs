@@ -14,9 +14,8 @@ use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Health, LogsAnswer, OperationsAnswer,
 };
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, place_of, store};
 use super::refusal::{Call, Refusal};
-use super::release::place;
 use super::status::{Container, ServiceFacts, Watch, service_status};
 use super::step::{
     Action, Ask, CloudQuery, Gate, LogsQuery, RequestKey, ServerName, ServiceVerb, Subject,
@@ -28,8 +27,6 @@ use crate::{
     ProjectName, ServicesQuery, SourceKind,
 };
 
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
-
 /// The deployed Service `service` names, by the runtime name its containers carry.
 fn deployed<'a>(
     namespace: &'a NamespaceView,
@@ -40,15 +37,11 @@ fn deployed<'a>(
         Refusal::not_found("No deployed Service by that name here")
             .with_did_you_mean(did_you_mean(service.as_str(), names()))
             .with_valid(names())
-            .with_next(Call::new("environment_show", json!(place_of(namespace))))
+            .with_next(Call::new(
+                "environment_show",
+                place_of(&namespace.environment),
+            ))
             .into()
-    })
-}
-
-fn place_of(namespace: &NamespaceView) -> Value {
-    json!({
-        "project": namespace.environment.project,
-        "environment": namespace.environment.name,
     })
 }
 
@@ -127,7 +120,10 @@ impl Tool for ServiceState {
                         names.iter().map(String::as_str),
                     ))
                     .with_valid(names.iter().map(String::as_str))
-                    .with_next(Call::new("environment_show", place_of(&namespace)))
+                    .with_next(Call::new(
+                        "environment_show",
+                        place_of(&namespace.environment),
+                    ))
                     .into());
             }
             listed
@@ -347,7 +343,7 @@ fn service_act(
         }
         None => None,
     };
-    let mut read = place(cx.call());
+    let mut read = cx.place_args();
     read.insert("service".into(), service.as_str().into());
     let environment = namespace.environment.id.clone();
     let run = Run {
@@ -379,10 +375,10 @@ macro_rules! service_act_tool {
             #[schemars(with = "Option<String>", pattern(NODE_NAME))]
             server: Option<ServerName>,
             #[serde(default)]
-            #[schemars(range(min = 0, max = 300))]
+            #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
             wait_seconds: u32,
             #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+            #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
             request_key: Option<RequestKey>,
             #[serde(default)]
             #[schemars(with = "Option<String>", pattern(NODE_NAME))]

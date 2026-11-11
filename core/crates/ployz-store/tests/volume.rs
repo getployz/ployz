@@ -1086,6 +1086,7 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -1254,6 +1255,7 @@ fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(
                     .collect(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),

@@ -1,35 +1,11 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { organizationAccess } from "./github-access";
-import { cancelGithubRun, checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
+import { cancelGithubRun, checkGithubBuildRepository, checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
+import { GITHUB_RULE_WORKFLOW, type GithubWorkflowTemplate } from "./github-build-workflow";
 import { GithubAuthority, type GithubAuthorityService, type GithubBuildRun } from "./github-authority.server";
-import { GITHUB_BUILD_WORKFLOW, githubBuildId, githubBuildWorkflowUrl } from "./github-build-workflow";
 import { GithubApi, GithubObservationError, githubLacksPermission, type GithubObservationErrorCode } from "./github-observation.api";
 import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
-
-describe("GitHub build workflow", () => {
-  it("calls getployz/build@v1 with every input Cloud dispatches", () => {
-    expect(GITHUB_BUILD_WORKFLOW).toContain("uses: getployz/build@v1");
-    for (const input of ["build", "cloud"]) {
-      expect(GITHUB_BUILD_WORKFLOW).toContain(`${input}: \${{ inputs.${input} }}`);
-    }
-  });
-
-  it("dispatches build ids that getployz/build@v1 accepts", () => {
-    const accepted = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
-    const deployment = "36755d9a-dc30-4385-a9bd-86ae1a85e44b";
-    for (const service of ["a", "ployz-soak-node", "s".repeat(63)]) {
-      expect(githubBuildId(deployment, service)).toMatch(accepted);
-    }
-  });
-
-  it("opens GitHub's new-file page on the default branch with the workflow filled in", () => {
-    const url = new URL(githubBuildWorkflowUrl({ web: "http://127.0.0.1:4555", fullName: "acme/api", defaultBranch: "release/v2" }));
-    expect(url.origin + url.pathname).toBe("http://127.0.0.1:4555/acme/api/new/release/v2");
-    expect(url.searchParams.get("filename")).toBe(".github/workflows/ployz-build.yml");
-    expect(url.searchParams.get("value")).toBe(GITHUB_BUILD_WORKFLOW);
-  });
-});
 
 const failure = (code: GithubObservationErrorCode, status: number, retriable = false) =>
   new GithubObservationError({ code, operation: "fetch_workflow", status, retriable, message: "failed" });
@@ -45,7 +21,8 @@ function withGithub<A, E>(effect: Effect.Effect<A, E, GithubApi | GithubAuthorit
 }
 
 const access = organizationAccess("org", 7);
-const workflowFile = (state: string, dispatchable = true) => ({ fullName: "acme/api", defaultBranch: "main", state, dispatchable });
+const workflowFile = (state: string | null, template: GithubWorkflowTemplate | null = "build", dispatchable = template !== null) =>
+  ({ fullName: "acme/api", defaultBranch: "main", state, template, dispatchable });
 
 function check(workflow: ReturnType<typeof workflowFile> | GithubObservationError) {
   return withGithub(checkGithubBuildWorkflow(access, 42), {
@@ -54,13 +31,19 @@ function check(workflow: ReturnType<typeof workflowFile> | GithubObservationErro
 }
 
 describe("checkGithubBuildWorkflow", () => {
-  it("is ready only when the workflow is active on the default branch, and says whether the file is Ployz's", async () => {
+  it("is ready only when the workflow Ployz offers is active on the default branch", async () => {
     const ready = await check(workflowFile("active"));
-    expect(ready.value).toEqual({ fullName: "acme/api", defaultBranch: "main", readiness: "ready", dispatchable: true });
+    expect(ready.value).toEqual({ fullName: "acme/api", defaultBranch: "main", readiness: "ready", template: "build", dispatchable: true });
     expect(ready.calls).toEqual([{ operation: "buildWorkflow", input: { installationId: 7, repositoryId: 42 } }]);
-    expect((await check(workflowFile("active", false))).value).toMatchObject({ readiness: "ready", dispatchable: false });
     expect((await check(workflowFile("disabled_manually"))).value.readiness).toBe("setup_needed");
     expect((await check(workflowFile("deleted"))).value.readiness).toBe("setup_needed");
+    expect((await check(workflowFile(null, null))).value.readiness).toBe("setup_needed");
+    expect((await check(workflowFile("active", "rule"))).value).toMatchObject({ readiness: "ready", template: "rule" });
+  });
+
+  it("reads another active file, such as one calling getployz/build@v1, as outdated, and says whether it still dispatches", async () => {
+    expect((await check(workflowFile("active", null))).value).toMatchObject({ readiness: "outdated", template: null, dispatchable: false });
+    expect((await check(workflowFile("active", null, true))).value).toMatchObject({ readiness: "outdated", dispatchable: true });
   });
 
   it("reports an installation without Actions access or without the repository as lacking permission", async () => {
@@ -81,6 +64,42 @@ function pushRuns(runs: GithubBuildRun[], workflow = ".github/workflows/ployz-bu
 
 const run = (id: number, headSha: string, event: string, status = "in_progress"): GithubBuildRun =>
   ({ id, url: `https://github.com/acme/api/actions/runs/${id}`, headSha, event, status, conclusion: null });
+
+describe("checkGithubBuildRepository", () => {
+  const contents = (text: string) => ({ content: Buffer.from(text).toString("base64"), encoding: "base64" });
+  const row = (ruleBranches: string[], file: ReturnType<typeof workflowFile>, onDisk?: string) => {
+    const api = fakeGithubApi(onDisk === undefined ? {} : { "/repositories/42/contents/.github/workflows/ployz-build.yml": contents(onDisk) });
+    return Effect.runPromise(checkGithubBuildRepository("org", { installationId: 7, repositoryId: 42, fullName: "acme/api", ruleBranches }).pipe(
+      Effect.provideService(GithubApi, api.service),
+      Effect.provideService(GithubAuthority, fakeGithubAuthority({ buildWorkflow: () => Effect.succeed(file) }).service),
+    ));
+  };
+  const handWritten = GITHUB_RULE_WORKFLOW.replace("branches: ['**']", "branches: [main]");
+
+  it("offers the build template to a repository no rule builds", async () => {
+    expect(await row([], workflowFile("active", "build"))).toMatchObject({ readiness: "ready", template: "build" });
+    expect(await row([], workflowFile(null, null))).toMatchObject({ readiness: "setup_needed", template: "build" });
+    expect(await row([], workflowFile("active", null), "jobs:\n  build:\n    steps:\n      - uses: getployz/build@v1\n"))
+      .toMatchObject({ readiness: "outdated", template: "build" });
+  });
+
+  it("offers the rule template to a repository an automatic deploy rule builds, never the build template", async () => {
+    expect(await row(["main"], workflowFile("active", "rule"))).toMatchObject({ readiness: "ready", template: "rule", ruleBranch: "main" });
+    expect(await row(["main", "release"], workflowFile("active", "rule"))).toMatchObject({ template: "rule", ruleBranch: null });
+    expect(await row(["main"], workflowFile("active", "build"))).toMatchObject({ readiness: "outdated", template: "rule" });
+    expect(await row(["main"], workflowFile(null, null))).toMatchObject({ readiness: "setup_needed", template: "rule" });
+    expect(await row(["main"], workflowFile("active", null), handWritten)).toMatchObject({ readiness: "outdated", template: "rule" });
+  });
+
+  it("offers the rule template where the file calls a reusable workflow or already is the rule template", async () => {
+    expect(await row([], workflowFile("active", null), handWritten)).toMatchObject({ readiness: "outdated", template: "rule" });
+    expect(await row([], workflowFile("active", "rule"))).toMatchObject({ readiness: "ready", template: "rule" });
+  });
+
+  it("offers the build template when the file can't be read", async () => {
+    expect(await row([], workflowFile("active", null))).toMatchObject({ readiness: "outdated", template: "build" });
+  });
+});
 
 describe("findGithubPushRun", () => {
   it("follows the run the push of the commit started", async () => {

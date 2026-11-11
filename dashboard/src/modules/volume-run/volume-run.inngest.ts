@@ -483,9 +483,10 @@ async function resizeAgain(steps: RunSteps) {
  */
 async function sizeSettle({ step, runEffect, run, runId }: RunSteps, id: string, set: Extract<ResizeStep, { kind: "set" }>, phase: ResizePhase) {
   const { machine } = set.member;
+  const approval = run.kind === "resize" ? run.args.approval : undefined;
   for (let check = 0; check < BUSY_CHECKS; check += 1) {
     if (check > 0) await step.sleep(`${id}-wait-${check}`, BUSY_WAIT);
-    const outcome: SizeOutcome = await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(resizeCopy(run, runId, machine, phase.to, phase.direction)));
+    const outcome: SizeOutcome = await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(resizeCopy(run, runId, machine, phase.to, phase.direction, approval)));
     if (outcome.kind !== "retry") return outcome;
   }
   const kept: SizeOutcome = { kind: "refused", reason: "read_only", message: `${machine.name} kept ${run.volumeName} read-only for ${BUSY_CHECKS} checks`, boundBytes: null, capacity: null, floorBytes: null };

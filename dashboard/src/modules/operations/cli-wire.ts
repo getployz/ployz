@@ -68,7 +68,7 @@ export const VOLUME_RUN_BODIES = {
   }),
   release: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
   restore: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Destination }),
-  resize: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("resize"), maximum_bytes: MaximumBytes }),
+  resize: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("resize"), maximum_bytes: MaximumBytes, approval: Schema.optional(VolumeApproval) }),
 } as const satisfies Record<Exclude<VolumeRunRequestKind, "seed">, Schema.Top>;
 
 export const NewVolumeRun = Schema.Union(Object.values(VOLUME_RUN_BODIES));
@@ -97,7 +97,7 @@ export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
     case "restore":
       return { kind: "restore", args: { from: body.from } };
     case "resize":
-      return { kind: "resize", args: { maximum_bytes: body.maximum_bytes } };
+      return { kind: "resize", args: { maximum_bytes: body.maximum_bytes, ...(body.approval && { approval: body.approval }) } };
   }
 }
 

@@ -347,6 +347,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Resize {
                     maximum_bytes: twenty_gb(),
+                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "resize", "maximum_bytes": 20_000_000_000_u64 }),
@@ -787,7 +788,7 @@ async fn a_release_cloud_plans_for_20_seconds_still_starts() {
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
-async fn a_signed_mirror_goes_to_cloud_with_its_run() {
+async fn a_signed_mirror_or_resize_goes_to_cloud_with_its_run() {
     use ployz_core::authority::{Signer, SignerKey, Timestamp, VolumeWorkflow};
     let signer = Signer::from_seed(&[7; 32]);
     let issued_at = Timestamp::from_millis(100_000).unwrap();
@@ -821,6 +822,13 @@ async fn a_signed_mirror_goes_to_cloud_with_its_run() {
                 approval: Some(signed.clone()),
             },
             "sync",
+        ),
+        (
+            RunAsk::Resize {
+                maximum_bytes: twenty_gb(),
+                approval: Some(signed.clone()),
+            },
+            "resize",
         ),
     ] {
         let expected = expected.clone();

@@ -63,6 +63,7 @@ fn temp_paths(dir: &tempfile::TempDir) -> Paths {
     Paths {
         checkin_dir: dir.path().join("checkin"),
         prepare_state: dir.path().join("prepare/state.json"),
+        prepare_lock: dir.path().join("prepare/lock"),
         token_file: dir.path().join("fleet-token"),
     }
 }

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { SetVolumeSizeRequest } from "@ployz/sdk";
+import type { SetVolumeSizeRequest, Signed } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
@@ -58,15 +58,17 @@ export function sizeRefusalOf(volumeName: string, machine: MachineRef, bytes: By
  * One SetVolumeSize to `machine`. An equal size answers Ok with no write, so a copy already at `bytes` costs one
  * round trip and is never skipped on a read of its own. Only a failure to ask fails the Effect, so the step's own
  * retries cover the network. Only a shrink or a settle sends `allow_shrink`, so a grow's request is the one older daemons know.
+ * `approval` is the Device's Resize approval the run carries, which an enforcing Server needs.
  */
 export const setVolumeSize = Effect.fn("VolumeRun.setVolumeSize")(function* (
   ctx: Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName">,
   machine: MachineRef,
   bytes: Bytes,
   direction: SizeDirection,
+  approval?: Signed,
 ) {
   const session = yield* openSession(ctx.organizationId);
-  const payload: SetVolumeSizeRequest = { name: ctx.dockerVolume, maximum_bytes: bytes };
+  const payload: SetVolumeSizeRequest = { name: ctx.dockerVolume, maximum_bytes: bytes, ...(approval && { approval }) };
   if (direction !== "grow") payload.allow_shrink = true;
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_size", payload }).pipe(
     clusterRead,
@@ -90,9 +92,10 @@ export const resizeCopy = Effect.fn("VolumeRun.resizeCopy")(function* (
   machine: MachineRef,
   bytes: Bytes,
   direction: SizeDirection,
+  approval?: Signed,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* setVolumeSize(ctx, machine, bytes, direction);
+  return yield* setVolumeSize(ctx, machine, bytes, direction, approval);
 });
 
 /**

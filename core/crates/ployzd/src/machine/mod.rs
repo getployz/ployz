@@ -38,6 +38,7 @@ use store::PENDING_RESET_FILE_NAME;
 pub use store::{EnrollPlan, LocalMachineStore, StoreError};
 pub(crate) use store::{InterruptedReset, Opened};
 
+pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
@@ -52,8 +53,6 @@ mod record_tests;
 #[cfg(test)]
 mod register_tests;
 
-pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
-pub const PREPARE_DIR_NAME: &str = "prepare";
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 

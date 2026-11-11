@@ -10,8 +10,6 @@ use super::step::RequestKey;
 use crate::catalog::NODE_NAME;
 use crate::{CreateProject, EnvironmentId, ProjectId, ProjectName, RenameProject};
 
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
-
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProjectCreate {
@@ -20,7 +18,7 @@ pub(crate) struct ProjectCreate {
     name: ProjectName,
     /// Any id you choose. A call that repeats a key gets the Project the first call made, not a second one.
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
 }
 
