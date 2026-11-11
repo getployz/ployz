@@ -117,6 +117,8 @@ export type Member =
       readonly boundBytes?: number | null;
       /** The Server reports device enforcement on, so it refuses a Container start or a seed Ployz Cloud sends. */
       readonly enforces?: boolean;
+      /** The Server signs a handoff receipt as a Move's source, and as its target needs one to become the writer. */
+      readonly handoff?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };
