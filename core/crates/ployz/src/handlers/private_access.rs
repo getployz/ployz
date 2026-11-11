@@ -4,14 +4,14 @@
 use std::io::Read;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{MachineFailure, PartialResult, RpcError, RpcErrorCode};
+use ployz_core::{MachineFailure, PartialResult, RpcError, RpcErrorCode, authority::Signer};
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
 use crate::cli::{base, switch};
 use crate::private_access::{
-    AccessChanged, AccessMachine, MachineAccess, key_refused, observe_access, seal_key, shown,
-    turn_off, turn_on,
+    AccessChanged, AccessMachine, MachineAccess, device_approval, key_refused, observe_access,
+    seal_key, shown, turn_off, turn_on,
 };
 use crate::ui::{self, Cell, Gaps, Hint, Table};
 
@@ -98,15 +98,25 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
     } else {
         ask_key()?
     };
+    let device_key = super::device::key::path(&super::config_path(root)?);
     with_client(root, |client| {
         Box::pin(async move {
             let observed = observe_access(client).await?;
             let sealed = seal_key(&observed, &key)?;
+            let approval = match (super::device::key::load(&device_key), observed.sealing) {
+                (Ok(Some(secret)), Some(cluster)) => Some(device_approval(
+                    &Signer::from_seed(&secret),
+                    cluster,
+                    &sealed,
+                )?),
+                _ => None,
+            };
             let addressed = observed.machines.clone();
             let changed = turn_on(
                 &*client,
                 observed.machines,
                 sealed,
+                approval,
                 &CancellationToken::new(),
             )
             .await;

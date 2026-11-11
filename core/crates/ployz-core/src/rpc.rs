@@ -1771,6 +1771,13 @@ pub struct SetPrivateAccessRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub sealed_auth_key: Option<Ciphertext>,
+    /// A person's approval of `sealed_auth_key`. A Machine that enforces Device approval
+    /// turns Private Access on for an Operator only with one; a Full caller needs none,
+    /// and turning off needs none. A client sends it only to a daemon advertising
+    /// `ployz.private-access.approval.v1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approval: Option<crate::authority::KeyApproval>,
 }
 
 /// Why a Private Access router is not serving.

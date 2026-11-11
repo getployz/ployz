@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { ApprovalCard } from "#/components/agent-sidebar/approval-card";
 import type { ApprovalView } from "#/components/agent-sidebar/approvals.queries";
 import * as approvals from "#/modules/approvals/approvals.functions";
+import * as approvedKey from "#/modules/private-access/approved-key";
 import * as functions from "#/modules/private-access/private-access.functions";
 import { machineId } from "#/test/ids";
 import { Integrations } from "./integrations";
@@ -23,13 +24,21 @@ let observed: Observed;
 const servers = (fra: "running" | "stopped" | "none", ams: "running" | "stopped" | "none"): Observed => ({
   servers: [{ id: FRA, name: "fra-1", router: fra }, { id: AMS, name: "ams-1", router: ams }],
   partial: false,
+  enforced: true,
 });
 
 let changing: (() => Promise<Changed>) | null = null;
 
+// What this browser sends instead of the key: a stand-in for the key sealed to the Cluster, and the passkey's approval of it.
+const ON = {
+  sealed_auth_key: "c2VhbGVk",
+  approval: { passkey: { body: '{"signer":"passkey"}', assertion: { credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" } } },
+} satisfies Awaited<ReturnType<typeof approvedKey.sealAndApprove>>;
+
 beforeEach(() => {
   vi.spyOn(functions, "observePrivateAccessServerFn").mockImplementation(() => Promise.resolve(observed));
   vi.spyOn(functions, "setPrivateAccessServerFn").mockImplementation(() => changing?.() ?? Promise.reject(new Error("no Connect expected")));
+  vi.spyOn(approvedKey, "sealAndApprove").mockImplementation(() => Promise.resolve(ON));
 });
 
 afterEach(() => {
@@ -69,7 +78,19 @@ it("reads partly connected while a Server has no router, and connects it without
 
   expect(await screen.findByText("Connected")).toBeTruthy();
   expect(functions.setPrivateAccessServerFn).toHaveBeenCalledOnce();
-  expect(functions.setPrivateAccessServerFn).toHaveBeenCalledWith({ data: { organizationSlug: "acme", to: "on", authKey: KEY } });
+  expect(approvedKey.sealAndApprove).toHaveBeenCalledWith(expect.anything(), "acme", KEY);
+  expect(functions.setPrivateAccessServerFn).toHaveBeenCalledWith({ data: { organizationSlug: "acme", to: "on", on: ON } });
+});
+
+it("sends nothing when the passkey doesn't approve the key, and says why on the form", async () => {
+  observed = servers("none", "none");
+  await show();
+  vi.mocked(approvedKey.sealAndApprove).mockRejectedValueOnce(new approvedKey.KeyNotApproved("Your passkey didn't answer. Try again."));
+
+  await connect({ servers: [], failures: [] }, servers("none", "none"));
+
+  expect(await screen.findByText("Your passkey didn't answer. Try again.")).toBeTruthy();
+  expect(functions.setPrivateAccessServerFn).not.toHaveBeenCalled();
 });
 
 it("calls a Server that didn't answer Connect running once it reports its router running, not refused", async () => {
@@ -137,6 +158,7 @@ it("marks a key the approver pasted in an Approval card refused on Integrations,
   await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Connect" })); });
 
   expect(await screen.findByText("Approved. Check private access in Integrations.")).toBeTruthy();
+  expect(functions.approvePrivateAccessServerFn).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: asked.id, digest: asked.digest, on: ON } });
   expect(toasted).toHaveBeenCalledWith("Approved. Not every server connected.", {
     description: "Tailscale refused the auth key on fra-1. Tailscale refused the auth key on ams-1. Try another key or turn it off in Integrations.",
   });

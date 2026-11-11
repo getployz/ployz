@@ -19,8 +19,8 @@ use crate::{
     LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
     LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY,
     METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PENDING_JOINS_CAPABILITY,
-    PREPARE_VOLUMES_CAPABILITY, PROPOSAL_APPROVAL_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
-    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
+    PREPARE_VOLUMES_CAPABILITY, PRIVATE_ACCESS_APPROVAL_CAPABILITY, PROPOSAL_APPROVAL_CAPABILITY,
+    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
     READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
     REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
@@ -60,7 +60,8 @@ impl Statement {
             Self::Restart => &[RESTART_APPROVAL_CAPABILITY],
             Self::Proposal => &[PROPOSAL_APPROVAL_CAPABILITY, DEPLOY_PROPOSAL_CAPABILITY],
             Self::Rule => &[DEPLOY_RULE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY],
-            Self::Volume | Self::Upgrade | Self::Teardown | Self::PrivateAccess => &[],
+            Self::PrivateAccess => &[PRIVATE_ACCESS_APPROVAL_CAPABILITY],
+            Self::Volume | Self::Upgrade | Self::Teardown => &[],
         }
     }
 }
@@ -85,7 +86,7 @@ pub enum Authorization {
 }
 
 use Authorization::{Bound, Full, Pending, Read, Signed};
-use Statement::{Deploy, Join, Proposal, Restart, Rule, Volume};
+use Statement::{Deploy, Join, PrivateAccess, Proposal, Restart, Rule, Volume};
 
 const IMAGE_BOUND: &str = "content-addressed; checked at creation by C";
 
@@ -167,8 +168,13 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     ),
     (READ_ROUTES_CAPABILITY, Read),
     (READ_ROUTED_ADDRESSES_CAPABILITY, Read),
-    (SET_INGRESS_DOORS_CAPABILITY, Signed(&[])),
-    (SET_PRIVATE_ACCESS_CAPABILITY, Signed(&[])),
+    (
+        SET_INGRESS_DOORS_CAPABILITY,
+        Bound(
+            "the request names no image; the daemon places only its pinned images; the tunnel token is thread X's",
+        ),
+    ),
+    (SET_PRIVATE_ACCESS_CAPABILITY, Signed(&[PrivateAccess])),
     (READ_CLUSTER_NAME_CAPABILITY, Read),
     (SET_CLUSTER_NAME_CAPABILITY, Bound("residual: mislabel")),
     (METRIC_HISTORY_CAPABILITY, Read),
@@ -235,6 +241,7 @@ const fn case(
 }
 
 const STARTS_NOTHING: &str = "a following unsigned EnsureContainer create that uses it is refused";
+const PINNED_DOORS: &str = "only pinned images run";
 
 /// Every case an enforcing Machine is held to, in catalog order. A `Pending` row's cases
 /// are Served until its slice, except a branch already refused today.
@@ -536,20 +543,20 @@ pub const CASES: &[Case] = &[
     case(
         SET_INGRESS_DOORS_CAPABILITY,
         "any doors",
-        "a SetIngressDoors placing the HTTP Doors",
-        Expected::Refused(&[SET_INGRESS_DOORS_CAPABILITY]),
+        "a SetIngressDoors placing the HTTP Doors, naming an image of its own",
+        Expected::Bounded(PINNED_DOORS),
     ),
     case(
         SET_PRIVATE_ACCESS_CAPABILITY,
         "on",
         "a SetPrivateAccess turning Private Access on",
-        Expected::Refused(&[SET_PRIVATE_ACCESS_CAPABILITY]),
+        Expected::Refused(&[PRIVATE_ACCESS_APPROVAL_CAPABILITY]),
     ),
     case(
         SET_PRIVATE_ACCESS_CAPABILITY,
         "off",
         "a SetPrivateAccess turning Private Access off",
-        Expected::Refused(&[SET_PRIVATE_ACCESS_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         SET_CLUSTER_NAME_CAPABILITY,

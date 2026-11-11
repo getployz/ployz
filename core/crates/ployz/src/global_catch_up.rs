@@ -288,6 +288,7 @@ impl CatchUpClient for Client {
             SetPrivateAccessRequest {
                 enabled: true,
                 sealed_auth_key: Some(sealed),
+                approval: None,
             },
         )
         .await

@@ -1,6 +1,7 @@
 import type { AccessChanged, ContainerObservation, RuntimeWatchView } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord } from "#/lib/json";
+import { PasskeyAnswerInput } from "#/modules/approval-session/approvals-input";
 import { offlineServers } from "#/modules/machines/server-status";
 
 export const TAILSCALE = "ployz-system/tailscale";
@@ -16,16 +17,16 @@ export function authKeyProblem(key: string): string | null {
   return AUTH_KEY.test(key.trim()) ? null : "Keys start with tskey-auth-.";
 }
 
-const AuthKey = Schema.String.check(
-  Schema.isTrimmed(),
-  Schema.isMaxLength(512),
-  Schema.makeFilter((key: string) => authKeyProblem(key) === null || "Keys start with tskey-auth-."),
-);
-
 const Slug = Schema.String.check(Schema.isNonEmpty());
 
-export const SetPrivateAccessInput = Schema.Struct({ organizationSlug: Slug, to: Schema.Literals(PRIVATE_ACCESS_WANTS), authKey: Schema.optional(AuthKey) });
-export const ApprovePrivateAccessInput = Schema.Struct({ organizationSlug: Slug, id: Schema.String.check(Schema.isUUID()), digest: Schema.NonEmptyString, authKey: AuthKey });
+/** The auth key as the browser sealed it to the Cluster, with the passkey's approval of exactly that ciphertext when a Server enforces. */
+const PrivateAccessOnInput = Schema.Struct({
+  sealed_auth_key: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{1,2048}={0,2}$/)),
+  approval: Schema.optional(PasskeyAnswerInput),
+});
+
+export const SetPrivateAccessInput = Schema.Struct({ organizationSlug: Slug, to: Schema.Literals(PRIVATE_ACCESS_WANTS), on: Schema.optional(PrivateAccessOnInput) });
+export const ApprovePrivateAccessInput = Schema.Struct({ organizationSlug: Slug, id: Schema.String.check(Schema.isUUID()), digest: Schema.NonEmptyString, on: PrivateAccessOnInput });
 
 export type RouterRow = { readonly id: string; readonly name: string; readonly router: boolean };
 
@@ -34,7 +35,7 @@ export type RouterState = "running" | "stopped" | "none";
 
 export type ObservedServer = { readonly id: string; readonly name: string; readonly router: RouterState };
 
-export type PrivateAccessObservation = { readonly servers: readonly ObservedServer[]; readonly partial: boolean };
+export type PrivateAccessObservation = { readonly servers: readonly ObservedServer[]; readonly partial: boolean; readonly enforced: boolean };
 
 /** Why a Server's router didn't take: Tailscale refused the key, the router didn't run, or the Server didn't answer. */
 export type RouterProblem = "key_refused" | "not_running" | "unreachable";
@@ -77,5 +78,6 @@ export function privateAccessObservation(frame: ObservedFrame): PrivateAccessObs
   return {
     servers: frame.machines.map(({ machine }) => ({ id: machine.id, name: machine.name, router: routers.get(machine.id) ?? "none" })),
     partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0 || offline.size > 0,
+    enforced: frame.machines.some(({ machine }) => machine.runtime.device_enforcement === true),
   };
 }
