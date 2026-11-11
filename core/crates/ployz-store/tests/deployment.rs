@@ -8328,7 +8328,10 @@ fn a_deploy_without_an_upload_builds_the_upload_a_service_runs_not_one_that_neve
     deploy_sent(&store, &who, 2, Some('b'));
     fail(&store, 2);
 
-    assert_eq!(deploy_sent(&store, &who, 3, None).upload, Some(digested('a')));
+    assert_eq!(
+        deploy_sent(&store, &who, 3, None).upload,
+        Some(digested('a'))
+    );
     let claimed = store.claim(&id(3), &a).unwrap();
     assert_eq!(claimed.deployment.upload, Some(digested('a')));
 }

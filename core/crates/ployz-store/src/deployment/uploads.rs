@@ -114,12 +114,14 @@ fn moved(deployment: &Stored, service: &str) -> bool {
 }
 
 /// Whether a Deployment admitted now runs after `deployment` has moved `service`:
-/// it did, or it is running, so the next one queues behind it. A queued one is
-/// superseded instead.
+/// it applied it, or it may still run and sent its upload or is running. A
+/// Deployment that settled without applying `service` moved it nowhere, whatever it
+/// sent.
 fn ahead(deployment: &Stored, service: &str) -> bool {
-    moved(deployment, service)
+    applied(deployment, service)
         || (deployment.summary.in_flight
-            && deployment.summary.status != crate::DeploymentStatus::Queued)
+            && (moved(deployment, service)
+                || deployment.summary.status != crate::DeploymentStatus::Queued))
 }
 
 /// The upload `service` builds from: its own in the latest Deployment that `moves` it.
@@ -234,7 +236,11 @@ fn chosen(
     let owned: Vec<(&str, usize, &UploadDigest)> = sourceless
         .iter()
         .filter_map(|service| {
-            lineage(deployments, service, ahead).map(|(at, digest)| (*service, at, digest))
+            // A Service nothing applied or may still apply has run no upload, so its
+            // latest sent is all there is to build.
+            lineage(deployments, service, ahead)
+                .or_else(|| lineage(deployments, service, moved))
+                .map(|(at, digest)| (*service, at, digest))
         })
         .collect();
     // The newest, preferring what that Deployment carried itself.
