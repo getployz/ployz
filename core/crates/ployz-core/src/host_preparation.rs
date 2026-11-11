@@ -48,10 +48,25 @@ pub enum ZfsBuild {
 /// ployzd itself can't read back (a missing `added_packages`, a build route this release doesn't
 /// know) still tells the check-in where each step stands. A host with no record reads as both steps
 /// not started.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 pub struct PrepSteps {
     pub docker: PrepStep<DockerOutcome>,
     pub zfs: PrepStep<ZfsOutcome>,
+}
+
+impl<'de> Deserialize<'de> for PrepSteps {
+    /// Reads through a struct that serde names `PrepState`, as the check-in's own record was
+    /// called before it moved here, so the "expected struct PrepState" a malformed file produces
+    /// reads as it always has.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct PrepState {
+            docker: PrepStep<DockerOutcome>,
+            zfs: PrepStep<ZfsOutcome>,
+        }
+        let PrepState { docker, zfs } = PrepState::deserialize(deserializer)?;
+        Ok(Self { docker, zfs })
+    }
 }
 
 /// Why `prepare/state.json` didn't read.

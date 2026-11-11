@@ -296,3 +296,33 @@ fn reading_the_state_file_tells_a_missing_file_from_one_that_does_not_read() {
         Err(StateError::Unreadable(_))
     ));
 }
+
+#[test]
+fn the_check_in_reader_names_the_record_it_expected_as_it_always_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    for (bytes, expected) in [
+        (
+            "null",
+            "invalid type: null, expected struct PrepState at line 1 column 4",
+        ),
+        (
+            "123",
+            "invalid type: integer `123`, expected struct PrepState at line 1 column 3",
+        ),
+        (
+            "[]",
+            "invalid length 0, expected struct PrepState with 2 elements at line 1 column 2",
+        ),
+        (
+            "\"abc\"",
+            "invalid type: string \"abc\", expected struct PrepState at line 1 column 5",
+        ),
+    ] {
+        fs::write(&path, bytes).unwrap();
+        let Err(StateError::Malformed(error)) = read_state::<PrepSteps>(&path) else {
+            panic!("{bytes} read");
+        };
+        assert_eq!(error.to_string(), expected);
+    }
+}
