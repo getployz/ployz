@@ -12,6 +12,12 @@ export const requestBillingSync = Effect.fn("Billing.requestSync")(function* (
   reason: "server-joined" | "server-removed",
 ) {
   yield* sendInngestEvent(createOrganizationBillingSyncRequestedEvent({ organizationId, reason })).pipe(
+    // Callers include the runtime recorder's uninterruptible writer; a stalled send must not hold it.
+    Effect.timeoutOrElse({
+      duration: "10 seconds",
+      orElse: () => Effect.fail(new Error("Requesting the billing sync timed out")),
+    }),
+    Effect.interruptible,
     Effect.catch((error) => Effect.logWarning("Billing units wait for the nightly reconcile.", { organizationId, reason, error })),
   );
 });

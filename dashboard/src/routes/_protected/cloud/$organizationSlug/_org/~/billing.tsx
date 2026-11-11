@@ -130,7 +130,7 @@ function RouteComponent() {
           note="Nothing is locked today."
           className="border-t md:border-t-0 md:border-l"
         >
-          {subscribed ? null : (
+          {subscribed || !billingState.canBuy ? null : (
             <Button className="self-start" disabled={busy} onClick={() => void openCheckout()}>
               {checkoutPending ? <Spinner data-icon="inline-start" /> : null}
               Upgrade to production

@@ -123,7 +123,8 @@ export const getBillingState = Effect.fn("Billing.getState")(function* (
   input: { readonly organizationSlug: string },
 ) {
   yield* requireHostedPolar();
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "org:read");
+  const access = yield* requireAccess(actor, input.organizationSlug, "org:read");
+  const { organization } = access;
   const database = yield* Database;
   const rows = yield* database.drizzle
     .select({
@@ -142,6 +143,7 @@ export const getBillingState = Effect.fn("Billing.getState")(function* (
       cancelAtPeriodEnd: false,
     }),
     servers,
+    canBuy: access.permissions.includes("org:billing"),
   };
 });
 
@@ -205,7 +207,7 @@ const getBillingUser = Effect.fn("Billing.getUser")(function* (userId: string) {
 export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
   function* (actor: Actor, input: { readonly organizationSlug: string }) {
     const polar = yield* requireHostedPolar();
-    const { organization } = yield* requireAccess(actor, input.organizationSlug, "org:read");
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "org:billing");
     yield* requireClaimed(organization.id, "billing");
     // Never sell Production twice.
     if (yield* hasCachedActiveSubscription(organization.id)) {

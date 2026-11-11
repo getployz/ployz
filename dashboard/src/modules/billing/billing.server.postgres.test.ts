@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { organizationBillingState } from "#/modules/billing/tables";
 import type { CreatePolarCheckout, PolarService } from "#/modules/billing/polar-provider.server";
 import { createEmbeddedCheckout, getBillingState } from "#/modules/billing/billing.server";
+import { member, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -108,6 +109,25 @@ it.live("opens no checkout for an unclaimed Organization or for someone outside 
 
       const outsider = yield* Effect.flip(createEmbeddedCheckout({ userId: sandbox.userId }, slug));
       assert.notStrictEqual(outsider._tag, "StoreRefused");
+      assert.deepStrictEqual(polar.checkouts, []);
+    }).pipe(Effect.provide(cloud));
+  }), 60_000);
+
+it.live("leaves buying Production to owners", () =>
+  Effect.gen(function* () {
+    const polar = makePolar();
+    const cloud = yield* storeTestCloud({ polar: polar.service });
+    yield* Effect.gen(function* () {
+      const ownerId = yield* seedStoreOrganization(ORGANIZATION);
+      const { drizzle } = yield* Database;
+      const [admin] = yield* drizzle.insert(user).values({ email: "grace@example.test", name: "Grace" }).returning();
+      const adminId = admin?.id ?? "";
+      yield* drizzle.insert(member).values({ userId: adminId, organizationId: ORGANIZATION, role: "admin" });
+
+      assert.strictEqual((yield* getBillingState({ userId: ownerId }, slug)).canBuy, true);
+      assert.strictEqual((yield* getBillingState({ userId: adminId }, slug)).canBuy, false, "an admin sees no Upgrade");
+      const refused = yield* Effect.flip(createEmbeddedCheckout({ userId: adminId }, slug));
+      assert.strictEqual(refused._tag, "Forbidden");
       assert.deepStrictEqual(polar.checkouts, []);
     }).pipe(Effect.provide(cloud));
   }), 60_000);
