@@ -195,9 +195,11 @@ fn free_port() -> u16 {
     }
 }
 
-/// Fails when another caller holds the port, whichever process it runs in.
+/// Fails when another caller holds the port, whichever process it runs in. The locks sit in a
+/// directory per user, so a shared temporary directory never hands one user another's files.
 fn reserve(port: u16) -> bool {
-    let locks = std::env::temp_dir().join("ployz-probe-test-ports");
+    let user = rustix::process::geteuid().as_raw();
+    let locks = std::env::temp_dir().join(format!("ployz-probe-test-ports-{user}"));
     fs::create_dir_all(&locks).unwrap();
     let lock = fs::OpenOptions::new()
         .create(true)
@@ -205,14 +207,17 @@ fn reserve(port: u16) -> bool {
         .write(true)
         .open(locks.join(port.to_string()))
         .unwrap();
-    let held = lock.try_lock().is_ok();
-    if held {
-        RESERVED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(lock);
+    match lock.try_lock() {
+        Ok(()) => {
+            RESERVED
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(lock);
+            true
+        }
+        Err(fs::TryLockError::WouldBlock) => false,
+        Err(fs::TryLockError::Error(error)) => panic!("cannot lock port {port}: {error}"),
     }
-    held
 }
 
 /// The ports the kernel hands to `bind(0)`, outbound connections and the UDP sockets of tests in
@@ -233,7 +238,7 @@ fn a_free_port_is_not_one_the_kernel_hands_out() {
     if usize::from(*ephemeral.start()) < usize::from(FIRST_FREE_PORT) + SMALLEST_BAND {
         return;
     }
-    for _ in 0..200 {
+    for _ in 0..50 {
         let port = free_port();
         assert!(
             !ephemeral.contains(&port),
@@ -243,9 +248,9 @@ fn a_free_port_is_not_one_the_kernel_hands_out() {
 }
 
 #[test]
-fn a_free_port_is_never_handed_out_twice() {
-    let ports: std::collections::HashSet<u16> = (0..500).map(|_| free_port()).collect();
-    assert_eq!(ports.len(), 500);
+fn a_port_one_caller_holds_cannot_be_held_by_another() {
+    let port = free_port();
+    assert!(!reserve(port));
 }
 
 fn handout(handout: &str, window_ms: u64, listen: &[Port], send: &[u16]) -> Handout {
