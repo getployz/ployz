@@ -1,5 +1,5 @@
 //! One Machine upgrade attempt, and what Machine mutation admission answers around it. The
-//! daemon's `request_locked` (ployzd installer/upgrade.rs:170-239) holds the installation
+//! daemon's `request_locked` (ployzd installer/upgrade.rs:208-287) holds the installation
 //! lock, writes the Accepted receipt (`upgrade-attempt.json`, :227), writes the
 //! `.upgrade-active` marker (`mark_active`, :228, mutation.rs:107-111) and launches the
 //! worker as a transient systemd unit (:230). If the launch fails, it writes
@@ -12,25 +12,25 @@
 //! Four processes take part. The daemon runs `request_locked` in a task (:156-158) and hosts
 //! every RPC: Inspect, a resend, Leave, a new upgrade request and the mutations that admit
 //! through `admit_installation` (local_machine.rs:331-334). A kill ends all of them at once.
-//! systemd restarts it (`Restart=always`, installer/host.rs:284), and daemon start
-//! reconciles before it serves (daemon.rs:186-188). The worker is its own unit (:397-459),
+//! systemd restarts it (`Restart=always`, installer/host.rs:286), and daemon start
+//! reconciles before it serves (daemon.rs:184-186). The worker is its own unit (:445-507),
 //! `ployzd install` its own process, and the volume plugin its own unit
-//! (installer/host.rs:343-365), which admits through `admit_mutation`
+//! (installer/host.rs:348-370), which admits through `admit_mutation`
 //! (volume_plugin/storage.rs:178-187).
 //!
 //! Daemon start clears the marker only if its `settle` wins `try_installation` (:258-260).
 //! Otherwise `settle` returns Ok (:263), `reconcile` drops it (:349-351) and the daemon
-//! serves (daemon.rs:189). `ployzd install` runs beside the daemon's reader, and a worker
+//! serves (daemon.rs:187). `ployzd install` runs beside the daemon's reader, and a worker
 //! that finds its receipt terminal holds the lock until it returns `NotActive` (:306-309),
 //! so either can hold the lock while daemon start settles.
 //!
 //! Settling readers repair a receipt and marker that a stopped writer left. `settle`
-//! (installer/upgrade.rs:251-276) runs for Inspect (local_machine.rs:512, through `latest`,
+//! (installer/upgrade.rs:299-324) runs for Inspect (local_machine.rs:512, through `latest`,
 //! :109-117), for a resend of the same attempt (local_machine/upgrade.rs:27-31, through
-//! `replay`, :90-105), for Leave (local_machine.rs:945) and at daemon start (daemon.rs:186,
+//! `replay`, :90-105), for Leave (local_machine.rs:945) and at daemon start (daemon.rs:184,
 //! through `reconcile`, :349-351). `reconcile_locked` (:372-395) runs under the lock for a
 //! new upgrade request (:185, after local_machine/upgrade.rs:38) and for `ployzd install`
-//! (`reconcile_for_install`, :353-370, from installer/mod.rs:257-258).
+//! (`reconcile_for_install`, :353-370, from installer/mod.rs:261-262).
 //!
 //! The finding: every terminal write comes before its `clear_active`. A process killed
 //! between the two, or a `clear_active` that returns Io before it removes the marker
@@ -121,9 +121,9 @@ enum Daemon {
     /// Serves RPCs.
     Serving,
     /// Killed or exited; systemd starts it again (`Restart=always`, `RestartSec=2`,
-    /// installer/host.rs:284-286).
+    /// installer/host.rs:286-288).
     Down,
-    /// Daemon start's `reconcile` runs (daemon.rs:186-188); nothing is served yet.
+    /// Daemon start's `reconcile` runs (daemon.rs:184-186); nothing is served yet.
     Starting,
 }
 
@@ -146,7 +146,7 @@ enum Request {
     Done,
 }
 
-/// The worker unit (`ployz-upgrade-<id>.service`, installer/upgrade.rs:397-459) and where its
+/// The worker unit (`ployz-upgrade-<id>.service`, installer/upgrade.rs:445-507) and where its
 /// `work` is.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Worker {
@@ -186,13 +186,13 @@ enum Caller {
     Replay,
     /// Leave's `depart` (local_machine.rs:938-961), through `latest`, then `finish_mutation`.
     Leave,
-    /// Daemon start (daemon.rs:186), through `reconcile` and `latest`, before it serves.
+    /// Daemon start (daemon.rs:184), through `reconcile` and `latest`, before it serves.
     DaemonStart,
     /// A request for another attempt: `replay` returns None for its id (:98-99), then
     /// `try_installation` (local_machine/upgrade.rs:38) and `request_locked`'s
     /// `reconcile_locked` (:185).
     NewRequest,
-    /// `ployzd install`'s `install_at` (installer/mod.rs:250-262), its own process.
+    /// `ployzd install`'s `install_at` (installer/mod.rs:254-266), its own process.
     Install,
 }
 
@@ -349,16 +349,16 @@ enum Branch {
     /// stopped writer left.
     DepartsAfterItsClear,
     /// The caller's `try_installation` answered Busy (local_machine/upgrade.rs:38,
-    /// installer/mod.rs:257).
+    /// installer/mod.rs:261).
     CallerBusy,
     /// A new request refused after reconciling (:186-187 or :191-192).
     NewRequestBusy,
     /// A new request passed :191 and goes on to resolve its release, out of the model.
     NewRequestGoesOn,
     /// `reconcile_for_install` refused (:358-359 or :368), and `install_at` returned Busy
-    /// (installer/mod.rs:352-355).
+    /// (installer/mod.rs:356-359).
     InstallBusy,
-    /// `install_at` goes on to `install_locked` (installer/mod.rs:261).
+    /// `install_at` goes on to `install_locked` (installer/mod.rs:265).
     InstallGoesOn,
 }
 
@@ -520,7 +520,7 @@ struct Broken {
     /// `reconcile_locked` writes Interrupted without its `worker_state` check (:381).
     reconcile_skips_worker_state: bool,
     /// The daemon serves again after a kill without daemon start's `reconcile`
-    /// (daemon.rs:186-188).
+    /// (daemon.rs:184-186).
     serves_before_reconcile: bool,
     /// The fix's admission reads the marker alone, as the code as it is does.
     fix_ignores_receipt: bool,
@@ -951,7 +951,7 @@ impl UpgradeAttempt {
                     Some(Holder::Worker) => state.worker = Worker::Stopped,
                     Some(Holder::Reader) => {
                         // Daemon start returns the error, and the daemon exits
-                        // (daemon.rs:186-188).
+                        // (daemon.rs:184-186).
                         if state
                             .reader
                             .is_some_and(|reader| reader.caller == Caller::DaemonStart)
@@ -1422,12 +1422,12 @@ fn enters(caller: Caller) -> &'static str {
         Caller::Replay => "a resend of the same attempt (local_machine/upgrade.rs:28) calls replay",
         Caller::Leave => "Leave's depart (local_machine.rs:945) calls latest",
         Caller::DaemonStart => {
-            "daemon start (daemon.rs:186) calls reconcile, then latest, before it serves"
+            "daemon start (daemon.rs:184) calls reconcile, then latest, before it serves"
         }
         Caller::NewRequest => {
             "a request for another attempt: replay returns None for its id (:98-99), and try_installation (local_machine/upgrade.rs:38)"
         }
-        Caller::Install => "ployzd install's install_at: try_installation (installer/mod.rs:257)",
+        Caller::Install => "ployzd install's install_at: try_installation (installer/mod.rs:261)",
     }
 }
 
@@ -1439,39 +1439,39 @@ fn enters(caller: Caller) -> &'static str {
 fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &State) -> String {
     match action {
         Action::Accept if after.took == Some(Branch::RequestBusy) => {
-            "Daemon: request_upgrade's try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1069-1074)".to_owned()
+            "Daemon: request_upgrade's try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1498-1500)".to_owned()
         }
         Action::Accept if after.took == Some(Branch::RequestFindsMarker) => {
-            "Daemon: request_upgrade takes the installation lock (local_machine/upgrade.rs:38); request_locked finds no receipt, finds .upgrade-active and returns Busy, and the lock drops (installer/upgrade.rs:177, :191-192)".to_owned()
+            "Daemon: request_upgrade takes the installation lock (local_machine/upgrade.rs:38); request_locked finds no receipt, finds .upgrade-active and returns Busy, and the lock drops (installer/upgrade.rs:216, :230-231)".to_owned()
         }
         Action::Accept => {
-            "Daemon: request_upgrade takes the installation lock (local_machine/upgrade.rs:38); request_locked finds no receipt and no marker, and writes Accepted (installer/upgrade.rs:177, :191, :227)".to_owned()
+            "Daemon: request_upgrade takes the installation lock (local_machine/upgrade.rs:38); request_locked finds no receipt and no marker, and writes Accepted (installer/upgrade.rs:216, :230, :275)".to_owned()
         }
         Action::Mark if before.request == Request::Launched => format!(
-            "Daemon: mark_active {} after the launch (under Broken); request_locked returns Accepted and the task drops the lock (installer/upgrade.rs:228, :238)",
+            "Daemon: mark_active {} after the launch (under Broken); request_locked returns Accepted and the task drops the lock (installer/upgrade.rs:276, :286)",
             marks(after)
         ),
         Action::Mark => format!(
-            "Daemon: mark_active {} (installer/upgrade.rs:228)",
+            "Daemon: mark_active {} (installer/upgrade.rs:276)",
             marks(after)
         ),
         Action::Launch if after.request == Request::Launched => {
-            "Daemon: launch_worker starts the unit before mark_active (under Broken); the task still holds the lock (installer/upgrade.rs:230)".to_owned()
+            "Daemon: launch_worker starts the unit before mark_active (under Broken); the task still holds the lock (installer/upgrade.rs:278)".to_owned()
         }
         Action::Launch => {
-            "Daemon: launch_worker starts the unit; request_locked returns Accepted and the task drops the lock (installer/upgrade.rs:230, :238, :157)".to_owned()
+            "Daemon: launch_worker starts the unit; request_locked returns Accepted and the task drops the lock (installer/upgrade.rs:278, :286, :195)".to_owned()
         }
         Action::LaunchFails { started: false } => {
-            "Daemon: launch_worker returns an error and no unit started (installer/upgrade.rs:230)".to_owned()
+            "Daemon: launch_worker returns an error and no unit started (installer/upgrade.rs:278)".to_owned()
         }
         Action::LaunchFails { started: true } => {
-            "Daemon: launch_worker times out after 20 s, but systemd started the unit; its worker waits for the lock (installer/upgrade.rs:230, :440-447)".to_owned()
+            "Daemon: launch_worker times out after 20 s, but systemd started the unit; its worker waits for the lock (installer/upgrade.rs:278, :488-495)".to_owned()
         }
         Action::WriteLaunchFailure => {
-            "Daemon: request_locked writes Failed{Launching} (installer/upgrade.rs:231-235)".to_owned()
+            "Daemon: request_locked writes Failed{Launching} (installer/upgrade.rs:279-283)".to_owned()
         }
         Action::ClearAfterLaunchFailure => format!(
-            "Daemon: clear_active {}; request_locked returns and the lock drops (installer/upgrade.rs:236-238)",
+            "Daemon: clear_active {}; request_locked returns and the lock drops (installer/upgrade.rs:284-286)",
             clears(after)
         ),
         Action::DaemonDies { started } => format!(
@@ -1509,34 +1509,34 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                     "it serves again without daemon start's reconcile (under Broken)"
                 }
                 (_, true) => {
-                    "its locks are released, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:284-286)"
+                    "its locks are released, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:286-288)"
                 }
                 (_, false) => {
-                    "it held no lock, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:284-286)"
+                    "it held no lock, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:286-288)"
                 }
             }
         ),
         Action::WorkerLocks if after.worker == Worker::Refusing => {
-            "Worker: lock_installation returns; the receipt is terminal, so work returns NotActive next, and its guard holds the lock until then (installer/upgrade.rs:306-309)".to_owned()
+            "Worker: lock_installation returns; the receipt is terminal, so work returns NotActive next, and its guard holds the lock until then (installer/upgrade.rs:354-357)".to_owned()
         }
         Action::WorkerLocks if before.receipt_terminal() => {
-            "Worker: lock_installation returns; the receipt is terminal, and work writes Running over it (under Broken) (installer/upgrade.rs:306-316)".to_owned()
+            "Worker: lock_installation returns; the receipt is terminal, and work writes Running over it (under Broken) (installer/upgrade.rs:354-364)".to_owned()
         }
         Action::WorkerLocks => {
-            "Worker: lock_installation returns; the receipt is this attempt's and not terminal; work writes Running (installer/upgrade.rs:306-316)".to_owned()
+            "Worker: lock_installation returns; the receipt is this attempt's and not terminal; work writes Running (installer/upgrade.rs:354-364)".to_owned()
         }
         Action::WorkerRefuses => {
-            "Worker: work returns NotActive; the process exits and the lock drops (installer/upgrade.rs:309)".to_owned()
+            "Worker: work returns NotActive; the process exits and the lock drops (installer/upgrade.rs:357)".to_owned()
         }
         Action::WorkerFinishes => {
-            "Worker: the install ends; work writes the terminal receipt (installer/upgrade.rs:336-343)".to_owned()
+            "Worker: the install ends; work writes the terminal receipt (installer/upgrade.rs:384-391)".to_owned()
         }
         Action::WorkerClears => format!(
-            "Worker: clear_active {}; the process exits and the lock drops (installer/upgrade.rs:344-345)",
+            "Worker: clear_active {}; the process exits and the lock drops (installer/upgrade.rs:392-393)",
             clears(after)
         ),
         Action::WorkerDies => format!(
-            "Worker: the process is killed (a kill, a crash, or RuntimeMaxSec=15min, installer/upgrade.rs:21, :414){}; the unit stops",
+            "Worker: the process is killed (a kill, a crash, or RuntimeMaxSec=15min, installer/upgrade.rs:21, :462){}; the unit stops",
             match before.worker {
                 Worker::Waiting => " while it waits for the lock (:306)",
                 Worker::Refusing => " before it returns NotActive (:309), releasing the lock",
@@ -1550,8 +1550,8 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
         Action::ClearFails { removed } => format!(
             "{}: {}, the caller returns it with ?, and the lock drops{}",
             match (before.holder, before.reader, before.install) {
-                (Some(Holder::Request), ..) => "Daemon: request_locked's clear_active (installer/upgrade.rs:236)",
-                (Some(Holder::Worker), ..) => "Worker: work's clear_active (installer/upgrade.rs:344)",
+                (Some(Holder::Request), ..) => "Daemon: request_locked's clear_active (installer/upgrade.rs:284)",
+                (Some(Holder::Worker), ..) => "Worker: work's clear_active (installer/upgrade.rs:392)",
                 (
                     Some(Holder::Reader),
                     Some(Reader {
@@ -1559,7 +1559,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                         ..
                     }),
                     _,
-                ) => "Reader: settle's clear_active (installer/upgrade.rs:259)",
+                ) => "Reader: settle's clear_active (installer/upgrade.rs:307)",
                 (
                     Some(Holder::Reader),
                     Some(Reader {
@@ -1567,7 +1567,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                         ..
                     }),
                     _,
-                ) => "Reader: reconcile_locked's clear_active, after Interrupted (installer/upgrade.rs:393)",
+                ) => "Reader: reconcile_locked's clear_active, after Interrupted (installer/upgrade.rs:441)",
                 (
                     Some(Holder::Install),
                     _,
@@ -1575,11 +1575,11 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                         at: At::Clear(Site::Interrupted),
                         ..
                     }),
-                ) => "Install: reconcile_locked's clear_active, after Interrupted (installer/upgrade.rs:393)",
+                ) => "Install: reconcile_locked's clear_active, after Interrupted (installer/upgrade.rs:441)",
                 (Some(Holder::Install), ..) => {
-                    "Install: reconcile_locked's clear_active (installer/upgrade.rs:378)"
+                    "Install: reconcile_locked's clear_active (installer/upgrade.rs:426)"
                 }
-                _ => "Reader: reconcile_locked's clear_active (installer/upgrade.rs:378)",
+                _ => "Reader: reconcile_locked's clear_active (installer/upgrade.rs:426)",
             },
             if removed {
                 "removes .upgrade-active, then its directory sync returns Io (mutation.rs:116, :121)"
@@ -1587,7 +1587,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                 "returns Io before removing .upgrade-active, which stays (mutation.rs:116, :119)"
             },
             if before.daemon == Daemon::Starting && before.holder == Some(Holder::Reader) {
-                "; daemon start fails and the daemon exits (daemon.rs:186-188)"
+                "; daemon start fails and the daemon exits (daemon.rs:184-186)"
             } else {
                 ""
             }
@@ -1695,10 +1695,10 @@ fn started(after: &State, caller: Caller) -> String {
             returns_to(caller, after)
         ),
         Some(Branch::CallerBusy) if caller == Caller::Install => {
-            "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer/mod.rs:257, :342-344, :93)".to_owned()
+            "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer/mod.rs:261, :346-348, :93)".to_owned()
         }
         Some(Branch::CallerBusy) => {
-            "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1069-1074)".to_owned()
+            "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1498-1500)".to_owned()
         }
         took if !caller.settles() => format!(
             "takes the lock; {}",
@@ -1712,10 +1712,10 @@ fn started(after: &State, caller: Caller) -> String {
             })
         ) =>
         {
-            "settle reads a terminal receipt (installer/upgrade.rs:257); try_installation is next"
+            "settle reads a terminal receipt (installer/upgrade.rs:305); try_installation is next"
                 .to_owned()
         }
-        _ => "settle reads a receipt that is not terminal; worker_state is next (installer/upgrade.rs:265)".to_owned(),
+        _ => "settle reads a receipt that is not terminal; worker_state is next (installer/upgrade.rs:313)".to_owned(),
     }
 }
 
@@ -1725,19 +1725,19 @@ fn reconcile_reads_as(caller: Caller, took: Option<Branch>, after: &State) -> St
     let at = after.slot(caller).map(|reader| reader.at);
     match took {
         Some(Branch::Interrupts) if after.worker.active() => {
-            "reconcile_locked skips worker_state while the unit runs (under Broken) and writes Interrupted (installer/upgrade.rs:384-392); clear_active is next (:393)".to_owned()
+            "reconcile_locked skips worker_state while the unit runs (under Broken) and writes Interrupted (installer/upgrade.rs:432-440); clear_active is next (:441)".to_owned()
         }
         Some(Branch::Interrupts) => {
-            "reconcile_locked finds the unit stopped and writes Interrupted (installer/upgrade.rs:381-392); clear_active is next (:393)".to_owned()
+            "reconcile_locked finds the unit stopped and writes Interrupted (installer/upgrade.rs:429-440); clear_active is next (:441)".to_owned()
         }
         Some(Branch::ReconcileSeesActive) => format!(
-            "reconcile_locked finds the unit running and returns (installer/upgrade.rs:381-382){}",
+            "reconcile_locked finds the unit running and returns (installer/upgrade.rs:429-430){}",
             returns_to(caller, after)
         ),
         _ if at == Some(At::Clear(Site::Terminal)) => {
-            "reconcile_locked reads a terminal receipt; clear_active is next (installer/upgrade.rs:377-378)".to_owned()
+            "reconcile_locked reads a terminal receipt; clear_active is next (installer/upgrade.rs:425-426)".to_owned()
         }
-        _ => "no receipt; the caller checks .upgrade-active next (installer/upgrade.rs:191, :357-362)".to_owned(),
+        _ => "no receipt; the caller checks .upgrade-active next (installer/upgrade.rs:230, :405-410)".to_owned(),
     }
 }
 
@@ -1764,29 +1764,29 @@ fn reader_step_reads_as(
     let tail = returns_to(reader.caller, after);
     match reader.at {
         At::QueryWorker { .. } if after.took == Some(Branch::SettleSeesActive) => format!(
-            "Reader: worker_state reads the unit active; settle returns the receipt it read (installer/upgrade.rs:265-266){tail}"
+            "Reader: worker_state reads the unit active; settle returns the receipt it read (installer/upgrade.rs:313-314){tail}"
         ),
         At::QueryWorker { .. } if before.worker.active() => {
-            "Reader: settle skips worker_state (under Broken); try_installation is next (installer/upgrade.rs:268)".to_owned()
+            "Reader: settle skips worker_state (under Broken); try_installation is next (installer/upgrade.rs:316)".to_owned()
         }
         At::QueryWorker { .. } => {
-            "Reader: worker_state reads the unit stopped; try_installation is next (installer/upgrade.rs:265, :268)".to_owned()
+            "Reader: worker_state reads the unit stopped; try_installation is next (installer/upgrade.rs:313, :316)".to_owned()
         }
         At::TryTerminal { .. } if after.took == Some(Branch::SettleBusy) => format!(
-            "Reader: try_installation answers Busy; settle returns the terminal receipt it read and leaves .upgrade-active (installer/upgrade.rs:258-263){tail}"
+            "Reader: try_installation answers Busy; settle returns the terminal receipt it read and leaves .upgrade-active (installer/upgrade.rs:306-311){tail}"
         ),
         At::TryTerminal { .. } => {
-            "Reader: try_installation takes the lock; clear_active is next (installer/upgrade.rs:258-259)".to_owned()
+            "Reader: try_installation takes the lock; clear_active is next (installer/upgrade.rs:306-307)".to_owned()
         }
         At::TryNonTerminal { .. } if after.took == Some(Branch::SettleBusy) => format!(
-            "Reader: try_installation answers Busy; settle returns the receipt it read (installer/upgrade.rs:268-270){tail}"
+            "Reader: try_installation answers Busy; settle returns the receipt it read (installer/upgrade.rs:316-318){tail}"
         ),
         At::TryNonTerminal { seen } if model.broken.settle_reuses_snapshot => format!(
             "Reader: try_installation takes the lock; settle reconciles the {seen:?} it read before the lock, with no re-read (under Broken); {}",
             reconcile_reads_as(reader.caller, after.took, after)
         ),
         At::TryNonTerminal { .. } => format!(
-            "Reader: try_installation takes the lock; settle re-reads the receipt (installer/upgrade.rs:268-274); {}",
+            "Reader: try_installation takes the lock; settle re-reads the receipt (installer/upgrade.rs:316-322); {}",
             reconcile_reads_as(reader.caller, after.took, after)
         ),
         At::Clear(site) => format!(
@@ -1805,16 +1805,16 @@ fn reader_step_reads_as(
         ),
         At::Decide => match after.took {
             Some(Branch::NewRequestBusy) => {
-                "Reader: request_locked returns Busy and the lock drops (installer/upgrade.rs:186-187 or :191-192)".to_owned()
+                "Reader: request_locked returns Busy and the lock drops (installer/upgrade.rs:225-226 or :230-231)".to_owned()
             }
             Some(Branch::NewRequestGoesOn) => {
                 "Reader: request_locked passes :186 and :191 and goes on to resolve its release, which the model leaves out; the lock drops".to_owned()
             }
             Some(Branch::InstallBusy) => {
-                "Reader: reconcile_for_install returns Busy, and ployzd install prints \"another Ployz installation is active\" (installer/upgrade.rs:357-369, installer/mod.rs:258-260, :352-355, :93)".to_owned()
+                "Reader: reconcile_for_install returns Busy, and ployzd install prints \"another Ployz installation is active\" (installer/upgrade.rs:405-417, installer/mod.rs:262-264, :356-359, :93)".to_owned()
             }
             _ => {
-                "Reader: reconcile_for_install returns Ok; install_locked runs under the lock and returns, and the lock drops (installer/mod.rs:258-261)".to_owned()
+                "Reader: reconcile_for_install returns Ok; install_locked runs under the lock and returns, and the lock drops (installer/mod.rs:262-265)".to_owned()
             }
         },
         At::Depart { live: true, .. } => {
@@ -2295,9 +2295,9 @@ mod tests {
     }
 
     /// Daemon start's `settle` clears the marker only if it wins `try_installation`
-    /// (:258-260). When `ployzd install` holds the lock (installer/mod.rs:257), `settle`
+    /// (:258-260). When `ployzd install` holds the lock (installer/mod.rs:261), `settle`
     /// returns the terminal receipt as Ok (:260, :263), `reconcile` drops it (:349-351) and
-    /// the daemon serves (daemon.rs:189). Install then stops before its `clear_active`, and a
+    /// the daemon serves (daemon.rs:187). Install then stops before its `clear_active`, and a
     /// daemon RPC answers Busy on the marker the killed daemon left.
     #[test]
     fn daemon_start_loses_the_lock_to_ployzd_install() {
@@ -2375,7 +2375,7 @@ mod tests {
     }
 
     /// If the daemon served again after a kill without daemon start's `reconcile`
-    /// (daemon.rs:186-188), a daemon RPC would answer Busy on the marker the killed
+    /// (daemon.rs:184-186), a daemon RPC would answer Busy on the marker the killed
     /// request left, with no start that lost the lock.
     #[test]
     fn daemon_start_settles_before_serving() {
