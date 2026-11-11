@@ -378,6 +378,7 @@ Design choices, settled from the code:
 
 - The pin source. The Device trusts no Machine key yet (the known-Machines file is F6's), and Cloud's Server Access supplies each relayed connection's identity, so nothing read through Cloud can be checked. SSH and the local socket can. `pin` dials only those, through `ployz recovery rotate`'s dial, which refuses a Management connection. A Machine-signed attestation waits on F6's pins.
 - The rule. A value Cloud relays may be shown and compared, but it never gates a seal. Cloud's key counts only when it equals the pin. The Organization that keys the pin is Cloud's word for a token sign-in, so a lying Cloud can only steer a seal to another Cluster this computer pinned, which is a mislabel.
+- Which routes count as the person's own. SSH and the local socket, when the person or a context chose them. A Management connection, any connection from Cloud's Server Access, and plain TCP read through the pin, and `pin` refuses them.
 - When the CLI can't verify. It refuses with `conflict` and `next: ployz device pin --connect ssh://USER@SERVER`. `pin` itself refuses a Server whose key isn't the one Cloud's recovery backup names for the Organization, so a pin from the wrong Cluster fails at once.
 - Rotation. Nothing tells a rotated key from a planted one without a pinned Machine, so a changed key is refused and the person pins again. F6's `ployz device enforce` rotates the key over pinned connections, so it should re-pin the new key as it prints the recovery code (handoff below).
 
@@ -397,8 +398,8 @@ Not closed. #4106: a sealed value doesn't say who sealed it, so Cloud can still 
 
 **Verify, live.**
 
-- [ ] Lane 1. `ployz device pin --connect ssh://` on a real Cluster, then `ployz set --secret` through Cloud. Pass when a deploy opens the value on the Machine.
-- [ ] Lane 2. Plant another key in Cloud's record of the Cluster's Sealing key. Pass when `ployz set --secret` and `ployz private-access on` refuse and Cloud receives no write.
+- [x] Lane 1. `ployz device pin --connect ssh://` on a real Cluster, then `ployz set --secret` through Cloud. Pass when a deploy opens the value on the Machine.
+- [x] Lane 2. Plant another key in Cloud's record of the Cluster's Sealing key. Pass when `ployz set --secret` and `ployz private-access on` refuse and Cloud receives no write.
 
 **Verify, perf.** `ployz set --secret` reads one local file and makes no new network call. `private-access on` makes one Inspect over a direct connection, and one Organization read for a token sign-in through Cloud.
 
