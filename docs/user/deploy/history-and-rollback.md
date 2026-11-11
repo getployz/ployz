@@ -117,8 +117,9 @@ deploys.
 - **Keep the CLI running.** The redeploy waits for your device's second approval. If you stop
   the CLI while it waits, it cancels the redeploy. If the CLI can't cancel it, Ployz Cloud fails
   it after an hour, and nothing deploys.
-- **The second approval lasts 15 minutes.** A server that reaches a service later refuses it,
-  and the redeploy fails. Redeploy again.
+- **Each approval lasts 15 minutes.** A rebuild that starts later, such as one queued behind
+  another deployment, fails, and the redeploy is cancelled. A server that reaches a service more
+  than 15 minutes after your second approval refuses it, and the redeploy fails. Redeploy again.
 - **A redeploy from the dashboard or by the agent isn't approved.** Servers that enforce refuse
   it. Run `ployz deployment redeploy` on an approved device.
 - **A rollback keeps your rule's settings.** Your servers run each service only with the
