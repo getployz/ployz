@@ -89,7 +89,7 @@ impl LocalMachine {
             _ => return Err(held("a review")),
         };
         let claims = github
-            .claims(&rule, grant.proof.as_str(), now)
+            .claims(&rule, grant.proof.as_str(), now.into())
             .await
             .map_err(|refusal| Error::PreviewGrantRefused(PreviewRefusal::Proof(refusal)))?;
         let expected = BuildClaim {

@@ -500,6 +500,7 @@ pub async fn github_rule_grant(
                     service: ask.service,
                     commit: ask.commit,
                     authority: ask.authority,
+                    approval: None,
                     recipient: ask.recipient,
                     reader,
                 }),

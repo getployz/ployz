@@ -1739,6 +1739,7 @@ async fn rule_proofs(
                         rule: signed.clone(),
                         token,
                         claim,
+                        approval: None,
                         reader: reader.cloned(),
                     },
                 );

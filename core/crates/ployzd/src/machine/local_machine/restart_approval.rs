@@ -358,13 +358,18 @@ struct AcceptedBuild {
     /// The review it was built under, for a reviewed preview's build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     review: Option<ployz_core::authority::ReviewDigest>,
+    /// The commit approval it was built under, for a build of a commit a person approved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approved: Option<ployz_core::authority::ApprovalDigest>,
 }
 
 impl AcceptedBuild {
     fn of(claim: &BuildClaim, preview: Option<&PreviewKey>) -> Option<Self> {
-        let review = match claim.authority {
-            ployz_core::authority::CommitAuthority::Review(digest) => Some(digest),
-            ployz_core::authority::CommitAuthority::Head => None,
+        use ployz_core::authority::CommitAuthority;
+        let (review, approved) = match claim.authority {
+            CommitAuthority::Review(digest) => (Some(digest), None),
+            CommitAuthority::Approved(digest) => (None, Some(digest)),
+            CommitAuthority::Head => (None, None),
         };
         match claim.stage {
             BuildStage::Built { image, .. } => Some(Self {
@@ -373,6 +378,7 @@ impl AcceptedBuild {
                 image,
                 preview: preview.cloned(),
                 review,
+                approved,
             }),
             BuildStage::Grant { .. } => None,
         }
