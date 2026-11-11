@@ -352,7 +352,7 @@ fn repository(image: &str) -> &str {
 }
 
 fn ingest_error(error: RpcError) -> PushError {
-    match ImageIngestReason::from_details(&error.details) {
+    match error.evidence::<ImageIngestReason>() {
         Some(ImageIngestReason::UnsupportedContainerdStore) => PushError::UnsupportedImageStore,
         Some(
             ImageIngestReason::NotParticipating

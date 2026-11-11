@@ -309,12 +309,12 @@ mod tests {
             .socket()
             .unwrap_err();
         assert_eq!(
-            ImageIngestReason::from_details(&unsupported.details),
+            unsupported.evidence::<ImageIngestReason>(),
             Some(ImageIngestReason::UnsupportedContainerdStore)
         );
         let missing = ImageIngestPrerequisite::MissingSocket.socket().unwrap_err();
         assert_eq!(
-            ImageIngestReason::from_details(&missing.details),
+            missing.evidence::<ImageIngestReason>(),
             Some(ImageIngestReason::ContainerdSocketMissing)
         );
         let socket = PathBuf::from("/run/containerd/containerd.sock");

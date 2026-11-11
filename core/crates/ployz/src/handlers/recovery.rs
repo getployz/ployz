@@ -309,7 +309,7 @@ fn refusal(error: &ConnectError) -> Option<RecoveryRefusal> {
     let ConnectError::Remote(answered) = error else {
         return None;
     };
-    answered.recovery_refusal()
+    answered.evidence::<RecoveryRefusal>()
 }
 
 fn recover_failure(error: ConnectError) -> Error {
@@ -426,7 +426,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use ployz_core::{
-        CapabilityName, ContractDescription, MachineId, RpcRequestBody, RpcResponse,
+        CapabilityName, ContractDescription, Evidence, MachineId, RpcRequestBody, RpcResponse,
         SealingKeyRecovered, SealingKeyWrapped,
     };
     use serde_json::Value;
@@ -599,7 +599,7 @@ mod tests {
     /// Refused the way ployzd's `recovery_error` answers: an error payload, not a gRPC status.
     fn refused(refusal: RecoveryRefusal) -> RpcResponse {
         RpcResponse::from(ployz_core::RpcError {
-            details: refusal.details(),
+            details: refusal.to_details(),
             ..ployz_core::RpcError::caused(
                 RpcErrorCode::InvalidArgument,
                 &std::io::Error::other("refused"),

@@ -571,7 +571,7 @@ pub(crate) async fn user_remove<C: MachineOperations>(
 ) -> Result<(), RpcError> {
     let observed = match observe(client, machine_id, container_id).await {
         Err(error) if error.code == RpcErrorCode::NotFound => {
-            return match ContainerNotFoundReason::from_details(&error.details) {
+            return match error.evidence::<ContainerNotFoundReason>() {
                 Some(ContainerNotFoundReason::NoResolvedSpec) => {
                     Err(kept_without_spec(container_id, error))
                 }
@@ -594,7 +594,7 @@ pub(crate) async fn user_remove<C: MachineOperations>(
 fn kept_without_spec(container_id: &ContainerId, inspected: RpcError) -> RpcError {
     RpcError::conflict(format!(
             "Container {container_id} was not removed: Docker on its Server has it, and the Server holds no Resolved Service Spec under its ID."
-        )).with_details(serde_json::json!({ "reason": ContainerNotFoundReason::NoResolvedSpec })).with_causes(std::iter::once(inspected.message)
+        )).with_evidence(&ContainerNotFoundReason::NoResolvedSpec).with_causes(std::iter::once(inspected.message)
             .chain(inspected.cause)
             .collect())
 }

@@ -5,8 +5,8 @@ use ployz_core::{
     ClusterNamed, CodecError, ContainerNotFoundReason, ContainerNow, ContainerRefusal,
     ContainerRefusalReason, ContainerWant, ContractDescription, CreateVolumeRequest,
     DescribeContractRequest, DeviceEnforcementSet, DeviceKey, DeviceSet, DiskFull, DiskSpace,
-    DoorChange, EnsureImageIngestRequest, EnvironmentValues, ExposedPort, ForgetRequest, Forgotten,
-    HealthVerdict, ImageIngestReason, ImagePulled, ImageRemovalOutcome, ImageSummary,
+    DoorChange, EnsureImageIngestRequest, EnvironmentValues, Evidence, ExposedPort, ForgetRequest,
+    Forgotten, HealthVerdict, ImageIngestReason, ImagePulled, ImageRemovalOutcome, ImageSummary,
     ImagesRemoved, IngressDoors, IngressDoorsSet, IngressStage, InspectContainerRequest,
     InspectStorageRequest, JoinApproved, LeaveRequest, Left, LimitsRefusal, ListContainersRequest,
     ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveLogTarget, LocalMachineRemoved,
@@ -325,14 +325,14 @@ fn the_error_model_keeps_its_wire_text_and_retry_table() {
         free_bytes: 5_000_000,
     };
     assert_eq!(
-        full.details(),
+        full.to_details(),
         json!({ "disk_full": { "docker_root": "/var/lib/docker", "free_bytes": 5_000_000 } })
     );
     assert_eq!(
         full.to_string(),
         "The Server's disk is full: 5 MB free under /var/lib/docker"
     );
-    let disk_full = RpcError::internal("m").with_details(full.details());
+    let disk_full = RpcError::internal("m").with_details(full.to_details());
     assert_eq!(disk_full.disk_full(), Some(full));
 
     let refusal = RpcError::unsupported("m")
