@@ -242,6 +242,7 @@ what the deploy ships, then shows every term it will sign, such as:
 Approved web: nginx@sha256:3f1c2a9b8e7d…
   variables GREETING="hello  world", API_KEY (sealed)
   deployment 0f8fad5b9d4f4c6e8a1b2c3d4e5f6a7b
+  namespace shop-production
   servers 6f1e0c2a9b8d4e7f8a1b2c3d4e5f6a7b, 9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f
   cluster "q8Xc0mZ1vN4yT7rE2wK9pL3sD6fH5jG8aB1nM0oQ4uI="
   signer browser key 72asyextvn

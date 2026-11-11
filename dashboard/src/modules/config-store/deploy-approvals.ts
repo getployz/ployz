@@ -32,6 +32,8 @@ export type Servers = { readonly machines: DeployTarget["machines"]; readonly ru
 /** What an approval reads and asks: the Store, the Servers, and the person, who answers each review. */
 export type Approving = { readonly reads: Reads; readonly servers: Servers; readonly review: (review: Review) => Promise<boolean> };
 
+const OTHER_ENVIRONMENT = "Cloud sent the plan of another environment. Nothing deployed.";
+
 const SIGNS_FOR = "Your servers run only what you approve here.";
 
 /** The image a plan names for a Service its Deployment builds, as `DeployApproval::browser_draft` refuses it. */
@@ -58,6 +60,7 @@ export async function approveEnvironmentDeploy(approving: Approving, environment
   const { reads, servers } = approving;
   if (!enforcing(servers)) return undefined;
   const plan = await reads.plan(environment);
+  if (plan.environment.name !== environment.environment) throw new SessionRefused(OTHER_ENVIRONMENT);
   // A Service that builds from source runs under the automatic deploy or preview rule, which no browser signs.
   if ((plan.target ?? []).some((spec) => spec.container.image.startsWith(BUILT))) return undefined;
   const own = servers.running(plan.namespace);
@@ -124,6 +127,7 @@ export async function approveRedeploy(approving: Approving, source: DeploymentVi
   const scope = await deployApprovalScope(target);
   if (scope === undefined || scope === null) return scope;
   const plan = await reads.plan(environment, source.id);
+  if (plan.environment.id !== source.environment.id) throw new SessionRefused(OTHER_ENVIRONMENT);
   const signed = await reviewed(approving, await draftDeploy(scope, id, plan), `Redeploy ${source.environment.name}?`);
   const [approval] = signed ?? [];
   return approval === undefined ? null : { fields: { approval }, again: null };

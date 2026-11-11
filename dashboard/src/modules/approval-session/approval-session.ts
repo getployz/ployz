@@ -312,7 +312,7 @@ const SharedTerms = Schema.fromJsonString(Schema.Struct({
   expires_at: Schema.Number,
   signer: Schema.Struct({ browser: Schema.String }),
 }));
-const DeployBodyTerms = Schema.fromJsonString(Schema.Struct({ operation: Schema.String, machines: Schema.Array(Schema.String) }));
+const DeployBodyTerms = Schema.fromJsonString(Schema.Struct({ operation: Schema.String, namespace: Schema.String, machines: Schema.Array(Schema.String) }));
 const CommitBody = Schema.fromJsonString(Schema.Struct({ service: Schema.String, commit: Schema.String, rule: Schema.String, generation: Schema.Number }));
 
 /** The terms a body shares with every body of its draft, read back from its own bytes. */
@@ -330,6 +330,7 @@ async function deployTermLines(body: string): Promise<string[]> {
   const terms = Schema.decodeUnknownSync(DeployBodyTerms)(body);
   return [
     `  deployment ${shownText(terms.operation)}`,
+    `  namespace ${shownText(terms.namespace)}`,
     `  servers ${terms.machines.map(shownText).join(", ")}`,
     ...(await sharedLines(body)),
   ];

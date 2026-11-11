@@ -107,6 +107,7 @@ describe("approveRedeploy of an image", () => {
     expect(lines[0]).toMatch(/^Approved web: nginx@sha256:0{63}1/);
     expect(lines).toContain('  variables GREETING="a  b", SECRET (sealed)');
     expect(lines).toContain(`  deployment ${body.operation}`);
+    expect(lines).toContain(`  namespace ${NAMESPACE}`);
     expect(lines).toContain(`  servers ${MACHINES.join(", ")}`);
     expect(lines).toContain(`  cluster "${CLUSTER}"`);
     expect(lines).toContain(`  signer browser key ${await keyCode(raw(body.signer.browser))}`);
@@ -227,9 +228,20 @@ describe("approveEnvironmentDeploy", () => {
     expect(await verifies(approved.approval)).toBe(true);
   });
 
+  it("refuses a plan Cloud sends of another Environment than the one pressed, before it asks or signs", async () => {
+    review.mockResolvedValue(true);
+    const store = reads({ plan: vi.fn(async () => plan()) });
+    await expect(approveEnvironmentDeploy(approving(store, placing()), branch, crypto.randomUUID(), parent))
+      .rejects.toThrow("Cloud sent the plan of another environment.");
+    const other = { ...plan(), environment: { ...ENVIRONMENT, id: crypto.randomUUID() } };
+    await expect(approveRedeploy(approving(reads({ plan: vi.fn(async () => other) }), placing()), deployment(), crypto.randomUUID()))
+      .rejects.toThrow("Cloud sent the plan of another environment.");
+    expect(review).not.toHaveBeenCalled();
+  });
+
   it("asks nothing for a plan that builds from source, so the Deploy goes as before and runs under its rule", async () => {
     review.mockResolvedValue(true);
-    const built = plan();
+    const built = { ...plan(), environment: { ...ENVIRONMENT, name: "fix-web" } };
     const [spec] = built.target ?? [];
     if (spec === undefined) return expect.fail("a spec");
     spec.container.image = "ployz-build/web:pending";
@@ -242,14 +254,14 @@ describe("approveEnvironmentDeploy", () => {
 
   it("names the Cluster its Parent runs on for a Branch that runs nowhere yet, and refuses when Cloud can't tell which", async () => {
     review.mockResolvedValue(true);
-    const store = reads({ namespace: vi.fn(async () => "production-ns") });
+    const store = reads({ plan: vi.fn(async () => ({ ...plan(), environment: { ...ENVIRONMENT, name: "fix-web" } })), namespace: vi.fn(async () => "production-ns") });
     const servers = placing(true, { "production-ns": [MACHINES[1] ?? ""] });
     // Two Clusters, so only the Parent's Servers say which one the Branch deploys to.
     const other = { ...servers, machines: [...servers.machines, { id: "3".repeat(32), name: "elsewhere", sealing: { kind: "held", public_key: "b".repeat(43) + "=" }, deviceEnforcement: true, capabilities: CAPABILITIES }] };
     const approved = await approveEnvironmentDeploy(approving(store, other), branch, crypto.randomUUID(), parent) ?? expect.fail("approved");
     expect(store.namespace).toHaveBeenCalledWith(parent);
     expect(JSON.parse(approved.approval.body)).toMatchObject({ cluster: CLUSTER, machines: MACHINES });
-    const nowhere = reads({ namespace: vi.fn(async () => "nowhere") });
+    const nowhere = reads({ plan: store.plan, namespace: vi.fn(async () => "nowhere") });
     await expect(approveEnvironmentDeploy(approving(nowhere, other), branch, crypto.randomUUID(), parent)).rejects.toThrow("Cloud couldn't check the servers.");
   });
 });
