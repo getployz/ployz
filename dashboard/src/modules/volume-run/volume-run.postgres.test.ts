@@ -2030,6 +2030,7 @@ describe("volume runs", () => {
       const output = await execute(release.id, "run-2");
 
       expect(output.result).toMatchObject({ moved: "fsn-2" });
+      expect(verbs).not.toContain("forget@fsn-2");
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
       expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, receipt, want: { kind: "writer", at: G.guid, epoch: 4 } });
       expect(named("fsn-2").copy).toMatchObject({ kind: "root", readonly: false, epoch: 4, newest: G });
@@ -2312,6 +2313,23 @@ describe("volume runs", () => {
         expect(verbs.slice(2)).toEqual(["writer@fsn-1(kept)", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
         expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, receipt, want: { kind: "writer", at: G.guid, epoch: 4 } });
       });
+    });
+
+    it("a user's planned release of a warm approved Move whose source handed off finishes on B in one run", async () => {
+      const G = newSnap("f-1");
+      const receipt = receiptFor(idOf("fsn-2"), G.guid, 4);
+      machines[0] = { name: "fsn-1", pool: true, copy: slotCopy(G), capabilities: HANDOFF_CAPABILITIES, enforces: true, handedOff: { at: G.guid, receipt } };
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2"), capabilities: HANDOFF_CAPABILITIES, enforces: true };
+      const service = asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+      const move = await requested({ kind: "move", args: { to: "fsn-2", approval: APPROVAL, service } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-1', phase = 'warm', epoch = 4 where id = $1", [move.id]);
+
+      const release = await requested({ kind: "release", args: { plan: { sources: [idOf("fsn-1")], forgets: [idOf("fsn-2")] } } });
+      const output = await execute(release.id, "run-2");
+
+      expect(output.result).toMatchObject({ moved: "fsn-2" });
+      expect(verbs).not.toContain("forget@fsn-2");
     });
 
     it("a user's release that takes over a running approved Move carries its approval and spec", async () => {
