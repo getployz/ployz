@@ -6,6 +6,7 @@
 //! Machine RPC is bounded and safe to repeat, so a caller reruns the whole verb after any
 //! failure. The report carries no ciphertext.
 
+use crate::cluster::Call;
 use std::collections::BTreeMap;
 
 use futures_util::future::join_all;
@@ -405,11 +406,14 @@ impl BackfillClient for Client {
     }
 
     async fn generate(&mut self, generator: MachineId) -> Result<SealingPublicKey, RpcError> {
-        self.read::<op::GenerateSealingKey>(
+        self.call::<op::GenerateSealingKey>(
             GenerateSealingKeyRequest {},
-            &MachineTarget::from(&generator),
+            Call::keyed()
+                .to(&MachineTarget::from(&generator))
+                .budget(crate::connect::target_read_timeout()),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map(|held| held.public_key)
     }
 
@@ -419,15 +423,18 @@ impl BackfillClient for Client {
         recipient: MachineId,
         public_key: WireGuardPublicKey,
     ) -> Result<SealedSealingKey, RpcError> {
-        self.read::<op::ShareSealingKey>(
+        self.call::<op::ShareSealingKey>(
             ShareSealingKeyRequest {
                 join_approval: None,
                 machine: recipient,
                 public_key,
             },
-            &MachineTarget::from(&holder),
+            Call::keyed()
+                .to(&MachineTarget::from(&holder))
+                .budget(crate::connect::target_read_timeout()),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map(|shared| shared.sealed)
     }
 
@@ -438,15 +445,18 @@ impl BackfillClient for Client {
         sealed: SealedSealingKey,
         public_key: SealingPublicKey,
     ) -> Result<(), RpcError> {
-        self.read::<op::InstallSealingKey>(
+        self.call::<op::InstallSealingKey>(
             InstallSealingKeyRequest {
                 from,
                 sealed,
                 public_key,
             },
-            &MachineTarget::from(&recipient),
+            Call::keyed()
+                .to(&MachineTarget::from(&recipient))
+                .budget(crate::connect::target_read_timeout()),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map(|_| ())
     }
 }
@@ -455,15 +465,27 @@ async fn observe(mut client: Client, id: MachineId) -> (MachineId, Sight) {
     let target = MachineTarget::from(&id);
     let unknown = |reason: String| (id, Sight::Unknown { reason });
     let description = match client
-        .read::<op::DescribeContract>(DescribeContractRequest {}, &target)
+        .call::<op::DescribeContract>(
+            DescribeContractRequest {},
+            Call::read()
+                .to(&target)
+                .budget(crate::connect::target_read_timeout()),
+        )
         .await
+        .map_err(crate::connect::rpc_error)
     {
         Ok(description) => description,
         Err(error) => return unknown(error.to_string()),
     };
     let details = match client
-        .read::<op::Inspect>(InspectRequest::default(), &target)
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::read()
+                .to(&target)
+                .budget(crate::connect::target_read_timeout()),
+        )
         .await
+        .map_err(crate::connect::rpc_error)
     {
         Ok(details) => details,
         Err(error) => return unknown(error.to_string()),

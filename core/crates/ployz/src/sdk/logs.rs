@@ -1,4 +1,5 @@
 //! On-demand Container log transport for SDK readers.
+use crate::cluster::{Call, Deadline};
 use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LastRun,
@@ -629,28 +630,28 @@ pub(crate) async fn container_env(
 ) -> Option<BTreeMap<String, String>> {
     let target = MachineTarget::from(&machine);
     let inspected = client
-        .invoke::<op::InspectContainer>(
+        .call_shared::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: container,
             },
-            &target,
-            Some(TAIL_READ),
+            Call::once().to(&target).within(Deadline::Target(TAIL_READ)),
         )
-        .await;
+        .await
+        .map_err(crate::connect::rpc_error);
     match inspected {
         Ok(details) => return details.environment,
         Err(error) if error.code == RpcErrorCode::NotFound => {}
         Err(_) => return None,
     }
     client
-        .invoke::<op::RetainedEnv>(
+        .call_shared::<op::RetainedEnv>(
             RetainedEnvRequest {
                 container_id: container,
             },
-            &target,
-            Some(TAIL_READ),
+            Call::once().to(&target).within(Deadline::Target(TAIL_READ)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .ok()
         .and_then(|reply| reply.environment)
 }

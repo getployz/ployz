@@ -11,6 +11,7 @@ mod probe;
 pub(crate) mod unit;
 mod wire;
 
+use crate::cluster::Call;
 use std::{
     fs, io,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -318,7 +319,10 @@ pub(crate) async fn local_machine(timeout: Duration) -> Option<ployz_core::Machi
         .await
         .ok()?;
         client
-            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+            .call::<op::Inspect>(
+                InspectRequest::default(),
+                Call::read().waiting(crate::cluster::Wait::standard()),
+            )
             .await
             .ok()
     };

@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Deadline, Wait};
 use std::{net::IpAddr, sync::Arc};
 
 use clap::ArgMatches;
@@ -100,7 +101,9 @@ pub(in crate::handlers) async fn inspect_token(
     client: &mut Client,
     request: InspectRequest,
 ) -> Result<(MachineDetails, MachineToken), Error> {
-    let mut details = client.call_repeatable::<op::Inspect>(request, None).await?;
+    let mut details = client
+        .call::<op::Inspect>(request, Call::read().waiting(Wait::standard()))
+        .await?;
     let token = details.token.take().ok_or_else(|| {
         Error::coded(
             RpcErrorCode::Unsupported,
@@ -282,7 +285,10 @@ pub(in crate::handlers) async fn check_listed(
     joining: &mut Joining,
 ) -> Result<(), ConnectError> {
     let details = client
-        .read_once::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::once().within(Deadline::SetupRead),
+        )
         .await?;
     joining.seen(&details.phase);
     if details.phase != LocalMachinePhase::Participating {
@@ -365,12 +371,8 @@ async fn enroll_with<T: Rpc<Response = Enrolled>>(
     Error,
 > {
     let enrolled = client
-        .call_repeatable_for::<T>(request, None, None, None, MACHINE_START_WAIT)
-        .await
-        .map_err(|error| match error {
-            crate::setup_retry::Error::Permanent(error) => error,
-            exhausted => ConnectError::Exhausted(Box::new(exhausted)),
-        })?;
+        .call::<T>(request, Call::keyed().waiting(Wait::of(MACHINE_START_WAIT)))
+        .await?;
     match enrolled {
         Enrolled::Enrolled {
             machine,
@@ -388,12 +390,11 @@ pub(in crate::handlers) async fn leave(
     departing: &MachineDetails,
 ) -> Result<(), Error> {
     let left = client
-        .call_repeatable_for::<op::Leave>(LeaveRequest {}, None, None, None, MACHINE_START_WAIT)
-        .await
-        .map_err(|error| match error {
-            crate::setup_retry::Error::Permanent(error) => error,
-            exhausted => ConnectError::Exhausted(Box::new(exhausted)),
-        })?;
+        .call::<op::Leave>(
+            LeaveRequest {},
+            Call::keyed().waiting(Wait::of(MACHINE_START_WAIT)),
+        )
+        .await?;
     match left {
         Left::Left { reset_warning, .. } => {
             if let Some(reason) = reset_warning {

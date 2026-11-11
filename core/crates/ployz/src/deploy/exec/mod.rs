@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Deadline};
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
@@ -281,14 +282,16 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         specs: &[ployz_core::ServiceStorageSpec],
     ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        self.invoke::<op::PrepareVolumes>(
+        self.call_shared::<op::PrepareVolumes>(
             ployz_core::PrepareVolumesRequest {
                 specs: specs.to_vec(),
             },
-            &MachineTarget::from(machine_id),
-            Some(Duration::from_secs(120)),
+            Call::once()
+                .to(&MachineTarget::from(machine_id))
+                .within(Deadline::Target(Duration::from_secs(120))),
         )
         .await
+        .map_err(crate::connect::rpc_error)
     }
 
     async fn service_containers(
@@ -411,14 +414,16 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<RoutesRead, RpcError> {
-        self.invoke::<op::ReadRoutes>(
+        self.call_shared::<op::ReadRoutes>(
             ReadRoutesRequest {
                 service: service.clone(),
             },
-            &MachineTarget::from(machine_id),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(machine_id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
     }
 
     async fn set_ingress_doors(
@@ -452,13 +457,14 @@ impl MachineOperations for Client {
     }
 
     async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
-        self.invoke_entry::<op::ReadRoutes>(
+        self.call_shared::<op::ReadRoutes>(
             ReadRoutesRequest {
                 service: service.clone(),
             },
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once().within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
     }
 
     async fn inspect_container(
@@ -466,26 +472,30 @@ impl MachineOperations for Client {
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerDetails, RpcError> {
-        self.invoke::<op::InspectContainer>(
+        self.call_shared::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: *container_id,
             },
-            &MachineTarget::from(machine_id),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(machine_id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
     }
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
-        self.invoke::<op::RemoveVolume>(
+        self.call_shared::<op::RemoveVolume>(
             RemoveVolumeRequest {
                 name: id.name.clone(),
                 force: false,
             },
-            &MachineTarget::from(&id.machine_id),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&id.machine_id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map(|_| ())
     }
 
@@ -495,15 +505,17 @@ impl MachineOperations for Client {
         container_id: &ContainerId,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerLimitsUpdated, RpcError> {
-        self.invoke::<op::UpdateContainerLimits>(
+        self.call_shared::<op::UpdateContainerLimits>(
             UpdateContainerLimitsRequest {
                 container_id: *container_id,
                 spec: spec.clone(),
             },
-            &MachineTarget::from(machine_id),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(machine_id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
     }
 
     async fn runs_global(
@@ -619,11 +631,13 @@ impl Client {
         }
         Ok(self
             .clone()
-            .try_read::<op::ListContainers>(
+            .call::<op::ListContainers>(
                 ListContainersRequest {
                     environment: EnvironmentValues::Included,
                 },
-                &MachineTarget::from(machine_id),
+                Call::read()
+                    .to(&MachineTarget::from(machine_id))
+                    .budget(crate::connect::target_read_timeout()),
             )
             .await
             .map_err(|error| crate::cluster::answered_by(machine_id, error))?

@@ -531,14 +531,16 @@ async fn redialed_into_a_refusal(bounded: bool) -> Option<MachineId> {
     client.entry = Some(machine_id('a'));
     let refused = if bounded {
         client
-            .try_read::<op::ListMachines>(
+            .call::<op::ListMachines>(
                 ListMachinesRequest {},
-                &MachineTarget::parse("machine-a").unwrap(),
+                Call::read()
+                    .to(&MachineTarget::parse("machine-a").unwrap())
+                    .budget(crate::connect::target_read_timeout()),
             )
             .await
     } else {
         client
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
             .await
     };
     assert!(refused.is_err(), "{refused:?}");
@@ -963,7 +965,7 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
 
     let refused = client
         .clone()
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
         .map(drop);
     assert!(in_another_cluster(&refused), "{refused:?}");
@@ -972,9 +974,11 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
 
     let read = client
         .clone()
-        .try_read::<op::ListMachines>(
+        .call::<op::ListMachines>(
             ListMachinesRequest {},
-            &MachineTarget::parse("machine-a").unwrap(),
+            Call::read()
+                .to(&MachineTarget::parse("machine-a").unwrap())
+                .budget(crate::connect::target_read_timeout()),
         )
         .await
         .map(drop);
@@ -998,13 +1002,12 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
                 .unwrap()
                 .with_machine_id(target),
         ])
-        .invoke_answered::<op::SetDeviceEnforcement>(
+        .call_shared::<op::SetDeviceEnforcement>(
             ployz_core::SetDeviceEnforcementRequest {
                 enforced: false,
                 starting_set: None,
             },
-            &MachineTarget::from(&target),
-            None,
+            Call::once().to(&MachineTarget::from(&target)),
         )
         .await
         .map(drop);
@@ -1060,15 +1063,13 @@ async fn a_call_waiting_to_send_when_another_clone_is_refused_sends_nothing() {
         connect.clone(),
     ));
 
-    let sent = client.call_unretried::<op::ListMachines>(
+    let sent = client.call_shared::<op::ListMachines>(
         ListMachinesRequest {},
-        None,
-        LIVE_MUTATION_REPLY_TIMEOUT,
+        Call::once().within(Deadline::MutationReply(LIVE_MUTATION_REPLY_TIMEOUT)),
     );
-    let unsent = client.call_unretried::<op::Inspect>(
+    let unsent = client.call_shared::<op::Inspect>(
         ployz_core::InspectRequest::default(),
-        None,
-        LIVE_MUTATION_REPLY_TIMEOUT,
+        Call::once().within(Deadline::MutationReply(LIVE_MUTATION_REPLY_TIMEOUT)),
     );
     let unopened = client.runtime_frame();
     tokio::pin!(sent, unsent, unopened);

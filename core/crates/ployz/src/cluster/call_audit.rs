@@ -1,68 +1,35 @@
 //! The replay audit: every place the Client sends an RPC, with how it repeats it.
 //!
-//! `call_audit.tsv` is the oracle. Each row names a call site (file and function), the Op, the
-//! flavor the site used before the Client had one call engine (`was`), how the site paces its
-//! attempts (`pace`), what bounds them (`time`), whether it dials again between attempts
-//! (`redial`) and what may be repeated (`replay`). The scan reads the sources and fails when a
-//! site appears, goes, or changes any column but `replay`; `replay` is chosen by hand, and a
-//! row whose `replay` disagrees with its `pace` fails too.
-//!
-//! Set `PLOYZ_BLESS_CALL_AUDIT=1` to rewrite the fixture after a deliberate change. Rows for
-//! a new site get `?` as their `replay`, which fails until someone chooses.
+//! `call_audit.tsv` is the oracle, recorded from the call sites as they were before the Client
+//! had one call engine. Each row names a call site (file and function), the Op, the flavor the
+//! site used then (`was`), how the site paces its attempts (`pace`), what bounds them (`time`),
+//! whether it dials again between attempts (`redial`) and what may be repeated (`replay`). The
+//! scan reads the sources as they are now, takes the same columns from the call each site
+//! builds, and fails when a site appears, goes, or changes any of them. A site that moved to
+//! another function or file is a change to review: edit its row by hand.
 
-use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 const FIXTURE: &str = "src/cluster/call_audit.tsv";
 const ROOTS: [&str; 4] = ["src", "tests", "../ployz-testkit/tests", "../ployz-sdk/src"];
-const FLAVORS: [&str; 14] = [
-    "call",
-    "call_repeatable",
-    "call_repeatable_for",
-    "read_once",
-    "call_unretried",
-    "read",
-    "try_read",
-    "invoke",
-    "invoke_answered",
-    "invoke_entry",
-    "invoke_raw",
-    "unary",
-    "unary_answered",
-    "repeatable",
+/// The calls that send: the Client's, and the SDK session's two wrappers over `call`.
+const SENDS: [&str; 5] = ["call", "call_shared", "call_raw", "unary", "unary_answered"];
+const SDK_WRAPPERS: [&str; 2] = ["unary", "unary_answered"];
+/// Files that are the engine or its own tests; they are not call sites.
+const ENGINE: [&str; 3] = [
+    "src/cluster/call.rs",
+    "src/cluster/call_audit.rs",
+    "src/cluster/retry.rs",
 ];
-/// The SDK session's own wrappers over `call` and `read`, which its Op methods call.
-const SDK_WRAPPERS: [&str; 3] = ["unary", "unary_answered", "repeatable"];
-/// The flavor definitions delegate to each other; the sites are their callers.
-const DELEGATIONS: [(&str, &str); 6] = [
-    ("src/cluster.rs", "call_repeatable"),
-    ("src/cluster.rs", "read"),
-    ("src/cluster.rs", "invoke"),
-    ("src/sdk.rs", "unary"),
-    ("src/sdk.rs", "unary_answered"),
-    ("src/sdk.rs", "repeatable"),
-];
+/// The SDK session's wrappers pass the caller's call through; the sites are their callers.
+const DELEGATIONS: [(&str, &str); 2] = [("src/sdk.rs", "unary"), ("src/sdk.rs", "unary_answered")];
 
+/// A call site as the scan finds it: what it sends, and the columns the audit compares.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Row {
     site: String,
     op: String,
-    was: String,
-    pace: String,
-    time: String,
-    redial: &'static str,
-}
-
-impl Row {
-    fn key(&self) -> String {
-        format!("{}\t{}\t{}", self.site, self.op, self.was)
-    }
-
-    fn policy(&self) -> String {
-        format!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            self.site, self.op, self.was, self.pace, self.time, self.redial
-        )
-    }
+    policy: String,
 }
 
 /// `text`, which opens with a bracket: the text inside it, and what follows its match.
@@ -154,50 +121,84 @@ fn enclosing(before: &str) -> String {
         .collect()
 }
 
-fn time_of(timeout: Option<&String>) -> String {
-    match timeout.map(String::as_str) {
-        None | Some("None") => "-".to_owned(),
-        Some(other) => match other
-            .strip_prefix("Some(")
-            .and_then(|some| some.strip_suffix(')'))
-        {
-            Some(duration) => format!("target({duration})"),
-            None => format!("target(?{other})"),
-        },
-    }
+/// The text of the arguments of the first `.method(...)` in `chain`.
+fn method<'a>(chain: &'a str, method: &str) -> Option<&'a str> {
+    let (_, after) = chain.split_once(&format!(".{method}"))?;
+    matching(after).map(|(args, _)| args)
 }
 
-fn row(site: &str, flavor: &str, op: &str, args: &[String]) -> Row {
-    let (pace, time, redial) = match flavor {
-        "call" | "unary" | "unary_answered" => ("unary", "-".to_owned(), "redial"),
-        "read" | "try_read" | "repeatable" => {
-            ("unary", "budget(target_read_timeout)".to_owned(), "redial")
-        }
-        "call_repeatable" => ("setup", "wait(WAIT)".to_owned(), "redial"),
-        "call_repeatable_for" => (
-            "setup",
-            format!("wait({})", args.get(4).map_or("?", String::as_str)),
-            "redial",
-        ),
-        "read_once" => ("single", "setup-read(5s)".to_owned(), "-"),
-        "call_unretried" => (
-            "single",
-            format!("reply({})", args.get(2).map_or("?", String::as_str)),
-            "-",
-        ),
-        "invoke" | "invoke_answered" => ("single", time_of(args.get(2)), "-"),
-        "invoke_entry" => ("single", time_of(args.get(1)), "-"),
-        "invoke_raw" => ("single", time_of(args.get(3)), "-"),
-        other => unreachable!("a flavor the audit does not know: {other}"),
-    };
-    Row {
-        site: site.to_owned(),
-        op: op.to_owned(),
-        was: flavor.to_owned(),
-        pace: pace.to_owned(),
-        time,
-        redial,
+/// The one argument of a call, without the comma rustfmt leaves after it.
+fn only(args: &str) -> String {
+    arguments(args).into_iter().next().unwrap_or_default()
+}
+
+/// The `wait` of a `Wait` as the call writes it.
+fn wait_of(wait: &str) -> String {
+    let wait = wait.trim();
+    if wait.contains("Wait::standard(") {
+        return "WAIT".to_owned();
     }
+    if let Some((_, of)) = wait.split_once("Wait::of")
+        && let Some((duration, _)) = matching(of)
+    {
+        return only(duration);
+    }
+    if let Some(fields) = wait
+        .strip_prefix("Wait")
+        .and_then(|rest| rest.trim_start().strip_prefix('{'))
+    {
+        for field in arguments(fields.trim_end().trim_end_matches('}')) {
+            if field == "wait" {
+                return "wait".to_owned();
+            }
+            if let Some(value) = field.strip_prefix("wait:") {
+                return value.trim().to_owned();
+            }
+        }
+    }
+    format!("?{wait}")
+}
+
+/// A deadline as the call writes it, in the audit's words.
+fn deadline_of(deadline: &str) -> String {
+    let deadline = deadline.trim();
+    if deadline == "Deadline::SetupRead" {
+        return "setup-read(5s)".to_owned();
+    }
+    for (name, words) in [("Target", "target"), ("MutationReply", "reply")] {
+        if let Some(duration) = deadline
+            .strip_prefix("Deadline::")
+            .and_then(|rest| rest.strip_prefix(name))
+            .and_then(|rest| matching(rest).map(|(inside, _)| inside))
+        {
+            return format!("{words}({})", only(duration));
+        }
+    }
+    format!("?{deadline}")
+}
+
+/// The pace, time, redial and replay of the call a site builds, in the fixture's columns.
+fn policy_of(chain: &str) -> String {
+    let replay = ["read", "keyed", "once"]
+        .into_iter()
+        .find(|replay| chain.contains(&format!("Call::{replay}()")))
+        .unwrap_or("?");
+    let (pace, time, redial) = if replay == "once" {
+        let time = method(chain, "within").map_or_else(|| "-".to_owned(), deadline_of);
+        ("single", time, "-")
+    } else if let Some(wait) = method(chain, "waiting") {
+        ("setup", format!("wait({})", wait_of(wait)), "redial")
+    } else if let Some(budget) = method(chain, "budget") {
+        let time = if budget.contains("target_read_timeout") {
+            "budget(target_read_timeout)".to_owned()
+        } else {
+            format!("budget({})", only(budget))
+        };
+        ("unary", time, "redial")
+    } else {
+        ("unary", "-".to_owned(), "redial")
+    };
+    format!("{pace}\t{time}\t{redial}\t{replay}")
 }
 
 fn scan_file(name: &str, text: &str, rows: &mut Vec<Row>) {
@@ -214,10 +215,10 @@ fn scan_file(name: &str, text: &str, rows: &mut Vec<Row>) {
             .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .collect();
-        let Some(flavor) = FLAVORS.iter().find(|flavor| **flavor == word) else {
+        let Some(send) = SENDS.iter().find(|send| **send == word) else {
             continue;
         };
-        if SDK_WRAPPERS.contains(flavor) && name != "src/sdk.rs" {
+        if SDK_WRAPPERS.contains(send) && name != "src/sdk.rs" {
             continue;
         }
         let mut rest = rest.get(word.len()..).unwrap_or_default().trim_start();
@@ -226,7 +227,7 @@ fn scan_file(name: &str, text: &str, rows: &mut Vec<Row>) {
         {
             rest = after.trim_start();
             op.trim().to_owned()
-        } else if *flavor == "invoke_raw" {
+        } else if *send == "call_raw" {
             "-".to_owned()
         } else {
             // Without a turbofish it is another type's method, such as the Config Store's.
@@ -239,12 +240,15 @@ fn scan_file(name: &str, text: &str, rows: &mut Vec<Row>) {
         if DELEGATIONS.contains(&(name, function.as_str())) {
             continue;
         }
-        rows.push(row(
-            &format!("{name}::{function}"),
-            flavor,
-            &op,
-            &arguments(args),
-        ));
+        let args = arguments(args);
+        let chain = args
+            .get(if *send == "call_raw" { 2 } else { 1 })
+            .map_or("", String::as_str);
+        rows.push(Row {
+            site: format!("{name}::{function}"),
+            op,
+            policy: policy_of(chain),
+        });
     }
 }
 
@@ -262,7 +266,10 @@ fn walk(base: &Path, dir: &Path, rows: &mut Vec<Row>) {
             && let Ok(text) = fs::read_to_string(&path)
         {
             let name = path.strip_prefix(base).unwrap_or(&path);
-            scan_file(&name.to_string_lossy().replace('\\', "/"), &text, rows);
+            let name = name.to_string_lossy().replace('\\', "/");
+            if !ENGINE.contains(&name.as_str()) {
+                scan_file(&name, &text, rows);
+            }
         }
     }
 }
@@ -273,123 +280,76 @@ fn scan() -> Vec<Row> {
     for root in ROOTS {
         walk(base, &base.join(root), &mut rows);
     }
-    rows.sort_by_key(Row::policy);
     rows
 }
 
-/// A row as the fixture holds it: the policy the scan finds, and the hand-chosen replay.
-#[derive(Debug)]
-struct Recorded {
-    policy: String,
-    pace: String,
-    replay: String,
+/// What each site and Op sends, as the columns the audit compares, in order.
+fn by_site(rows: impl Iterator<Item = (String, String, String)>) -> BTreeMap<String, Vec<String>> {
+    let mut sites: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (site, op, policy) in rows {
+        sites
+            .entry(format!("{site}\t{op}"))
+            .or_default()
+            .push(policy);
+    }
+    for policies in sites.values_mut() {
+        policies.sort();
+    }
+    sites
 }
 
-/// Rows are told apart by their site, Op and flavor, and by order when those repeat.
-fn numbered<'a>(keys: impl Iterator<Item = (String, &'a str)>) -> Vec<(String, &'a str)> {
-    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-    keys.map(|(key, value)| {
-        let count = seen.entry(key.clone()).or_default();
-        let numbered = format!("{key}\t#{count}");
-        *count += 1;
-        (numbered, value)
-    })
-    .collect()
-}
-
-fn recorded() -> BTreeMap<String, Recorded> {
+/// The fixture's rows, each as (site, op, the columns the audit compares).
+fn recorded() -> Vec<(String, String, String)> {
     let text =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE)).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().filter(|line| !line.starts_with('#')).collect();
-    let keys = lines.iter().map(|line| {
-        let key = line.splitn(4, '\t').take(3).collect::<Vec<_>>().join("\t");
-        (key, *line)
-    });
-    numbered(keys)
-        .into_iter()
-        .map(|(key, line)| {
+    text.lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| {
             let columns: Vec<&str> = line.split('\t').collect();
-            let [site, op, was, pace, time, redial, replay] = columns[..] else {
+            let [site, op, _was, pace, time, redial, replay] = columns[..] else {
                 panic!("a call audit row has seven columns: {line}");
             };
             (
-                key,
-                Recorded {
-                    policy: [site, op, was, pace, time, redial].join("\t"),
-                    pace: pace.to_owned(),
-                    replay: replay.to_owned(),
-                },
+                site.to_owned(),
+                op.to_owned(),
+                [pace, time, redial, replay].join("\t"),
             )
         })
         .collect()
 }
 
-fn bless(rows: &[Row]) {
-    let replays: BTreeMap<String, String> = recorded()
-        .into_iter()
-        .map(|(key, recorded)| (key, recorded.replay))
-        .collect();
-    let mut out = String::from(
-        "# site\top\twas\tpace\ttime\tredial\treplay\n\
-         # pace: unary = UNARY_RETRY_DELAYS (500 ms, 1500 ms, 4 s); setup = 5 s attempts, 1 s apart, until `time`; single = one attempt.\n\
-         # replay: read | keyed repeat; once never does.\n",
-    );
-    let policies: Vec<String> = rows.iter().map(Row::policy).collect();
-    let keys = rows
-        .iter()
-        .zip(&policies)
-        .map(|(row, policy)| (row.key(), policy.as_str()));
-    for (key, policy) in numbered(keys) {
-        let replay = replays.get(&key).map_or("?", String::as_str);
-        let _ = writeln!(out, "{policy}\t{replay}");
-    }
-    fs::write(Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE), out)
-        .expect("the call audit fixture is writable");
-}
-
 /// What a `replay` may be for a pace: a single attempt is `once`, a repeating one a `read` or a
 /// `keyed` mutation.
-fn replay_fits(pace: &str, replay: &str) -> bool {
-    match pace {
-        "single" => replay == "once",
-        _ => matches!(replay, "read" | "keyed"),
+fn replay_fits(policy: &str) -> bool {
+    let columns: Vec<&str> = policy.split('\t').collect();
+    match columns[..] {
+        ["single", _, _, replay] => replay == "once",
+        [_, _, _, replay] => matches!(replay, "read" | "keyed"),
+        _ => false,
     }
 }
 
 #[test]
 fn every_call_site_keeps_the_replay_policy_the_audit_records() {
-    let rows = scan();
-    if std::env::var_os("PLOYZ_BLESS_CALL_AUDIT").is_some() {
-        bless(&rows);
-    }
-    let expected = recorded();
-    let policies: Vec<String> = rows.iter().map(Row::policy).collect();
-    let keys = rows
+    let found = by_site(scan().into_iter().map(|row| (row.site, row.op, row.policy)));
+    let expected_rows = recorded();
+    let mut problems: Vec<String> = expected_rows
         .iter()
-        .zip(&policies)
-        .map(|(row, policy)| (row.key(), policy.as_str()));
-    let found: BTreeMap<String, &str> = numbered(keys).into_iter().collect();
-    let mut problems = Vec::new();
-    for (key, policy) in &found {
-        match expected.get(key) {
-            None => problems.push(format!("new site, not in the audit: {policy}")),
-            Some(recorded) if recorded.policy != *policy => problems.push(format!(
-                "changed policy: was `{}`, now `{policy}`",
-                recorded.policy
+        .filter(|(_, _, policy)| !replay_fits(policy))
+        .map(|(site, op, policy)| format!("replay does not fit pace: {site} {op} {policy}"))
+        .collect();
+    let expected = by_site(expected_rows.into_iter());
+    for (site, policies) in &found {
+        match expected.get(site) {
+            None => problems.push(format!("new site, not in the audit: {site} {policies:?}")),
+            Some(recorded) if recorded != policies => problems.push(format!(
+                "changed policy at {site}: was {recorded:?}, now {policies:?}"
             )),
             Some(_) => {}
         }
     }
-    for (key, recorded) in &expected {
-        if !found.contains_key(key) {
-            problems.push(format!("site gone or changed: {}", recorded.policy));
-        }
-        if !replay_fits(&recorded.pace, &recorded.replay) {
-            problems.push(format!(
-                "replay `{}` does not fit pace `{}`: {}",
-                recorded.replay, recorded.pace, recorded.policy
-            ));
-        }
+    for site in expected.keys().filter(|site| !found.contains_key(*site)) {
+        problems.push(format!("site gone or changed: {site}"));
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

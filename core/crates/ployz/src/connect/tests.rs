@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use std::{fs, os::unix::fs::symlink, process::Command as StdCommand, time::Duration};
 
 use super::*;
@@ -1162,12 +1163,12 @@ async fn prepare_volumes_answered_with(answer: Result<RpcError, tonic::Status>) 
     })
     .await;
     let error = client
-        .invoke::<ployz_core::op::PrepareVolumes>(
+        .call_shared::<ployz_core::op::PrepareVolumes>(
             ployz_core::PrepareVolumesRequest { specs: Vec::new() },
-            &MachineTarget::parse("machine-2").unwrap(),
-            None,
+            Call::once().to(&MachineTarget::parse("machine-2").unwrap()),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .unwrap_err();
     server.abort();
     error
