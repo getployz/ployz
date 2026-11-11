@@ -303,9 +303,13 @@ async fn a_build_or_exec_whose_client_is_refused_sends_no_more_input() {
         let target = MachineTarget::from(&machine_id('a'));
         let receiver = tokio_stream::wrappers::ReceiverStream::new(receiver);
         let _frames = if build {
-            client.build_stream(&target, receiver).await
+            client
+                .open_stream::<op::Build>(Some(&target), receiver)
+                .await
         } else {
-            client.exec_stream(&target, receiver).await
+            client
+                .open_stream::<op::Exec>(Some(&target), receiver)
+                .await
         }
         .unwrap();
         input.send(frame(1)).await.unwrap();
@@ -325,8 +329,8 @@ async fn exec_output_whose_client_is_refused_reads_no_more_frames() {
     let (client, _server, _read, output) = refused_on_redial().await;
     let (_input, receiver) = mpsc::channel(4);
     let frames = client
-        .exec_stream(
-            &MachineTarget::from(&machine_id('a')),
+        .open_stream::<op::Exec>(
+            Some(&MachineTarget::from(&machine_id('a'))),
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
         .await

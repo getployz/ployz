@@ -369,7 +369,14 @@ async fn metrics(
                 since_nanos: since.0.saturating_mul(NANOS_PER_SECOND),
                 until_nanos,
             };
-            let history = super::metric_history(&client, subject, range, None).await?;
+            let history = super::metrics::metric_history_among(
+                &client,
+                subject,
+                range,
+                None,
+                Some(&machines),
+            )
+            .await?;
             Ok(summarize(
                 &history,
                 &machines,

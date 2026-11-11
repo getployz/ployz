@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tonic::{Streaming, codec::CompressionEncoding, transport::Channel};
+use tonic::{Streaming, transport::Channel};
 
 use crate::{
     connect::{
@@ -370,6 +370,26 @@ impl Client {
         self.session.confirm_entry().await
     }
 
+    /// Whether the Machine at `target`, the entry when there is none, promises `capability` in
+    /// the contract it describes. A caller words what a Machine that doesn't means to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport or remote error the describe met.
+    pub(crate) async fn supports(
+        &self,
+        target: Option<&MachineTarget>,
+        capability: &str,
+    ) -> Result<bool, ConnectError> {
+        Ok(self
+            .call_shared::<op::DescribeContract>(
+                DescribeContractRequest {},
+                Call::once().toward(target),
+            )
+            .await?
+            .supports(capability))
+    }
+
     /// The id of the Machine this client enters by.
     ///
     /// # Errors
@@ -379,93 +399,45 @@ impl Client {
         self.session.entry_id().await
     }
 
-    pub(crate) async fn build_stream(
+    /// Open the stream `Op` names, on the connection its scope routes to.
+    ///
+    /// A Full RPC with a target dials that target directly, as [`Self::send`] does for a
+    /// unary one; the rest go through the entry with the target named. `input` is the one
+    /// request of a server stream, or the whole feed of a client stream. A client stream
+    /// stops reading its feed once this client ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport error the open met, naming `target` when the Server refused it.
+    pub(crate) async fn open_stream<Op: StreamRpc>(
         &self,
-        target: &MachineTarget,
+        target: Option<&MachineTarget>,
         input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        // Submission is one-shot. A lost response must never replay a Build.
-        Ok(self
-            .session
-            .machine_rpc()
-            .await?
-            .build(target_request(
-                self.session.until_ended(input),
-                Some(target),
-            ))
-            .await
-            .map_err(|status| TransportError::from(status).name_refusal(op::Build::PATH, target))?
-            .into_inner())
-    }
-
-    pub(crate) async fn exec_stream(
-        &self,
-        target: &MachineTarget,
-        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let direct = self
-            .full_client(target)
-            .await
-            .map_err(TransportError::client_ended)?;
-        let mut rpc = direct
+        let direct = if Op::ENTRY_ONLY {
+            None
+        } else {
+            self.direct_client(Op::PATH, target)
+                .await
+                .map_err(TransportError::client_ended)?
+        };
+        let sent_to = if direct.is_some() { None } else { target };
+        let input: std::pin::Pin<Box<dyn tokio_stream::Stream<Item = OpaquePayload> + Send>> =
+            if Op::CLIENT_STREAM {
+                Box::pin(self.session.until_ended(input))
+            } else {
+                Box::pin(input)
+            };
+        let opened = direct
             .as_ref()
             .unwrap_or(self)
             .session
-            .machine_rpc()
-            .await?;
-        Ok(rpc
-            .exec(target_request(
-                self.session.until_ended(input),
-                direct.is_none().then_some(target),
-            ))
-            .await
-            .map_err(|status| TransportError::from(status).name_refusal(op::Exec::PATH, target))?
-            .into_inner())
-    }
-
-    pub(crate) async fn tail_logs_stream(
-        &self,
-        target: &MachineTarget,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.session.machine_rpc().await?;
-        Ok(rpc
-            .tail_logs(target_request(request, Some(target)))
-            .await
-            .map_err(|status| {
-                TransportError::from(status).name_refusal(op::TailLogs::PATH, target)
-            })?
-            .into_inner())
-    }
-
-    pub(crate) async fn log_history_stream(
-        &self,
-        target: &MachineTarget,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.session.machine_rpc().await?;
-        Ok(rpc
-            .log_history(target_request(request, Some(target)))
-            .await
-            .map_err(|status| {
-                TransportError::from(status).name_refusal(op::LogHistory::PATH, target)
-            })?
-            .into_inner())
-    }
-
-    pub(crate) async fn runtime_watch_stream(
-        &self,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self
-            .session
-            .machine_rpc()
-            .await?
-            .accept_compressed(CompressionEncoding::Gzip);
-        Ok(rpc
-            .runtime_watch(tonic::Request::new(request))
-            .await?
-            .into_inner())
+            .open(Op::PATH, Op::GZIP, target_request(input, sent_to))
+            .await;
+        match target {
+            Some(target) => opened.map_err(|error| error.name_refusal(Op::PATH, target)),
+            None => opened,
+        }
     }
 
     /// The Cluster as the first Runtime Watch frame shows it.
@@ -474,7 +446,7 @@ impl Client {
             .encode()
             .map_err(|error| RpcError::from(ConnectError::from(error)))?;
         let mut stream = self
-            .runtime_watch_stream(payload)
+            .open_stream::<op::RuntimeWatch>(None, tokio_stream::once(payload))
             .await
             .map_err(|error| error.to_rpc_error())?;
         let Some(frame) = stream
@@ -490,32 +462,28 @@ impl Client {
             .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
     }
 
-    async fn call_once<T: Rpc>(
+    /// [`Self::send_path`] for an RPC of the catalog.
+    async fn send<T: Rpc>(
         &self,
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        self.send_once(T::PATH, payload, target)
+        self.send_path(T::PATH, payload, target)
             .await?
             .decode::<T>()
             .map_err(ConnectError::Codec)
     }
 
-    /// One unary RPC on `path`, answered by the daemon's own error when it sent one.
-    async fn send_once(
+    /// The one attempt every unary call makes, answered by the daemon's own error when it
+    /// sent one. A Full RPC with a target goes straight to it; the rest enter by this
+    /// client's own channel with the target named.
+    async fn send_path(
         &self,
         path: &'static str,
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<ployz_core::RpcResponse, ConnectError> {
-        let direct = if dials_direct(path) {
-            match target {
-                Some(target) => self.full_client(target).await?,
-                None => None,
-            }
-        } else {
-            None
-        };
+        let direct = self.direct_client(path, target).await?;
         let target = if direct.is_some() { None } else { target };
         direct
             .as_ref()
@@ -523,6 +491,19 @@ impl Client {
             .session
             .unary(path, payload, target)
             .await
+    }
+
+    /// The client that dials `target` itself, when `path` is an RPC only a Full connection
+    /// may send and one is held for it.
+    async fn direct_client(
+        &self,
+        path: &str,
+        target: Option<&MachineTarget>,
+    ) -> Result<Option<Self>, ConnectError> {
+        match target {
+            Some(target) if dials_direct(path) => self.full_client(target).await,
+            _ => Ok(None),
+        }
     }
 
     /// List Docker Volumes on each Machine that invites an RPC.
@@ -614,11 +595,8 @@ impl Client {
         &mut self,
         request: RemoveVolumesRequest,
     ) -> Result<Vec<VolumeRemoval>, RpcError> {
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
-            .await
-            .map_err(RpcError::from)?;
-        Ok(remove_volumes_on(self, &machines.machines, request).await)
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        Ok(remove_volumes_on(self, &machines, request).await)
     }
 
     /// Which Machines hold each of the Docker Volumes `sought`, as the Docker Volume
@@ -633,18 +611,15 @@ impl Client {
         &mut self,
         sought: Vec<DockerVolumeName>,
     ) -> Result<ployz_store::VolumeObservation, RpcError> {
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
-            .await
-            .map_err(RpcError::from)?;
+        let machines = self.machines().await.map_err(RpcError::from)?;
         let inspector = self.clone();
         // Seeking nothing asks only who answers: storage holds nothing sought.
         let storage: &[MachineObservation] = match sought.is_empty() {
             true => &[],
-            false => &machines.machines,
+            false => &machines,
         };
         let (listed, inspected) = tokio::join!(
-            self.list_volumes(&machines.machines),
+            self.list_volumes(&machines),
             inspector.inspect_storage(storage)
         );
         let mut unanswered: BTreeSet<MachineId> = listed
@@ -698,12 +673,9 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_running(&mut self) -> Result<ployz_store::RunningObservation, RpcError> {
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
-            .await
-            .map_err(RpcError::from)?;
+        let machines = self.machines().await.map_err(RpcError::from)?;
         let live = self
-            .live_services_from(&machines.machines, EnvironmentValues::Redacted)
+            .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
             .map_err(RpcError::from)?;
         let services: BTreeSet<_> = live
@@ -724,7 +696,6 @@ impl Client {
         // packets to it are dropped (#3490). A failed dial sends only small packets, so
         // a Server the entry couldn't reach is left out, as the router leaves it.
         let dropped = machines
-            .machines
             .iter()
             .filter(|machine| {
                 machine
@@ -753,11 +724,8 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_copies(&mut self) -> Result<crate::sdk::CopyObservation, RpcError> {
-        let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
-            .await
-            .map_err(RpcError::from)?;
-        let inspected = self.inspect_storage(&machines.machines).await;
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let inspected = self.inspect_storage(&machines).await;
         let unanswered: BTreeSet<MachineId> = inspected
             .failures
             .iter()
@@ -835,11 +803,11 @@ impl Client {
             return Ok(Departed::AlreadyForgotten.into());
         };
         let selected = observation.machine.id;
-        let current = self
-            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
-            .await
-            .map_err(RpcError::from)?
-            .machine_id;
+        // The entry confirmed on this channel is the one a describe would name now.
+        let current = match self.entry_machine() {
+            Some(entry) => entry,
+            None => self.entry_id().await.map_err(RpcError::from)?,
+        };
         if selected == current && machines.len() > 1 {
             return Err(RpcError::invalid_argument(
                 "the current entry Machine cannot be removed while another Machine is visible",
@@ -1251,7 +1219,7 @@ impl Client {
         .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         apply_timeout(
             timeout,
-            self.call_once::<op::EnsureContainer>(payload, Some(&target)),
+            self.send::<op::EnsureContainer>(payload, Some(&target)),
         )
         .await
         .map_err(|error| answered_by(machine_id, error))
@@ -1817,6 +1785,45 @@ pub(crate) async fn evict_machine(
         .require(confirm_data_loss)
         .map_err(UnconfirmedDataLoss::into_rpc_error)?;
     depart(client, selected, current).await
+}
+
+/// A streaming RPC of the catalog, as [`Client::open_stream`] opens it.
+pub(crate) trait StreamRpc {
+    const PATH: &'static str;
+    /// Whether the caller feeds many requests, not one.
+    const CLIENT_STREAM: bool;
+    /// Whether the stream is submitted through the entry even where a Full connection to
+    /// its target is held: a Build's submission is one-shot.
+    const ENTRY_ONLY: bool = false;
+    /// Whether the frames come gzip-compressed.
+    const GZIP: bool = false;
+}
+
+impl StreamRpc for op::Build {
+    const PATH: &'static str = op::Build::PATH;
+    const CLIENT_STREAM: bool = true;
+    const ENTRY_ONLY: bool = true;
+}
+
+impl StreamRpc for op::Exec {
+    const PATH: &'static str = op::Exec::PATH;
+    const CLIENT_STREAM: bool = true;
+}
+
+impl StreamRpc for op::TailLogs {
+    const PATH: &'static str = op::TailLogs::PATH;
+    const CLIENT_STREAM: bool = false;
+}
+
+impl StreamRpc for op::LogHistory {
+    const PATH: &'static str = op::LogHistory::PATH;
+    const CLIENT_STREAM: bool = false;
+}
+
+impl StreamRpc for op::RuntimeWatch {
+    const PATH: &'static str = op::RuntimeWatch::PATH;
+    const CLIENT_STREAM: bool = false;
+    const GZIP: bool = true;
 }
 
 /// Whether a call on `path` to a named target goes to that target itself when a Full

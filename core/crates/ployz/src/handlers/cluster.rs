@@ -1,8 +1,8 @@
 use crate::cluster::Call;
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    ClusterName, ClusterNamed, DescribeContractRequest, READ_CLUSTER_NAME_CAPABILITY,
-    ReadClusterNameRequest, RpcErrorCode, SET_CLUSTER_NAME_CAPABILITY, SetClusterNameRequest, op,
+    ClusterName, ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, ReadClusterNameRequest, RpcErrorCode,
+    SET_CLUSTER_NAME_CAPABILITY, SetClusterNameRequest, op,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -145,11 +145,11 @@ async fn read(client: &Client) -> Result<ClusterNamed, Error> {
 }
 
 async fn require(client: &Client, capability: &str) -> Result<(), Error> {
-    let contract = client
-        .call_shared::<op::DescribeContract>(DescribeContractRequest {}, Call::once())
+    if client
+        .supports(None, capability)
         .await
-        .map_err(crate::connect::rpc_error)?;
-    if contract.supports(capability) {
+        .map_err(crate::connect::rpc_error)?
+    {
         return Ok(());
     }
     Err(Error::detailed(

@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use futures_util::future::join_all;
 use ployz_core::{
-    ListMachinesRequest, MachineFailure, MachineId, MachineSuccess, MachineTarget,
-    QualifiedService, RpcError,
+    MachineFailure, MachineId, MachineObservation, MachineSuccess, MachineTarget, QualifiedService,
+    RpcError,
     metrics::{
         MetricHistoryReply, MetricHistoryRequest, MetricPoints, MetricRange, MetricScope,
         ServicePoint,
@@ -96,6 +96,21 @@ pub async fn metric_history(
     range: MetricRange,
     step_nanos: Option<i64>,
 ) -> Result<MetricHistory, RpcError> {
+    metric_history_among(client, subject, range, step_nanos, None).await
+}
+
+/// [`metric_history`] over Machines the caller has already listed, so one answer lists the
+/// Cluster once. With `listed` None, a Service's history lists them itself.
+///
+/// # Errors
+/// Returns invalid input or a failure to list Machines.
+pub(super) async fn metric_history_among(
+    client: &Client,
+    subject: MetricSubject,
+    range: MetricRange,
+    step_nanos: Option<i64>,
+    listed: Option<&[MachineObservation]>,
+) -> Result<MetricHistory, RpcError> {
     let (scope, machine) = match subject {
         MetricSubject::Machine { machine_id } => (MetricScope::Machine, Some(machine_id)),
         MetricSubject::Service { service } => (MetricScope::Service { service }, None),
@@ -108,7 +123,10 @@ pub async fn metric_history(
     request.validate().map_err(RpcError::invalid_argument)?;
     let machines = match machine {
         Some(machine_id) => Asked::one(machine_id),
-        None => Asked::cluster(client).await?,
+        None => match listed {
+            Some(listed) => Asked::among(listed),
+            None => Asked::among(&client.clone().machines().await.map_err(RpcError::from)?),
+        },
     };
     let answers = join_all(machines.reachable.into_iter().map(|machine_id| {
         let mut client = client.clone();
@@ -151,17 +169,12 @@ impl Asked {
         }
     }
 
-    async fn cluster(client: &Client) -> Result<Self, RpcError> {
-        let listed = client
-            .clone()
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
-            .await
-            .map_err(RpcError::from)?;
+    fn among(listed: &[MachineObservation]) -> Self {
         let mut asked = Self {
             reachable: Vec::new(),
             unreachable: Vec::new(),
         };
-        for machine in listed.machines {
+        for machine in listed {
             if machine.invites_rpc() {
                 asked.reachable.push(machine.machine.id);
             } else {
@@ -171,7 +184,7 @@ impl Asked {
                 });
             }
         }
-        Ok(asked)
+        asked
     }
 }
 

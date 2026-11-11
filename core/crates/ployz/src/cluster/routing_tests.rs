@@ -291,7 +291,7 @@ async fn a_client_with_no_full_connection_sends_every_route_through_the_entry() 
 }
 
 #[tokio::test]
-async fn a_raw_call_goes_through_the_entry_even_on_a_full_route() {
+async fn a_raw_call_routes_by_scope_as_a_unary_one_does() {
     let (pinned, _) = pinned(true).await;
     let _ = pinned.dials();
     let request = op::Leave::into_request(LeaveRequest {});
@@ -301,9 +301,8 @@ async fn a_raw_call_goes_through_the_entry_even_on_a_full_route() {
         .await;
     assert_eq!(
         pinned.seen(),
-        [at('a', "leave", Some(&target('b').to_string()))]
+        [at('b', "describe_contract", None), at('b', "leave", None)]
     );
-    assert!(pinned.dials().is_empty());
 }
 
 fn no_input() -> impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static {
@@ -322,7 +321,10 @@ async fn a_stream_opens_where_its_route_goes() {
     let _ = pinned.dials();
 
     // Exec is a Full route: dialed itself, with no target header, as a unary Full call is.
-    client.exec_stream(&target('b'), no_input()).await.unwrap();
+    client
+        .open_stream::<op::Exec>(Some(&target('b')), no_input())
+        .await
+        .unwrap();
     assert_eq!(
         pinned.seen(),
         [at('b', "describe_contract", None), at('b', "stream", None)]
@@ -331,7 +333,10 @@ async fn a_stream_opens_where_its_route_goes() {
 
     // To the entry itself, or a Machine no Full connection names, it goes through the entry.
     for id in ['a', 'c'] {
-        client.exec_stream(&target(id), no_input()).await.unwrap();
+        client
+            .open_stream::<op::Exec>(Some(&target(id)), no_input())
+            .await
+            .unwrap();
         assert_eq!(
             pinned.seen(),
             [at('a', "stream", named(id).as_deref())],
@@ -341,16 +346,19 @@ async fn a_stream_opens_where_its_route_goes() {
 
     // A Build is submitted through the entry, naming its target, whatever Full connections
     // are held.
-    client.build_stream(&target('b'), no_input()).await.unwrap();
+    client
+        .open_stream::<op::Build>(Some(&target('b')), no_input())
+        .await
+        .unwrap();
     assert_eq!(pinned.seen(), [at('a', "stream", named('b').as_deref())]);
 
     // Logs go through the entry, naming their target.
     client
-        .tail_logs_stream(&target('b'), nothing())
+        .open_stream::<op::TailLogs>(Some(&target('b')), tokio_stream::once(nothing()))
         .await
         .unwrap();
     client
-        .log_history_stream(&target('b'), nothing())
+        .open_stream::<op::LogHistory>(Some(&target('b')), tokio_stream::once(nothing()))
         .await
         .unwrap();
     assert_eq!(
@@ -362,7 +370,10 @@ async fn a_stream_opens_where_its_route_goes() {
     );
 
     // A Runtime Watch is the entry's own, with no target.
-    client.runtime_watch_stream(nothing()).await.unwrap();
+    client
+        .open_stream::<op::RuntimeWatch>(None, tokio_stream::once(nothing()))
+        .await
+        .unwrap();
     assert_eq!(pinned.seen(), [at('a', "stream", None)]);
     assert!(pinned.dials().is_empty());
 }
@@ -372,7 +383,7 @@ async fn an_exec_with_no_full_connection_goes_through_the_entry_naming_its_targe
     let (pinned, _) = pinned(false).await;
     pinned
         .client
-        .exec_stream(&target('b'), no_input())
+        .open_stream::<op::Exec>(Some(&target('b')), no_input())
         .await
         .unwrap();
     assert_eq!(
@@ -417,31 +428,35 @@ fn the_routes_a_call_dials_itself_are_the_ones_pinned_here() {
     assert_eq!(ployz_core::rpc_catalog!(direct_routes), DIRECT);
 }
 
-/// Calls the three pinned reads make with no deadline today, on a daemon that never answers.
+/// Every read of the Machine list gives up on its own, on a daemon that never answers.
 #[tokio::test(start_paused = true)]
-async fn only_the_machine_list_read_has_a_deadline_where_several_sites_list_machines() {
+async fn every_site_that_lists_machines_gives_up_after_the_machine_list_deadline() {
     let (mut client, server) = crate::connect::test_support::rpc_client(|_| async {
         std::future::pending::<Result<Response<OpaquePayload>, Status>>().await
     })
     .await;
     let waited = Duration::from_secs(600);
-    assert!(
-        tokio::time::timeout(waited, client.observe_running())
+    let timed_out = |error: &dyn std::fmt::Debug| {
+        let error = format!("{error:?}");
+        assert!(error.contains("target Machine RPC timed out"), "{error}");
+    };
+    timed_out(
+        &tokio::time::timeout(waited, client.observe_running())
             .await
-            .is_err(),
-        "observe_running lists with no deadline"
+            .expect("observe_running gives up on its own")
+            .unwrap_err(),
     );
-    assert!(
-        tokio::time::timeout(waited, client.observe_copies())
+    timed_out(
+        &tokio::time::timeout(waited, client.observe_copies())
             .await
-            .is_err(),
-        "observe_copies lists with no deadline"
+            .expect("observe_copies gives up on its own")
+            .unwrap_err(),
     );
-    let capped = tokio::time::timeout(waited, client.machines()).await;
-    let error = capped.expect("machines() gives up on its own").unwrap_err();
-    assert!(
-        format!("{error:?}").contains("target Machine RPC timed out"),
-        "{error:?}"
+    timed_out(
+        &tokio::time::timeout(waited, client.machines())
+            .await
+            .expect("machines() gives up on its own")
+            .unwrap_err(),
     );
     server.abort();
 }

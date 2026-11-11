@@ -10,10 +10,15 @@
 use std::sync::{Arc, PoisonError, RwLock};
 
 use ployz_core::{
-    DescribeContractRequest, MachineId, MachineRpcClient, MachineTarget, OpaquePayload,
+    DescribeContractRequest, MachineId, MachineTarget, OpaquePayload,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Rpc, RpcResponse, RpcResponseBody, op,
 };
-use tonic::{codec::ProstCodec, codegen::http::uri::PathAndQuery, transport::Channel};
+use tonic::{
+    Streaming,
+    codec::{CompressionEncoding, ProstCodec},
+    codegen::http::uri::PathAndQuery,
+    transport::Channel,
+};
 
 use super::status_error;
 use crate::{
@@ -166,9 +171,16 @@ impl Session {
             .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
     }
 
-    /// [`Self::grpc`] for streams, with the status [`crate::connect::rpc_error`] gives the
-    /// refusal. The channel stays ready, so the stream opens with no wait after the check.
-    pub(super) async fn machine_rpc(&self) -> Result<MachineRpcClient<Channel>, TransportError> {
+    /// Open the stream on `path` over this Session's own channel, with the status
+    /// [`crate::connect::rpc_error`] gives a refusal. The channel stays ready, so the stream
+    /// opens with no wait after the check. `request` is one message for a server stream or
+    /// the whole feed of a client stream; both go out as the same gRPC call.
+    pub(super) async fn open(
+        &self,
+        path: &'static str,
+        gzip: bool,
+        request: tonic::Request<impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static>,
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let channel = self.ready_channel().await.map_err(|error| {
             if let ConnectError::Dial(error) = error {
                 // Worded as the generated client words a channel that isn't ready.
@@ -179,8 +191,22 @@ impl Session {
                 TransportError::client_ended(error)
             }
         })?;
-        Ok(MachineRpcClient::new(channel)
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
+        let mut grpc = tonic::client::Grpc::new(channel)
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
+        if gzip {
+            grpc = grpc.accept_compressed(CompressionEncoding::Gzip);
+        }
+        grpc.ready()
+            .await
+            .map_err(|error| tonic::Status::unknown(format!("Service was not ready: {error}")))?;
+        Ok(grpc
+            .streaming(
+                request,
+                PathAndQuery::from_static(path),
+                ProstCodec::<OpaquePayload, OpaquePayload>::default(),
+            )
+            .await?
+            .into_inner())
     }
 
     /// `input` until the client ends, so a stream it opened takes no more input after that.

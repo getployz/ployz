@@ -4,8 +4,7 @@ pub mod local;
 use crate::cluster::{Call, Deadline};
 use crate::connect::{Client, ConnectError};
 use ployz_core::{
-    EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, RegisterRequest, Registered,
-    RpcError, op,
+    EnrollmentAssignment, EnrollmentSnapshot, RegisterRequest, Registered, RpcError, op,
 };
 
 /// Observe the Entry Machine's enrollment facts before taking an operator lock.
@@ -14,7 +13,7 @@ use ployz_core::{
 /// Returns transport errors or missing enrollment facts.
 pub async fn observe_enrollment(entry: &mut Client) -> Result<EnrollmentSnapshot, RpcError> {
     entry
-        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
+        .machine_list()
         .await?
         .enrollment
         .ok_or_else(|| RpcError::unavailable("Entry Machine returned no enrollment snapshot"))
