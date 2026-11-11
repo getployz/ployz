@@ -1,0 +1,27 @@
+Lane 4: the Ployz check on Ployz-test/lab-preview#9, Cloud in minter mode (no App key in its env), 2026-11-11T00:26:57Z
+
+$ ployz deployment ls --project lab --env pr-9
+DEPLOYMENT	STATUS	SAVED REVISION
+#5	applied	3
+#4	applied	2
+#3	applied	2
+#2	applied	1
+#1	superseded	1
+
+The check on the PR's head 9f168215c9b911c6ba8f02b4bef6491c21811cf8, as GitHub lists it:
+  id 130228315729, Ployz · ready to merge, completed success, app ployz-lab, external_id 1452922192:9
+  No config changes
+  details https://wright-satisfaction-programme-leo.trycloudflare.com/cloud/ada/lab/pr-9?panel=on-merge
+
+One check run, posted and then updated in place after each preview deploy. Its text stays "No config changes": merging #9 lands nothing (ployz env on-merge).
+
+The minter's audit of every /v1/check (Cloud holds no token that can write a check):
+{"time":"2026-11-11T00:21:13.316Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":4675}
+{"time":"2026-11-11T00:21:33.292Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":3163}
+{"time":"2026-11-11T00:22:30.762Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":3936}
+{"time":"2026-11-11T00:23:27.881Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":4049}
+{"time":"2026-11-11T00:23:47.251Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":4007}
+{"time":"2026-11-11T00:24:42.432Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":2957}
+{"time":"2026-11-11T00:24:57.444Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":3833}
+{"time":"2026-11-11T00:25:32.075Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":3090}
+{"time":"2026-11-11T00:26:06.128Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"9f168215c9b911c6ba8f02b4bef6491c21811cf8","duration_ms":3710}

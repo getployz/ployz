@@ -7,6 +7,7 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { closeDoorsRun, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { AppConfig } from "#/server/config.server";
@@ -64,15 +65,17 @@ vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 const unused = {
   config: asTestDouble<AppConfig["Service"]>()({}),
   github: asTestDouble<GithubApi["Service"]>()({}),
+  authority: asTestDouble<GithubAuthority["Service"]>()({}),
 };
 
-const run = <A, E>(effect: Effect.Effect<A, E, Database | OrganizationRuntime | CloudStore | InngestClient | AppConfig | GithubApi | SecretEncryption>) =>
+const run = <A, E>(effect: Effect.Effect<A, E, Database | OrganizationRuntime | CloudStore | InngestClient | AppConfig | GithubApi | GithubAuthority | SecretEncryption>) =>
   harness.runEffect(effect.pipe(
     Effect.provideService(OrganizationRuntime, runtime),
     Effect.provideService(CloudStore, store),
     Effect.provideService(InngestClient, inngest),
     Effect.provideService(AppConfig, unused.config),
     Effect.provideService(GithubApi, unused.github),
+    Effect.provideService(GithubAuthority, unused.authority),
   ));
 
 const setup = (state: "set_up" | "active" | "left" | "setting_up") => harness.pool.query(
