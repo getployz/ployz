@@ -1,6 +1,6 @@
 ---
 name: verify-removal-marks
-description: Model-check the Config Store's removal mark lifecycle (remove, sweep, cancel, pull-request close, the removal Deployment ending) on Postgres and SQLite with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz-store/src/removal/ (due.rs sweep, settle, finish, close; mark.rs live, of, save, finish; mod.rs cancel_removal, stop, on_servers, purge), the row locks in scope.rs, the Deployment record path in deployment/lifecycle.rs, the transaction isolation in storage/pg.rs or storage/sqlite.rs, or Cloud's sweep triggers in dashboard/src/modules/config-store/.
+description: Model-check the Config Store's removal mark lifecycle (remove, sweep, cancel, pull-request close, the removal Deployment ending) on Postgres and SQLite with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz-store/src/removal/ (due.rs sweep, settle, finish, close; mark.rs live, of, save, finish; mod.rs cancel_removal, stop), the row locks and purge in scope.rs, on_servers and ran in deployment/history.rs, the Deployment record path in deployment/lifecycle.rs, the transaction isolation in storage/pg.rs or storage/sqlite.rs, or Cloud's sweep triggers in dashboard/src/modules/config-store/.
 ---
 
 # Verify removal marks
