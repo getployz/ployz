@@ -528,7 +528,7 @@ async fn redialed_into_a_refusal(bounded: bool) -> Option<MachineId> {
             }
         })
         .await;
-    client.entry = Some(machine_id('a'));
+    client.session.entry = Some(machine_id('a'));
     let refused = if bounded {
         client
             .call::<op::ListMachines>(
@@ -564,10 +564,14 @@ async fn a_redial_whose_entry_fails_its_check_leaves_every_clone_on_the_old_chan
         Err(tonic::Status::unavailable("not ready"))
     })
     .await;
-    client.connector = crate::connect::test_support::connector(other.channel());
+    client
+        .session
+        .use_connector(crate::connect::test_support::connector(
+            other.session.channel(),
+        ));
     let clone = client.clone();
 
-    assert!(client.redial_shared().await.is_err());
+    assert!(client.session.redial_shared().await.is_err());
 
     let answer = clone.entry_id().await.unwrap_err();
     assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
@@ -591,13 +595,17 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
         Ok(tonic::Response::new(described.encode().unwrap()))
     })
     .await;
-    client.entry = Some(machine_id('a'));
-    client.confirmed = Some(machine_id('a'));
-    client.connector = crate::connect::test_support::connector(other.channel());
+    client.session.entry = Some(machine_id('a'));
+    client.session.confirmed = Some(machine_id('a'));
+    client
+        .session
+        .use_connector(crate::connect::test_support::connector(
+            other.session.channel(),
+        ));
 
     // A client whose last redial failed has forgotten its entry, and still refuses.
     let mut forgot = client.clone();
-    forgot.entry = None;
+    forgot.session.entry = None;
     for redialing in [client.clone(), forgot] {
         let refused = redialing.redial_shared().await;
         assert!(
@@ -621,18 +629,22 @@ async fn a_shared_redial_whose_daemon_will_not_say_which_machine_it_is_keeps_the
         Ok(tonic::Response::new(refused.encode().unwrap()))
     })
     .await;
-    client.entry = Some(machine_id('a'));
-    client.confirmed = Some(machine_id('a'));
-    client.connector = crate::connect::test_support::connector(other.channel());
+    client.session.entry = Some(machine_id('a'));
+    client.session.confirmed = Some(machine_id('a'));
+    client
+        .session
+        .use_connector(crate::connect::test_support::connector(
+            other.session.channel(),
+        ));
 
-    let refused = client.redial_shared().await;
+    let refused = client.session.redial_shared().await;
     assert!(
         matches!(refused, Err(ConnectError::Remote(_))),
         "{refused:?}"
     );
 
     // A retry's redial forgets its entry before it dials, and still refuses.
-    let refused = client.clone().redial().await;
+    let refused = client.clone().session.redial().await;
     assert!(
         matches!(refused, Err(ConnectError::Remote(_))),
         "{refused:?}"
@@ -660,17 +672,21 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
         Ok(tonic::Response::new(described.encode().unwrap()))
     })
     .await;
-    client.entry = Some(machine_id('a'));
-    client.confirmed = Some(machine_id('a'));
-    client.connector = crate::connect::test_support::connector(other.channel());
+    client.session.entry = Some(machine_id('a'));
+    client.session.confirmed = Some(machine_id('a'));
+    client
+        .session
+        .use_connector(crate::connect::test_support::connector(
+            other.session.channel(),
+        ));
 
     // As a Server reset under `server add` does, the endpoint now answers as another
     // Machine; the retry follows it. A clone whose last redial failed has forgotten
     // its entry, and still moves only itself.
     let mut forgot = client.clone();
-    forgot.entry = None;
+    forgot.session.entry = None;
     for mut retrying in [client.clone(), forgot] {
-        retrying.redial().await.unwrap();
+        retrying.session.redial().await.unwrap();
         assert_eq!(retrying.entry_machine(), Some(machine_id('b')));
         assert_eq!(retrying.entry_id().await.unwrap(), machine_id('b'));
     }
@@ -828,7 +844,7 @@ impl Connector for Resealing {
             },
         )
         .await;
-        Ok(daemon.channel())
+        Ok(daemon.session.channel())
     }
 
     async fn dial_proxy(
@@ -863,9 +879,9 @@ fn expecting(byte: u8, allow_unverified: bool) -> Option<crate::connect::Cluster
 /// Redial `client` as a call does, or as a Deploy does when `shared`.
 async fn redialed(client: &Client, shared: bool) -> Result<(), ConnectError> {
     if shared {
-        client.redial_shared().await
+        client.session.redial_shared().await
     } else {
-        client.clone().redial().await
+        client.clone().session.redial().await
     }
 }
 
@@ -901,8 +917,8 @@ async fn a_redial_whose_entry_still_holds_the_expected_key_keeps_it() {
         let connector = Resealing::new(vec![held(7), sealing, sealing]);
         let mut client = connector.open(expecting(7, false)).await;
 
-        client.redial().await.unwrap();
-        client.redial_shared().await.unwrap();
+        client.session.redial().await.unwrap();
+        client.session.redial_shared().await.unwrap();
         assert_eq!(client.entry_machine(), Some(machine_id('a')));
         assert_eq!(connector.calls(), ["DescribeContract"; 3]);
     }
@@ -940,8 +956,8 @@ async fn a_redial_whose_confirmation_tells_no_key_checks_only_the_machine() {
         let connector = Resealing::new(vec![held(7), sealing, sealing]);
         let mut client = connector.open(expecting(7, false)).await;
 
-        client.redial().await.unwrap();
-        client.redial_shared().await.unwrap();
+        client.session.redial().await.unwrap();
+        client.session.redial_shared().await.unwrap();
         assert_eq!(client.entry_machine(), Some(machine_id('a')));
         // Nothing beyond the confirmation is asked on a redial.
         assert_eq!(connector.calls(), ["DescribeContract"; 3]);
@@ -953,8 +969,8 @@ async fn a_redial_of_a_client_expecting_no_cluster_checks_none() {
     let connector = Resealing::new(vec![held(7), held(9), held(9)]);
     let mut client = connector.open(None).await;
 
-    client.redial().await.unwrap();
-    client.redial_shared().await.unwrap();
+    client.session.redial().await.unwrap();
+    client.session.redial_shared().await.unwrap();
     assert_eq!(client.entry_machine(), Some(machine_id('a')));
 }
 
@@ -1058,10 +1074,12 @@ async fn a_call_waiting_to_send_when_another_clone_is_refused_sends_nothing() {
     let connector = Resealing::new(vec![held(7), held(9)]);
     let client = connector.open(expecting(7, false)).await;
     let connect = Arc::new(tokio::sync::Notify::new());
-    client.share(crate::connect::test_support::waiting_channel(
-        connector.unary(held(7), None),
-        connect.clone(),
-    ));
+    client
+        .session
+        .share(crate::connect::test_support::waiting_channel(
+            connector.unary(held(7), None),
+            connect.clone(),
+        ));
 
     let sent = client.call_shared::<op::ListMachines>(
         ListMachinesRequest {},
@@ -1078,7 +1096,7 @@ async fn a_call_waiting_to_send_when_another_clone_is_refused_sends_nothing() {
     assert!(waits(unsent.as_mut()).await);
     assert!(waits(unopened.as_mut()).await);
 
-    let refused = client.clone().redial().await;
+    let refused = client.clone().session.redial().await;
     assert!(in_another_cluster(&refused), "{refused:?}");
     connect.notify_one();
 
@@ -1204,7 +1222,7 @@ async fn a_deploys_redial_tells_a_refusal_from_a_failed_dial() {
 
     let connector = Resealing::new(vec![held(7)]);
     let mut client = connector.open(expecting(7, false)).await;
-    client.connector = Arc::new(Unreachable);
+    client.session.use_connector(Arc::new(Unreachable));
     let failed = MachineOperations::redial(&client).await;
     assert!(
         matches!(failed, Some(Err(RedialFailure::Failed))),
@@ -1226,7 +1244,7 @@ async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
             Err(tonic::Status::unavailable("restarting"))
         })
         .await;
-    client.entry = Some(machine_id('a'));
+    client.session.entry = Some(machine_id('a'));
 
     let error = client.held_copies(&machine('b')).await.unwrap_err();
 
@@ -1291,7 +1309,7 @@ async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_th
             }
         })
         .await;
-    client.entry = Some(machine_id('a'));
+    client.session.entry = Some(machine_id('a'));
 
     let held = client.held_copies(&machine('b')).await;
 

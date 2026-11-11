@@ -356,7 +356,7 @@ impl Client {
     ) -> Result<ployz_core::RpcResponse, ConnectError> {
         let payload = request.encode().map_err(ConnectError::Codec)?;
         let send = async {
-            let mut grpc = self.grpc().await?;
+            let mut grpc = self.session.grpc().await?;
             Ok(grpc
                 .unary(
                     target_request(payload, once.target),
@@ -435,9 +435,9 @@ impl Client {
     ) -> Result<RpcResponse, ConnectError> {
         if redial {
             match limit {
-                Limit::Unbounded => self.redial().await?,
+                Limit::Unbounded => self.session.redial().await?,
                 Limit::Until(deadline, _) => {
-                    match tokio::time::timeout_at(deadline, self.redial()).await {
+                    match tokio::time::timeout_at(deadline, self.session.redial()).await {
                         Ok(confirmed) => confirmed?,
                         Err(_) => {
                             return Err(tonic::Status::deadline_exceeded(

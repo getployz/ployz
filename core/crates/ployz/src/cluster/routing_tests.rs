@@ -97,7 +97,7 @@ async fn daemon(id: char, log: &Log) -> Channel {
         },
     )
     .await;
-    client.channel()
+    client.session.channel()
 }
 
 /// Dials the daemon whose Machine the connection names, and counts each dial.

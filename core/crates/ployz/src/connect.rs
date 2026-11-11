@@ -1018,7 +1018,7 @@ async fn connect_selected(
                 Some((index, connection, outcome)) = dialing.next() => {
                     let error = match outcome {
                         Ok(mut client) => {
-                            if let Some(ExpectedCluster { check, .. }) = client.cluster.as_deref_mut() {
+                            if let Some(check) = client.cluster_check_mut() {
                                 check.foreign = failures
                                     .values()
                                     .filter_map(|(_, error)| {
@@ -1108,10 +1108,10 @@ pub(crate) async fn connect_one(
     let sealing = confirmed.map_err(|error| naming_local_refusal(connection, error))?;
     if let Some(expect) = expect {
         let check = client.check_cluster(expect, sealing).await?;
-        client.cluster = Some(Box::new(ExpectedCluster {
+        client.expect_cluster(ExpectedCluster {
             expect: *expect,
             check,
-        }));
+        });
     }
     Ok(client)
 }

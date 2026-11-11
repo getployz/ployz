@@ -277,13 +277,13 @@ async fn refused_on_redial() -> (
         },
     )
     .await;
-    client.cluster = Some(Box::new(crate::connect::ExpectedCluster {
+    client.expect_cluster(crate::connect::ExpectedCluster {
         expect: crate::connect::ClusterExpectation {
             sealing_public_key: ployz_core::SealingPublicKey::from_bytes([7; 32]),
             allow_unverified: false,
         },
         check: crate::connect::ClusterCheck::default(),
-    }));
+    });
     (client, server, read, output)
 }
 
