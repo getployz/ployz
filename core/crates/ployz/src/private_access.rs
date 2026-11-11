@@ -78,12 +78,13 @@ pub(crate) fn access_machines(observed: &[MachineObservation]) -> Vec<AccessMach
 /// The sealed auth key the newest observed router carries, so a joiner runs the same
 /// router as the rest.
 pub(crate) fn cluster_sealed_key(services: &[ServiceObservation]) -> Option<Ciphertext> {
-    services
-        .iter()
-        .filter(|service| service.identity == QualifiedService::system_tailscale())
-        .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation()))
-        .max_by_key(|copy| (copy.created_at_unix_nanos, copy.container_id))
-        .and_then(|router| private_access_sealed_key(&router.resolved_spec.container.labels))
+    ployz_core::newest(
+        services
+            .iter()
+            .filter(|service| service.identity == QualifiedService::system_tailscale())
+            .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation())),
+    )
+    .and_then(|router| private_access_sealed_key(&router.resolved_spec.container.labels))
 }
 
 /// The Machines whose router runs now.

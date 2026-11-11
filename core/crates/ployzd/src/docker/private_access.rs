@@ -197,7 +197,7 @@ impl ContainerRuntime {
                 routers.push(observation);
             }
         }
-        routers.sort_by_key(|router| (router.created_at_unix_nanos, router.container_id));
+        routers.sort_by_key(ContainerObservation::recency_key);
         Ok(routers)
     }
 

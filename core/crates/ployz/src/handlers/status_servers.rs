@@ -794,13 +794,7 @@ fn shortfall<'service>(
         .collect();
     let mode = candidates
         .iter()
-        .max_by_key(|copy| {
-            (
-                *copy.rotation() == CopyRotation::In,
-                copy.created_at_unix_nanos,
-                copy.container_id,
-            )
-        })?
+        .max_by_key(|copy| (*copy.rotation() == CopyRotation::In, copy.recency_key()))?
         .resolved_spec
         .mode
         .clone();

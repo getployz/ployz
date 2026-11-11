@@ -429,6 +429,48 @@ async fn a_pending_copy_older_than_an_in_gen_is_not_the_source() {
     );
 }
 
+// Catches the newest-copy tie-break drifting: of two copies created in the same
+// nanosecond, the larger Container ID says whether the Service is a Global.
+#[test]
+fn a_creation_tie_goes_to_the_larger_container_id_when_naming_a_global() {
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let global = |hex| {
+        global_service(
+            identity.clone(),
+            'a',
+            Placement::default(),
+            running_on(&founder, hex),
+        )
+        .containers
+        .remove(0)
+        .into_observation()
+    };
+    let replicated = |hex| {
+        let mut copy = global(hex);
+        copy.try_update(|parts| {
+            parts.resolved_spec.mode = ServiceMode::Replicated {
+                replicas: std::num::NonZeroU32::MIN,
+            };
+        })
+        .unwrap();
+        copy
+    };
+
+    for (smaller, larger, named) in [
+        (global('a'), replicated('b'), 0),
+        (replicated('a'), global('b'), 1),
+    ] {
+        for copies in [
+            [smaller.clone(), larger.clone()],
+            [larger.clone(), smaller.clone()],
+        ] {
+            let services = ployz_core::derive_services(copies);
+            assert_eq!(sources(&services, false).len(), named);
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_copy_keeps_its_sources_label_and_gen() {
     let joiner = machine('1', "joiner");

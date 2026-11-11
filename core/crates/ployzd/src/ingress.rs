@@ -155,8 +155,10 @@ impl PublicationTrace {
                     .and_modify(|count| *count = count.saturating_add(1))
                     .or_insert(NonZeroUsize::MIN);
             }
-            if (naming_rank(container), creation_key(container))
-                > (naming_rank(newest), creation_key(newest))
+            if (
+                naming_rank(container),
+                container.as_observation().recency_key(),
+            ) > (naming_rank(newest), newest.as_observation().recency_key())
             {
                 *newest = container;
             }
@@ -407,24 +409,15 @@ impl SiteBuilder {
     }
 }
 
-fn container_order<'container>(
+fn container_order(
     local_machine: &MachineId,
-    container: &'container ServiceContainer,
-) -> (bool, QualifiedService, i64, &'container str) {
+    container: &ServiceContainer,
+) -> (bool, QualifiedService, (i64, ContainerId)) {
     let observation = container.as_observation();
     (
         observation.machine_id != *local_machine,
         observation.identity(),
-        observation.created_at_unix_nanos,
-        observation.container_id.as_str(),
-    )
-}
-
-fn creation_key(container: &ServiceContainer) -> (i64, &str) {
-    let observation = container.as_observation();
-    (
-        observation.created_at_unix_nanos,
-        observation.container_id.as_str(),
+        observation.recency_key(),
     )
 }
 
@@ -470,7 +463,7 @@ fn local_ingress<'container>(
             let observation = container.as_observation();
             observation.machine_id == machine.id && is_system_ingress(observation)
         })
-        .max_by(|left, right| creation_key(left).cmp(&creation_key(right)))
+        .max_by_key(|container| container.as_observation().recency_key())
 }
 
 /// What one pass applies: the projection, and the newest local ingress container.
