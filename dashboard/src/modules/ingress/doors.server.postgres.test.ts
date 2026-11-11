@@ -257,6 +257,36 @@ it("stops before the source moves on a name under the zone that no Deployment ac
   expect(await attempts()).toMatchObject([{ state: "failed", stage: "moving", failure: gap }]);
 });
 
+it("stops before any Door opens when a generated name would spell a custom domain under the zone, and says so in the review", async () => {
+  await setup("set_up");
+  await hosted();
+  session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("wk.acme.ployz.test"), serving("wk.example.com")] }));
+  storeViews = owning([{ kind: "generated", hostname: "wk.acme.ployz.test" }, { kind: "custom", hostname: "wk.example.com" }]);
+  const gap = "wk.example.com would be the generated domain of shop-prod/shop, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.";
+  expect(await run(reviewSwitch(ORG, "tunnel"))).toEqual({
+    moves: [{ from: "wk.acme.ployz.test", to: "wk.example.com" }], kept: ["wk.example.com"], zone: "example.com", hostedName: "acme.ployz.test", gap,
+  });
+  const request = await asked("tunnel");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([]);
+  expect(await stateNow()).toBe("set_up");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: gap }]);
+});
+
+it("opens no Door when a switch to public ports would spell a generated name like a custom domain, so the tunnel is never left beside open ports", async () => {
+  await setup("active");
+  await hosted();
+  session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("wk.example.com"), serving("wk.acme.ployz.test")] }));
+  storeViews = owning([{ kind: "generated", hostname: "wk.example.com" }, { kind: "custom", hostname: "wk.acme.ployz.test" }]);
+  const gap = "wk.acme.ployz.test would be the generated domain of shop-prod/shop, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.";
+  expect((await run(reviewSwitch(ORG, "public"))).gap).toBe(gap);
+  const request = await asked("public");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([]);
+  expect(await stateNow()).toBe("active");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: gap }]);
+});
+
 it("moves nothing when a Server doesn't take both doors, and says so", async () => {
   await setup("set_up");
   session = answering(() => ["public"]);

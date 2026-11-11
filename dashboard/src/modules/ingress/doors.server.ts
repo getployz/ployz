@@ -23,6 +23,8 @@ import {
   type KnownRoutes,
   type LatestDoorsChange,
   type MovedHostname,
+  collidingMoves,
+  collisionGap,
   keptHostnames,
   movedHostnames,
   observationGap,
@@ -178,21 +180,27 @@ const switchSeen = Effect.fn("IngressDoors.seen")(function* (organizationId: str
   const hosted = (yield* loadClusterDomain(organizationId))?.name ?? null;
   const seen = yield* observeClusterIngress(organizationId);
   const sources = sourcesOf(setup, hosted, to);
-  if (seen === null || sources === null) return { setup, hosted, seen, moving: [], kept: [], unknown: [] };
+  if (seen === null || sources === null) return { setup, hosted, seen, moving: [], kept: [], unknown: [], colliding: [] };
   const known = yield* knownRoutes(organizationId);
+  const moving = movedHostnames(seen.hostnames, sources.from, sources.to, known);
   return {
     setup,
     hosted,
     seen,
-    moving: movedHostnames(seen.hostnames, sources.from, sources.to, known),
+    moving,
     kept: keptHostnames(seen.hostnames, known),
     unknown: unknownHostnames(seen.hostnames, sources.from, known),
+    colliding: collidingMoves(moving, known),
   };
 });
 
 /** Why a switch can't trust what it saw: a Server that didn't answer, or a published name no Deployment accounts for. */
-const switchGap = ({ seen, unknown }: { readonly seen: ClusterIngressObservation | null; readonly unknown: readonly PublishedHostname[] }) =>
+const unreadGap = ({ seen, unknown }: { readonly seen: ClusterIngressObservation | null; readonly unknown: readonly PublishedHostname[] }) =>
   observationGap(seen) ?? unknownGap(unknown);
+
+/** Why a switch can't go on: what it can't trust, or a move onto a hostname a custom domain holds. */
+const switchGap = (looked: Parameters<typeof unreadGap>[0] & { readonly colliding: readonly MovedHostname[] }) =>
+  unreadGap(looked) ?? collisionGap(looked.colliding);
 
 /**
  * What switching the Cluster to `to` asks a human: every generated hostname moves between the Hosted domain and the
@@ -315,13 +323,22 @@ const deploymentEnd = (organizationId: string, id: string) =>
   );
 
 /**
+ * A move onto a hostname a custom domain holds, as the Servers and the Store show it before any Door opens. The switch
+ * ends there: it would flip the source and be refused on its route IDs at the redeploy. Looked for before the Doors
+ * open, not after, since a refusal with both open and the source unmoved can't be walked back from public ports.
+ */
+const blockedNow = Effect.fn("IngressDoors.blocked")(function* (organizationId: string, want: DoorsWant) {
+  return collisionGap((yield* switchSeen(organizationId, want)).colliding);
+});
+
+/**
  * The generated names a switch to `want` moves, read while both Doors are open, or why Cloud can't tell: a Server
  * that didn't answer may publish a name the switch would otherwise leave behind, and a name no Deployment accounts for
  * may be either kind, so the switch stops before its source moves.
  */
 const movingNow = Effect.fn("IngressDoors.moving")(function* (organizationId: string, want: DoorsWant) {
   const looked = yield* switchSeen(organizationId, want);
-  const gap = switchGap(looked);
+  const gap = unreadGap(looked);
   return gap === null ? { moves: looked.moving } : { failure: gap };
 });
 
@@ -367,6 +384,7 @@ const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSes
     at: (stage) => drizzle.update(ingressDoorsAttempt).set({ stage }).where(owned).pipe(Effect.asVoid),
     flip: () => drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: new Date() })
       .where(eq(organizationCloudflareIngress.organizationId, request.organizationId)).pipe(Effect.asVoid),
+    blocked: () => blockedNow(request.organizationId, want),
     moving: () => movingNow(request.organizationId, want),
     redeploy: (moves) => redeployMoving(request.organizationId, moves),
   }, founding.kind === "closed");
