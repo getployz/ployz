@@ -178,6 +178,30 @@ fn free_port() -> u16 {
     }
 }
 
+/// The ports the kernel hands to `bind(0)`, outbound connections and the UDP sockets of tests in
+/// other processes.
+fn ephemeral_ports() -> std::ops::RangeInclusive<u16> {
+    let range = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|text| {
+            let mut ends = text.split_whitespace().map(str::parse::<u16>);
+            Some(ends.next()?.ok()?..=ends.next()?.ok()?)
+        });
+    range.unwrap_or(32_768..=u16::MAX)
+}
+
+#[test]
+fn a_free_port_is_one_no_other_process_is_handed() {
+    let ephemeral = ephemeral_ports();
+    for _ in 0..200 {
+        let port = free_port();
+        assert!(
+            !ephemeral.contains(&port),
+            "{port} is in the kernel's ephemeral range {ephemeral:?}, so a test in another process can be handed it"
+        );
+    }
+}
+
 fn handout(handout: &str, window_ms: u64, listen: &[Port], send: &[u16]) -> Handout {
     if window_ms <= 2_000 && LEAD.get().is_none() {
         LEAD.set(Some(Duration::from_millis(window_ms * 3 / 10)));
