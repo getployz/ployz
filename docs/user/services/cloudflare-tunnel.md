@@ -62,6 +62,11 @@ again. The same goes for an address under the domain the switch leaves that no d
 put there, since Ployz can't tell whether it moves. The review names it. Deploy that
 environment again, or remove the address, then switch again.
 
+The switch also stops, before it moves anything, when a generated address would land on a
+custom domain you already use, such as the generated `wk` becoming `wk.example.com` while a
+service holds `wk.example.com` as its own domain. The review names the address. Remove the
+generated domain or the custom domain, deploy, then switch again.
+
 Custom domains stay as they are. Add each to your tunnel's DNS in Cloudflare, as the CLI steps
 below show.
 

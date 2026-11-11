@@ -122,6 +122,23 @@ export function movedHostnames(published: readonly PublishedHostname[], from: st
     .sort((a, b) => a.from.localeCompare(b.from));
 }
 
+/**
+ * The moves whose new hostname a custom domain already holds, in any Namespace. The Store judged the two apart under
+ * the Cluster Domain it knew, and the switch changes that domain, so both would spell one hostname and the redeploy
+ * would be refused on its route IDs.
+ */
+export function collidingMoves(moving: readonly MovedHostname[], known: KnownRoutes) {
+  const custom = new Set([...known].filter(([, kind]) => kind === "custom").map(([key]) => key.slice(key.lastIndexOf("/") + 1)));
+  return moving.filter(({ to }) => custom.has(to));
+}
+
+/** Why a switch stops on the first of `colliding`: its new hostname is also a custom domain. */
+export function collisionGap(colliding: readonly MovedHostname[]) {
+  const [first] = colliding;
+  if (first === undefined) return null;
+  return `${first.to} would be the generated domain of ${first.namespace}/${first.service}, and a custom domain already holds it. Remove the generated domain or the custom domain, then switch again.`;
+}
+
 /** The hostnames published one label under `from` that no Deployment the Store knows of put there. */
 export const unknownHostnames = (published: readonly PublishedHostname[], from: string, known: KnownRoutes) =>
   published.filter(({ hostname, namespace }) => labelUnder(hostname, from) !== null && !known.has(routeKey(namespace, hostname)));

@@ -23,6 +23,8 @@ import {
   type KnownRoutes,
   type LatestDoorsChange,
   type MovedHostname,
+  collidingMoves,
+  collisionGap,
   keptHostnames,
   movedHostnames,
   observationGap,
@@ -178,21 +180,31 @@ const switchSeen = Effect.fn("IngressDoors.seen")(function* (organizationId: str
   const hosted = (yield* loadClusterDomain(organizationId))?.name ?? null;
   const seen = yield* observeClusterIngress(organizationId);
   const sources = sourcesOf(setup, hosted, to);
-  if (seen === null || sources === null) return { setup, hosted, seen, moving: [], kept: [], unknown: [] };
+  if (seen === null || sources === null) return { setup, hosted, seen, moving: [], kept: [], unknown: [], colliding: [] };
   const known = yield* knownRoutes(organizationId);
+  const moving = movedHostnames(seen.hostnames, sources.from, sources.to, known);
   return {
     setup,
     hosted,
     seen,
-    moving: movedHostnames(seen.hostnames, sources.from, sources.to, known),
+    moving,
     kept: keptHostnames(seen.hostnames, known),
     unknown: unknownHostnames(seen.hostnames, sources.from, known),
+    colliding: collidingMoves(moving, known),
   };
 });
 
-/** Why a switch can't trust what it saw: a Server that didn't answer, or a published name no Deployment accounts for. */
-const switchGap = ({ seen, unknown }: { readonly seen: ClusterIngressObservation | null; readonly unknown: readonly PublishedHostname[] }) =>
-  observationGap(seen) ?? unknownGap(unknown);
+/**
+ * Why a switch can't go on: a Server that didn't answer, a published name no Deployment accounts for, or a move onto a
+ * hostname a custom domain holds.
+ */
+const switchGap = (
+  { seen, unknown, colliding }: {
+    readonly seen: ClusterIngressObservation | null;
+    readonly unknown: readonly PublishedHostname[];
+    readonly colliding: readonly MovedHostname[];
+  },
+) => observationGap(seen) ?? unknownGap(unknown) ?? collisionGap(colliding);
 
 /**
  * What switching the Cluster to `to` asks a human: every generated hostname moves between the Hosted domain and the
