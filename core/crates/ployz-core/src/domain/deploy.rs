@@ -64,6 +64,75 @@ pub struct PlanOptions {
     pub ended_runs: BTreeSet<crate::DeploymentLogId>,
 }
 
+impl PlanOptions {
+    /// Who runs this Deploy, which the planner reads instead of the loose runner fields.
+    /// A Deploy is a runner's exactly when it blocks unmountable Services, the one flag
+    /// a runner always sets; `operator` and `ended_runs` mean nothing without it.
+    #[must_use]
+    pub fn mode(&self) -> PlanMode<'_> {
+        if self.block_unmountable {
+            PlanMode::Runner {
+                operator: self.operator,
+                ended_runs: &self.ended_runs,
+            }
+        } else {
+            PlanMode::Interactive
+        }
+    }
+
+    /// These options as a runner plans them: driven as `operator`, recording each
+    /// Service's outcome, with `ended_runs` as the runs that can no longer change the
+    /// Namespace. The one place a runner sets what `mode` reads.
+    #[must_use]
+    pub fn as_runner(
+        self,
+        operator: Operator,
+        ended_runs: BTreeSet<crate::DeploymentLogId>,
+    ) -> Self {
+        Self {
+            operator,
+            block_unmountable: true,
+            ended_runs,
+            ..self
+        }
+    }
+}
+
+/// How the planner treats a Deploy, read from `PlanOptions::mode`. Never serialized: the
+/// wire keeps `PlanOptions`' own fields.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlanMode<'a> {
+    /// A command a person runs and sees refused whole: a Volume nothing can mount fails
+    /// the Deploy, and no run's leftovers are removed.
+    Interactive,
+    /// A runner that records each Service's outcome.
+    Runner {
+        /// Who drives the Deploy, which a refusal's way back depends on.
+        operator: Operator,
+        /// The runs that can no longer change the Namespace.
+        ended_runs: &'a BTreeSet<crate::DeploymentLogId>,
+    },
+}
+
+impl PlanMode<'_> {
+    /// Whether a Service mounting a Volume nothing can mount is blocked and reported
+    /// while the rest of the Deploy goes ahead, instead of refusing the whole Deploy.
+    #[must_use]
+    pub const fn blocks_unmountable(&self) -> bool {
+        matches!(self, Self::Runner { .. })
+    }
+
+    /// Who drives the Deploy. An interactive Deploy is Ployz Cloud's, as an Intent that
+    /// doesn't say.
+    #[must_use]
+    pub const fn operator(&self) -> Operator {
+        match self {
+            Self::Interactive => Operator::Cloud,
+            Self::Runner { operator, .. } => *operator,
+        }
+    }
+}
+
 /// How far a full reconciliation removes what its target lacks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -1520,6 +1589,56 @@ mod tests {
         assert_eq!(
             written.get("block_unmountable"),
             Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn a_runner_is_the_options_it_sets_and_serializes_the_same_fields() {
+        let ended = BTreeSet::from([crate::DeploymentLogId::parse("run-1").unwrap()]);
+        let interactive = PlanOptions::default();
+        assert_eq!(interactive.mode(), PlanMode::Interactive);
+        assert!(!interactive.mode().blocks_unmountable());
+        assert_eq!(interactive.mode().operator(), Operator::Cloud);
+
+        let runner = interactive.clone().as_runner(Operator::Cli, ended.clone());
+        assert_eq!(
+            runner.mode(),
+            PlanMode::Runner {
+                operator: Operator::Cli,
+                ended_runs: &ended,
+            }
+        );
+        assert!(runner.mode().blocks_unmountable());
+        assert_eq!(runner.mode().operator(), Operator::Cli);
+        assert_eq!(
+            serde_json::to_value(&runner).unwrap(),
+            serde_json::json!({
+                "force_recreate": false,
+                "skip_health_monitor": false,
+                "placement_seed": 0,
+                "selected": [],
+                "operator": "cli",
+                "block_unmountable": true,
+            }),
+            "ended_runs is never serialized"
+        );
+    }
+
+    #[test]
+    fn a_runner_keeps_the_options_the_store_lowered() {
+        let lowered = PlanOptions {
+            force_recreate: true,
+            placement_seed: 7,
+            prune: PruneScope::Removals,
+            ..PlanOptions::default()
+        };
+        let runner = lowered.clone().as_runner(Operator::Cloud, BTreeSet::new());
+        assert_eq!(
+            runner,
+            PlanOptions {
+                block_unmountable: true,
+                ..lowered
+            }
         );
     }
 
