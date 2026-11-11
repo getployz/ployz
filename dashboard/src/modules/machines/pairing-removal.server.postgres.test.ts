@@ -161,6 +161,23 @@ describe("protected pairing removal", () => {
     } finally { await runtime.dispose(); }
   });
 
+  it.each([
+    { was: "set_up", tunnelId: "t1", after: "left" },
+    { was: "active", tunnelId: "t1", after: "left" },
+    { was: "left", tunnelId: "t1", after: "left" },
+    { was: "setting_up", tunnelId: null, after: null },
+  ])("ends the Cloudflare setup a $was row holds when the Cluster is removed, so the next one starts clean", async ({ was, tunnelId, after }) => {
+    await harness.pool.query(`insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state)
+      values ($1,'example.com',$2,'ployz-removal',$3)`, [organizationId, tunnelId, was]);
+    const fake = fixture();
+    const runtime = fake.makeRuntime();
+    try {
+      expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
+      const rows = (await harness.pool.query("select state from organization_cloudflare_ingress where organization_id=$1", [organizationId])).rows;
+      expect(rows).toEqual(after === null ? [] : [{ state: after }]);
+    } finally { await runtime.dispose(); }
+  });
+
   it("asks a new pairing's entries for its own Sealing Key, never an earlier pairing's", async () => {
     const fake = fixture();
     const runtime = fake.makeRuntime();
