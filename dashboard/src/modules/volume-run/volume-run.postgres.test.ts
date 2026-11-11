@@ -5197,6 +5197,17 @@ describe("volume runs", () => {
         expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, want: { kind: "writer", at: cut.guid, epoch: 1, start: { kind: "kept" } } });
       });
 
+      it("keeps following A once it resumed, when the fence runs again", async () => {
+        await committed(false);
+        const [placed] = await place();
+        expect(await fence(placed)).toEqual({ on: "fsn-1" });
+        verbs = [];
+
+        expect(await fence(placed)).toEqual({ on: "fsn-1" });
+
+        expect(verbs).toEqual([]);
+      });
+
       it("starts B on the receipt A answers with when A handed off", async () => {
         const { cut, receipt, service } = await committed(true);
         const [placed] = await place();

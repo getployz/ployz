@@ -340,17 +340,21 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
 /**
  * An approved commitment with no receipt does not say its source handed the Volume off, so a source that signs
  * handoffs decides first, as a release asks it: it resumes at the lane's epoch and the Deploy runs there, or it
- * answers with the receipt B starts on. Null when the commitment carries no approval or its source signs no handoffs.
+ * answers with the receipt B starts on. A source that already resumed, on this Deploy's earlier fence or a release's,
+ * is followed as it is. Null when the commitment carries no approval or its source signs no handoffs.
  */
 const askSource = Effect.fn("VolumeRun.askSource")(function* (lane: FollowLane, others: readonly AnsweredMember[]) {
   const { run } = lane;
   const approved = carriedApproval(run);
+  const asks = (member: AnsweredMember) => member.handoff === true && member.enforces === true;
+  const resumed = others.find((member) => member.view.copy?.kind === "root" && !member.view.copy.readonly);
+  if (approved !== undefined && resumed !== undefined && asks(resumed)) return { kind: "resumed", on: resumed.machine.name } as const;
   const slots = others.filter((member) => member.view.copy?.kind === "slot");
   if (approved === undefined || slots.length === 0 || lane.epoch === null) return null;
   const kept = yield* keptOn(run.organizationId, run.dockerVolume, slots.map((member) => member.machine));
   const source = kept === null ? undefined : slots.find((member) => member.machine.id === kept.machine.id);
   const copy = source?.view.copy;
-  if (kept === null || source === undefined || source.handoff !== true || source.enforces !== true || copy?.kind !== "slot" || copy.newest === null) return null;
+  if (kept === null || source === undefined || !asks(source) || copy?.kind !== "slot" || copy.newest === null) return null;
   const start = { kind: "kept", container_id: kept.containerId } as const;
   const asked = yield* askCopy(run, source.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch: lane.epoch, start }, approved.approval);
   if (asked.ok) return { kind: "resumed", on: source.machine.name } as const;
