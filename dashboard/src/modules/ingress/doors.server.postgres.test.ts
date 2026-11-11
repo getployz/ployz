@@ -56,7 +56,9 @@ type StoreRows =
 /** The Store as a switch reads it: no Environment owns a Namespace unless a test says so, and a switch never writes to it. */
 const noOwners = ({ query }: { query: string }): StoreRows => query === "namespaces" ? { namespaces: [] } : { projects: [] };
 let storeViews = noOwners;
-const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async (_organizationId: string, query: { query: string }) => storeViews(query) })) };
+/** Held by a test that pauses a switch inside a Store read. */
+let storeRead: () => Promise<void> = () => Promise.resolve();
+const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async (_organizationId: string, query: { query: string }) => { await storeRead(); return storeViews(query); } })) };
 
 const inngest = new Inngest({ id: "doors-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -103,6 +105,7 @@ beforeEach(async () => {
   sets.length = 0;
   session = answering();
   storeViews = noOwners;
+  storeRead = () => Promise.resolve();
   await harness.pool.query(`
     truncate table operation_outbox, "user", organization cascade;
     insert into organization (id, name, slug) values ('${ORG}', 'Acme', 'acme');
@@ -363,18 +366,16 @@ it.each(["public", "tunnel"] as const)("never lets a %s switch still running at 
   await setup(to === "public" ? "active" : "set_up");
   await hosted();
   const request = await asked(to);
-  const oldSession = session;
   let release!: () => void;
   let entered!: () => void;
   const reading = new Promise<void>((resolve) => { entered = resolve; });
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  storeViews = ((query) => { entered(); return gate.then(() => noOwners(query)); }) as typeof noOwners;
+  storeRead = () => { entered(); return gate; };
   const old = run(executeDoorsOnce(request, RUN));
   await reading;
   await harness.runEffect(harness.database.transaction(endClusterIngress(ORG)));
   expect(await attempts()).toMatchObject([{ state: "failed", failure: "The Cluster was removed." }]);
-  if (oldSession.status === "connected") oldSession.connected.setIngressDoors = () => Effect.fail(new Error("the old session is closed"));
-  await setup("set_up");
+    await setup("set_up");
   release();
   expect(await old).toMatchObject({ state: "failed" });
   expect(await stateNow()).toBe("set_up");

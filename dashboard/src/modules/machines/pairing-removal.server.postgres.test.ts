@@ -167,8 +167,9 @@ describe("protected pairing removal", () => {
     { was: "left", tunnelId: "t1" },
     { was: "setting_up", tunnelId: null },
   ])("drops the Cloudflare setup a $was row holds, and fails an open switch, when the Cluster is removed", async ({ was, tunnelId }) => {
-    await harness.pool.query(`insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state)
-      values ($1,'example.com',$2,'ployz-removal',$3)`, [organizationId, tunnelId, was]);
+    // A reservation is dropped here once its setup is long dead; one still working is kept, as the next test shows.
+    await harness.pool.query(`insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state, updated_at)
+      values ($1,'example.com',$2,'ployz-removal',$3, now() - interval '11 minutes')`, [organizationId, tunnelId, was]);
     await harness.pool.query("insert into ingress_doors_attempt (id, organization_id, want, state) values (gen_random_uuid(), $1, 'tunnel', 'pending')", [organizationId]);
     const fake = fixture();
     const runtime = fake.makeRuntime();
@@ -176,6 +177,17 @@ describe("protected pairing removal", () => {
       expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
       expect((await harness.pool.query("select 1 from organization_cloudflare_ingress where organization_id=$1", [organizationId])).rows).toEqual([]);
       expect((await harness.pool.query("select state, failure from ingress_doors_attempt")).rows).toEqual([{ state: "failed", failure: "The Cluster was removed." }]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("keeps a reservation whose setup is still working, marked, for that setup to drop once its cleanup ends", async () => {
+    await harness.pool.query(`insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state)
+      values ($1,'example.com',null,'ployz-removal','setting_up')`, [organizationId]);
+    const fake = fixture();
+    const runtime = fake.makeRuntime();
+    try {
+      expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
+      expect((await harness.pool.query("select state, cluster_removed_at is not null as removed from organization_cloudflare_ingress")).rows).toEqual([{ state: "setting_up", removed: true }]);
     } finally { await runtime.dispose(); }
   });
 
