@@ -46,8 +46,11 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
   version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS,
-  /** Asks the passkey for each staged Volume workflow on a Server that enforces; false when the person cancels one. */
-  approvePlacements: () => Promise<boolean> = () => Promise.resolve(true)) {
+  /**
+   * Reads each staged Volume workflow on a Server that enforces, then answers with its prompts, which ask the passkey for
+   * each; false when the person cancels one.
+   */
+  preparePlacements: () => Promise<() => Promise<boolean>> = () => Promise.resolve(() => Promise.resolve(true))) {
   const writer = useStoreWriter(organizationSlug);
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
@@ -84,6 +87,9 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     // Each press is judged once: a later one with no pointer or key before it (assistive tech) starts from here.
     gesture.current = { mark: writeMark(queryClient), saving: false };
     if (saving || reviewMoving(queryClient, organizationSlug, environment, mark)) return { status: "staging" };
+    // The Volume workflows' reads go while the Deploy asks for its own approval; their prompts wait for it.
+    const placements = action === "deploy" ? preparePlacements() : null;
+    placements?.catch(() => undefined);
     let scope;
     try {
       scope = action === "deploy" ? await approval.scope() : undefined;
@@ -92,9 +98,9 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
       return { status: "failed" };
     }
     if (scope === null) return { status: "failed" };
-    if (action === "deploy") {
+    if (placements !== null) {
       try {
-        if (!(await approvePlacements())) return { status: "failed" };
+        if (!(await (await placements)())) return { status: "failed" };
       } catch (error) {
         toast.error(toErrorMessage(error, "Couldn't approve the volume changes"));
         return { status: "failed" };

@@ -80,10 +80,12 @@ export type StagedPlacements = {
   /** Discards every staged row after `discardStore`, which takes the Store's half, including each staged restore's Volume. */
   readonly discardAll: (discardStore: () => Promise<ConfigWritten | undefined>) => void;
   /**
-   * Asks the person's passkey once for each Volume workflow the next Deploy runs on a Server that enforces device approval,
-   * and keeps the answers on the staged rows. False when they cancel one; throws `VolumeNotApproved` or a refusal.
+   * Reads what each Volume workflow the next Deploy runs on a Server that enforces device approval names, then answers
+   * with the prompts: they ask the person's passkey once for each workflow and keep the answers on the staged rows,
+   * false when they cancel one. Both throw `VolumeNotApproved` or a refusal. The reads need no prompt, so a Deploy starts
+   * them while it asks for its own approval.
    */
-  readonly approve: () => Promise<boolean>;
+  readonly prepare: () => Promise<() => Promise<boolean>>;
 };
 
 /**
@@ -125,25 +127,26 @@ export function useStagedPlacements(
         organizationSlug, volumeId, environment, staged: undoPlacement(entry.volume, entry.members, entry.row, change), mirrors: [...mirrors],
       } })]);
     },
-    approve: async () => {
-      const kept: (PlacementApproval & { readonly volumeId: string })[] = [];
-      for (const { volume, row, members: shown, changes } of staged) {
-        // A Volume no Server enforces on asks nothing, so it reads nothing more. A Server that started enforcing since
-        // refuses its run, and says to deploy again. A restore into a new Volume runs on its source's Servers.
-        const enforcing = shown.some((member) => member.answered && member.enforces === true);
-        if (!enforcing && !changes.some((change) => change.kind === "seed")) continue;
-        const asked = await placementApprovalAsks(queryClient, organizationSlug, environment, volume, row, changes);
-        for (const { scope, ask } of asked) {
+    prepare: async () => {
+      // A Volume no Server enforces on asks nothing, so it reads nothing more. A Server that started enforcing since
+      // refuses its run, and says to deploy again. A restore into a new Volume runs on its source's Servers.
+      const asking = staged.filter(({ members: shown, changes }) =>
+        shown.some((member) => member.answered && member.enforces === true) || changes.some((change) => change.kind === "seed"));
+      const asked = await Promise.all(asking.map(async ({ volume, row, changes }) =>
+        (await placementApprovalAsks(queryClient, organizationSlug, environment, volume, row, changes)).map((each) => ({ ...each, volumeId: volume.id }))));
+      return async () => {
+        const kept: (PlacementApproval & { readonly volumeId: string })[] = [];
+        for (const { scope, ask, volumeId } of asked.flat()) {
           const approved = await approveVolume(scope, ask.change);
           if (approved === null) return false;
           if (approved === undefined) continue;
-          kept.push({ volumeId: volume.id, run: ask.run, machine: ask.machine, approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) });
+          kept.push({ volumeId, run: ask.run, machine: ask.machine, approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) });
         }
-      }
-      if (kept.length === 0) return true;
-      const result = await keepPlacementApprovalsServerFn({ data: { organizationSlug, environment, approvals: kept } });
-      if (!result.ok) throw new VolumeNotApproved(result.refusal.message);
-      return true;
+        if (kept.length === 0) return true;
+        const result = await keepPlacementApprovalsServerFn({ data: { organizationSlug, environment, approvals: kept } });
+        if (!result.ok) throw new VolumeNotApproved(result.refusal.message);
+        return true;
+      };
     },
     // Every staged row, not just the groups shown: a restore whose Volume the Store discard takes may not have answered yet.
     discardAll: (discardStore) => {

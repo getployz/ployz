@@ -1172,26 +1172,36 @@ export const volumeApprovalTerms = Effect.fn("VolumeRun.approvalTerms")(function
   organizationId: string, environment: EnvironmentRef, volumeId: string, from: MachineId | null,
 ) {
   const volume = yield* resolveVolume(organizationId, environment, volumeId);
-  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume);
+  // The Servers' answers and the spec a Move starts are read side by side.
+  const [members, holders] = yield* Effect.all([
+    observeVolumeMembers(organizationId, volume.dockerVolume),
+    from === null ? Effect.succeed(null) : runningOn(organizationId, volume.dockerVolume, from),
+  ], { concurrency: "unbounded" });
   const namespace = parseDockerVolumeName(volume.dockerVolume)?.namespace ?? "";
   const terms = {
     namespace, dockerVolume: volume.dockerVolume, name: volume.volumeName, members,
     recorded: volume.recordedBytes > 0 ? volume.recordedBytes : null,
   };
-  if (from === null) return { ...terms, running: null };
-  const on = (yield* serviceContainers(organizationId, volume.dockerVolume))
-    .filter((container) => container.machine_id === from && container.runtime.state === "running");
-  const [holder] = on;
-  if (holder === undefined || on.length > 1) {
+  if (from === null || holders === null) return { ...terms, running: null };
+  if (!holders.ok) {
     const where = members.find((member) => member.machine.id === from)?.machine.name ?? from;
-    const found = on.length === 0 ? "no running Service" : `${on.length} running Services`;
+    const found = holders.count === 0 ? "no running Service" : `${holders.count} running Services`;
     return yield* new Conflict({ message: `${volume.volumeName} has ${found} on ${where}; a move starts exactly one.`, userFacing: true });
   }
+  return { ...terms, running: holders.running };
+});
+
+/** The spec of the one Service running Docker Volume `dockerVolume` on `from`, or how many run it there instead. */
+const runningOn = Effect.fn("VolumeRun.runningOn")(function* (organizationId: string, dockerVolume: string, from: MachineId) {
+  const on = (yield* serviceContainers(organizationId, dockerVolume))
+    .filter((container) => container.machine_id === from && container.runtime.state === "running");
+  const [holder] = on;
+  if (holder === undefined || on.length > 1) return { ok: false, count: on.length } as const;
   const running = yield* Effect.scoped(Effect.gen(function* () {
     const session = yield* openSession(organizationId);
     return (yield* session.inspectContainer(holder.machine_id, holder.container_id)).container.resolved_spec;
   }));
-  return { ...terms, running };
+  return { ok: true, running } as const;
 });
 
 /** Whether the Volume's committed Move is still owed its finish, so the Copies tab offers no move or mirror. */
