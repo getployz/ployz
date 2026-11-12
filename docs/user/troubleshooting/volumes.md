@@ -63,6 +63,24 @@ Ployz Cloud can't restore a point into a new volume on servers that enforce yet.
 before anything changes. Run `ployz device enforce --off` on an approved device, restore again,
 then run `ployz device enforce`.
 
+## A restore or a mirror removal says the server enforces device approval
+
+```
+web-2 enforces device approval, so Ployz Cloud can't restore data on its own. Run ployz volume restore data --from web-2 from an approved device.
+web-2 enforces device approval, so Ployz Cloud can't delete data-web-2 on its own. Run ployz volume mirror rm data-web-2 from an approved device.
+```
+
+On servers that enforce, a server makes a copy the writer, or deletes a copy that holds data,
+only with an approved device's approval. Nothing changed. Run the command it prints on an approved
+device. See [Restore a volume](../services/restore-a-volume.md#on-servers-that-enforce-device-approval)
+and [Mirror on servers that enforce device approval](../services/mirror-a-volume.md#mirror-on-servers-that-enforce-device-approval).
+
+```
+The approval from your device is for another change, not deleting data-web-2.
+```
+
+The approval names another copy than the one you asked to delete or restore. Run the command again.
+
 ## A volume command says the volume is busy
 
 ```
@@ -196,7 +214,10 @@ On servers that enforce device approval, the old server of a move decides once, 
 copy, where the move ends. Once it handed the volume to the new server it never writes it again
 under that move, so it refuses to become the writer, whoever asks. A release or a deploy that
 asks it then finishes the move on the new server instead. If you see the line on its own, run
-`ployz volume release data` to finish the move there.
+`ployz volume release data` to finish the move there. If the new server is gone for good, forget
+it with `ployz server forget web-2 --confirm dead`, then restore the old server's copy with
+`ployz volume restore data --from web-1` from an approved device. See
+[On servers that enforce device approval](../services/restore-a-volume.md#on-servers-that-enforce-device-approval).
 
 ## A volume has no writer after you removed a server mid-move
 

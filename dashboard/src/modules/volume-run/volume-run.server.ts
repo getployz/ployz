@@ -46,7 +46,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, approvalRefusedMessage, approvesMirror, approvesMove, enforcedMessage, otherMoveApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
+  alreadyOn, approvalRefusedMessage, approvesMirror, approvesMove, approvesRemoval, approvesRestore, enforcedMessage, otherMoveApprovalMessage, otherRemovalApprovalMessage, otherRestoreApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
   type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -149,6 +149,12 @@ export function laneInputOf(lane: Pick<VolumeRunRow, "kind" | "args">): VolumeLa
 export const carriedApproval = (row: Pick<VolumeRunRow, "kind" | "args">) => {
   const lane = laneInputOf(row);
   return lane.kind === "move" || lane.kind === "release" ? moveApproved(lane.args) : undefined;
+};
+
+/** The Restore a Device approved, which a Deploy that finishes the Restore sends with the promotion it asks for again. */
+export const restoreApproval = (row: Pick<VolumeRunRow, "kind" | "args">) => {
+  const lane = laneInputOf(row);
+  return lane.kind === "restore" ? lane.args.approval : undefined;
 };
 
 /**
@@ -699,6 +705,17 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   if (input.kind === "move" && input.args.approval !== undefined && phase.kind === "move"
     && !approvesMove(input.args.approval, input.args.service, volume.dockerVolume, phase.writer.machine.id, phase.target.machine.id)) {
     return { ok: false, refusal: storeRefusal({ code: "invalid", message: otherMoveApprovalMessage(volume.volumeName, phase.target.machine.name) }) } satisfies ClusterPlan;
+  }
+  if (input.kind === "restore" && input.args.approval !== undefined && phase.kind === "restore"
+    && !approvesRestore(input.args.approval, volume.dockerVolume, phase.from.machine.id)) {
+    return { ok: false, refusal: storeRefusal({ code: "invalid", message: otherRestoreApprovalMessage(volume.volumeName, phase.from.machine.name) }) } satisfies ClusterPlan;
+  }
+  const { approval: removal } = input.kind === "delete_mirror" ? input.args : {};
+  const unremoved = phase.kind === "delete_mirror" && removal !== undefined
+    ? phase.destroy.find((slot) => !approvesRemoval(removal, volume.dockerVolume, slot.machine.id))
+    : undefined;
+  if (unremoved !== undefined) {
+    return { ok: false, refusal: storeRefusal({ code: "invalid", message: otherRemovalApprovalMessage(copyName(volume.volumeName, unremoved.machine.name)) }) } satisfies ClusterPlan;
   }
   if (phase.kind === "landed") {
     const source = yield* answered(keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)));
@@ -1282,7 +1299,7 @@ export type CopyAnswer =
   | { readonly ok: true; readonly copy: VolumeCopy | null; readonly receipt?: MachineSigned }
   | {
     readonly ok: false;
-    readonly reason: CopyRefusal | "enforced" | "unapproved";
+    readonly reason: CopyRefusal | "enforced" | "unapproved" | "unanswered";
     readonly copy: VolumeCopy | null;
     readonly message: string;
     readonly receipt?: MachineSigned;
@@ -1962,7 +1979,18 @@ export const findOrphans = Effect.fn("VolumeRun.findOrphans")(function* (
     Effect.map((members) => (planFromCopies(orphanDelete(name), members).ok ? [name] : [])),
     Effect.catch((error) => Effect.logWarning("Orphan inspect failed.", { organizationId, name, error }).pipe(Effect.as([]))),
   ), { concurrency: 4 });
-  return [...orphanSlotNames(copies, config), ...seeds.flat()].sort();
+  // A slot that holds data on a Server enforcing device approval is deleted only under a removal a Device signs, which
+  // an orphan's run never carries, so the sweep leaves it rather than fail a run on it every time.
+  const slots = yield* Effect.forEach(orphanSlotNames(copies, config), (name) => inspect(organizationId, name).pipe(
+    Effect.flatMap((members) => {
+      const planned = planFromCopies(orphanDelete(name), members);
+      return !planned.ok && planned.refusal.code === "enforced"
+        ? Effect.logInfo("Orphan slot kept: it holds data on a Server that enforces device approval.", { organizationId, name }).pipe(Effect.as([]))
+        : Effect.succeed([name]);
+    }),
+    Effect.catch(() => Effect.succeed([name])),
+  ), { concurrency: 4 });
+  return [...slots.flat(), ...seeds.flat()].sort();
 });
 
 export const startOrphanDeletes = Effect.fn("VolumeRun.startOrphanDeletes")(function* (

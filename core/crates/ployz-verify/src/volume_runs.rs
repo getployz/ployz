@@ -641,6 +641,9 @@ struct Broken {
     /// A Move's target checks its receipt against the cut's snapshot the receipt names,
     /// not the snapshot it promotes at. Only [`admission::MoveAdmission`] reads it.
     receipt_any_snapshot: bool,
+    /// A Machine promotes its copy to the Writer with no approval at all, as it did before
+    /// only a Restore could. Only [`admission::MoveAdmission`] reads it.
+    restore_unapproved: bool,
 }
 
 /// One bounded slice of the runs. Each is checked whole; together they cover the resize
@@ -3126,10 +3129,19 @@ mod admission {
         Handoff,
         Pull(Carried),
         Promote(Carried),
+        /// A promotion of B's copy that carries no approval, as Ployz Cloud alone sends it.
+        PromoteUnapproved,
+        /// The Restore a person approved of A's copy at the cut's snapshot, under its own
+        /// operation, which overrides A's handoff. The person forgot B first, as the CLI and
+        /// Ployz Cloud require every Server to answer and A's copy to be the only one.
+        Restore,
+        /// A records that the Restore landed, which ends its operation. A separate step, so a
+        /// restart can fall between the promotion and its end.
+        EndRestore,
     }
 
     impl Step {
-        const ALL: [Self; 11] = [
+        const ALL: [Self; 14] = [
             Self::Snapshot,
             Self::Cut,
             Self::Resume(Holder::Service),
@@ -3141,6 +3153,9 @@ mod admission {
             Self::Promote(Carried::None),
             Self::Promote(Carried::Seen),
             Self::Promote(Carried::Foreign),
+            Self::PromoteUnapproved,
+            Self::Restore,
+            Self::EndRestore,
         ];
     }
 
@@ -3192,11 +3207,22 @@ mod admission {
         refused_resume: bool,
         /// B refused a promotion that carried no receipt, or the foreign one.
         refused_unreceipted: bool,
+        /// B refused a promotion that carried no approval.
+        refused_unapproved: bool,
+        /// A became the Writer again under the Restore a person approved.
+        restored: bool,
+        /// A recorded the Restore's end.
+        restore_ended: bool,
+        /// A admitted the Restore again after it recorded its end.
+        restored_again: bool,
+        /// The person forgot B before the Restore: B is out of the Cluster and takes no step.
+        b_forgotten: bool,
     }
 
     impl State {
         fn writers(&self) -> usize {
-            usize::from(!self.cut || self.resumed) + usize::from(self.promoted.is_some())
+            usize::from(!self.cut || self.resumed || self.restored)
+                + usize::from(self.promoted.is_some() && !self.b_forgotten)
         }
     }
 
@@ -3238,6 +3264,8 @@ mod admission {
         receipts: Signer,
         /// A key outside the Cluster, a Device's, that signs the foreign receipt.
         foreign: Signer,
+        /// The Restore's own operation.
+        restore: OperationId,
     }
 
     impl MoveAdmission {
@@ -3256,6 +3284,7 @@ mod admission {
                 cluster: SealingPublicKey::from_bytes([9; 32]),
                 receipts: Signer::from_seed(&[7; 32]),
                 foreign: Signer::from_seed(&[8; 32]),
+                restore: OperationId::parse("2".repeat(32)).expect("an operation ID"),
             }
         }
 
@@ -3450,6 +3479,9 @@ mod admission {
 
         /// B's promotion at the newest snapshot it pulled. Returns `false` when B refuses.
         fn promote(&self, state: &mut State, carried: Carried) -> bool {
+            if state.b_forgotten {
+                return false;
+            }
             let Some(at) = state.pulled else {
                 return false;
             };
@@ -3484,9 +3516,86 @@ mod admission {
             true
         }
 
+        /// B's promotion with no approval: refused `Unsigned` before any record is read,
+        /// unless broken. Returns `false` when B refuses. This encodes the daemon's gate,
+        /// which lives in ployzd and is proven there by
+        /// `a_cut_a_promote_and_a_forget_of_a_copy_need_an_approval` and
+        /// `a_promote_without_a_receipt_runs_only_under_a_restore_of_this_copy_at_its_snapshot`;
+        /// the model checks what the gate buys: one Writer.
+        fn promote_unapproved(&self, state: &mut State) -> bool {
+            if state.b_forgotten {
+                return false;
+            }
+            let Some(at) = state.pulled else {
+                return false;
+            };
+            if state.promoted.is_some() {
+                return false;
+            }
+            if !self.broken.restore_unapproved {
+                state.refused_unapproved = true;
+                return false;
+            }
+            state.promoted = Some(at);
+            true
+        }
+
+        /// A's Restore at the cut's snapshot under its own operation, which a person
+        /// approved after forgetting B: A's records admit it as a new owner of A's copy, over
+        /// a handoff. [`Step::EndRestore`] ends it. Returns `false` when A refuses.
+        fn restore(&self, state: &mut State) -> bool {
+            if !state.cut || state.resumed {
+                return false;
+            }
+            state.b_forgotten = true;
+            let workflow = VolumeWorkflow::Restore {
+                machine: self.a,
+                at: Snap::Cut.guid(),
+                loses_after: Some(
+                    ployz_core::authority::Timestamp::from_millis(1).expect("a timestamp"),
+                ),
+            };
+            let expired = state.expired;
+            let admitted = state
+                .a
+                .0
+                .admit(
+                    self.restore,
+                    StepDigest::of("op 2"),
+                    &self.a,
+                    &self.volume,
+                    &VolumeStep::Copy(CopyTransition::WriterToWriter),
+                    || {
+                        if expired {
+                            Err(AuthorityRefusal::Expired)
+                        } else {
+                            Ok(workflow)
+                        }
+                    },
+                )
+                .is_ok();
+            if !admitted {
+                return false;
+            }
+            state.restored_again |= state.restore_ended;
+            state.restored = true;
+            true
+        }
+
+        /// A records that its Restore landed, ending the Restore's operation.
+        fn end_restore(&self, state: &mut State) {
+            if state.restored && !state.restore_ended {
+                state.a.0.end(self.restore);
+                state.restore_ended = true;
+            }
+        }
+
         /// B's pull of A's newest snapshot. Returns `false` when B refuses or A's stream
         /// does not serve it.
         fn pull(&self, state: &mut State, carried: Carried) -> bool {
+            if state.b_forgotten {
+                return false;
+            }
             let Some(newest) = state.newest else {
                 return false;
             };
@@ -3543,6 +3652,11 @@ mod admission {
                 second_decision: false,
                 refused_resume: false,
                 refused_unreceipted: false,
+                refused_unapproved: false,
+                restored: false,
+                restore_ended: false,
+                restored_again: false,
+                b_forgotten: false,
             }]
         }
 
@@ -3619,6 +3733,15 @@ mod admission {
                 Action::Send(Step::Promote(carried)) => {
                     self.promote(&mut next, carried);
                 }
+                Action::Send(Step::PromoteUnapproved) => {
+                    self.promote_unapproved(&mut next);
+                }
+                Action::Send(Step::Restore) => {
+                    self.restore(&mut next);
+                }
+                Action::Send(Step::EndRestore) => {
+                    self.end_restore(&mut next);
+                }
             }
             // A syncs each change to its records before the step replies; a broken handoff
             // replies first, and a restart before A's next write loses its decision.
@@ -3635,6 +3758,7 @@ mod admission {
         fn properties(&self) -> Vec<Property<Self>> {
             vec![
                 Property::always(ONE_WRITER, |_, state: &State| state.writers() <= 1),
+                Property::always(RESTORES_ONCE, |_, state: &State| !state.restored_again),
                 Property::always(ONE_DECISION, |_, state: &State| !state.second_decision),
                 Property::always(PROMOTES_AT_CUT, |_, state: &State| {
                     state.promoted.is_none_or(|at| at == Snap::Cut)
@@ -3670,11 +3794,26 @@ mod admission {
                     "a first step after the window is refused Expired",
                     |_, state: &State| state.refused_expired,
                 ),
+                Property::sometimes(
+                    "B refuses a promotion with no approval",
+                    |_, state: &State| state.refused_unapproved,
+                ),
+                Property::sometimes(
+                    "a Restore a person approved makes A the Writer after its handoff",
+                    |model: &Self, state: &State| {
+                        state.restored
+                            && matches!(
+                                state.a.0.decision(model.operation),
+                                Some(Decision::Handed(_))
+                            )
+                    },
+                ),
             ]
         }
     }
 
-    const ONE_WRITER: &str = "A and B are never both the Writer";
+    const ONE_WRITER: &str = "A and B are never both the Writer in the Cluster";
+    const RESTORES_ONCE: &str = "a Restore whose end A recorded is never admitted again";
     const ONE_DECISION: &str = "A's decision never changes once recorded";
     const PROMOTES_AT_CUT: &str = "B becomes the Writer only at the cut's snapshot";
     const NO_LATE_FIRST_STEP: &str =
@@ -3762,6 +3901,17 @@ mod admission {
             breaks(
                 Broken {
                     receipt_before_sync: true,
+                    ..Broken::default()
+                },
+                ONE_WRITER,
+            );
+        }
+
+        #[test]
+        fn a_promote_without_an_approval_is_refused() {
+            breaks(
+                Broken {
+                    restore_unapproved: true,
                     ..Broken::default()
                 },
                 ONE_WRITER,

@@ -65,7 +65,7 @@ fn restore(machine: char) -> VolumeWorkflow {
     VolumeWorkflow::Restore {
         machine: id(machine),
         at: SnapshotGuid::new(7),
-        loses_after: at(1),
+        loses_after: Some(at(1)),
     }
 }
 
@@ -177,13 +177,6 @@ fn replayed(result: Result<(), Error>, op: char) -> bool {
         Err(Error::VolumeStepRefused(AuthorityRefusal::Replayed { operation: refused }))
             if refused == operation(op)
     )
-}
-
-fn mismatch(result: Result<(), Error>) -> Option<&'static str> {
-    match result {
-        Err(Error::VolumeStepRefused(AuthorityRefusal::Mismatch { field })) => Some(field),
-        _ => None,
-    }
 }
 
 #[test]
@@ -1066,26 +1059,40 @@ async fn a_machine_that_does_not_enforce_sends_to_any_peer() {
 /// An Operator's cut, which stops the Writer's Service, needs a Move approval under
 /// enforcement; a promotion and a snapshot without one go on as before E4.
 #[tokio::test]
-async fn a_cut_needs_an_approval() {
+async fn a_cut_a_promote_and_a_forget_of_a_copy_need_an_approval() {
     let fixture = enforcing().await;
-    assert_eq!(
-        refused(
-            fixture
-                .machine
-                .admit_operator_copy(None, &data(), CopyStep::Cut)
-                .await
-        ),
-        Some(AuthorityRefusal::Unsigned {
-            purpose: ployz_core::authority::Purpose::Volume
-        })
-    );
+    let unsigned = Some(AuthorityRefusal::Unsigned {
+        purpose: ployz_core::authority::Purpose::Volume,
+    });
     for step in [
-        CopyStep::Snapshot,
+        CopyStep::Cut,
         CopyStep::Promote {
             transition: CopyTransition::MirrorToWriter,
             at: &SnapshotGuid::new(7),
             epoch: ployz_core::WriterEpoch::new(2),
             receipt: None,
+        },
+        CopyStep::Forget {
+            role: Some(SlotRole::Mirror),
+            empty: false,
+        },
+    ] {
+        assert_eq!(
+            refused(
+                fixture
+                    .machine
+                    .admit_operator_copy(None, &data(), step)
+                    .await
+            ),
+            unsigned,
+            "{step:?}"
+        );
+    }
+    for step in [
+        CopyStep::Snapshot,
+        CopyStep::Forget {
+            role: Some(SlotRole::Mirror),
+            empty: true,
         },
     ] {
         assert!(matches!(
@@ -2141,4 +2148,326 @@ fn a_move_replayed_after_it_ended_changes_nothing_on_either_end() {
 
 fn at_now() -> Timestamp {
     at(5_000)
+}
+
+/// `workflow` on `data` under operation `op`, signed now by `fixture`'s Device.
+fn signed_as(fixture: &Enforcing, op: char, workflow: VolumeWorkflow) -> Signed<VolumeApproval> {
+    let issued_at = Timestamp::now();
+    let body = VolumeApproval {
+        cluster: fixture.cluster,
+        operation: operation(op),
+        namespace: Namespace::parse("app").unwrap(),
+        volume: data(),
+        workflow,
+        issued_at,
+        expires_at: issued_at.plus(MAX_LIFETIME_MILLIS),
+        signer: SignerKey::Device(DeviceKey::from(fixture.signer.public())),
+    };
+    Signed::sign(&body, &fixture.signer).unwrap()
+}
+
+fn restore_of(machine: MachineId, guid: u64) -> VolumeWorkflow {
+    VolumeWorkflow::Restore {
+        machine,
+        at: SnapshotGuid::new(guid),
+        loses_after: Some(at(1_000)),
+    }
+}
+
+fn forgetting(role: Option<SlotRole>) -> CopyStep<'static> {
+    CopyStep::Forget { role, empty: false }
+}
+
+fn mismatch<T>(result: Result<T, Error>) -> Option<&'static str> {
+    match result {
+        Err(Error::VolumeStepRefused(AuthorityRefusal::Mismatch { field })) => Some(field),
+        _ => None,
+    }
+}
+
+/// Only a Restore of this Machine's copy, at the snapshot it names, makes the copy the
+/// Writer with no receipt. A Mirror's approval, a Move's to here without its source's
+/// receipt, a Restore of another Server and a Restore at another snapshot are refused.
+#[tokio::test]
+async fn a_promote_without_a_receipt_runs_only_under_a_restore_of_this_copy_at_its_snapshot() {
+    let fixture = enforcing().await;
+    let here = fixture.machine.record().id();
+    let at7 = SnapshotGuid::new(7);
+    let promote = |approval: &Signed<VolumeApproval>| {
+        let approval = approval.clone();
+        let machine = &fixture.machine;
+        let at7 = &at7;
+        async move {
+            machine
+                .admit_operator_copy(Some(&approval), &data(), promoting(at7, None))
+                .await
+        }
+    };
+    let mirror = signed_as(
+        &fixture,
+        '2',
+        VolumeWorkflow::Mirror {
+            writer: id('a'),
+            mirror: here,
+            replace: false,
+        },
+    );
+    assert_eq!(mismatch(promote(&mirror).await), Some("a Volume step"));
+    let moving = move_signed(&fixture, '3', (id('a'), here), Timestamp::now());
+    assert_eq!(
+        refused(promote(&moving).await),
+        Some(AuthorityRefusal::Unreceipted)
+    );
+    let elsewhere = signed_as(&fixture, '4', restore_of(id('b'), 7));
+    assert_eq!(mismatch(promote(&elsewhere).await), Some("this Server"));
+    let other_snapshot = signed_as(&fixture, '5', restore_of(here, 8));
+    assert_eq!(mismatch(promote(&other_snapshot).await), Some("a snapshot"));
+
+    let restore = signed_as(&fixture, '6', restore_of(here, 7));
+    let admitted = promote(&restore).await.unwrap().unwrap();
+    assert_eq!(admitted.operation, operation('6'));
+    assert!(matches!(admitted.workflow, VolumeWorkflow::Restore { .. }));
+}
+
+/// A Restore of a copy this Machine handed off in a Move makes it the Writer again: the
+/// person's statement that the target is gone. Once its promotion lands it never runs again,
+/// and a later operation that owns the copy ends it even when the daemon stopped before its
+/// outcome was recorded. Both hold after a reload.
+#[tokio::test]
+async fn a_restore_overrides_a_handoff_here_and_never_runs_again() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let web2 = peered.web2.id;
+    let machine = &peered.machine;
+    let moving = move_signed(&peered.fixture, '1', (this, web2), Timestamp::now());
+    let cut = machine
+        .admit_operator_copy(Some(&moving), &data(), CopyStep::Cut)
+        .await
+        .unwrap()
+        .unwrap();
+    machine
+        .record_cut(cut.operation, (&name("f-1"), epoch(1)), &[])
+        .unwrap();
+    machine
+        .hand_off(
+            &moving,
+            &data(),
+            web2,
+            (SnapshotGuid::new(9), &name("f-1")),
+            epoch(2),
+        )
+        .unwrap();
+    assert!(
+        machine
+            .handed_off(&data(), Some(&cut_slot(9, "f-1")))
+            .unwrap()
+            .is_some()
+    );
+
+    let at9 = SnapshotGuid::new(9);
+    let restore = signed_as(&peered.fixture, '2', restore_of(this, 9));
+    let restored = machine
+        .admit_operator_copy(Some(&restore), &data(), promoting(&at9, None))
+        .await
+        .unwrap()
+        .unwrap();
+    machine.end_volume_operation(restored.operation).unwrap();
+
+    let unlanded = signed_as(&peered.fixture, '3', restore_of(this, 9));
+    machine
+        .admit_operator_copy(Some(&unlanded), &data(), promoting(&at9, None))
+        .await
+        .unwrap();
+    let later = move_signed(&peered.fixture, '4', (this, web2), Timestamp::now());
+    machine
+        .admit_operator_copy(Some(&later), &data(), CopyStep::Snapshot)
+        .await
+        .unwrap();
+
+    let reloaded = LocalMachine::new(peered.fixture.machine.owner().clone()).with_cluster(Some((
+        peered.machine.replicated().unwrap().clone(),
+        crate::corrosion::AdminClient::new("/no/admin"),
+    )));
+    for machine in [machine, &reloaded] {
+        for (approval, op) in [(&restore, '2'), (&unlanded, '3')] {
+            assert_eq!(
+                refused(
+                    machine
+                        .admit_operator_copy(Some(approval), &data(), promoting(&at9, None))
+                        .await
+                ),
+                Some(AuthorityRefusal::Replayed {
+                    operation: operation(op)
+                })
+            );
+        }
+    }
+}
+
+/// A Forget of a slot that holds a snapshot runs under a removal of that slot in the role it
+/// holds, or a Move to this Machine releasing back. A removal of the other role, a slot with
+/// no reported role, a standing Mirror's approval and a Move from here are refused.
+#[tokio::test]
+async fn a_forget_of_a_copy_needs_a_removal_of_its_role() {
+    let fixture = enforcing().await;
+    let here = fixture.machine.record().id();
+    let forget = |approval: Signed<VolumeApproval>, role| {
+        let machine = &fixture.machine;
+        async move {
+            machine
+                .admit_operator_copy(Some(&approval), &data(), forgetting(role))
+                .await
+        }
+    };
+    let removal = |op| {
+        signed_as(
+            &fixture,
+            op,
+            VolumeWorkflow::MirrorRemoval {
+                mirror: here,
+                writer: Some(id('a')),
+                role: SlotRole::Mirror,
+            },
+        )
+    };
+    assert_eq!(
+        mismatch(forget(removal('2'), Some(SlotRole::OldCopy)).await),
+        Some("a copy's role")
+    );
+    assert_eq!(
+        mismatch(forget(removal('2'), None).await),
+        Some("a copy's role")
+    );
+    let standing = signed_as(
+        &fixture,
+        '3',
+        VolumeWorkflow::Mirror {
+            writer: id('a'),
+            mirror: here,
+            replace: false,
+        },
+    );
+    assert_eq!(
+        mismatch(forget(standing, Some(SlotRole::Mirror)).await),
+        Some("a Volume step")
+    );
+    let from_here = move_signed(&fixture, '4', (here, id('b')), Timestamp::now());
+    assert_eq!(
+        mismatch(forget(from_here, Some(SlotRole::Mirror)).await),
+        Some("a Volume step")
+    );
+
+    let removed = forget(removal('2'), Some(SlotRole::Mirror))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        removed.workflow,
+        VolumeWorkflow::MirrorRemoval { .. }
+    ));
+    let to_here = move_signed(&fixture, '5', (id('b'), here), Timestamp::now());
+    assert!(
+        forget(to_here, Some(SlotRole::Mirror))
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// A full Sync's replacing approval destroys the copy it replaces only before its own first
+/// pull, and ends the Mirror operation it replaces. A removal ends the replacing one in turn,
+/// and once it lands neither runs here again, while a new Mirror approval does. All of it
+/// holds after a reload.
+#[tokio::test]
+async fn a_replacing_mirror_forgets_once_and_a_removal_ends_it() {
+    let fixture = enforcing().await;
+    let here = fixture.machine.record().id();
+    let mirror = |op, replace| {
+        signed_as(
+            &fixture,
+            op,
+            VolumeWorkflow::Mirror {
+                writer: id('a'),
+                mirror: here,
+                replace,
+            },
+        )
+    };
+    let pull = VolumeStep::Copy(CopyTransition::MirrorToMirror);
+    let (old, replacing) = (mirror('2', false), mirror('3', true));
+    fixture
+        .machine
+        .admit_volume_step(&old, &data(), &pull)
+        .unwrap();
+    for _resend in 0..2 {
+        fixture
+            .machine
+            .admit_operator_copy(
+                Some(&replacing),
+                &data(),
+                forgetting(Some(SlotRole::Mirror)),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        refused(fixture.machine.admit_volume_step(&old, &data(), &pull)),
+        Some(AuthorityRefusal::Replayed {
+            operation: operation('2')
+        })
+    );
+    fixture
+        .machine
+        .admit_volume_step(&replacing, &data(), &pull)
+        .unwrap();
+    let volume = data();
+    assert_eq!(
+        mismatch(
+            fixture
+                .machine
+                .admit_operator_copy(
+                    Some(&replacing),
+                    &volume,
+                    forgetting(Some(SlotRole::Mirror))
+                )
+                .await
+        ),
+        Some("a Forget after the Mirror's pull")
+    );
+
+    let removal = signed_as(
+        &fixture,
+        '4',
+        VolumeWorkflow::MirrorRemoval {
+            mirror: here,
+            writer: Some(id('a')),
+            role: SlotRole::Mirror,
+        },
+    );
+    let removed = fixture
+        .machine
+        .admit_operator_copy(Some(&removal), &data(), forgetting(Some(SlotRole::Mirror)))
+        .await
+        .unwrap()
+        .unwrap();
+    fixture
+        .machine
+        .end_volume_operation(removed.operation)
+        .unwrap();
+
+    let reloaded = LocalMachine::new(fixture.machine.owner().clone());
+    for machine in [&fixture.machine, &reloaded] {
+        for (approval, op) in [(&replacing, '3'), (&removal, '4')] {
+            let step = if op == '4' { forget() } else { pull.clone() };
+            assert_eq!(
+                refused(machine.admit_volume_step(approval, &data(), &step)),
+                Some(AuthorityRefusal::Replayed {
+                    operation: operation(op)
+                })
+            );
+        }
+    }
+    reloaded
+        .admit_volume_step(&mirror('5', false), &data(), &pull)
+        .unwrap();
 }

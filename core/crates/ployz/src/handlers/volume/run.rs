@@ -181,10 +181,13 @@ pub(crate) enum RunAsk {
         #[serde(skip_serializing_if = "Option::is_none")]
         approval: Option<Signed<VolumeApproval>>,
     },
+    /// `approval`: this Device's, when a Server enforces Device approval.
     DeleteMirror {
         slot: MachineName,
         #[serde(skip_serializing_if = "Option::is_none")]
         confirm: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approval: Option<Signed<VolumeApproval>>,
     },
     /// `--if-old-copy`: a kind of its own, so a Cloud from before it refuses the request
     /// rather than dropping the restriction and deleting a live mirror.
@@ -192,6 +195,8 @@ pub(crate) enum RunAsk {
         slot: MachineName,
         #[serde(skip_serializing_if = "Option::is_none")]
         confirm: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approval: Option<Signed<VolumeApproval>>,
     },
     /// `approval`: this Device's, when a Server enforces Device approval, with `service`,
     /// the spec it approved the Service starting with on `to`.
@@ -203,8 +208,11 @@ pub(crate) enum RunAsk {
         service: Option<Box<ResolvedServiceSpec>>,
     },
     Release,
+    /// `approval`: this Device's, when a Server enforces Device approval.
     Restore {
         from: MachineName,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approval: Option<Signed<VolumeApproval>>,
     },
     /// `approval`: this Device's, when a Server enforces Device approval.
     Resize {
@@ -221,8 +229,8 @@ impl RunAsk {
     /// A removal's slot, its typed confirmation, and whether it is limited to an old copy.
     fn removal(&self) -> Option<(&MachineName, Option<&str>, bool)> {
         match self {
-            Self::DeleteMirror { slot, confirm } => Some((slot, confirm.as_deref(), false)),
-            Self::DeleteOldCopy { slot, confirm } => Some((slot, confirm.as_deref(), true)),
+            Self::DeleteMirror { slot, confirm, .. } => Some((slot, confirm.as_deref(), false)),
+            Self::DeleteOldCopy { slot, confirm, .. } => Some((slot, confirm.as_deref(), true)),
             Self::Mirror { .. }
             | Self::Sync { .. }
             | Self::Move { .. }
@@ -253,7 +261,7 @@ fn predates_if_old_copy(ask: &RunAsk, error: &StoreCallError) -> Option<Error> {
 }
 
 /// The `volume mirror rm` line that asks again to remove `volume`'s copy on `slot`.
-fn removal_words(
+pub(super) fn removal_words(
     volume: &VolumeName,
     slot: &MachineName,
     if_old_copy: bool,
@@ -408,6 +416,9 @@ pub(crate) fn remove_mirror_command(command: Command) -> Command {
         .arg(switch("if-old-copy", None).help(
             "Delete it only while it is an old copy a move left; refused once it is the live Mirror",
         ))
+        .arg(crate::cli::yes(
+            "Sign the deletion without asking, when your Servers enforce device approval",
+        ))
         .arg(approval_arg())
         .arg(wait_flag())
 }
@@ -457,6 +468,9 @@ pub(crate) fn restore_command(command: Command) -> Command {
             .required(true)
             .help("The Server whose copy becomes the writer; it must hold the Volume's only copy"),
     )
+    .arg(crate::cli::yes(
+        "Sign the Restore without asking, when your Servers enforce device approval",
+    ))
     .arg(approval_arg())
     .arg(wait_flag())
 }
@@ -672,11 +686,33 @@ pub(crate) fn restore(root: &ArgMatches) -> Result<(), Error> {
         let (volume_id, environment) = located(&store, matches, &volume)?;
         return super::restore::standalone(root, &store, &volume, &volume_id, &environment, &from);
     }
+    cloud(store.backend())?;
+    let (volume_id, environment) = located(&store, matches, &volume)?;
+    let approval = super::loss_approval::sign_restore(
+        root,
+        &store,
+        (&volume, &volume_id, &environment),
+        &from,
+    )?;
+    let (signed, change) = approval.map_or((None, None), |approval| {
+        (Some(approval.signed), Some(approval.change))
+    });
     let started = format!("Restore of Volume {volume} from {from}");
-    request(root, &volume, started, |environment| RunRequest {
+    request_located(
+        root,
+        &store,
+        &volume,
+        &volume_id,
         environment,
-        ask: RunAsk::Restore { from: from.clone() },
-    })
+        (started, change.as_ref()),
+        |environment| RunRequest {
+            environment,
+            ask: RunAsk::Restore {
+                from: from.clone(),
+                approval: signed,
+            },
+        },
+    )
 }
 
 /// `volume set NAME --size N` on a deployed Volume: Cloud sets every copy's size, then records
@@ -741,21 +777,42 @@ pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
         .map(|listing| listing.volume.name.clone())
         .collect();
     let (volume, slot) = mirror_of(&names, &mirror)?;
+    let (volume_id, environment) = located(&store, matches, &volume)?;
+    let approval = super::loss_approval::sign_removal(
+        root,
+        &store,
+        (&volume, &volume_id, &environment),
+        &slot,
+        (confirm.as_deref(), if_old_copy),
+    )?;
+    let (signed, change) = approval.map_or((None, None), |approval| {
+        (Some(approval.signed), Some(approval.change))
+    });
     let started = format!("deletion of Mirror {mirror}");
-    request(root, &volume, started, |environment| RunRequest {
+    request_located(
+        root,
+        &store,
+        &volume,
+        &volume_id,
         environment,
-        ask: if if_old_copy {
-            RunAsk::DeleteOldCopy {
-                slot: slot.clone(),
-                confirm: confirm.clone(),
-            }
-        } else {
-            RunAsk::DeleteMirror {
-                slot: slot.clone(),
-                confirm: confirm.clone(),
-            }
+        (started, change.as_ref()),
+        |environment| RunRequest {
+            environment,
+            ask: if if_old_copy {
+                RunAsk::DeleteOldCopy {
+                    slot: slot.clone(),
+                    confirm: confirm.clone(),
+                    approval: signed,
+                }
+            } else {
+                RunAsk::DeleteMirror {
+                    slot: slot.clone(),
+                    confirm: confirm.clone(),
+                    approval: signed,
+                }
+            },
         },
-    })
+    )
 }
 
 /// Split `mirror`, `VOLUME-SERVER`, at the one Volume of `volumes` it starts with.
@@ -886,7 +943,7 @@ fn approved(
         match &asked.ask {
             RunAsk::Release => (Verb::Release, words("release", &[])),
             RunAsk::Move { to, .. } => (Verb::Move, words("move", &["--to", to.as_str()])),
-            RunAsk::Restore { from } => {
+            RunAsk::Restore { from, .. } => {
                 (Verb::Restore, words("restore", &["--from", from.as_str()]))
             }
             RunAsk::Resize { maximum_bytes, .. } => (

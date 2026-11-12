@@ -72,20 +72,24 @@ pub enum VolumeWorkflow {
         mirror: MachineId,
         replace: bool,
     },
-    /// `mirror` destroys its copy, held in `role`. `last_copy` says no other copy remains
-    /// beside the Writer's.
+    /// `mirror` destroys its copy, held in `role`. `writer` is the Server that writes the
+    /// Volume, or `None` when none does, so the copy may be the Volume's last.
     MirrorRemoval {
         mirror: MachineId,
-        writer: MachineId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        writer: Option<MachineId>,
         role: SlotRole,
-        last_copy: bool,
     },
-    /// `machine` promotes its copy at `at` with no start. Writes after `loses_after` are
-    /// lost.
+    /// `machine` promotes its copy at `at` with no start, over a Move's handoff too. Writes
+    /// after `loses_after` are lost. With none the copy is a root, which keeps every write it
+    /// took, so the Restore loses none.
     Restore {
         machine: MachineId,
         at: SnapshotGuid,
-        loses_after: Timestamp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        loses_after: Option<Timestamp>,
     },
     /// Each of `machines` bounds the Volume at `maximum_bytes`. With `shrink` each request
     /// may lower a bound, and without it none may.
@@ -147,7 +151,11 @@ impl VolumeWorkflow {
                     || (machine == to
                         && matches!(
                             transition,
-                            NoneToMirror | MirrorToMirror | MirrorToWriter | WriterToWriter
+                            NoneToMirror
+                                | MirrorToMirror
+                                | MirrorToWriter
+                                | WriterToWriter
+                                | MirrorToForget
                         ))
                     || (mirrors.contains(machine) && *transition == MirrorToMirror)
             }
@@ -170,7 +178,7 @@ impl VolumeWorkflow {
                 machine == mirror && *transition == MirrorToForget
             }
             (Self::Restore { machine: owner, .. }, VolumeStep::Copy(transition)) => {
-                machine == owner && *transition == MirrorToWriter
+                machine == owner && matches!(transition, MirrorToWriter | WriterToWriter)
             }
             (
                 Self::Resize {
@@ -258,8 +266,9 @@ impl VolumeWorkflow {
             Self::Move {
                 from, to, mirrors, ..
             } => machine == from || machine == to || mirrors.contains(machine),
-            Self::Mirror { writer, mirror, .. } | Self::MirrorRemoval { mirror, writer, .. } => {
-                machine == writer || machine == mirror
+            Self::Mirror { writer, mirror, .. } => machine == writer || machine == mirror,
+            Self::MirrorRemoval { mirror, writer, .. } => {
+                machine == mirror || writer.as_ref() == Some(machine)
             }
             Self::Restore { machine: owner, .. } | Self::Seed { machine: owner, .. } => {
                 machine == owner
@@ -275,9 +284,8 @@ impl VolumeWorkflow {
             Self::Move {
                 from, to, mirrors, ..
             } => from != to && !mirrors.contains(from) && !mirrors.contains(to),
-            Self::Mirror { writer, mirror, .. } | Self::MirrorRemoval { mirror, writer, .. } => {
-                writer != mirror
-            }
+            Self::Mirror { writer, mirror, .. } => writer != mirror,
+            Self::MirrorRemoval { mirror, writer, .. } => writer.as_ref() != Some(mirror),
             Self::Restore { .. } | Self::Resize { .. } | Self::Seed { .. } => true,
         }
     }
@@ -314,6 +322,23 @@ pub enum ApprovedVolumeChange {
         service: ApprovedChange,
         mirrors: Vec<String>,
     },
+    /// `server` makes its copy of `volume` the Writer at snapshot `at`, starting nothing.
+    /// Writes after `lost_after`, the time the client read the approval's `loses_after` as,
+    /// are lost. With none the copy keeps every write it holds.
+    Restore {
+        volume: String,
+        server: String,
+        at: SnapshotGuid,
+        lost_after: Option<String>,
+    },
+    /// `server` deletes its copy of `volume`, held as `role`. `writer` keeps writing the
+    /// Volume, or with none the copy may be its last.
+    MirrorRemoval {
+        volume: String,
+        server: String,
+        role: SlotRole,
+        writer: Option<String>,
+    },
 }
 
 impl ApprovedVolumeChange {
@@ -346,11 +371,45 @@ impl ApprovedVolumeChange {
                 size: maximum_bytes.to_string().replace(' ', ""),
                 shrink: *shrink,
             }),
+            VolumeWorkflow::MirrorRemoval {
+                mirror,
+                writer,
+                role,
+            } => Some(Self::MirrorRemoval {
+                volume: volume.to_owned(),
+                server: name(mirror),
+                role: *role,
+                writer: writer.as_ref().map(&name),
+            }),
             VolumeWorkflow::Move { .. }
-            | VolumeWorkflow::MirrorRemoval { .. }
             | VolumeWorkflow::Restore { .. }
             | VolumeWorkflow::Seed { .. } => None,
         }
+    }
+
+    /// The Restore `approval` makes of the Volume the client calls `volume`, reading its
+    /// `loses_after` with `time`. `None` unless `approval` is a Restore.
+    #[must_use]
+    pub fn restoring(
+        approval: &VolumeApproval,
+        volume: &str,
+        name: impl Fn(&MachineId) -> String,
+        time: impl Fn(Timestamp) -> String,
+    ) -> Option<Self> {
+        let VolumeWorkflow::Restore {
+            machine,
+            at,
+            loses_after,
+        } = &approval.workflow
+        else {
+            return None;
+        };
+        Some(Self::Restore {
+            volume: volume.to_owned(),
+            server: name(machine),
+            at: *at,
+            lost_after: loses_after.map(time),
+        })
     }
 
     /// The Move `approval` makes of the Volume the client calls `volume`, with `service` the
@@ -389,7 +448,10 @@ impl ApprovedVolumeChange {
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let started = match self {
-            Self::Resize { .. } | Self::Mirror { .. } => Vec::new(),
+            Self::Resize { .. }
+            | Self::Mirror { .. }
+            | Self::Restore { .. }
+            | Self::MirrorRemoval { .. } => Vec::new(),
             Self::Move { service, .. } => service.lines(),
         };
         std::iter::once(self.line()).chain(started).collect()
@@ -397,8 +459,10 @@ impl ApprovedVolumeChange {
 
     /// One line a person reads: the Volume, both Servers, and that later syncs need no
     /// approval, or what stops and starts where. A resize names the Volume, its size, every
-    /// Server and whether a copy may shrink. The Volume and Server names are relayed, so a
-    /// resize's show through [`Shown`].
+    /// Server and whether a copy may shrink. A Restore names the Server, the snapshot and
+    /// the time after which writes are lost, and a removal the copy it deletes and what is
+    /// left writing. The Volume and Server names are relayed, so a resize's, a Restore's and
+    /// a removal's show through [`Shown`].
     #[must_use]
     pub fn line(&self) -> String {
         match self {
@@ -465,6 +529,60 @@ impl ApprovedVolumeChange {
                     }
                 }
                 line
+            }
+            Self::Restore {
+                volume,
+                server,
+                at,
+                lost_after,
+            } => {
+                let change = Shown::words("Approved: make the copy of ")
+                    .and_text(volume)
+                    .and_words(" on ")
+                    .and_text(server)
+                    .and_words(" its writer, at snapshot ")
+                    .and_text(&at.to_string());
+                match lost_after {
+                    Some(lost_after) => change
+                        .and_words(". Writes to ")
+                        .and_text(volume)
+                        .and_words(" after ")
+                        .and_text(lost_after)
+                        .and_words(" are lost. Nothing starts until you deploy."),
+                    None => change.and_words(
+                        ". It keeps every write it holds. Nothing starts until you deploy.",
+                    ),
+                }
+                .into()
+            }
+            Self::MirrorRemoval {
+                volume,
+                server,
+                role,
+                writer,
+            } => {
+                let change = Shown::words("Approved: delete ")
+                    .and_text(volume)
+                    .and_words(match role {
+                        SlotRole::Mirror => "'s mirror on ",
+                        SlotRole::OldCopy => "'s old copy on ",
+                    })
+                    .and_text(server);
+                match writer {
+                    Some(writer) => change
+                        .and_words(". ")
+                        .and_text(writer)
+                        .and_words(" keeps writing ")
+                        .and_text(volume)
+                        .and_words("."),
+                    None => change
+                        .and_words(". No Server writes ")
+                        .and_text(volume)
+                        .and_words(
+                            ", so this may be its last copy, and its data is gone for good.",
+                        ),
+                }
+                .into()
             }
         }
     }

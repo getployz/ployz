@@ -74,14 +74,13 @@ fn workflows() -> [VolumeWorkflow; 6] {
         },
         VolumeWorkflow::MirrorRemoval {
             mirror: b(),
-            writer: a(),
+            writer: Some(a()),
             role: SlotRole::Mirror,
-            last_copy: true,
         },
         VolumeWorkflow::Restore {
             machine: b(),
             at: SnapshotGuid::new(18_446_744_073_709_551_615),
-            loses_after: at(500_000),
+            loses_after: Some(at(500_000)),
         },
         VolumeWorkflow::Resize {
             machines: vec![a(), b()],
@@ -154,9 +153,7 @@ fn each_workflow_signs_its_golden_canonical_body() {
             r#"{{"from":"{a}","kind":"move","mirrors":["{c}"],"service":{{"digest":"{d}","name":"db"}},"to":"{b}"}}"#
         ),
         format!(r#"{{"kind":"mirror","mirror":"{b}","replace":false,"writer":"{a}"}}"#),
-        format!(
-            r#"{{"kind":"mirror_removal","last_copy":true,"mirror":"{b}","role":"mirror","writer":"{a}"}}"#
-        ),
+        format!(r#"{{"kind":"mirror_removal","mirror":"{b}","role":"mirror","writer":"{a}"}}"#),
         format!(
             r#"{{"at":"18446744073709551615","kind":"restore","loses_after":500000,"machine":"{b}"}}"#
         ),
@@ -178,6 +175,25 @@ fn each_workflow_signs_its_golden_canonical_body() {
 }
 
 #[test]
+fn a_root_restore_signs_no_loss_and_reads_back_without_one() {
+    let workflow = VolumeWorkflow::Restore {
+        machine: b(),
+        at: SnapshotGuid::new(42),
+        loses_after: None,
+    };
+    let signed = Signed::sign(&approval(workflow.clone()), &signer()).unwrap();
+    let b = "b".repeat(32);
+    assert!(
+        signed.body.ends_with(&format!(
+            r#""workflow":{{"at":"42","kind":"restore","machine":"{b}"}}}}"#
+        )),
+        "{}",
+        signed.body
+    );
+    assert_eq!(signed.open().unwrap(), approval(workflow));
+}
+
+#[test]
 fn a_device_approval_admits_each_step_its_graph_names_on_each_machine() {
     use CopyTransition::*;
     let moved = Signed::sign(&approval(moving()), &signer()).unwrap();
@@ -191,6 +207,7 @@ fn a_device_approval_admits_each_step_its_graph_names_on_each_machine() {
         (b(), VolumeStep::Copy(MirrorToMirror)),
         (b(), VolumeStep::Copy(MirrorToWriter)),
         (b(), VolumeStep::Copy(WriterToWriter)),
+        (b(), VolumeStep::Copy(MirrorToForget)),
         (b(), VolumeStep::Start),
         (c(), VolumeStep::Copy(MirrorToMirror)),
     ] {
@@ -202,7 +219,6 @@ fn a_device_approval_admits_each_step_its_graph_names_on_each_machine() {
         (a(), VolumeStep::Copy(NoneToMirror)),
         (a(), VolumeStep::Copy(WriterToForget)),
         (b(), cut()),
-        (b(), VolumeStep::Copy(MirrorToForget)),
         (c(), VolumeStep::Copy(MirrorToWriter)),
         (c(), VolumeStep::Start),
         (

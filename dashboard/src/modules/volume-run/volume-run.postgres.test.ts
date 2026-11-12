@@ -896,7 +896,7 @@ describe("volume runs", () => {
 
       expect(await plan(signed({ volume: dockerVolume, workflow: { ...workflow, mirror: idOf("fsn-3") } }))).toEqual(invalid);
       expect(await plan(signed({ volume: "shop-production_vol-other", workflow }))).toEqual(invalid);
-      expect(await plan(signed({ volume: dockerVolume, workflow: { kind: "mirror_removal", mirror: idOf("fsn-2"), writer: idOf("fsn-1"), role: "mirror", last_copy: false } }))).toEqual(invalid);
+      expect(await plan(signed({ volume: dockerVolume, workflow: { kind: "mirror_removal", mirror: idOf("fsn-2"), writer: idOf("fsn-1"), role: "mirror" } }))).toEqual(invalid);
       expect(await plan(signed({ volume: dockerVolume, workflow }))).toMatchObject({ ok: true });
     });
 
@@ -2821,7 +2821,7 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)"]);
     });
 
-    it("sync --full: offers its approval ahead of the kept one, and sends it with the snapshots and pulls but not the forgets", async () => {
+    it("sync --full: offers its approval ahead of the kept one, and sends it with the Mirror's forget, snapshots and pulls but not the Writer's forget", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       await harness.pool.query(
         "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
@@ -2832,7 +2832,7 @@ describe("volume runs", () => {
 
       expect(await rows()).toMatchObject([{ state: "done" }]);
       expect(sent.map((request) => `${request.want.kind}:${request.approval === undefined ? "none" : "approval"}`)).toEqual([
-        "forget:none", "forget:none", "snapshot:approval", "mirror:approval", "mirror:approval", "snapshot:approval",
+        "forget:approval", "forget:none", "snapshot:approval", "mirror:approval", "mirror:approval", "snapshot:approval",
       ]);
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, { body: "old", signatures: [] }] }]);
     });
@@ -3009,7 +3009,34 @@ describe("volume runs", () => {
       expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
       expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
       expect(machines[1]?.copy).toBeNull();
-      expect(await rows()).toMatchObject([{ state: "done", epoch: null }]);
+      expect(await rows()).toMatchObject([{ state: "done", epoch: null, message: "Deleted data-fsn-2; fsn-2 and fsn-1 recorded the removal" }]);
+    });
+
+    it("sends a Device's removal with the slot's forget only, and names a Writer that hasn't recorded it", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      failNext.set("forget@fsn-1", "mismatch");
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any", approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(sent.map((request) => `${request.want.kind}:${request.approval === undefined ? "none" : "approval"}`)).toEqual(["forget:approval", "forget:none"]);
+      expect(machines[1]?.copy).toBeNull();
+      expect(await rows()).toMatchObject([{ state: "done", message: expect.stringMatching(/^Deleted data-fsn-2; fsn-2 recorded the removal, but fsn-1 has not yet \(.+\)\. fsn-2 refuses the old approval either way$/) }]);
+    });
+
+    it("names a Writer that never answers its withdrawal instead of failing a removal that happened", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      failNext.set("forget@fsn-1", "held");
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any", approval: APPROVAL } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
+      expect(machines[1]?.copy).toBeNull();
+      expect(await rows()).toMatchObject([{
+        state: "done",
+        message: "Deleted data-fsn-2; fsn-2 recorded the removal, but fsn-1 has not yet (set_volume_copy on fsn-1: unavailable: target Machine RPC timed out). fsn-2 refuses the old approval either way",
+      }]);
     });
 
     it("withdraws every slot it deleted on the writer, each in its own step, once every slot is gone", async () => {
@@ -3776,12 +3803,13 @@ describe("volume runs", () => {
         { name: "fsn-2", pool: true, copy: slotCopy(base) },
       ];
       containers = [];
-      const run = await requested({ kind: "restore", args: { from: "fsn-2" } });
+      const run = await requested({ kind: "restore", args: { from: "fsn-2", approval: APPROVAL } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, restored: "fsn-2" });
       expect(verbs).toEqual(["writer@fsn-2(none)"]);
+      expect(sent[0]?.approval).toEqual(APPROVAL);
       expect(named("fsn-2").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1, newest: base });
       expect(await rows()).toMatchObject([{
         state: "done",

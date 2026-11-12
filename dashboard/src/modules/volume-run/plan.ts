@@ -117,13 +117,15 @@ const refuse = (code: RefusalCode, message: string, next?: string): Planned => (
 /**
  * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A seed a
  * Server it writes on would refuse, since that Server enforces device approval, is refused here, before anything
- * stops. So is a Move, a Mirror or a full Sync that carries no approval: a Move would otherwise stop the Service before
- * its start met the refusal, and a full Sync forget the Mirror's copy before its pull did.
+ * stops. So is a Move, a Mirror, a full Sync, a Restore or a Mirror removal that carries no approval: a Move would
+ * otherwise stop the Service before its start met the refusal, and a full Sync forget the Mirror's copy before its pull
+ * did.
  */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const planned = planCopies(input, observed);
   if (!planned.ok) return planned;
-  const unapproved = (input.kind === "mirror" || input.kind === "sync" || input.kind === "move") && input.args.approval === undefined;
+  const unapproved = (input.kind === "mirror" || input.kind === "sync" || input.kind === "move" || input.kind === "restore" || input.kind === "delete_mirror")
+    && input.args.approval === undefined;
   const enforcing = gatedOn(planned.phase, unapproved).find((member) => member.enforces === true);
   return enforcing === undefined ? planned : enforcedRefusal(planned.phase, input.volumeName, enforcing.machine.name);
 }
@@ -132,7 +134,8 @@ type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
 
 /**
  * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud: a seed, and an `unapproved` Move's
- * start on B and release back to A's stopped Container, or Mirror's snapshot and pull.
+ * start on B and release back to A's stopped Container, Mirror's snapshot and pull, Restore's promotion, or removal of
+ * a slot that holds a snapshot. A slot with none holds no data, so its Server deletes it unasked.
  */
 function gatedOn(phase: PlannedPhase, unapproved: boolean): readonly AnsweredMember[] {
   switch (phase.kind) {
@@ -146,6 +149,10 @@ function gatedOn(phase: PlannedPhase, unapproved: boolean): readonly AnsweredMem
       return unapproved ? [phase.writer, phase.target] : [];
     case "sync":
       return unapproved && phase.full ? [phase.writer, phase.mirror] : [];
+    case "restore":
+      return unapproved ? [phase.from] : [];
+    case "delete_mirror":
+      return unapproved ? phase.destroy.filter(holds) : [];
     default:
       return [];
   }
@@ -161,6 +168,12 @@ function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Pla
     case "move":
     case "landed":
       return refuse("enforced", `${own} move ${name} on its own. Run ployz volume move ${name} --to ${phase.target.machine.name} from an approved device.`);
+    case "restore":
+      return refuse("enforced", `${own} restore ${name} on its own. Run ployz volume restore ${name} --from ${phase.from.machine.name} from an approved device.`);
+    case "delete_mirror": {
+      const slot = copyName(name, server);
+      return refuse("enforced", `${own} delete ${slot} on its own. Run ployz volume mirror rm ${slot}${ifOldCopy(phase.role ?? undefined)} from an approved device.`);
+    }
     default:
       return refuse("enforced", enforcedMessage(phase.kind === "seed", name, server), ENFORCEMENT_OFF);
   }
@@ -206,6 +219,53 @@ export function approvesMove(approval: Signed, service: ResolvedServiceSpec | un
   const body = Schema.decodeUnknownOption(MoveApproval)(approval.body);
   return Option.isSome(body) && body.value.volume === volume && body.value.workflow.from === from
     && body.value.workflow.to === to && body.value.workflow.service.name === service.name;
+}
+
+const RestoreApproval = Schema.fromJsonString(Schema.Struct({
+  volume: Schema.String,
+  workflow: Schema.Struct({ kind: Schema.Literal("restore"), machine: Schema.String }),
+}));
+
+/**
+ * Whether `approval` approves making `machine`'s copy of Docker Volume `volume` its writer, in at most
+ * `MAX_APPROVAL_BYTES`. Cloud reads it only to refuse a mistake before the run starts; the Server checks the signature
+ * and the snapshot.
+ */
+export function approvesRestore(approval: Signed, volume: string, machine: MachineId) {
+  if (bytesOf(approval) > MAX_APPROVAL_BYTES) return false;
+  const body = Schema.decodeUnknownOption(RestoreApproval)(approval.body);
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.machine === machine;
+}
+
+const RemovalApproval = Schema.fromJsonString(Schema.Struct({
+  volume: Schema.String,
+  workflow: Schema.Struct({ kind: Schema.Literal("mirror_removal"), mirror: Schema.String }),
+}));
+
+/** Whether `approval` approves deleting the copy of Docker Volume `volume` on `mirror`, in at most `MAX_APPROVAL_BYTES`. */
+export function approvesRemoval(approval: Signed, volume: string, mirror: MachineId) {
+  if (bytesOf(approval) > MAX_APPROVAL_BYTES) return false;
+  const body = Schema.decodeUnknownOption(RemovalApproval)(approval.body);
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.mirror === mirror;
+}
+
+export const otherRestoreApprovalMessage = (name: string, server: string) =>
+  `The approval from your device is for another change, not restoring ${name} from ${server}.`;
+
+export const otherRemovalApprovalMessage = (slot: string) =>
+  `The approval from your device is for another change, not deleting ${slot}.`;
+
+/**
+ * Which Servers recorded a Mirror removal: each deleted slot's own Server, then the Writer, or why the Writer has not
+ * yet. A slot's record already refuses its old approval; the Writer's stops it serving that Server.
+ */
+export function withdrawnMessage(name: string, slots: readonly string[], writer: string | undefined, behind: readonly string[]) {
+  const listed = (each: readonly string[]) => (each.length < 2 ? each.join("") : `${each.slice(0, -1).join(", ")} and ${each.at(-1)}`);
+  const deleted = `Deleted ${slots.map((slot) => copyName(name, slot)).join(", ")}`;
+  if (writer === undefined) return `${deleted}; ${listed(slots)} recorded the removal`;
+  if (behind.length === 0) return `${deleted}; ${listed([...slots, writer])} recorded the removal`;
+  return `${deleted}; ${listed(slots)} recorded the removal, but ${writer} has not yet (${behind.join("; ")}). `
+    + `${listed(slots)} ${slots.length === 1 ? "refuses" : "refuse"} the old approval either way`;
 }
 
 export const otherMoveApprovalMessage = (name: string, server: string) =>

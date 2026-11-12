@@ -115,6 +115,10 @@ struct OperationRecord {
     cut: Option<Cut>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     promoted: Option<Promotion>,
+    /// A pull ran under it here. A replacing Mirror destroys the copy it replaces only
+    /// before its first pull, so once it pulled its approval destroys nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pulled: bool,
 }
 
 impl OperationRecord {
@@ -158,6 +162,14 @@ struct Grant {
     scope: GrantScope,
 }
 
+/// Whether `step` pulls the Volume into this Machine's copy.
+fn pulls(step: &VolumeStep) -> bool {
+    matches!(
+        step,
+        VolumeStep::Copy(CopyTransition::NoneToMirror | CopyTransition::MirrorToMirror)
+    )
+}
+
 impl VolumeRecords {
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -170,7 +182,9 @@ impl VolumeRecords {
     /// operation that owns this Machine's copy ends the one that owned it before. Admitting
     /// a replacing Mirror's opening `MirrorToForget` also withdraws this Machine from the
     /// Volume, just before the replacement opens, so the withdrawal ends every other Mirror
-    /// operation here and none of the replacement's.
+    /// operation here and none of the replacement's. Its `MirrorToForget` passes on its
+    /// record only until its first pull, so a standing approval never destroys the copy it
+    /// made.
     ///
     /// # Errors
     /// Returns the [`AuthorityRefusal`] naming what the approval lacks, or
@@ -203,6 +217,18 @@ impl VolumeRecords {
             }
             if record.cut.is_some() && *step == VolumeStep::Copy(CopyTransition::WriterToSnapshot) {
                 return refused("a snapshot after the cut");
+            }
+            if record.pulled
+                && *step == VolumeStep::Copy(CopyTransition::MirrorToForget)
+                && matches!(record.workflow, VolumeWorkflow::Mirror { .. })
+            {
+                return refused("a Forget after the Mirror's pull");
+            }
+            if pulls(step) {
+                self.operations
+                    .get_mut(&operation)
+                    .expect("read above")
+                    .pulled = true;
             }
             return Ok(());
         }
@@ -241,6 +267,7 @@ impl VolumeRecords {
                 decision: None,
                 cut: None,
                 promoted: None,
+                pulled: pulls(step),
             },
         );
         Ok(())

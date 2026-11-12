@@ -59,7 +59,17 @@ const UNIT_ONLY: &[(&str, &str, &str)] = &[
     (
         ployz_core::SET_VOLUME_COPY_CAPABILITY,
         "a cut",
-        "volume_approval_tests::a_cut_needs_an_approval",
+        "volume_approval_tests::a_cut_a_promote_and_a_forget_of_a_copy_need_an_approval",
+    ),
+    (
+        ployz_core::SET_VOLUME_COPY_CAPABILITY,
+        "a promote with no receipt",
+        "volume_approval_tests::a_promote_without_a_receipt_runs_only_under_a_restore_of_this_copy_at_its_snapshot",
+    ),
+    (
+        ployz_core::SET_VOLUME_COPY_CAPABILITY,
+        "a forget of a copy",
+        "volume_approval_tests::a_forget_of_a_copy_needs_a_removal_of_its_role",
     ),
 ];
 
@@ -499,7 +509,7 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
                 "a handoff" => json!({
                     "kind": "handoff", "to": "b".repeat(32), "at": "7", "epoch": 2,
                 }),
-                "promote, forget" => json!({"kind": "forget"}),
+                "a forget of nothing" => json!({"kind": "forget"}),
                 "floor, snapshot" => json!({"kind": "floor"}),
                 other => panic!("SetVolumeCopy has no sample for {other:?}"),
             };

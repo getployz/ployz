@@ -11,6 +11,7 @@ import {
   admitRun,
   askCopy,
   carriedApproval,
+  restoreApproval,
   commitment,
   contextOf,
   type CopyAnswer,
@@ -325,7 +326,7 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
   const epoch = copy.kind === "root" ? copy.epoch : owedEpoch;
   if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
   const started = run.kind === "restore"
-    ? yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null })
+    ? yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null }, restoreApproval(run))
     : yield* startWriter(run, null, { to: machine, from: null, expect: expectOf(copy), at: copy.newest.guid, epoch, approved: carriedApproval(run), receipt });
   if (started.ok) return { on: machine.name };
   if (started.reason === "stale" && successor) {

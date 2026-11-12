@@ -36,6 +36,15 @@ describe("volumeRunInput", () => {
     expect(() => decode({ environment, kind: "move", to: "web-2", service: "db" })).toThrow();
   });
 
+  it("carries a Device's approval of a restore and a mirror rm, and none when the CLI sent none", () => {
+    const approval = { body: '{"volume":"v"}', signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }] };
+    expect(volumeRunInput(decode({ environment, kind: "restore", from: "web-2", approval })))
+      .toEqual({ kind: "restore", args: { from: "web-2", approval } });
+    expect(volumeRunInput(decode({ environment, kind: "restore", from: "web-2" }))).toEqual({ kind: "restore", args: { from: "web-2" } });
+    expect(volumeRunInput(decode({ environment, kind: "delete_old_copy", slot: "web-1", confirm: "data", approval })))
+      .toEqual({ kind: "delete_mirror", args: { slot: "web-1", confirmed_name: "data", role: "old_copy", approval } });
+  });
+
   it("refuses an approval that isn't shaped as a signed one", () => {
     expect(() => decode({ environment, kind: "mirror", to: "web-2", approval: { body: "{}", signatures: [{ key: "web-1", signature: "x" }] } })).toThrow();
     expect(() => decode({ environment, kind: "mirror", to: "web-2", approval: "signed" })).toThrow();

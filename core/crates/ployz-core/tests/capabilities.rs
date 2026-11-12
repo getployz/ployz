@@ -707,8 +707,7 @@ mod coverage {
             [
                 ("ployz.machine.enroll.v1", "F7"),
                 ("ployz.machine.enroll-for-recovery.v1", "F7"),
-                ("ployz.volume.remove.v1", "E6"),
-                ("ployz.volume.copy.set.v1", "E3 to E6"),
+                ("ployz.volume.remove.v1", "F5"),
             ]
         );
     }
@@ -762,7 +761,9 @@ mod coverage {
                 "a pull",
                 "a cut",
                 "a handoff",
-                "promote, forget",
+                "a promote with no receipt",
+                "a forget of a copy",
+                "a forget of nothing",
                 "floor, snapshot",
             ],
         ),

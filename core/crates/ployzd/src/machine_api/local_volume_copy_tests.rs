@@ -46,23 +46,23 @@ fn checks_a_pull_that_moves_data_and_every_run_snapshot() {
     let want = pull(Some(source));
     for transition in [CopyTransition::NoneToMirror, CopyTransition::MirrorToMirror] {
         assert!(matches!(
-            approved_step(&want, Some(transition), None),
+            approved_step(&want, Some(transition), None, None),
             Some(CopyStep::Pull { transition: checked, from, .. }) if checked == transition && *from == source
         ));
     }
     assert!(matches!(
-        approved_step(&want, None, None),
+        approved_step(&want, None, None, None),
         Some(CopyStep::Held { from }) if *from == source
     ));
-    assert!(approved_step(&want, Some(CopyTransition::WriterToMirror), None).is_none());
-    assert!(approved_step(&pull(None), Some(CopyTransition::NoneToMirror), None).is_none());
+    assert!(approved_step(&want, Some(CopyTransition::WriterToMirror), None, None).is_none());
+    assert!(approved_step(&pull(None), Some(CopyTransition::NoneToMirror), None, None).is_none());
 
     let snapshot = WantedCopy::Snapshot {
         name: "w-1-1".parse().unwrap(),
     };
     for transition in [None, Some(CopyTransition::WriterToSnapshot)] {
         assert!(matches!(
-            approved_step(&snapshot, transition, None),
+            approved_step(&snapshot, transition, None, None),
             Some(CopyStep::Snapshot)
         ));
     }
@@ -76,16 +76,21 @@ fn checks_a_pull_that_moves_data_and_every_run_snapshot() {
         CopyTransition::WriterToWriter,
     ] {
         assert!(matches!(
-            approved_step(&writer, Some(transition), None),
+            approved_step(&writer, Some(transition), None, None),
             Some(CopyStep::Promote { transition: checked, epoch, .. }) if checked == transition && epoch == WriterEpoch::new(2)
         ));
     }
-    assert!(approved_step(&writer, None, None).is_none());
+    assert!(approved_step(&writer, None, None, None).is_none());
     assert!(matches!(
-        approved_step(&pull(None), Some(CopyTransition::WriterToMirror), None),
+        approved_step(
+            &pull(None),
+            Some(CopyTransition::WriterToMirror),
+            None,
+            None
+        ),
         Some(CopyStep::Cut)
     ));
-    assert!(approved_step(&WantedCopy::Forget { recipient: None }, None, None).is_none());
+    assert!(approved_step(&WantedCopy::Forget { recipient: None }, None, None, None).is_none());
 }
 
 #[test]
