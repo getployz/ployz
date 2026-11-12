@@ -9,8 +9,9 @@ use ployz_store::{
 };
 use serde_json::json;
 
+use super::shared::confirm::confirm;
 use super::store::{Store, mint, store};
-use super::teardown::{self, Removed, confirm, inventory};
+use super::teardown::{self, Removed, inventory};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
 use crate::ui::{Table, Tree};

@@ -28,6 +28,21 @@ fn every_generated_file_is_named_once() {
     );
 }
 
+/// Cloud imports the verbs it gates operations with from these declarations, so their
+/// text is frozen.
+#[test]
+fn the_operation_verbs_cloud_names_are_declared() {
+    let payloads = file("payloads.d.ts");
+    let declared = payloads
+        .lines()
+        .find(|line| line.contains("type OperationVerb ="))
+        .unwrap_or_else(|| panic!("OperationVerb is not declared"));
+    assert_eq!(
+        declared,
+        "export type OperationVerb = \"drain\" | \"set\" | \"clean\" | \"remove\" | \"forget\" | \"release\" | \"remove_mirror\" | \"stop\" | \"restart\" | \"unprotect\" | \"move\" | \"restore\" | \"resize\" | \"set_cluster_name\" | \"set_ingress_doors\" | \"set_private_access\";"
+    );
+}
+
 const CLOUD_CONTRACT: &[(&str, &str, &str)] = &[
     ("UPLOAD_LIMIT", "99614720", "99614720"),
     (

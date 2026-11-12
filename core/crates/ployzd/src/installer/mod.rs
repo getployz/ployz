@@ -24,10 +24,11 @@ use std::{
 
 use ployz_core::{
     MachineLayout, MachineRelease, MachineUpgradeStage, MachineVersion, StoragePreparation,
+    probe_document::ProbeDocument,
 };
 use thiserror::Error;
 
-use crate::mutation;
+use crate::{mutation, units::Unit};
 
 use self::{
     assess::{assess, read_facts},
@@ -241,14 +242,7 @@ pub fn probe() -> Result<String, Error> {
     require_root()?;
     let facts = read_facts(&InstallPaths::production())?;
     let assessment = assess(&facts);
-    serde_json::to_string_pretty(&serde_json::json!({
-        "facts": facts,
-        "assessment": assessment,
-    }))
-    .map_err(|error| Error::Io {
-        stage: "print host probe",
-        source: io::Error::other(error),
-    })
+    assess::probe_json(&ProbeDocument { facts, assessment })
 }
 
 async fn install_at(
@@ -297,7 +291,7 @@ async fn install_locked(
         }
     }
 
-    let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
+    let mut restart_required = !paths.systemd_dir.join(Unit::Ployz.name()).is_file();
     restart_required |=
         install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;
     install_units(paths).await?;
@@ -334,11 +328,11 @@ fn restart_units() -> Result<(), Error> {
     // After=ployz.socket starts the socket before the daemon.
     systemctl(
         "restart daemon",
-        ["restart", "ployz.socket", "ployz.service"],
+        ["restart", Unit::PloyzSocket.name(), Unit::Ployz.name()],
     )?;
     systemctl(
         "restart volume plugin",
-        ["try-restart", "ployz-volume-plugin.service"],
+        ["try-restart", Unit::VolumePluginService.name()],
     )?;
     Ok(())
 }

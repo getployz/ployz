@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::client::{self, Reply};
-use super::wire::{self, Answer, Probe};
+use super::wire::{self, Answer};
 use super::*;
 
 const PROBE: &str = r#"{
@@ -81,7 +81,7 @@ struct FakeHost {
 }
 
 impl Host for FakeHost {
-    async fn probe(&self) -> Result<Probe, String> {
+    async fn probe(&self) -> Result<ProbeDocument, String> {
         if self.probe_hangs {
             std::future::pending::<()>().await;
         }

@@ -69,7 +69,7 @@ Under enforcement, a deploy of a built image is already refused. A built image i
 | Auto-deploy forced on for the repository's Services | `ployz-store/src/pull_request/mod.rs:1387` | That pushes deploy | None needed once each deploy needs the proof |
 | Setup commands from the plan | `ployz-store/src/pull_request/mod.rs:1343` | Code run in the Own Copies | D7. They are in the spec, so the template covers them. |
 | Which Sealed values a preview Deploy carries | `ployz-store/src/variables.rs:1126` keeps only values sealed for the deploying Environment. The parent's become Not set. | Sealed open | Today this keeps parent values out, but only Cloud enforces it. If Cloud sends the parent's ciphertext with the parent's `SealedIdentity` (`ployz-store/src/deployment/lowering.rs:906`), the Machine opens it. Under enforcement thread C's deploy approval binds the identity, and C4's `sealed_scope_allows` stops a session from crossing Environments. D7 adds the inherited path. |
-| Registry pull credentials, sealed with the Store's own key and copied into PR Environments | `ployz-store/src/registry.rs:215`, `ployz-store/src/branch/pair.rs:2306` | Image pulls | Not D's. Cloud already holds these. A pull credential cannot change a content-addressed image. |
+| Registry pull credentials, sealed with the Store's own key and copied into PR Environments | `ployz-store/src/registry.rs:215`, `ployz-store/src/branch/pair.rs:2310` | Image pulls | Not D's. Cloud already holds these. A pull credential cannot change a content-addressed image. |
 
 ## Caches
 

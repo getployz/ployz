@@ -6,13 +6,15 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::super::teardown::{Drafted, confirm, signing};
+use super::super::shared::confirm::confirm;
+use super::super::teardown::{Drafted, signing};
 use super::super::{Error, leaf_matches, runtime, store};
-use crate::approval::{self, Verb};
+use crate::approval;
 use crate::cli::{base, value};
 use crate::cloud_account::{self, Credential};
 use crate::deploy::VolumeFate;
 use crate::ui::{Table, Tree};
+use ployz_store::OperationVerb;
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Remove a Namespace on your Servers that isn't in any Project; lists them without --namespace",
@@ -334,7 +336,7 @@ fn through_cloud(
     let id = approval::approved(
         runtime,
         credential,
-        Verb::Clean,
+        OperationVerb::Clean,
         matches.get_one::<String>("approval").cloned(),
         |id| {
             let namespace = namespace.to_string();

@@ -417,7 +417,7 @@ fn amazon_linux_build_stops_at_dkms_build() {
     if let Ok(name) = env::var(CASE) {
         let root = contract_root();
         let paths = InstallPaths::at(&root);
-        let os = OsRelease::read(&paths.os_release).unwrap();
+        let os = os_release::read(&paths.os_release).unwrap();
         let sha256 = hex::encode(Sha256::digest(fs::read(root.join("tarball")).unwrap()));
         let mut job = Job {
             path: state_path(&paths),

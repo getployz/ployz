@@ -12,7 +12,7 @@ use super::super::deploy;
 use super::super::store::{self, project, store};
 use super::super::{Error, leaf_matches, required};
 use super::branch::setups;
-use crate::handlers::teardown::{accepted, take_off, unfinished, with_accepted};
+use crate::handlers::shared::accepted::{accepted, take_off, unfinished, with_accepted};
 
 /// Take an Environment off the Servers and keep everything else of it.
 pub(crate) fn shutdown(root: &ArgMatches) -> Result<(), Error> {

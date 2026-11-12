@@ -209,6 +209,8 @@ pub(super) struct DiscoveryService {
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
+    /// SetManagementClient and MintBuildGrant announce themselves here, then never answer.
+    pub(super) mutation_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) register_blocked: Option<Arc<tokio::sync::Notify>>,
     /// The one Upgrade attempt this daemon holds.
     upgrade_attempt: Arc<Mutex<Option<ployz_core::MachineUpgradeAttempt>>>,
@@ -314,6 +316,7 @@ impl DiscoveryService {
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
+            mutation_blocked: None,
             register_blocked: None,
             upgrade_attempt: Arc::default(),
             upgrade_outcome: None,
@@ -796,6 +799,34 @@ impl FakeMachine for DiscoveryService {
         };
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),
+        ))
+    }
+
+    async fn set_management_client(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(received) = &self.mutation_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let _ = request;
+        Err(Status::unimplemented(
+            "set_management_client is not used by this fixture",
+        ))
+    }
+
+    async fn mint_build_grant(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(received) = &self.mutation_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let _ = request;
+        Err(Status::unimplemented(
+            "mint_build_grant is not used by this fixture",
         ))
     }
 
