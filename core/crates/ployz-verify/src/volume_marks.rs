@@ -594,7 +594,7 @@ impl VolumeMarks {
                 (SeedPath::Held, Answer::Refused)
             }
             // seed.rs: `SeedProgress::Stale`: `Stale::clear` runs `zfs destroy -r <parent>`,
-            // then `copy_point` runs `create_bounded_slot`, sets `ployz:pull` and runs
+            // then `copy_point` runs `create_slot`, sets `ployz:pull` and runs
             // `receives.spawn(copy_snapshot)`.
             Into::Slot { fs } => {
                 state.destroyed = Some(Destroy {

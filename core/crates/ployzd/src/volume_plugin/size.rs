@@ -13,16 +13,14 @@ use ployz_core::{
     SetVolumeSizeRequest, SizeRefusal, shrink_floor,
 };
 
-use super::{
-    DockerVolumeName, VolumeError, VolumeStorage, inspect::internal, mirror, storage::Held,
-};
+use super::{DockerVolumeName, VolumeError, VolumeStorage, inspect::internal, slot, storage::Held};
 
 impl VolumeStorage {
     async fn set_size(
         &self,
         request: &SetVolumeSizeRequest,
     ) -> Result<SetVolumeSizeReply, RpcError> {
-        let name = mirror::name(&request.name)?;
+        let name = slot::name(&request.name)?;
         let wanted = request.maximum_bytes;
         let allow_shrink = request.allow_shrink;
         let admission = self.admit_mutation().await.map_err(internal)?;

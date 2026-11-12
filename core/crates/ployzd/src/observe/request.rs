@@ -423,7 +423,7 @@ pub(super) fn spawn(
     salts: Arc<Salts>,
     outbox: Arc<RequestOutbox>,
 ) -> io::Result<()> {
-    let path = run_dir.join("ingress").join(crate::ingress::ACCESS_LOG);
+    let path = crate::ingress::access_log_path(run_dir);
     std::thread::Builder::new()
         .name("requests".to_owned())
         .spawn(move || tail(&path, &salts, &outbox))?;

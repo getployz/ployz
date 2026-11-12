@@ -16,7 +16,7 @@ use super::{
     Dataset, DockerVolumeName, VolumeStorage,
     inspect::{answering, internal},
     marks::{Mark, Marks},
-    mirror,
+    slot,
     storage::HeldMutation,
     transfer::{Busy, Stop, ZfsChild, exited},
 };
@@ -159,8 +159,8 @@ struct Source {
 
 impl VolumeStorage {
     async fn seed_volume(&self, request: &SeedVolumeRequest) -> Result<VolumeCopyView, RpcError> {
-        let name = mirror::name(&request.name)?;
-        let into = mirror::name(&request.into)?;
+        let name = slot::name(&request.name)?;
+        let into = slot::name(&request.into)?;
         let guid = request.guid;
         let (held, _installation) = self.admit_mutation().await.map_err(internal)?;
         let pool = self.one_pool().await.map_err(internal)?;
@@ -327,7 +327,7 @@ impl VolumeStorage {
         let parent = DatasetLayout::of(pool).slot_parent(into);
         let fs = DatasetLayout::of(pool).slot_fs(into);
         let Source { root, point, bound } = source;
-        self.create_bounded_slot(&parent, bound).await?;
+        self.create_slot(&parent, bound).await.map_err(internal)?;
         self.marks(&parent)
             .set_pull(point.name.as_str())
             .await
@@ -380,25 +380,9 @@ impl VolumeStorage {
             .expect("zfs send stdout is piped")
             .into_owned_fd()
             .map_err(|error| format!("could not hand the send stream over: {error}"))?;
-        let refquota = format!("refquota={bound}");
-        let mut receive = ZfsChild::spawn(
-            Command::new(&self.zfs)
-                .args([
-                    "receive",
-                    "-u",
-                    "-s",
-                    "-o",
-                    "readonly=on",
-                    "-o",
-                    &refquota,
-                    fs,
-                ])
-                .stdin(Stdio::from(stream))
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped()),
-            stop,
-        )
-        .map_err(|error| format!("could not run zfs receive: {error}"))?;
+        let mut receive = self
+            .spawn_receive(fs, bound, Stdio::from(stream), stop)
+            .map_err(|error| format!("could not run zfs receive: {error}"))?;
         let exits = {
             let both = async { tokio::join!(exited(send.child()), exited(receive.child())) };
             tokio::select! {

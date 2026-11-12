@@ -28,11 +28,11 @@ mod copy;
 mod departure;
 mod inspect;
 mod marks;
-mod mirror;
 mod pool;
 mod removal;
 mod seed;
 mod size;
+mod slot;
 mod storage;
 mod transfer;
 

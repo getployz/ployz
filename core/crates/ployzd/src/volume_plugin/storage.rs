@@ -156,9 +156,7 @@ impl VolumeStorage {
             self.ensure_commitment(pool, &datasets, requested).await?;
         }
 
-        if !datasets.iter().any(|dataset| dataset.name == root) {
-            self.create_root(&root).await?;
-        }
+        self.ensure_root(&datasets, &root).await?;
         self.zfs(&["create", "-o", &format!("refquota={requested}"), &volume])
             .await?;
         Ok(())
