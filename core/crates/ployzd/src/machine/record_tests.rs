@@ -69,6 +69,7 @@ fn born_defaults(body: Value) -> Value {
         "trusted_machines": [],
         "membership_cluster": null,
         "enrollment": null,
+        "trusted_snapshot": {},
     })
 }
 

@@ -27,6 +27,8 @@ pub use routing::{MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionErro
 
 #[cfg(test)]
 pub(crate) use local::MachineService;
+#[cfg(test)]
+pub(crate) mod test_socket;
 
 /// A servable Machine API. Every request it serves is routed.
 #[derive(Clone)]
@@ -344,9 +346,7 @@ struct NeedsFullAccess {
 struct NeedsManagementConnection;
 
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "This Server enforces Device approval. Connect directly as an approved Device, or over SSH."
-)]
+#[error("This Server takes this call only from an approved Device connected to it directly, or over SSH.")]
 struct NeedsDirectDevice;
 
 fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Body>> {

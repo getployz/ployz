@@ -1,11 +1,10 @@
 use ployz_core::{
     AdvertisedEndpoint, GenerateSealingKeyRequest, InstallSealingKeyRequest, MachineName,
-    MachineRpc, MachineRpcClient, RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal,
+    MachineRpc, RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal,
     RecoverySeed, RpcErrorCode, RpcResponseBody, Sealing, SealingKeyBackup, SealingPublicKey,
     ShareSealingKeyRequest, WrapSealingKeyRequest, op,
 };
-use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{Code, Request, transport::Server};
+use tonic::{Code, Request};
 
 use super::super::{
     LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner, RecoveryError, SealingError,
@@ -554,13 +553,12 @@ async fn the_cloud_slot_needs_full_access_to_wrap_or_recover() {
     let (dir, store, founder) = open_store("ployzd-recover-scope");
     replicated.publish_local_machine(&founder).await.unwrap();
     let api = MachineApi::from_local(machine_service(store, replicated, None));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server =
-        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
-    let mut client = MachineRpcClient::connect(format!("http://{address}"))
-        .await
-        .unwrap();
+    let socket_dir = tempfile::tempdir().unwrap();
+    let (mut client, server) = crate::machine_api::test_socket::served(
+        api,
+        &crate::machine_api::test_socket::socket_in(socket_dir.path()),
+    )
+    .await;
     let code = RecoveryCode::generate();
     let operator = |body| {
         let mut request = Request::new(body);

@@ -272,6 +272,20 @@ impl LocalMachine {
     }
 }
 
+#[cfg(test)]
+impl LocalMachine {
+    /// Commit an admitted activation in place, as the next boot does.
+    pub(crate) async fn commit_activation_as_if_restarted(&self) {
+        self.owner
+            .mutate(|store| {
+                crate::activation::commit_pending(store, &crate::activation::NoPlugin).unwrap();
+            })
+            .await
+            .unwrap();
+        self.owner.end_activating();
+    }
+}
+
 /// Every key the record holds that the snapshot does not.
 fn legacy_keys(record: &LocalMachineRecord) -> Vec<LegacyKey> {
     let evidenced = |code: DeviceCode| {

@@ -90,13 +90,12 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     let api = MachineApi::builder(crate::machine::RecordOwner::spawn(machine_store).unwrap())
         .with_optional_containers(Some(runtime))
         .build();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server =
-        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
-    let mut client = MachineRpcClient::connect(format!("http://{address}"))
-        .await
-        .unwrap();
+    let socket_dir = tempfile::tempdir().unwrap();
+    let (mut client, server) = crate::machine_api::test_socket::served(
+        api,
+        &crate::machine_api::test_socket::socket_in(socket_dir.path()),
+    )
+    .await;
     let config = exec_config(&container_id, ["sh"], false);
     let mut output = client
         .exec(Request::new(tokio_stream::iter([config])))
@@ -253,13 +252,12 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
     let api = MachineApi::builder(crate::machine::RecordOwner::spawn(machine_store).unwrap())
         .with_optional_containers(Some(runtime))
         .build();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server =
-        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
-    let mut client = MachineRpcClient::connect(format!("http://{address}"))
-        .await
-        .unwrap();
+    let socket_dir = tempfile::tempdir().unwrap();
+    let (mut client, server) = crate::machine_api::test_socket::served(
+        api,
+        &crate::machine_api::test_socket::socket_in(socket_dir.path()),
+    )
+    .await;
     let mut output = client
         .exec(Request::new(tokio_stream::iter([exec_config(
             &container_id,

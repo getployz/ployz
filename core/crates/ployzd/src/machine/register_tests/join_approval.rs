@@ -5,8 +5,11 @@ use ployz_core::{
     authority::{AuthorityRefusal, Member, Signed, Signer, StartingSet, Timestamp},
 };
 
+/// Approve `signer` and activate with it at `entry`'s console, then commit as the next boot
+/// does.
 async fn enforce(entry: &LocalMachine, signer: &Signer) {
-    entry
+    let console = entry.clone().on_local_socket();
+    console
         .set_device(SetDeviceRequest::Approve {
             key: signer.public().into(),
         })
@@ -22,10 +25,11 @@ async fn enforce(entry: &LocalMachine, signer: &Signer) {
         .iter()
         .map(Into::into)
         .collect();
-    entry
+    console
         .set_device_enforcement(enforce_request(signer, members))
         .await
         .unwrap();
+    entry.commit_activation_as_if_restarted().await;
 }
 
 fn enforce_request(signer: &Signer, members: Vec<Member>) -> SetDeviceEnforcementRequest {
@@ -804,12 +808,16 @@ async fn enforcing_register_refuses_an_overlapping_allocation_before_proposing()
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A mesh caller is a Member's own Machine or anything holding its WireGuard key, and the
+/// local socket stays the console's, so a daemon that says `enforced.v1` never gives it Full
+/// scope, before activation or after.
 #[tokio::test]
-async fn mesh_keeps_full_scope_when_enforcement_is_off() {
+async fn a_mesh_caller_is_never_full_on_an_enforced_v1_daemon() {
     use ployz_core::{MachineRpcClient, op};
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::{Request, transport::Server};
     let (directory, owner, _) = open_store("ployzd-mesh-off");
+    assert!(!owner.record().device_enforcement());
     let api = crate::machine_api::MachineApi::builder(owner.clone()).build();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -819,15 +827,16 @@ async fn mesh_keeps_full_scope_when_enforcement_is_off() {
         .await
         .unwrap();
     let key = DeviceKey::from_bytes([9; 32]);
-    client
+    let refused = client
         .set_device(Request::new(
             op::SetDevice::into_request(SetDeviceRequest::Approve { key })
                 .encode()
                 .unwrap(),
         ))
         .await
-        .unwrap();
-    assert!(owner.record().devices().any(|device| device == key));
+        .unwrap_err();
+    assert_eq!(refused.code(), tonic::Code::PermissionDenied);
+    assert!(!owner.record().devices().any(|device| device == key));
     server.abort();
     drop(client);
     drop(owner);
@@ -997,16 +1006,18 @@ async fn enforcement_trusts_only_the_signed_starting_set_not_rows_registered_bef
         .unwrap()
         .assigned_machine;
     let signer = Signer::from_seed(&[1; 32]);
-    entry
+    let console = entry.clone().on_local_socket();
+    console
         .set_device(SetDeviceRequest::Approve {
             key: signer.public().into(),
         })
         .await
         .unwrap();
-    entry
+    console
         .set_device_enforcement(enforce_request(&signer, vec![(&founder).into()]))
         .await
         .unwrap();
+    entry.commit_activation_as_if_restarted().await;
     assert!(!entry.record().accepts_machine(&late));
     assert!(
         !raw.machines()
@@ -1033,42 +1044,54 @@ async fn enforcement_trusts_only_the_signed_starting_set_not_rows_registered_bef
 }
 
 #[tokio::test]
-async fn enforcement_refuses_a_missing_foreign_misscoped_or_reused_starting_set() {
+async fn activation_refuses_a_missing_foreign_or_misscoped_starting_set_and_has_no_off() {
     let (entry, _, founder, directory, server) = participating().await;
     let signer = Signer::from_seed(&[1; 32]);
-    entry
+    let console = entry.clone().on_local_socket();
+    console
         .set_device(SetDeviceRequest::Approve {
             key: signer.public().into(),
         })
         .await
         .unwrap();
-    let refused = |result| matches!(result, Err(LocalMachineError::EnforcementRefused(_)));
+    let refused = |result| {
+        matches!(
+            result,
+            Err(LocalMachineError::EnforcementRefused(_) | LocalMachineError::ActivationRefused { .. })
+        )
+    };
     let unsigned = SetDeviceEnforcementRequest {
         enforced: true,
         starting_set: None,
     };
-    assert!(refused(entry.set_device_enforcement(unsigned).await));
+    assert!(refused(console.set_device_enforcement(unsigned).await));
     let foreign = enforce_request(&Signer::from_seed(&[2; 32]), vec![(&founder).into()]);
-    assert!(refused(entry.set_device_enforcement(foreign).await));
+    assert!(refused(console.set_device_enforcement(foreign).await));
     let mut other = founder.clone();
     other.id = MachineId::random();
     let misscoped = enforce_request(&signer, vec![(&other).into()]);
-    assert!(refused(entry.set_device_enforcement(misscoped).await));
-    assert!(!entry.record().device_enforcement());
+    assert!(refused(console.set_device_enforcement(misscoped).await));
     let approved = enforce_request(&signer, vec![(&founder).into()]);
-    entry
+    console
         .set_device_enforcement(approved.clone())
         .await
         .unwrap();
-    entry
-        .set_device_enforcement(SetDeviceEnforcementRequest {
-            enforced: false,
-            starting_set: None,
-        })
-        .await
-        .unwrap();
-    assert!(refused(entry.set_device_enforcement(approved).await));
     assert!(!entry.record().device_enforcement());
+    assert!(matches!(
+        console.set_device_enforcement(approved.clone()).await,
+        Err(LocalMachineError::Activating)
+    ));
+    entry.commit_activation_as_if_restarted().await;
+    assert!(entry.record().device_enforcement());
+    let off = SetDeviceEnforcementRequest {
+        enforced: false,
+        starting_set: None,
+    };
+    assert!(refused(console.set_device_enforcement(off).await));
+    console.set_device_enforcement(approved).await.unwrap();
+    let again = enforce_request(&signer, vec![(&founder).into()]);
+    assert!(refused(console.set_device_enforcement(again).await));
+    assert!(entry.record().device_enforcement());
     server.abort();
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();

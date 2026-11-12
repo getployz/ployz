@@ -245,6 +245,12 @@ impl RecordOwner {
         self.shared.activating.store(true, Ordering::SeqCst);
     }
 
+    /// Forget an admitted activation, as a restart into the committed record does.
+    #[cfg(test)]
+    pub(crate) fn end_activating(&self) {
+        self.shared.activating.store(false, Ordering::SeqCst);
+    }
+
     /// Whether an activation was admitted in this process.
     #[must_use]
     pub(crate) fn activating(&self) -> bool {

@@ -117,7 +117,9 @@ impl Enforcing {
         let starting = vec![ployz_core::authority::Member::from(&peer)];
         store
             .mutate(move |store| {
-                store.approve_device(device, None).unwrap();
+                store
+                    .approve_device(device, Some(crate::machine::Evidence::LocalSocket))
+                    .unwrap();
                 store.set_device_enforcement(enforced, starting).unwrap();
             })
             .await
@@ -531,10 +533,84 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::SET_CLUSTER_DOORS_CAPABILITY, _) => {
             unary::<op::SetClusterDoors>(json!({"doors": ["public"]}))
         }
+        (ployz_core::ACTIVATE_ENFORCEMENT_CAPABILITY, branch) => {
+            let (seed, members) = match branch {
+                "a legacy Member" => (7, vec![(&machine.machine).into(), (&machine.peer).into()]),
+                _ => (9, vec![(&machine.machine).into()]),
+            };
+            let signer = Signer::from_seed(&[seed; 32]);
+            let issued_at = ployz_core::authority::Timestamp::now();
+            let set = ployz_core::authority::StartingSet {
+                operation: ployz_core::OperationId::random(),
+                members,
+                issued_at,
+                expires_at: issued_at.plus(60_000),
+                signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
+                kept_keys: Vec::new(),
+            };
+            unary::<op::ActivateEnforcement>(json!({
+                "starting_set": ployz_core::authority::Signed::sign(&set, &signer).unwrap(),
+            }))
+        }
+        (ployz_core::SET_RECIPIENT_KEY_CAPABILITY, branch) => {
+            let operation = activated(machine).await;
+            match branch {
+                "generate" => unary::<op::SetRecipientKey>(json!({
+                    "step": "generate", "operation": operation,
+                })),
+                "install" => unary::<op::SetRecipientKey>(json!({
+                    "step": "install", "rotation": stranger_rotation(machine, operation),
+                })),
+                _ => unary::<op::SetRecipientKey>(json!({
+                    "step": "share", "rotation": stranger_rotation(machine, operation), "to": peer,
+                })),
+            }
+        }
+        (ployz_core::RESEAL_VALUES_CAPABILITY, _) => {
+            activated(machine).await;
+            SealingKey::set_recipient(&machine.data_dir, &SealingKey::generate()).unwrap();
+            unary::<op::ResealValues>(json!({"values": []}))
+        }
         (ployz_core::EXEC_CONTAINER_CAPABILITY, _) => Sample::Exec,
         (ployz_core::BUILD_CAPABILITY, _) => Sample::Build,
         (capability, branch) => panic!("{capability} has no sample for branch {branch:?}"),
     }
+}
+
+/// Commit an activation of this Machine alone, signed at its console by the approved
+/// Device, as the next boot does.
+async fn activated(machine: &Enforcing) -> ployz_core::OperationId {
+    use crate::machine::{Evidence, local_machine::PendingActivation};
+    let operation = ployz_core::OperationId::random();
+    let pending = PendingActivation {
+        operation,
+        members: vec![(&machine.machine).into()],
+        signer: DeviceKey::from(Signer::from_seed(&[7; 32]).public()).code(),
+        signer_evidence: Evidence::LocalSocket,
+        kept_keys: Vec::new(),
+    };
+    machine
+        .store
+        .mutate(move |store| {
+            pending.write(store.data_dir()).unwrap();
+            crate::activation::commit_pending(store, &crate::activation::NoPlugin).unwrap();
+        })
+        .await
+        .unwrap();
+    operation
+}
+
+/// A recipient rotation for `operation` a key this Machine never trusted signed.
+fn stranger_rotation(machine: &Enforcing, operation: ployz_core::OperationId) -> Value {
+    let signer = Signer::from_seed(&[9; 32]);
+    let rotation = ployz_core::authority::SealingRotation {
+        cluster: SealingKey::load(&machine.data_dir).unwrap().unwrap().public_key(),
+        operation,
+        recipient: SealingKey::generate().public_key(),
+        members: vec![(&machine.machine).into()],
+        signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
+    };
+    serde_json::to_value(ployz_core::authority::Signed::sign(&rotation, &signer).unwrap()).unwrap()
 }
 
 fn recovery_code() -> String {
@@ -709,6 +785,26 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
             assert!(
                 !created.is_empty() && created.iter().all(|image| pinned.contains(&image.as_str())),
                 "{case:?}: the doors ran images other than the pins: {created:?}"
+            );
+        }
+        "the key is held unused until a verified rotation names it" => {
+            assert!(
+                SealingKey::load_recipient(&machine.data_dir).unwrap().is_none(),
+                "{case:?}: a generated key was installed"
+            );
+            assert!(
+                SealingKey::load_generated(&machine.data_dir).unwrap().is_some(),
+                "{case:?}: no key was generated"
+            );
+        }
+        "the result opens only under this Machine's recipient key" => {
+            let keys = crate::sealing_key::ClusterKeys::load(&machine.data_dir)
+                .unwrap()
+                .unwrap();
+            assert_ne!(
+                keys.sealing_to().public_key(),
+                keys.identity().public_key(),
+                "{case:?}"
             );
         }
         "Device slots are untouched" => {
