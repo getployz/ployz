@@ -808,6 +808,7 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::labels;
     use std::{
         fs,
         os::unix::fs::{MetadataExt, PermissionsExt},
@@ -975,7 +976,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_copy_created_before_rotation_existed_is_in_until_a_rotation_is_written() {
-        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+        use crate::docker::test_support::runtime_with_running_container;
         use ployz_core::{CopyRotation, MachineId};
 
         let (runtime, fake, id) = runtime_with_running_container().await;
@@ -988,7 +989,7 @@ mod tests {
             .unwrap()
             .as_object_mut()
             .unwrap()
-            .remove(LABEL_GEN)
+            .remove(labels::GEN)
             .unwrap();
         let machine = MachineId::random();
         let rotation = || async {
@@ -1023,11 +1024,11 @@ mod tests {
         crate::docker::test_support::FakeDocker,
         ContainerId,
     ) {
-        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+        use crate::docker::test_support::runtime_with_running_container;
 
         let (runtime, fake, id) = runtime_with_running_container().await;
         edit_config(&fake, |config| {
-            labels(config).remove(LABEL_GEN).unwrap();
+            labels(config).remove(labels::GEN).unwrap();
         });
         assert_eq!(stored_healthcheck(&runtime, &id).await, None);
         (runtime, fake, id)
@@ -1115,12 +1116,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_system_copy_with_no_healthcheck_keeps_it() {
-        use crate::docker::LABEL_NAMESPACE;
-
         let (runtime, fake, _id) = unstamped_copy_with_no_healthcheck().await;
         edit_config(&fake, |config| {
             labels(config).insert(
-                LABEL_NAMESPACE.into(),
+                labels::NAMESPACE.into(),
                 ployz_core::Namespace::system().to_string().into(),
             );
         });
@@ -1158,7 +1157,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_sync_adopts_each_unstamped_copy_whose_spec_decodes() {
-        use crate::docker::LABEL_GEN;
         use crate::docker::test_support::{
             FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
         };
@@ -1195,7 +1193,7 @@ mod tests {
                 .pointer_mut("/Config/Labels")
                 .and_then(serde_json::Value::as_object_mut)
                 .unwrap()
-                .remove(LABEL_GEN)
+                .remove(labels::GEN)
                 .unwrap();
         }
         let [undecodable, valid] = ids.try_into().unwrap();

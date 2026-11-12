@@ -4,11 +4,11 @@ use std::num::NonZeroU64;
 
 use ployz_core::{
     Ciphertext, ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRefusal,
-    ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL, DeploymentLogId, DockerVolumeName, Gen,
-    HealthObservation, MachineId, MachineStorageObservation, Namespace, Placement,
-    PrivateAccessSet, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig,
-    ServiceMode, ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference,
+    ContainerRuntimeObservation, DeploymentLogId, DockerVolumeName, Gen, HealthObservation,
+    MachineId, MachineStorageObservation, Namespace, Placement, PrivateAccessSet,
+    ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig, ServiceMode,
+    ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    labels,
 };
 
 use super::*;
@@ -481,7 +481,7 @@ async fn a_copy_keeps_its_sources_label_and_gen() {
         .try_update(|parts| {
             parts
                 .labels
-                .insert(DEPLOYMENT_ID_LABEL.to_owned(), deploy.to_string());
+                .insert(labels::DEPLOYMENT_ID.to_owned(), deploy.to_string());
         })
         .unwrap();
     let service = global_service(qualified("app", "api"), 'a', Placement::default(), source);

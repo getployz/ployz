@@ -1,5 +1,6 @@
 //! Stateful fake-Docker support for Volume tests.
 
+use ployz_core::Namespace;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
@@ -408,7 +409,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         let network = fake.network.lock().unwrap().clone().unwrap_or_else(|| {
             serde_json::json!({
                 "Name": "ployz",
-                "Labels": {"ployzd.managed": ""},
+                "Labels": {labels::SYSTEM_MANAGED: ""},
                 "IPAM": {"Config": [{"Subnet": "10.210.0.0/24", "Gateway": "10.210.0.1"}]},
             })
         });

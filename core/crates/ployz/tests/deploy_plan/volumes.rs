@@ -702,7 +702,7 @@ fn a_grown_provisioned_volume_is_reused_despite_the_size_docker_froze_at_create(
 fn provisioned_volume_requires_requested_labels() {
     let mut existing = observed_volume(machine_id('1'), "data");
     existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
-    existing.labels.remove(NAMESPACE_LABEL);
+    existing.labels.remove(labels::NAMESPACE);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
@@ -1549,7 +1549,7 @@ fn deploy_over_mismatched_volume(selected: &[&ServiceName]) -> Result<DeployPrev
     let (web, db) = web_and_db();
     let mut existing = observed_volume(machine_id('1'), "data");
     existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
-    existing.labels.remove(NAMESPACE_LABEL);
+    existing.labels.remove(labels::NAMESPACE);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),

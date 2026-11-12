@@ -12,13 +12,11 @@ use super::{
     rotation::{CopyRotation, Gen},
     spec::{HealthcheckSpec, ResolvedServiceSpec},
 };
+use crate::labels::{self, LabelMap};
 use crate::{
     ContainerAddress, ContainerId, DeploymentLogId, MachineId, Namespace, QualifiedService,
     ServiceId, ServiceName,
 };
-
-/// Docker label carrying the deployment that created a Container.
-pub const DEPLOYMENT_ID_LABEL: &str = "ployz.deployment.id";
 
 /// Value that replaces each environment value in a redacted observation.
 pub const REDACTED_ENVIRONMENT_VALUE: &str = "<redacted>";
@@ -292,9 +290,9 @@ impl TryFrom<ContainerObservationParts> for ContainerObservation {
 
     fn try_from(parts: ContainerObservationParts) -> Result<Self, Self::Error> {
         for (label, expected) in [
-            ("ployz.service.id", parts.resolved_spec.service_id.as_str()),
-            ("ployz.service.name", parts.resolved_spec.name.as_str()),
-            ("ployz.namespace", parts.namespace.as_str()),
+            (labels::SERVICE_ID, parts.resolved_spec.service_id.as_str()),
+            (labels::SERVICE_NAME, parts.resolved_spec.name.as_str()),
+            (labels::NAMESPACE, parts.namespace.as_str()),
         ] {
             if parts
                 .labels
@@ -304,13 +302,11 @@ impl TryFrom<ContainerObservationParts> for ContainerObservation {
                 return Err(ContainerObservationError { label });
             }
         }
-        if (parts.labels.contains_key("ployz.managed")
-            || parts.labels.contains_key("ployz.service.hook"))
-            && parts.labels.contains_key("ployz.service.hook")
-                != (parts.kind == ContainerKind::PreDeployHook)
+        if (parts.labels.has_label(labels::MANAGED) || parts.labels.has_label(labels::HOOK))
+            && parts.labels.has_label(labels::HOOK) != (parts.kind == ContainerKind::PreDeployHook)
         {
             return Err(ContainerObservationError {
-                label: "ployz.service.hook",
+                label: labels::HOOK,
             });
         }
         Ok(Self { parts })
@@ -343,12 +339,31 @@ impl ContainerObservationParts {
         self.r#gen.unwrap_or(Gen::FIRST)
     }
 
-    /// The Deploy this Container was created under, from its `DEPLOYMENT_ID_LABEL`.
+    /// The Deploy this Container was created under, from its `ployz.deployment.id` label.
     #[must_use]
     pub fn deploy_label(&self) -> Option<DeploymentLogId> {
-        self.labels
-            .get(DEPLOYMENT_ID_LABEL)
+        self.deployment_label()
             .and_then(|label| DeploymentLogId::parse(label).ok())
+    }
+
+    /// The `ployz.deployment.id` label as written, whether or not it parses.
+    #[must_use]
+    pub fn deployment_label(&self) -> Option<&str> {
+        self.labels.label(labels::DEPLOYMENT_ID)
+    }
+
+    /// The creation key this Container was made under, from its `ployz.creation.key` label.
+    #[must_use]
+    pub fn creation_key(&self) -> Option<&str> {
+        self.labels.label(labels::CREATION_KEY)
+    }
+
+    /// Whether its creation key names a slot of `run`.
+    #[must_use]
+    pub fn made_under(&self, run: &DeploymentLogId) -> bool {
+        self.creation_key()
+            .and_then(|key| key.strip_prefix(run.as_str()))
+            .is_some_and(|slot| slot.starts_with(':'))
     }
 }
 
@@ -1034,6 +1049,130 @@ mod tests {
         let slot = group.observed_global_slot().unwrap();
         assert_eq!(slot.identity().to_string(), "app/api");
         assert_eq!(slot.resolved_spec().container.image, "api:new");
+    }
+
+    #[test]
+    fn admission_accepts_exactly_the_label_sets_consistent_with_the_retained_facts() {
+        let service = ContainerKind::ServiceContainer;
+        let hook = ContainerKind::PreDeployHook;
+        let id = "a".repeat(32);
+        // (labels, kind, rejected by)
+        type Case<'a> = (&'a [(&'a str, &'a str)], ContainerKind, Option<&'a str>);
+        let table: [Case; 22] = [
+            (&[], service, None),
+            (&[], hook, None),
+            (&[("ployz.managed", "")], service, None),
+            (&[("ployz.managed", "true")], service, None),
+            (&[("ployz.managed", "")], hook, Some("ployz.service.hook")),
+            (
+                &[("ployz.managed", ""), ("ployz.service.hook", "pre-deploy")],
+                service,
+                Some("ployz.service.hook"),
+            ),
+            (
+                &[("ployz.managed", ""), ("ployz.service.hook", "pre-deploy")],
+                hook,
+                None,
+            ),
+            (
+                &[("ployz.managed", ""), ("ployz.service.hook", "future-hook")],
+                hook,
+                None,
+            ),
+            (
+                &[("ployz.service.hook", "")],
+                service,
+                Some("ployz.service.hook"),
+            ),
+            (&[("ployz.service.hook", "")], hook, None),
+            (&[("ployzd.managed", "")], hook, None),
+            (&[("ployzd.managed", "")], service, None),
+            (&[("com.example.other", "x")], hook, None),
+            (&[("ployz.namespace", "app")], service, None),
+            (
+                &[("ployz.namespace", "other")],
+                service,
+                Some("ployz.namespace"),
+            ),
+            (&[("ployz.namespace", "")], service, Some("ployz.namespace")),
+            (&[("ployz.service.name", "api")], service, None),
+            (
+                &[("ployz.service.name", "web")],
+                service,
+                Some("ployz.service.name"),
+            ),
+            (&[("ployz.service.id", &id)], service, None),
+            (
+                &[("ployz.service.id", "b")],
+                service,
+                Some("ployz.service.id"),
+            ),
+            (
+                &[
+                    ("ployz.service.id", "b"),
+                    ("ployz.service.name", "web"),
+                    ("ployz.namespace", "other"),
+                ],
+                service,
+                Some("ployz.service.id"),
+            ),
+            (
+                &[("ployz.namespace", "other"), ("ployz.service.hook", "")],
+                service,
+                Some("ployz.namespace"),
+            ),
+        ];
+        for (labels, kind, rejected_by) in table {
+            let mut parts = observation(kind).into_parts();
+            parts.labels = labels
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            let admitted = ContainerObservation::try_from(parts).map(|_| ());
+            assert_eq!(
+                admitted.err().map(|error| error.label),
+                rejected_by,
+                "{labels:?} on {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn label_accessors_read_the_run_and_the_creation_key() {
+        let mut parts: crate::ContainerObservationParts =
+            observation(ContainerKind::ServiceContainer).into();
+        let run = crate::DeploymentLogId::parse("deploy-7").unwrap();
+        let other = crate::DeploymentLogId::parse("deploy-70").unwrap();
+        let read = |parts: &crate::ContainerObservationParts| {
+            ContainerObservation::try_from(parts.clone()).unwrap()
+        };
+        let bare = read(&parts);
+        assert_eq!(bare.deployment_label(), None);
+        assert_eq!(bare.creation_key(), None);
+        assert!(!bare.made_under(&run));
+
+        parts.labels.insert(
+            crate::labels::DEPLOYMENT_ID.to_owned(),
+            "deploy-7".to_owned(),
+        );
+        parts.labels.insert(
+            crate::labels::CREATION_KEY.to_owned(),
+            "deploy-7:0".to_owned(),
+        );
+        let stamped = read(&parts);
+        assert_eq!(stamped.deployment_label(), Some("deploy-7"));
+        assert_eq!(stamped.deploy_label(), Some(run.clone()));
+        assert_eq!(stamped.creation_key(), Some("deploy-7:0"));
+        assert!(stamped.made_under(&run));
+        assert!(!stamped.made_under(&other));
+
+        parts.labels.insert(
+            crate::labels::DEPLOYMENT_ID.to_owned(),
+            "not a run!".to_owned(),
+        );
+        let unparsed = read(&parts);
+        assert_eq!(unparsed.deployment_label(), Some("not a run!"));
+        assert_eq!(unparsed.deploy_label(), None);
     }
 
     fn observation(kind: ContainerKind) -> ContainerObservation {

@@ -1005,3 +1005,21 @@ async fn a_server_whose_containers_cannot_be_inspected_withholds_only_sealed_lin
     );
     assert_eq!(shown(&nothing_sealed).len(), 1);
 }
+
+#[test]
+fn the_sdk_log_filter_reads_exactly_the_label_keys_the_labels_module_writes() {
+    let script = include_str!("../../../ployz-sdk/runtime-logs.js");
+    let read: BTreeSet<&str> = script
+        .split("labels[\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert_eq!(
+        read,
+        BTreeSet::from([
+            ployz_core::labels::CLOUD_SERVICE_ID,
+            ployz_core::labels::DEPLOYMENT_ID,
+            ployz_core::labels::SERVICE_NAME,
+        ])
+    );
+}

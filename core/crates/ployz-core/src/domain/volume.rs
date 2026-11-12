@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MANAGED_LABEL,
-    MachinePath, NAMESPACE_LABEL, Namespace, ServiceVolumeReference, ValueError,
+    BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MachinePath,
+    Namespace, ServiceVolumeReference, ValueError, labels,
 };
 
 /// A storage source declared under a service-local reference.
@@ -113,7 +113,7 @@ impl TryFrom<RawVolumeSource> for VolumeSource {
         | RawVolumeSource::Provisioned { labels, .. } = &source
             && let Some(key) = labels
                 .keys()
-                .find(|key| key.as_str() == MANAGED_LABEL || key.as_str() == NAMESPACE_LABEL)
+                .find(|key| key.as_str() == labels::MANAGED || key.as_str() == labels::NAMESPACE)
         {
             return Err(ValueError::new(
                 "volume label",
@@ -205,8 +205,8 @@ impl VolumeSource {
             | RawVolumeSource::Tmpfs { .. } => return BTreeMap::new(),
         };
         if let Some(scope) = &self.scope {
-            labels.insert(MANAGED_LABEL.into(), String::new());
-            labels.insert(NAMESPACE_LABEL.into(), scope.namespace.to_string());
+            labels.insert(labels::MANAGED.into(), String::new());
+            labels.insert(labels::NAMESPACE.into(), scope.namespace.to_string());
         }
         labels
     }

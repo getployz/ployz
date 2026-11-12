@@ -539,7 +539,7 @@ pub const SEALED_VALUE: &str = "a Sealed value";
 
 /// The digest a preview rule or review approves for `spec`, a preview's spec in its
 /// derived `namespace`: its [`PayloadDigest`] with the image, pull policy, Sealed
-/// identity and [`crate::config::SERVICE_ID_LABEL`] left out, each Generated Value `service` names checked and replaced by its
+/// identity and [`crate::labels::CLOUD_SERVICE_ID`] left out, each Generated Value `service` names checked and replaced by its
 /// generator, and every occurrence of `namespace` replaced by [`NAMESPACE_PLACEHOLDER`].
 ///
 /// # Errors
@@ -585,7 +585,7 @@ fn templated(
     // Each preview's Services are its own copies with their own IDs, which only this
     // bookkeeping label names.
     let mut labels = spec.container.labels.as_map().clone();
-    labels.remove(crate::config::SERVICE_ID_LABEL);
+    labels.remove(crate::labels::CLOUD_SERVICE_ID);
     spec.container.labels = crate::ContainerLabels::parse(labels)
         .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
     for (key, generator) in &service.generated {

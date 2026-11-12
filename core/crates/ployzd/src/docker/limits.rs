@@ -6,7 +6,8 @@ use ployz_core::{
     LimitsRefusal, ResolvedServiceSpec, SpecChange, compare_specs,
 };
 
-use super::{ContainerRuntime, Error, ManagedLabels, docker_error};
+use super::{ContainerRuntime, Error, docker_error};
+use ployz_core::labels::ServiceLabels;
 
 /// The limits Docker reports on a Container after an update asked for others.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,7 +72,7 @@ impl ContainerRuntime {
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::NotManaged)?;
-        if ManagedLabels::parse(labels)?.kind != ContainerKind::ServiceContainer {
+        if ServiceLabels::parse(labels)?.kind != ContainerKind::ServiceContainer {
             return Err(Error::NotAServiceContainer(*container_id));
         }
         // A stopped Container would take the limits but serve nothing; the Deploy

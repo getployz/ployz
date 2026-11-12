@@ -776,14 +776,9 @@ fn left_pending(
                 && requested
                     .iter()
                     .any(|spec| spec.name == *container.service_name())
-                && container.deploy_label().is_some_and(|run| {
-                    ended_runs.contains(&run)
-                        && container
-                            .labels
-                            .get(ployz_core::labels::CREATION_KEY)
-                            .and_then(|key| key.strip_prefix(run.as_str()))
-                            .is_some_and(|slot| slot.starts_with(':'))
-                })
+                && container
+                    .deploy_label()
+                    .is_some_and(|run| ended_runs.contains(&run) && container.made_under(&run))
         })
         .map(|container| container.container_id)
         .collect()

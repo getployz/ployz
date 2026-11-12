@@ -1,3 +1,4 @@
+use ployz_core::labels;
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
@@ -21,7 +22,7 @@ use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use memchr::memmem::Finder;
 use ployz_core::{
-    ContainerId, MachineId, Namespace, QualifiedService, ServiceId, ServiceName,
+    ContainerId, MachineId,
     metrics::{MarkerKind, MetricMarker, MetricRange},
 };
 use serde::{Deserialize, Serialize};
@@ -43,13 +44,7 @@ use super::{
     settled::{Key, Settlement, Settlements, Unfinished},
     ship::Outbox,
 };
-use crate::docker::{
-    LABEL_DEPLOYMENT, LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
-    LABEL_SERVICE_NAME,
-};
-use crate::sealed_env::LABEL_SEALED;
 
-const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
 const LOCAL_LOGS_DIR: &str = "local-logs";
 /// Docker's default `max-file` for the `local` driver.
 const DEFAULT_MAX_FILES: usize = 5;
@@ -1722,7 +1717,7 @@ fn retained_env(inspected: &ContainerInspectResponse) -> Option<RetainedEnv> {
     let label = config
         .labels
         .as_ref()
-        .and_then(|labels| labels.get(LABEL_SEALED));
+        .and_then(|labels| labels.get(labels::SEALED_ENV));
     RetainedEnv::from_inspected(
         config.env.as_deref().unwrap_or_default(),
         label.map(String::as_str),
@@ -1736,18 +1731,7 @@ fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {
 
 pub(super) fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta> {
     let labels = inspected.config.as_ref()?.labels.as_ref()?;
-    if !labels.contains_key(LABEL_MANAGED) && !labels.contains_key(LABEL_SYSTEM_MANAGED) {
-        return None;
-    }
-    let kind = if labels.contains_key(LABEL_HOOK) {
-        ContainerKind::PreDeployHook
-    } else if labels.get(LABEL_NAMESPACE).map(String::as_str) == Some(Namespace::SYSTEM) {
-        ContainerKind::System
-    } else if labels.contains_key(LABEL_SERVICE_NAME) {
-        ContainerKind::Service
-    } else {
-        ContainerKind::System
-    };
+    let kind = ContainerKind::of(labels)?;
     let state = inspected.state.as_ref();
     let finished_at = state
         .and_then(|state| state.finished_at.clone())
@@ -1757,9 +1741,9 @@ pub(super) fn container_meta(inspected: &ContainerInspectResponse) -> Option<Con
         && (state.and_then(|state| state.running) != Some(true)
             || state.and_then(|state| state.restarting) == Some(true));
     Some(ContainerMeta {
-        service: labels.get(LABEL_SERVICE_NAME).cloned(),
-        namespace: labels.get(LABEL_NAMESPACE).cloned(),
-        deployment: labels.get(LABEL_DEPLOYMENT).cloned(),
+        service: labels.get(labels::SERVICE_NAME).cloned(),
+        namespace: labels.get(labels::NAMESPACE).cloned(),
+        deployment: labels.get(labels::DEPLOYMENT_ID).cloned(),
         replica: inspected
             .name
             .as_deref()
@@ -1806,11 +1790,7 @@ fn service_event(
     let labelled = labelled_by_event(message);
     let meta = container_meta(&labelled).filter(|meta| meta.kind == ContainerKind::Service)?;
     let attributes = labelled.config.and_then(|config| config.labels)?;
-    let service_id = ServiceId::parse(attributes.get(LABEL_SERVICE_ID)?.clone()).ok()?;
-    let service = QualifiedService::new(
-        Namespace::parse(meta.namespace.as_deref()?).ok()?,
-        ServiceName::parse(meta.service.as_deref()?).ok()?,
-    );
+    let (service_id, service) = labels::service_pair(&attributes)?;
     let ts = message
         .time_nano
         .or_else(|| message.time.map(|secs| secs.saturating_mul(NANOS_PER_SEC)))
@@ -2589,6 +2569,136 @@ mod tests {
         };
         assert_eq!(kind("ployz-system", "ingress"), ContainerKind::System);
         assert_eq!(kind("default", "web"), ContainerKind::Service);
+    }
+
+    #[test]
+    fn container_meta_classifies_by_labels_leniently() {
+        let classify = |labels: &[(&str, &str)]| {
+            container_meta(&labelled(labels)).map(|meta| {
+                (
+                    meta.kind,
+                    meta.namespace,
+                    meta.service,
+                    meta.deployment,
+                    meta.replica,
+                )
+            })
+        };
+        let owned =
+            |kind, namespace: Option<&str>, service: Option<&str>, deployment: Option<&str>| {
+                Some((
+                    kind,
+                    namespace.map(str::to_owned),
+                    service.map(str::to_owned),
+                    deployment.map(str::to_owned),
+                    "replica".to_owned(),
+                ))
+            };
+        assert_eq!(classify(&[]), None);
+        assert_eq!(classify(&[("com.example.other", "x")]), None);
+        assert_eq!(classify(&[("ployz.namespace", "app")]), None);
+        assert_eq!(
+            classify(&[("ployz.service.name", "web"), ("ployz.service.id", "x")]),
+            None
+        );
+        assert_eq!(
+            classify(&[("ployzd.managed", "")]),
+            owned(ContainerKind::System, None, None, None)
+        );
+        assert_eq!(
+            classify(&[("ployz.managed", "")]),
+            owned(ContainerKind::System, None, None, None),
+            "a managed container with no Service name is a system one"
+        );
+        assert_eq!(
+            classify(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "app"),
+                ("ployz.service.name", "web"),
+                ("ployz.deployment.id", "d1"),
+            ]),
+            owned(ContainerKind::Service, Some("app"), Some("web"), Some("d1"))
+        );
+        assert_eq!(
+            classify(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "ployz-system"),
+                ("ployz.service.name", "ingress"),
+            ]),
+            owned(
+                ContainerKind::System,
+                Some("ployz-system"),
+                Some("ingress"),
+                None
+            )
+        );
+        assert_eq!(
+            classify(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "ployz-system"),
+                ("ployz.service.name", "ingress"),
+                ("ployz.service.hook", "pre-deploy"),
+            ]),
+            owned(
+                ContainerKind::PreDeployHook,
+                Some("ployz-system"),
+                Some("ingress"),
+                None
+            ),
+            "a hook label wins over the system Namespace"
+        );
+        assert_eq!(
+            classify(&[
+                ("ployz.managed", ""),
+                ("ployz.service.name", "web"),
+                ("ployz.service.hook", ""),
+            ]),
+            owned(ContainerKind::PreDeployHook, None, Some("web"), None),
+            "any hook value is a hook"
+        );
+        assert_eq!(
+            classify(&[
+                ("ployzd.managed", ""),
+                ("ployz.service.name", "web"),
+                ("ployz.namespace", "app"),
+            ]),
+            owned(ContainerKind::Service, Some("app"), Some("web"), None),
+            "the system marker admits a container the Service labels then classify"
+        );
+        assert_eq!(
+            classify(&[("ployz.service.hook", "pre-deploy")]),
+            None,
+            "a hook label alone does not make a container Ployz's"
+        );
+    }
+
+    #[test]
+    fn meta_json_names_each_container_kind_in_snake_case() {
+        let meta = |kind| ContainerMeta {
+            service: Some("web".to_owned()),
+            namespace: Some("app".to_owned()),
+            deployment: None,
+            replica: "web-1".to_owned(),
+            kind,
+            started_at: None,
+            finished_at: None,
+            exit_code: None,
+            oom_killed: false,
+        };
+        for (kind, name) in [
+            (ContainerKind::Service, "service"),
+            (ContainerKind::PreDeployHook, "pre_deploy_hook"),
+            (ContainerKind::System, "system"),
+        ] {
+            let json = serde_json::to_value(meta(kind)).unwrap();
+            assert_eq!(json.get("kind"), Some(&serde_json::json!(name)));
+            let back: ContainerMeta = serde_json::from_value(json).unwrap();
+            assert_eq!(back.kind, kind);
+        }
+        assert_eq!(
+            serde_json::to_string(&meta(ContainerKind::Service)).unwrap(),
+            r#"{"service":"web","namespace":"app","deployment":null,"replica":"web-1","kind":"service","started_at":null,"finished_at":null,"exit_code":null,"oom_killed":false}"#
+        );
     }
 
     #[test]

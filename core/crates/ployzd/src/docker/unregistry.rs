@@ -10,6 +10,7 @@ use std::{
 use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use ployz_core::{
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ManagementAddress, RpcError,
+    labels,
 };
 use tokio::{net::TcpStream, sync::Mutex};
 
@@ -195,7 +196,7 @@ fn unregistry_config(socket: &Path, management_address: Ipv6Addr) -> ContainerCr
             "UNREGISTRY_CONTAINERD_NAMESPACE=moby".into(),
             format!("UNREGISTRY_CONTAINERD_SOCK={container_socket}"),
         ]),
-        labels: Some(HashMap::from([("ployz.managed".into(), String::new())])),
+        labels: Some(HashMap::from([(labels::MANAGED.into(), String::new())])),
         host_config: Some(HostConfig {
             mounts: Some(vec![Mount {
                 typ: Some(MountType::BIND),
@@ -300,6 +301,18 @@ mod tests {
         assert_eq!(
             unregistry_management_address(&LocalMachinePhase::Joining, None),
             None
+        );
+    }
+
+    #[test]
+    fn the_unregistry_container_is_marked_managed_without_a_namespace() {
+        let config = unregistry_config(
+            Path::new("/run/containerd/containerd.sock"),
+            "fdcc:202:202:202:202:202:202:202".parse().unwrap(),
+        );
+        assert_eq!(
+            config.labels,
+            Some(HashMap::from([(labels::MANAGED.to_owned(), String::new())]))
         );
     }
 

@@ -312,15 +312,7 @@ impl fmt::Display for SegmentName {
 }
 
 /// What a container was, read from its labels when the store first saw it.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ContainerKind {
-    Service,
-    PreDeployHook,
-    /// Ingress, the unregistry, Corrosion, and other containers Ployz runs
-    /// for itself. They share the one cap with apps.
-    System,
-}
+pub use ployz_core::labels::Class as ContainerKind;
 
 /// The contents of `meta.json`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

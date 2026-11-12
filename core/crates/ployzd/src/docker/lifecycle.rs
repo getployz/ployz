@@ -1,3 +1,4 @@
+use ployz_core::labels::{self, ServiceLabels};
 use std::future::Future;
 
 use bollard::{
@@ -10,7 +11,6 @@ use bollard::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
 };
-use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
     MachineStorageObservation, Namespace, QualifiedService, ResolvedServiceSpec, ServiceName,
@@ -27,8 +27,8 @@ use crate::{
 };
 
 use super::{
-    ContainerRuntime, Error, IngressRecovery, LABEL_SERVICE_ID, ManagedLabels, create,
-    create::CreationNetwork, docker_error, doors, spec_store::ConfigOperation,
+    ContainerRuntime, Error, IngressRecovery, create, create::CreationNetwork, docker_error, doors,
+    spec_store::ConfigOperation,
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
@@ -201,19 +201,12 @@ impl ContainerRuntime {
                 .join(create::TCP_MIGRATE_REQ.replace('.', "/"))
                 .exists(),
         );
-        if let Some(id) = deployment_id {
-            body.labels
-                .get_or_insert_default()
-                .insert(super::LABEL_DEPLOYMENT.into(), id.to_string());
-        }
-        if let Some(key) = creation_key {
-            body.labels
-                .get_or_insert_default()
-                .insert(CREATION_KEY.into(), key.into());
-        }
-        body.labels
-            .get_or_insert_default()
-            .insert(super::LABEL_GEN.into(), r#gen.to_string());
+        labels::stamp_run(
+            body.labels.get_or_insert_default(),
+            deployment_id,
+            creation_key,
+            r#gen,
+        );
         if let ImagePull::Policy(registry_auth) = image
             && let Err(error) = prepare_image(
                 &self.docker.client,
@@ -431,10 +424,10 @@ impl ContainerRuntime {
             .and_then(|config| config.labels)
             .unwrap_or_default();
         let (true, Some(service_id)) = (
-            labels.contains_key(CREATION_KEY)
+            labels.contains_key(labels::CREATION_KEY)
                 && inspected.state.and_then(|state| state.status)
                     == Some(ContainerStateStatusEnum::CREATED),
-            labels.get(LABEL_SERVICE_ID),
+            labels.get(labels::SERVICE_ID),
         ) else {
             return Ok(false);
         };
@@ -498,7 +491,7 @@ impl ContainerRuntime {
             .config
             .as_ref()
             .and_then(|config| config.labels.as_ref())
-            .and_then(|labels| labels.get(CREATION_KEY))
+            .and_then(|labels| labels.get(labels::CREATION_KEY))
             .map(String::as_str)
             != Some(key)
         {
@@ -792,7 +785,7 @@ impl ContainerRuntime {
         // left in a removed Container's network.
         let mut managed = self.docker.managed_containers().await?;
         managed.sort_by_key(|(_, labels)| {
-            ManagedLabels::parse(labels)
+            ServiceLabels::parse(labels)
                 .is_ok_and(|managed| managed.identity == QualifiedService::system_ingress_holder())
         });
         for (container_id, _) in managed {
@@ -831,7 +824,7 @@ impl ContainerRuntime {
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::NotManaged)?;
-        ManagedLabels::parse(labels)?;
+        ServiceLabels::parse(labels)?;
         self.specs
             .get(container_id)
             .await?
@@ -1147,6 +1140,85 @@ mod tests {
         assert_eq!(
             body.pointer("/NetworkingConfig/EndpointsConfig/ployz/IPAMConfig/IPv4Address"),
             Some(&serde_json::json!("10.210.0.2")),
+        );
+    }
+
+    async fn stamped_labels(
+        kind: ContainerKind,
+        creation_key: Option<&str>,
+        deployment_id: Option<&ployz_core::DeploymentLogId>,
+        generation: Gen,
+    ) -> serde_json::Value {
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
+            ..FakeDocker::default()
+        })
+        .await;
+        runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                ContainerRequest {
+                    creation_key,
+                    deployment_id,
+                    r#gen: generation,
+                    ..container_request(kind, &namespace, &spec, std::future::ready(None))
+                },
+            )
+            .await
+            .unwrap();
+        let body = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap()
+            .1
+            .clone();
+        body.get("Labels").unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_created_container_carries_exactly_the_stamped_labels() {
+        let deployment = ployz_core::DeploymentLogId::parse("deploy-7").unwrap();
+        let without_service_id = |mut labels: serde_json::Value| {
+            let labels = labels.as_object_mut().unwrap();
+            let id = labels.remove("ployz.service.id").unwrap();
+            ployz_core::ServiceId::parse(id.as_str().unwrap()).unwrap();
+            serde_json::Value::Object(labels.clone())
+        };
+        let service = stamped_labels(
+            ContainerKind::ServiceContainer,
+            Some("plan:0"),
+            Some(&deployment),
+            Gen::new(3),
+        )
+        .await;
+        assert_eq!(
+            without_service_id(service),
+            serde_json::json!({
+                "ployz.managed": "",
+                "ployz.namespace": "app",
+                "ployz.service.name": "api",
+                "ployz.network.ipv6": "true",
+                "ployz.deployment.id": "deploy-7",
+                "ployz.creation.key": "plan:0",
+                "ployz.gen": "3",
+            })
+        );
+        let hook = stamped_labels(ContainerKind::PreDeployHook, None, None, Gen::FIRST).await;
+        assert_eq!(
+            without_service_id(hook),
+            serde_json::json!({
+                "ployz.managed": "",
+                "ployz.namespace": "app",
+                "ployz.service.name": "api",
+                "ployz.service.hook": "pre-deploy",
+                "ployz.network.ipv6": "true",
+                "ployz.gen": Gen::FIRST.to_string(),
+            })
         );
     }
 

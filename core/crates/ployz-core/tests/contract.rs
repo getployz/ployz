@@ -14,16 +14,16 @@ use ployz_core::{
     ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
     ImageSummary, ImagesRemoved, IngressHost, InspectBuildGrantRequest, InspectRequest,
     LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY, LeaveRequest, Left, LeftPhase,
-    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
-    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate,
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
-    MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
-    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
-    PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
+    ListImagesRequest, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
+    MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
+    ManagementAddress, NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, PruneImagesRequest,
+    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
     PullImageFromMachineRequest, RequestMachineUpgradeRequest, ResolvedServiceSpec, ResponseKind,
     RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, RunRotation, ServiceId,
     ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames,
-    op,
+    labels, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -283,7 +283,7 @@ fn namespace_volume_name_includes_the_namespace_and_differs_across_namespaces() 
 #[test]
 fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope() {
     for owner in ["shop", "blog"] {
-        for reserved in [NAMESPACE_LABEL, MANAGED_LABEL] {
+        for reserved in [labels::NAMESPACE, labels::MANAGED] {
             let raw = ployz_core::RawVolumeSource::Ordinary {
                 name: DockerVolumeName::parse("data").unwrap(),
                 driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
@@ -309,7 +309,7 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
     let request = named.to_create_volume_request().unwrap();
     assert_eq!(request.name.as_str(), "shop_data");
     assert_eq!(
-        request.labels.get(NAMESPACE_LABEL).map(String::as_str),
+        request.labels.get(labels::NAMESPACE).map(String::as_str),
         Some("shop")
     );
     assert_eq!(request.labels.get("user").map(String::as_str), Some("kept"));
