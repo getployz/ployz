@@ -127,7 +127,11 @@ export function useStagedPlacements(
     },
     approve: async () => {
       const kept: (PlacementApproval & { readonly volumeId: string })[] = [];
-      for (const { volume, row, changes } of staged) {
+      for (const { volume, row, members: shown, changes } of staged) {
+        // A Volume no Server enforces on asks nothing, so it reads nothing more. A Server that started enforcing since
+        // refuses its run, and says to deploy again. A restore into a new Volume runs on its source's Servers.
+        const enforcing = shown.some((member) => member.answered && member.enforces === true);
+        if (!enforcing && !changes.some((change) => change.kind === "seed")) continue;
         const asked = await placementApprovalAsks(queryClient, organizationSlug, environment, volume, row, changes);
         for (const { scope, ask } of asked) {
           const approved = await approveVolume(scope, ask.change);
