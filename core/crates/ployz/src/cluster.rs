@@ -2012,7 +2012,7 @@ async fn list_on_machine(
 /// [`rpc_error`] in its own words, marked unanswered when the router or this client's
 /// deadline shows the target never answered, and undialed as well when the router
 /// couldn't dial it.
-fn unanswered_kept(error: ConnectError) -> RpcError {
+pub(crate) fn unanswered_kept(error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
         return rpc_error(error);
     }

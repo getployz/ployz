@@ -286,8 +286,28 @@ impl CopyLifecycle for Client {
                     .budget(crate::connect::target_read_timeout()),
             )
             .await
-            .map_err(crate::connect::rpc_error)?
-            .containers;
+            .map_err(crate::cluster::unanswered_kept);
+        let listed = match listed {
+            Ok(listed) => listed.containers,
+            // The Server's name and id ride on the error, as they did when every Machine was listed.
+            Err(error) if error.target_unanswered() => {
+                let mut client = self.clone();
+                let machines = client.machines().await.map_err(RpcError::from)?;
+                return Err(
+                    match machines
+                        .iter()
+                        .find(|machine| machine.machine.id == *machine_id)
+                    {
+                        Some(machine) => naming_machine(
+                            crate::cluster::unanswered_by(&machine.machine.name, error),
+                            machine_id,
+                        ),
+                        None => error,
+                    },
+                );
+            }
+            Err(error) => return Err(error),
+        };
         Ok(listed
             .into_iter()
             .filter(|observed| {

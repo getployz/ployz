@@ -1356,3 +1356,71 @@ async fn a_joiner_with_the_role_sets_its_public_door_once() {
         caught_up.ensured
     );
 }
+
+/// A Machine being retired that does not answer its listing names itself in the refusal,
+/// whichever way the other Machine answers.
+#[tokio::test(start_paused = true)]
+async fn a_target_that_does_not_answer_its_listing_is_named_in_the_refusal() {
+    use crate::deploy::CopyLifecycle;
+    use ployz_core::{
+        ContainerList, MachineList, MachineObservation, MembershipObservation, OpaquePayload,
+        RpcRequestBody,
+    };
+    use tonic::{Request, Response};
+
+    let target = machine('1', "target");
+    let peer = machine('2', "peer");
+    let (answering, silent) = (target.clone(), peer.clone());
+    let (client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let (target, peer) = (answering.clone(), silent.clone());
+            let selected = rpc
+                .metadata()
+                .get(ployz_core::ONE_TARGET_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            async move {
+                let body = rpc.into_inner().decode_request().unwrap().body;
+                let response = if matches!(body, RpcRequestBody::ListMachines(_)) {
+                    RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines: [peer, target.clone()]
+                            .into_iter()
+                            .map(|machine| {
+                                MachineObservation::new(machine, MembershipObservation::Up)
+                            })
+                            .collect(),
+                    })
+                } else {
+                    assert!(
+                        matches!(body, RpcRequestBody::ListContainers(_)),
+                        "unexpected {body:?}"
+                    );
+                    if selected == target.id.as_str() {
+                        std::future::pending::<()>().await;
+                    }
+                    RpcResponse::from(ContainerList { containers: vec![] })
+                };
+                Ok(Response::new(response.encode().unwrap()))
+            }
+        })
+        .await;
+    let refusal = client
+        .target_copies(&target.id, &qualified("app", "api"))
+        .await
+        .unwrap_err();
+    server.abort();
+    assert!(refusal.target_unanswered(), "{refusal:?}");
+    assert!(
+        refusal
+            .message
+            .starts_with("Machine target did not answer: "),
+        "{}",
+        refusal.message
+    );
+    assert_eq!(
+        serde_json::to_value(&refusal).unwrap().get("details"),
+        Some(&serde_json::json!({"machine_id": target.id.as_str(), "reason": "target_unanswered"}))
+    );
+}
