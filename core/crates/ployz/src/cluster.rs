@@ -59,14 +59,23 @@ mod session;
 pub(crate) use call::setup_outcome;
 pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
 pub(crate) use container_health::HealthWaitError;
-use deploy_context::DeployContext;
 pub use deploy_context::RuleProofs;
+use deploy_context::{Carried, DeployContext};
 pub(crate) use fan_out::{fan_out, fan_out_entry_last};
 pub(crate) use routes::FullRoutes;
 pub(crate) use session::Refusal;
 use session::Session;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// What an `EnsureContainer` carries to the Machine beside its want.
+#[derive(Clone, Copy)]
+enum Carry {
+    /// The approvals and proofs this client's Deploy holds.
+    Approvals,
+    Nothing,
+}
+
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
 /// answer only once that work lets it through.
 pub(crate) const LIVE_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1098,9 +1107,45 @@ impl Client {
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
-        crate::sealed_compat::admit(self, &target, &want).await?;
-        let carried = self.deploy.carried(&want);
-        let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
+        let request = self.ensure_request(&target, want, Carry::Approvals).await?;
+        let payload = op::EnsureContainer::into_request(request)
+            .encode()
+            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        apply_timeout(
+            timeout,
+            self.send::<op::EnsureContainer>(payload, Some(&target)),
+        )
+        .await
+        .map_err(|error| answered_by(machine_id, error))
+    }
+
+    /// Converge one Container as a joiner's catch-up does, which carries no Deploy's
+    /// approvals and resends the keyed call until it answers.
+    pub(crate) async fn ensure_retried(
+        &mut self,
+        target: &MachineTarget,
+        want: ContainerWant,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        let request = self.ensure_request(target, want, Carry::Nothing).await?;
+        self.call::<op::EnsureContainer>(request, Call::keyed().to(target))
+            .await
+            .map_err(RpcError::from)
+    }
+
+    /// The one place an `EnsureContainer` is built: it admits `want` first, so no Sealed
+    /// value reaches a Machine that can't keep it sealed.
+    async fn ensure_request(
+        &self,
+        target: &MachineTarget,
+        want: ContainerWant,
+        carry: Carry,
+    ) -> Result<EnsureContainerRequest, RpcError> {
+        crate::sealed_compat::admit(self, target, &want).await?;
+        let carried = match carry {
+            Carry::Approvals => self.deploy.carried(&want),
+            Carry::Nothing => Carried::none(),
+        };
+        Ok(EnsureContainerRequest {
             teardown: carried.teardown,
             preview: carried.preview,
             want,
@@ -1108,14 +1153,6 @@ impl Client {
             deploy: carried.deploy,
             rule: carried.rule,
         })
-        .encode()
-        .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(
-            timeout,
-            self.send::<op::EnsureContainer>(payload, Some(&target)),
-        )
-        .await
-        .map_err(|error| answered_by(machine_id, error))
     }
 
     pub async fn change_observed_service(
@@ -1975,7 +2012,7 @@ async fn list_on_machine(
 /// [`rpc_error`] in its own words, marked unanswered when the router or this client's
 /// deadline shows the target never answered, and undialed as well when the router
 /// couldn't dial it.
-fn unanswered_kept(error: ConnectError) -> RpcError {
+pub(crate) fn unanswered_kept(error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
         return rpc_error(error);
     }

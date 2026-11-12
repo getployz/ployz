@@ -2100,6 +2100,61 @@ fn an_earlier_lost_answer_never_hides_a_silent_target() {
     assert!(crate::connect::keep_lost_call(Some(lost), silent).target_unanswered());
 }
 
+/// What a restart wait reports after a run of attempts, the last of which repeats until the
+/// wait runs out. Every row is what `Client::repeat` reports for the same attempts through
+/// `keep_target_reply` and `keep_lost_call`. The two stay separate folds because one case
+/// differs: a redial the entry refuses ends this wait still saying an earlier send may have
+/// been done (`restart.rs`, `still_lost`), while `keep_lost_call` hands a refusal no retry
+/// fixes back as it is.
+#[tokio::test(start_paused = true)]
+async fn a_restart_wait_reports_what_its_attempts_showed_of_the_machine() {
+    let machine = machine('1');
+    let answered = || unavailable("answered");
+    let lost = || unavailable("lost").reply_lost_from(&machine);
+    let silent = || RpcError::unanswered_target(RpcErrorCode::Unavailable, "silent".into());
+    let unreached = || unavailable("unreached").unreached();
+    let rows: [(&str, Vec<RpcError>, &str); 8] = [
+        (
+            "answered, then silent",
+            vec![answered(), silent()],
+            "answered",
+        ),
+        ("lost, then answered", vec![lost(), answered()], "answered"),
+        ("silent, then lost", vec![silent(), lost()], "lost"),
+        ("lost, then silent", vec![lost(), silent()], "silent"),
+        ("lost, then unreached", vec![lost(), unreached()], "lost"),
+        (
+            "answered, then lost, then unreached",
+            vec![answered(), lost(), unreached()],
+            "lost",
+        ),
+        (
+            "silent, then unreached",
+            vec![silent(), unreached()],
+            "silent",
+        ),
+        (
+            "lost, silent, then unreached",
+            vec![lost(), silent(), unreached()],
+            "silent",
+        ),
+    ];
+    for (row, attempts, reported) in rows {
+        let mut attempts = attempts.into_iter();
+        let error = wait_out_restart(
+            &CancellationToken::new(),
+            || {
+                let attempt = attempts.next().unwrap_or_else(unreached);
+                async move { Err::<(), _>(attempt) }
+            },
+            no_redial,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, reported, "{row}: {error:?}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_lost_answer_never_hides_a_closed_session_or_a_refused_key() {
     let machine = machine('1');

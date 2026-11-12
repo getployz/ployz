@@ -35,7 +35,8 @@ use crate::deploy::{Converged, LastIn, Moving, can_move, converge, named};
 
 pub(crate) mod retirement;
 
-use retirement::{Retirement, copies_on, let_go, retire_globals};
+use crate::global_slot::copies_on;
+use retirement::{Retirement, let_go, retire_globals};
 
 pub use crate::deploy::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,

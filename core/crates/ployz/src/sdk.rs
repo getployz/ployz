@@ -1316,7 +1316,7 @@ impl Session {
                     RpcError::unavailable(error.to_string())
                 }
             })?;
-            crate::drain::retirement::retire_ingress_proxy(&client, &id, cancel).await
+            crate::global_slot::retire_ingress_proxy(&client, &id, cancel).await
         })
         .await
     }
