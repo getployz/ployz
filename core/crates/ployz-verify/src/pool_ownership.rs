@@ -24,7 +24,7 @@
 //!
 //! The finding needs a volume plugin installed before the installer creates `ployz-device`.
 //! `install_locked` runs `prepare_storage` before it installs the binaries and units and
-//! enables the plugin's socket (installer/mod.rs:283, :292-295, installer/host.rs:270), so
+//! enables the plugin's socket (installer/mod.rs:283, :292-295, installer/host.rs:273), so
 //! a fresh host has no plugin until a run completes. An earlier `ployzd install`, whose
 //! `--storage` defaults to `none` (ployzd main.rs:108-109), installs both and enables the
 //! socket whatever its storage, and a later `ployzd install --storage zfs:<device>` runs
@@ -108,7 +108,7 @@ struct Disk {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Host {
     /// A release is installed with its units, so ployzd and its volume plugin answer
-    /// (`install_binaries`, `install_units` and `activate_units` in installer/mod.rs, installer/host.rs:261-274).
+    /// (`install_binaries`, `install_units` and `activate_units` in installer/mod.rs, installer/host.rs:264-277).
     release: bool,
     /// The root-backed `ployz` Pool exists on `/var/lib/ployz-machine-pool`, imported
     /// (`MachineLayout::machine_pool_file`, machine_layout.rs:112-116).
@@ -298,7 +298,7 @@ enum Action {
     Verify,
     /// `remember_device_pool` (installer/storage.rs:77-83, :113). `install_locked` then
     /// installs the binaries and units and enables the plugin's socket
-    /// (`install_binaries`, `install_units` and `activate_units` in installer/mod.rs, installer/host.rs:270), which this step includes.
+    /// (`install_binaries`, `install_units` and `activate_units` in installer/mod.rs, installer/host.rs:273), which this step includes.
     Record,
     /// Docker asks the plugin to create a Provisioned Volume (`VolumeStorage::create`,
     /// volume_plugin/pool.rs:96), or a copy asks for the first Pool (copy.rs `first_pool`).

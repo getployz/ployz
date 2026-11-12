@@ -18,9 +18,9 @@ use super::{
 use crate::{
     machine::LocalMachineRecord,
     runtime_unit::{self, UNIT_DIR, UnitSupervision, restart_needed, systemctl},
+    units::Unit,
 };
 
-const UNIT_NAME: &str = "ployz-dns.service";
 const PROBE_BOUND: Duration = Duration::from_secs(2);
 const STOP_BOUND: Duration = Duration::from_secs(5);
 
@@ -63,7 +63,7 @@ impl DnsService {
                 run_dir: run_dir.to_path_buf(),
                 upstreams,
                 spec_file: SpecFile::in_run_dir(run_dir),
-                unit_file: Path::new(UNIT_DIR).join(UNIT_NAME),
+                unit_file: Path::new(UNIT_DIR).join(Unit::Dns.name()),
                 unit_text: unit_text(own_exe.path(), socket),
                 own_exe,
             }),
@@ -140,7 +140,7 @@ impl DnsService {
                 self.inner.spec_file.publish(Some(spec))?;
                 if self.inner.supervision == UnitSupervision::Systemd {
                     runtime_unit::install(&self.inner.unit_file, &self.inner.unit_text).await?;
-                    systemctl(&["start", "--no-block", UNIT_NAME]).await;
+                    systemctl(&["start", "--no-block", Unit::Dns.name()]).await;
                 }
             }
             None => {
@@ -154,8 +154,8 @@ impl DnsService {
     }
 
     async fn move_onto_own_binary(&self) {
-        if runtime_unit::runs_other_software(UNIT_NAME, &self.inner.own_exe).await {
-            systemctl(&["restart", "--no-block", UNIT_NAME]).await;
+        if runtime_unit::runs_other_software(Unit::Dns.name(), &self.inner.own_exe).await {
+            systemctl(&["restart", "--no-block", Unit::Dns.name()]).await;
         }
     }
 }
@@ -166,7 +166,7 @@ impl DnsService {
 /// missing file does, and PID 1 aborts (systemd/systemd#35288, fixed in 257).
 /// A stopped unit has released its store.
 async fn retire_unit(unit_file: &Path) -> io::Result<()> {
-    if systemctl(&["stop", UNIT_NAME]).await.is_none() {
+    if systemctl(&["stop", Unit::Dns.name()]).await.is_none() {
         return Ok(());
     }
     match fs::remove_file(unit_file) {
@@ -278,6 +278,43 @@ mod tests {
         assert!(!text.contains("[Install]"));
     }
 
+    /// Pinned from `main`: an installed Machine's unit is rewritten only when this text changes.
+    #[test]
+    fn unit_text_keeps_its_exact_bytes() {
+        assert_eq!(
+            unit_text(
+                Path::new("/usr/local/bin/ployzd"),
+                Path::new("/run/ployz/ployz.sock"),
+            ),
+            "\
+# Written by ployzd. Removed by reset, uninstall, and reboot.
+[Unit]
+Description=Ployz internal DNS
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/ployzd --socket /run/ployz/ployz.sock dns
+EnvironmentFile=-/etc/default/ployz
+Restart=always
+RestartSec=1
+RestartPreventExitStatus=78
+SuccessExitStatus=78
+FileDescriptorStoreMax=4
+TimeoutStopSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE
+"
+        );
+    }
+
     const RETIRE_CASE: &str = "PLOYZ_DNS_RETIRE_CASE";
     const RETIRE_ROOT: &str = "PLOYZ_DNS_RETIRE_ROOT";
 
@@ -307,7 +344,7 @@ esac"#;
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(retire_unit(&root.join(UNIT_NAME)))
+                .block_on(retire_unit(&root.join(Unit::Dns.name())))
                 .unwrap();
             fs::write(root.join("child-completed"), case).unwrap();
             return;
@@ -318,7 +355,7 @@ esac"#;
             let root = root.path();
             fs::create_dir_all(root.join("commands")).unwrap();
             write_script(&root.join("commands/systemctl"), RETIRE_SYSTEMCTL);
-            fs::write(root.join(UNIT_NAME), "[Service]\n").unwrap();
+            fs::write(root.join(Unit::Dns.name()), "[Service]\n").unwrap();
             if case == "stop-fails" {
                 fs::write(root.join("stop-fails"), "").unwrap();
             }
@@ -347,7 +384,7 @@ esac"#;
                 "{case}: reloaded while the unit was still stopping"
             );
             let log = fs::read_to_string(root.join("systemctl.log")).unwrap();
-            let unit_kept = root.join(UNIT_NAME).exists();
+            let unit_kept = root.join(Unit::Dns.name()).exists();
             match case {
                 "stops" => {
                     assert_eq!(log, "stop ployz-dns.service\ndaemon-reload\n");

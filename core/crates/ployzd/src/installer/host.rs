@@ -12,7 +12,10 @@ use std::{
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
-use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
+use crate::{
+    filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write},
+    units::Unit,
+};
 use ployz_core::{
     DescribeContractRequest, MachineRpcClient, MachineVersion, NETWORK_CONFLICT_EXIT_STATUS, op,
 };
@@ -238,22 +241,22 @@ pub fn write_units(bin_dir: &Path, run_dir: &Path, systemd_dir: &Path) -> Result
         source,
     })?;
     write_file_atomically(
-        &systemd_dir.join("ployz.service"),
+        &systemd_dir.join(Unit::Ployz.name()),
         &machine_daemon_service_unit(bin_dir),
         "write Machine daemon service unit",
     )?;
     write_file_atomically(
-        &systemd_dir.join("ployz.socket"),
+        &systemd_dir.join(Unit::PloyzSocket.name()),
         &machine_api_socket_unit(run_dir),
         "write Machine API socket unit",
     )?;
     write_file_atomically(
-        &systemd_dir.join("ployz-volume-plugin.socket"),
+        &systemd_dir.join(Unit::VolumePluginSocket.name()),
         &volume_plugin_socket_unit(),
         "write Volume plugin socket unit",
     )?;
     write_file_atomically(
-        &systemd_dir.join("ployz-volume-plugin.service"),
+        &systemd_dir.join(Unit::VolumePluginService.name()),
         &volume_plugin_service_unit(bin_dir),
         "write Volume plugin service unit",
     )?;
@@ -262,27 +265,28 @@ pub fn write_units(bin_dir: &Path, run_dir: &Path, systemd_dir: &Path) -> Result
 
 pub(super) fn activate_units() -> Result<(), Error> {
     systemctl("reload systemd units", ["daemon-reload"])?;
-    systemctl("enable daemon", ["enable", "ployz.service"])?;
+    systemctl("enable daemon", ["enable", Unit::Ployz.name()])?;
     systemctl(
         "enable Machine API socket",
-        ["enable", "--now", "ployz.socket"],
+        ["enable", "--now", Unit::PloyzSocket.name()],
     )?;
     systemctl(
         "enable volume plugin socket",
-        ["enable", "--now", "ployz-volume-plugin.socket"],
+        ["enable", "--now", Unit::VolumePluginSocket.name()],
     )?;
     Ok(())
 }
 
 fn machine_daemon_service_unit(bin_dir: &Path) -> String {
     let bin = bin_dir.display();
+    let socket = Unit::PloyzSocket.name();
     format!(
         "\
 [Unit]
 Description=Ployz Machine daemon
-After=network-online.target docker.service ployz.socket
+After=network-online.target docker.service {socket}
 Wants=network-online.target
-Requires=ployz.socket
+Requires={socket}
 
 [Service]
 Type=notify
@@ -333,6 +337,7 @@ WantedBy=sockets.target
 }
 
 fn volume_plugin_socket_unit() -> String {
+    let service = Unit::VolumePluginService.name();
     format!(
         "\
 [Unit]
@@ -344,7 +349,7 @@ ListenStream={}
 SocketMode=0660
 DirectoryMode=0755
 Accept=no
-Service=ployz-volume-plugin.service
+Service={service}
 
 [Install]
 WantedBy=sockets.target
@@ -355,18 +360,19 @@ WantedBy=sockets.target
 
 fn volume_plugin_service_unit(bin_dir: &Path) -> String {
     let bin = bin_dir.display();
+    let socket = Unit::VolumePluginSocket.name();
     format!(
         "\
 [Unit]
 Description=Ployz Docker Volume plugin
 Before=docker.service
-After=zfs-import.target zfs-mount.service ployz-volume-plugin.socket
-Requires=ployz-volume-plugin.socket docker.service
+After=zfs-import.target zfs-mount.service {socket}
+Requires={socket} docker.service
 
 [Service]
 Type=simple
 ExecStart={bin}/ployzd volume-plugin
-Sockets=ployz-volume-plugin.socket
+Sockets={socket}
 EnvironmentFile=-/etc/default/ployz
 Restart=on-failure
 RestartSec=2
@@ -381,8 +387,10 @@ RestrictNamespaces=true
 /// leftover `/etc` copy would shadow.
 fn remove_legacy_observe_unit(systemd_dir: &Path) -> Result<(), Error> {
     for path in [
-        systemd_dir.join("multi-user.target.wants/ployz-observe.service"),
-        systemd_dir.join("ployz-observe.service"),
+        systemd_dir
+            .join("multi-user.target.wants")
+            .join(Unit::Observe.name()),
+        systemd_dir.join(Unit::Observe.name()),
     ] {
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -516,7 +524,7 @@ pub(super) async fn verify_running_daemon(
 ) -> Result<(), Error> {
     systemctl(
         "check daemon readiness",
-        ["is-active", "--quiet", "ployz.service"],
+        ["is-active", "--quiet", Unit::Ployz.name()],
     )?;
     let pid = daemon_main_pid()?;
     let running =
@@ -531,9 +539,10 @@ pub(super) async fn verify_running_daemon(
         source,
     })?;
     if (running.dev(), running.ino()) != (installed.dev(), installed.ino()) {
-        return Err(Error::Verification(
-            "ployz.service is active but does not run the activated daemon executable".into(),
-        ));
+        return Err(Error::Verification(format!(
+            "{} is active but does not run the activated daemon executable",
+            Unit::Ployz.name()
+        )));
     }
     match installed_release(&paths.daemon()).await? {
         Some(observed) if &observed == target => {}
@@ -553,13 +562,14 @@ pub(super) async fn verify_running_daemon(
 pub(super) fn daemon_main_pid() -> Result<u32, Error> {
     let output = systemctl(
         "inspect running daemon",
-        ["show", "--property=MainPID", "--value", "ployz.service"],
+        ["show", "--property=MainPID", "--value", Unit::Ployz.name()],
     )?;
     let pid = String::from_utf8_lossy(&output.stdout);
     let pid = pid.trim();
     match pid.parse() {
         Ok(0) | Err(_) => Err(Error::Verification(format!(
-            "ployz.service did not report a daemon process ID ({pid:?})"
+            "{} did not report a daemon process ID ({pid:?})",
+            Unit::Ployz.name()
         ))),
         Ok(pid) => Ok(pid),
     }
@@ -708,6 +718,82 @@ WantedBy=sockets.target
         );
         assert!(
             volume_plugin_socket_unit().contains("\nListenStream=/run/docker/plugins/ployz.sock\n")
+        );
+    }
+
+    /// Pinned from `main`: an installed Machine keeps these bytes until its next `install-units`.
+    #[test]
+    fn installed_unit_files_keep_their_exact_text() {
+        assert_eq!(
+            machine_daemon_service_unit(Path::new("/usr/local/bin")),
+            "\
+[Unit]
+Description=Ployz Machine daemon
+After=network-online.target docker.service ployz.socket
+Wants=network-online.target
+Requires=ployz.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/ployzd
+# Set PLOYZ_LOG=debug in /etc/default/ployz to raise verbosity.
+EnvironmentFile=-/etc/default/ployz
+TimeoutStartSec=20
+TimeoutStopSec=15
+Restart=always
+RestartPreventExitStatus=78
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+
+[Install]
+WantedBy=multi-user.target
+"
+        );
+        assert_eq!(
+            volume_plugin_socket_unit(),
+            "\
+[Unit]
+Description=Ployz Docker Volume plugin socket
+Before=docker.service
+
+[Socket]
+ListenStream=/run/docker/plugins/ployz.sock
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+Service=ployz-volume-plugin.service
+
+[Install]
+WantedBy=sockets.target
+"
+        );
+        assert_eq!(
+            volume_plugin_service_unit(Path::new("/usr/local/bin")),
+            "\
+[Unit]
+Description=Ployz Docker Volume plugin
+Before=docker.service
+After=zfs-import.target zfs-mount.service ployz-volume-plugin.socket
+Requires=ployz-volume-plugin.socket docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ployzd volume-plugin
+Sockets=ployz-volume-plugin.socket
+EnvironmentFile=-/etc/default/ployz
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+"
         );
     }
 
