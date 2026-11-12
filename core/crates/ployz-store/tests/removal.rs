@@ -2375,12 +2375,12 @@ fn the_teardown_a_person_signed_reaches_the_runner_of_the_removal_it_admitted() 
     let first = taking_off(&removing, "production");
     assert_eq!(
         store.claim(&first, &runner()).unwrap().teardown,
-        Some(teardown)
+        Some(teardown.clone())
     );
     fail(&store, &first, &["web"]);
 
-    // A removal admitted again without one carries none, and an enforcing Server takes
-    // nothing off under it.
+    // Admitted again under the same mark, with no new one, it carries what the person
+    // signed when they asked; a new one replaces it.
     let again = confirmed(
         &store,
         &who,
@@ -2390,7 +2390,27 @@ fn the_teardown_a_person_signed_reaches_the_runner_of_the_removal_it_admitted() 
     .unwrap();
     let second = taking_off(&again, "production");
     assert_ne!(second, first);
-    assert_eq!(store.claim(&second, &runner()).unwrap().teardown, None);
+    assert_eq!(
+        store.claim(&second, &runner()).unwrap().teardown,
+        Some(teardown)
+    );
+    fail(&store, &second, &["web"]);
+    let fresh = signed_teardown();
+    let third = confirmed(
+        &store,
+        &who,
+        Remove {
+            teardown: Some(Box::new(fresh.clone())),
+            ..accepting_data(Some("production"))
+        },
+        &observing(observed()),
+    )
+    .unwrap();
+    let third = taking_off(&third, "production");
+    assert_eq!(
+        store.claim(&third, &runner()).unwrap().teardown,
+        Some(fresh)
+    );
 }
 
 #[test]

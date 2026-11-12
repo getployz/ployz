@@ -436,7 +436,8 @@ fn admit_member(
         (&review, &losses, namespace),
         trusted,
     )?;
-    if let Some(teardown) = teardown {
+    // A sweep's admission carries what the person signed when they asked, while it lasts.
+    if let Some(teardown) = teardown.or(mark.teardown.as_ref()) {
         deployment::torn_down_under(tx, &admitted.id, teardown)?;
     }
     mark.evidence.insert(

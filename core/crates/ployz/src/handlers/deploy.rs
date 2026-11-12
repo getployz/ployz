@@ -306,13 +306,14 @@ pub(super) fn upload_and_ship(
         Some(_) => None,
         None => approve::sign(matches, store, &id, (&environment, &services))?,
     };
+    let teardown = super::teardown::volume_loss(matches, store, (&environment, None), &accept)?;
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
         store.upload(&id, dir, listing)?;
     }
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
-            teardown: None,
+            teardown: teardown.map(Box::new),
             id,
             environment,
             services,
@@ -1408,14 +1409,22 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
     let events = open_events(matches)?;
     // On Servers that enforce Device approval, this Device approves each commit.
     let mut device = built::prepare(matches, &store, &source)?;
+    let accept = super::teardown::accepted(matches)?;
+    // A redeploy's loss is read from its source, wherever it ran.
+    let teardown = super::teardown::volume_loss(
+        matches,
+        &store,
+        (&EnvironmentRef::default(), Some(&source)),
+        &accept,
+    )?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
-            teardown: None,
+            teardown: teardown.map(Box::new),
             id: DeploymentId::parse(mint())?,
             deployment: source.clone(),
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
-            accept_volume_loss: super::teardown::accepted(matches)?,
+            accept_volume_loss: accept,
             approvals: device
                 .as_mut()
                 .map(|device| std::mem::take(&mut device.approvals))

@@ -1,11 +1,12 @@
 use clap::{ArgMatches, Command};
+use ployz_core::authority::{TeardownApproval, TeardownScope};
 use ployz_core::{DeployOutcome, DockerVolumeId, Hint, Namespace, RpcErrorCode};
 use ployz_store::{NamespacesQuery, OwnedNamespace};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::super::teardown::confirm;
+use super::super::teardown::{Drafted, confirm, signing};
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::approval::{self, Verb};
 use crate::cli::{base, value};
@@ -80,8 +81,8 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
     if let Some(namespace) = &named {
         let runtime = runtime()?;
         if let Some(credential) = super::cloud_runs(&runtime, matches)? {
-            confirm_in_cloud(&runtime, matches, &credential, namespace)?;
-            return through_cloud(&runtime, matches, &credential, namespace);
+            let teardown = confirm_in_cloud(&runtime, matches, &credential, namespace)?;
+            return through_cloud(&runtime, matches, &credential, (namespace, teardown));
         }
     }
     let store = store::store(root)?;
@@ -181,20 +182,21 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
         });
     };
     let next = retry(matches, &namespace);
+    let doomed: Vec<_> = found
+        .volumes
+        .iter()
+        .map(|id| Doomed {
+            id: id.clone(),
+            label: None,
+        })
+        .collect();
+    let signing = drafted(matches, &namespace, &doomed)?;
     confirm(
         matches,
-        namespace.as_str(),
+        (namespace.as_str(), signing.as_ref()),
         "Namespace",
         next.clone(),
         || {
-            let doomed: Vec<_> = found
-                .volumes
-                .iter()
-                .map(|id| Doomed {
-                    id: id.clone(),
-                    label: None,
-                })
-                .collect();
             let (message, loss) = deletes(&namespace, &doomed);
             let refusal = Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
@@ -209,6 +211,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
             Ok((refusal, loss))
         },
     )?;
+    let mut client = client.with_teardown(signing.map(Drafted::sign).transpose()?);
     let (volumes, outcome) = runtime.block_on(async {
         let token = crate::cancellation::on_ctrl_c();
         // ponytail: the loss confirmed is the one observed now, which the refusal
@@ -253,29 +256,32 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
     }
 }
 
+/// Confirm the clean Cloud runs, and sign its teardown when this Device holds a key and a
+/// Server enforces Device approval: the Namespace and the Volumes Cloud's preview names.
 fn confirm_in_cloud(
     runtime: &tokio::runtime::Runtime,
     matches: &ArgMatches,
     credential: &Credential,
     namespace: &Namespace,
-) -> Result<(), Error> {
+) -> Result<Option<TeardownApproval>, Error> {
     #[derive(Deserialize)]
     struct Preview {
         volumes: Vec<Doomed>,
     }
     let next = retry(matches, namespace);
+    let Preview { volumes } = runtime.block_on(cloud_account::refusable_operation(
+        credential,
+        Method::GET,
+        &format!("namespaces/{namespace}/clean"),
+        None,
+    ))?;
+    let signing = drafted(matches, namespace, &volumes)?;
     confirm(
         matches,
-        namespace.as_str(),
+        (namespace.as_str(), signing.as_ref()),
         "Namespace",
         next.clone(),
         || {
-            let Preview { volumes } = runtime.block_on(cloud_account::refusable_operation(
-                credential,
-                Method::GET,
-                &format!("namespaces/{namespace}/clean"),
-                None,
-            ))?;
             let (message, loss) = deletes(namespace, &volumes);
             let refusal = Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
@@ -285,6 +291,33 @@ fn confirm_in_cloud(
             .hint(Hint::Retry(next.clone()));
             Ok((refusal, loss))
         },
+    )?;
+    signing.map(Drafted::sign).transpose()
+}
+
+/// The teardown of stray Namespace `namespace` and each of `volumes` on every Server.
+fn drafted(
+    matches: &ArgMatches,
+    namespace: &Namespace,
+    volumes: &[Doomed],
+) -> Result<Option<Drafted>, Error> {
+    signing::draft(
+        matches,
+        "this clean",
+        |machines| TeardownScope::Namespace {
+            namespaces: vec![namespace.clone()],
+            machines: machines.to_vec(),
+            volumes: volumes
+                .iter()
+                .map(|doomed| doomed.id.name.clone())
+                .collect(),
+        },
+        |volume| {
+            volumes
+                .iter()
+                .find(|doomed| doomed.id.name == *volume)
+                .map_or_else(|| volume.to_string(), |doomed| doomed.name().to_owned())
+        },
     )
 }
 
@@ -292,8 +325,12 @@ fn through_cloud(
     runtime: &tokio::runtime::Runtime,
     matches: &ArgMatches,
     credential: &Credential,
-    namespace: &Namespace,
+    (namespace, teardown): (&Namespace, Option<TeardownApproval>),
 ) -> Result<(), Error> {
+    let body = match &teardown {
+        Some(teardown) => json!({ "teardown": teardown }),
+        None => json!({}),
+    };
     let id = approval::approved(
         runtime,
         credential,
@@ -316,7 +353,7 @@ fn through_cloud(
                 credential,
                 Method::POST,
                 &format!("namespaces/{namespace}/clean"),
-                &json!({}),
+                &body,
                 approval,
             )
             .await

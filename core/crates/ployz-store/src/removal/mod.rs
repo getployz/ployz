@@ -434,6 +434,9 @@ pub(crate) fn remove(
             Mark::new(who, (target, target_name), members, accepted)
         }
     };
+    if let Some(teardown) = &remove.teardown {
+        mark.teardown = Some((**teardown).clone());
+    }
     mark::save(tx, who, &mark)?;
     let waiting_on = waiting_on(tx, who, &reviews, trusted, &mark.target_name)?;
     due::go_on(
