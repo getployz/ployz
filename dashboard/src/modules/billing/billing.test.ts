@@ -54,16 +54,16 @@ describe("billing policy", () => {
 });
 
 describe("Production units", () => {
-  it("bills two Servers at least and one more unit for each Server beyond", () => {
-    expect([0, 1, 2, 3, 7].map(billedUnits)).toEqual([2, 2, 2, 3, 7]);
+  it("carries one unit per Server, and the one Polar requires with none", () => {
+    expect([0, 1, 2, 3, 7].map(billedUnits)).toEqual([1, 1, 2, 3, 7]);
   });
 
   it("prices two Servers at $10 a month and $5 for each extra", () => {
-    expect([0, 2, 3, 7].map(monthlyPriceUsd)).toEqual([10, 10, 15, 35]);
+    expect([0, 1, 2, 3, 7].map(monthlyPriceUsd)).toEqual([10, 10, 10, 15, 35]);
   });
 
   it("changes nothing when the units already match", () => {
-    expect(planUnitsChange(subscription({ units: 2 }), 1)).toEqual({ kind: "keep" });
+    expect(planUnitsChange(subscription({ units: 1 }), 0)).toEqual({ kind: "keep" });
     expect(planUnitsChange(subscription({ units: 4 }), 4)).toEqual({ kind: "keep" });
   });
 
@@ -83,7 +83,7 @@ describe("Production units", () => {
     });
     expect(planUnitsChange(subscription({ units: 5 }), 0)).toEqual({
       kind: "set",
-      units: 2,
+      units: 1,
       prorationBehavior: "next_period",
     });
   });

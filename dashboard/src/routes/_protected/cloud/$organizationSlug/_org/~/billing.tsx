@@ -13,7 +13,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/co
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
-import { MINIMUM_UNITS, monthlyPriceUsd, UNIT_PRICE_USD } from "#/modules/billing/billing";
+import { BASE_PRICE_USD, EXTRA_SERVER_USD, INCLUDED_SERVERS, monthlyPriceUsd } from "#/modules/billing/billing";
 import { billingKeys, billingStateQueryOptions } from "#/modules/billing/billing.queries";
 import {
   createCustomerPortalServerFn,
@@ -127,8 +127,8 @@ function RouteComponent() {
         />
         <Plan
           name="Production"
-          price={`$${MINIMUM_UNITS * UNIT_PRICE_USD}`}
-          pitch={`Includes ${MINIMUM_UNITS} servers, then $${UNIT_PRICE_USD} per extra server.`}
+          price={`$${BASE_PRICE_USD}`}
+          pitch={`Includes ${INCLUDED_SERVERS} servers, then $${EXTRA_SERVER_USD} per extra server.`}
           current={subscribed}
           features={PRODUCTION_FEATURES}
           className="border-t md:border-t-0 md:border-l"
