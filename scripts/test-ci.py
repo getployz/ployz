@@ -66,7 +66,7 @@ class CiTest(unittest.TestCase):
                 self.assertNotIn("macos-cli", ci["select"]([path], pull_request=True))
 
     def test_store_postgres_reruns_only_when_its_inputs_change(self):
-        for paths in [["core/crates/ployz-store/src/lib.rs"], ["core/crates/ployz-core/src/rpc.rs"], ["docs/user/services/domains.md"],
+        for paths in [["core/crates/ployz-store/src/lib.rs"], ["core/crates/ployz-core/src/rpc.rs"], ["core/crates/ployz-decide/src/github_build.rs"], ["docs/user/services/domains.md"],
                       ["core/crates/ployz/tests/fixtures/published-manifest.json"], ["core/Cargo.lock"], [".github/workflows/ci.yml"], ["unknown.config"]]:
             with self.subTest(paths=paths):
                 self.assertTrue(ci["store_postgres"](paths, pull_request=True))
@@ -77,7 +77,7 @@ class CiTest(unittest.TestCase):
         # STORE_INPUTS names ployz-store's path dependencies by hand; a new one must join it.
         metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=SCRIPT.parent.parent / "core"))
         path_deps = {p["name"]: {d["name"] for d in p["dependencies"] if d.get("path")} for p in metadata["packages"]}
-        self.assertEqual(path_deps["ployz-store"] | path_deps["ployz-core"], {"ployz-core"})
+        self.assertEqual(path_deps["ployz-store"] | path_deps["ployz-core"], {"ployz-core", "ployz-decide"})
 
     def test_only_dns_soak_reaches_rust_from_the_verify_harness(self):
         # select runs no Rust check for core/scripts/verify/; a crate that reads another of its files must join dns-soak.sh.
@@ -87,7 +87,7 @@ class CiTest(unittest.TestCase):
     def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
         self.assertEqual(
             ci["sdk_and_config_wasm_crates"](),
-            {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-store", "ployz-build"},
+            {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-decide", "ployz-store", "ployz-build"},
         )
 
     def test_agent_tool_changes_run_the_tool_tests(self):
