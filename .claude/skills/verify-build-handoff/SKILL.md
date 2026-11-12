@@ -73,7 +73,7 @@ The build itself went on: Skipped put it back to pending, and `startLimit` needs
 cd core && cargo nextest run -p ployz-verify build_handoff --no-capture
 ```
 
-Expected: the summary line ends with `18 tests run: 18 passed, 201 skipped`. `the_code_keeps_a_started_run` prints `the code: 1407273 states`, `timed_out_breaks_only_the_finding` prints `timed out: 1523471 states`, and `the_check_in_guard_refuses_a_second_grant` prints `two requests: 3234872 states`. Each story prints under its test's name. A warm run took 78 s and 106 s of nextest time in two runs. CI runs `ployz-verify` in its workspace nextest run.
+Expected: the summary line ends with `18 tests run: 18 passed, 213 skipped`. `the_code_keeps_a_started_run` prints `the code: 1407273 states`, `timed_out_breaks_only_the_finding` prints `timed out: 1523471 states`, and `the_check_in_guard_refuses_a_second_grant` prints `two requests: 3234872 states`. Each story prints under its test's name. A warm run took 78 s and 106 s of nextest time in two runs. CI runs `ployz-verify` in its workspace nextest run.
 
 Read the tests in three groups.
 - **The finding, with the start limit settling by the grant** (`timed_out()`, which sets `start_limit_reads_the_grant`).
