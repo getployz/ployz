@@ -1454,16 +1454,28 @@ fn forget_then(who: usize, answer: Answer, then: Then) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeSet,
-        sync::{Arc, Mutex},
-    };
-
-    use stateright::{Checker, Expectation, HasDiscoveries};
+    use stateright::Checker;
 
     use super::*;
+    use crate::harness::{self, Narrated, breaks, breaks_where, check, follow_from, last};
 
-    type Path = Vec<(State, Option<Action>)>;
+    type Path = harness::Path<SignInStore>;
+
+    impl Narrated for SignInStore {
+        fn story(&self, path: &[(State, Option<Action>)]) -> String {
+            story(self, path)
+        }
+    }
+
+    /// Steps `actions` from the start with no `cloud.json`.
+    fn follow(model: SignInStore, actions: &[Action]) -> Path {
+        let start = model
+            .init_states()
+            .into_iter()
+            .find(|start| start.file == File::Absent)
+            .expect("a start with no cloud.json");
+        follow_from(model, start, actions)
+    }
 
     const A: usize = 0;
     const B: usize = 1;
@@ -1494,84 +1506,6 @@ mod tests {
         SignInStore { broken, ..fixed() }
     }
 
-    fn check(model: SignInStore) -> impl Checker<SignInStore> {
-        model.checker().threads(4).spawn_bfs().join()
-    }
-
-    /// The first path in BFS order whose last state breaks `property` under `model`, so no
-    /// shorter path breaks it, printed as a story under the test's name. For a
-    /// `sometimes`, such as a `COVERAGE` row's name, it is the first path that reaches it.
-    /// It panics when no path does, as for an `always` that holds. The checker's own
-    /// discovery is not that path: `check_block` stores every violation it visits, each
-    /// overwriting the last, so a visitor keeps the first. One thread keeps the path the
-    /// same from run to run.
-    fn breaks(model: SignInStore, property: &'static str) -> Path {
-        first_break(model, property, |_| true, true).expect("a path breaks the property")
-    }
-
-    /// As `breaks`, the first such path that also satisfies `and`. It explores the whole
-    /// model, since the first discovery may not pass `and`. The checker keeps one path to
-    /// each state, so `and` sees only the first path to the state it ends in.
-    fn breaks_where(
-        model: SignInStore,
-        property: &'static str,
-        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
-    ) -> Path {
-        first_break(model, property, and, false).expect("a path breaks the property")
-    }
-
-    /// As `breaks_where`, or `None` when no path breaks `property` and satisfies `and`.
-    fn first_break(
-        model: SignInStore,
-        property: &'static str,
-        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
-        stop_at_discovery: bool,
-    ) -> Option<Path> {
-        let named = model
-            .properties()
-            .into_iter()
-            .find(|candidate| candidate.name == property)
-            .expect("a model property");
-        let reached = matches!(named.expectation, Expectation::Sometimes);
-        let holds = named.condition;
-        let first = Arc::new(Mutex::new(None));
-        let seen = Arc::clone(&first);
-        let checker =
-            model
-                .checker()
-                .threads(1)
-                .visitor(move |path: stateright::Path<State, Action>| {
-                    let mut first = seen.lock().expect("the first break");
-                    if first.is_none() && holds(&model, path.last_state()) == reached {
-                        let path = path.into_vec();
-                        if and(&path) {
-                            *first = Some(path);
-                        }
-                    }
-                });
-        // The default, `HasDiscoveries::All`, stops once every property has a discovery.
-        // An empty `AnyOf` never matches, so the checker visits every state.
-        let checker = checker.finish_when(if stop_at_discovery {
-            HasDiscoveries::AllOf([property].into())
-        } else {
-            HasDiscoveries::AnyOf(BTreeSet::new())
-        });
-        checker.spawn_bfs().join();
-        let path = first.lock().expect("the first break").take()?;
-        let test = std::thread::current();
-        println!(
-            "[{}] {property} {} under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            if reached { "is reached" } else { "fails" },
-            story(&model, &path)
-        );
-        Some(path)
-    }
-
-    fn last(path: &Path) -> State {
-        path.last().expect("a path has a state").0
-    }
-
     /// Each step `who` took, as the process's place before and after it.
     fn moves(path: &Path, who: usize) -> Vec<(Pc, Pc)> {
         path.windows(2)
@@ -1594,33 +1528,6 @@ mod tests {
     /// The branch the last step took.
     fn last_took(path: &Path) -> Option<Branch> {
         last(path).took
-    }
-
-    /// Steps `actions` from the start with no `cloud.json` under `model`, each one offered
-    /// where it is taken, and prints the path as a story under the test's name.
-    fn follow(model: SignInStore, actions: &[Action]) -> Path {
-        let mut state = model
-            .init_states()
-            .into_iter()
-            .find(|start| start.file == File::Absent)
-            .expect("a start with no cloud.json");
-        let mut path = Vec::new();
-        for &action in actions {
-            let mut offered = Vec::new();
-            model.actions(&state, &mut offered);
-            assert!(offered.contains(&action), "{action:?} is offered");
-            let next = model.next_state(&state, action).expect("a next state");
-            path.push((state, Some(action)));
-            state = next;
-        }
-        path.push((state, None));
-        let test = std::thread::current();
-        println!(
-            "[{}] a schedule under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            story(&model, &path)
-        );
-        path
     }
 
     /// The finding's schedule: A requests c0 and waits, B resumes c0 and waits, the browser

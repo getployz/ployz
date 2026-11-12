@@ -41,7 +41,7 @@
 
 use std::fmt::Write as _;
 
-use stateright::{Checker, HasDiscoveries, Model, Property};
+use stateright::{Checker, Model, Property};
 
 /// `mark::State` (removal/mark.rs).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -743,10 +743,7 @@ fn reads_as(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn check(model: RemovalMarks) -> impl Checker<RemovalMarks> {
-        model.checker().threads(4).spawn_bfs().join()
-    }
+    use crate::harness::{check, discoveries};
 
     fn as_is(finishers: Finishers) -> RemovalMarks {
         RemovalMarks {
@@ -758,12 +755,7 @@ mod tests {
 
     /// A path on which `property` fails under `model`, printed as a story.
     fn breaks(model: RemovalMarks, property: &'static str) -> State {
-        let checker = model
-            .checker()
-            .threads(4)
-            .finish_when(HasDiscoveries::AllOf([property].into()))
-            .spawn_bfs()
-            .join();
+        let checker = discoveries(model, &[property]);
         let path = checker.assert_any_discovery(property);
         let last = path.last_state().clone();
         println!("{property} fails under {model:?}:\n{}", story(&model, path));
