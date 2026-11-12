@@ -606,11 +606,12 @@ impl Daemon {
     }
 
     /// Ask a running daemon to exit. [`wait`](Self::wait) still has to be called.
+    #[cfg(test)]
     pub fn request_stop(&self) {
         self.stop.cancel();
     }
 
-    /// Wait until a signal, [`request_stop`](Self::request_stop), or restart-request
+    /// Wait until a signal, `request_stop`, or restart-request
     /// finishes shutdown or reset.
     ///
     /// systemd READY is advertised only after SIGINT/SIGTERM are catchable, so a
