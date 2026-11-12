@@ -1270,6 +1270,11 @@ async fn observe_liveness<H: Host>(host: &H, paths: &Paths) -> (Liveness, Vec<St
     (liveness, notes)
 }
 
+/// Whether this process runs as root.
+pub(crate) fn process_is_root() -> bool {
+    rustix::process::geteuid().is_root()
+}
+
 /// Whether a preparation run marks the lock at `lock`. ployzd's run puts a whole-file write lock
 /// on the open file it flocks, an open file description lock, which the kernel keeps for as long
 /// as any process holds that file open, the run's build children included, and which reports no

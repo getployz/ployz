@@ -77,7 +77,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         .map_or(DEFAULT_CLOUD, String::as_str)
         .to_owned();
     let paths = Paths::system(token_file);
-    if !crate::provisioning::process_is_root() {
+    if !crate::checkin::process_is_root() {
         return Err(Error::coded(
             RpcErrorCode::Unauthenticated,
             "Run ployz server checkin as root.",
