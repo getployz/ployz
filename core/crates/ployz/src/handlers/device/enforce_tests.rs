@@ -226,3 +226,15 @@ fn set_summary_names_each_server_and_kept_key_before_signing() {
     set.kept_keys = vec![device(3)];
     assert!(set_summary(&reach, &set).ends_with(&format!("Keeping older keys: {}.", device(3))));
 }
+
+#[test]
+fn enforce_has_no_off() {
+    let mut command = enforce_command(clap::Command::new("enforce"));
+    let help = command.render_long_help().to_string();
+    assert!(!help.contains("--off"), "{help}");
+    assert!(
+        command
+            .try_get_matches_from_mut(["enforce", "--off"])
+            .is_err()
+    );
+}
