@@ -1916,7 +1916,11 @@ fn seal_inherited(
     if let Some(variable) = variable(&mut branch.working, lineage, key) {
         seal_without_value(variable);
     }
-    scope::persist_working(tx, branch)?;
+    scope::write_working(
+        tx,
+        branch,
+        scope::WorkingWrite::Trusted(scope::Reason::Inherit),
+    )?;
     // After the write, which empties the value in this base by fingerprint.
     let mut base = base_of(tx, (&branch.summary.id, &parent))?;
     if let Some(variable) = variable(&mut base, lineage, key) {

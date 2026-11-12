@@ -31,8 +31,8 @@ enum Edit {
 fn write(tx: &mut dyn Tx, environment: &mut Environment, mode: Mode) -> Result<(), RpcError> {
     match mode {
         Mode::Validated => save_working(tx, environment, &Trusted::default()),
-        Mode::Trusted => persist_working(tx, environment),
-        Mode::Removed => persist_removed(tx, environment),
+        Mode::Trusted => write_working(tx, environment, WorkingWrite::Trusted(Reason::Publish)),
+        Mode::Removed => write_working(tx, environment, WorkingWrite::Removed),
     }
 }
 
