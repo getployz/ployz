@@ -4732,6 +4732,614 @@ mod tests {
         assert_eq!(host.markers(), []);
     }
 
+    fn listing(dir: &Path) -> Vec<(String, String)> {
+        let mut files: Vec<(String, String)> = fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .map(|entry| {
+                        let entry = entry.unwrap();
+                        let name = entry.file_name().into_string().unwrap();
+                        let text =
+                            fs::read_to_string(entry.path()).unwrap_or_else(|_| "<dir>".to_owned());
+                        (name, text)
+                    })
+                    .filter(|(name, _)| !name.ends_with(".tmp"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    fn pair(name: impl Into<String>, text: impl Into<String>) -> (String, String) {
+        (name.into(), text.into())
+    }
+
+    fn marker_json(ts: i64, code: i64) -> String {
+        format!(
+            r#"{{"machine_id":"{}","container_id":"{ID}","service_id":"{SERVICE_ID}","service":"default/web","deployment_id":"d1","replica":"web-1","ts":{ts},"kind":"exit","exit_code":{code},"oom":false,"stopped":false}}"#,
+            "a".repeat(32)
+        )
+    }
+
+    fn pending_json(ts: i64, code: i64, appended: bool, seq: Option<i64>) -> String {
+        let seq = seq.map_or_else(|| "null".to_owned(), |seq| seq.to_string());
+        format!(
+            r#"{{"marker":{},"appended":{appended},"seq":{seq}}}"#,
+            marker_json(ts, code)
+        )
+    }
+
+    fn entry_json(seq: i64, ts: i64, code: i64) -> String {
+        format!(r#"{{"seq":"{seq}","marker":{}}}"#, marker_json(ts, code))
+    }
+
+    fn outbox_name(seq: i64) -> String {
+        format!("{seq:020}")
+    }
+
+    fn crash_die(at: i64) -> EventMessage {
+        event(
+            "die",
+            at,
+            &[("ployz.service.id", SERVICE_ID), ("exitCode", "1")],
+        )
+    }
+
+    fn marker_rows(host: &Host) -> usize {
+        host.markers().len()
+    }
+
+    #[tokio::test]
+    async fn a_settled_crash_leaves_these_files_byte_for_byte() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let ts = T0 + 1;
+        running.harvester.on_docker_event(crash_die(ts));
+        running.settle_exits(|| Inspected::Gone);
+
+        assert_eq!(
+            listing(&host.store.settled()),
+            [pair(
+                format!("{ID}-exit-{ts}"),
+                pending_json(ts, 1, true, Some(ts))
+            )]
+        );
+        assert_eq!(
+            listing(&host.store.crash_outbox()),
+            [
+                pair(outbox_name(ts), entry_json(ts, ts, 1)),
+                pair("last_seq", ts.to_string()),
+            ]
+        );
+        assert_eq!(
+            listing(&host.store.raw_metrics()),
+            [pair(
+                "1759996800.jsonl",
+                format!("{{\"row\":\"marker\",{}\n", &marker_json(ts, 1)[1..])
+            )]
+        );
+    }
+
+    // Each phase fails the next step of one settlement, so the files after it
+    // show the steps that ran before it and none that run after.
+    #[tokio::test]
+    async fn a_crash_settles_its_steps_in_order_and_a_failed_step_leaves_the_files_before_it() {
+        let host = host().with_machine();
+        let ts = T0 + 1;
+        let next = ts + 1;
+        let name = format!("{ID}-exit-{ts}");
+        let pending = format!("{name}.pending");
+        let raw = host.store.raw_metrics();
+        let outbox = host.store.crash_outbox();
+        let mut running = host.harvester();
+
+        // The marker cannot be appended.
+        fs::create_dir_all(raw.parent().unwrap()).unwrap();
+        fs::write(&raw, b"").unwrap();
+        running.harvester.on_docker_event(crash_die(ts));
+        running.settle_exits(|| Inspected::Gone);
+        assert_eq!(
+            listing(&host.store.settled()),
+            [pair(&pending, pending_json(ts, 1, false, None))]
+        );
+        assert_eq!(listing(&outbox), []);
+
+        // The marker is appended and said to be, but no seq can be reserved.
+        fs::remove_file(&raw).unwrap();
+        fs::remove_dir_all(&outbox).unwrap();
+        fs::write(&outbox, b"").unwrap();
+        running.harvester.finish_settlements();
+        assert_eq!(marker_rows(&host), 1);
+        assert_eq!(
+            listing(&host.store.settled()),
+            [pair(&pending, pending_json(ts, 1, true, None))]
+        );
+
+        // A seq is reserved but cannot be saved, so nothing is queued.
+        fs::remove_file(&outbox).unwrap();
+        fs::create_dir(&outbox).unwrap();
+        let blocked = host.store.settled().join(format!("{name}.tmp"));
+        fs::create_dir(&blocked).unwrap();
+        running.harvester.finish_settlements();
+        assert_eq!(
+            listing(&host.store.settled()),
+            [pair(&pending, pending_json(ts, 1, true, None))]
+        );
+        assert_eq!(
+            listing(&outbox),
+            [
+                pair(format!("{}.reserved", outbox_name(ts)), ""),
+                pair("last_seq", ts.to_string()),
+            ]
+        );
+
+        // The reserved seq is saved but the crash cannot be queued under it.
+        fs::remove_dir(&blocked).unwrap();
+        fs::create_dir(outbox.join(outbox_name(next))).unwrap();
+        running.harvester.finish_settlements();
+        assert_eq!(
+            listing(&host.store.settled()),
+            [pair(&pending, pending_json(ts, 1, true, Some(next)))]
+        );
+        assert_eq!(
+            listing(&outbox),
+            [
+                pair(outbox_name(next), "<dir>"),
+                pair(format!("{}.reserved", outbox_name(next)), ""),
+                pair("last_seq", next.to_string()),
+            ]
+        );
+
+        // The crash is queued but the settlement cannot be finished.
+        fs::remove_dir(outbox.join(outbox_name(next))).unwrap();
+        let finished = host.store.settled().join(&name);
+        fs::create_dir_all(finished.join("blocked")).unwrap();
+        running.harvester.finish_settlements();
+        assert_eq!(
+            listing(&host.store.settled()),
+            [
+                pair(&name, "<dir>"),
+                pair(&pending, pending_json(ts, 1, true, Some(next))),
+            ]
+        );
+        assert_eq!(
+            listing(&outbox),
+            [
+                pair(outbox_name(next), entry_json(next, ts, 1)),
+                pair("last_seq", next.to_string()),
+            ]
+        );
+
+        // Finishing it queues nothing again.
+        fs::remove_dir_all(&finished).unwrap();
+        running.harvester.finish_settlements();
+        assert_eq!(
+            listing(&host.store.settled()),
+            [pair(&name, pending_json(ts, 1, true, Some(next)))]
+        );
+        assert_eq!(
+            listing(&outbox),
+            [
+                pair(outbox_name(next), entry_json(next, ts, 1)),
+                pair("last_seq", next.to_string()),
+            ]
+        );
+        assert_eq!(marker_rows(&host), 1);
+    }
+
+    // A failed save of "appended" does not stop the settlement, but a failed
+    // save of the reserved seq does.
+    #[tokio::test]
+    async fn a_failed_save_of_the_appended_step_carries_on_and_one_of_the_seq_step_stops() {
+        let host = host().with_machine();
+        let ts = T0 + 1;
+        let name = format!("{ID}-exit-{ts}");
+        let pending = format!("{name}.pending");
+        fs::create_dir_all(host.store.settled().join(format!("{name}.tmp"))).unwrap();
+        fs::write(
+            host.store.settled().join(&pending),
+            pending_json(ts, 1, false, None),
+        )
+        .unwrap();
+        let mut running = host.harvester();
+        running.harvester.finish_settlements();
+
+        assert_eq!(marker_rows(&host), 1);
+        assert_eq!(
+            listing(&host.store.settled()),
+            [pair(&pending, pending_json(ts, 1, false, None))]
+        );
+        assert_eq!(
+            listing(&host.store.crash_outbox()),
+            [
+                pair(format!("{}.reserved", outbox_name(ts)), ""),
+                pair("last_seq", ts.to_string()),
+            ]
+        );
+    }
+
+    struct Left {
+        appended: bool,
+        seq: Option<i64>,
+        stored: bool,
+        reserved: bool,
+        queued: bool,
+        code: i64,
+    }
+
+    const LEFT: Left = Left {
+        appended: false,
+        seq: None,
+        stored: false,
+        reserved: false,
+        queued: false,
+        code: 1,
+    };
+
+    // The files an earlier daemon wrote, which the next one reads after an
+    // upgrade in the middle of a settlement.
+    #[tokio::test]
+    async fn a_settlement_an_earlier_daemon_left_resumes_from_where_it_stopped() {
+        let ts = T0 + 1;
+        let held = Some(ts);
+        // Each case: what was left, the marker rows after, the seqs queued
+        // after, and the seq the finished settlement names.
+        let cases = [
+            ("marker not appended", LEFT, 1, vec![ts], held),
+            (
+                "marker stored but not said to be",
+                Left {
+                    stored: true,
+                    ..LEFT
+                },
+                1,
+                vec![ts],
+                held,
+            ),
+            (
+                "marker appended, no seq",
+                Left {
+                    appended: true,
+                    ..LEFT
+                },
+                0,
+                vec![ts],
+                held,
+            ),
+            (
+                "seq reserved",
+                Left {
+                    appended: true,
+                    seq: held,
+                    reserved: true,
+                    ..LEFT
+                },
+                0,
+                vec![ts],
+                held,
+            ),
+            (
+                "crash already queued",
+                Left {
+                    appended: true,
+                    seq: held,
+                    queued: true,
+                    ..LEFT
+                },
+                0,
+                vec![ts],
+                held,
+            ),
+            (
+                "reserved seq gone and nothing queued",
+                Left {
+                    appended: true,
+                    seq: held,
+                    ..LEFT
+                },
+                0,
+                vec![],
+                held,
+            ),
+            (
+                "clean exit not appended",
+                Left { code: 0, ..LEFT },
+                1,
+                vec![],
+                None,
+            ),
+        ];
+        for (label, left, rows, queued_seqs, finished_seq) in cases {
+            let host = host().with_machine();
+            let name = format!("{ID}-exit-{ts}");
+            let outbox = host.store.crash_outbox();
+            fs::create_dir_all(&outbox).unwrap();
+            fs::create_dir_all(host.store.settled()).unwrap();
+            let json = pending_json(ts, left.code, left.appended, left.seq);
+            fs::write(host.store.settled().join(format!("{name}.pending")), &json).unwrap();
+            if left.stored {
+                let marker = serde_json::from_str(&marker_json(ts, left.code)).unwrap();
+                super::segment::append(&host.store, &[Row::Marker(marker)]).unwrap();
+            }
+            if left.reserved {
+                fs::write(outbox.join(format!("{}.reserved", outbox_name(ts))), b"").unwrap();
+            }
+            if left.queued {
+                fs::write(outbox.join(outbox_name(ts)), entry_json(ts, ts, left.code)).unwrap();
+            }
+            let mut running = host.harvester();
+            running.harvester.finish_settlements();
+
+            assert_eq!(marker_rows(&host), rows, "{label}");
+            let files = listing(&outbox);
+            let queued: Vec<i64> = files
+                .iter()
+                .filter(|(name, _)| name.len() == 20)
+                .map(|(name, _)| name.parse().unwrap())
+                .collect();
+            assert_eq!(queued, queued_seqs, "{label}");
+            if !queued.is_empty() {
+                assert_eq!(
+                    files[0],
+                    pair(outbox_name(ts), entry_json(ts, ts, 1)),
+                    "{label}"
+                );
+            }
+            assert!(
+                files.iter().all(|(name, _)| !name.ends_with(".reserved")),
+                "{label}"
+            );
+            assert_eq!(
+                listing(&host.store.settled()),
+                [pair(&name, pending_json(ts, left.code, true, finished_seq))],
+                "{label}"
+            );
+        }
+    }
+
+    enum Late {
+        Event(&'static str, i64, &'static [(&'static str, &'static str)]),
+        Settle,
+    }
+
+    /// The exits the store keeps after `steps`, as (ts, oom, stopped).
+    fn exits_after(steps: &[Late]) -> Vec<(i64, bool, bool)> {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        for step in steps {
+            match step {
+                Late::Event(action, at, extra) => {
+                    let extra: Vec<(&str, &str)> = [("ployz.service.id", SERVICE_ID)]
+                        .into_iter()
+                        .chain(extra.iter().copied())
+                        .collect();
+                    running
+                        .harvester
+                        .on_docker_event(event(action, T0 + at, &extra));
+                }
+                Late::Settle => running.settle_exits(|| Inspected::Unanswered),
+            }
+        }
+        running.settle_exits(|| Inspected::Unanswered);
+        host.markers()
+            .into_iter()
+            .filter_map(|(ts, kind)| match kind {
+                MarkerKind::Exit { oom, stopped, .. } => Some((ts, oom, stopped)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const TERM: &[(&str, &str)] = &[("signal", "15")];
+    const HUP: &[(&str, &str)] = &[("signal", "1")];
+    const NO_SIGNAL: &[(&str, &str)] = &[("signal", "not-a-signal")];
+    const FAILED: &[(&str, &str)] = &[("exitCode", "1")];
+    const NONE: &[(&str, &str)] = &[];
+
+    // A late stop, oom or kill belongs to the live run, else to the last
+    // exit still queued, and a kill belongs to no exit.
+    #[tokio::test]
+    async fn a_late_stop_oom_or_kill_belongs_to_the_live_run_else_the_last_queued_exit() {
+        use Late::{Event, Settle};
+        let t = |at| T0 + at;
+        let cases: Vec<(&str, Vec<Late>, Vec<(i64, bool, bool)>)> = vec![
+            (
+                "a kill of the live run stops its exit",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("kill", 2, TERM),
+                    Event("die", 3, FAILED),
+                ],
+                vec![(t(3), false, true)],
+            ),
+            (
+                "a kill after the exit belongs to no exit",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Event("kill", 3, TERM),
+                ],
+                vec![(t(2), false, false)],
+            ),
+            (
+                "a signal Docker does not name is no kill",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("kill", 2, NO_SIGNAL),
+                    Event("stop", 3, NONE),
+                    Event("die", 4, FAILED),
+                ],
+                vec![(t(4), false, false)],
+            ),
+            (
+                "a stop after the exit belongs to the queued exit",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Event("stop", 3, NONE),
+                ],
+                vec![(t(2), false, true)],
+            ),
+            (
+                "a stop of a live run nothing signalled and with no exit queued is lost",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("stop", 2, NONE),
+                    Event("die", 3, FAILED),
+                ],
+                vec![(t(3), false, false)],
+            ),
+            (
+                "a stop of a live run signalled with a signal that does not stop belongs to it",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("kill", 2, HUP),
+                    Event("stop", 3, NONE),
+                    Event("die", 4, FAILED),
+                ],
+                vec![(t(4), false, true)],
+            ),
+            (
+                "a stop after the next start belongs to the queued exit of the run before",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Event("start", 3, NONE),
+                    Event("stop", 4, NONE),
+                    Event("die", 5, FAILED),
+                ],
+                vec![(t(2), false, true), (t(5), false, false)],
+            ),
+            (
+                "a stop belongs to the last of two queued exits",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Event("start", 3, NONE),
+                    Event("die", 4, FAILED),
+                    Event("stop", 5, NONE),
+                ],
+                vec![(t(2), false, false), (t(4), false, true)],
+            ),
+            (
+                "an oom of the live run is its exit's",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("oom", 2, NONE),
+                    Event("die", 3, FAILED),
+                ],
+                vec![(t(3), true, false)],
+            ),
+            (
+                "an oom after the exit belongs to the queued exit",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Event("oom", 3, NONE),
+                ],
+                vec![(t(2), true, false)],
+            ),
+            (
+                "an oom belongs to the last of two queued exits",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Event("start", 3, NONE),
+                    Event("die", 4, FAILED),
+                    Event("oom", 5, NONE),
+                ],
+                vec![(t(2), false, false), (t(4), true, false)],
+            ),
+            (
+                "an oom of a later run is not its earlier exit's",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Event("start", 3, NONE),
+                    Event("oom", 4, NONE),
+                    Event("die", 5, FAILED),
+                ],
+                vec![(t(2), false, false), (t(5), true, false)],
+            ),
+            (
+                "an oom after its exit settled changes that exit no more",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Settle,
+                    Event("oom", 3, NONE),
+                ],
+                vec![(t(2), false, false)],
+            ),
+            (
+                "a stop after its exit settled changes that exit no more",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Settle,
+                    Event("stop", 3, NONE),
+                ],
+                vec![(t(2), false, false)],
+            ),
+        ];
+        for (label, steps, expected) in cases {
+            assert_eq!(exits_after(&steps), expected, "{label}");
+        }
+    }
+
+    // The exit is kept in `exits.jsonl` each time it is settled, though a
+    // settled exit is not recorded again.
+    #[tokio::test]
+    async fn an_exit_settled_again_adds_a_line_to_exits_jsonl_and_no_marker() {
+        let host = host().with_machine();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let service = ("ployz.service.id", SERVICE_ID);
+        let die = event("die", T0 + 5, &[service, ("exitCode", "137")]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running
+            .harvester
+            .on_inspected(id, inspected(&self::running(1)));
+        running.harvester.on_docker_event(die.clone());
+        running.settle_exits(|| Inspected::Unanswered);
+        assert_eq!(
+            fs::read_to_string(host.dir().join("exits.jsonl")).unwrap(),
+            "{\"ts\":1760000000000000005,\"exit_code\":137,\"oom_killed\":false}\n"
+        );
+
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_docker_event(die);
+        running.settle_exits(|| inspected(&exited(1, 5, 137, true)));
+        assert_eq!(
+            fs::read_to_string(host.dir().join("exits.jsonl")).unwrap(),
+            "{\"ts\":1760000000000000005,\"exit_code\":137,\"oom_killed\":false}\n\
+             {\"ts\":1760000000000000005,\"exit_code\":137,\"oom_killed\":true}\n"
+        );
+        assert_eq!(marker_rows(&host), 1);
+    }
+
+    // An oom kill and a restart are recorded but never kept as an exit.
+    #[tokio::test]
+    async fn an_oom_or_a_restart_adds_no_line_to_exits_jsonl() {
+        let host = host().with_machine();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running
+            .harvester
+            .on_inspected(id, inspected(&self::running(1)));
+        let service = ("ployz.service.id", SERVICE_ID);
+        running
+            .harvester
+            .on_docker_event(event("oom", T0 + 2, &[service]));
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 3, &[service]));
+        assert!(!exists(&host.dir().join("exits.jsonl")));
+    }
+
     #[test]
     fn docker_resumes_events_from_a_fractional_second() {
         assert_eq!(
