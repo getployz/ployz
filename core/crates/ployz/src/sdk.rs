@@ -107,8 +107,7 @@ fn unprepared(
 }
 pub(crate) use logs::{AgentTail, container_env, process_tail, service_tail, tail_frames};
 pub use logs::{
-    ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
-    LogHistoryStream,
+    ContainerLogInput, ContainerLogStream, LogHistoryInput, LogHistoryRecord, LogHistoryStream,
 };
 pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
