@@ -197,21 +197,7 @@ impl Enforcing {
     }
 
     async fn unary(&self, path: &'static str, request: &RpcRequest) -> Answer {
-        let channel = tonic::transport::Endpoint::from_shared(self.address.clone())
-            .unwrap()
-            .connect()
-            .await
-            .unwrap();
-        let mut grpc = tonic::client::Grpc::new(channel);
-        grpc.ready().await.unwrap();
-        let result = grpc
-            .unary(
-                Request::new(request.encode().unwrap()),
-                tonic::codegen::http::uri::PathAndQuery::from_static(path),
-                tonic::codec::ProstCodec::<OpaquePayload, OpaquePayload>::default(),
-            )
-            .await;
-        Answer::of(result.map(|response| response.into_inner().decode_response().unwrap()))
+        unary_at(self.address.clone(), path, request, false).await
     }
 
     async fn stream(&self, exec: bool) -> Answer {
@@ -634,6 +620,38 @@ fn new_want(name: &str, image: &str) -> Value {
         "slot": {"namespace": "app", "service": name, "kind": "service_container",
                  "creation_key": "attacker-0001"},
         "resolved_spec": spec(name, image), "gen": 1}}})
+}
+
+/// One call to the Machine at `address`, owned, so a test can leave it waiting. `operator`
+/// marks it an Operator's whether or not the Machine enforces, as Cloud's slot does.
+async fn unary_at(
+    address: String,
+    path: &'static str,
+    request: &RpcRequest,
+    operator: bool,
+) -> Answer {
+    let channel = tonic::transport::Endpoint::from_shared(address)
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut grpc = tonic::client::Grpc::new(channel);
+    grpc.ready().await.unwrap();
+    let mut call = Request::new(request.encode().unwrap());
+    if operator {
+        call.metadata_mut().insert(
+            ployz_core::OPERATOR_SCOPE_HEADER,
+            tonic::metadata::MetadataValue::from_static("1"),
+        );
+    }
+    let result = grpc
+        .unary(
+            call,
+            tonic::codegen::http::uri::PathAndQuery::from_static(path),
+            tonic::codec::ProstCodec::<OpaquePayload, OpaquePayload>::default(),
+        )
+        .await;
+    Answer::of(result.map(|response| response.into_inner().decode_response().unwrap()))
 }
 
 async fn running_container(machine: &Enforcing) -> ployz_core::ContainerId {
@@ -1324,6 +1342,144 @@ mod teardown {
             )
             .await;
         assert!(!answer.for_authority(), "{answer:?}");
+        machine.remove();
+    }
+
+    /// Send each request with this Machine's admission turn held, and return once each has
+    /// passed admission and waits for the turn, with the turn to release.
+    async fn queued(
+        machine: &Enforcing,
+        requests: Vec<(&'static str, RpcRequest)>,
+    ) -> (
+        tokio::sync::OwnedRwLockWriteGuard<()>,
+        Vec<tokio::task::JoinHandle<Answer>>,
+    ) {
+        let turn = machine.store.admission_lock().write_owned().await;
+        let waiting: Vec<_> = requests
+            .into_iter()
+            .map(|(path, request)| {
+                let address = machine.address.clone();
+                tokio::spawn(async move { unary_at(address, path, &request, true).await })
+            })
+            .collect();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        for call in &waiting {
+            assert!(
+                !call.is_finished(),
+                "a request was answered before its turn"
+            );
+        }
+        (turn, waiting)
+    }
+
+    /// No Docker request since the `before`th stopped or deleted anything.
+    fn assert_took_nothing_off(machine: &Enforcing, before: usize) {
+        let requests = machine.fake.requests.lock().unwrap();
+        let effects: Vec<_> = requests[before..]
+            .iter()
+            .filter(|(method, path)| *method == http::Method::DELETE || path.contains("/stop"))
+            .collect();
+        assert!(effects.is_empty(), "{effects:?}");
+    }
+
+    fn removal(id: ployz_core::ContainerId, teardown: Option<TeardownApproval>) -> RpcRequest {
+        let mut request: EnsureContainerRequest = serde_json::from_value(
+            json!({"want": {"state":"gone", "container":{"id":id}, "drain":0}}),
+        )
+        .unwrap();
+        request.teardown = teardown.map(Box::new);
+        op::EnsureContainer::into_request(request)
+    }
+
+    fn volume_removal(teardown: Option<TeardownApproval>) -> RpcRequest {
+        op::RemoveVolume::into_request(RemoveVolumeRequest {
+            name: data(),
+            force: false,
+            teardown: teardown.map(Box::new),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_teardown_whose_device_is_removed_while_it_waits_takes_nothing_off() {
+        let machine = Enforcing::new(true).await;
+        let here = machine.machine.id;
+        let id = running_container(&machine).await;
+        let app = approval(
+            &machine,
+            &device(),
+            namespace("app", vec![here], vec![data()]),
+        );
+        let (turn, waiting) = queued(
+            &machine,
+            vec![
+                (
+                    op::EnsureContainer::PATH,
+                    removal(id.clone(), Some(app.clone())),
+                ),
+                (op::RemoveVolume::PATH, volume_removal(Some(app))),
+            ],
+        )
+        .await;
+        let before = machine.fake.requests.lock().unwrap().len();
+        let code = DeviceKey::from(device().public()).code();
+        machine
+            .store
+            .mutate(move |store| assert!(store.remove_device(code).unwrap()))
+            .await
+            .unwrap();
+        drop(turn);
+        for call in waiting {
+            refused(&call.await.unwrap(), ployz_core::TEARDOWN_CAPABILITY);
+        }
+        assert_took_nothing_off(&machine, before);
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_request_sent_unsigned_before_enforcement_takes_nothing_off_once_it_turns_on() {
+        let machine = Enforcing::new(false).await;
+        let id = running_container(&machine).await;
+        let forget = op::Forget::into_request(ForgetRequest {
+            machine_id: machine.peer.id,
+            teardown: None,
+        });
+        let (turn, waiting) = queued(
+            &machine,
+            vec![
+                (op::EnsureContainer::PATH, removal(id, None)),
+                (op::RemoveVolume::PATH, volume_removal(None)),
+                (op::Forget::PATH, forget),
+            ],
+        )
+        .await;
+        let before = machine.fake.requests.lock().unwrap().len();
+        let starting = vec![ployz_core::authority::Member::from(&machine.peer)];
+        machine
+            .store
+            .mutate(move |store| store.set_device_enforcement(true, starting).unwrap())
+            .await
+            .unwrap();
+        drop(turn);
+        let capabilities = [
+            ployz_core::TEARDOWN_CAPABILITY,
+            ployz_core::TEARDOWN_CAPABILITY,
+            ployz_core::FORGET_MACHINE_CAPABILITY,
+        ];
+        for (call, capability) in waiting.into_iter().zip(capabilities) {
+            refused(&call.await.unwrap(), capability);
+        }
+        assert_took_nothing_off(&machine, before);
+        assert!(
+            machine
+                .replicated
+                .machines()
+                .await
+                .unwrap()
+                .observations
+                .iter()
+                .any(|row| row.id == machine.peer.id),
+            "the peer is not forgotten"
+        );
         machine.remove();
     }
 }

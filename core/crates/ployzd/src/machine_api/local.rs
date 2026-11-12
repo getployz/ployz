@@ -12,7 +12,8 @@ use ployz_core::{
     ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
     LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, ManagementScope,
     OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy,
+    authority::RestartStep, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -21,8 +22,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        Landing, LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, RecoveryError,
-        SealingError, StoreError,
+        HeldStep, HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord,
+        RecordOwner, RecoveryError, SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -184,6 +185,14 @@ impl MachineService {
     pub fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.ingest = ingest;
         self
+    }
+
+    /// This call's Machine, holding `held` for each admitted turn to check again.
+    fn held(&self, held: Option<HeldTeardown>) -> LocalMachine {
+        match held {
+            Some(held) => self.local.clone().with_teardown(held),
+            None => self.local.clone(),
+        }
     }
 
     /// Local Machine used to construct routing from this Machine's record and store.
@@ -604,19 +613,25 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
-        let request = expect::<op::EnsureContainer>(request)?;
+        let mut request = expect::<op::EnsureContainer>(request)?;
         let teardown_only = request.approval.is_none()
             && request.deploy.is_none()
             && request.rule.is_none()
             && request.preview.is_none();
-        let want = if let (true, true, Some(teardown)) =
-            (operator, teardown_only, request.teardown.as_deref())
+        let (want, held) = if let (true, true, Some(teardown)) =
+            (operator, teardown_only, request.teardown.take())
         {
             match self.local.admit_teardown_step(request.want, teardown).await {
-                Ok(want) => want,
+                Ok((want, held)) => (want, Some(held)),
                 Err(error) => return local_error(error),
             }
         } else if operator {
+            // A step that starts nothing, sent with no statement, passes only while this
+            // Machine doesn't enforce: each turn checks that again.
+            let unsigned = (teardown_only
+                && RestartStep::of(&request.want)
+                    .is_some_and(|(step, _)| step != RestartStep::Start))
+            .then(|| HeldTeardown::unsigned(HeldStep::Container(None)));
             match self
                 .local
                 .admit_operator_restart(
@@ -628,13 +643,13 @@ impl MachineRpc for MachineService {
                 )
                 .await
             {
-                Ok(want) => want,
+                Ok(want) => (want, unsigned),
                 Err(error) => return local_error(error),
             }
         } else {
-            request.want
+            (request.want, None)
         };
-        finish(self.local.ensure_container(want).await)
+        finish(self.held(held).ensure_container(want).await)
     }
 
     async fn update_container_limits(
@@ -695,14 +710,22 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::RemoveVolume>(request)?;
-        if operator
-            && let Err(error) = self
+        let held = if operator {
+            match self
                 .local
-                .admit_operator_volume_removal(&request.name, request.teardown.as_deref())
-        {
-            return local_error(error);
-        }
-        finish(self.local.remove_volume(request.name, request.force).await)
+                .admit_operator_volume_removal(&request.name, request.teardown)
+            {
+                Ok(held) => Some(held),
+                Err(error) => return local_error(error),
+            }
+        } else {
+            None
+        };
+        finish(
+            self.held(held)
+                .remove_volume(request.name, request.force)
+                .await,
+        )
     }
 
     async fn inspect_volume_copy(
@@ -1029,15 +1052,19 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
-        let request = expect::<op::Leave>(request)?;
-        if operator
-            && let Err(error) = self
+        let mut request = expect::<op::Leave>(request)?;
+        let held = if operator {
+            match self
                 .local
-                .admit_operator_departure(None, request.teardown.as_deref())
-        {
-            return local_error(error);
-        }
-        finish(self.local.leave(request).await)
+                .admit_operator_departure(None, request.teardown.take())
+            {
+                Ok(held) => Some(held),
+                Err(error) => return local_error(error),
+            }
+        } else {
+            None
+        };
+        finish(self.held(held).leave(request).await)
     }
 
     async fn forget(
@@ -1045,15 +1072,19 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
-        let request = expect::<op::Forget>(request)?;
-        if operator
-            && let Err(error) = self
+        let mut request = expect::<op::Forget>(request)?;
+        let held = if operator {
+            match self
                 .local
-                .admit_operator_departure(Some(&request.machine_id), request.teardown.as_deref())
-        {
-            return local_error(error);
-        }
-        finish(self.local.forget(request).await)
+                .admit_operator_departure(Some(&request.machine_id), request.teardown.take())
+            {
+                Ok(held) => Some(held),
+                Err(error) => return local_error(error),
+            }
+        } else {
+            None
+        };
+        finish(self.held(held).forget(request).await)
     }
 
     async fn list_images(

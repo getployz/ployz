@@ -446,14 +446,17 @@ Approved: delete volume data (my-app-staging_vol-0f8fad5b) there. Its data is go
 
 `ployz env rm`, `ployz project rm`, `ployz server clean --namespace` and
 `ployz deploy --accept-volume-loss` on an approved device print the same lines and sign them with
-the device key once you answer yes. Without a terminal, add `--yes` to sign them. Each server
+the device key once you answer yes. Without a terminal, `--confirm <name>` signs them for the
+first three, and `--yes` for `ployz deploy`. Each server
 checks the teardown itself and logs `teardown approved`, so Ployz Cloud can't take anything else
 off. Closing a pull request removes its preview with no prompt, under the
 [preview rule](../environments/preview-environments.md#previews-on-servers-that-enforce-device-approval)
 that opened it.
 
 A server that answers more than 15 minutes later refuses the old teardown, and its part stays.
-Delete again to approve a new one. A branch's **Shut down** and the automatic close of an idle branch
+Delete again to approve a new one. A server checks the teardown again when the deletion's turn comes, so
+if you remove the device or passkey that approved it, or turn enforcement on, while the deletion
+waits, that server refuses it then and takes nothing off. A branch's **Shut down** and the automatic close of an idle branch
 carry no teardown yet, so servers that enforce refuse them.
 Delete the environment instead. A server that enforces and runs a Ployz from before 0.4 can't take
 a teardown: the dashboard names it and deletes nothing, so upgrade it first.

@@ -491,7 +491,7 @@ impl LocalMachine {
         if let Err(refused) = drained().await? {
             return Ok(Err(refused));
         }
-        let turn = self.owner.admission_lock().write_owned().await;
+        let turn = self.exclusive_turn().await?;
         let held = match check().await? {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
@@ -613,7 +613,7 @@ impl LocalMachine {
                     return Ok(Err(CutRefusal::Busy));
                 }
             }
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await?;
             if local.volume_holder_running(&name).await? {
                 return Ok(Err(CutRefusal::Busy));
             }
@@ -1303,7 +1303,7 @@ impl LocalMachine {
                         Ok(Err(refusal)) => return Ok(Some(refusal)),
                         Err(error) => return Err(error),
                     }
-                    let _turn = local.owner.admission_lock().write_owned().await;
+                    let _turn = local.exclusive_turn().await?;
                     let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
                     removed(
                         remove_out_of_rotation(

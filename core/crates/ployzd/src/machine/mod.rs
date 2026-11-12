@@ -42,7 +42,8 @@ pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    Admitted, CopyStep, CutRefusal, RecoveryError, RuntimeWatchTelemetry, SealingError,
+    Admitted, CopyStep, CutRefusal, HeldStep, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
+    SealingError,
 };
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
