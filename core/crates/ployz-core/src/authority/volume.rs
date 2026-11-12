@@ -1,12 +1,11 @@
-//! The approval a person's Device signs for one Volume workflow, the steps each workflow
-//! lets each Machine take, and the checks a Machine runs before it admits the first step.
+//! The approval a person gives one Volume workflow, from a Device or a passkey's own
+//! prompt, the steps each workflow lets each Machine take, and the checks a Machine runs
+//! before it admits the first step.
 //!
 //! A workflow is a graph, not a list of routes: [`VolumeWorkflow::permits`] answers for
 //! one Machine and one step. A Machine keeps its own record of the operations it admitted,
 //! so a later step of an open operation needs no fresh window and an ended one never runs
 //! again. That record is the Machine's, not this module's.
-
-use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -43,7 +42,8 @@ pub struct VolumeApproval {
     pub workflow: VolumeWorkflow,
     pub issued_at: Timestamp,
     pub expires_at: Timestamp,
-    /// The Device that signed, which the signature must come from.
+    /// The Device that signed, which the signature must come from, or `"passkey"` for a
+    /// trusted passkey's own prompt. A browser key is refused.
     pub signer: SignerKey,
 }
 
@@ -339,6 +339,13 @@ pub enum ApprovedVolumeChange {
         role: SlotRole,
         writer: Option<String>,
     },
+    /// `server` creates `volume` from its copy of `source` at snapshot `at`.
+    Seed {
+        volume: String,
+        server: String,
+        source: String,
+        at: SnapshotGuid,
+    },
 }
 
 impl ApprovedVolumeChange {
@@ -381,9 +388,17 @@ impl ApprovedVolumeChange {
                 role: *role,
                 writer: writer.as_ref().map(&name),
             }),
-            VolumeWorkflow::Move { .. }
-            | VolumeWorkflow::Restore { .. }
-            | VolumeWorkflow::Seed { .. } => None,
+            VolumeWorkflow::Seed {
+                machine,
+                source,
+                at,
+            } => Some(Self::Seed {
+                volume: volume.to_owned(),
+                server: name(machine),
+                source: source.to_string(),
+                at: *at,
+            }),
+            VolumeWorkflow::Move { .. } | VolumeWorkflow::Restore { .. } => None,
         }
     }
 
@@ -451,7 +466,8 @@ impl ApprovedVolumeChange {
             Self::Resize { .. }
             | Self::Mirror { .. }
             | Self::Restore { .. }
-            | Self::MirrorRemoval { .. } => Vec::new(),
+            | Self::MirrorRemoval { .. }
+            | Self::Seed { .. } => Vec::new(),
             Self::Move { service, .. } => service.lines(),
         };
         std::iter::once(self.line()).chain(started).collect()
@@ -493,16 +509,23 @@ impl ApprovedVolumeChange {
                 mirror,
                 replace,
             } => {
-                let change = if *replace {
-                    format!(
-                        "copy {volume} from {writer} to {mirror} again, replacing the copy there"
-                    )
+                let change = Shown::words(if *replace {
+                    "Approved: copy "
                 } else {
-                    format!("mirror {volume} from {writer} to {mirror}")
-                };
-                format!(
-                    "Approved: {change}. Later syncs run without asking until you remove the Mirror."
-                )
+                    "Approved: mirror "
+                })
+                .and_text(volume)
+                .and_words(" from ")
+                .and_text(writer)
+                .and_words(" to ")
+                .and_text(mirror);
+                change
+                    .and_words(if *replace {
+                        " again, replacing the copy there. Later syncs run without asking until you remove the Mirror."
+                    } else {
+                        ". Later syncs run without asking until you remove the Mirror."
+                    })
+                    .into()
             }
             Self::Move {
                 volume,
@@ -511,24 +534,37 @@ impl ApprovedVolumeChange {
                 service,
                 mirrors,
             } => {
-                let mut line = format!(
-                    "Approved: move {volume} from {from} to {to}. {name} stops on {from} for the last copy, then starts on {to}.",
-                    name = service.service,
-                );
+                let line = Shown::words("Approved: move ")
+                    .and_text(volume)
+                    .and_words(" from ")
+                    .and_text(from)
+                    .and_words(" to ")
+                    .and_text(to)
+                    .and_words(". ")
+                    .and_text(service.service.as_str())
+                    .and_words(" stops on ")
+                    .and_text(from)
+                    .and_words(" for the last copy, then starts on ")
+                    .and_text(to)
+                    .and_words(".");
                 match mirrors.as_slice() {
-                    [] => {}
-                    [mirror] => {
-                        let _ = write!(line, " The Mirror on {mirror} keeps syncing.");
-                    }
+                    [] => line,
+                    [mirror] => line
+                        .and_words(" The Mirror on ")
+                        .and_text(mirror)
+                        .and_words(" keeps syncing."),
                     several => {
-                        let _ = write!(
-                            line,
-                            " The Mirrors on {} keep syncing.",
-                            several.join(" and ")
-                        );
+                        let mut joined = line.and_words(" The Mirrors on ");
+                        for (index, mirror) in several.iter().enumerate() {
+                            if index > 0 {
+                                joined = joined.and_words(" and ");
+                            }
+                            joined = joined.and_text(mirror);
+                        }
+                        joined.and_words(" keep syncing.")
                     }
                 }
-                line
+                .into()
             }
             Self::Restore {
                 volume,
@@ -584,6 +620,21 @@ impl ApprovedVolumeChange {
                 }
                 .into()
             }
+            Self::Seed {
+                volume,
+                server,
+                source,
+                at,
+            } => Shown::words("Approved: create ")
+                .and_text(volume)
+                .and_words(" on ")
+                .and_text(server)
+                .and_words(" from its copy of ")
+                .and_text(source)
+                .and_words(" at snapshot ")
+                .and_text(&at.to_string())
+                .and_words(".")
+                .into(),
         }
     }
 }
@@ -603,22 +654,22 @@ pub struct VolumeFacts<'a> {
     pub handed: Option<&'a HandoffReceipt>,
 }
 
-/// A Volume approval a Machine checked: its body, the Device that signed it, and the
-/// digest of the body as signed, which the Machine's record keeps.
+/// A Volume approval a Machine checked: its body, the Device or passkey that approved it,
+/// and the digest of the body as signed, which the Machine's record keeps.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VolumeApproved {
     pub body: VolumeApproval,
-    pub by: SigningPublicKey,
+    pub by: Approver,
     pub digest: StepDigest,
 }
 
 /// Check `approval` lets this Machine take `facts.step` now, signed by a Device this
-/// Machine trusts. A browser key is refused even under a valid session grant, and so is an
-/// envelope that rides a proposal.
+/// Machine trusts or answered by a trusted passkey's own prompt. A browser key is refused
+/// even under a valid session grant, and so is an envelope that rides a proposal.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature problem, a malformed body, a
-/// signer that is not a trusted Device, a body naming another Cluster or Volume, a
+/// signer that is not a trusted Device or passkey, a body naming another Cluster or Volume, a
 /// workflow that does not name this Machine or does not permit the step, an invalid
 /// lifetime, or an expired window. An ended operation is the Machine's record to refuse.
 pub fn verify(
@@ -634,9 +685,9 @@ pub fn verify(
     }
     let by = approvers
         .into_iter()
-        .find_map(|approver| match approver {
-            Approver::Device(key) if approver.signs_as(body.signer) => Some(key),
-            Approver::Device(_) | Approver::Browser { .. } | Approver::Passkey(_) => None,
+        .find(|approver| {
+            matches!(approver, Approver::Device(_) | Approver::Passkey(_))
+                && approver.signs_as(body.signer)
         })
         .ok_or(AuthorityRefusal::Mismatch {
             field: "the signer",

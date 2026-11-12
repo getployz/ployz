@@ -483,7 +483,7 @@ impl TrustedKeys {
 
     /// The trusted passkey that answered `assertion` to `challenge`, when a statement of
     /// `purpose` may rest on a passkey at all. Workflows may, through a session grant, and
-    /// rules, through a prompt of their own.
+    /// rules and Volume workflows, through a prompt of their own.
     ///
     /// A credential ID is the authenticator's claim, not a key, so every trusted passkey
     /// under it is tried and only a verifying signature picks one.
@@ -503,7 +503,7 @@ impl TrustedKeys {
             .iter()
             .filter(|trusted| trusted.passkey.credential_id == assertion.credential_id);
         let first = candidates.next().ok_or(AuthorityRefusal::UnknownPasskey)?;
-        if !matches!(purpose, Purpose::Workflow | Purpose::Rule) {
+        if !matches!(purpose, Purpose::Workflow | Purpose::Rule | Purpose::Volume) {
             return Err(AuthorityRefusal::ApproveOnly {
                 code: first.passkey.code(),
                 purpose,

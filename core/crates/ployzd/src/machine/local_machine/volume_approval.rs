@@ -86,7 +86,7 @@ impl LocalMachine {
                             },
                         )
                         .map(|approved| {
-                            by = Some(Approver::Device(approved.by).to_string());
+                            by = Some(approved.by.to_string());
                             approved.body.workflow
                         })
                     })

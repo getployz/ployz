@@ -169,6 +169,33 @@ impl Timestamp {
         self.0
     }
 
+    /// This time in UTC to the second, as RFC 3339 writes it: `2026-11-12T02:08:13Z`.
+    #[must_use]
+    pub fn utc(self) -> String {
+        let seconds = self.0 / 1000;
+        let (days, rest) = (seconds / 86_400, seconds % 86_400);
+        // Howard Hinnant's civil_from_days, for days since 1970-01-01.
+        let shifted = days + 719_468;
+        let era = shifted / 146_097;
+        let of_era = shifted - era * 146_097;
+        let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+        let day_of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let month_index = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+        let month = if month_index < 10 {
+            month_index + 3
+        } else {
+            month_index - 9
+        };
+        let year = year_of_era + era * 400 + u64::from(month <= 2);
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            rest / 3600,
+            rest % 3600 / 60,
+            rest % 60
+        )
+    }
+
     /// `self` plus `millis`, saturating at the largest safe integer.
     #[must_use]
     pub const fn plus(self, millis: u64) -> Self {

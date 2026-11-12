@@ -31,10 +31,12 @@ export type {
   StepDigest,
   StepKind,
   VolumeApproval,
+  VolumeDraft,
+  VolumeTerms,
   VolumeWorkflow,
 } from "./generated/payloads";
 
-import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView } from "./generated/payloads";
+import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView, VolumeDraft, VolumeTerms } from "./generated/payloads";
 
 /**
  * The deploy approval a browser key signs for `plan`, a Store plan read with `target`, under `terms`: the canonical body
@@ -69,3 +71,10 @@ export function privateAccessApprovalBody(terms: PrivateAccessTerms): string;
  * the preview from a review.
  */
 export function previewReviewBody(view: PreviewReviewView, terms: Pick<ReviewTerms, "cluster" | "issued_at" | "expires_at">): ReviewDraft;
+
+/**
+ * The Volume approval a passkey answers for `terms`: the canonical body to answer as it is, every line the person reads,
+ * rendered from that body by the ployz-core code the CLI and the Servers run, and for a Move the spec the target starts.
+ * Throws an Error for malformed terms, or a Move whose Service runs an image not pinned by digest.
+ */
+export function volumeApprovalBody(terms: VolumeTerms): VolumeDraft;

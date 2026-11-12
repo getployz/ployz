@@ -1,9 +1,11 @@
 //! The SDK's WASM ABI for Node and the browser: config rules, the deploy approval a
 //! browser key signs, the automatic deploy rule and Private Access approval a passkey
-//! answers, and the review of a preview a person signs. All policy lives in ployz-core.
+//! answers, the review of a preview a person signs, and the Volume approval a passkey
+//! answers. All policy lives in ployz-core.
 use ployz_core::authority::{
     AutoDeployRule, DeployApproval, DeployTerms, PreviewReview, PreviewRule, PrivateAccessApproval,
     PrivateAccessTerms, ReviewTerms, RuleBasis, RuleTerms, Signed, SignerKey, Timestamp,
+    VolumeTerms,
 };
 use ployz_core::{Namespace, RequestedServiceSpec, ServiceName};
 use wasm_bindgen::prelude::*;
@@ -140,6 +142,22 @@ pub fn preview_review_body(input: &str) -> Result<String, JsError> {
         .open()
         .map_err(|_| JsError::new("The preview rule isn't readable. Approve it again."))?;
     let draft = PreviewReview::draft(&rule, &input.namespace, &input.target, input.terms)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// The Volume approval a passkey answers for `terms`, as [`VolumeTerms::draft`] builds it:
+/// its canonical body, every line the person reads, rendered from that body, and for a Move
+/// the spec the target starts, hashed by the code the CLI and the Servers run.
+///
+/// # Errors
+/// Rejects malformed terms and whatever `draft` refuses.
+#[wasm_bindgen]
+pub fn volume_approval_body(input: &str) -> Result<String, JsError> {
+    let terms: VolumeTerms =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    let draft = terms
+        .draft()
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
 }
