@@ -4,10 +4,11 @@
 //! Each Server then takes off only what the person read.
 
 use clap::ArgMatches;
+use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
     Signed, Signer, SignerKey, Teardown, TeardownApproval, TeardownScope, TeardownTerms, Timestamp,
 };
-use ployz_core::{DockerVolumeName, Hint, MachineId, RpcErrorCode};
+use ployz_core::{DeviceKey, DockerVolumeName, Hint, MachineId, RpcErrorCode};
 
 use super::super::Error;
 use super::super::deploy::approve::{Probe, probe};
@@ -73,7 +74,17 @@ pub(in crate::handlers) fn draft(
             .cloned()
             .unwrap_or_else(|| id.to_string())
     };
-    let lines = Teardown::drafted(terms.clone()).lines(name, label);
+    let mut lines = Teardown::drafted(terms.clone()).lines(name, label);
+    // The rest of what it signs. The window starts at the yes, when `sign` stamps it.
+    lines.extend([
+        Shown::words("  cluster ")
+            .and_text(&terms.cluster.to_string())
+            .into(),
+        Shown::words("  signer device ")
+            .and_text(&DeviceKey::from(signer.public()).code().to_string())
+            .into(),
+        "  valid for 15 minutes from your yes".to_owned(),
+    ]);
     Ok(Some(Drafted {
         terms,
         signer,
