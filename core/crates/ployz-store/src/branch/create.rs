@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::Trusted;
+use crate::followup::{FollowUp, Place};
 
 pub(crate) fn create_branch(
     tx: &mut dyn Tx,
@@ -35,9 +36,11 @@ pub(crate) fn create_branch(
                 "{} is empty, so there is nothing to branch",
                 parent.summary.name
             ),
-            json!({
-                "next": format!("ployz env new {} --project {}", create.name, project.name),
-            }),
+            FollowUp::EnvironmentNew {
+                name: create.name.clone(),
+                project: project.name.clone(),
+            }
+            .details(),
         ));
     }
     let mut copy = create
@@ -360,20 +363,17 @@ pub(crate) fn copy_node(
 /// An Own Copy rewrites what a Branch runs, so it waits until the Branch runs its
 /// Working State: no Deployment in flight and nothing staged.
 fn settled(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
-    let scope = format!(
-        "--project {} --env {}",
-        branch.summary.project, branch.summary.name
-    );
+    let place = Place::of(&branch.summary);
     if deployment::in_flight(tx, &branch.summary.id)?.is_some() {
         return Err(error::conflict(
             "A Deployment of this Branch is still running: wait for it to finish",
-            json!({ "next": format!("ployz deployment ls {scope}") }),
+            FollowUp::DeploymentList { place }.details(),
         ));
     }
     if !review::review(tx, branch)?.view.changes.is_empty() {
         return Err(error::conflict(
             "This Branch has changes that aren't deployed: deploy or discard them first",
-            json!({ "next": format!("ployz diff {scope}") }),
+            FollowUp::Diff { place }.details(),
         ));
     }
     Ok(())

@@ -20,6 +20,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::Hostname;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::SettingPath;
@@ -617,7 +618,10 @@ pub(crate) fn set_generated_domain(
         (_, []) => {
             return Err(error::not_found(
                 format!("{} has no generated domain to change", set.service),
-                json!({ "next": format!("ployz domain add {}", set.service) }),
+                FollowUp::DomainAdd {
+                    service: set.service.to_string(),
+                }
+                .details(),
             ));
         }
         (Some(name), _) => generated_domains
@@ -1085,11 +1089,10 @@ fn clash(
                 "{hostname} is already published by {service} in Namespace {namespace}, which \
                  isn't in any Project: remove that Namespace from the Servers first"
             ),
-            json!({
-                "hostname": hostname,
-                "namespace": namespace,
-                "next": format!("ployz server clean --namespace {namespace} --confirm {namespace}"),
-            }),
+            FollowUp::ServerClean {
+                namespace: namespace.to_string(),
+            }
+            .within(json!({ "hostname": hostname, "namespace": namespace })),
         ),
     })
 }

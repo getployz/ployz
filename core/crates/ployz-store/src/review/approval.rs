@@ -11,6 +11,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname, VolumeName};
 use crate::review::{ApprovalRequired, ApprovalSubject, DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
@@ -720,7 +721,7 @@ impl Pruning {
         let Some(number) = redeploy else {
             return Err(error::forbidden(
                 format!("Needs {destroy}: {removes}. Deploy with --no-prune to keep them."),
-                json!({ "permission": destroy, "next": "ployz deploy --no-prune" }),
+                FollowUp::Deploy { no_prune: true }.within(json!({ "permission": destroy })),
             ));
         };
         // A redeploy ships what its Deployment froze, prune and all: only waiting

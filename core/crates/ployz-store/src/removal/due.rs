@@ -10,14 +10,14 @@ use ts_rs::TS;
 
 use super::mark::{self, Accepted, Closed, Evidence, Mark, State};
 use super::{
-    Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, next,
-    teardown_order,
+    Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, teardown_order,
 };
 use crate::automation::{Automated, Skipped};
 use crate::deployment::admit::{AdmitRemoval, ShutDown};
 use crate::deployment::loss::{RemovedVolume, VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, Outcome};
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{DeploymentId, EnvironmentId, ProjectId};
 use crate::review::approval;
 use crate::scope::{self, Environment, EnvironmentSummary};
@@ -349,7 +349,11 @@ pub(crate) fn admit(
     }) else {
         return Err(error::conflict(
             format!("{} isn't being removed", summary.name),
-            json!({ "next": next("remove", json!({ "project": summary.project, "environment": summary.name })) }),
+            FollowUp::Remove {
+                project: summary.project.clone(),
+                environment: Some(summary.name.clone()),
+            }
+            .details(),
         ));
     };
     // Two sweeps can find it due at once: the mark admits its removal once. A
@@ -582,13 +586,11 @@ fn stalled(
         .unwrap_or_else(|| format!("it failed on {}", failed_on.join(", ")));
     Err(error::conflict(
         format!("Removing {} stalled: {reason}", environment.summary.name),
-        json!({
-            "failed_on": failed_on,
-            "next": next("remove", json!({
-                "project": environment.summary.project,
-                "environment": environment.summary.name,
-            })),
-        }),
+        FollowUp::Remove {
+            project: environment.summary.project.clone(),
+            environment: Some(environment.summary.name.clone()),
+        }
+        .within(json!({ "failed_on": failed_on })),
     ))
 }
 

@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
+use crate::followup::{FollowUp, Place};
 use crate::git::GitSetting;
 use crate::policy::{Policy, PolicySetting};
 use crate::scope::EnvironmentSummary;
@@ -778,15 +779,15 @@ pub(crate) fn healthcheck_text(service: &ServiceName, summary: &EnvironmentSumma
             "{}: text sets an HTTP path like /health; a command takes an object like {{\"command\":\"pg_isready\",\"timeoutSeconds\":60}}, and an HTTP check's timeout one like {{\"path\":\"/health\",\"timeoutSeconds\":60}}",
             setting.name()
         ),
-        json!({
+        FollowUp::PatchHealthcheck {
+            service: service.to_string(),
+            place: Place::of(summary),
+        }
+        .within(json!({
             "setting": setting.name(),
             "expected": setting.expected(),
             "example": setting.examples().get(0),
-            "next": format!(
-                "ployz set {service} --patch '{{\"healthcheck\":{{\"command\":\"pg_isready\"}}}}' --env {} --project {}",
-                summary.name, summary.project
-            ),
-        }),
+        })),
     )
 }
 

@@ -670,7 +670,13 @@ fn names_resolve_within_one_organization() {
         RpcErrorCode::NotFound,
         "another Organization sees nothing"
     );
-    assert_eq!(error.details, json!({ "next": "ployz project new NAME" }));
+    assert_eq!(
+        error.details,
+        json!({
+            "next": "ployz project new NAME",
+            "follow_up": { "kind": "project_new" },
+        })
+    );
 
     let mut duplicate = create_service("svc-api", "web", "nginx:1");
     duplicate.environment.project = Some(ProjectName::parse("shop").unwrap());
@@ -710,6 +716,7 @@ fn environments_are_created_in_a_named_project_and_addressed_by_name() {
         error.details,
         json!({
             "next": "ployz env ls --project shop",
+            "follow_up": { "kind": "environment_list", "project": "shop" },
             "valid_children": ["production", "staging"],
         })
     );

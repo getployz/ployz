@@ -4,13 +4,12 @@
 use ployz_core::RpcError;
 use serde_json::json;
 
-/// What an old CLI is told to run to update.
-const UPDATE: &str = "curl -fsSL https://ployz.sh | sh";
+use crate::followup::FollowUp;
 
 /// The refusal an old CLI gets for plain text set as variable `key`.
 pub(crate) fn told_to_update(key: &str) -> RpcError {
     crate::error::unsupported(
         format!("{key}: update ployz to set a Sealed value."),
-        json!({ "variable": key, "next": UPDATE }),
+        FollowUp::UpdateClient { beta: false }.within(json!({ "variable": key })),
     )
 }

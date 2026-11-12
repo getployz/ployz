@@ -15,6 +15,7 @@ use crate::automation::Shipped;
 use crate::deployment::{self, DeploymentSummary, TargetNode, UploadedSource};
 use crate::domain;
 use crate::error;
+use crate::followup::{FollowUp, Place};
 use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, VolumeName};
 use crate::registry;
 use crate::review;
@@ -396,23 +397,17 @@ fn needs_cluster_domain(
         return Ok(());
     }
     let summary = &environment.summary;
-    let remove = prefixes
-        .iter()
-        .map(|prefix| {
-            format!(
-                "ployz domain rm {prefix} --project {} --env {}",
-                summary.project, summary.name
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" && ");
+    let remove = FollowUp::DomainRemove {
+        prefixes: prefixes.iter().map(|prefix| (*prefix).to_owned()).collect(),
+        place: Place::of(summary),
+    };
     Err(RpcError::unsupported(format!(
         "{} has generated domains ({}), which need the Cluster Domain Ployz Cloud \
              reserves at a Deploy: deploy through Ployz Cloud, or remove them",
         summary.name,
         prefixes.join(", ")
     ))
-    .with_details(json!({ "domains": prefixes, "next": remove })))
+    .with_details(remove.within(json!({ "domains": prefixes }))))
 }
 
 fn deploy(

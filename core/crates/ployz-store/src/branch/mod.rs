@@ -56,6 +56,7 @@ use ts_rs::TS;
 
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
+use crate::followup::{FollowUp, Place};
 use crate::id::{
     DeploymentId, EnvironmentId, EnvironmentName, ProposalId, PullRequestNumber, Revision, SyncId,
     VolumeName,
@@ -589,7 +590,11 @@ fn branch_row(tx: &mut dyn Tx, environment: &Environment) -> Result<Row, RpcErro
     row(tx, &environment.summary.id)?.ok_or_else(|| {
         error::invalid(
             format!("{} is not a Branch", environment.summary.name),
-            json!({ "next": format!("ployz env branch NAME --from {} --project {}", environment.summary.name, environment.summary.project) }),
+            FollowUp::EnvironmentBranch {
+                from: environment.summary.name.clone(),
+                project: environment.summary.project.clone(),
+            }
+            .details(),
         )
     })
 }

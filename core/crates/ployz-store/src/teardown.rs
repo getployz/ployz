@@ -10,6 +10,7 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::deployment::{self, DeploymentSummary};
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{
     DeploymentId, EnvironmentId, EnvironmentName, OrganizationId, ProjectId, ProjectName,
     VolumeName,
@@ -376,10 +377,11 @@ pub(crate) fn remove_organization(
                 "This Organization still has Projects ({}). Remove them first",
                 names.join(", ")
             ),
-            json!({
-                "projects": names,
-                "next": crate::removal::next("remove", json!({ "project": first.name })),
-            }),
+            FollowUp::Remove {
+                project: first.name.clone(),
+                environment: None,
+            }
+            .within(json!({ "projects": names })),
         ));
     }
     for table in [

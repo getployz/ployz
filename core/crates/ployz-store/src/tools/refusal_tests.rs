@@ -1,6 +1,6 @@
-use std::path::Path;
-
 use super::*;
+use crate::followup::{SetupLeft, Storage};
+use crate::{EnvironmentName, ProjectName};
 
 fn store_error(code: RpcErrorCode, message: &str, details: Value) -> RpcError {
     RpcError {
@@ -8,13 +8,6 @@ fn store_error(code: RpcErrorCode, message: &str, details: Value) -> RpcError {
         message: message.to_owned(),
         details,
         cause: Vec::new(),
-    }
-}
-
-fn next_of(line: &str) -> Option<Call> {
-    match cli_next(line) {
-        Next::Call(call) => Some(call),
-        Next::Fix(_) | Next::Drop => None,
     }
 }
 
@@ -36,119 +29,139 @@ fn sanitize_cuts_the_cli_clause() {
     );
 }
 
-#[test]
-fn a_cli_line_becomes_its_tool_call() {
-    assert_eq!(
-        next_of("ployz domain add web --env staging --project shop"),
-        Some(Call::new(
-            "domain_add",
-            json!({ "service": "web", "environment": "staging", "project": "shop" })
-        ))
-    );
-    assert_eq!(
-        next_of("ployz env pr acme/api --from ENV --project shop"),
-        Some(Call::new(
-            "environment_pr",
-            json!({ "repository": "acme/api", "enabled": true, "project": "shop" })
-        ))
-    );
-    assert_eq!(
-        next_of("ployz github ls acme/api --project shop --env staging"),
-        Some(Call::new("github_ls", json!({ "repository": "acme/api" })))
-    );
-    assert_eq!(
-        next_of("ployz volume set data --shared-writes"),
-        Some(Call::new(
-            "volume_update",
-            json!({ "volume": "data", "shared_writes": true })
-        ))
-    );
-    assert_eq!(
-        next_of("ployz project new NAME"),
-        Some(Call::new("project_create", json!({})))
-    );
-    assert_eq!(
-        next_of("ployz diff --env staging"),
-        Some(Call::new("review", json!({ "environment": "staging" })))
-    );
-}
-
-/// What an agent is told of each `details.next` the Store's producers write, as the
-/// Store wrote them before follow-ups were typed: the next call or the fix, or neither.
+/// Each follow-up a Store producer writes: the `details.next` it wrote before
+/// follow-ups were typed, and what an agent was told of it, which is unchanged.
 #[test]
 fn every_store_follow_up_reads_as_main_wrote_it() {
+    let project = || ProjectName::parse("shop").unwrap();
+    let environment = |name: &str| EnvironmentName::parse(name).unwrap();
+    let at = |name: &str| Place {
+        project: project(),
+        environment: environment(name),
+    };
+    let staging = || at("staging");
     let scope = json!({ "project": "shop", "environment": "staging" });
     let call = |tool: &str, input: Value| (Some(Call::new(tool, input)), None);
     let fix = |page: DashboardPage| (None, Some(Fix::OpenDashboard { page }));
     let nothing = (None, None);
-    let shown = |environment: &str| {
-        call(
-            "environment_show",
-            json!({ "project": "shop", "environment": environment }),
-        )
-    };
     type Told = (Option<Call>, Option<Fix>);
-    let cases: Vec<(Value, Told)> = vec![
-        (json!("ployz server add"), (None, Some(Fix::ConnectServers))),
+    let cases: Vec<(FollowUp, Value, Told)> = vec![
         (
+            FollowUp::ServerAdd,
+            json!("ployz server add"),
+            (None, Some(Fix::ConnectServers)),
+        ),
+        (
+            FollowUp::ServerClean {
+                namespace: "shop-staging".into(),
+            },
             json!("ployz server clean --namespace shop-staging --confirm shop-staging"),
             fix(DashboardPage::Servers),
         ),
         (
+            FollowUp::SetRegistryCredential {
+                service: "web".into(),
+            },
             json!("ployz set web.registryCredential --secret"),
             fix(DashboardPage::Variables),
         ),
         (
+            FollowUp::SetStopFirst {
+                service: "web".into(),
+                place: staging(),
+            },
             json!("ployz set web.updateOrder=stop-first --env staging --project shop"),
             fix(DashboardPage::Variables),
         ),
         (
+            FollowUp::RenameVariable {
+                service: "web".into(),
+                key: "KEY".into(),
+                to: "NEW".into(),
+                place: staging(),
+            },
             json!(
                 "ployz set web.env.KEY --rename NEW --update-references --env staging --project shop"
             ),
             fix(DashboardPage::Variables),
         ),
         (
+            FollowUp::PatchHealthcheck {
+                service: "web".into(),
+                place: staging(),
+            },
             json!(
                 "ployz set web --patch '{\"healthcheck\":{\"command\":\"pg_isready\"}}' --env staging --project shop"
             ),
             fix(DashboardPage::Variables),
         ),
         (
+            FollowUp::SyncThenSetSecret {
+                label: "web.env.KEY".into(),
+                place: staging(),
+            },
             json!(
                 "sync without --value first, then ployz set web.env.KEY --secret --env staging --project shop"
             ),
             nothing.clone(),
         ),
         (
+            FollowUp::ProjectNew,
             json!("ployz project new NAME"),
             call("project_create", json!({})),
         ),
         (
+            FollowUp::ProjectList,
             json!("ployz project ls"),
             call("environment_show", json!({})),
         ),
         (
+            FollowUp::EnvironmentList { project: project() },
+            json!("ployz env ls --project shop"),
+            call("environment_show", json!({ "project": "shop" })),
+        ),
+        (
+            FollowUp::EnvironmentNew {
+                name: environment("fix"),
+                project: project(),
+            },
             json!("ployz env new fix --project shop"),
             fix(DashboardPage::Environments),
         ),
         (
+            FollowUp::EnvironmentBranch {
+                from: environment("staging"),
+                project: project(),
+            },
             json!("ployz env branch NAME --from staging --project shop"),
             fix(DashboardPage::Environments),
         ),
         (
+            FollowUp::EnvironmentSync { place: staging() },
             json!("ployz env sync --to ENV --project shop --env staging"),
             fix(DashboardPage::Environments),
         ),
         (
+            FollowUp::EnvironmentSetup {
+                place: staging(),
+                left: SetupLeft::One,
+            },
             json!("ployz env setup --clear --env staging --project shop"),
             fix(DashboardPage::Environments),
         ),
         (
+            FollowUp::EnvironmentSetup {
+                place: staging(),
+                left: SetupLeft::Several,
+            },
             json!("ployz env setup --setup SERVICE=COMMAND --env staging --project shop"),
             fix(DashboardPage::Environments),
         ),
         (
+            FollowUp::EnvironmentPr {
+                repository: "acme/api".into(),
+                project: project(),
+            },
             json!("ployz env pr acme/api --from ENV --project shop"),
             call(
                 "environment_pr",
@@ -156,34 +169,56 @@ fn every_store_follow_up_reads_as_main_wrote_it() {
             ),
         ),
         (
+            FollowUp::GithubList {
+                repository: "acme/api".into(),
+            },
             json!("ployz github ls acme/api"),
             call("github_ls", json!({ "repository": "acme/api" })),
         ),
         (
+            FollowUp::GithubConnect,
             json!("ployz github connect"),
             call("github_connect", json!({})),
         ),
-        (json!("ployz deploy"), call("deploy", json!({}))),
-        (json!("ployz deploy --no-prune"), call("deploy", json!({}))),
         (
+            FollowUp::Deploy { no_prune: false },
+            json!("ployz deploy"),
+            call("deploy", json!({})),
+        ),
+        (
+            FollowUp::Deploy { no_prune: true },
+            json!("ployz deploy --no-prune"),
+            call("deploy", json!({})),
+        ),
+        (
+            FollowUp::DeploymentList { place: staging() },
             json!("ployz deployment ls --project shop --env staging"),
             call("deployment_list", scope.clone()),
         ),
         (
+            FollowUp::Diff { place: staging() },
             json!("ployz diff --project shop --env staging"),
             call("review", scope.clone()),
         ),
         (
+            FollowUp::DomainAdd {
+                service: "web".into(),
+            },
             json!("ployz domain add web"),
             call("domain_add", json!({ "service": "web" })),
         ),
         (
+            FollowUp::DomainRemove {
+                prefixes: vec!["a".into(), "b".into()],
+                place: staging(),
+            },
             json!(
                 "ployz domain rm a --project shop --env staging && ployz domain rm b --project shop --env staging"
             ),
             nothing.clone(),
         ),
         (
+            FollowUp::RenameSetupService { place: staging() },
             json!("ployz service rename setup NAME --env staging --project shop"),
             call(
                 "service_rename",
@@ -191,10 +226,18 @@ fn every_store_follow_up_reads_as_main_wrote_it() {
             ),
         ),
         (
+            FollowUp::VolumeInspect {
+                volume: "data".into(),
+                place: staging(),
+            },
             json!("ployz volume inspect data --env staging --project shop"),
             call("environment_show", scope.clone()),
         ),
         (
+            FollowUp::VolumeAllowSharedWrites {
+                volume: "data".into(),
+                place: staging(),
+            },
             json!("ployz volume set data --shared-writes --env staging --project shop"),
             call(
                 "volume_update",
@@ -202,116 +245,124 @@ fn every_store_follow_up_reads_as_main_wrote_it() {
             ),
         ),
         (
+            FollowUp::VolumeAdd {
+                volume: "data".into(),
+                mounts: vec!["web:/data".into()],
+                storage: Storage::Docker,
+                place: staging(),
+            },
             json!(
                 "ployz volume add data --mount web:/data --docker --shared-writes --env staging --project shop"
             ),
             nothing.clone(),
         ),
-        (json!("curl -fsSL https://ployz.sh | sh"), nothing.clone()),
         (
+            FollowUp::VolumeAdd {
+                volume: "data".into(),
+                mounts: vec!["web:/data".into(), "worker:/my data".into()],
+                storage: Storage::Size("10GiB".into()),
+                place: staging(),
+            },
+            json!(
+                "ployz volume add data --mount web:/data --mount 'worker:/my data' --size 10GiB --shared-writes --env staging --project shop"
+            ),
+            nothing.clone(),
+        ),
+        (
+            FollowUp::UpdateClient { beta: false },
+            json!("curl -fsSL https://ployz.sh | sh"),
+            nothing.clone(),
+        ),
+        (
+            FollowUp::UpdateClient { beta: true },
             json!("curl -fsSL https://ployz.sh | sh -s -- beta"),
             nothing.clone(),
         ),
-        (shown_object("environment_show", &scope), shown("staging")),
         (
+            FollowUp::ShowEnvironment { place: staging() },
+            json!({ "tool": "environment_show", "input": scope }),
+            call(
+                "environment_show",
+                json!({ "project": "shop", "environment": "staging" }),
+            ),
+        ),
+        (
+            FollowUp::ShowProject { project: project() },
             json!({ "tool": "project_show", "input": { "project": "shop" } }),
             call("environment_show", json!({ "project": "shop" })),
         ),
         (
+            FollowUp::UnprotectEnvironment { place: staging() },
             json!({ "tool": "environment_protect", "input": { "project": "shop", "environment": "staging", "protected": false } }),
             fix(DashboardPage::Environments),
         ),
         (
+            FollowUp::Remove {
+                project: project(),
+                environment: Some(environment("staging")),
+            },
             json!({ "tool": "remove", "input": { "project": "shop", "environment": "staging" } }),
             nothing.clone(),
         ),
         (
+            FollowUp::Remove {
+                project: project(),
+                environment: None,
+            },
+            json!({ "tool": "remove", "input": { "project": "shop" } }),
+            nothing.clone(),
+        ),
+        (
+            FollowUp::StopKeepingBranch { place: at("fix") },
             json!({ "tool": "keep_branch", "input": { "environment": { "project": "shop", "environment": "fix" }, "kept": false } }),
             nothing,
         ),
     ];
-    for (next, (call, fix)) in cases {
-        let error = store_error(
-            RpcErrorCode::Conflict,
-            "Refused",
-            json!({ "next": next.clone() }),
-        );
+    for (follow_up, next, (call, fix)) in cases {
+        assert_eq!(follow_up.cli(), next, "{follow_up:?}");
+        let details = follow_up.details();
+        assert_eq!(details.get("next"), Some(&next), "{follow_up:?}");
+        assert_eq!(FollowUp::of(&details).as_ref(), Some(&follow_up));
+        let error = store_error(RpcErrorCode::Conflict, "Refused", details);
         let refusal = from_store(error, &Call::new("deploy", json!({})), Writes::None);
         assert_eq!(refusal.next, call.into_iter().collect::<Vec<_>>(), "{next}");
         assert_eq!(refusal.fix(), fix, "{next}");
+        assert_eq!(refusal.details.get("follow_up"), None, "{next}");
+        assert_eq!(refusal.details.get("next"), None, "{next}");
     }
 }
 
-fn shown_object(tool: &str, input: &Value) -> Value {
-    json!({ "tool": tool, "input": input })
+#[test]
+fn a_cli_line_alone_tells_an_agent_nothing() {
+    for next in [
+        json!("ployz domain add web"),
+        json!("ployz server add"),
+        json!({ "tool": "environment_show", "input": { "environment": "staging" } }),
+    ] {
+        let error = store_error(RpcErrorCode::Conflict, "Refused", json!({ "next": next }));
+        let refusal = from_store(error, &Call::new("deploy", json!({})), Writes::None);
+        assert!(refusal.next.is_empty());
+        assert_eq!(refusal.fix(), None);
+    }
 }
 
 #[test]
-fn a_placeholder_is_never_an_argument() {
+fn a_follow_up_keeps_the_fields_it_sits_beside() {
+    let details = FollowUp::DomainAdd {
+        service: "web".into(),
+    }
+    .within(json!({ "hostname": "app.example.com" }));
     assert_eq!(
-        next_of("ployz domain add SERVICE --env staging"),
-        Some(Call::new("domain_add", json!({ "environment": "staging" })))
-    );
-}
-
-#[test]
-fn a_cli_line_for_a_human_becomes_a_fix() {
-    assert!(matches!(
-        cli_next("ployz server add"),
-        Next::Fix(Fix::ConnectServers)
-    ));
-    assert!(matches!(
-        cli_next("ployz set web.registryCredential --secret"),
-        Next::Fix(Fix::OpenDashboard {
-            page: DashboardPage::Variables
+        details,
+        json!({
+            "hostname": "app.example.com",
+            "next": "ployz domain add web",
+            "follow_up": { "kind": "domain_add", "service": "web" },
         })
-    ));
-    assert!(matches!(
-        cli_next("ployz volume add data --mount web:/data --docker --shared-writes"),
-        Next::Drop
-    ));
-    assert!(matches!(cli_next("ployz rm everything"), Next::Drop));
-}
-
-#[test]
-fn every_cli_line_the_store_names_has_a_row() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut lines = Vec::new();
-    let mut dirs = vec![src.clone()];
-    while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                if path != src.join("tools") {
-                    dirs.push(path);
-                }
-                continue;
-            }
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            for (at, _) in text.match_indices("\"ployz ") {
-                let rest = text.get(at + 1..).unwrap();
-                let line = rest.split('"').next().unwrap();
-                let words = line
-                    .split_whitespace()
-                    .skip(1)
-                    .take_while(|word| !word.starts_with("--") && !word.contains('{'))
-                    .collect::<Vec<_>>();
-                if !words.is_empty() {
-                    lines.push((name.clone(), line.to_owned(), words.join(" ")));
-                }
-            }
-        }
-    }
-    assert!(lines.len() >= 16, "the scan found {} lines", lines.len());
-    let missing = lines
-        .iter()
-        .filter(|(_, _, words)| cli_row(&words.split(' ').collect::<Vec<_>>()).is_none())
-        .collect::<Vec<_>>();
-    assert!(missing.is_empty(), "no CLI_NEXT row for {missing:?}");
+    );
+    let mut stripped = details;
+    FollowUp::remove_from(&mut stripped);
+    assert_eq!(stripped, json!({ "hostname": "app.example.com" }));
 }
 
 #[test]
@@ -345,18 +396,12 @@ fn another_refusal_keeps_the_same_call_as_its_retry() {
     let error = store_error(
         RpcErrorCode::Conflict,
         "The Environment moved",
-        json!({ "next": [{ "tool": "environment_show", "input": { "environment": "staging" } }, { "tool": "volume_remove" }, "ployz server add"] }),
+        FollowUp::ServerAdd.details(),
     );
     let refusal = from_store(error, &call, Writes::Committed);
     assert!(refusal.retry.is_same());
     assert_eq!(refusal.writes, Writes::Committed);
-    assert_eq!(
-        refusal.next,
-        vec![Call::new(
-            "environment_show",
-            json!({ "environment": "staging" })
-        )]
-    );
+    assert!(refusal.next.is_empty());
     assert_eq!(refusal.fix(), Some(Fix::ConnectServers));
 }
 
