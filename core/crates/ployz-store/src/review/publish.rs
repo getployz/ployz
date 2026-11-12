@@ -141,11 +141,7 @@ impl WayBack {
                 && other.name == change.name
         });
         let path = (!named_twice)
-            .then(|| match change.node.node_type {
-                EnvironmentNodeType::Service => change.name.clone(),
-                EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
-                EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
-            })
+            .then(|| change.path())
             .and_then(|path| SettingPath::parse(&path).ok());
         Self {
             drops_unsaved: path.is_none(),

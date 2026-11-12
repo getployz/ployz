@@ -4,8 +4,7 @@
 )]
 
 use ployz_core::config::{
-    At, Setting, compare_service_settings, parse_service_config, parse_service_setting,
-    restore_service_setting,
+    Place, Setting, compare_service_settings, parse_service_config, parse_service_setting,
 };
 use serde_json::{Value, json};
 
@@ -21,7 +20,7 @@ fn config() -> Value {
 }
 
 #[test]
-fn service_comparison_and_restore_preserve_authored_source_identity() {
+fn service_comparison_keeps_the_git_branch_with_its_source() {
     let baseline = parse_service_config(config()).unwrap();
     let mut edited = config();
     edited["source"]["access"]["installationId"] = json!(9);
@@ -36,22 +35,10 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
         ["source", "source.branch", "startCommand"]
     );
     assert_eq!(
-        rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
-        [Setting::Source, Setting::Branch, Setting::StartCommand].map(|s| Some(At::Setting(s)))
-    );
-    let restored = restore_service_setting(current.clone(), &baseline, "source").unwrap();
-    assert_eq!(
-        serde_json::to_value(&restored).unwrap()["source"]["access"]["installationId"],
-        7
-    );
-    assert_eq!(
-        serde_json::to_value(&restored).unwrap()["source"]["branch"]["type"],
-        "disconnected",
-        "the git branch is the Service's own"
-    );
-    assert_eq!(
-        serde_json::to_value(restored).unwrap()["startCommand"],
-        "npm start"
+        rows.iter()
+            .map(|(_, place)| place.clone())
+            .collect::<Vec<_>>(),
+        [Setting::Source, Setting::Branch, Setting::StartCommand].map(Place::Setting)
     );
 
     let mut image = config();
@@ -60,25 +47,19 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     let image = parse_service_config(image).unwrap();
     let rows = compare_service_settings(&image, Some(&baseline));
     assert_eq!(rows.len(), 1, "the branch goes with its source");
-    let (switched, at) = &rows[0];
+    let (switched, place) = &rows[0];
     assert_eq!(switched.path, "source");
-    assert_eq!(*at, Some(At::Setting(Setting::Source)));
+    assert_eq!(*place, Place::Setting(Setting::Source));
     assert_eq!(
         switched.after["credentials"],
         json!(true),
         "never the credential"
     );
-    assert_eq!(
-        restore_service_setting(image.clone(), &baseline, "source").unwrap(),
-        baseline,
-        "a Service without a git branch takes the baseline's"
-    );
     assert!(compare_service_settings(&image, Some(&image)).is_empty());
-    assert!(restore_service_setting(current, &baseline, "unrecognized.setting").is_err());
 }
 
 #[test]
-fn an_emptied_source_is_the_source_row_and_discard_brings_it_back() {
+fn an_emptied_source_is_the_source_row() {
     let git = parse_service_config(config()).unwrap();
     let mut empty = config();
     empty["source"] = json!({"version": 1, "type": "empty", "rootDir": "/"});
@@ -87,13 +68,12 @@ fn an_emptied_source_is_the_source_row_and_discard_brings_it_back() {
     assert_eq!(rows.len(), 1);
     assert_eq!(
         (rows[0].0.path.as_str(), &rows[0].0.after, &rows[0].1),
-        ("source", &Value::Null, &Some(At::Setting(Setting::Source)))
+        ("source", &Value::Null, &Place::Setting(Setting::Source))
     );
-    assert_eq!(restore_service_setting(empty, &git, "source").unwrap(), git);
 }
 
 #[test]
-fn compound_settings_compare_and_restore_the_edited_field() {
+fn compound_settings_compare_the_edited_field() {
     let mut input = config();
     input["build"] = json!({"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile"});
     input["healthcheck"] = json!({"type":"http", "path":"/up", "timeoutSeconds":30});
@@ -109,13 +89,11 @@ fn compound_settings_compare_and_restore_the_edited_field() {
         ["healthcheck", "build.dockerfilePath"]
     );
     assert_eq!(
-        rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
-        [Setting::Healthcheck, Setting::DockerfilePath].map(|s| Some(At::Setting(s)))
+        rows.iter()
+            .map(|(_, place)| place.clone())
+            .collect::<Vec<_>>(),
+        [Setting::Healthcheck, Setting::DockerfilePath].map(Place::Setting)
     );
-    let restored =
-        restore_service_setting(current.clone(), &baseline, "build.dockerfilePath").unwrap();
-    assert_eq!(restored.settings.build, baseline.settings.build);
-    assert_eq!(restored.settings.healthcheck, current.settings.healthcheck);
 }
 
 #[test]
@@ -212,7 +190,7 @@ fn command_healthchecks_are_trimmed_and_bounded() {
 }
 
 #[test]
-fn related_settings_preserve_ownership_redact_secrets_and_restore_stable_routes() {
+fn related_settings_preserve_ownership_and_redact_secrets() {
     let mut before = config();
     before["env"] = json!({"TOKEN": {"kind":"secret","fingerprint":"before-private-fingerprint","encryptedValue":{"version":1,"iv":"iv","tag":"tag","ciphertext":"private-ciphertext"}}});
     before["mounts"] = json!([{"volumeResourceId":"11111111-1111-4111-8111-111111111111","volumeName":"data","mountPath":"/data"}]);
@@ -225,28 +203,22 @@ fn related_settings_preserve_ownership_redact_secrets_and_restore_stable_routes(
     let current = parse_service_config(after).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(rows.len(), 2, "volume rename is not a mount edit");
-    let (secret, at) = rows
+    let (_, place) = rows
         .iter()
         .find(|(row, _)| row.path == "env.TOKEN")
         .unwrap();
-    assert!(!secret.can_restore);
-    assert_eq!(*at, Some(At::Variable("TOKEN".into())));
-    let (_, at) = rows
+    assert_eq!(*place, Place::Variable("TOKEN".into()));
+    let (_, place) = rows
         .iter()
         .find(|(row, _)| row.path.starts_with("routes."))
         .unwrap();
-    assert_eq!(*at, Some(At::Setting(Setting::Routes)));
+    assert_eq!(
+        *place,
+        Place::Route("22222222-2222-4222-8222-222222222222".into())
+    );
     let rows: Vec<_> = rows.into_iter().map(|(row, _)| row).collect();
     let output = serde_json::to_string(&rows).unwrap();
     assert!(!output.contains("private-"));
-    let restored = restore_service_setting(
-        current,
-        &baseline,
-        "routes.22222222-2222-4222-8222-222222222222",
-    )
-    .unwrap();
-    assert_eq!(restored.settings.routes, baseline.settings.routes);
-    assert_eq!(restored.mounts[0].volume_name, "renamed");
 }
 
 #[test]
@@ -291,9 +263,13 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
     assert_eq!(added.len(), 1);
     assert_eq!(added[0].0.kind, ployz_core::config::ChangeKind::Add);
     assert_eq!(
-        added[0].1, None,
+        added[0].1,
+        Place::Mount {
+            volume_resource_id: "volume".into()
+        },
         "a mount's Volume lineage is the Store's to find"
     );
+    assert_eq!(added[0].1.at(), None);
     before["mounts"][0]["mountPath"] = json!("/other");
     let moved = compare_service_settings(&parse_service_config(before).unwrap(), Some(&mounted));
     assert_eq!(moved.len(), 1);
@@ -315,7 +291,7 @@ fn git_access_is_explicit_and_changes_with_repository_identity() {
 }
 
 #[test]
-fn build_command_is_validated_compared_and_restored() {
+fn build_command_is_validated_and_compared() {
     let baseline = parse_service_config(config()).unwrap();
     let mut input = config();
     input["build"] = json!({"buildMethod":"railpack", "command":"  cd dashboard && pnpm build  "});
@@ -327,10 +303,6 @@ fn build_command_is_validated_compared_and_restored() {
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].0.path, "build.command");
-    assert_eq!(
-        restore_service_setting(current, &baseline, "build.command").unwrap(),
-        baseline
-    );
     for command in [" ".to_owned(), "x".repeat(2001)] {
         input["build"]["command"] = json!(command);
         assert!(parse_service_config(input.clone()).is_err());
@@ -346,38 +318,173 @@ fn build_command_is_validated_compared_and_restored() {
     );
 }
 
-#[test]
-fn restoring_routes_preserves_link_order() {
-    let mut input = config();
-    input["routes"] = json!([
-        {"id":"11111111-1111-4111-8111-111111111111","hostname":"first.example.com","targetPort":3000},
-        {"id":"22222222-2222-4222-8222-222222222222","hostname":"last.example.com","targetPort":3000}
-    ]);
-    let baseline = parse_service_config(input).unwrap();
-    let mut edited = baseline.clone();
-    edited.settings.routes[0].target_port = Some(8080);
-    let restored = restore_service_setting(
-        edited,
-        &baseline,
-        "routes.11111111-1111-4111-8111-111111111111",
-    )
-    .unwrap();
-    assert_eq!(restored.settings.routes, baseline.settings.routes);
+fn every_setting() -> Value {
+    json!({
+        "version": 2, "privateDns": "api",
+        "source": {"version": 2, "type": "git", "repository": "acme/api",
+            "repositoryId": 42, "access": {"type": "github-installation", "installationId": 7},
+            "rootDir": "/apps/api", "branch": {"type": "connected", "name": "main"}},
+        "preDeployCommand": "migrate", "startCommand": "serve",
+        "healthcheck": {"type": "http", "path": "/up", "timeoutSeconds": 5},
+        "restartPolicy": "always", "maxRetries": 3, "updateOrder": "rolling",
+        "replicas": 2, "cpuLimit": 0.5, "memLimit": 256,
+        "build": {"buildMethod": "dockerfile", "dockerfilePath": "Dockerfile.prod", "command": "make"},
+        "routes": [{"id": "00000000-0000-4000-8000-000000000001", "hostname": "b.example.com", "targetPort": null}],
+        "managedHostnames": [{"prefix": "api-prod", "targetPort": 8080}]
+    })
+}
 
-    let mut deleted = baseline.clone();
-    deleted.settings.routes.clear();
-    let mut newest = baseline.settings.routes[0].clone();
-    newest.id = "33333333-3333-4333-8333-333333333333".into();
-    newest.hostname = "newest.example.com".into();
-    deleted.settings.routes.push(newest.clone());
-    let restored = restore_service_setting(
-        deleted,
-        &baseline,
-        "routes.22222222-2222-4222-8222-222222222222",
-    )
+/// Each row as a review shows it, keyed by path so the pin does not depend on row order.
+fn shown(rows: Vec<(ployz_core::config::ServiceSettingChange, Place)>) -> Value {
+    let rows: std::collections::BTreeMap<_, _> = rows
+        .into_iter()
+        .map(|(row, place)| {
+            let at = place.at().map(|at| at.to_string());
+            (
+                row.path,
+                json!({"kind": row.kind, "before": row.before, "after": row.after, "at": at}),
+            )
+        })
+        .collect();
+    json!(rows)
+}
+
+#[test]
+fn a_created_service_lists_each_setting_it_sets_beyond_its_default() {
+    let created = parse_service_config(every_setting()).unwrap();
+    assert_eq!(
+        shown(compare_service_settings(&created, None)),
+        json!({
+            "build.buildMethod": {"kind": "add", "before": null, "after": "dockerfile", "at": "build.buildMethod"},
+            "build.command": {"kind": "add", "before": null, "after": "make", "at": "build.command"},
+            "build.dockerfilePath": {"kind": "add", "before": null, "after": "Dockerfile.prod", "at": "build.dockerfilePath"},
+            "cpuLimit": {"kind": "add", "before": null, "after": 0.5, "at": "cpuLimit"},
+            "healthcheck": {"kind": "add", "before": null, "after": {"type": "http", "path": "/up", "timeoutSeconds": 5}, "at": "healthcheck"},
+            "managedHostnames": {"kind": "add", "before": null, "after": [{"prefix": "api-prod", "targetPort": 8080}], "at": "managedHostnames"},
+            "maxRetries": {"kind": "add", "before": null, "after": 3, "at": "maxRetries"},
+            "memLimit": {"kind": "add", "before": null, "after": 256.0, "at": "memLimit"},
+            "preDeployCommand": {"kind": "add", "before": null, "after": "migrate", "at": "preDeployCommand"},
+            "privateDns": {"kind": "add", "before": null, "after": "api", "at": "privateDns"},
+            "replicas": {"kind": "add", "before": null, "after": 2, "at": "replicas"},
+            "restartPolicy": {"kind": "add", "before": null, "after": "always", "at": "restartPolicy"},
+            "routes.00000000-0000-4000-8000-000000000001": {"kind": "add", "before": null,
+                "after": {"id": "00000000-0000-4000-8000-000000000001", "hostname": "b.example.com", "targetPort": null}, "at": "routes"},
+            "source": {"kind": "add", "before": null,
+                "after": {"type": "git", "version": 2, "repository": "acme/api", "repositoryId": 42,
+                    "access": {"type": "github-installation", "installationId": 7}, "rootDir": "/apps/api"}, "at": "source"},
+            "source.branch": {"kind": "add", "before": null, "after": {"type": "connected", "name": "main"}, "at": "source.branch"},
+            "startCommand": {"kind": "add", "before": null, "after": "serve", "at": "startCommand"},
+            "updateOrder": {"kind": "add", "before": null, "after": "rolling", "at": "updateOrder"},
+        })
+    );
+    let bare = parse_service_config(json!({
+        "version": 2, "privateDns": "api",
+        "source": {"version": 1, "type": "empty", "rootDir": "/"},
+        "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped"
+    }))
     .unwrap();
     assert_eq!(
-        restored.settings.routes,
-        vec![baseline.settings.routes[1].clone(), newest]
+        shown(compare_service_settings(&bare, None)),
+        json!({
+            "managedHostnames": {"kind": "add", "before": null, "after": [], "at": "managedHostnames"},
+            "privateDns": {"kind": "add", "before": null, "after": "api", "at": "privateDns"},
+        })
     );
+}
+
+#[test]
+fn rows_come_in_the_order_a_review_has_always_listed_them() {
+    let baseline = parse_service_config(every_setting()).unwrap();
+    let mut changed = every_setting();
+    changed["source"]["branch"] = json!({"type": "disconnected", "previousName": "main"});
+    changed["privateDns"] = json!("web");
+    changed["healthcheck"] = json!({"type": "none"});
+    changed["preDeployCommand"] = json!("seed");
+    changed["memLimit"] = json!(512);
+    changed["build"]["command"] = json!("ninja");
+    let current = parse_service_config(changed).unwrap();
+    let paths: Vec<_> = compare_service_settings(&current, Some(&baseline))
+        .into_iter()
+        .map(|(row, _)| row.path)
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "healthcheck",
+            "source.branch",
+            "preDeployCommand",
+            "memLimit",
+            "privateDns",
+            "build.command",
+        ]
+    );
+}
+
+#[test]
+fn a_changed_service_lists_before_and_after_of_each_setting_that_moved() {
+    let baseline = parse_service_config(every_setting()).unwrap();
+    let mut changed = every_setting();
+    changed["privateDns"] = json!("web");
+    changed["preDeployCommand"] = Value::Null;
+    changed["healthcheck"] = json!({"type": "none"});
+    changed["replicas"] = json!(3);
+    changed["maxRetries"] = json!(10);
+    changed["managedHostnames"] = json!([]);
+    changed["build"]["command"] = Value::Null;
+    let current = parse_service_config(changed).unwrap();
+    assert_eq!(
+        shown(compare_service_settings(&current, Some(&baseline))),
+        json!({
+            "build.command": {"kind": "remove", "before": "make", "after": null, "at": "build.command"},
+            "healthcheck": {"kind": "update", "before": {"type": "http", "path": "/up", "timeoutSeconds": 5},
+                "after": {"type": "none"}, "at": "healthcheck"},
+            "managedHostnames": {"kind": "update", "before": [{"prefix": "api-prod", "targetPort": 8080}], "after": [], "at": "managedHostnames"},
+            "maxRetries": {"kind": "update", "before": 3, "after": 10, "at": "maxRetries"},
+            "preDeployCommand": {"kind": "remove", "before": "migrate", "after": null, "at": "preDeployCommand"},
+            "privateDns": {"kind": "update", "before": "api", "after": "web", "at": "privateDns"},
+            "replicas": {"kind": "update", "before": 2, "after": 3, "at": "replicas"},
+        })
+    );
+}
+
+#[test]
+fn a_place_names_its_row_as_its_path_always_did() {
+    let file = ployz_core::ConfigFileName::parse("app/config.toml").unwrap();
+    for (place, path, at) in [
+        (Place::Name, "name", Some("name")),
+        (Place::Storage, "storage", Some("storage")),
+        (
+            Place::File(file),
+            "files.app/config.toml",
+            Some("files.app/config.toml"),
+        ),
+        (
+            Place::Setting(Setting::BuildCommand),
+            "build.command",
+            Some("build.command"),
+        ),
+        (Place::Route("r1".into()), "routes.r1", Some("routes")),
+        (
+            Place::Variable("KEY".into()),
+            "env.KEY",
+            Some("variables.KEY"),
+        ),
+        (
+            Place::Mount {
+                volume_resource_id: "v1".into(),
+            },
+            "mounts.v1",
+            None,
+        ),
+        (
+            Place::ConfigMount {
+                config_resource_id: "c1".into(),
+            },
+            "configs.c1",
+            None,
+        ),
+    ] {
+        assert_eq!(place.path(), path);
+        assert_eq!(place.at().map(|at| at.to_string()).as_deref(), at);
+    }
 }
