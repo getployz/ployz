@@ -1,0 +1,15 @@
+$ ployz server rm machine-3   # no terminal, no --yes
+! Server machine-3 is running Services: shop-staging/worker.
+next: ployz server drain machine-3
+error: Removing Server machine-3 needs its name typed. No changes made.
+retry: ployz server rm machine-3 --confirm machine-3
+exit=2
+$ ployz server rm machine-3 --confirm machine-3
+! Server machine-3 is running Services: shop-staging/worker.
+! Replicated Services now run no copies: shop-staging/worker. Their replicas were not moved.
+next: ployz deploy
+Removed Server machine-3.
+exit=0
+== machine-1
+== machine-2
+== machine-3

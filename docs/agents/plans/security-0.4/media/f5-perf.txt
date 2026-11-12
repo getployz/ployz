@@ -1,0 +1,16 @@
+# F5 perf: Environment deletion, CLI env rm under an approved Organization approval (approval time excluded)
+# head  = this branch's daemons, enforcement on, Device signs a Namespace teardown
+# trunk = main's daemon (CI build 0139c374e), enforcement off
+head perf1 rc=0 seconds=6.092840256
+head perf2 rc=0 seconds=6.609399383
+head perf3 rc=0 seconds=6.394419904
+head perf4 rc=0 seconds=7.402618524
+head perf5 rc=0 seconds=7.443299491
+trunk perf6 rc=0 seconds=6.078694786
+trunk perf7 rc=0 seconds=8.748543447
+trunk perf8 rc=0 seconds=6.541998796
+trunk perf9 rc=0 seconds=5.980719937
+trunk perf10 rc=0 seconds=6.166745858
+head ['6.09', '6.61', '6.39', '7.40', '7.44'] median 6.61 mean 6.79
+trunk ['6.08', '8.75', '6.54', '5.98', '6.17'] median 6.17 mean 6.70
+ratio median 1.072 mean 1.013

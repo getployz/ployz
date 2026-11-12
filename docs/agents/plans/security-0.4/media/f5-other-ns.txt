@@ -1,0 +1,41 @@
+### replay: remove_volume shop-staging_vol-6aa585a3-bb9b-4257-bf25-06b5741fb4bd (shop-staging) on machine-2 under the teardown signed for shop-other
+error: This server takes this off only under your approval: the approval names a Volume on this Server this request does not match
+next: delete it again with your passkey in the dashboard, or from an approved device
+exit=1
+### replay: ensure_container gone fb5393ff1145 (shop-staging redis) on machine-2 under the same teardown
+error: This server takes this off only under your approval: the approval names a Namespace on this Server this request does not match
+next: delete it again with your passkey in the dashboard, or from an approved device
+exit=1
+### staging still on machine-2:
+redis-496ec953c45b shop-staging
+shop-staging_vol-6aa585a3-bb9b-4257-bf25-06b5741fb4bd
+### control: ensure_container gone cb0348b008c6 (shop-other redis) on machine-2 under its own teardown
+{
+  "response": {
+    "kind": "ensured_container",
+    "payload": {
+      "now": {
+        "address": "<address>",
+        "container_id": "cb0348b008c65ceabc0aee7d395dc71c8861607a2df17a177ca2646784dfd631",
+        "created_at_unix_nanos": 1794471503326796862,
+        "display_name": "redis-fe31b8868438",
+        "effective_healthcheck": {
+          "interval_millis": 10000,
+          "retries": 
+exit=0
+### machine-2 journal since replay:
+2026-11-12T08:21:07+00:00 machine-2 ployzd:  WARN teardown refused: the approval names a Volume on this Server this request does not match step=Volume(DockerVolumeName("shop-staging_vol-6aa585a3-bb9b-4257-bf25-06b5741fb4bd"))
+2026-11-12T08:21:08+00:00 machine-2 ployzd:  WARN teardown refused: the approval names a Namespace on this Server this request does not match step=Container { namespace: Namespace("shop-staging"), step: Remove }
+2026-11-12T08:21:19+00:00 machine-2 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:21:19+00:00 machine-2 ployzd:  INFO teardown step on shop-other/redis admitted step=Remove
+### no teardown: remove_volume shop-staging_vol-6aa585a3-bb9b-4257-bf25-06b5741fb4bd on machine-2
+error: This server takes this off only under your approval: the workflow approval carries no signature
+next: delete it again with your passkey in the dashboard, or from an approved device
+exit=1
+### forged: shop-other's passkey answer on a body rewritten to name shop-staging and its Volume
+error: This server takes this off only under your approval: the approval names a challenge this request does not match
+next: delete it again with your passkey in the dashboard, or from an approved device
+exit=1
+### machine-2 journal:
+2026-11-12T08:23:04+00:00 machine-2 ployzd:  WARN teardown refused: the approval names a challenge this request does not match step=Volume(DockerVolumeName("shop-staging_vol-6aa585a3-bb9b-4257-bf25-06b5741fb4bd"))
+shop-staging_vol-6aa585a3-bb9b-4257-bf25-06b5741fb4bd
