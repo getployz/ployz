@@ -26,7 +26,6 @@ use tokio_util::sync::CancellationToken;
 use super::Session;
 use crate::cluster::HealthWaitError;
 use crate::deploy::cleanup::{self, UserStarted};
-use crate::operator::DEPLOYMENT_LABEL;
 
 /// The Namespaces whose Services an answer may describe. A Server answer keeps its host
 /// totals either way; `Only` drops every Service event outside the set before counting.
@@ -711,9 +710,8 @@ fn report(container: &ContainerObservation, server: &ServerName) -> ContainerRep
         restarts: None,
         image: container.resolved_spec.container.image.clone(),
         deployment: container
-            .labels
-            .get(DEPLOYMENT_LABEL)
-            .and_then(|id| DeploymentId::parse(id.clone()).ok()),
+            .deployment_label()
+            .and_then(|id| DeploymentId::parse(id.to_owned()).ok()),
     }
 }
 

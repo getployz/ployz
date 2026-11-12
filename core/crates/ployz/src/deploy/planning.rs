@@ -779,8 +779,7 @@ fn left_pending(
                 && container.deploy_label().is_some_and(|run| {
                     ended_runs.contains(&run)
                         && container
-                            .labels
-                            .get(ployz_core::labels::CREATION_KEY)
+                            .creation_key()
                             .and_then(|key| key.strip_prefix(run.as_str()))
                             .is_some_and(|slot| slot.starts_with(':'))
                 })

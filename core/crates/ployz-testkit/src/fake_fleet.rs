@@ -56,7 +56,6 @@ const VOLUME_BYTES: NonZeroU64 = NonZeroU64::new(10 * GIB).expect("10 GiB is not
 const USED_BYTES: u64 = GIB;
 const FIRST_LOG_NANOS: i64 = 1_700_000_000_000_000_000;
 const LOG_STEP_NANOS: i64 = 1_000_000_000;
-const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
 
 /// `dashboard/evals/agent/machines.json`: the fleet as it starts.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1311,12 +1310,12 @@ impl MachineState {
         }))
         .map_err(internal)?;
         let mut labels = BTreeMap::from([
-            ("ployz.service.id".to_owned(), service_id.to_string()),
-            ("ployz.service.name".to_owned(), spec.service.to_string()),
+            (labels::SERVICE_ID.to_owned(), service_id.to_string()),
+            (labels::SERVICE_NAME.to_owned(), spec.service.to_string()),
             (labels::NAMESPACE.to_owned(), spec.namespace.to_string()),
         ]);
         if let Some(deployment) = spec.deployment {
-            labels.insert(DEPLOYMENT_LABEL.to_owned(), deployment.to_string());
+            labels.insert(labels::DEPLOYMENT_ID.to_owned(), deployment.to_string());
         }
         ContainerObservation::try_from(ContainerObservationParts {
             rotation: Some(spec.rotation.clone()),

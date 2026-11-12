@@ -10,7 +10,6 @@ use futures_util::{
     future::{Either, join_all},
     stream::FuturesUnordered,
 };
-use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind,
     ContainerLimitsUpdated, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusal,
@@ -648,7 +647,7 @@ impl Client {
                     && container.kind == slot.kind
                     && container.namespace == slot.namespace
                     && container.resolved_spec == *spec)
-                    .then(|| container.labels.get(CREATION_KEY).cloned())
+                    .then(|| container.creation_key().map(str::to_owned))
                     .flatten()
             })
             .and_then(|key| CreationKey::try_from(key).ok()))
