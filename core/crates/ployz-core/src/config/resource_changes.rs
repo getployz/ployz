@@ -61,7 +61,6 @@ pub fn compare_resource_settings(
                 (path, Some(row)),
                 at(&baseline, path).clone(),
                 at(&current, path).clone(),
-                true,
             ));
         }
     }
@@ -83,7 +82,6 @@ pub fn compare_resource_settings(
                     (&format!("files.{name}"), Some(At::File(file))),
                     before,
                     after,
-                    true,
                 ));
             }
         }

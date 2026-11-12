@@ -1,8 +1,27 @@
 //! One authored change set, shared by Cloud's canvas and review actions.
-use super::{At, EnvironmentNodeType, ServiceSettingChange};
+use super::{At, ServiceSettingChange};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
+
+/// Environment Node families with distinct configuration semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentNodeType {
+    Service,
+    Volume,
+    Config,
+}
+
+impl EnvironmentNodeType {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Service => "service",
+            Self::Volume => "volume",
+            Self::Config => "config",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ReviewNodeIdentity {

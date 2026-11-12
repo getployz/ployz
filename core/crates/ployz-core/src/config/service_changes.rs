@@ -1,12 +1,10 @@
-//! Compare service settings and restore their authored values without runtime I/O.
+//! Compare service settings without runtime I/O.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use super::{
-    At, ConfigError, ServiceConfig, Setting, keep_branch, parse_service_config, source_cell,
-};
+use super::{At, ServiceConfig, Setting};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether an owned setting appeared, changed, or disappeared.
@@ -35,6 +33,7 @@ pub struct ServiceSettingChange {
     pub kind: ChangeKind,
     pub before: Value,
     pub after: Value,
+    /// Whether Discard takes it; the Store's to fill from the paths it accepts.
     pub can_restore: bool,
     /// The Sync row it falls in, which joins it to what moved it; the Store's to fill
     /// from the `At` its comparison hands alongside and the node's lineage.
@@ -97,22 +96,26 @@ fn named<'a>(path: &'a str, name: Option<&crate::ConfigName>) -> Option<(String,
     Some((format!("{service}.configs.{name}"), id))
 }
 
-/// Each compared field and the Setting whose row it falls in.
-const FIELDS: &[(&str, Setting)] = &[
-    ("source.branch", Setting::Branch),
-    ("preDeployCommand", Setting::PreDeployCommand),
-    ("startCommand", Setting::StartCommand),
-    ("restartPolicy", Setting::RestartPolicy),
-    ("maxRetries", Setting::MaxRetries),
-    ("updateOrder", Setting::UpdateOrder),
-    ("replicas", Setting::Replicas),
-    ("cpuLimit", Setting::CpuLimit),
-    ("memLimit", Setting::MemLimit),
-    ("privateDns", Setting::PrivateDns),
-    ("managedHostnames", Setting::ManagedHostnames),
-    ("build.buildMethod", Setting::BuildMethod),
-    ("build.dockerfilePath", Setting::DockerfilePath),
-    ("build.command", Setting::BuildCommand),
+/// The order a review lists a Service's setting rows in, which Cloud and the CLI show as
+/// they come; the Settings in landing order are not it. Routes are listed apart.
+const REVIEW_ORDER: [Setting; 17] = [
+    Setting::Source,
+    Setting::Healthcheck,
+    Setting::Branch,
+    Setting::PreDeployCommand,
+    Setting::StartCommand,
+    Setting::RestartPolicy,
+    Setting::MaxRetries,
+    Setting::UpdateOrder,
+    Setting::Replicas,
+    Setting::CpuLimit,
+    Setting::MemLimit,
+    Setting::PrivateDns,
+    Setting::ManagedHostnames,
+    Setting::BuildMethod,
+    Setting::DockerfilePath,
+    Setting::BuildCommand,
+    Setting::Routes,
 ];
 
 /// Compare settings against an available authored baseline, keeping derived effects separate.
@@ -123,135 +126,41 @@ pub fn compare_service_settings(
     current: &ServiceConfig,
     baseline: Option<&ServiceConfig>,
 ) -> Vec<(ServiceSettingChange, Option<At>)> {
-    // The source is one row, as Sync moves it and Discard takes it, but for its git branch.
-    let source = |config: &ServiceConfig| {
-        Some(source_cell(&config.settings.source)).filter(|cell| *cell != Setting::Source.default())
-    };
-    let (before, after) = (baseline.and_then(source), source(current));
     // A git branch that comes or goes with its source is the source's change.
     let switched = baseline.is_some_and(|baseline| {
         std::mem::discriminant(&baseline.settings.source)
             != std::mem::discriminant(&current.settings.source)
     });
     let mut changes = Vec::new();
-    if before != after {
+    for setting in REVIEW_ORDER {
+        // Each route is a row of its own, found below.
+        if setting == Setting::Routes || (setting == Setting::Branch && switched) {
+            continue;
+        }
+        let read = |config: &ServiceConfig| setting.read(&config.settings, "");
+        let (mut before, mut after) = (baseline.map_or(Value::Null, read), read(current));
+        // The source is one row, as Sync moves it and Discard takes it, but for its git
+        // branch; an empty one is no source.
+        if setting == Setting::Source {
+            for cell in [&mut before, &mut after] {
+                if *cell == setting.default() {
+                    *cell = Value::Null;
+                }
+            }
+        }
+        if before == after || (baseline.is_none() && after == setting.default()) {
+            continue;
+        }
         changes.push(change(
-            ("source", Some(At::Setting(Setting::Source))),
-            before.unwrap_or_default(),
-            after.unwrap_or_default(),
-            baseline.is_some(),
+            (setting.path(), Some(At::Setting(setting))),
+            before,
+            after,
         ));
     }
     let current = json!(current);
     let baseline = baseline.map_or(Value::Null, |value| json!(value));
-    // One row, as Sync moves it and Discard takes it, whichever of its parts changed.
-    if at(&current, "healthcheck") != at(&baseline, "healthcheck")
-        && (!baseline.is_null() || at(&current, "healthcheck.type") != "none")
-    {
-        changes.push(change(
-            ("healthcheck", Some(At::Setting(Setting::Healthcheck))),
-            at(&baseline, "healthcheck").clone(),
-            at(&current, "healthcheck").clone(),
-            !baseline.is_null(),
-        ));
-    }
-    for &(path, setting) in FIELDS {
-        let before = at(&baseline, path);
-        let after = at(&current, path);
-        if before == after || (switched && path == "source.branch") {
-            continue;
-        }
-        if baseline.is_null() && *after == setting.default() {
-            continue;
-        }
-        changes.push(change(
-            (path, Some(At::Setting(setting))),
-            before.clone(),
-            after.clone(),
-            !baseline.is_null(),
-        ));
-    }
     changes.extend(compare_related_settings(&current, &baseline));
     changes
-}
-
-/// Restore one setting from the supplied configuration baseline.
-///
-/// # Errors
-/// Returns an error for an unsupported path or an invalid restored configuration.
-pub fn restore_service_setting(
-    current: ServiceConfig,
-    baseline: &ServiceConfig,
-    path: &str,
-) -> Result<ServiceConfig, ConfigError> {
-    if let Some(id) = path.strip_prefix("routes.") {
-        let mut current = current;
-        let routes = &mut current.settings.routes;
-        let baseline = &baseline.settings.routes;
-        if let Some((index, restored)) = baseline
-            .iter()
-            .enumerate()
-            .find(|(_, route)| route.id == id)
-        {
-            if let Some(route) = routes.iter_mut().find(|route| route.id == id) {
-                *route = restored.clone();
-            } else {
-                // Restore before later baseline routes and newly linked domains.
-                let position = routes
-                    .iter()
-                    .position(|route| {
-                        baseline
-                            .iter()
-                            .position(|prior| prior.id == route.id)
-                            .is_none_or(|prior| prior > index)
-                    })
-                    .unwrap_or(routes.len());
-                routes.insert(position, restored.clone());
-            }
-        } else {
-            routes.retain(|route| route.id != id);
-        }
-        return parse_service_config(json!(current));
-    }
-    if path != "source"
-        && path != "healthcheck"
-        && path != "template"
-        && !FIELDS.iter().any(|(field, _)| *field == path)
-    {
-        return Err(ConfigError::at(
-            "path",
-            "Setting has no authored restore operation",
-        ));
-    }
-    if path == "source" {
-        let mut current = current;
-        current.settings.source =
-            keep_branch(&current.settings.source, baseline.settings.source.clone());
-        return parse_service_config(json!(current));
-    }
-    let mut current = json!(current);
-    let baseline = json!(baseline);
-    if path == "healthcheck" {
-        current
-            .as_object_mut()
-            .expect("serialized service")
-            .insert("healthcheck".into(), at(&baseline, "healthcheck").clone());
-    } else if let Some((parent, field)) = path.split_once('.') {
-        let Some(value) = baseline.get(parent).and_then(|v| v.get(field)) else {
-            return parse_service_config(current);
-        };
-        current
-            .get_mut(parent)
-            .and_then(Value::as_object_mut)
-            .expect("serialized source")
-            .insert(field.into(), value.clone());
-    } else {
-        current
-            .as_object_mut()
-            .expect("serialized service")
-            .insert(path.into(), at(&baseline, path).clone());
-    }
-    parse_service_config(current)
 }
 
 pub(super) fn at<'a>(value: &'a Value, path: &str) -> &'a Value {
@@ -264,7 +173,6 @@ pub(super) fn change(
     (path, at): (&str, Option<At>),
     before: Value,
     after: Value,
-    can_restore: bool,
 ) -> (ServiceSettingChange, Option<At>) {
     let kind = if before.is_null() {
         ChangeKind::Add
@@ -278,7 +186,7 @@ pub(super) fn change(
         kind,
         before,
         after,
-        can_restore,
+        can_restore: false,
         row: None,
         config_name: None,
         hostnames: None,
@@ -320,7 +228,6 @@ fn compare_related_settings(
                     (&format!("{family}.{id}"), at),
                     before.clone(),
                     after.clone(),
-                    family == "routes" && !baseline.is_null(),
                 ));
             }
         }
@@ -342,7 +249,6 @@ fn compare_related_settings(
             (&format!("env.{key}"), Some(At::Variable(key.clone()))),
             redacted_env(before),
             redacted_env(after),
-            false,
         ));
     }
     changes
@@ -373,5 +279,17 @@ fn redacted_env(value: &Value) -> Value {
         // Shown as `get` shows it: a plain `${{` reads escaped, unlike a reference.
         let text = value["value"].as_str().unwrap_or_default();
         json!({"kind": "literal", "value": text.replace("${{", "$${{")})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_review_order_lists_every_setting_once() {
+        let mut listed = REVIEW_ORDER;
+        listed.sort();
+        assert_eq!(listed, Setting::ALL);
     }
 }
