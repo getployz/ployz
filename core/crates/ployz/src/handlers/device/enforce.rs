@@ -12,9 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    ActivationReport, ActivationState, DeviceCode, DeviceKey, ENFORCED_CAPABILITY, Hint,
-    InspectRequest, LegacyKey, MachineDetails, MachineId, MachineTarget, OperationId,
-    RecipientSecret, RecoveryCode, RpcError, Sealing, SealingPublicKey,
+    ActivateEnforcementRequest, ActivationReport, ActivationState, DeviceCode, DeviceKey,
+    ENFORCED_CAPABILITY, Hint, InspectRequest, LegacyKey, MachineDetails, MachineId, MachineTarget,
+    OperationId, RecipientSecret, RecoveryCode, RpcError, Sealing, SealingPublicKey,
     SetDeviceEnforcementRequest, SetRecipientKeyRequest, TrustedKeyKind,
     authority::{
         Member, SealingRotation, Signed, Signer, SignerKey, StartingSet, Timestamp,
@@ -30,7 +30,6 @@ use super::{Reach, compat, context, key, known::KnownMachines};
 use crate::cli::{base, yes};
 use crate::cluster::{Call, Wait};
 use crate::connect::Client;
-use crate::sealing_pin::SealTo;
 use crate::ui::{self, Cell, Table, Tone};
 
 pub(crate) fn enforce_command(command: Command) -> Command {
@@ -41,9 +40,12 @@ pub(crate) fn enforce_command(command: Command) -> Command {
     .long_about(
         "Signs the set of Servers every Server trusts from now on, with this device's key, and \
          turns Device enforcement on for good. Each Server is pinned by this computer first: \
-         from a join this device approved, from the Server you reach over SSH, or from a \
-         fingerprint you confirm against `ployz status` on that Server. Keys added while \
-         enforcement was off are removed unless you keep them. There is no off.",
+         from a join this device approved, from a Server you reach over SSH, or from a \
+         fingerprint you confirm against `ployz status` on that Server. A Server that holds \
+         keys or Servers from before takes the set only over its own SSH, so reach every such \
+         Server in one run. A Server left out is no longer part of the Cluster once the others \
+         activate. Keys added while enforcement was off are removed unless you keep them. \
+         There is no off.",
     )
     .after_help(concat!(
         "Examples:\n",
@@ -115,14 +117,23 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
     let unattended = leaf.get_flag("yes");
     runtime()?.block_on(async {
         let mut client = route::connect_full(leaf, context(leaf)).await?;
-        let reach = Reach::full(&mut client).await?;
+        // Every Server, not only those this run reaches with Full scope: a Server missing
+        // from the signed set is cut off once the others commit it.
+        let reach = Reach::of(&mut client).await?;
         let (found, gaps) = reach
             .fan_out(|machine_id| found_on(client.clone(), machine_id))
             .await;
         let found: Vec<Found> = found.into_iter().map(|(_, server)| server).collect();
         let known = KnownMachines::beside(&config);
         let pinned = known.load()?;
-        let over_ssh = SealTo::direct(&client).then_some(reach.entry).flatten();
+        // A Server reached over its own SSH or local socket answers for itself, and takes the
+        // set from there whatever it holds from before.
+        let direct: BTreeSet<MachineId> = reach
+            .asked
+            .iter()
+            .filter(|machine| client.reaches_full(machine, false))
+            .copied()
+            .collect();
         let Pinning {
             included,
             newly,
@@ -132,7 +143,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
             &reach,
             &Pinned {
                 known: &pinned,
-                over_ssh,
+                direct: &direct,
                 typed: &typed_pins,
             },
             |name, member| {
@@ -154,6 +165,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
                 "ployz device enforce --connect ssh://root@SERVER".to_owned(),
             )));
         }
+        refuse_unreachable(&included, &direct, &reach)?;
         let own = DeviceKey::from(signer.public()).code();
         let kept = kept_keys(&legacy_keys(&included, &reach, own), |key| {
             Ok(typed_keeps.contains(&key.code) || (!unattended && ui::can_prompt() && keeps(key)?))
@@ -171,15 +183,26 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
             kept_keys: kept.iter().copied().collect(),
         };
         ui::note(set_summary(&reach, &set));
+        for outcome in &outcomes {
+            ui::warn(format!(
+                "{} is left out. Once the others activate it's no longer part of the Cluster: remove it with `ployz server rm`, then add it again with a join you approve.",
+                outcome.server
+            ));
+        }
         let signed = Signed::sign(&set, &signer).map_err(Error::command)?;
         let request = SetDeviceEnforcementRequest {
             enforced: true,
-            starting_set: Some(signed),
+            starting_set: Some(signed.clone()),
         };
         let mut activated = Vec::new();
         for server in &included {
             let name = reach.name(&server.machine_id);
-            match deliver(&client, server.machine_id, request.clone()).await {
+            let delivered = if direct.contains(&server.machine_id) {
+                deliver(&client, server.machine_id, request.clone()).await
+            } else {
+                deliver_over_mesh(&client, server.machine_id, &signed).await
+            };
+            match delivered {
                 Ok(()) => match settled(&client, server.machine_id, set.operation).await {
                     Ok(report) => {
                         if let Some(router) = &report.private_access {
@@ -253,8 +276,9 @@ async fn found_on(client: Client, machine_id: MachineId) -> Result<Option<Found>
 /// What this computer trusts each Server's key from, other than asking.
 struct Pinned<'a> {
     known: &'a BTreeMap<MachineId, Member>,
-    /// The Server this run reached over SSH or the local socket, which answers for itself.
-    over_ssh: Option<MachineId>,
+    /// The Servers this run reached over their own SSH or local socket, which answer for
+    /// themselves.
+    direct: &'a BTreeSet<MachineId>,
     /// Fingerprints the person typed with `--pin`.
     typed: &'a BTreeSet<String>,
 }
@@ -285,7 +309,8 @@ fn pin_each<'a>(
             pinning.outcomes.push(left_out(
                 server,
                 &name,
-                "runs a Ployz too old to activate. Upgrade it, then run this again.".to_owned(),
+                "runs a Ployz too old to activate. Upgrade it before you activate the others."
+                    .to_owned(),
             ));
             continue;
         }
@@ -293,7 +318,7 @@ fn pin_each<'a>(
             if *pin != server.member {
                 return Err(substituted(&name, pin, &server.member));
             }
-        } else if pinned.over_ssh == Some(server.machine_id)
+        } else if pinned.direct.contains(&server.machine_id)
             || pinned
                 .typed
                 .contains(&server.member.public_key.fingerprint())
@@ -304,7 +329,7 @@ fn pin_each<'a>(
             pinning.outcomes.push(left_out(
                 server,
                 &name,
-                "isn't pinned on this computer, so it stays awaiting activation. Check its key with `ployz status` on it, or reach it over SSH.".to_owned(),
+                "isn't pinned on this computer. Check its key with `ployz status` on it, or reach it over SSH.".to_owned(),
             ));
             continue;
         }
@@ -482,6 +507,57 @@ fn set_summary(reach: &Reach, set: &StartingSet) -> String {
         "Signing the {} Servers every Server trusts from now on: {servers}. Keeping older keys: {kept}.",
         set.members.len()
     )
+}
+
+/// A Server only the mesh reaches admits the set only when it holds evidence for the signer
+/// and every Member. One holding keys or Servers from before would refuse while the others
+/// commit a set naming it, so nothing is signed until every such Server is reached directly.
+fn refuse_unreachable(
+    included: &[&Found],
+    direct: &BTreeSet<MachineId>,
+    reach: &Reach,
+) -> Result<(), Error> {
+    let unreached: Vec<String> = included
+        .iter()
+        .filter(|server| !direct.contains(&server.machine_id))
+        .filter(|server| {
+            server
+                .report
+                .as_ref()
+                .is_none_or(|report| !report.nothing_legacy())
+        })
+        .map(|server| reach.name(&server.machine_id))
+        .collect();
+    if unreached.is_empty() {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "{} hold keys or Servers added while enforcement was off, so each takes the set only over its own SSH. Nothing was signed.",
+        unreached.join(", ")
+    ))
+    .hint(Hint::Next(
+        "ployz device enforce without --connect, in the context `ployz server add` saved SSH connections to"
+            .to_owned(),
+    )))
+}
+
+/// Hand the signed set to a Server through the mesh, which admits it against its own
+/// trusted snapshot.
+async fn deliver_over_mesh(
+    client: &Client,
+    machine_id: MachineId,
+    starting_set: &Signed<StartingSet>,
+) -> Result<(), RpcError> {
+    client
+        .call_shared::<op::ActivateEnforcement>(
+            ActivateEnforcementRequest {
+                starting_set: starting_set.clone(),
+            },
+            Call::once().to(&MachineTarget::from(&machine_id)),
+        )
+        .await
+        .map_err(crate::connect::rpc_error)
+        .map(drop)
 }
 
 async fn deliver(

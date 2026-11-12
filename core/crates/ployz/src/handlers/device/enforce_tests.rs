@@ -75,7 +75,7 @@ fn enforce_refuses_a_substituted_identity_and_answer() {
         &reach,
         &Pinned {
             known: &known,
-            over_ssh: Some(servers[1].machine_id),
+            direct: &BTreeSet::from([servers[1].machine_id]),
             typed: &BTreeSet::from([servers[1].member.public_key.fingerprint()]),
         },
         |_, _| Ok(true),
@@ -114,7 +114,7 @@ fn enforce_leaves_out_an_unpinned_legacy_member() {
         &reach,
         &Pinned {
             known: &known,
-            over_ssh: Some(servers[1].machine_id),
+            direct: &BTreeSet::from([servers[1].machine_id]),
             typed: &BTreeSet::from([servers[2].member.public_key.fingerprint()]),
         },
         |name, _| {
@@ -255,4 +255,40 @@ fn activation_names_a_kept_private_access_router_and_its_tailnet() {
     assert!(named.contains("tailnet example.com"), "{named}");
     let unnamed = kept_router("web-1", &ployz_core::PrivateAccessKept { tailnet: None });
     assert!(unnamed.contains("a tailnet it couldn't name"), "{unnamed}");
+}
+
+#[test]
+fn enforce_signs_nothing_while_a_server_only_the_mesh_reaches_holds_older_keys() {
+    let entry = found('1', "machine-1");
+    let mut clean = found('2', "machine-2");
+    clean.report = Some(ActivationReport {
+        state: ActivationState::Awaiting,
+        operation: None,
+        legacy_members: Vec::new(),
+        legacy_keys: Vec::new(),
+        private_access: None,
+    });
+    let mut older = found('3', "machine-3");
+    older.report = Some(ActivationReport {
+        state: ActivationState::Awaiting,
+        operation: None,
+        legacy_members: Vec::new(),
+        legacy_keys: vec![legacy(4)],
+        private_access: None,
+    });
+    let servers = [entry, clean, older];
+    let reach = reach_of(&servers.iter().collect::<Vec<_>>());
+    let direct = BTreeSet::from([servers[0].machine_id]);
+
+    assert!(refuse_unreachable(&[&servers[0], &servers[1]], &direct, &reach).is_ok());
+    let refused = refuse_unreachable(&servers.iter().collect::<Vec<_>>(), &direct, &reach)
+        .expect_err("a Server that would refuse the set stops the run");
+
+    let message = refused.to_string();
+    assert!(message.contains("machine-3"), "{message}");
+    assert!(!message.contains("machine-2"), "{message}");
+    assert!(message.contains("Nothing was signed"), "{message}");
+
+    let direct = BTreeSet::from([servers[0].machine_id, servers[2].machine_id]);
+    assert!(refuse_unreachable(&servers.iter().collect::<Vec<_>>(), &direct, &reach).is_ok());
 }

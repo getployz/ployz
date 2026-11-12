@@ -23,8 +23,9 @@ Pick one of these.
 
 **From your computer.** Run `ployz device enforce` from a device you approved, as in
 [Require a device's signature](manage-servers.md#require-a-devices-signature-for-restarts-and-joins).
-Reach each server over SSH, or confirm each server's key with `sudo ployz status` on it. This
-works for every cluster.
+Run it without `--connect` in the context where you added your servers over SSH, so it reaches
+each one over its own SSH connection. This works for every cluster. A server that only joined
+through Ployz Cloud has no SSH connection saved; confirm its key with `sudo ployz status` on it.
 
 **From the dashboard.** When no server holds a device, passkey or server it can't vouch for, the
 dashboard offers **Activate** on the **Servers** page. Your passkey approves the list of servers.
@@ -38,8 +39,9 @@ Activation:
 - removes every device and passkey added while enforcement was off, unless you keep it. Approve
   a removed one again with `ployz device request` on that computer, then
   `ployz device approve <code>` from yours.
-- leaves out a server you didn't confirm or that runs a Ployz older than 0.4. It stays as it
-  was. Run `ployz device enforce` again once you can reach it.
+- leaves out a server you didn't confirm or that runs a Ployz older than 0.4. Once the others
+  activate, that server is no longer part of the cluster: remove it with `ployz server rm`, then
+  add it again with a join you approve. Upgrade every server first.
 - cancels any build Ployz Cloud approved and any volume change waiting on an approval. Start them
   again from an approved device or with your passkey.
 - gives the cluster a new key for sealed values. Values you seal from then on use it. A server

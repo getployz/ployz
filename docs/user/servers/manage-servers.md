@@ -344,8 +344,9 @@ computer learned it without going through Ployz Cloud:
   **wireguard key** line with the one `enforce` shows, or pass it with `--pin`.
 
 A server whose key doesn't match what this computer saw before stops the command, and nothing is
-signed. A server you don't confirm is left out and stays as it was. So is a server running a
-Ployz older than 0.4.
+signed. A server you don't confirm is left out, and so is a server running a Ployz older than
+0.4. Once the others activate, a server left out is no longer part of the cluster: remove it with
+`ployz server rm`, then add it again with a join you approve.
 
 Next, `enforce` lists the devices and passkeys added while enforcement was off. Activation
 removes each one unless you keep it. Keep a key only after checking its code with
@@ -357,12 +358,14 @@ subnet, Machine ID and key fingerprint, and the keys you kept, and signs that li
 checks the list, restarts, and reports itself activated. `enforce` waits for each one, then
 gives the cluster a new key for sealed values, made on this computer. Values you seal from then
 on use it, so no one holding the old key can open them. It lists each server as `activated`,
-`left out` or `refused`, with why, and exits 3 unless every server activated. Run it again for a
-server it left out.
+`left out` or `refused`, with why, and exits 3 unless every server activated.
 
 After activation a server trusts only the servers in the signed list, plus servers whose join an
-approved device signs later. A server that held a key or server from before enforcement refuses
-a list delivered through Ployz Cloud, so reach each such server over SSH.
+approved device signs later. A server that held a key or server from before enforcement takes the
+list only over its own SSH. When a server like that is reached only through another one or
+through Ployz Cloud, `enforce` signs nothing and names it. Run `ployz device enforce` without
+`--connect` in the context where you added your servers with `ployz server add` over SSH: it
+reaches each server over the SSH connection saved for it.
 
 Enforcement also covers deploys: a server creates a container only from a spec an approved
 device signed with `ployz deploy`, and only from an image pinned by digest. See
