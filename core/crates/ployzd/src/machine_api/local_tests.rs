@@ -6532,10 +6532,12 @@ mod ensure_container {
                     store
                         .stage_management_client(
                             ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
-                            [19; 32],
+                            ployz_core::ClientKey::from_bytes([19; 32]),
                         )
                         .unwrap();
-                    store.activate_management_client([19; 32]).unwrap();
+                    store
+                        .activate_management_client(ployz_core::ClientKey::from_bytes([19; 32]))
+                        .unwrap();
                 })
                 .await
                 .unwrap();
@@ -6543,7 +6545,7 @@ mod ensure_container {
                 .service
                 .local
                 .clone()
-                .with_management_client([19; 32]);
+                .with_management_client(ployz_core::ClientKey::from_bytes([19; 32]));
             assert!(matches!(
                 operator
                     .set_device_enforcement(SetDeviceEnforcementRequest {

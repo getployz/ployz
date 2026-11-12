@@ -1346,7 +1346,7 @@ mod tests {
         };
         let daemon = Daemon::start(config).await.unwrap();
         let client = iroh::SecretKey::generate();
-        let pending = *client.public().as_bytes();
+        let pending = ployz_core::ClientKey::from_bytes(*client.public().as_bytes());
         let machine = daemon
             .local
             .mutate(move |store| {

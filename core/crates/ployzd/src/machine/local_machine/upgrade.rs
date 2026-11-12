@@ -79,7 +79,9 @@ mod tests {
         let local = LocalMachine::new(
             RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap(),
         );
-        let tunnel = local.clone().with_management_client([7; 32]);
+        let tunnel = local
+            .clone()
+            .with_management_client(ployz_core::ClientKey::from_bytes([7; 32]));
 
         assert_eq!(local.downgrade(false), Downgrade::Allowed);
         assert_eq!(local.downgrade(true), Downgrade::Refused);

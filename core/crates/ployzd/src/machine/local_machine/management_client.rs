@@ -1,9 +1,9 @@
 //! Management Client slots and the client keys they admit, as admitted mutations.
 
 use ployz_core::{
-    DeviceCode, DeviceSet, LocalMachinePhase, ManagementCapability, RemoveTrustedKeyRequest,
-    SetDeviceRequest, SetManagementClientRequest, SetManagementClientResponse, SetPasskeyRequest,
-    TrustedKeyRemoved,
+    ClientKey, DeviceCode, DeviceSet, LocalMachinePhase, ManagementCapability,
+    RemoveTrustedKeyRequest, SetDeviceRequest, SetManagementClientRequest,
+    SetManagementClientResponse, SetPasskeyRequest, TrustedKeyRemoved,
     authority::{PasskeyApprover, TrustedPasskey},
 };
 
@@ -48,7 +48,10 @@ impl LocalMachine {
                     let capability = match request {
                         SetManagementClientRequest::Set { label } => {
                             let client = iroh::SecretKey::generate();
-                            store.stage_management_client(label, *client.public().as_bytes())?;
+                            store.stage_management_client(
+                                label,
+                                ClientKey::from_bytes(*client.public().as_bytes()),
+                            )?;
                             Some(ManagementCapability::new(
                                 store.record().management_secret().public_key(),
                                 client.to_bytes(),
@@ -231,7 +234,7 @@ impl LocalMachine {
         match self.management_client {
             Some(remote) => record
                 .devices()
-                .find(|device| device.as_bytes() == &remote)
+                .find(|device| ClientKey::from(*device) == remote)
                 .map(|device| PasskeyApprover::Device {
                     code: device.code(),
                 })
@@ -245,7 +248,7 @@ impl LocalMachine {
     ///
     /// # Errors
     /// Returns mutation admission, record owner or persistence errors.
-    pub async fn activate_management_client(&self, remote: [u8; 32]) -> Result<(), Error> {
+    pub async fn activate_management_client(&self, remote: ClientKey) -> Result<(), Error> {
         if self.record().pending_label(&remote).is_none() {
             return Ok(());
         }
@@ -315,9 +318,11 @@ mod tests {
             .unwrap()
             .capability
             .unwrap();
-        let key = *iroh::SecretKey::from_bytes(capability.client_secret())
-            .public()
-            .as_bytes();
+        let key = ClientKey::from_bytes(
+            *iroh::SecretKey::from_bytes(capability.client_secret())
+                .public()
+                .as_bytes(),
+        );
         local.activate_management_client(key).await.unwrap();
         let remote = local.clone().with_management_client(key);
         let lock = local.owner.admission_lock().write_owned().await;
@@ -335,7 +340,7 @@ mod tests {
         assert!(!local.record().has_management_clients());
     }
 
-    async fn accepted(local: &LocalMachine, label: &str) -> [u8; 32] {
+    async fn accepted(local: &LocalMachine, label: &str) -> ClientKey {
         let label = ployz_core::ManagementClientLabel::parse(label).unwrap();
         let capability = local
             .set_management_client(SetManagementClientRequest::Set { label })
@@ -343,9 +348,11 @@ mod tests {
             .unwrap()
             .capability
             .unwrap();
-        let key = *iroh::SecretKey::from_bytes(capability.client_secret())
-            .public()
-            .as_bytes();
+        let key = ClientKey::from_bytes(
+            *iroh::SecretKey::from_bytes(capability.client_secret())
+                .public()
+                .as_bytes(),
+        );
         local.activate_management_client(key).await.unwrap();
         key
     }
@@ -413,11 +420,11 @@ mod tests {
         let client_public = iroh::SecretKey::from_bytes(capability.client_secret()).public();
         assert_eq!(
             record.pending_client(&cloud()),
-            Some(*client_public.as_bytes())
+            Some(ClientKey::from_bytes(*client_public.as_bytes()))
         );
         assert_eq!(record.accepted_client(&cloud()), None);
         local
-            .activate_management_client(*client_public.as_bytes())
+            .activate_management_client(ClientKey::from_bytes(*client_public.as_bytes()))
             .await
             .unwrap();
         let persisted = std::fs::read_to_string(dir.path().join("machine.json")).unwrap();
@@ -430,7 +437,7 @@ mod tests {
         assert_ne!(replacement, capability);
         assert_eq!(
             local.record().accepted_client(&cloud()),
-            Some(*client_public.as_bytes())
+            Some(ClientKey::from_bytes(*client_public.as_bytes()))
         );
         let replacement_public = iroh::SecretKey::from_bytes(replacement.client_secret()).public();
         // Restart between issuance and handover: both public keys survive, no secret does.
@@ -439,12 +446,12 @@ mod tests {
             RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap(),
         );
         local
-            .activate_management_client(*replacement_public.as_bytes())
+            .activate_management_client(ClientKey::from_bytes(*replacement_public.as_bytes()))
             .await
             .unwrap();
         assert_eq!(
             local.record().accepted_client(&cloud()),
-            Some(*replacement_public.as_bytes())
+            Some(ClientKey::from_bytes(*replacement_public.as_bytes()))
         );
         assert_eq!(local.record().pending_client(&cloud()), None);
     }
@@ -459,9 +466,11 @@ mod tests {
             .unwrap()
             .capability
             .unwrap();
-        let first_key = *iroh::SecretKey::from_bytes(first.client_secret())
-            .public()
-            .as_bytes();
+        let first_key = ClientKey::from_bytes(
+            *iroh::SecretKey::from_bytes(first.client_secret())
+                .public()
+                .as_bytes(),
+        );
         local.activate_management_client(first_key).await.unwrap();
         let next = local
             .set_management_client(set())
@@ -469,9 +478,11 @@ mod tests {
             .unwrap()
             .capability
             .unwrap();
-        let next_key = *iroh::SecretKey::from_bytes(next.client_secret())
-            .public()
-            .as_bytes();
+        let next_key = ClientKey::from_bytes(
+            *iroh::SecretKey::from_bytes(next.client_secret())
+                .public()
+                .as_bytes(),
+        );
         let before = local.record();
         // An occupied destination makes the atomic rename fail, even when tests run as root.
         let path = dir.path().join("machine.json");
@@ -534,9 +545,9 @@ mod tests {
             DeviceSet::AlreadyApproved { code: key.code() }
         );
         let record = local.record();
-        assert_eq!(record.accepted_client(&key.label()), Some(*key.as_bytes()));
+        assert_eq!(record.accepted_client(&key.label()), Some(key.into()));
         assert_eq!(
-            record.management_scope(key.as_bytes()),
+            record.management_scope(&key.into()),
             Some(ManagementScope::Full)
         );
 
@@ -557,7 +568,7 @@ mod tests {
         }
         assert_eq!(
             local.record().accepted_client(&key.label()),
-            Some(*key.as_bytes())
+            Some(key.into())
         );
     }
 
@@ -605,7 +616,7 @@ mod tests {
             local.set_device(remove.clone()).await.unwrap(),
             DeviceSet::Removed { code: key.code() }
         );
-        assert!(!local.record().accepts_management_client(key.as_bytes()));
+        assert!(!local.record().accepts_management_client(&key.into()));
         assert_eq!(
             local.set_device(remove).await.unwrap(),
             DeviceSet::NotPresent { code: key.code() }
@@ -629,7 +640,7 @@ mod tests {
             .set_device(SetDeviceRequest::Approve { key: first })
             .await
             .unwrap();
-        let caller = local.clone().with_management_client(*first.as_bytes());
+        let caller = local.clone().with_management_client(first.into());
         let lock = local.owner.admission_lock().write_owned().await;
         let remove = local.set_device(SetDeviceRequest::Remove { code: first.code() });
         let queued = caller.set_device(SetDeviceRequest::Approve { key: second });
@@ -639,7 +650,7 @@ mod tests {
         drop(lock);
         remove.await.unwrap();
         assert!(matches!(queued.await, Err(Error::ManagementRevoked)));
-        assert!(!local.record().accepts_management_client(second.as_bytes()));
+        assert!(!local.record().accepts_management_client(&second.into()));
     }
 
     fn passkey(key: [u8; 32]) -> ployz_core::authority::Passkey {
@@ -689,8 +700,8 @@ mod tests {
                 approved_by: PasskeyApprover::Server,
             }]
         );
-        assert!(!record.admits_management_client(&key));
-        assert_eq!(record.management_scope(&key), None);
+        assert!(!record.admits_management_client(&ClientKey::from_bytes(key)));
+        assert_eq!(record.management_scope(&ClientKey::from_bytes(key)), None);
         assert_eq!(record.trusted_keys().signing_keys().count(), 0);
         let reread: crate::machine::LocalMachineRecord =
             serde_json::from_str(&serde_json::to_string(&*record).unwrap()).unwrap();
@@ -749,7 +760,7 @@ mod tests {
             .set_device(SetDeviceRequest::Approve { key: device })
             .await
             .unwrap();
-        let caller = local.clone().with_management_client(*device.as_bytes());
+        let caller = local.clone().with_management_client(device.into());
         let key = *iroh::SecretKey::generate().public().as_bytes();
         let code = passkey(key).code();
         caller.set_passkey(approve(passkey(key))).await.unwrap();
@@ -784,7 +795,7 @@ mod tests {
             .set_device(SetDeviceRequest::Approve { key: device })
             .await
             .unwrap();
-        let caller = local.clone().with_management_client(*device.as_bytes());
+        let caller = local.clone().with_management_client(device.into());
         let mine = [
             passkey_with_credential(*iroh::SecretKey::generate().public().as_bytes(), "AQID"),
             passkey_with_credential(*iroh::SecretKey::generate().public().as_bytes(), "BAUG"),
@@ -867,7 +878,11 @@ mod tests {
             }
         );
         assert!(!trusts_any(&local, code));
-        assert!(!local.record().accepts_management_client(&key));
+        assert!(
+            !local
+                .record()
+                .accepts_management_client(&ClientKey::from_bytes(key))
+        );
     }
 
     #[tokio::test]

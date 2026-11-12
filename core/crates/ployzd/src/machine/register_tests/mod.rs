@@ -182,7 +182,7 @@ async fn register_carries_the_entrys_devices_to_the_joiner() {
         .await
         .unwrap();
     assert_eq!(
-        joiner.record().management_scope(device.as_bytes()),
+        joiner.record().management_scope(&device.into()),
         Some(ployz_core::ManagementScope::Full)
     );
 

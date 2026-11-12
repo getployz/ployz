@@ -10,10 +10,10 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
-    InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
-    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
-    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
+    ClientKey, ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest,
+    Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine,
+    MachineDetails, MachineId, MachineIdentity, MachineList, MachineName, MachineObservation,
+    MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
     PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
     RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
     SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
@@ -47,7 +47,7 @@ const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 pub struct LocalMachine {
     owner: RecordOwner,
-    management_client: Option<[u8; 32]>,
+    management_client: Option<ClientKey>,
     /// Whether this call came over this Server's local socket, rather than the mesh.
     local_socket: bool,
     cluster: Option<ClusterContext>,
@@ -391,7 +391,7 @@ impl LocalMachine {
 
     /// Bind subsequent mutation admission to this authenticated management client.
     #[must_use]
-    pub(crate) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+    pub(crate) fn with_management_client(mut self, remote: ClientKey) -> Self {
         self.management_client = Some(remote);
         self
     }
@@ -450,7 +450,7 @@ impl LocalMachine {
     /// Refuse a slot change from any management client other than Cloud's.
     /// Local-socket callers carry no client key and keep full authority.
     pub(crate) fn require_slot_authority(
-        client: Option<[u8; 32]>,
+        client: Option<ClientKey>,
         record: &LocalMachineRecord,
     ) -> Result<(), Error> {
         let Some(remote) = client else {
