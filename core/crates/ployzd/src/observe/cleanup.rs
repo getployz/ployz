@@ -1068,6 +1068,37 @@ mod tests {
     }
 
     #[test]
+    fn the_hour_a_23_hour_range_starts_in_is_never_deleted_while_that_range_is_served_raw() {
+        let store = store();
+        let raw = store.root.raw_metrics();
+        fs::create_dir_all(&raw).unwrap();
+        let hour = T0 - T0 % 3_600;
+        for hours_back in 0..30 {
+            fs::write(raw.join(segment_name(hours_back)), b"{}\n").unwrap();
+        }
+        for minutes_into_hour in [0, 1, 30, 59] {
+            let now_secs = hour + minutes_into_hour * 60;
+            let start = now_secs - 23 * 3_600;
+            let first = format!("{}.jsonl", start - start % 3_600);
+            let report = run(
+                &store.root,
+                &Limits::for_filesystem(u64::MAX),
+                Disk {
+                    total_bytes: u64::MAX,
+                    free_bytes: u64::MAX,
+                },
+                SystemTime::UNIX_EPOCH + Duration::from_secs(now_secs),
+                |_| true,
+            )
+            .unwrap();
+            assert!(
+                store.segments().contains(&first),
+                "{first} after {report:?} at +{minutes_into_hour} min"
+            );
+        }
+    }
+
+    #[test]
     fn a_dir_with_a_log_file_name_does_not_stop_a_discard() {
         let store = store();
         store.file(&cid(1), "2-11.log", 10, 0);

@@ -601,6 +601,65 @@ mod tests {
         assert_eq!(fold_pending(&store, time(T0 + 2 * HOUR)).unwrap(), 2);
     }
 
+    /// Raw segments for the three hours from `T0`, one host row each, last
+    /// written long ago so a rollup written now is never redone for its mtime.
+    fn write_three_hours(store: &StoreRoot) {
+        for tick in [0, 360, 720] {
+            segment::append(store, &[Row::Host(host(tick))]).unwrap();
+        }
+        for hours in 0..3 {
+            fs::File::options()
+                .write(true)
+                .open(
+                    store
+                        .raw_metrics()
+                        .join(hour(T0 + hours * HOUR).to_string()),
+                )
+                .unwrap()
+                .set_modified(time(T0))
+                .unwrap();
+        }
+    }
+
+    fn rollup_names(store: &StoreRoot) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(store.rollup_metrics())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn an_hour_that_fails_to_fold_does_not_stop_the_hours_after_it_and_is_retried() {
+        let (_dir, store) = store();
+        write_three_hours(&store);
+        let middle = hour(T0 + HOUR).to_string();
+        let blocked = store.rollup_metrics().join(format!("{middle}.tmp"));
+        fs::create_dir_all(&blocked).unwrap();
+
+        assert_eq!(fold_pending(&store, time(T0 + 3 * HOUR)).unwrap(), 2);
+        assert_eq!(
+            rollup_names(&store),
+            [
+                hour(T0).to_string(),
+                format!("{middle}.tmp"),
+                hour(T0 + 2 * HOUR).to_string()
+            ]
+        );
+
+        fs::remove_dir(&blocked).unwrap();
+        assert_eq!(fold_pending(&store, time(T0 + 3 * HOUR)).unwrap(), 1);
+        assert_eq!(
+            rollup_names(&store),
+            [
+                hour(T0).to_string(),
+                middle,
+                hour(T0 + 2 * HOUR).to_string()
+            ]
+        );
+    }
+
     #[test]
     fn an_empty_store_folds_and_reads_nothing() {
         let (_dir, store) = store();

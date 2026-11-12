@@ -859,6 +859,31 @@ pub(crate) mod tests {
         assert_eq!(step(now - 90 * DAY), 90 * DAY / 4_000);
     }
 
+    #[test]
+    fn a_range_is_read_raw_from_23_hours_back_and_from_rollups_one_nanosecond_earlier() {
+        let (_dir, store) = store();
+        let now = T0 + 5 * HOUR + 17 * MIN;
+        let step = |since: i64| {
+            let asked = request(MetricScope::Machine, since, now, Some(MIN));
+            history(&store, &asked, now).unwrap().step_nanos
+        };
+        assert_eq!(step(now - 23 * HOUR), MIN);
+        assert_eq!(step(now - 23 * HOUR - 1), STEP_NANOS);
+    }
+
+    #[test]
+    fn a_range_starting_23_hours_back_reads_raw_rows_that_have_no_rollup() {
+        let (_dir, store) = store();
+        let now = T0 + 23 * HOUR + 30 * MIN;
+        write(&store, T0 + 30 * MIN, now, |ts| vec![host(ts)]);
+
+        let asked = request(MetricScope::Machine, now - 23 * HOUR, now, Some(HOUR));
+        let reply = history(&store, &asked, now).unwrap();
+        assert_eq!(reply.gaps, []);
+        assert_host_rates(host_points(&reply));
+        assert!(host_points(&reply).len() >= 22);
+    }
+
     /// 90 days of rollups for 50 Services, two Deployments each.
     #[test]
     #[ignore = "perf: writes about 300 MB of rollups"]
