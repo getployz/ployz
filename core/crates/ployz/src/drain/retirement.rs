@@ -8,7 +8,7 @@ use ployz_core::{
 use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError};
-use crate::deploy::cleanup::{self, ACK_WAIT, Copy, Step, Wait};
+use crate::deploy::cleanup::{self, ACK_WAIT, Copy, EmptyPolicy, RotationFailure};
 use crate::deploy::{MachineOperations, MachineRef, OldCopyEnd, Unconfirmed};
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
 
@@ -107,7 +107,15 @@ pub(crate) async fn retire_copies<C: MachineOperations>(
             return Err(cancelled());
         }
         ended(
-            cleanup::retire(client, &copy, false, AnonymousVolumes::Remove, cancellation).await?,
+            cleanup::retire(
+                client,
+                &copy,
+                EmptyPolicy::RequireOtherIn,
+                AnonymousVolumes::Remove,
+                cancellation,
+            )
+            .await?
+            .failure(),
             names,
         )?;
     }
@@ -132,7 +140,9 @@ pub(crate) async fn retire_ingress_proxy<C: MachineOperations>(
                 return Err(cancelled());
             }
             ended(
-                cleanup::remove(client, &copy, AnonymousVolumes::Remove).await?,
+                cleanup::remove(client, &copy, AnonymousVolumes::Remove)
+                    .await?
+                    .failure(),
                 &Names::new(),
             )?;
         }
@@ -146,9 +156,6 @@ pub(crate) async fn let_go<C: MachineOperations>(
     name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
     cancellation: &CancellationToken,
 ) -> OldCopyEnd {
-    let proxies = |waiting: &cleanup::Unconfirmed| Unconfirmed::Proxies {
-        servers: waiting.machines.iter().map(name).collect(),
-    };
     let unlisted = cleanup::wait_unlisted(
         client,
         &copy.machine_id,
@@ -156,21 +163,17 @@ pub(crate) async fn let_go<C: MachineOperations>(
         &copy.container_id,
         cancellation,
     )
-    .await;
-    let unconfirmed = match unlisted {
-        Ok(Wait::Done) => match cleanup::remove(client, copy, AnonymousVolumes::Remove).await {
-            Ok(Step::Done) => return OldCopyEnd::Stopped,
-            Ok(Step::Refused(refusal)) => Unconfirmed::Failed {
-                detail: refusal.message,
-            },
-            Ok(Step::NotConfirmed(machines)) => proxies(&machines),
-            Ok(Step::Cancelled) => Unconfirmed::Cancelled,
-            Err(error) => Unconfirmed::Failed {
-                detail: crate::ui::row(&error),
-            },
-        },
-        Ok(Wait::TimedOut(machines) | Wait::Gapped(machines)) => proxies(&machines),
-        Ok(Wait::Cancelled) => Unconfirmed::Cancelled,
+    .await
+    .map(cleanup::Waited::failure);
+    let ended = match unlisted {
+        Ok(Ok(())) => cleanup::remove(client, copy, AnonymousVolumes::Remove)
+            .await
+            .map(cleanup::Removal::failure),
+        unlisted => unlisted,
+    };
+    let unconfirmed = match ended {
+        Ok(Ok(())) => return OldCopyEnd::Stopped,
+        Ok(Err(failure)) => Unconfirmed::of(failure, name),
         Err(error) => Unconfirmed::Failed {
             detail: crate::ui::row(&error),
         },
@@ -178,11 +181,10 @@ pub(crate) async fn let_go<C: MachineOperations>(
     OldCopyEnd::Running { unconfirmed }
 }
 
-fn ended(step: Step, names: &Names) -> Result<(), RpcError> {
-    match step {
-        Step::Done => Ok(()),
-        Step::Refused(refusal) => Err(refusal.into_error()),
-        Step::NotConfirmed(machines) => Err(RpcError::unavailable(format!(
+fn ended(rotated: Result<(), RotationFailure>, names: &Names) -> Result<(), RpcError> {
+    rotated.map_err(|failure| match failure {
+        RotationFailure::Refused(refusal) => refusal.into_error(),
+        RotationFailure::NotConfirmed(machines) => RpcError::unavailable(format!(
             "not unlisted after {} s; the proxies on {} did not confirm",
             ACK_WAIT.as_secs(),
             machines
@@ -191,9 +193,9 @@ fn ended(step: Step, names: &Names) -> Result<(), RpcError> {
                 .map(|id| server_name(names, id))
                 .collect::<Vec<_>>()
                 .join(", ")
-        ))),
-        Step::Cancelled => Err(cancelled()),
-    }
+        )),
+        RotationFailure::Cancelled => cancelled(),
+    })
 }
 
 fn cancelled() -> RpcError {

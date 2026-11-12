@@ -37,10 +37,10 @@ use ployz_core::EnvironmentValues;
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestoreAttempt,
     StopAttempt,
-    schedule::{Action, Event, Schedule, ServiceGroup, Step, Task, TaskKind, starts_container},
+    schedule::{Action, Event, Schedule, ServiceGroup, Stage, Task, TaskKind, starts_container},
 };
 
-use super::cleanup::{self, ACK_POLL, ACK_WAIT};
+use super::cleanup::{self, ACK_POLL, ACK_WAIT, EmptyPolicy, NotIn, RotationFailure};
 pub(super) use super::progress::Progress;
 
 mod health;
@@ -1305,13 +1305,18 @@ async fn restore_group<C: MachineOperations>(
             continue;
         };
         if restored {
-            let left =
-                match cleanup::retire(client, &copy, false, AnonymousVolumes::Remove, &cleanup)
-                    .await
-                {
-                    Ok(step) => Option::<Left>::from(step),
-                    Err(error) => Some(Left::Failed(error)),
-                };
+            let left = match cleanup::retire(
+                client,
+                &copy,
+                EmptyPolicy::RequireOtherIn,
+                AnonymousVolumes::Remove,
+                &cleanup,
+            )
+            .await
+            {
+                Ok(step) => Option::<Left>::from(step),
+                Err(error) => Some(Left::Failed(error)),
+            };
             if let Some(left) = left {
                 rows.leave_running(progress, &copy, left);
             }
@@ -1352,14 +1357,19 @@ async fn discard_new<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Withdrawn {
     let running = || Withdrawn::Running(*machine_id);
-    let want = ContainerWant::Gone {
-        container: ContainerLocator::Id(container_id),
-        drain: Drain::NONE,
-        anonymous_volumes: AnonymousVolumes::Remove,
-    };
-    let (now, refusal) = match client.ensure_unsettled(machine_id, want, None).await {
-        Ok(EnsuredContainer::Ensured { .. }) => return Withdrawn::Gone,
-        Ok(EnsuredContainer::Refused { now, refusal }) => (now, refusal),
+    let gone = cleanup::gone(
+        client,
+        machine_id,
+        ContainerLocator::Id(container_id),
+        Drain::NONE,
+        AnonymousVolumes::Remove,
+        None,
+    )
+    .await;
+    let now = match gone {
+        Ok(cleanup::Gone::Removed) => return Withdrawn::Gone,
+        Ok(cleanup::Gone::InRotation { now, .. }) => now,
+        Ok(cleanup::Gone::Refused(_)) => return running(),
         Err(error) => {
             if let Some(service) = service {
                 rows.leave_unrouted(progress, service, *machine_id, container_id, error);
@@ -1367,22 +1377,25 @@ async fn discard_new<C: MachineOperations>(
             return running();
         }
     };
-    if refusal.reason == ContainerRefusalReason::NotFound {
-        return Withdrawn::Gone;
-    }
-    let Some(observed) = now
-        .present()
-        .filter(|_| refusal.reason == ContainerRefusalReason::InRotation)
-    else {
+    let Some(observed) = now.present() else {
         return running();
     };
     let mut copy = cleanup::Copy::observed(observed);
     let step = match hold {
         Some(run) => cleanup::hold(client, &copy, run.clone(), cancellation).await,
-        None => cleanup::retire(client, &copy, true, AnonymousVolumes::Remove, cancellation).await,
+        None => {
+            cleanup::retire(
+                client,
+                &copy,
+                EmptyPolicy::MayEmpty,
+                AnonymousVolumes::Remove,
+                cancellation,
+            )
+            .await
+        }
     };
     let left = match step {
-        Ok(cleanup::Step::Done) => None,
+        Ok(cleanup::Rotated::Done) => None,
         Ok(step) => Option::<Left>::from(step),
         Err(error) => Some(Left::Failed(error)),
     };
@@ -1422,14 +1435,16 @@ async fn remove_stray<C: MachineOperations>(
     (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
     cancellation: &CancellationToken,
 ) {
-    let want = ContainerWant::Gone {
-        container: ContainerLocator::Id(container_id),
-        drain: Drain::NONE,
-        anonymous_volumes: AnonymousVolumes::Remove,
-    };
     let removed = tokio::time::timeout(
         RESTART_WAIT,
-        client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT)),
+        cleanup::gone(
+            client,
+            machine_id,
+            ContainerLocator::Id(container_id),
+            Drain::NONE,
+            AnonymousVolumes::Remove,
+            Some(RESTART_WAIT),
+        ),
     );
     let answer = tokio::select! {
         answer = removed => answer.unwrap_or_else(|_| {
@@ -1446,15 +1461,8 @@ async fn remove_stray<C: MachineOperations>(
         }
     };
     let error = match answer {
-        Ok(EnsuredContainer::Ensured { .. }) => return,
-        Ok(EnsuredContainer::Refused { refusal, .. })
-            if refusal.reason == ContainerRefusalReason::NotFound =>
-        {
-            return;
-        }
-        Ok(EnsuredContainer::Refused { refusal, .. })
-            if refusal.reason == ContainerRefusalReason::InRotation =>
-        {
+        Ok(cleanup::Gone::Removed) => return,
+        Ok(cleanup::Gone::InRotation { .. }) => {
             rows.name_left(
                 progress,
                 service,
@@ -1464,7 +1472,7 @@ async fn remove_stray<C: MachineOperations>(
             );
             return;
         }
-        Ok(EnsuredContainer::Refused { refusal, .. }) => refusal.into_error(),
+        Ok(cleanup::Gone::Refused(refusal)) => refusal.into_error(),
         Err(error) => error,
     };
     rows.leave_unrouted(progress, service, *machine_id, container_id, error);
@@ -1646,9 +1654,9 @@ async fn publish_group<C: MachineOperations>(
             )
             .await
             {
-                Ok(cleanup::Wait::Done | cleanup::Wait::Gapped(_)) => None,
-                Ok(cleanup::Wait::TimedOut(_)) => Some(Left::NotListed),
-                Ok(cleanup::Wait::Cancelled) => Some(Left::Interrupted),
+                Ok(cleanup::Waited::Done | cleanup::Waited::Gapped(_)) => None,
+                Ok(cleanup::Waited::TimedOut(_)) => Some(Left::NotListed),
+                Ok(cleanup::Waited::Cancelled) => Some(Left::Interrupted),
                 Err(error) => Some(Left::Failed(error)),
             };
             if let Some(left) = left {
@@ -1663,7 +1671,7 @@ async fn publish_group<C: MachineOperations>(
     // retirement costs one unlisting, not one per copy.
     let sent = join_all(
         outs.iter()
-            .map(|copy| cleanup::send_out(client, copy, false)),
+            .map(|copy| cleanup::send_out(client, copy, EmptyPolicy::RequireOtherIn)),
     )
     .await;
     // An Out that may have landed but was never seen unlisted admits no
@@ -1687,16 +1695,14 @@ async fn publish_group<C: MachineOperations>(
     if !unlisting.is_empty() {
         let ids: BTreeSet<ContainerId> = unlisting.iter().map(|copy| copy.container_id).collect();
         let unlisted = cleanup::wait_none_listed(client, service, &ids, cancellation).await;
-        let (left, error) = match unlisted {
-            Ok(cleanup::Wait::Done) => (None, None),
-            Ok(cleanup::Wait::TimedOut(machines) | cleanup::Wait::Gapped(machines)) => {
-                let error = machine_error(
-                    MachineAction::ReadRoutes,
-                    RpcError::unavailable(rows.not_confirmed(&machines)),
-                );
-                (Some(Left::NotConfirmed(machines)), Some(error))
+        let (left, error) = match unlisted.map(cleanup::Waited::failure) {
+            Ok(Ok(())) => (None, None),
+            // A cancelled wait leaves the copies running but is no failure to report.
+            Ok(Err(RotationFailure::Cancelled)) => (Some(Left::Interrupted), None),
+            Ok(Err(failure)) => {
+                let (left, error) = rows.failed(failure, MachineAction::ReadRoutes);
+                (Some(left), Some(error))
             }
-            Ok(cleanup::Wait::Cancelled) => (Some(Left::Interrupted), None),
             Err(error) => (
                 Some(Left::Unread(error.clone())),
                 Some(machine_error(MachineAction::ReadRoutes, error)),
@@ -1721,7 +1727,7 @@ async fn publish_group<C: MachineOperations>(
     )
     .await;
     for (copy, removed) in gone.iter().zip(removed) {
-        if let Some(left) = left_unless_done(removed) {
+        if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
             rows.leave_running(progress, copy, left);
         }
     }
@@ -1766,7 +1772,7 @@ async fn gaps_still_routing<C: MachineOperations>(
     })
 }
 
-fn left_unless_done(step: Result<cleanup::Step, RpcError>) -> Option<Left> {
+fn left_unless_done(step: Result<cleanup::Rotated, RpcError>) -> Option<Left> {
     match step {
         Ok(step) => step.into(),
         Err(error) => Some(Left::Failed(error)),
@@ -1809,20 +1815,16 @@ async fn route_new<C: MachineOperations>(
                     .expect("a started copy has a spec");
                 let error =
                     match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
-                        Ok(cleanup::BroughtIn::In) => return Ok(()),
-                        Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
-                            health_error(*container_id, health, spec)
-                        }
-                        Ok(cleanup::BroughtIn::Refused(refusal))
-                            if refusal.reason == ContainerRefusalReason::OlderThanIn =>
-                        {
-                            ExecutionError::NewerServing {
+                        Ok(brought) => match brought.not_in() {
+                            Ok(()) => return Ok(()),
+                            Err(NotIn::Health(health)) => health_error(*container_id, health, spec),
+                            Err(NotIn::OlderThanIn(_)) => ExecutionError::NewerServing {
                                 service: service.clone(),
+                            },
+                            Err(NotIn::Refused(refusal)) => {
+                                machine_error(MachineAction::StartContainer, refusal.into_error())
                             }
-                        }
-                        Ok(cleanup::BroughtIn::Refused(refusal)) => {
-                            machine_error(MachineAction::StartContainer, refusal.into_error())
-                        }
+                        },
                         Err(error) => machine_error(MachineAction::StartContainer, error),
                     };
                 Err(Published::CopyFailed { task: *task, error })
@@ -1843,10 +1845,10 @@ async fn route_new<C: MachineOperations>(
     )
     .await
     {
-        Ok(cleanup::Wait::Done) => Ok(None),
-        Ok(cleanup::Wait::Gapped(machines)) => Ok(Some(machines)),
-        Ok(cleanup::Wait::TimedOut(machines)) => Err(Published::Unconfirmed(machines)),
-        Ok(cleanup::Wait::Cancelled) => Err(Published::Cancelled),
+        Ok(cleanup::Waited::Done) => Ok(None),
+        Ok(cleanup::Waited::Gapped(machines)) => Ok(Some(machines)),
+        Ok(cleanup::Waited::TimedOut(machines)) => Err(Published::Unconfirmed(machines)),
+        Ok(cleanup::Waited::Cancelled) => Err(Published::Cancelled),
         Err(error) => Err(Published::Failed(machine_error(
             MachineAction::ReadRoutes,
             error,
@@ -1864,8 +1866,8 @@ fn old_copies(
         .steps
         .iter()
         .flat_map(|step| match step {
-            Step::Serial(index) => vec![*index],
-            Step::Parallel(indices) => indices.clone(),
+            Stage::Serial(index) => vec![*index],
+            Stage::Parallel(indices) => indices.clone(),
         })
         .filter_map(|index| match operation_at(operations, index) {
             DeployOperation::ReplaceContainer(replacement) => {
@@ -2073,8 +2075,8 @@ impl<'a> Rows<'a> {
             .flat_map(|group| &group.steps)
             .map(|step| {
                 let tasks = match step {
-                    Step::Serial(index) => vec![*index],
-                    Step::Parallel(indices) => indices.clone(),
+                    Stage::Serial(index) => vec![*index],
+                    Stage::Parallel(indices) => indices.clone(),
                 };
                 tasks
                     .into_iter()
@@ -2113,8 +2115,8 @@ impl<'a> Rows<'a> {
                 steps
                     .iter()
                     .flat_map(|step| match step {
-                        Step::Serial(index) => std::slice::from_ref(index),
-                        Step::Parallel(indices) => indices.as_slice(),
+                        Stage::Serial(index) => std::slice::from_ref(index),
+                        Stage::Parallel(indices) => indices.as_slice(),
                     })
                     .map(move |index| (*index, service))
             })
@@ -2249,15 +2251,12 @@ impl<'a> Rows<'a> {
         .await;
         for (task, removed) in pending {
             let error = match removed {
-                Ok(cleanup::Step::Done) => {
+                Ok(cleanup::Removal::Removed) => {
                     old.insert(task, Ok(None));
                     continue;
                 }
-                Ok(cleanup::Step::Refused(refusal)) => {
+                Ok(cleanup::Removal::Refused(refusal)) => {
                     machine_error(MachineAction::RemoveContainer, refusal.into_error())
-                }
-                Ok(step @ (cleanup::Step::NotConfirmed(_) | cleanup::Step::Cancelled)) => {
-                    unreachable!("a removal waits on no proxy: {step:?}")
                 }
                 Err(error) => machine_error(MachineAction::RemoveContainer, error),
             };
@@ -2278,23 +2277,15 @@ impl<'a> Rows<'a> {
         let mut failed = None;
         let mut withdrawn = Vec::new();
         for (task, observed, mut copy, step) in withdrawals.into_iter().flatten() {
-            let (left, error) = match step {
-                Ok(cleanup::Step::Done) => (None, None),
-                Ok(cleanup::Step::NotConfirmed(machines)) => {
-                    let error = machine_error(
-                        MachineAction::StopContainer,
-                        RpcError::unavailable(self.not_confirmed(&machines)),
-                    );
-                    (Some(Left::NotConfirmed(machines)), Some(error))
-                }
-                Ok(cleanup::Step::Cancelled) => {
-                    (Some(Left::Interrupted), Some(ExecutionError::Cancelled))
-                }
-                Ok(cleanup::Step::Refused(refusal)) => {
-                    copy.rotation = observed.rotation().clone();
-                    let error =
-                        machine_error(MachineAction::StopContainer, refusal.clone().into_error());
-                    (Some(Left::Refused(refusal)), Some(error))
+            let (left, error) = match step.map(cleanup::Rotated::failure) {
+                Ok(Ok(())) => (None, None),
+                Ok(Err(failure)) => {
+                    // A refusal came before the Machine acted, so the copy is as observed.
+                    if matches!(failure, RotationFailure::Refused(_)) {
+                        copy.rotation = observed.rotation().clone();
+                    }
+                    let (left, error) = self.failed(failure, MachineAction::StopContainer);
+                    (Some(left), Some(error))
                 }
                 Err(error) => (
                     Some(Left::Failed(error.clone())),
@@ -2548,25 +2539,20 @@ impl<'a> Rows<'a> {
             .await
     }
 
-    #[expect(
-        clippy::result_large_err,
-        reason = "ExecutionError is the Deploy's wire failure value; every step in this file returns it unboxed"
-    )]
-    fn confirmed(
-        &self,
-        step: Result<cleanup::Step, RpcError>,
-        action: MachineAction,
-    ) -> Result<(), ExecutionError> {
-        match step {
-            Ok(cleanup::Step::Done) => Ok(()),
-            Ok(cleanup::Step::Refused(refusal)) => Err(machine_error(action, refusal.into_error())),
-            Ok(cleanup::Step::NotConfirmed(machines)) => Err(machine_error(
+    /// What a rotation that did not finish leaves its copy as, and the Deploy's error
+    /// for `action`.
+    fn failed(&self, failure: RotationFailure, action: MachineAction) -> (Left, ExecutionError) {
+        let error = match &failure {
+            RotationFailure::Refused(refusal) => {
+                machine_error(action, refusal.clone().into_error())
+            }
+            RotationFailure::NotConfirmed(unconfirmed) => machine_error(
                 action,
-                RpcError::unavailable(self.not_confirmed(&machines)),
-            )),
-            Ok(cleanup::Step::Cancelled) => Err(ExecutionError::Cancelled),
-            Err(error) => Err(machine_error(action, error)),
-        }
+                RpcError::unavailable(self.not_confirmed(unconfirmed)),
+            ),
+            RotationFailure::Cancelled => ExecutionError::Cancelled,
+        };
+        (Left::from(failure), error)
     }
 
     /// The Machines `service`'s listing left unanswered whose proxy acks nothing, so
@@ -2810,14 +2796,19 @@ enum Left {
     Unreached,
 }
 
-impl From<cleanup::Step> for Option<Left> {
-    fn from(step: cleanup::Step) -> Self {
-        match step {
-            cleanup::Step::Done => None,
-            cleanup::Step::Refused(refusal) => Some(Left::Refused(refusal)),
-            cleanup::Step::NotConfirmed(machines) => Some(Left::NotConfirmed(machines)),
-            cleanup::Step::Cancelled => Some(Left::Interrupted),
+impl From<RotationFailure> for Left {
+    fn from(failure: RotationFailure) -> Self {
+        match failure {
+            RotationFailure::Refused(refusal) => Left::Refused(refusal),
+            RotationFailure::NotConfirmed(unconfirmed) => Left::NotConfirmed(unconfirmed),
+            RotationFailure::Cancelled => Left::Interrupted,
         }
+    }
+}
+
+impl From<cleanup::Rotated> for Option<Left> {
+    fn from(rotated: cleanup::Rotated) -> Self {
+        rotated.failure().err().map(Left::from)
     }
 }
 
@@ -3497,7 +3488,7 @@ async fn withdraw<C: MachineOperations>(
     old: &ContainerObservation,
     rows: &Rows<'_>,
     cancellation: &CancellationToken,
-) -> Option<(cleanup::Copy, Result<cleanup::Step, RpcError>)> {
+) -> Option<(cleanup::Copy, Result<cleanup::Rotated, RpcError>)> {
     let mut copy = cleanup::Copy::observed(old);
     let (step, now) = match &copy.rotation {
         CopyRotation::Pending | CopyRotation::Out => return None,
@@ -3511,7 +3502,7 @@ async fn withdraw<C: MachineOperations>(
             copy.rotation.clone(),
         ),
         CopyRotation::Held(_) => (
-            cleanup::take_out(client, &copy, false, cancellation).await,
+            cleanup::take_out(client, &copy, EmptyPolicy::RequireOtherIn, cancellation).await,
             CopyRotation::Out,
         ),
     };
@@ -3589,42 +3580,31 @@ async fn remove_container<C: MachineOperations>(
         rows.leave_running(progress, &copy, Left::NotConfirmed(gaps));
         return Ok(Ran::default());
     }
-    let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
+    let empty = EmptyPolicy::from(purpose);
     let unreached = rows.unreached(client, &copy.service, cancellation).await?;
     let retired = if copy.drains() && unreached.may_keep_route() {
-        cleanup::retire_unconfirmed(client, &copy, allow_empty, purpose.into()).await
+        cleanup::retire_unconfirmed(client, &copy, empty, purpose.into()).await
     } else {
-        cleanup::retire(client, &copy, allow_empty, purpose.into(), cancellation).await
+        cleanup::retire(client, &copy, empty, purpose.into(), cancellation).await
     };
-    match retired {
-        Ok(cleanup::Step::Done) => {
+    match retired.map(cleanup::Rotated::failure) {
+        Ok(Ok(())) => {
             rows.leave_unreached(progress, unreached.copies());
             Ok(Ran::default())
         }
         // The run already ends with its Service's publish gapped, and no In copy
         // the gap proxy routes is acked by every proxy: the owner keeps this one In
         // for the next Deploy.
-        Ok(cleanup::Step::Refused(refusal))
+        Ok(Err(RotationFailure::Refused(refusal)))
             if gapped.is_some() && refusal.reason == ContainerRefusalReason::LastIn =>
         {
             rows.leave_running(progress, &copy, Left::Refused(refusal));
             Ok(Ran::default())
         }
-        Ok(cleanup::Step::Refused(refusal)) => {
-            rows.leave_running(progress, &copy, Left::Refused(refusal.clone()));
-            Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())
-        }
-        Ok(cleanup::Step::NotConfirmed(machines)) => {
-            let error = machine_error(
-                MachineAction::RemoveContainer,
-                RpcError::unavailable(rows.not_confirmed(&machines)),
-            );
-            rows.leave_running(progress, &copy, Left::NotConfirmed(machines));
+        Ok(Err(failure)) => {
+            let (left, error) = rows.failed(failure, MachineAction::RemoveContainer);
+            rows.leave_running(progress, &copy, left);
             Err(error.into())
-        }
-        Ok(cleanup::Step::Cancelled) => {
-            rows.leave_running(progress, &copy, Left::Interrupted);
-            Err(ExecutionError::Cancelled.into())
         }
         Err(error) => {
             rows.leave_running(progress, &copy, Left::Failed(error.clone()));
@@ -3655,25 +3635,19 @@ async fn stop_old_copy<C: MachineOperations>(
                 container_id: copy.container_id,
             },
         );
-        let (left, error) = match step {
-            Ok(cleanup::Step::Done) => {
+        let (left, error) = match step.map(cleanup::Rotated::failure) {
+            Ok(Ok(())) => {
                 copy.rotation = now;
                 return stop_held(client, index, progress, old, rows, copy).await;
             }
-            Ok(cleanup::Step::Refused(refusal)) => {
+            // Answered before the Machine acted, so there is nothing to put back.
+            Ok(Err(RotationFailure::Refused(refusal))) => {
                 return Err(machine_error(
                     MachineAction::StopContainer,
                     refusal.into_error(),
                 ));
             }
-            Ok(cleanup::Step::NotConfirmed(machines)) => {
-                let error = machine_error(
-                    MachineAction::StopContainer,
-                    RpcError::unavailable(rows.not_confirmed(&machines)),
-                );
-                (Left::NotConfirmed(machines), error)
-            }
-            Ok(cleanup::Step::Cancelled) => (Left::Interrupted, ExecutionError::Cancelled),
+            Ok(Err(failure)) => rows.failed(failure, MachineAction::StopContainer),
             // The ask may have landed, so the copy is restored as if Held.
             Err(error) => (
                 Left::Failed(error.clone()),
@@ -3737,14 +3711,14 @@ async fn leave_unstopped<C: MachineOperations>(
         return;
     }
     let not_restored = match cleanup::bring_in(client, copy, spec, Some(rows.run.clone())).await {
-        Ok(cleanup::BroughtIn::In) => None,
-        Ok(cleanup::BroughtIn::NotIn { .. }) => Some("it failed health".to_owned()),
-        Ok(cleanup::BroughtIn::Refused(refusal))
-            if refusal.reason == ContainerRefusalReason::OlderThanIn =>
-        {
-            return retire_older(client, progress, copy, rows).await;
-        }
-        Ok(cleanup::BroughtIn::Refused(refusal)) => Some(refusal.message),
+        Ok(brought) => match brought.not_in() {
+            Ok(()) => None,
+            Err(NotIn::Health(_)) => Some("it failed health".to_owned()),
+            Err(NotIn::OlderThanIn(_)) => {
+                return retire_older(client, progress, copy, rows).await;
+            }
+            Err(NotIn::Refused(refusal)) => Some(refusal.message),
+        },
         Err(error) => Some(error.message),
     };
     match not_restored {
@@ -3762,7 +3736,7 @@ async fn retire_older<C: MachineOperations>(
     let retired = cleanup::retire(
         client,
         copy,
-        false,
+        EmptyPolicy::RequireOtherIn,
         AnonymousVolumes::Remove,
         &CancellationToken::new(),
     )
@@ -3856,23 +3830,24 @@ async fn restore_old<C: MachineOperations>(
         }
         CopyRotation::In | CopyRotation::Held(_) => {}
     }
-    match cleanup::bring_in(client, old, spec, Some(rows.run.clone())).await {
-        Ok(cleanup::BroughtIn::In) => {}
-        Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
+    match cleanup::bring_in(client, old, spec, Some(rows.run.clone()))
+        .await
+        .map(cleanup::BroughtIn::not_in)
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(NotIn::Health(health))) => {
             return ended(failed(health_error(old.container_id, health, spec)), true);
         }
-        Ok(cleanup::BroughtIn::Refused(refusal))
+        Ok(Err(NotIn::Refused(refusal)))
             if refusal.reason == ployz_core::ContainerRefusalReason::HeldByOtherRun =>
         {
             return ended(RestoreAttempt::LeftHeld, false);
         }
-        Ok(cleanup::BroughtIn::Refused(refusal))
-            if refusal.reason == ContainerRefusalReason::OlderThanIn =>
-        {
+        Ok(Err(NotIn::OlderThanIn(_))) => {
             retire_older(client, progress, old, rows).await;
             return ended(RestoreAttempt::NewerServing, false);
         }
-        Ok(cleanup::BroughtIn::Refused(refusal)) => {
+        Ok(Err(NotIn::Refused(refusal))) => {
             return ended(
                 failed(machine_error(
                     MachineAction::StartContainer,
@@ -3899,12 +3874,10 @@ async fn restore_old<C: MachineOperations>(
     )
     .await
     {
-        Ok(wait) => {
-            match rows.confirmed(Ok(cleanup::Step::from(wait)), MachineAction::ReadRoutes) {
-                Ok(()) => RestoreAttempt::Restored,
-                Err(error) => failed(error),
-            }
-        }
+        Ok(wait) => match wait.failure() {
+            Ok(()) => RestoreAttempt::Restored,
+            Err(failure) => failed(rows.failed(failure, MachineAction::ReadRoutes).1),
+        },
         Err(error) => failed(machine_error(MachineAction::ReadRoutes, error)),
     };
     ended(attempt, true)

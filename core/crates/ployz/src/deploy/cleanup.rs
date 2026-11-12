@@ -3,10 +3,10 @@ use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNotFoundReason,
-    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
-    DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId, QualifiedService,
-    ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions,
-    Unacked,
+    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
+    CopyRotation, DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId,
+    QualifiedService, ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation,
+    RunTarget, StopOptions, Unacked,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -60,6 +60,31 @@ pub(crate) enum BroughtIn {
     Refused(ContainerRefusal),
 }
 
+/// Why a copy asked In is not In.
+#[derive(Debug)]
+pub(crate) enum NotIn {
+    /// It ran but did not come In; the verdict is what its health check said, if it did.
+    Health(Option<HealthVerdict>),
+    /// A newer copy is In, so this one is superseded.
+    OlderThanIn(ContainerRefusal),
+    Refused(ContainerRefusal),
+}
+
+impl BroughtIn {
+    pub(crate) fn not_in(self) -> Result<(), NotIn> {
+        match self {
+            BroughtIn::In => Ok(()),
+            BroughtIn::NotIn { health } => Err(NotIn::Health(health)),
+            BroughtIn::Refused(refusal)
+                if refusal.reason == ContainerRefusalReason::OlderThanIn =>
+            {
+                Err(NotIn::OlderThanIn(refusal))
+            }
+            BroughtIn::Refused(refusal) => Err(NotIn::Refused(refusal)),
+        }
+    }
+}
+
 /// An unanswered ask re-reads the copy: the owner may have written In after
 /// the deadline passed.
 pub(crate) async fn bring_in<C: MachineOperations>(
@@ -100,12 +125,37 @@ pub(crate) async fn bring_in<C: MachineOperations>(
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum Wait {
+pub(crate) enum Waited {
     Done,
     TimedOut(Unconfirmed),
     /// Every proxy confirmed but those on the wait's gap Servers.
     Gapped(Unconfirmed),
     Cancelled,
+}
+
+/// Why a rotation did not finish. A site says it in its own words; this is the split.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RotationFailure {
+    #[error("{}", .0.message)]
+    Refused(ContainerRefusal),
+    #[error("the proxies on {} did not confirm", listed(&.0.machines))]
+    NotConfirmed(Unconfirmed),
+    #[error("the wait for its proxies was cancelled")]
+    Cancelled,
+}
+
+impl Waited {
+    /// A wait that ended at its gap Servers is as unconfirmed as one that timed out; a
+    /// site that treats the gap differently matches on the wait itself.
+    pub(crate) fn failure(self) -> Result<(), RotationFailure> {
+        match self {
+            Waited::Done => Ok(()),
+            Waited::TimedOut(unconfirmed) | Waited::Gapped(unconfirmed) => {
+                Err(RotationFailure::NotConfirmed(unconfirmed))
+            }
+            Waited::Cancelled => Err(RotationFailure::Cancelled),
+        }
+    }
 }
 
 /// The live Machines whose proxy had not confirmed when the wait ended.
@@ -123,7 +173,7 @@ pub(crate) async fn wait_listed<C: MachineOperations>(
     copies: &BTreeSet<ContainerId>,
     cancellation: &CancellationToken,
     acked: impl FnMut(&MachineId),
-) -> Result<Wait, RpcError> {
+) -> Result<Waited, RpcError> {
     wait_listed_beside(
         client,
         machine_id,
@@ -136,7 +186,7 @@ pub(crate) async fn wait_listed<C: MachineOperations>(
     .await
 }
 
-/// [`wait_listed`] that ends at [`Wait::Gapped`] once only `gaps`' proxies are
+/// [`wait_listed`] that ends at [`Waited::Gapped`] once only `gaps`' proxies are
 /// unconfirmed. A gap Server is one this Deploy already reports unobserved, such as
 /// an Up one whose daemon the entry couldn't dial: nothing there writes its ack.
 pub(crate) async fn wait_listed_beside<C: MachineOperations>(
@@ -147,7 +197,7 @@ pub(crate) async fn wait_listed_beside<C: MachineOperations>(
     gaps: &BTreeSet<MachineId>,
     cancellation: &CancellationToken,
     acked: impl FnMut(&MachineId),
-) -> Result<Wait, RpcError> {
+) -> Result<Waited, RpcError> {
     wait_routes(
         || client.read_routes(machine_id, service),
         |routed| copies.is_subset(routed),
@@ -165,7 +215,7 @@ pub(crate) async fn wait_none_listed<C: MachineOperations>(
     service: &QualifiedService,
     copies: &BTreeSet<ContainerId>,
     cancellation: &CancellationToken,
-) -> Result<Wait, RpcError> {
+) -> Result<Waited, RpcError> {
     wait_routes(
         || client.read_entry_routes(service),
         |routed| routed.is_disjoint(copies),
@@ -182,7 +232,7 @@ pub(crate) async fn wait_unlisted<C: MachineOperations>(
     service: &QualifiedService,
     container_id: &ContainerId,
     cancellation: &CancellationToken,
-) -> Result<Wait, RpcError> {
+) -> Result<Waited, RpcError> {
     wait_routes(
         || client.read_routes(machine_id, service),
         |routed| !routed.contains(container_id),
@@ -199,7 +249,7 @@ async fn wait_routes<Read>(
     gaps: &BTreeSet<MachineId>,
     cancellation: &CancellationToken,
     mut acked: impl FnMut(&MachineId),
-) -> Result<Wait, RpcError>
+) -> Result<Waited, RpcError>
 where
     Read: Future<Output = Result<RoutesRead, RpcError>>,
 {
@@ -208,7 +258,7 @@ where
     loop {
         let read = tokio::select! {
             read = read() => read?,
-            () = cancellation.cancelled() => return Ok(Wait::Cancelled),
+            () = cancellation.cancelled() => return Ok(Waited::Cancelled),
         };
         let waiting = still_waiting(&read, &satisfied);
         for machine in read.routes.keys() {
@@ -217,7 +267,7 @@ where
             }
         }
         if read.complete && waiting.machines.is_empty() {
-            return Ok(Wait::Done);
+            return Ok(Waited::Done);
         }
         if read.complete
             && waiting
@@ -227,17 +277,17 @@ where
         {
             // A gap Server is away even when its stale row arrived.
             let away = waiting.machines.clone();
-            return Ok(Wait::Gapped(Unconfirmed {
+            return Ok(Waited::Gapped(Unconfirmed {
                 machines: away.clone(),
                 unanswered: away,
             }));
         }
         if Instant::now() >= deadline {
-            return Ok(Wait::TimedOut(waiting));
+            return Ok(Waited::TimedOut(waiting));
         }
         tokio::select! {
             () = tokio::time::sleep(ACK_POLL) => {}
-            () = cancellation.cancelled() => return Ok(Wait::Cancelled),
+            () = cancellation.cancelled() => return Ok(Waited::Cancelled),
         }
     }
 }
@@ -256,20 +306,34 @@ pub(crate) fn still_waiting(
     waiting
 }
 
+/// What one rotation ask came to: the copy moved as asked, or why it did not.
 #[derive(Debug)]
-pub(crate) enum Step {
+pub(crate) enum Rotated {
     Done,
     Refused(ContainerRefusal),
     NotConfirmed(Unconfirmed),
     Cancelled,
 }
 
-impl From<Wait> for Step {
-    fn from(wait: Wait) -> Self {
+impl Rotated {
+    pub(crate) fn failure(self) -> Result<(), RotationFailure> {
+        match self {
+            Rotated::Done => Ok(()),
+            Rotated::Refused(refusal) => Err(RotationFailure::Refused(refusal)),
+            Rotated::NotConfirmed(unconfirmed) => Err(RotationFailure::NotConfirmed(unconfirmed)),
+            Rotated::Cancelled => Err(RotationFailure::Cancelled),
+        }
+    }
+}
+
+impl From<Waited> for Rotated {
+    fn from(wait: Waited) -> Self {
         match wait {
-            Wait::Done => Step::Done,
-            Wait::TimedOut(machines) | Wait::Gapped(machines) => Step::NotConfirmed(machines),
-            Wait::Cancelled => Step::Cancelled,
+            Waited::Done => Rotated::Done,
+            Waited::TimedOut(machines) | Waited::Gapped(machines) => {
+                Rotated::NotConfirmed(machines)
+            }
+            Waited::Cancelled => Rotated::Cancelled,
         }
     }
 }
@@ -279,7 +343,7 @@ pub(crate) async fn hold<C: MachineOperations>(
     copy: &Copy,
     run: DeploymentLogId,
     cancellation: &CancellationToken,
-) -> Result<Step, RpcError> {
+) -> Result<Rotated, RpcError> {
     let want = ContainerWant::Held {
         container: copy.locator(),
         run: run.clone(),
@@ -289,7 +353,7 @@ pub(crate) async fn hold<C: MachineOperations>(
         .ensure_unsettled(&copy.machine_id, want, Some(TARGET_RPC_TIMEOUT))
         .await;
     match answer {
-        Ok(EnsuredContainer::Refused { refusal, .. }) => return Ok(Step::Refused(refusal)),
+        Ok(EnsuredContainer::Refused { refusal, .. }) => return Ok(Rotated::Refused(refusal)),
         Ok(EnsuredContainer::Ensured { .. }) => {}
         // As with In, the owner may have written Held after the deadline.
         Err(error) if error.target_unanswered() => {
@@ -311,17 +375,33 @@ pub(crate) async fn hold<C: MachineOperations>(
         cancellation,
     )
     .await
-    .map(Step::from)
+    .map(Rotated::from)
+}
+
+/// Whether taking a copy Out may leave its Service with no copy In.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EmptyPolicy {
+    RequireOtherIn,
+    MayEmpty,
+}
+
+impl From<ployz_core::RemoveContainerPurpose> for EmptyPolicy {
+    fn from(purpose: ployz_core::RemoveContainerPurpose) -> Self {
+        match purpose {
+            ployz_core::RemoveContainerPurpose::Rollout => Self::RequireOtherIn,
+            ployz_core::RemoveContainerPurpose::Retire => Self::MayEmpty,
+        }
+    }
 }
 
 pub(crate) async fn take_out<C: MachineOperations>(
     client: &C,
     copy: &Copy,
-    allow_empty: bool,
+    empty: EmptyPolicy,
     cancellation: &CancellationToken,
-) -> Result<Step, RpcError> {
-    if let Some(refusal) = send_out(client, copy, allow_empty).await? {
-        return Ok(Step::Refused(refusal));
+) -> Result<Rotated, RpcError> {
+    if let Some(refusal) = send_out(client, copy, empty).await? {
+        return Ok(Rotated::Refused(refusal));
     }
     wait_unlisted(
         client,
@@ -331,7 +411,7 @@ pub(crate) async fn take_out<C: MachineOperations>(
         cancellation,
     )
     .await
-    .map(Step::from)
+    .map(Rotated::from)
 }
 
 /// Asks the copy Out without waiting for proxies to drop it, giving the Machine's
@@ -339,12 +419,12 @@ pub(crate) async fn take_out<C: MachineOperations>(
 pub(crate) async fn send_out<C: MachineOperations>(
     client: &C,
     copy: &Copy,
-    allow_empty: bool,
+    empty: EmptyPolicy,
 ) -> Result<Option<ContainerRefusal>, RpcError> {
     if matches!(copy.rotation, CopyRotation::In | CopyRotation::Held(_)) {
         let want = ContainerWant::Out {
             container: copy.locator(),
-            allow_empty,
+            allow_empty: empty == EmptyPolicy::MayEmpty,
             expect: Some(copy.rotation.clone()),
         };
         let answer = client
@@ -360,16 +440,22 @@ pub(crate) async fn send_out<C: MachineOperations>(
 pub(crate) async fn retire<C: MachineOperations>(
     client: &C,
     copy: &Copy,
-    allow_empty: bool,
+    empty: EmptyPolicy,
     anonymous_volumes: AnonymousVolumes,
     cancellation: &CancellationToken,
-) -> Result<Step, RpcError> {
+) -> Result<Rotated, RpcError> {
     if !copy.drains() {
-        return remove(client, copy, anonymous_volumes).await;
+        return remove(client, copy, anonymous_volumes)
+            .await
+            .map(Rotated::from);
     }
-    match take_out(client, copy, allow_empty, cancellation).await? {
-        Step::Done => remove(client, copy, anonymous_volumes).await,
-        step @ (Step::Refused(_) | Step::NotConfirmed(_) | Step::Cancelled) => Ok(step),
+    match take_out(client, copy, empty, cancellation).await? {
+        Rotated::Done => remove(client, copy, anonymous_volumes)
+            .await
+            .map(Rotated::from),
+        rotated @ (Rotated::Refused(_) | Rotated::NotConfirmed(_) | Rotated::Cancelled) => {
+            Ok(rotated)
+        }
     }
 }
 
@@ -379,12 +465,37 @@ pub(crate) async fn retire<C: MachineOperations>(
 pub(crate) async fn retire_unconfirmed<C: MachineOperations>(
     client: &C,
     copy: &Copy,
-    allow_empty: bool,
+    empty: EmptyPolicy,
     anonymous_volumes: AnonymousVolumes,
-) -> Result<Step, RpcError> {
-    match send_out(client, copy, allow_empty).await? {
-        None => remove(client, copy, anonymous_volumes).await,
-        Some(refusal) => Ok(Step::Refused(refusal)),
+) -> Result<Rotated, RpcError> {
+    match send_out(client, copy, empty).await? {
+        None => remove(client, copy, anonymous_volumes)
+            .await
+            .map(Rotated::from),
+        Some(refusal) => Ok(Rotated::Refused(refusal)),
+    }
+}
+
+/// What asking a copy Gone came to. A removal waits on no proxy, so it is never
+/// unconfirmed or cancelled.
+#[derive(Debug)]
+pub(crate) enum Removal {
+    Removed,
+    Refused(ContainerRefusal),
+}
+
+impl Removal {
+    pub(crate) fn failure(self) -> Result<(), RotationFailure> {
+        Rotated::from(self).failure()
+    }
+}
+
+impl From<Removal> for Rotated {
+    fn from(removal: Removal) -> Self {
+        match removal {
+            Removal::Removed => Rotated::Done,
+            Removal::Refused(refusal) => Rotated::Refused(refusal),
+        }
     }
 }
 
@@ -392,24 +503,66 @@ pub(crate) async fn remove<C: MachineOperations>(
     client: &C,
     copy: &Copy,
     anonymous_volumes: AnonymousVolumes,
-) -> Result<Step, RpcError> {
+) -> Result<Removal, RpcError> {
+    match gone(
+        client,
+        &copy.machine_id,
+        copy.locator(),
+        Drain::DEFAULT,
+        anonymous_volumes,
+        None,
+    )
+    .await?
+    {
+        Gone::Removed => Ok(Removal::Removed),
+        Gone::InRotation { refusal, .. } | Gone::Refused(refusal) => Ok(Removal::Refused(refusal)),
+    }
+}
+
+/// What asking a copy Gone came to. A copy that is not there is removed.
+#[derive(Debug)]
+pub(crate) enum Gone {
+    Removed,
+    /// The owner refuses Gone on a copy that is In or Held; `now` is what it observes.
+    InRotation {
+        now: Box<ContainerNow>,
+        refusal: ContainerRefusal,
+    },
+    Refused(ContainerRefusal),
+}
+
+pub(crate) async fn gone<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container: ContainerLocator,
+    drain: Drain,
+    anonymous_volumes: AnonymousVolumes,
+    budget: Option<Duration>,
+) -> Result<Gone, RpcError> {
     let want = ContainerWant::Gone {
-        container: copy.locator(),
-        drain: Drain::DEFAULT,
+        container,
+        drain,
         anonymous_volumes,
     };
-    match client
-        .ensure_unsettled(&copy.machine_id, want, None)
-        .await?
-    {
-        EnsuredContainer::Ensured { .. } => Ok(Step::Done),
-        EnsuredContainer::Refused { refusal, .. }
-            if refusal.reason == ContainerRefusalReason::NotFound =>
-        {
-            Ok(Step::Done)
-        }
-        EnsuredContainer::Refused { refusal, .. } => Ok(Step::Refused(refusal)),
-    }
+    Ok(
+        match client.ensure_unsettled(machine_id, want, budget).await? {
+            EnsuredContainer::Ensured { .. } => Gone::Removed,
+            EnsuredContainer::Refused { refusal, .. }
+                if refusal.reason == ContainerRefusalReason::NotFound =>
+            {
+                Gone::Removed
+            }
+            EnsuredContainer::Refused { now, refusal }
+                if refusal.reason == ContainerRefusalReason::InRotation =>
+            {
+                Gone::InRotation {
+                    now: Box::new(now),
+                    refusal,
+                }
+            }
+            EnsuredContainer::Refused { refusal, .. } => Gone::Refused(refusal),
+        },
+    )
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -440,12 +593,12 @@ pub(crate) async fn user_stop<C: MachineOperations>(
         let step = hold(client, &copy, run.clone(), cancellation).await;
         if copy.rotation == CopyRotation::In {
             let failed = match step {
-                Ok(Step::Cancelled) => Some(RpcError::unavailable(
+                Ok(Rotated::Cancelled) => Some(RpcError::unavailable(
                     "the wait for its proxies was cancelled".to_owned(),
                 )),
                 // The ask may have landed, so the copy is restored as if Held.
                 Err(ref error) => Some(error.clone()),
-                Ok(Step::Done | Step::Refused(_) | Step::NotConfirmed(_)) => None,
+                Ok(Rotated::Done | Rotated::Refused(_) | Rotated::NotConfirmed(_)) => None,
             };
             if let Some(error) = failed {
                 return Err(not_stopped(client, &copy, &observed.resolved_spec, run, error).await);
@@ -456,8 +609,8 @@ pub(crate) async fn user_stop<C: MachineOperations>(
         // the owner's own decision, and holding the copy there would leave it running
         // and unrouted everywhere, for good (#3995).
         let step = match step? {
-            Step::NotConfirmed(_) => Step::Done,
-            step @ (Step::Done | Step::Refused(_) | Step::Cancelled) => step,
+            Rotated::NotConfirmed(_) => Rotated::Done,
+            step @ (Rotated::Done | Rotated::Refused(_) | Rotated::Cancelled) => step,
         };
         left_running(&copy, "Held", step)?;
     }
@@ -522,17 +675,15 @@ pub(crate) async fn user_restart<C: MachineOperations>(
         ..copy.clone()
     };
     let stopped = match hold(client, &copy, run.clone(), cancellation).await {
-        Ok(Step::Refused(refusal)) => return Err(refusal.into_error()),
-        Ok(Step::Done) => stopped(client, &held, spec, stop, queued).await,
-        Ok(Step::NotConfirmed(unconfirmed)) => Err(RpcError::unavailable(format!(
-            "Container {} was not restarted: the proxies on {} did not confirm they stopped routing it.",
-            copy.container_id,
-            listed(&unconfirmed.machines)
-        ))),
-        Ok(Step::Cancelled) => Err(RpcError::unavailable(format!(
-            "Container {} was not restarted: the wait for its proxies was cancelled.",
-            copy.container_id
-        ))),
+        Ok(rotated) => match rotated.failure() {
+            Ok(()) => stopped(client, &held, spec, stop, queued).await,
+            // Answered before the Machine acted, so there is nothing to put back.
+            Err(RotationFailure::Refused(refusal)) => return Err(refusal.into_error()),
+            Err(failure) => Err(left_unrouted(
+                &format!("Container {} was not restarted", copy.container_id),
+                failure,
+            )),
+        },
         Err(error) if error.code.as_str() == ployz_core::FORBIDDEN_CODE => {
             let message = with_reason(
                 format_args!("Container {} was not restarted", copy.container_id),
@@ -550,15 +701,12 @@ pub(crate) async fn user_restart<C: MachineOperations>(
         }
     };
     let brought = bring_in(client, &held, spec, Some(run)).await;
-    if let Err(mut error) = stopped {
-        let left = match brought {
-            Ok(BroughtIn::In) => "It is back In.",
-            Ok(BroughtIn::NotIn { .. } | BroughtIn::Refused(_)) | Err(_) => {
-                "It is left Held and not routed."
-            }
-        };
-        error.message = then_sentence(&error.message, left);
-        return Err(error);
+    if let Err(error) = stopped {
+        return Err(say_restored(
+            error,
+            &brought,
+            "It is left Held and not routed.",
+        ));
     }
     started(&held, brought?)
 }
@@ -581,12 +729,21 @@ pub(crate) async fn user_remove<C: MachineOperations>(
         observed => observed?,
     };
     let copy = Copy::observed(&observed);
-    let step = if routable(&observed) {
-        retire(client, &copy, true, AnonymousVolumes::Remove, cancellation).await?
+    let rotated = if routable(&observed) {
+        retire(
+            client,
+            &copy,
+            EmptyPolicy::MayEmpty,
+            AnonymousVolumes::Remove,
+            cancellation,
+        )
+        .await?
     } else {
-        remove(client, &copy, AnonymousVolumes::Remove).await?
+        remove(client, &copy, AnonymousVolumes::Remove)
+            .await?
+            .into()
     };
-    left_running(&copy, "Out", step)
+    left_running(&copy, "Out", rotated)
 }
 
 /// The inspect saw Docker answer for `container_id` while its Machine holds no Resolved
@@ -751,30 +908,50 @@ async fn not_stopped<C: MachineOperations>(
         rotation: CopyRotation::Held(run.clone()),
         ..copy.clone()
     };
-    let back = match bring_in(client, &held, spec, Some(run)).await {
-        Ok(BroughtIn::In) => "It is back In.",
-        Ok(BroughtIn::NotIn { .. } | BroughtIn::Refused(_)) | Err(_) => {
-            "It is left running and Held."
-        }
+    let brought = bring_in(client, &held, spec, Some(run)).await;
+    say_restored(error, &brought, "It is left running and Held.")
+}
+
+/// Ends a failed user command with whether its copy is back In or what it was left as.
+fn say_restored(
+    mut error: RpcError,
+    brought: &Result<BroughtIn, RpcError>,
+    left: &str,
+) -> RpcError {
+    let tail = if matches!(brought, Ok(BroughtIn::In)) {
+        "It is back In."
+    } else {
+        left
     };
-    error.message = then_sentence(&error.message, back);
+    error.message = then_sentence(&error.message, tail);
     error
 }
 
-fn left_running(copy: &Copy, rotation: &str, step: Step) -> Result<(), RpcError> {
-    match step {
-        Step::Done => Ok(()),
-        Step::Refused(refusal) => Err(refusal.into_error()),
-        Step::NotConfirmed(unconfirmed) => Err(RpcError::unavailable(format!(
-            "Container {} is left running and {rotation}: the proxies on {} did not confirm they stopped routing it.",
-            copy.container_id,
+/// A user command's line for a proxy wait that did not finish, after `lead` says what
+/// became of the copy.
+fn left_unrouted(lead: &str, failure: RotationFailure) -> RpcError {
+    match failure {
+        RotationFailure::Refused(refusal) => refusal.into_error(),
+        RotationFailure::NotConfirmed(unconfirmed) => RpcError::unavailable(format!(
+            "{lead}: the proxies on {} did not confirm they stopped routing it.",
             listed(&unconfirmed.machines)
-        ))),
-        Step::Cancelled => Err(RpcError::unavailable(format!(
-            "Container {} is left running and {rotation}: the wait for its proxies was cancelled.",
-            copy.container_id
-        ))),
+        )),
+        RotationFailure::Cancelled => {
+            RpcError::unavailable(format!("{lead}: the wait for its proxies was cancelled."))
+        }
     }
+}
+
+fn left_running(copy: &Copy, rotation: &str, rotated: Rotated) -> Result<(), RpcError> {
+    rotated.failure().map_err(|failure| {
+        left_unrouted(
+            &format!(
+                "Container {} is left running and {rotation}",
+                copy.container_id
+            ),
+            failure,
+        )
+    })
 }
 
 fn deploy_again(copy: &Copy) -> RpcError {

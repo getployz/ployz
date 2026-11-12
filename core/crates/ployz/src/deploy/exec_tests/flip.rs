@@ -637,7 +637,7 @@ fn scale_down_groups() -> Vec<crate::deploy::schedule::ServiceGroup> {
         crate::deploy::schedule::ServiceGroup {
             service: None,
             dependencies: vec![service],
-            steps: vec![crate::deploy::schedule::Step::Serial(0)],
+            steps: vec![crate::deploy::schedule::Stage::Serial(0)],
             publish: false,
         },
     ]
@@ -805,7 +805,7 @@ async fn a_failed_chain_reports_each_service_as_new_old_or_not_started() {
 
 #[tokio::test]
 async fn a_failed_deploy_keeps_the_services_it_removes() {
-    use crate::deploy::{ServiceGroup, Step};
+    use crate::deploy::{ServiceGroup, Stage};
 
     let machine = machine('1');
     let removed = container('a');
@@ -827,13 +827,13 @@ async fn a_failed_deploy_keeps_the_services_it_removes() {
         ServiceGroup {
             service: Some(api.clone()),
             dependencies: Vec::new(),
-            steps: vec![Step::Parallel(vec![0])],
+            steps: vec![Stage::Parallel(vec![0])],
             publish: true,
         },
         ServiceGroup {
             service: None,
             dependencies: vec![api],
-            steps: vec![Step::Serial(1), Step::Serial(2)],
+            steps: vec![Stage::Serial(1), Stage::Serial(2)],
             publish: false,
         },
     ];
@@ -969,7 +969,7 @@ async fn a_cancel_before_the_stop_ends_the_service_old() {
     .with_copy(&machine, &old, CopyRotation::In);
     let mut groups = scale_down_groups();
     groups.truncate(1);
-    groups.first_mut().unwrap().steps = vec![crate::deploy::schedule::Step::Serial(0)];
+    groups.first_mut().unwrap().steps = vec![crate::deploy::schedule::Stage::Serial(0)];
     let plan =
         crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups);
 
@@ -1285,7 +1285,7 @@ async fn a_failed_group_removes_a_container_a_sibling_starts_afterwards() {
     let groups = vec![crate::deploy::schedule::ServiceGroup {
         service: Some(ServiceName::parse("api").unwrap()),
         dependencies: Vec::new(),
-        steps: vec![crate::deploy::schedule::Step::Parallel(vec![0, 1])],
+        steps: vec![crate::deploy::schedule::Stage::Parallel(vec![0, 1])],
         publish: true,
     }];
 
@@ -1387,7 +1387,7 @@ async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
                 .iter()
                 .map(|dependency| ServiceName::parse(*dependency).unwrap())
                 .collect(),
-            steps: vec![crate::deploy::schedule::Step::Parallel(vec![task])],
+            steps: vec![crate::deploy::schedule::Stage::Parallel(vec![task])],
             publish: true,
         };
     let groups = vec![
@@ -1411,7 +1411,7 @@ async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
 
 #[tokio::test(start_paused = true)]
 async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
-    use crate::deploy::{ServiceGroup, Step};
+    use crate::deploy::{ServiceGroup, Stage};
 
     let machine = machine('1');
     let operations = vec![run(&machine, spec(None, None, None), true)];
@@ -1425,7 +1425,7 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
         ServiceGroup {
             service: Some(ServiceName::parse("api").unwrap()),
             dependencies: vec![ServiceName::parse("db").unwrap()],
-            steps: vec![Step::Parallel(vec![0])],
+            steps: vec![Stage::Parallel(vec![0])],
             publish: true,
         },
     ];
@@ -2574,7 +2574,7 @@ async fn a_slow_retirement_does_not_hold_up_another_services_flip() {
     let group = |service: &str, task| crate::deploy::schedule::ServiceGroup {
         service: Some(ServiceName::parse(service).unwrap()),
         dependencies: Vec::new(),
-        steps: vec![crate::deploy::schedule::Step::Serial(task)],
+        steps: vec![crate::deploy::schedule::Stage::Serial(task)],
         publish: true,
     };
     let started = tokio::time::Instant::now();
@@ -3528,19 +3528,19 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
         crate::deploy::schedule::ServiceGroup {
             service: Some(api.clone()),
             dependencies: Vec::new(),
-            steps: vec![crate::deploy::schedule::Step::Parallel(vec![0])],
+            steps: vec![crate::deploy::schedule::Stage::Parallel(vec![0])],
             publish: true,
         },
         crate::deploy::schedule::ServiceGroup {
             service: Some(web.clone()),
             dependencies: Vec::new(),
-            steps: vec![crate::deploy::schedule::Step::Parallel(vec![1])],
+            steps: vec![crate::deploy::schedule::Stage::Parallel(vec![1])],
             publish: true,
         },
         crate::deploy::schedule::ServiceGroup {
             service: None,
             dependencies: vec![api.clone()],
-            steps: vec![crate::deploy::schedule::Step::Serial(2)],
+            steps: vec![crate::deploy::schedule::Stage::Serial(2)],
             publish: false,
         },
     ];

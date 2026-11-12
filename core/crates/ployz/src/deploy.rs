@@ -40,7 +40,7 @@ pub use ployz_core::{
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
     ReplacementCompensation, ReplacementOperation, RestoreAttempt, ServiceAttempt, StopAttempt,
 };
-pub use schedule::{ServiceGroup, Step};
+pub use schedule::{ServiceGroup, Stage};
 
 pub(crate) use progress::pending_rows;
 pub(crate) use report::{Replica, service_row, starts, updates};

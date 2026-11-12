@@ -373,3 +373,57 @@ async fn a_cancelled_global_move_keeps_an_adopted_replica() {
     assert!(!cancelled_global_move(&client).await);
     client.assert_done();
 }
+
+/// How the old copy of a move ends when its retirement does not finish: the refusal's own
+/// words, the proxies that never confirmed, or the cancel.
+#[tokio::test(start_paused = true)]
+async fn an_old_copy_that_does_not_retire_says_why_it_still_runs() {
+    let moved = |client: &Scripted| {
+        client.moved.lock().unwrap().insert(
+            (container('a'), Ask::Out),
+            CopyRotation::Held(DeploymentLogId::parse("other-run").unwrap()),
+        );
+    };
+    let client = Scripted::new(vec![]).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
+    moved(&client);
+    let refused = retire_old(&client, &old_copy(), &name, &CancellationToken::new()).await;
+    assert_eq!(
+        refused.unwrap(),
+        OldCopyEnd::Running {
+            unconfirmed: Unconfirmed::Failed {
+                detail: "the copy moved since it was read".into(),
+            },
+        }
+    );
+
+    let mut client = Scripted::new(vec![])
+        .with_copy(&machine(FROM), &container('a'), CopyRotation::In)
+        .with_copy(&machine(TO), &container('b'), CopyRotation::In);
+    client.acks.insert(machine('3'), Ack::Never);
+    let unconfirmed = retire_old(&client, &old_copy(), &name, &CancellationToken::new()).await;
+    assert_eq!(
+        unconfirmed.unwrap(),
+        OldCopyEnd::Running {
+            unconfirmed: Unconfirmed::Proxies {
+                servers: vec![name(&machine('3'))],
+            },
+        }
+    );
+
+    let cancellation = CancellationToken::new();
+    let mut client = Scripted::new(vec![])
+        .with_copy(&machine(FROM), &container('a'), CopyRotation::In)
+        .with_copy(&machine(TO), &container('b'), CopyRotation::In);
+    client.acks.insert(machine('3'), Ack::Never);
+    client.cancel_on_move = Some((
+        Move::To(container('a'), CopyRotation::Out),
+        cancellation.clone(),
+    ));
+    let cancelled = retire_old(&client, &old_copy(), &name, &cancellation).await;
+    assert_eq!(
+        cancelled.unwrap(),
+        OldCopyEnd::Running {
+            unconfirmed: Unconfirmed::Cancelled,
+        }
+    );
+}

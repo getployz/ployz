@@ -34,7 +34,7 @@ use super::{
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::MachineOperations;
-use crate::deploy::cleanup::{self, Copy, Step};
+use crate::deploy::cleanup::{self, Copy, Rotated, RotationFailure};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -630,18 +630,18 @@ async fn retire_copy<C: MachineOperations>(
     let step = cleanup::retire(
         client,
         &Copy::observed(&observed),
-        matches!(copy.purpose, RemoveContainerPurpose::Retire),
+        copy.purpose.into(),
         copy.purpose.into(),
         &CancellationToken::new(),
     )
     .await;
-    match step {
-        Ok(Step::Done) => None,
-        Ok(Step::Refused(refusal)) => Some(refusal.message),
-        Ok(Step::NotConfirmed(unconfirmed)) if unconfirmed.machines.is_empty() => {
+    match step.map(Rotated::failure) {
+        Ok(Ok(())) => None,
+        Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
+        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) if unconfirmed.machines.is_empty() => {
             Some("the route set did not name every live Machine".into())
         }
-        Ok(Step::NotConfirmed(unconfirmed)) => {
+        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) => {
             let proxies: Vec<String> = unconfirmed
                 .machines
                 .iter()
@@ -649,7 +649,7 @@ async fn retire_copy<C: MachineOperations>(
                 .collect();
             Some(format!("proxy on {} did not confirm", proxies.join(", ")))
         }
-        Ok(Step::Cancelled) => Some("interrupted".into()),
+        Ok(Err(RotationFailure::Cancelled)) => Some("interrupted".into()),
         Err(error) => Some(machine_failure_reason(&copy.machine, error)),
     }
 }

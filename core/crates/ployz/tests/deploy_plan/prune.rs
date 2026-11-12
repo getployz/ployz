@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::support::*;
-use ployz::deploy::{Step, plan_deploy, preview_deploy};
+use ployz::deploy::{Stage, plan_deploy, preview_deploy};
 use ployz_core::{
     ContainerKind, ContainerRuntimeObservation, DependencyCondition, DeployWarning, DockerVolumeId,
     MachineFailure, PruneRefusal, PruneScope, QualifiedService, RpcError, RpcErrorCode,
@@ -846,7 +846,7 @@ fn a_removal_retires_every_copy_of_a_service_in_one_step() {
     let Some(tail) = plan.groups().last() else {
         panic!("expected a removal group");
     };
-    assert_eq!(tail.steps, [Step::Parallel(vec![0, 1])]);
+    assert_eq!(tail.steps, [Stage::Parallel(vec![0, 1])]);
 }
 
 #[test]
@@ -881,9 +881,9 @@ fn a_removal_removes_pending_copies_one_at_a_time_before_the_rest_go_out_togethe
     assert_eq!(
         tail.steps,
         [
-            Step::Serial(0),
-            Step::Serial(1),
-            Step::Parallel(vec![2, 3, 4])
+            Stage::Serial(0),
+            Stage::Serial(1),
+            Stage::Parallel(vec![2, 3, 4])
         ]
     );
 }
