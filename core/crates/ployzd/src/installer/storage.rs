@@ -11,12 +11,12 @@ use std::{
 
 use crate::machine_pool::DEVICE_BACKED_POOL_NAME;
 use ployz_core::StoragePreparation;
+use ployz_core::probe_document::{Blocker, OsRelease, Virtualization};
 
 use super::assess::{
-    Filesystem, Virtualization, ZFS_SMOKE_BYTES, read_secure_boot_variable, read_virtualization,
+    ZFS_SMOKE_BYTES, read_root_filesystem, read_secure_boot_variable, read_virtualization,
     root_reserve_blocker, secure_boot_blocker, virtualization_blocker, zfs_os_route,
 };
-use super::os_release::OsRelease;
 use super::zfs_route::ZfsRoute;
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
@@ -344,8 +344,8 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
 }
 
 pub(super) fn zfs_preflight(paths: &InstallPaths) -> Result<(OsRelease, ZfsRoute), Error> {
-    let refusal = |reason: super::assess::Blocker| refuse(STAGE, reason.message);
-    let os = OsRelease::read(&paths.os_release)?;
+    let refusal = |reason: Blocker| refuse(STAGE, reason.message);
+    let os = super::os_release::read(&paths.os_release)?;
     let route = zfs_os_route(&os).map_err(refusal)?;
     if route.builds_module() {
         let secure_boot = read_secure_boot_variable(&paths.secure_boot)?;
@@ -787,7 +787,7 @@ pub(super) fn uname(arg: &str, stage: &str) -> Result<String, Error> {
 }
 
 fn require_host_root_reserve() -> Result<(), Error> {
-    match root_reserve_blocker(Filesystem::read_root()?) {
+    match root_reserve_blocker(read_root_filesystem()?) {
         Some(blocker) => Err(refuse(STAGE, blocker.message)),
         None => Ok(()),
     }

@@ -30,7 +30,7 @@
 //! `replay`, :90-105), for Leave (local_machine.rs:945) and at daemon start (daemon.rs:184,
 //! through `reconcile`, :349-351). `reconcile_locked` (:372-395) runs under the lock for a
 //! new upgrade request (:185, after local_machine/upgrade.rs:38) and for `ployzd install`
-//! (`reconcile_for_install`, :353-370, from installer/mod.rs:260-261).
+//! (`reconcile_for_install`, :353-370, from installer/mod.rs:254-255).
 //!
 //! The finding: every terminal write comes before its `clear_active`. A process killed
 //! between the two, or a `clear_active` that returns Io before it removes the marker
@@ -192,7 +192,7 @@ enum Caller {
     /// `try_installation` (local_machine/upgrade.rs:38) and `request_locked`'s
     /// `reconcile_locked` (:185).
     NewRequest,
-    /// `ployzd install`'s `install_at` (installer/mod.rs:253-265), its own process.
+    /// `ployzd install`'s `install_at` (installer/mod.rs:247-259), its own process.
     Install,
 }
 
@@ -349,16 +349,16 @@ enum Branch {
     /// stopped writer left.
     DepartsAfterItsClear,
     /// The caller's `try_installation` answered Busy (local_machine/upgrade.rs:38,
-    /// installer/mod.rs:260).
+    /// installer/mod.rs:254).
     CallerBusy,
     /// A new request refused after reconciling (:186-187 or :191-192).
     NewRequestBusy,
     /// A new request passed :191 and goes on to resolve its release, out of the model.
     NewRequestGoesOn,
     /// `reconcile_for_install` refused (:358-359 or :368), and `install_at` returned Busy
-    /// (installer/mod.rs:355-358).
+    /// (`map_upgrade_reconciliation` in installer/mod.rs).
     InstallBusy,
-    /// `install_at` goes on to `install_locked` (installer/mod.rs:264).
+    /// `install_at` goes on to `install_locked` (installer/mod.rs:258).
     InstallGoesOn,
 }
 
@@ -1427,7 +1427,7 @@ fn enters(caller: Caller) -> &'static str {
         Caller::NewRequest => {
             "a request for another attempt: replay returns None for its id (:98-99), and try_installation (local_machine/upgrade.rs:38)"
         }
-        Caller::Install => "ployzd install's install_at: try_installation (installer/mod.rs:260)",
+        Caller::Install => "ployzd install's install_at: try_installation (installer/mod.rs:254)",
     }
 }
 
@@ -1695,7 +1695,7 @@ fn started(after: &State, caller: Caller) -> String {
             returns_to(caller, after)
         ),
         Some(Branch::CallerBusy) if caller == Caller::Install => {
-            "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer/mod.rs:260, :342-344, :93)".to_owned()
+            "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer/mod.rs:254, :336-338, `Error::Busy`)".to_owned()
         }
         Some(Branch::CallerBusy) => {
             "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1069-1074)".to_owned()
@@ -1811,10 +1811,10 @@ fn reader_step_reads_as(
                 "Reader: request_locked passes :186 and :191 and goes on to resolve its release, which the model leaves out; the lock drops".to_owned()
             }
             Some(Branch::InstallBusy) => {
-                "Reader: reconcile_for_install returns Busy, and ployzd install prints \"another Ployz installation is active\" (installer/upgrade.rs:357-369, installer/mod.rs:261-263, :352-355, :93)".to_owned()
+                "Reader: reconcile_for_install returns Busy, and ployzd install prints \"another Ployz installation is active\" (installer/upgrade.rs:357-369, installer/mod.rs:255-257, :346-349, `Error::Busy`)".to_owned()
             }
             _ => {
-                "Reader: reconcile_for_install returns Ok; install_locked runs under the lock and returns, and the lock drops (installer/mod.rs:261-264)".to_owned()
+                "Reader: reconcile_for_install returns Ok; install_locked runs under the lock and returns, and the lock drops (installer/mod.rs:255-258)".to_owned()
             }
         },
         At::Depart { live: true, .. } => {
@@ -2295,7 +2295,7 @@ mod tests {
     }
 
     /// Daemon start's `settle` clears the marker only if it wins `try_installation`
-    /// (:258-260). When `ployzd install` holds the lock (installer/mod.rs:260), `settle`
+    /// (:258-260). When `ployzd install` holds the lock (installer/mod.rs:254), `settle`
     /// returns the terminal receipt as Ok (:260, :263), `reconcile` drops it (:349-351) and
     /// the daemon serves (daemon.rs:187). Install then stops before its `clear_active`, and a
     /// daemon RPC answers Busy on the marker the killed daemon left.

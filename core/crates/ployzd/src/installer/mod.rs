@@ -24,6 +24,7 @@ use std::{
 
 use ployz_core::{
     MachineLayout, MachineRelease, MachineUpgradeStage, MachineVersion, StoragePreparation,
+    probe_document::ProbeDocument,
 };
 use thiserror::Error;
 
@@ -241,14 +242,7 @@ pub fn probe() -> Result<String, Error> {
     require_root()?;
     let facts = read_facts(&InstallPaths::production())?;
     let assessment = assess(&facts);
-    serde_json::to_string_pretty(&serde_json::json!({
-        "facts": facts,
-        "assessment": assessment,
-    }))
-    .map_err(|error| Error::Io {
-        stage: "print host probe",
-        source: io::Error::other(error),
-    })
+    assess::probe_json(&ProbeDocument { facts, assessment })
 }
 
 async fn install_at(
