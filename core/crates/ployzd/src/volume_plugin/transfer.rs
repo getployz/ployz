@@ -506,25 +506,11 @@ impl VolumeStorage {
         identity: Identity<'_>,
         stop: &Stop,
     ) -> Result<(), ReceiveFailure> {
-        let refquota = format!("refquota={bound}");
-        let mut child = ZfsChild::spawn(
-            Command::new(&self.zfs)
-                .args([
-                    "receive",
-                    "-u",
-                    "-s",
-                    "-o",
-                    "readonly=on",
-                    "-o",
-                    &refquota,
-                    fs,
-                ])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped()),
-            stop,
-        )
-        .map_err(|error| ReceiveFailure::Failed(format!("could not run zfs receive: {error}")))?;
+        let mut child = self
+            .spawn_receive(fs, bound, Stdio::piped(), stop)
+            .map_err(|error| {
+                ReceiveFailure::Failed(format!("could not run zfs receive: {error}"))
+            })?;
         let pumped = {
             let pump = self.pump(child.child(), &shown, response, fs, fault, identity);
             tokio::select! {

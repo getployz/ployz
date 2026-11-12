@@ -24,7 +24,7 @@
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{DepartureFailure, RpcError, SlotRole, StorageDeparture};
+use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
 use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
 use super::{Dataset, DockerVolumeName, VolumeStorage, inspect::internal};
@@ -146,21 +146,10 @@ impl VolumeStorage {
     ) -> super::Result<bool> {
         let datasets = self.datasets(pool).await?;
         let demoted = match self.departure(pool, &datasets, name).await? {
-            Departure::Root(root) => {
+            Departure::Root(root) | Departure::RootBesideEmptySlot(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
-                self.ensure_mirror_root(pool, &datasets).await?;
-                let parent = DatasetLayout::of(pool).slot_parent(name);
-                self.create_slot_parent(&parent, root.refquota).await?;
-                self.marks(&parent).set_role(SlotRole::OldCopy).await?;
-                self.move_into_slot(pool, root, name).await?;
-                true
-            }
-            Departure::RootBesideEmptySlot(root) => {
-                self.freeze_root(root, name, now_unix_seconds).await?;
-                self.marks(&DatasetLayout::of(pool).slot_parent(name))
-                    .set_role(SlotRole::OldCopy)
-                    .await?;
-                self.move_into_slot(pool, root, name).await?;
+                self.park_root_in_slot(pool, &datasets, name, root).await?;
+                self.seal_fs(&DatasetLayout::of(pool).slot_fs(name)).await?;
                 true
             }
             Departure::RootBesideMirror => {
@@ -278,17 +267,6 @@ impl VolumeStorage {
         ])
         .await?;
         Ok(())
-    }
-
-    async fn move_into_slot(
-        &self,
-        pool: &MachinePool,
-        root: &Dataset,
-        name: &DockerVolumeName,
-    ) -> super::Result<()> {
-        let fs = DatasetLayout::of(pool).slot_fs(name);
-        self.zfs(&["rename", &root.name, &fs]).await?;
-        self.seal_fs(&fs).await
     }
 
     async fn seal_fs(&self, fs: &str) -> super::Result<()> {
