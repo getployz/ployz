@@ -382,7 +382,7 @@ impl ServiceUpdate {
                 });
                 return Err(
                     Refusal::invalid(not_setting_sentence(tool), &format!("set.{key}"))
-                        .with_next(Call::new(tool, drop_nulls(next)))
+                        .with_next(Call::to(tool, drop_nulls(next)))
                         .into(),
                 );
             }
