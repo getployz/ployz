@@ -1029,4 +1029,134 @@ mod tests {
             );
         }
     }
+
+    /// The words each verb Cloud names puts on an approval card are frozen with its text.
+    #[test]
+    fn every_verb_keeps_its_text_and_its_words() {
+        for (verb, noun, past, preposition) in [
+            ("drain", "drain", "drained", "of"),
+            ("set", "change", "changed", "to"),
+            ("clean", "cleanup", "cleaned", "of"),
+            ("remove", "removal", "removed", "of"),
+            ("forget", "forgetting", "forgotten", "of"),
+            ("release", "release", "released", "of"),
+            ("remove_mirror", "mirror removal", "removed", "of"),
+            ("stop", "stop", "stopped", "of"),
+            ("restart", "restart", "restarted", "of"),
+            ("unprotect", "unprotecting", "unprotected", "of"),
+            ("move", "move", "moved", "of"),
+            ("restore", "restore", "restored", "of"),
+            ("resize", "resize", "resized", "of"),
+            ("set_cluster_name", "rename", "renamed", "to"),
+            ("set_ingress_doors", "door change", "changed", "to"),
+            (
+                "set_private_access",
+                "Private Access change",
+                "changed",
+                "to",
+            ),
+        ] {
+            let asked = asked(verb, "removes_member");
+            assert_eq!(asked.verb().noun(), noun, "{verb}");
+            assert_eq!(asked.verb().past(), past, "{verb}");
+            assert_eq!(
+                asked.what(asked.verb()),
+                format!("this {noun} {preposition} bob@example.com"),
+                "{verb}"
+            );
+        }
+        for (verb, noun, past) in [
+            (Verb::Publish, "save", "saved"),
+            (Verb::Deploy, "deploy", "deployed"),
+            (Verb::Retry, "redeploy", "retried"),
+        ] {
+            assert_eq!((verb.noun(), verb.past()), (noun, past));
+        }
+    }
+
+    /// A verb this CLI cannot read leaves the refusal unasked, whatever else it names.
+    #[test]
+    fn a_verb_nobody_taught_this_cli_leaves_the_refusal_unasked() {
+        let refusal = |verb: &str| -> ployz_core::RpcError {
+            serde_json::from_value(serde_json::json!({
+                "code": "approval_required",
+                "message": "A human must approve this.",
+                "details": {
+                    "approval_id": "a1", "approval": "d1", "effects": [],
+                    "operation": { "verb": verb, "name": "web" },
+                },
+            }))
+            .unwrap()
+        };
+        assert!(Asked::of(&refusal("restart")).is_some());
+        for verb in ["frobnicate", "Restart", "set-cluster-name", ""] {
+            assert!(Asked::of(&refusal(verb)).is_none(), "{verb}");
+        }
+    }
+
+    /// Every key Cloud and the Store send on an approval card, read as one ask.
+    #[test]
+    fn an_ask_with_every_key_reads_as_it_always_did() {
+        let operation: ployz_core::RpcError = serde_json::from_value(serde_json::json!({
+            "code": "approval_required",
+            "message": "A human must approve moving pg-data before it runs.",
+            "details": {
+                "approval_id": "a1", "approval": "d1",
+                "effects": [{ "kind": "deletes_volume", "name": "pg-data", "node": "v1", "path": "volumes/v1" }],
+                "operation": { "verb": "remove", "name": "box", "subject": "server:box", "preview": { "from": "alpha" } },
+                "organization": "ada",
+                "protected": { "environment": "production" },
+            },
+        }))
+        .unwrap();
+        let asked = Asked::of(&operation).unwrap();
+        assert_eq!(
+            (asked.id.as_str(), asked.digest.as_str(), asked.name()),
+            ("a1", "d1", "box")
+        );
+        assert!(asked.for_someone_else());
+        assert_eq!(
+            asked.reason,
+            "A human must approve moving pg-data before it runs."
+        );
+        assert_eq!(
+            asked.review_in(asked.verb(), &chrono::Utc),
+            [
+                "This removal in Organization ada:",
+                "  ✕ loses access to Volume pg-data; its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
+            ]
+        );
+
+        let diff: ployz_core::RpcError = serde_json::from_value(serde_json::json!({
+            "code": "approval_required",
+            "message": "m",
+            "details": {
+                "approval_id": "a2", "approval": "d2",
+                "effects": [{ "kind": "removes_service", "name": "web", "node": "s1", "path": "web" }],
+                "diff": {
+                    "environment": { "id": "00000000-0000-4000-8000-000000000002", "project": "shop", "name": "production", "revision": 3 },
+                    "version": "3:2:0.1", "saved": 2, "holds_staged": false, "changes": [], "total_count": 3,
+                },
+                "prunes": true,
+                "dropped": ["box-1", "box-2"],
+                "redeploy": { "deployment": 4, "rolls_back": [5] },
+            },
+        }))
+        .unwrap();
+        let asked = Asked::of(&diff).unwrap();
+        assert!(!asked.for_someone_else());
+        assert_eq!(asked.name(), "production");
+        assert_eq!(asked.what(Verb::Deploy), "this deploy to shop/production");
+        assert_eq!(
+            asked.review_in(Verb::Deploy, &chrono::Utc),
+            [
+                "This redeploy of #4 destroys 1 thing:",
+                "  ✕ removes Service web",
+                "  ~ rolls back to #4, undoing #5",
+                "  ✕ removes any other Service running in this environment",
+                "    couldn't check every server: large packets to box-1, box-2 are dropped on the mesh path",
+                "  + 2 other changes",
+            ]
+        );
+    }
 }

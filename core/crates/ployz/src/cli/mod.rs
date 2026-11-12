@@ -347,6 +347,31 @@ mod tests {
         }
     }
 
+    /// The grammar takes numbers as Rust parses them and hex digests in either case, and
+    /// hands the text on as it was typed.
+    #[test]
+    fn expect_version_hands_on_what_it_accepted_as_typed() {
+        for good in [
+            "+3:1:0.1",
+            "003:01:0.01",
+            "3:0:0.12:ab12cd:FF00",
+            "3:1:0.1:ABCDEF#loss-0z",
+            "18446744073709551615:0:0.0",
+        ] {
+            assert_eq!(super::review_version(good).as_deref(), Ok(good));
+        }
+        for bad in [
+            "18446744073709551616:0:0.0",
+            "3:1:0.1:xyz",
+            "3:1:+0.1.2",
+            "3:1:0.1:ab:",
+            "3:1:0.1 ",
+            "3:1:0.1#loss-a b",
+        ] {
+            assert!(super::review_version(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn root_version_flags_are_accepted() {
         for flag in ["--version", "-V"] {

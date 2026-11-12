@@ -1009,3 +1009,7 @@ pub(crate) fn approve_move(
     let message = gate.message(&diff, what, String::new);
     gate.require(bound, message, (&diff.effects, &diff))
 }
+
+#[cfg(test)]
+#[path = "approval_tests.rs"]
+mod approval_tests;
