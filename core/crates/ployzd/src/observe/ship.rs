@@ -1130,6 +1130,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_crash_batch_body_is_these_bytes() {
+        let (_root, store) = store();
+        let outbox = Outbox::open(&store).unwrap();
+        outbox.push(crash(1_760_000_000_123_456_789)).unwrap();
+
+        let held = Stream::next(&*outbox).unwrap().unwrap();
+
+        assert_eq!(
+            String::from_utf8(held.body).unwrap(),
+            concat!(
+                r#"{"stream":"crash","seq":"1760000000123456789","dropped":0,"events":[{"#,
+                r#""seq":"1760000000123456789","marker":{"machine_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","#,
+                r#""container_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","#,
+                r#""service_id":"cccccccccccccccccccccccccccccccc","service":"prod/web","deployment_id":"d1","#,
+                r#""replica":"web-1","ts":1760000000123456789,"kind":"exit","exit_code":137,"oom":true,"stopped":false}}]}"#
+            )
+        );
+        assert_eq!(held.seqs, [1_760_000_000_123_456_789]);
+    }
+
     const ACK: &str = r#"{"sites":[{"namespace":"acme-prod","salts":[{"day":"2026-10-15","start":0,"end":9999999999,"salt":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}]}]}"#;
 
     fn acme_covered(salts: &Salts) -> bool {
