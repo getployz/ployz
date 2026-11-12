@@ -211,12 +211,7 @@ impl PoolStorage {
     ///
     /// Returns an error for failed inspection, conflicting backing, or failed ownership recording.
     pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
-        let args = [
-            "list",
-            "-Hp",
-            "-o",
-            "name,size,allocated,free,health,readonly",
-        ];
+        let args = machine_pool::ZPOOL_LIST;
         let output = match run_command(&self.zpool, &args).await {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             output => checked_output(&self.zpool, &args, output)?,

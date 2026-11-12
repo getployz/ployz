@@ -11,6 +11,14 @@ pub const ROOT_BACKED_POOL_NAME: &str = "ployz";
 /// The Pool created on a disk explicitly selected during installation.
 pub const DEVICE_BACKED_POOL_NAME: &str = "ployz-device";
 
+/// The `zpool` arguments whose output [`one_usable`] reads.
+pub const ZPOOL_LIST: [&str; 4] = [
+    "list",
+    "-Hp",
+    "-o",
+    "name,size,allocated,free,health,readonly",
+];
+
 /// A writable imported Machine Pool with usable health.
 #[derive(Debug, Eq, PartialEq)]
 pub struct MachinePool {

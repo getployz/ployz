@@ -29,7 +29,9 @@ use ployz_core::{
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
-use crate::{machine_pool, volume_copy::BOUND_PATH_PREFIX};
+pub mod protocol;
+
+use crate::machine_pool;
 
 /// Whether this Machine sends a Volume to a mesh peer.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,7 +114,7 @@ async fn send<R: Recipients>(
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
     let programs = &sender.programs;
-    if let Some(name) = request.uri().path().strip_prefix(BOUND_PATH_PREFIX) {
+    if let Some(name) = protocol::bound_volume(request.uri().path()) {
         let Ok(name) = name.parse::<DockerVolumeName>() else {
             return (StatusCode::NOT_FOUND, "no such Volume").into_response();
         };
@@ -234,16 +236,7 @@ async fn bound(programs: &Programs, name: &DockerVolumeName) -> Result<String, R
 /// the slot until the target promotes, and the target still pulls the final increment
 /// from there.
 async fn resolve_root(programs: &Programs, name: &DockerVolumeName) -> Result<String, Refusal> {
-    let pools = lines(
-        &programs.zpool,
-        &[
-            "list",
-            "-Hp",
-            "-o",
-            "name,size,allocated,free,health,readonly",
-        ],
-    )
-    .await?;
+    let pools = lines(&programs.zpool, &machine_pool::ZPOOL_LIST).await?;
     let pool = machine_pool::one_usable(&pools.join("\n"))
         .map_err(|error| Refusal::Zfs(error.to_string()))?
         .ok_or_else(|| {
