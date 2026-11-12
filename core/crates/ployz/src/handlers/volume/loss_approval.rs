@@ -15,7 +15,7 @@ use serde_json::json;
 
 use super::super::{Error, leaf_matches, store};
 use super::approve::{approval, context, device, named};
-use super::restore::{Planned, Seen, copies, docker_volume, plan};
+use super::restore::{Planned, Seen, Unseen, copies, docker_volume, plan};
 use crate::ui::Hint;
 
 /// A signed approval and the change it approved.
@@ -77,7 +77,7 @@ pub(super) fn sign_restore(
 ///
 /// # Errors
 /// Refuses a Server not in the Cluster or holding no Mirror, a copy that is no longer an old
-/// one under `--if-old-copy`, a Volume with several writers, a last copy without `--confirm`,
+/// one under `--if-old-copy`, a Server that didn't answer, a Volume with several writers, a last copy without `--confirm`,
 /// and before signing a person who declines or can't be asked without `--yes`. Returns the
 /// Store's, a Server's or the key's error.
 pub(super) fn sign_removal(
@@ -209,6 +209,30 @@ fn removal_workflow(
         return Err(Error::conflict(format!(
             "{mirror} is no longer an old copy, so nothing was deleted"
         )));
+    }
+    // A Server whose copy is unknown may be the writer, and a removal signed without it would
+    // say the copy may be the last.
+    for other in seen {
+        match &other.copy {
+            Ok(_) => {}
+            Err(Unseen::Silent(_)) => {
+                return Err(Error::unavailable(format!(
+                    "{} did not answer, so this device can't tell who writes {volume}. Try again \
+                     once it answers, or forget it if it is gone.",
+                    other.name
+                )));
+            }
+            Err(Unseen::Unfenced) => {
+                return Err(Error::coded(
+                    RpcErrorCode::Unsupported,
+                    format!(
+                        "{} runs a Ployz too old to say what it holds of {volume}, so this device \
+                         can't approve deleting {mirror}. Upgrade Ployz on {} first.",
+                        other.name, other.name
+                    ),
+                ));
+            }
+        }
     }
     let roots: Vec<&Seen> = seen
         .iter()

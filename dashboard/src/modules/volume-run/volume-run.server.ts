@@ -1299,7 +1299,7 @@ export type CopyAnswer =
   | { readonly ok: true; readonly copy: VolumeCopy | null; readonly receipt?: MachineSigned }
   | {
     readonly ok: false;
-    readonly reason: CopyRefusal | "enforced" | "unapproved";
+    readonly reason: CopyRefusal | "enforced" | "unapproved" | "unanswered";
     readonly copy: VolumeCopy | null;
     readonly message: string;
     readonly receipt?: MachineSigned;

@@ -380,11 +380,14 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
     }
     const writer = phase.forget;
     if (writer !== null) {
+      // The slots are gone and refuse the old approval, so a Writer that refuses or never answers its withdrawal is
+      // named as behind rather than failing a removal that already happened.
       for (const slot of phase.destroy) {
-        const answer = await setCopy(steps, `04-forget-${slot.machine.name}`, writer.machine, { kind: "writer", epoch: epochOf(writer) }, {
-          kind: "forget",
-          recipient: slot.machine.id,
-        }, `${writer.machine.name} is still busy with ${run.volumeName}`);
+        const withdraw = setVolumeCopy(run, runId, writer.machine, { kind: "writer", epoch: epochOf(writer) }, { kind: "forget", recipient: slot.machine.id }).pipe(
+          Effect.catchIf((error) => error instanceof SwitchAttemptError, (error) =>
+            Effect.succeed<CopyAnswer>({ ok: false, reason: "unanswered", copy: null, message: error.message })),
+        );
+        const answer = await settle(steps, `04-forget-${slot.machine.name}`, withdraw, `${writer.machine.name} is still busy with ${run.volumeName}`);
         if (!answer.ok && !behind.includes(answer.message)) behind.push(answer.message);
       }
     }

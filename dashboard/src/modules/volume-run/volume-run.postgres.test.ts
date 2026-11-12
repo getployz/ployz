@@ -3024,6 +3024,21 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: expect.stringMatching(/^Deleted data-fsn-2; fsn-2 recorded the removal, but fsn-1 has not yet \(.+\)\. fsn-2 refuses the old approval either way$/) }]);
     });
 
+    it("names a Writer that never answers its withdrawal instead of failing a removal that happened", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      failNext.set("forget@fsn-1", "held");
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any", approval: APPROVAL } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
+      expect(machines[1]?.copy).toBeNull();
+      expect(await rows()).toMatchObject([{
+        state: "done",
+        message: "Deleted data-fsn-2; fsn-2 recorded the removal, but fsn-1 has not yet (set_volume_copy on fsn-1: unavailable: target Machine RPC timed out). fsn-2 refuses the old approval either way",
+      }]);
+    });
+
     it("withdraws every slot it deleted on the writer, each in its own step, once every slot is gone", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       machines.push({ name: "fsn-3", pool: true, copy: slotCopy(base, null, "2", "old_copy") });

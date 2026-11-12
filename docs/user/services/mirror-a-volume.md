@@ -134,7 +134,9 @@ Approved: delete data's old copy on web-2. No Server writes data, so this may be
 
 The run then says which servers recorded the removal, like
 `Deleted data-web-2; web-2 and web-1 recorded the removal`. If web-1 didn't answer, it says web-1
-has not yet. web-2 refuses the mirror's old approval either way. A copy that holds no data yet,
+has not yet. web-2 refuses the mirror's old approval either way, so it pulls nothing more. Until
+web-1 records the removal, it still sends data to web-2 if asked. To make it record the removal,
+mirror the volume to web-2 again and remove that mirror. A copy that holds no data yet,
 from a mirror whose first copy never finished, is deleted without an approval.
 
 Ployz Cloud can't delete a copy that holds data on these servers on its own. **Remove** under

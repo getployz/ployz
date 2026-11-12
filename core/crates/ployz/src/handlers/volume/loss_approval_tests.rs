@@ -193,3 +193,24 @@ fn a_removal_signs_nothing_for_an_empty_slot_and_refuses_a_changed_role() {
         "{refused}"
     );
 }
+
+#[test]
+fn a_removal_beside_a_server_that_did_not_answer_signs_nothing() {
+    let silent = Seen {
+        copy: Err(super::super::restore::Unseen::Silent(
+            "timed out".to_owned(),
+        )),
+        ..seen("web-1", None)
+    };
+    let seen = [
+        silent,
+        seen("web-2", Some(slot(SlotRole::Mirror, Some(snapshot(41, 1))))),
+    ];
+    let refused =
+        removal_workflow(&volume(), &server("web-2"), &seen, (Some("data"), false)).unwrap_err();
+    assert_eq!(refused.report().code, RpcErrorCode::Unavailable);
+    assert!(
+        refused.to_string().contains("web-1 did not answer"),
+        "{refused}"
+    );
+}
