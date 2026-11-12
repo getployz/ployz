@@ -1,5 +1,5 @@
 use clap::{ArgMatches, Command};
-use ployz_core::{DeployOutcome, DockerVolumeId, Namespace, RpcErrorCode};
+use ployz_core::{DeployOutcome, DockerVolumeId, Hint, Namespace, RpcErrorCode};
 use ployz_store::{NamespacesQuery, OwnedNamespace};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use crate::approval::{self, Verb};
 use crate::cli::{base, value};
 use crate::cloud_account::{self, Credential};
 use crate::deploy::VolumeFate;
-use crate::ui::{Hint, Table, Tree};
+use crate::ui::{Table, Tree};
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Remove a Namespace on your Servers that isn't in any Project; lists them without --namespace",

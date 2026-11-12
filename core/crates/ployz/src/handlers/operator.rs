@@ -12,7 +12,7 @@ use clap::{ArgMatches, parser::ValueSource};
 use crossterm::terminal;
 use ployz_core::{
     ContainerId, ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame,
-    FanoutSelector, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
+    FanoutSelector, Hint, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
     LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector, log_level, select_service,
 };
 use ployz_store::{DeploymentId, NamespaceQuery};
@@ -31,7 +31,6 @@ use crate::{
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
         prepare_service_history, select_proxy_container,
     },
-    ui::Hint,
 };
 
 use super::{

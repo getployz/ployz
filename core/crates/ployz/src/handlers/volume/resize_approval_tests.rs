@@ -1,4 +1,4 @@
-use ployz_core::{MachineId, SlotId, SlotRole, VolumeCopy, WriterEpoch};
+use ployz_core::{Hint, MachineId, SlotId, SlotRole, VolumeCopy, WriterEpoch};
 use ployz_store::VolumeName;
 
 use super::super::restore::{Seen, Unseen};
@@ -79,7 +79,7 @@ fn no_terminal_refuses_before_signing_and_names_yes() {
     assert!(
         error.hints().iter().any(|hint| matches!(
             hint,
-            crate::ui::Hint::Retry(retry) if retry.ends_with(" --yes")
+            Hint::Retry(retry) if retry.ends_with(" --yes")
         )),
         "{:?}",
         error.hints()

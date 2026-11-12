@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::authority::{ApprovedChange, PayloadDigest};
-use ployz_core::{Namespace, RequestedServiceSpec, ServiceName};
+use ployz_core::{Hint, Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
 use super::{Enforcing, Probe, consent, enforced, pin_tags, signable, unpinnable};
@@ -117,7 +117,7 @@ fn next_hints(error: &crate::handlers::Error) -> Vec<String> {
         .hints()
         .iter()
         .filter_map(|hint| {
-            if let crate::ui::Hint::Next(next) = hint {
+            if let Hint::Next(next) = hint {
                 Some(next.clone())
             } else {
                 None
@@ -298,7 +298,7 @@ fn no_terminal_refuses_before_signing_and_names_yes() {
     assert!(
         error.hints().iter().any(|hint| matches!(
             hint,
-            crate::ui::Hint::Retry(retry) if retry.ends_with(" --yes")
+            Hint::Retry(retry) if retry.ends_with(" --yes")
         )),
         "{:?}",
         error.hints()

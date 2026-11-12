@@ -2,7 +2,7 @@
 //! that takes an Environment off the Servers first. `env rm` and `project rm` share it.
 
 use clap::ArgMatches;
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use std::collections::BTreeMap;
 
 use ployz_store::{
@@ -18,7 +18,7 @@ use super::Error;
 use super::deploy;
 use super::store::{self, Store, mint};
 use crate::cloud_account::StoreCallError;
-use crate::ui::{self, Hint, Tree};
+use crate::ui::{self, Tree};
 
 /// `--confirm` typed `name`, or a person typed it at the prompt after seeing
 /// `unconfirmed`'s loss tree. Anywhere else its refusal is the error; a

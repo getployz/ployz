@@ -15,7 +15,7 @@ use std::{
 
 use chrono::Utc;
 use clap::{ArgMatches, Command, parser::ValueSource};
-use ployz_core::{MachineLayout, RpcErrorCode};
+use ployz_core::{Hint, MachineLayout, RpcErrorCode};
 
 use super::super::{Error, leaf_matches, runtime};
 use crate::checkin::{
@@ -24,7 +24,6 @@ use crate::checkin::{
 };
 use crate::cli::{base, env, switch, value};
 use crate::cloud_login::DEFAULT_CLOUD;
-use crate::ui::Hint;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SKIP_ZFS: &str = "PLOYZ_SKIP_ZFS";

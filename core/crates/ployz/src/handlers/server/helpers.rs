@@ -3,13 +3,12 @@ use std::{net::IpAddr, sync::Arc};
 
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollForRecoveryRequest, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
+    EnrollForRecoveryRequest, EnrollRequest, Enrolled, Hint, InspectRequest, LeaveRequest, Left,
     LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken,
     PinnedAddresses, PublicIpDiscovery, RecoverySeed, Rpc, RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
-use crate::ui::Hint;
 use crate::{
     connect::{Client, ConnectError, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections, Transport},

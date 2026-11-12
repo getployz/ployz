@@ -13,7 +13,8 @@ use serde::Serialize;
 use super::super::store::{self, Next};
 use super::super::{Error, leaf_matches};
 use crate::cli::{positional, value};
-use crate::ui::{Cell, Fields, Hint, Table, Tone};
+use crate::ui::{Cell, Fields, Table, Tone};
+use ployz_core::Hint;
 
 pub(crate) fn add_command(command: Command) -> Command {
     store::scoped(command.about("Add a Service; it is staged until a Deploy"))

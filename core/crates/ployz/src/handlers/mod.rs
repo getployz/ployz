@@ -1,3 +1,4 @@
+use ployz_core::Hint;
 use std::{future::Future, path::Path, pin::Pin};
 
 use crate::cancellation::on_ctrl_c as cancellation_on_ctrl_c;
@@ -609,7 +610,7 @@ pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -
         .diagnostic()
         .and_then(|diagnostic| diagnostic.failed_machine)
         .map(|machine| {
-            crate::ui::Hint::Retry(command(&[
+            Hint::Retry(command(&[
                 "server",
                 "set",
                 &machine.to_string(),
@@ -633,7 +634,7 @@ pub(crate) fn ingress_log_hints(
         .logs
         .iter()
         .map(|tail| {
-            crate::ui::Hint::Inspect(command(&[
+            Hint::Inspect(command(&[
                 "logs",
                 &tail.service.to_string(),
                 "--machine",

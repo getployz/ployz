@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
-use ployz_core::{LocalMachinePhase, RpcErrorCode};
+use ployz_core::{Hint, LocalMachinePhase, RpcErrorCode};
 use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
     EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery,
@@ -34,7 +34,7 @@ use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
 use crate::context::{Config, ConfigError, ContextError, select_connections};
-use crate::ui::{Cell, Fields, Hint, Tone};
+use crate::ui::{Cell, Fields, Tone};
 
 pub(super) fn link_command(command: Command) -> Command {
     scoped(command.about("Link this directory to a Project and Environment"))

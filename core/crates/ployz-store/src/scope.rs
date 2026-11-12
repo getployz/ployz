@@ -7,7 +7,7 @@ use ployz_core::config::{
     EnvironmentNodeType, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
     SavedVolumeIntent, parse_environment_intent,
 };
-use ployz_core::{ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigName, Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -653,17 +653,14 @@ pub(crate) fn resolve(
             .iter()
             .map(|row| row.text(0))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut details = error::suggest(name.as_str(), names.iter().copied());
-        if let Some(details) = details.as_object_mut() {
-            details.insert(
-                "next".into(),
-                format!("ployz env ls --project {}", project.name).into(),
-            );
-        }
         return Err(error::not_found(
             format!("No Environment named {name} in Project {}", project.name),
-            details,
-        ));
+            error::suggest(name.as_str(), names.iter().copied()),
+        )
+        .with_hint(Hint::Next(format!(
+            "ployz env ls --project {}",
+            project.name
+        ))));
     };
     Ok((project.name, row.parse::<EnvironmentId>(0, "identity")?))
 }

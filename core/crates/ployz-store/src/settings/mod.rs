@@ -21,7 +21,7 @@ use ployz_core::config::{
     ServiceImageCredentials, ServiceRestartPolicy, ServiceSource, UPDATE_ORDERS,
     default_max_retries, default_replicas, parse_service_setting,
 };
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -744,10 +744,6 @@ impl ServiceSetting {
                 let first = name.split('.').next().unwrap_or(name);
                 let closest = error::did_you_mean(first, names.clone());
                 let mut details = serde_json::Map::new();
-                details.insert("valid_children".into(), names.collect::<Vec<_>>().into());
-                if let Some(closest) = closest {
-                    details.insert("did_you_mean".into(), closest.into());
-                }
                 if let Some(setting) = Self::ALL
                     .into_iter()
                     .find(|setting| Some(setting.name()) == closest)
@@ -757,7 +753,14 @@ impl ServiceSetting {
                         details.insert("example".into(), example.clone());
                     }
                 }
-                error::invalid("Unknown Service Setting", details.into())
+                let mut details = Value::Object(details);
+                let hints: Vec<_> = closest
+                    .map(|closest| Hint::Closest(closest.into()))
+                    .into_iter()
+                    .chain([Hint::valid(names)])
+                    .collect();
+                Hint::into_details(&hints, &mut details);
+                error::invalid("Unknown Service Setting", details)
             })
     }
 }

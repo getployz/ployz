@@ -8,14 +8,13 @@ use ployz_core::authority::{
     ApprovedVolumeChange, Signed, Signer, SignerKey, Timestamp, VolumeApproval, VolumeWorkflow,
     validity::MAX_LIFETIME_MILLIS,
 };
-use ployz_core::{MachineId, OperationId, ProvisionedVolumeMaximumBytes, RpcErrorCode};
+use ployz_core::{Hint, MachineId, OperationId, ProvisionedVolumeMaximumBytes, RpcErrorCode};
 use ployz_store::{EnvironmentSummary, VolumeId, VolumeName};
 use serde_json::json;
 
 use super::super::deploy::approve::{Probe, probe};
 use super::super::{Error, leaf_matches, store};
 use super::restore::{Seen, copies, docker_volume};
-use crate::ui::Hint;
 
 /// A signed Resize approval and the change it approved.
 pub(super) struct ResizeApproval {

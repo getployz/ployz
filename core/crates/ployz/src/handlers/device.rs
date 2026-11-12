@@ -30,7 +30,8 @@ use crate::cli::{base, positional, yes};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::connect::Client;
-use crate::ui::{self, Cell, Gaps, Hint, Table, Tone};
+use crate::ui::{self, Cell, Gaps, Table, Tone};
+use ployz_core::Hint;
 
 mod pin;
 pub(super) use pin::seal_to;

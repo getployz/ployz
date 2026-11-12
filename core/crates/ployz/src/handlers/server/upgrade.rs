@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
-    Machine, MachineId, MachineRelease, MachineTarget, MachineUpgradeAttempt,
+    Hint, Machine, MachineId, MachineRelease, MachineTarget, MachineUpgradeAttempt,
     MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
     RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
@@ -18,7 +18,6 @@ use crate::{
     cluster::Client,
     connect::ConnectError,
     ingress::Followed,
-    ui::Hint,
 };
 
 use serde_json::json;

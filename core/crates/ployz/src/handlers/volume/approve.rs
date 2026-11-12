@@ -16,7 +16,7 @@ use ployz_core::authority::{
     VolumeWorkflow, deploy::content_addressed, validity::MAX_LIFETIME_MILLIS,
 };
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
+    ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName, Hint,
     InspectContainerRequest, MachineName, MachineTarget, Namespace, OperationId,
     ProvisionedVolumeMaximumBytes, PullPolicy, ResolvedServiceSpec, RpcErrorCode, SlotRole,
     VolumeCopy, op,
@@ -29,7 +29,6 @@ use super::super::{Error, leaf_matches, store};
 use super::restore::{Seen, copies, docker_volume};
 use crate::cluster::{Call, Deadline};
 use crate::connect::TARGET_RPC_TIMEOUT;
-use crate::ui::Hint;
 
 /// A signed Mirror approval and the change it approved.
 pub(super) struct MirrorApproval {

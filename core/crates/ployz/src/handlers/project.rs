@@ -13,7 +13,8 @@ use super::store::{Store, mint, store};
 use super::teardown::{self, Removed, confirm, inventory};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
-use crate::ui::{Hint, Table, Tree};
+use crate::ui::{Table, Tree};
+use ployz_core::Hint;
 
 pub(super) fn group(command: Command) -> Command {
     command.about("Manage Projects")

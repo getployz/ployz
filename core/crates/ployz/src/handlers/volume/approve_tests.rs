@@ -1,6 +1,6 @@
 use ployz_core::{
-    DockerVolumeName, MachineId, MachineName, SlotId, SlotRole, Snapshot, SnapshotGuid, VolumeCopy,
-    WriterEpoch,
+    DockerVolumeName, Hint, MachineId, MachineName, SlotId, SlotRole, Snapshot, SnapshotGuid,
+    VolumeCopy, WriterEpoch,
 };
 use ployz_store::VolumeName;
 
@@ -346,7 +346,7 @@ fn a_move_with_no_terminal_refuses_before_signing_and_names_yes() {
     assert!(
         error.hints().iter().any(|hint| matches!(
             hint,
-            crate::ui::Hint::Retry(retry) if retry.ends_with(" --yes")
+            Hint::Retry(retry) if retry.ends_with(" --yes")
         )),
         "{:?}",
         error.hints()

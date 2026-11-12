@@ -110,7 +110,7 @@ fn render(
             let _ = diagnostic.write(stderr);
         }
         for hint in failure.hints() {
-            let _ = hint.write(stderr);
+            let _ = error::write_hint(stderr, &hint);
         }
     }
     if failure.is_interrupted() {
@@ -144,7 +144,8 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::ui::{Hint, Table};
+    use crate::ui::Table;
+    use ployz_core::Hint;
 
     #[test]
     fn cancellation_survives_context_hints_and_committed_json() {
@@ -294,6 +295,43 @@ mod tests {
                 "cause": ["connection refused (os error 111)"],
                 "details": { "inspect": ["ployz cloud status"] },
             }})
+        );
+    }
+
+    #[test]
+    fn json_text_of_a_refusal_carries_every_hint_key_beside_the_other_details() {
+        let near_miss = Failure::from(RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "No Service wbe in production.".into(),
+            details: json!({
+                "did_you_mean": "web",
+                "valid_children": ["web", "db"],
+                "project": "blog",
+            }),
+            cause: Vec::new(),
+        })
+        .hint(Hint::Next("ployz ps".into()))
+        .hint(Hint::Inspect("ployz service ls".into()))
+        .hint(Hint::Inspect("ployz ps -a".into()));
+        assert_eq!(
+            end(&near_miss, Mode::Json, false).stdout,
+            "{\"error\":{\"cause\":[],\"code\":\"not_found\",\"details\":{\"did_you_mean\":\"web\",\
+             \"inspect\":[\"ployz service ls\",\"ployz ps -a\"],\"next\":\"ployz ps\",\
+             \"project\":\"blog\",\"valid_children\":[\"web\",\"db\"]},\
+             \"message\":\"No Service wbe in production.\"}}\n"
+        );
+
+        let not_running = Failure::from(crate::operator::OperatorError::NotRunning {
+            name: "nope".into(),
+            running_in_scope: vec!["web".into()],
+        })
+        .hint(Hint::Retry("ployz exec web -- ls".into()))
+        .hint(Hint::Undo("ployz stop web".into()));
+        assert_eq!(
+            end(&not_running, Mode::Json, false).stdout,
+            "{\"error\":{\"cause\":[],\"code\":\"not_found\",\"details\":{\"retry\":\"ployz exec web -- ls\",\
+             \"undo\":\"ployz stop web\",\"valid_children\":[\"web\"]},\
+             \"message\":\"No running Service \\\"nope\\\"\"}}\n"
         );
     }
 

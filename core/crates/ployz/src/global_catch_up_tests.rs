@@ -900,7 +900,7 @@ async fn a_router_tailscale_refused_fails_catch_up_and_names_the_way_to_retry() 
     assert!(!said.contains("redeploy"), "{said}");
     assert_eq!(
         failure.hints(),
-        [crate::ui::Hint::Retry(
+        [Hint::Retry(
             "ployz private-access on --auth-key-stdin".to_owned()
         )]
     );

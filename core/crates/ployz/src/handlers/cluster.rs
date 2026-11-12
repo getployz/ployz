@@ -1,8 +1,8 @@
 use crate::cluster::Call;
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    ClusterName, ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, ReadClusterNameRequest, RpcErrorCode,
-    SET_CLUSTER_NAME_CAPABILITY, SetClusterNameRequest, op,
+    ClusterName, ClusterNamed, Hint, READ_CLUSTER_NAME_CAPABILITY, ReadClusterNameRequest,
+    RpcErrorCode, SET_CLUSTER_NAME_CAPABILITY, SetClusterNameRequest, op,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -13,7 +13,7 @@ use crate::cli::{base, positional};
 use crate::cloud_account::{Credential, Via};
 use crate::cluster::Client;
 use crate::published;
-use crate::ui::{self, Hint};
+use crate::ui;
 
 pub(crate) fn group(command: Command) -> Command {
     command.about("Name the Cluster")

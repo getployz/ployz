@@ -1,6 +1,6 @@
 use clap::ArgMatches;
 use ployz_core::{
-    ClusterName, EnrollAs, EnrollRequest, LocalMachinePhase, MachineLayout, MachineRelease,
+    ClusterName, EnrollAs, EnrollRequest, Hint, LocalMachinePhase, MachineLayout, MachineRelease,
     RpcErrorCode,
 };
 
@@ -9,7 +9,6 @@ use super::{ConnectionOptions, helpers};
 use crate::{
     context::{Connection, Context},
     handlers::{Error, leaf_matches},
-    ui::Hint,
 };
 use serde_json::json;
 
