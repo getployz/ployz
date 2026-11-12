@@ -116,6 +116,33 @@ Ployz Cloud can't add a mirror on these servers yet. Adding one under **Copies**
 changes anything. A mirror added before you turned enforcement on has no approval, so its
 refreshes fail. Run `ployz volume sync data --full` on an approved device to approve it.
 
+To delete a mirror, run `ployz volume mirror rm data-web-2` on an approved device. It signs the
+removal, prints it and asks first:
+
+```
+Approved: delete data's mirror on web-2. web-1 keeps writing data.
+Approve deleting data-web-2?
+```
+
+Add `--yes` to sign without asking. With no terminal to ask in and no `--yes`, it signs nothing
+and deletes nothing. When no server writes the volume, the copy may be its last, so it asks for
+`--confirm data` before it signs, and the line says so:
+
+```
+Approved: delete data's old copy on web-2. No Server writes data, so this may be its last copy, and its data is gone for good.
+```
+
+The run then says which servers recorded the removal, like
+`Deleted data-web-2; web-2 and web-1 recorded the removal`. If web-1 didn't answer, it says web-1
+has not yet. web-2 refuses the mirror's old approval either way. A copy that holds no data yet,
+from a mirror whose first copy never finished, is deleted without an approval.
+
+Ployz Cloud can't delete a copy that holds data on these servers on its own. **Remove** under
+**Copies**, and a deploy that drops a mirror or an old copy, fail before they change anything and
+name the command to run from an approved device. When you delete a volume, Ployz Cloud leaves its
+mirrors' copies on servers that enforce. Turn enforcement off with `ployz device enforce --off` to
+let Ployz Cloud clean them up, then turn it back on.
+
 If `ployz volume mirror` can't reach your servers to ask whether they enforce, it warns and runs
 without signing, and servers that enforce refuse it. A server from before Ployz 0.4 ignores the
 approval and copies as before.
