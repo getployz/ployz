@@ -585,7 +585,10 @@ fn environments_list_and_an_undeployed_one_is_removed_without_servers() {
     let default = refusal(store.write(&who, &request(Some("production"))));
     assert_eq!(default.code, RpcErrorCode::Unsupported);
     assert!(default.message.contains("Default Environment"));
-    assert_eq!(default.details["next"]["tool"], "environment_show");
+    assert_eq!(
+        default.details["next"],
+        json!({ "tool": "environment_show", "input": { "project": "shop", "environment": "production" } })
+    );
 
     set_default(&store, &who, "staging");
     assert_eq!(listed(&store, &who), ["production", "staging*"]);
@@ -765,6 +768,10 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
     let parent = refusal(store.write(&who, &accepting_data(Some("production"))));
     assert_eq!(parent.code, RpcErrorCode::Unsupported);
     assert_eq!(parent.details["branches"], json!(["fix"]));
+    assert_eq!(
+        parent.details["next"],
+        json!({ "tool": "environment_show", "input": { "project": "shop", "environment": "fix" } })
+    );
     let unmarked = refusal(admit_removal(
         &store,
         &who,
@@ -773,7 +780,10 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
         &Trusted::default(),
     ));
     assert_eq!(unmarked.code, RpcErrorCode::Conflict);
-    assert_eq!(unmarked.details["next"]["tool"], "remove");
+    assert_eq!(
+        unmarked.details["next"],
+        json!({ "tool": "remove", "input": { "project": "shop", "environment": "production" } })
+    );
 
     // Its runner lost track after preparing: the outcome is unknown, so it stays.
     let removing = confirmed(&store, &who, request(Some("fix")), &Trusted::default()).unwrap();
@@ -1203,6 +1213,10 @@ fn a_failed_removal_goes_again_only_on_new_evidence_or_a_retry() {
     assert_eq!(stalled.code, RpcErrorCode::Conflict);
     assert!(stalled.message.contains("stalled"), "{}", stalled.message);
     assert_eq!(stalled.details["failed_on"], json!(["a".repeat(32)]));
+    assert_eq!(
+        stalled.details["next"],
+        json!({ "tool": "remove", "input": { "project": "shop", "environment": "fix" } })
+    );
 
     // A Server left: that may let it go.
     let one = Trusted {
@@ -1801,6 +1815,10 @@ fn a_default_waits_while_its_branch_removal_is_stalled() {
     assert_eq!(first.code, RpcErrorCode::Conflict);
     assert_eq!(first.details["branches"], json!(["fix"]));
     assert_eq!(
+        first.details["next"],
+        json!({ "tool": "environment_show", "input": { "project": "shop", "environment": "fix" } })
+    );
+    assert_eq!(
         listed(&store, &who),
         ["fix<production", "production*", "staging"]
     );
@@ -1992,7 +2010,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
     let removing = confirmed(&store, &who, accepting_data(None), &observing(observed())).unwrap();
     fail(&store, &taking_off(&removing, "fix"), &["web"]);
 
-    let being_removed = |written: Result<serde_json::Value, RpcError>| {
+    let being_removed = |written: Result<serde_json::Value, RpcError>, shown: Option<&str>| {
         let refused = written.unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
         assert!(
@@ -2000,69 +2018,95 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
             "{}",
             refused.message
         );
-        assert!(refused.details["next"]["tool"].is_string());
+        let expected = match shown {
+            Some(environment) => json!({
+                "tool": "environment_show",
+                "input": { "project": "shop", "environment": environment },
+            }),
+            None => json!({ "tool": "project_show", "input": { "project": "shop" } }),
+        };
+        assert_eq!(refused.details["next"], expected);
     };
     let write = |command: ployz_store::Command| {
         store
             .write(&who, &command)
             .map(|written| serde_json::to_value(written).unwrap())
     };
-    being_removed(write(ployz_store::Command::Admit(Admit::Deploy(Deploy {
-        teardown: None,
-        id: id(3),
-        environment: at("production"),
-        services: Vec::new(),
-        version: None,
-        upload: None,
-        accept_volume_loss: Vec::new(),
-        message: None,
-        prune: false,
-        no_prune: false,
-        approval: None,
-    }))));
-    being_removed(write(ployz_store::Command::Publish(Publish {
-        id: None,
-        environment: at("production"),
-        version: None,
-        message: None,
-        accept_volume_loss: Vec::new(),
-    })));
-    being_removed(write(ployz_store::Command::CreateBranch(CreateBranch {
-        id: EnvironmentId::parse(uuid(8)).unwrap(),
-        from: at("production"),
-        name: EnvironmentName::parse("other").unwrap(),
-        copy: vec![node("web")],
-        live: Vec::new(),
-        setup: Vec::new(),
-        keep: false,
-        fix: None,
-    })));
-    being_removed(write(ployz_store::Command::Sync(SyncChanges {
-        from: at("fix"),
-        into: Some(at("production")),
-        close_after: false,
-        version: "stale".into(),
-        picks: None,
-        skip: Vec::new(),
-        values: BTreeMap::new(),
-        id: None,
-    })));
-    being_removed(write(ployz_store::Command::SetDefaultEnvironment(
-        SetDefaultEnvironment {
-            environment: at("staging"),
-        },
-    )));
-    being_removed(write(ployz_store::Command::KeepBranch(KeepBranch {
-        environment: at("fix"),
-        kept: true,
-    })));
-    being_removed(write(ployz_store::Command::CreateEnvironment(
-        CreateEnvironment {
+    being_removed(
+        write(ployz_store::Command::Admit(Admit::Deploy(Deploy {
+            teardown: None,
+            id: id(3),
+            environment: at("production"),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            approval: None,
+        }))),
+        Some("production"),
+    );
+    being_removed(
+        write(ployz_store::Command::Publish(Publish {
+            id: None,
+            environment: at("production"),
+            version: None,
+            message: None,
+            accept_volume_loss: Vec::new(),
+        })),
+        Some("production"),
+    );
+    being_removed(
+        write(ployz_store::Command::CreateBranch(CreateBranch {
+            id: EnvironmentId::parse(uuid(8)).unwrap(),
+            from: at("production"),
+            name: EnvironmentName::parse("other").unwrap(),
+            copy: vec![node("web")],
+            live: Vec::new(),
+            setup: Vec::new(),
+            keep: false,
+            fix: None,
+        })),
+        Some("production"),
+    );
+    being_removed(
+        write(ployz_store::Command::Sync(SyncChanges {
+            from: at("fix"),
+            into: Some(at("production")),
+            close_after: false,
+            version: "stale".into(),
+            picks: None,
+            skip: Vec::new(),
+            values: BTreeMap::new(),
+            id: None,
+        })),
+        Some("fix"),
+    );
+    being_removed(
+        write(ployz_store::Command::SetDefaultEnvironment(
+            SetDefaultEnvironment {
+                environment: at("staging"),
+            },
+        )),
+        Some("staging"),
+    );
+    being_removed(
+        write(ployz_store::Command::KeepBranch(KeepBranch {
+            environment: at("fix"),
+            kept: true,
+        })),
+        Some("fix"),
+    );
+    being_removed(
+        write(ployz_store::Command::CreateEnvironment(CreateEnvironment {
             id: EnvironmentId::parse(uuid(9)).unwrap(),
             project: None,
             name: EnvironmentName::parse("qa").unwrap(),
-        },
-    )));
+        })),
+        None,
+    );
 }
 
 #[test]

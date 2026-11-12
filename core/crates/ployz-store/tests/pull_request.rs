@@ -277,6 +277,10 @@ fn plans_name_nodes_of_the_start_from_environment() {
         )
         .unwrap_err();
     assert_eq!(early.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        early.details["next"],
+        "ployz env pr acme/web --from ENV --project shop"
+    );
     let missing = store
         .write(
             &who,

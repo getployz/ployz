@@ -1097,6 +1097,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn several_setup_commands_say_to_set_them_all() {
+        let (store, who) = shop();
+        setup(&store, &who, &["db", "redis"]).unwrap();
+        let refused = remove(&store, &who, "db").unwrap_err();
+        assert_eq!(
+            refused.details["next"],
+            "ployz env setup --setup SERVICE=COMMAND --env production --project shop"
+        );
+    }
+
+    #[test]
     fn a_setup_command_runs_in_a_service_there_is() {
         let (store, who) = shop();
         let refused = setup(&store, &who, &["nosuch"]).unwrap_err();
