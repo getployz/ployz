@@ -17,14 +17,15 @@ use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use ployz_core::{Hint, LocalMachinePhase, RpcErrorCode};
 use ployz_store::{
-    DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
-    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery,
-    ProjectName, ProjectsQuery,
+    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, EnvironmentName,
+    EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery, ProjectName,
+    ProjectsQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::status_servers::{Subject, UNCHECKED};
+use super::status::model::{Attention, Subject};
+use super::status_servers::UNCHECKED;
 use super::store::{
     Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
 };
@@ -580,19 +581,6 @@ struct Staged {
     version: String,
 }
 
-/// Something that needs someone to act, with the command that acts.
-#[derive(Serialize)]
-pub(super) struct Attention {
-    pub(super) reason: String,
-    pub(super) message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) deployment: Option<DeploymentId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) next: Option<String>,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    pub(super) subject: Option<Subject>,
-}
-
 /// This host's check-in record, and whether its Machine left the Cluster since it joined.
 #[derive(Serialize)]
 struct ThisServer {
@@ -668,14 +656,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     Some(next) => next.to_owned(),
                     None => "ployz link --project PROJECT".to_owned(),
                 };
-                let next = Some(next);
-                attention.push(Attention {
-                    reason: error.code.to_string(),
-                    message: crate::ui::row(&error),
-                    deployment: None,
-                    next,
-                    subject: None,
-                });
+                attention.push(
+                    Attention::new(None, error.code.to_string(), crate::ui::row(&error)).next(next),
+                );
                 None
             }
             Err(error) => return Err(store.fail(error)),
@@ -712,25 +695,24 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                 | DeploymentStatus::Cancelled => None,
             };
             if let Some(reason) = reason {
-                attention.push(Attention {
-                    reason: reason.to_owned(),
-                    message: format!("Deployment {} did not complete", ended.label()),
-                    deployment: Some(ended.id.clone()),
-                    next: Some(super::deploy::hint_for(matches, ended)),
-                    subject: None,
-                });
+                attention.push(
+                    Attention::new(
+                        None,
+                        reason,
+                        format!("Deployment {} did not complete", ended.label()),
+                    )
+                    .deployment(ended.id.clone())
+                    .next(super::deploy::hint_for(matches, ended)),
+                );
             }
         }
         deploying = page.in_flight;
     }
     for reference in diff.iter().flat_map(|diff| &diff.broken) {
-        attention.push(Attention {
-            reason: "broken_reference".to_owned(),
-            message: reference.to_string(),
-            deployment: None,
-            next: Some(super::store::fix_broken(matches, reference)),
-            subject: None,
-        });
+        attention.push(
+            Attention::new(None, "broken_reference", reference.to_string())
+                .next(super::store::fix_broken(matches, reference)),
+        );
     }
     let mut partial = false;
     if let (Some(store), Some(_)) = (&store, &diff) {
@@ -761,7 +743,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     });
     let hint = attention
         .first()
-        .and_then(|attention| attention.next.clone())
+        .and_then(|attention| attention.command().map(str::to_owned))
         .or_else(|| {
             staged
                 .as_ref()
@@ -960,7 +942,7 @@ fn status_record(status: &Status) -> Fields {
         );
     }
     for attention in &status.attention {
-        let label = match &attention.subject {
+        let label = match attention.subject() {
             Some(
                 Subject::NotPickedUp { service, .. }
                 | Subject::StaleAddress { service, .. }
@@ -975,7 +957,7 @@ fn status_record(status: &Status) -> Fields {
         };
         record.push(
             label,
-            Cell::status(crate::ui::escaped(&attention.message), Tone::Bad),
+            Cell::status(crate::ui::escaped(attention.message()), Tone::Bad),
         );
     }
     record

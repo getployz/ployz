@@ -42,6 +42,7 @@ pub(crate) mod review;
 pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
+mod status;
 mod status_servers;
 pub(crate) mod store;
 mod teardown;
