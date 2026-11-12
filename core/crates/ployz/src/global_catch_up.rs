@@ -17,16 +17,18 @@
 use crate::cluster::Call;
 use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerObservation,
-    ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
-    EnvironmentValues, HealthFailure, HealthVerdict, Hint, IngressDoors, IngressDoorsSet,
-    InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
-    NewContainer, PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError,
-    RunRotation, RunTarget, ServiceId, ServiceMode, ServiceObservation,
-    ServicePlacementEligibility, SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, op,
+    ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, EnvironmentValues,
+    HealthFailure, HealthVerdict, Hint, IngressDoors, IngressDoorsSet, InspectRequest,
+    ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
+    PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
+    RunTarget, ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
+    SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, op,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::deploy::cleanup::{self, BroughtIn, Copy, Step};
+use crate::deploy::cleanup::{
+    self, BroughtIn, Copy, EmptyPolicy, NotIn, Removal, Rotated, RotationFailure,
+};
 use crate::drain::retirement::{Names, server_name};
 use crate::failure::partial_failure_details;
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
@@ -110,8 +112,8 @@ pub(crate) trait CatchUpClient {
         &mut self,
         copy: &Copy,
         cancel: &CancellationToken,
-    ) -> Result<Step, RpcError>;
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError>;
+    ) -> Result<Rotated, RpcError>;
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError>;
     async fn target_containers(
         &mut self,
         machine_id: &MachineId,
@@ -195,8 +197,14 @@ impl CatchUpClient for Client {
                 for observed in own {
                     let copy = Copy::observed(observed);
                     step_error(
-                        cleanup::retire(&*self, &copy, false, AnonymousVolumes::Remove, cancel)
-                            .await?,
+                        cleanup::retire(
+                            &*self,
+                            &copy,
+                            EmptyPolicy::RequireOtherIn,
+                            AnonymousVolumes::Remove,
+                            cancel,
+                        )
+                        .await?,
                     )?;
                 }
                 Ok(true)
@@ -321,11 +329,18 @@ impl CatchUpClient for Client {
         &mut self,
         copy: &Copy,
         cancel: &CancellationToken,
-    ) -> Result<Step, RpcError> {
-        cleanup::retire(&*self, copy, false, AnonymousVolumes::Remove, cancel).await
+    ) -> Result<Rotated, RpcError> {
+        cleanup::retire(
+            &*self,
+            copy,
+            EmptyPolicy::RequireOtherIn,
+            AnonymousVolumes::Remove,
+            cancel,
+        )
+        .await
     }
 
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError> {
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
         cleanup::remove(&*self, copy, AnonymousVolumes::Remove).await
     }
 
@@ -369,11 +384,10 @@ async fn takes_ingress(client: &mut Client, machine_id: &MachineId) -> Result<bo
         .ok_or_else(|| RpcError::conflict("the Server does not observe itself participating"))
 }
 
-fn step_error(step: Step) -> Result<(), RpcError> {
-    match step {
-        Step::Done => Ok(()),
-        Step::Refused(refusal) => Err(refusal.into_error()),
-        Step::NotConfirmed(machines) => Err(RpcError::unavailable(format!(
+fn step_error(rotated: Rotated) -> Result<(), RpcError> {
+    rotated.failure().map_err(|failure| match failure {
+        RotationFailure::Refused(refusal) => refusal.into_error(),
+        RotationFailure::NotConfirmed(machines) => RpcError::unavailable(format!(
             "{} did not confirm the copy left its routes",
             machines
                 .machines
@@ -381,12 +395,11 @@ fn step_error(step: Step) -> Result<(), RpcError> {
                 .map(MachineId::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
-        ))),
-        Step::Cancelled => Err(crate::ui::rpc_error(
-            ployz_core::RpcErrorCode::Internal,
-            &Failure::cancelled(),
         )),
-    }
+        RotationFailure::Cancelled => {
+            crate::ui::rpc_error(ployz_core::RpcErrorCode::Internal, &Failure::cancelled())
+        }
+    })
 }
 
 async fn ensure_retried(
@@ -724,6 +737,16 @@ fn new_copy(source: &ContainerObservation) -> NewContainer {
     }
 }
 
+/// A copy that did not come In is removed; `message` is why, and what the removal did
+/// follows it when it did not finish.
+async fn remove_started<C: CatchUpClient>(client: &mut C, copy: &Copy, message: String) -> String {
+    match client.remove_copy(copy).await {
+        Ok(Removal::Removed) => message,
+        Ok(removal) => format!("{message}; the started copy stays: {removal:?}"),
+        Err(error) => format!("{message}; {}", crate::ui::row(&error)),
+    }
+}
+
 fn not_in_message(health: Option<HealthVerdict>) -> String {
     health
         .and_then(HealthVerdict::into_failure)
@@ -924,20 +947,14 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             }
         };
         if copy.rotation != CopyRotation::In {
-            let outcome = match client.bring_in(&copy, &spec).await {
-                Ok(BroughtIn::In) => None,
-                Ok(BroughtIn::NotIn { health }) => Some(not_in_message(health)),
-                Ok(BroughtIn::Refused(refusal)) => {
-                    let message = if refusal.reason == ContainerRefusalReason::OlderThanIn {
-                        OUTDATED.to_owned()
-                    } else {
-                        refusal.message
-                    };
-                    Some(match client.remove_copy(&copy).await {
-                        Ok(Step::Done) => message,
-                        Ok(step) => format!("{message}; the started copy stays: {step:?}"),
-                        Err(error) => format!("{message}; {}", crate::ui::row(&error)),
-                    })
+            let outcome = match client.bring_in(&copy, &spec).await.map(BroughtIn::not_in) {
+                Ok(Ok(())) => None,
+                Ok(Err(NotIn::Health(health))) => Some(not_in_message(health)),
+                Ok(Err(NotIn::OlderThanIn(_))) => {
+                    Some(remove_started(client, &copy, OUTDATED.to_owned()).await)
+                }
+                Ok(Err(NotIn::Refused(refusal))) => {
+                    Some(remove_started(client, &copy, refusal.message).await)
                 }
                 Err(error) => Some(crate::ui::row(&error)),
             };
@@ -1011,11 +1028,15 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             if cancel.is_cancelled() {
                 break;
             }
-            let left = match client.retire_copy(&Copy::observed(old), cancel).await {
-                Ok(Step::Done) => None,
-                Ok(Step::Cancelled) => break,
-                Ok(Step::Refused(refusal)) => Some(refusal.message),
-                Ok(Step::NotConfirmed(machines)) => Some(format!(
+            let left = match client
+                .retire_copy(&Copy::observed(old), cancel)
+                .await
+                .map(Rotated::failure)
+            {
+                Ok(Ok(())) => None,
+                Ok(Err(RotationFailure::Cancelled)) => break,
+                Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
+                Ok(Err(RotationFailure::NotConfirmed(machines))) => Some(format!(
                     "{} did not confirm it left the routes",
                     machines
                         .machines

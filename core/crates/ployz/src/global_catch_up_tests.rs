@@ -4,11 +4,11 @@ use std::num::NonZeroU64;
 
 use ployz_core::{
     Ciphertext, ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRefusal,
-    ContainerRuntimeObservation, DeploymentLogId, DockerVolumeName, Gen, HealthObservation,
-    MachineId, MachineStorageObservation, Namespace, Placement, PrivateAccessSet,
-    ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig, ServiceMode,
-    ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    labels,
+    ContainerRefusalReason, ContainerRuntimeObservation, DeploymentLogId, DockerVolumeName, Gen,
+    HealthObservation, MachineId, MachineStorageObservation, Namespace, Placement,
+    PrivateAccessSet, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig,
+    ServiceMode, ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, labels,
 };
 
 use super::*;
@@ -605,19 +605,19 @@ fn refusal(reason: ContainerRefusalReason) -> ContainerRefusal {
 #[test]
 fn a_step_reads_as_the_error_each_outcome_names() {
     let (one, two) = (machine('1', "one").id, machine('2', "two").id);
-    step_error(Step::Done).unwrap();
+    step_error(Rotated::Done).unwrap();
     let refused = refusal(ContainerRefusalReason::LastIn);
     assert_eq!(
-        step_error(Step::Refused(refused.clone())).unwrap_err(),
+        step_error(Rotated::Refused(refused.clone())).unwrap_err(),
         refused.into_error()
     );
-    let unconfirmed = step_error(Step::NotConfirmed(unconfirmed(&[one, two]))).unwrap_err();
+    let unconfirmed = step_error(Rotated::NotConfirmed(unconfirmed(&[one, two]))).unwrap_err();
     assert_eq!(unconfirmed.code, ployz_core::RpcErrorCode::Unavailable);
     assert_eq!(
         unconfirmed.message,
         format!("{one}, {two} did not confirm the copy left its routes")
     );
-    let cancelled = step_error(Step::Cancelled).unwrap_err();
+    let cancelled = step_error(Rotated::Cancelled).unwrap_err();
     assert_eq!(cancelled.code, ployz_core::RpcErrorCode::Internal);
     assert_eq!(cancelled.message, "Cancelled.");
 }
@@ -630,20 +630,20 @@ async fn a_superseded_copy_that_does_not_retire_names_why_it_stays() {
     let founder = machine('f', "founder");
     let identity = qualified("app", "api");
     let stuck = machine('2', "stuck").id;
-    type Outcome = (fn() -> Step, Option<String>);
+    type Outcome = (fn() -> Rotated, Option<String>);
     let outcomes: [Outcome; 4] = [
         (
-            || Step::Refused(refusal(ContainerRefusalReason::LastIn)),
+            || Rotated::Refused(refusal(ContainerRefusalReason::LastIn)),
             Some("superseded copy {old} stays: owner refused: LastIn".into()),
         ),
         (
-            || Step::NotConfirmed(unconfirmed(&[machine('2', "stuck").id])),
+            || Rotated::NotConfirmed(unconfirmed(&[machine('2', "stuck").id])),
             Some(format!(
                 "superseded copy {{old}} stays: {stuck} did not confirm it left the routes"
             )),
         ),
-        (|| Step::Cancelled, None),
-        (|| Step::Done, None),
+        (|| Rotated::Cancelled, None),
+        (|| Rotated::Done, None),
     ];
     for (retire, stays) in outcomes {
         let service = global_service(
@@ -704,7 +704,7 @@ async fn a_refused_started_copy_whose_removal_does_not_finish_says_it_stays() {
     )]);
     client.run_result = Ok(Some(container_id('b')));
     client.bring_in = FakeBringIn::Refused(ContainerRefusalReason::OlderThanIn);
-    client.remove_step = || Step::Refused(refusal(ContainerRefusalReason::InRotation));
+    client.remove_step = || Removal::Refused(refusal(ContainerRefusalReason::InRotation));
     let text = message(catch_up(&mut client, &joiner).await.unwrap_err(), &joiner);
     let stays = format!(
         "{OUTDATED}; the started copy stays: Refused(ContainerRefusal {{ reason: InRotation, message: \"owner refused: InRotation\", capability: None }})"
@@ -1114,8 +1114,8 @@ struct FakeCatchUpClient {
     brought_in: Vec<Copy>,
     retired: Vec<Copy>,
     removed: Vec<Copy>,
-    retire_step: fn() -> Step,
-    remove_step: fn() -> Step,
+    retire_step: fn() -> Rotated,
+    remove_step: fn() -> Removal,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
     names: crate::drain::retirement::Names,
@@ -1142,8 +1142,8 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         brought_in: Vec::new(),
         retired: Vec::new(),
         removed: Vec::new(),
-        retire_step: || Step::Done,
-        remove_step: || Step::Done,
+        retire_step: || Rotated::Done,
+        remove_step: || Removal::Removed,
         failures: Vec::new(),
         omissions: Vec::new(),
         names: Vec::new(),
@@ -1312,12 +1312,12 @@ impl CatchUpClient for FakeCatchUpClient {
         &mut self,
         copy: &Copy,
         _cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Step, RpcError> {
+    ) -> Result<Rotated, RpcError> {
         self.retired.push(copy.clone());
         Ok((self.retire_step)())
     }
 
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError> {
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
         self.removed.push(copy.clone());
         Ok((self.remove_step)())
     }
