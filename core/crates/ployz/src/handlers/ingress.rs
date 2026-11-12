@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
 use crate::cli::{base, positional, switch};
-use crate::ingress::{Doors, MachineDoors, cluster_doors_for, use_doors};
+use crate::ingress::{Doors, MachineDoors, checked_doors, use_doors};
 use crate::ui::{self, Cell, Gaps, Table};
 
 /// The most a Cloudflare tunnel token holds on stdin. Cloudflare's run a few hundred bytes.
@@ -109,19 +109,19 @@ pub(crate) fn use_doors_on(root: &ArgMatches) -> Result<(), Error> {
     } else {
         None
     };
+    let config = super::config_path(root)?;
     with_client(root, |client| {
         Box::pin(async move {
             let observed = crate::ingress::observe_doors(client).await?;
-            let token = match token {
-                Some(token) => Some(token),
-                None if doors.has(ployz_core::IngressDoor::Tunnel)
-                    && observed.cluster.sealed_token.is_none() =>
-                {
-                    Some(ask_token()?)
-                }
-                None => None,
-            };
-            let doors = cluster_doors_for(&observed, doors, token.as_deref())?;
+            let doors = checked_doors(
+                client,
+                &observed,
+                doors,
+                token,
+                async |client| super::device::seal_to(&config, client).await,
+                ask_token,
+            )
+            .await?;
             let changed = use_doors(client, observed, doors, &CancellationToken::new()).await?;
             let gaps = gaps_of(&changed.machines, changed.failures);
             let table = table(&changed.machines);

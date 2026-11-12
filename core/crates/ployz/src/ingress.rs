@@ -26,6 +26,7 @@ use crate::{
     connect::{Client, ConnectError},
     deploy::{MachineOperations, RestartTolerant, SlotAction},
     failure::Failure,
+    sealing_pin::SealTo,
     ui::progress::{Detail, Diagnostic, StartFailure},
 };
 
@@ -192,21 +193,29 @@ pub(crate) struct Doors {
     pub(crate) open: BTreeMap<MachineId, IngressDoors>,
     /// The listing the rest derives from, with the Servers that didn't answer it.
     pub(crate) listed: PartialResult<Vec<ContainerObservation>, RpcError>,
-    /// The Cluster's Sealing Key, from the first Server that holds it.
+    /// The Cluster's Sealing Key as the first Server's row claims it. Cloud can write
+    /// that row, so the CLI seals only to a key [`SealTo`] checks.
     pub(crate) sealing: Option<SealingPublicKey>,
 }
 
-/// The Doors to open: `doors`, with `token` sealed to the Cluster when the Tunnel Door is
+/// A Cloudflare tunnel token to seal, with the Cluster Sealing Key to seal it to.
+pub(crate) struct NewToken<'token> {
+    /// A key the caller trusts for the Cluster, never one a row merely claims.
+    pub(crate) cluster: SealingPublicKey,
+    pub(crate) token: &'token str,
+}
+
+/// The Doors to open: `doors`, with `token` sealed to its key when the Tunnel Door is
 /// among them, or the token the Cluster already runs when none is given.
 ///
 /// # Errors
 ///
-/// Fails when the Tunnel Door needs a token and none is given or observed, or when no
-/// Server holds the Sealing Key to seal it for.
+/// Fails when the Tunnel Door needs a token and none is given or observed, or the token
+/// can't be sealed.
 pub(crate) fn cluster_doors_for(
     observed: &Doors,
     doors: IngressDoors,
-    token: Option<&str>,
+    token: Option<NewToken<'_>>,
 ) -> Result<ClusterDoors, Failure> {
     if !doors.has(IngressDoor::Tunnel) {
         return Ok(ClusterDoors {
@@ -215,15 +224,8 @@ pub(crate) fn cluster_doors_for(
         });
     }
     let sealed_token = match token {
-        Some(token) => {
-            let Some(sealing) = &observed.sealing else {
-                return Err(Failure::coded(
-                    RpcErrorCode::Unavailable,
-                    "No online Server holds the Cluster's Sealing Key, so the tunnel token can't \
-                     be sealed.",
-                ));
-            };
-            seal_platform(sealing, PlatformPurpose::IngressTunnel, token.as_bytes()).map_err(
+        Some(NewToken { cluster, token }) => {
+            seal_platform(&cluster, PlatformPurpose::IngressTunnel, token.as_bytes()).map_err(
                 |error| {
                     Failure::caused(
                         RpcErrorCode::Internal,
@@ -243,6 +245,42 @@ pub(crate) fn cluster_doors_for(
         doors,
         sealed_token: Some(sealed_token),
     })
+}
+
+/// [`cluster_doors_for`] through `client`, sealing a new tunnel token only to the key
+/// `seal_to` vouches for. The token is `given`, else `ask` asks for one when the Cluster
+/// runs none; the key is checked first, so nothing is asked for or sealed when it fails.
+///
+/// # Errors
+///
+/// As [`SealTo::key`] when the key can't be checked, and as `seal_to`, `ask` and
+/// [`cluster_doors_for`].
+pub(crate) async fn checked_doors(
+    client: &mut Client,
+    observed: &Doors,
+    doors: IngressDoors,
+    given: Option<String>,
+    seal_to: impl AsyncFnOnce(&Client) -> Result<SealTo, Failure>,
+    ask: impl FnOnce() -> Result<String, Failure>,
+) -> Result<ClusterDoors, Failure> {
+    let new_token = doors.has(IngressDoor::Tunnel)
+        && (given.is_some() || observed.cluster.sealed_token.is_none());
+    if !new_token {
+        return cluster_doors_for(observed, doors, None);
+    }
+    let cluster = seal_to(client).await?.key(client, observed.sealing).await?;
+    let token = match given {
+        Some(token) => token,
+        None => ask()?,
+    };
+    cluster_doors_for(
+        observed,
+        doors,
+        Some(NewToken {
+            cluster,
+            token: &token,
+        }),
+    )
 }
 
 pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
