@@ -10,8 +10,8 @@ use std::net::IpAddr;
 
 use ployz_core::{
     ContainerId, ContainerKind, CopyTransition, DockerVolumeName, HandoffReceiptEnvelope,
-    MachineId, ManagementAddress, OperationId, Sealing, SnapshotGuid, SnapshotName, Start,
-    VolumeCopy, WriterEpoch,
+    MachineId, ManagementAddress, OperationId, Sealing, SlotRole, SnapshotGuid, SnapshotName,
+    Start, VolumeCopy, WriterEpoch,
     authority::{
         Approver, AuthorityRefusal, Handed as Lands, HandoffFacts, HandoffReceipt, MachineSigned,
         Purpose, Signed, StepDigest, Timestamp, VolumeApproval, VolumeFacts, VolumeStep,
@@ -184,15 +184,19 @@ impl LocalMachine {
     /// must be the address this Machine's own accepted row gives a Server the approval pulls
     /// from. A Snapshot with one opens its operation, and under a Mirror approval grants the
     /// Mirror every snapshot of the Volume. A Snapshot without one runs and records nothing.
-    /// A cut needs a Move approval from this Machine. A promote with one is admitted: on a
-    /// Move's source it records the resume, which ends the Move here, and on its target it
-    /// grants each Mirror that keeps following every snapshot. A promote without one runs
-    /// as before. Returns the operation admitted, for the step's effect to record against.
+    /// A cut needs a Move approval from this Machine. A promote needs an approval: a Move's,
+    /// where on its source it records the resume, which ends the Move here, and on its
+    /// target it grants each Mirror that keeps following every snapshot; or a Restore's of
+    /// this Machine's copy at the snapshot it names. A Forget of a slot holding a snapshot
+    /// needs a removal of that slot in its role, a replacing Mirror before its first pull, or
+    /// the Move this Machine was the target of; a slot holding none destroys nothing, so it
+    /// needs none. Returns the operation admitted, for the step's effect to record against.
     ///
     /// # Errors
-    /// Returns [`Error::VolumeStepRefused`] for a pull or a cut with no approval, a pull
-    /// from another source, and a step the approval does not admit; [`Error::ApprovalRecord`]
-    /// or a store error when a record cannot be read.
+    /// Returns [`Error::VolumeStepRefused`] for a pull, a cut, a promote or a Forget of a
+    /// snapshot with no approval, a pull from another source, a Restore at another snapshot,
+    /// a removal of another role, and a step the approval does not admit;
+    /// [`Error::ApprovalRecord`] or a store error when a record cannot be read.
     pub(crate) async fn admit_operator_copy(
         &self,
         approval: Option<&Signed<VolumeApproval>>,
@@ -258,18 +262,39 @@ impl LocalMachine {
                 let step = VolumeStep::Copy(CopyTransition::WriterToMirror);
                 self.admitted(approval, volume, &step, None).map(Some)
             }
+            CopyStep::Forget { role, empty } => {
+                if empty {
+                    return Ok(None);
+                }
+                let approval = approval.ok_or_else(unsigned)?;
+                let body = approval.open().map_err(Error::VolumeStepRefused)?;
+                if let VolumeWorkflow::MirrorRemoval { role: removed, .. } = body.workflow
+                    && role != Some(removed)
+                {
+                    return Err(Error::VolumeStepRefused(AuthorityRefusal::Mismatch {
+                        field: "a copy's role",
+                    }));
+                }
+                let step = VolumeStep::Copy(CopyTransition::MirrorToForget);
+                self.admitted(approval, volume, &step, None).map(Some)
+            }
             CopyStep::Promote {
                 transition,
                 at,
                 epoch,
                 receipt,
             } => {
-                let Some(approval) = approval else {
-                    return Ok(None);
-                };
+                let approval = approval.ok_or_else(unsigned)?;
                 let machine = self.record().id();
                 let step = VolumeStep::Copy(transition);
                 let body = approval.open().map_err(Error::VolumeStepRefused)?;
+                if let VolumeWorkflow::Restore { at: restored, .. } = body.workflow
+                    && restored != *at
+                {
+                    return Err(Error::VolumeStepRefused(AuthorityRefusal::Mismatch {
+                        field: "a snapshot",
+                    }));
+                }
                 if !matches!(&body.workflow, VolumeWorkflow::Move { to, .. } if *to == machine) {
                     let admitted = self.admitted(approval, volume, &step, None)?;
                     if admitted.workflow.moves_from(&machine) {
@@ -682,13 +707,16 @@ pub(crate) enum CopyStep<'a> {
     /// The cut on a Move's source.
     Cut,
     /// The copy becomes the Writer at `at` with `epoch`: a Move's target promotes, which
-    /// needs its source's `receipt`, or its source resumes.
+    /// needs its source's `receipt`, its source resumes, or a Restore promotes it.
     Promote {
         transition: CopyTransition,
         at: &'a SnapshotGuid,
         epoch: WriterEpoch,
         receipt: Option<&'a HandoffReceiptEnvelope>,
     },
+    /// A Mirror's slot is destroyed: one held as `role`, which is `empty` when it holds no
+    /// snapshot.
+    Forget { role: Option<SlotRole>, empty: bool },
 }
 
 /// A Volume step this Machine admitted, for its effect to record against.

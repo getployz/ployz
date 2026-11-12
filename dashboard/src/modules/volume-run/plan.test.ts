@@ -499,7 +499,7 @@ describe("read a Mirror approval", () => {
     ["the Mirror and Volume asked for", mirrorTo(b), true],
     ["another Mirror", mirrorTo(c), false],
     ["another Volume", mirrorTo(b, "shop_logs"), false],
-    ["another workflow", signed({ volume: "shop_data", workflow: { kind: "mirror_removal", mirror: b, writer: a, role: "mirror", last_copy: false } }), false],
+    ["another workflow", signed({ volume: "shop_data", workflow: { kind: "mirror_removal", mirror: b, writer: a, role: "mirror" } }), false],
     ["a body that isn't JSON", { body: "{", signatures: [] }, false],
     ["another Writer", signed({ volume: "shop_data", workflow: { kind: "mirror", writer: c, mirror: b, replace: false } }), false],
     ["a body past the size limit", { ...mirrorTo(b), signatures: [{ key: "a".repeat(64), signature: "b".repeat(MAX_APPROVAL_BYTES) }] }, false],

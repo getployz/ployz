@@ -1,7 +1,7 @@
 //! SetVolumeCopy: the transition table and its Container half. ZFS runs on the plugin
 //! through the routes in [`crate::volume_copy`].
 
-use ployz_core::authority::{AuthorityRefusal, Purpose};
+use ployz_core::authority::{AuthorityRefusal, Purpose, Signed, VolumeApproval, VolumeWorkflow};
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerRuntimeObservation, ContainerWant, CopyPlan, CopyRefusal, CopyRotation,
@@ -186,7 +186,8 @@ impl MachineService {
             CopyPlan::Transition(transition) => Some(transition),
         };
         if operator
-            && matches!(want, WantedCopy::Writer { .. })
+            && let WantedCopy::Writer { at, .. } = &want
+            && !restores(approval.as_ref(), &self.local.record().id(), at)
             && let Some(handed) = self.local.handed_off(&name, copy.as_ref())?
         {
             tracing::warn!(%name, "Volume handed off here refuses to become its Writer again");
@@ -212,7 +213,7 @@ impl MachineService {
             self.local
                 .admit_operator_volume_start(approval.as_ref(), &name, start, handed)?;
         }
-        let admitted = match approved_step(&want, transition, receipt.as_ref()) {
+        let admitted = match approved_step(&want, transition, receipt.as_ref(), copy.as_ref()) {
             Some(step) if operator => {
                 self.local
                     .admit_operator_copy(approval.as_ref(), &name, step)
@@ -220,7 +221,12 @@ impl MachineService {
             }
             _ => None,
         };
+        // A replacing Mirror admitted its Forget with the withdrawal in the same write.
+        let withdrew = admitted
+            .as_ref()
+            .is_some_and(|admitted| matches!(admitted.workflow, VolumeWorkflow::Mirror { .. }));
         if let WantedCopy::Forget { recipient } = &want
+            && !withdrew
             && let Some(recipient) = withdrawn(
                 copy.as_ref(),
                 *recipient,
@@ -265,6 +271,7 @@ impl MachineService {
                     }
                     copy => copy,
                 };
+                self.end_landed(admitted.as_ref(), false)?;
                 // Another holder already runs: starting this one too would run two. Read
                 // again here, since a holder can exit or go while the Writer route runs.
                 if let Some(start) = start {
@@ -287,6 +294,7 @@ impl MachineService {
                     r#gen,
                 };
                 let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
+                self.end_landed(admitted.as_ref(), false)?;
                 crate::faults::kill_inside(
                     "SetVolumeCopy.MirrorToWriter",
                     Some(Identity {
@@ -394,8 +402,11 @@ impl MachineService {
                 CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
                 WantedCopy::Forget { .. },
             ) => {
-                self.plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
-                    .await
+                let copy = self
+                    .plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
+                    .await?;
+                self.end_landed(admitted.as_ref(), true)?;
+                Ok(copy)
             }
             (transition, want) => {
                 unreachable!("the planner paired {transition:?} with {want:?}")
@@ -615,6 +626,32 @@ impl MachineService {
 }
 
 impl MachineService {
+    /// End the operation a step's effect just landed under, when that step was its last
+    /// here: a Restore's promotion, and the destroy of a slot under its removal or under a
+    /// Move whose target releases the copy it pulled. A Move's promotion leaves its
+    /// operation open for the resend of the approved start. A resend then finds the copy at
+    /// its want and changes nothing, and the approval never runs here again.
+    fn end_landed(
+        &self,
+        admitted: Option<&Admitted>,
+        destroyed: bool,
+    ) -> Result<(), LocalMachineError> {
+        let Some(admitted) = admitted else {
+            return Ok(());
+        };
+        let last = match admitted.workflow {
+            VolumeWorkflow::Restore { .. } => true,
+            VolumeWorkflow::MirrorRemoval { .. } | VolumeWorkflow::Move { .. } => destroyed,
+            VolumeWorkflow::Mirror { .. }
+            | VolumeWorkflow::Resize { .. }
+            | VolumeWorkflow::Seed { .. } => false,
+        };
+        if last {
+            self.local.end_volume_operation(admitted.operation)?;
+        }
+        Ok(())
+    }
+
     /// Let a Move's target pull what this round left newest: the snapshot it took, or with
     /// nothing written the one before, which is what the run then sends.
     fn grant_newest(
@@ -635,13 +672,23 @@ impl MachineService {
 
 /// The step of `want` an enforcing Machine checks against an Operator's Volume approval: a
 /// pull that makes, refreshes or already holds a Mirror, a run snapshot taken or already
-/// held, a Move's cut, and a promote to the Writer.
+/// held, a Move's cut, a promote to the Writer, and the destroy of a Mirror's slot. A
+/// Writer's `Forget` drops only its run snapshots, and a seed's an unadopted copy no
+/// Container wrote, so neither is checked.
 fn approved_step<'a>(
     want: &'a WantedCopy,
     transition: Option<CopyTransition>,
     receipt: Option<&'a HandoffReceiptEnvelope>,
+    copy: Option<&VolumeCopy>,
 ) -> Option<CopyStep<'a>> {
     match (want, transition) {
+        (WantedCopy::Forget { .. }, Some(CopyTransition::MirrorToForget)) => match copy {
+            Some(VolumeCopy::Slot { role, newest, .. }) => Some(CopyStep::Forget {
+                role: *role,
+                empty: newest.is_none(),
+            }),
+            _ => None,
+        },
         (
             WantedCopy::Mirror {
                 from: Some(from),
@@ -678,6 +725,22 @@ fn approved_step<'a>(
         }),
         _ => None,
     }
+}
+
+/// Whether `approval` restores this Machine's copy at `at`: the Restore a person approved
+/// after a Move handed the copy off, which the handoff's refusal lets through. Admission
+/// checks its signature.
+fn restores(
+    approval: Option<&Signed<VolumeApproval>>,
+    machine: &MachineId,
+    at: &ployz_core::SnapshotGuid,
+) -> bool {
+    approval
+        .and_then(|approval| approval.open().ok())
+        .is_some_and(|body| {
+            matches!(body.workflow, VolumeWorkflow::Restore { machine: restored, at: restored_at, .. }
+                if restored == *machine && restored_at == *at)
+        })
 }
 
 /// Whom a `Forget` withdraws from the Volume before it destroys anything: on a Mirror's

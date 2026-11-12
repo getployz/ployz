@@ -74,9 +74,8 @@ fn workflows() -> [VolumeWorkflow; 6] {
         },
         VolumeWorkflow::MirrorRemoval {
             mirror: b(),
-            writer: a(),
+            writer: Some(a()),
             role: SlotRole::Mirror,
-            last_copy: true,
         },
         VolumeWorkflow::Restore {
             machine: b(),
@@ -154,9 +153,7 @@ fn each_workflow_signs_its_golden_canonical_body() {
             r#"{{"from":"{a}","kind":"move","mirrors":["{c}"],"service":{{"digest":"{d}","name":"db"}},"to":"{b}"}}"#
         ),
         format!(r#"{{"kind":"mirror","mirror":"{b}","replace":false,"writer":"{a}"}}"#),
-        format!(
-            r#"{{"kind":"mirror_removal","last_copy":true,"mirror":"{b}","role":"mirror","writer":"{a}"}}"#
-        ),
+        format!(r#"{{"kind":"mirror_removal","mirror":"{b}","role":"mirror","writer":"{a}"}}"#),
         format!(
             r#"{{"at":"18446744073709551615","kind":"restore","loses_after":500000,"machine":"{b}"}}"#
         ),

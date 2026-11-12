@@ -18,8 +18,8 @@ const workflows: [VolumeWorkflow, string][] = [
   ],
   [{ kind: "mirror", writer: a, mirror: b, replace: false }, `{"kind":"mirror","mirror":"${b}","replace":false,"writer":"${a}"}`],
   [
-    { kind: "mirror_removal", mirror: b, writer: a, role: "mirror", last_copy: true },
-    `{"kind":"mirror_removal","last_copy":true,"mirror":"${b}","role":"mirror","writer":"${a}"}`,
+    { kind: "mirror_removal", mirror: b, writer: a, role: "mirror" },
+    `{"kind":"mirror_removal","mirror":"${b}","role":"mirror","writer":"${a}"}`,
   ],
   [
     { kind: "restore", machine: b, at: "18446744073709551615", loses_after: 500000 },

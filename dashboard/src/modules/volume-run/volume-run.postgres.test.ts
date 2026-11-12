@@ -896,7 +896,7 @@ describe("volume runs", () => {
 
       expect(await plan(signed({ volume: dockerVolume, workflow: { ...workflow, mirror: idOf("fsn-3") } }))).toEqual(invalid);
       expect(await plan(signed({ volume: "shop-production_vol-other", workflow }))).toEqual(invalid);
-      expect(await plan(signed({ volume: dockerVolume, workflow: { kind: "mirror_removal", mirror: idOf("fsn-2"), writer: idOf("fsn-1"), role: "mirror", last_copy: false } }))).toEqual(invalid);
+      expect(await plan(signed({ volume: dockerVolume, workflow: { kind: "mirror_removal", mirror: idOf("fsn-2"), writer: idOf("fsn-1"), role: "mirror" } }))).toEqual(invalid);
       expect(await plan(signed({ volume: dockerVolume, workflow }))).toMatchObject({ ok: true });
     });
 

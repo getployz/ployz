@@ -149,10 +149,10 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (INSPECT_STORAGE_CAPABILITY, Read),
     (PREPARE_VOLUMES_CAPABILITY, Bound("checked at mount by C")),
     (LIST_VOLUMES_CAPABILITY, Read),
-    (REMOVE_VOLUME_CAPABILITY, Pending("E6")),
+    (REMOVE_VOLUME_CAPABILITY, Pending("F5")),
     (INSPECT_VOLUME_COPY_CAPABILITY, Read),
     (SEED_VOLUME_CAPABILITY, Signed(&[Volume])),
-    (SET_VOLUME_COPY_CAPABILITY, Pending("E3 to E6")),
+    (SET_VOLUME_COPY_CAPABILITY, Signed(&[Volume])),
     (SET_VOLUME_SIZE_CAPABILITY, Signed(&[Volume])),
     (LIST_IMAGES_CAPABILITY, Read),
     (
@@ -500,8 +500,20 @@ pub const CASES: &[Case] = &[
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
-        "promote, forget",
-        "a SetVolumeCopy forgetting a copy",
+        "a promote with no receipt",
+        "a SetVolumeCopy making a Mirror the Writer with no receipt and no Restore approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
+        "a forget of a copy",
+        "a SetVolumeCopy deleting a slot that holds a snapshot, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
+        "a forget of nothing",
+        "a SetVolumeCopy forgetting where this Machine holds no copy",
         Expected::Served,
     ),
     case(
