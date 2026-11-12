@@ -14,7 +14,6 @@ use crate::cloud_account::{self, Credential, ServerClears, TokenKind, TokenPrese
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Table, Tone};
 use ployz_core::Hint;
-use ployz_store::OperationVerb;
 
 pub(super) fn token_group(command: Command) -> Command {
     command.about("Manage Organization Tokens and signed-in devices")
@@ -572,7 +571,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let removal = approval::approved(
         &runtime,
         &credential,
-        OperationVerb::Remove,
+        ployz_store::OperationVerb::Remove,
         matches.get_one::<String>("approval").cloned(),
         |id| super::server::approved_rerun(matches, &again, id),
         async |approval| {
