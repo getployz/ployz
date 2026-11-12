@@ -108,7 +108,7 @@ struct Disk {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Host {
     /// A release is installed with its units, so ployzd and its volume plugin answer
-    /// (installer/mod.rs:301-304, installer/host.rs:261-274).
+    /// (`install_binaries`, `install_units` and `activate_units` in installer/mod.rs, installer/host.rs:261-274).
     release: bool,
     /// The root-backed `ployz` Pool exists on `/var/lib/ployz-machine-pool`, imported
     /// (`MachineLayout::machine_pool_file`, machine_layout.rs:112-116).
@@ -202,7 +202,7 @@ enum Branch {
     InstallationActive,
     /// `install_at`'s `try_installation` refused at once while a Volume create holds the
     /// shared guard (ployzd mutation.rs:77-81, installer/mod.rs:259-260). The installer
-    /// prints "another Ployz installation is active" (installer/mod.rs:92-93, :342-350).
+    /// prints "another Ployz installation is active" (`Error::Busy` in installer/mod.rs, :342-350).
     InstallerBusy,
     /// `prepare_storage` refuses beside a root-backed Pool: the backing check
     /// (installer/storage.rs:48-53), or `existing_device_pool` finding `ployz`
@@ -288,7 +288,7 @@ enum Action {
     InstallerStops,
     /// `install_at` tries the installation gate's exclusive guard once
     /// (installer/mod.rs:259-260, ployzd mutation.rs:77-81), then `prepare_storage`'s checks
-    /// run, from resolving the device (installer/storage.rs:44) to `empty_device` (:63).
+    /// run, from resolving the device (the `fs::canonicalize` call in `prepare_storage`) to `empty_device`.
     Assess,
     /// The fix: the installer writes the intent atomically.
     WriteIntent,
@@ -298,7 +298,7 @@ enum Action {
     Verify,
     /// `remember_device_pool` (installer/storage.rs:77-83, :113). `install_locked` then
     /// installs the binaries and units and enables the plugin's socket
-    /// (installer/mod.rs:301-304, installer/host.rs:270), which this step includes.
+    /// (`install_binaries`, `install_units` and `activate_units` in installer/mod.rs, installer/host.rs:270), which this step includes.
     Record,
     /// Docker asks the plugin to create a Provisioned Volume (`VolumeStorage::create`,
     /// volume_plugin/pool.rs:96), or a copy asks for the first Pool (copy.rs `first_pool`).

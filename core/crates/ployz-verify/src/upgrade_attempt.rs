@@ -356,7 +356,7 @@ enum Branch {
     /// A new request passed :191 and goes on to resolve its release, out of the model.
     NewRequestGoesOn,
     /// `reconcile_for_install` refused (:358-359 or :368), and `install_at` returned Busy
-    /// (installer/mod.rs:355-358).
+    /// (`map_upgrade_reconciliation` in installer/mod.rs).
     InstallBusy,
     /// `install_at` goes on to `install_locked` (installer/mod.rs:264).
     InstallGoesOn,
@@ -1695,7 +1695,7 @@ fn started(after: &State, caller: Caller) -> String {
             returns_to(caller, after)
         ),
         Some(Branch::CallerBusy) if caller == Caller::Install => {
-            "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer/mod.rs:260, :342-344, :93)".to_owned()
+            "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer/mod.rs:260, :342-344, `Error::Busy`)".to_owned()
         }
         Some(Branch::CallerBusy) => {
             "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1069-1074)".to_owned()
@@ -1811,7 +1811,7 @@ fn reader_step_reads_as(
                 "Reader: request_locked passes :186 and :191 and goes on to resolve its release, which the model leaves out; the lock drops".to_owned()
             }
             Some(Branch::InstallBusy) => {
-                "Reader: reconcile_for_install returns Busy, and ployzd install prints \"another Ployz installation is active\" (installer/upgrade.rs:357-369, installer/mod.rs:261-263, :352-355, :93)".to_owned()
+                "Reader: reconcile_for_install returns Busy, and ployzd install prints \"another Ployz installation is active\" (installer/upgrade.rs:357-369, installer/mod.rs:261-263, :352-355, `Error::Busy`)".to_owned()
             }
             _ => {
                 "Reader: reconcile_for_install returns Ok; install_locked runs under the lock and returns, and the lock drops (installer/mod.rs:261-264)".to_owned()
