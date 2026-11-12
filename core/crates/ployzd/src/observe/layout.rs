@@ -95,6 +95,8 @@ const RESUME_FILE: &str = "resume-from";
 const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
+/// Unix nanoseconds in a second, the unit metric rows are stamped in.
+pub(crate) const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 /// The versioned root of the Log Store, `<DockerRootDir>/ployz-observe/v1`.
 #[derive(Clone, Debug)]
@@ -279,7 +281,7 @@ impl SegmentName {
     /// before 1970.
     #[must_use]
     pub fn containing(ts: i64) -> Option<Self> {
-        let secs = u64::try_from(ts.div_euclid(1_000_000_000)).ok()?;
+        let secs = u64::try_from(ts.div_euclid(NANOS_PER_SEC)).ok()?;
         Some(Self {
             start_secs: secs - secs % HOUR_SECS,
         })
@@ -303,6 +305,24 @@ impl SegmentName {
     pub fn end_secs(self) -> u64 {
         self.start_secs.saturating_add(HOUR_SECS)
     }
+
+    /// The Unix nanosecond this segment's hour begins at.
+    #[must_use]
+    pub fn start_nanos(self) -> i64 {
+        secs_to_nanos(self.start_secs())
+    }
+
+    /// The first Unix nanosecond after this segment's hour.
+    #[must_use]
+    pub fn end_nanos(self) -> i64 {
+        secs_to_nanos(self.end_secs())
+    }
+}
+
+fn secs_to_nanos(secs: u64) -> i64 {
+    i64::try_from(secs)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(NANOS_PER_SEC)
 }
 
 impl fmt::Display for SegmentName {
@@ -427,6 +447,15 @@ pub fn run_exits(bytes: &[u8]) -> impl Iterator<Item = RunExit> + '_ {
 mod tests {
     use super::{LogFileName, SegmentName, StoreRoot};
     use crate::test_dir::TestDir;
+
+    #[test]
+    fn a_segment_spans_its_hour_in_unix_nanoseconds() {
+        let name = SegmentName::parse(b"1759996800.jsonl").unwrap();
+        assert_eq!(name.start_nanos(), 1_759_996_800_000_000_000);
+        assert_eq!(name.end_nanos(), 1_760_000_400_000_000_000);
+        assert_eq!(SegmentName::containing(name.end_nanos() - 1), Some(name));
+        assert_ne!(SegmentName::containing(name.end_nanos()), Some(name));
+    }
 
     #[test]
     fn log_file_names_parse_only_in_their_printed_form() {

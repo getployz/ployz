@@ -38,6 +38,7 @@ use super::{
     disk::{self, DatasetPlace, SlowReading},
     host::{self, HostCounters},
     net::{self, NetCounters},
+    policy::RETENTION,
     rollup,
     segment::{self, Row},
     zfs_io::{self, DatasetIo},
@@ -52,7 +53,7 @@ use crate::{
     },
 };
 
-const INTERVAL: Duration = Duration::from_secs(10);
+const INTERVAL: Duration = RETENTION.sample;
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(5);
 const CGROUP_V2_PREFIX: &str = "0::";
 const LOOPBACK: &str = "lo";

@@ -15,7 +15,7 @@
 //! know is skipped the same way, so new kinds can join the file.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, BufRead, BufReader, Write},
     ops::ControlFlow,
@@ -277,32 +277,25 @@ fn scan_until<R: DeserializeOwned + Stamped>(
     Ok(false)
 }
 
-/// Where the oldest raw segment starts, in Unix nanoseconds, or `None` when
-/// there is none.
+/// The hours that have a raw segment, oldest first.
 ///
 /// # Errors
 ///
 /// Returns an error when the raw dir exists but cannot be listed.
-pub fn oldest(store: &StoreRoot) -> io::Result<Option<i64>> {
+pub fn hours(store: &StoreRoot) -> io::Result<BTreeSet<SegmentName>> {
     let entries = match fs::read_dir(store.raw_metrics()) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
         Err(error) => return Err(error),
     };
     Ok(entries
         .filter_map(Result::ok)
         .filter_map(|entry| SegmentName::parse(entry.file_name().as_encoded_bytes()))
-        .map(|name| name.start_secs())
-        .min()
-        .map(|secs| {
-            i64::try_from(secs).map_or(i64::MAX, |secs| secs.saturating_mul(1_000_000_000))
-        }))
+        .collect())
 }
 
 fn overlaps(name: SegmentName, range: MetricRange) -> bool {
-    let nanos =
-        |secs: u64| i64::try_from(secs).map_or(i64::MAX, |secs| secs.saturating_mul(1_000_000_000));
-    nanos(name.start_secs()) < range.until_nanos && nanos(name.end_secs()) > range.since_nanos
+    name.start_nanos() < range.until_nanos && name.end_nanos() > range.since_nanos
 }
 
 /// Visits the rows of one segment in `range` and returns how many lines did

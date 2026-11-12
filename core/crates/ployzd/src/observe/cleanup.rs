@@ -35,17 +35,17 @@ use nix::{
 };
 use ployz_core::ContainerId;
 
-use super::layout::{
-    CONTAINERS_DIR, ENV_FILE, ENV_TEMP_FILE, EXITS_FILE, EXITS_TEMP_FILE, FIRST_SET_FILE,
-    FIRST_SET_TEMP_FILE, GAPS_FILE, LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE,
-    METRICS_DIR, RAW_DIR, ROLLUP_DIR, SCANNED_FILE, SCANNED_TEMP_FILE, SegmentName, StoreRoot,
-    VERSION_DIR, run_exits,
+use super::{
+    layout::{
+        CONTAINERS_DIR, ENV_FILE, ENV_TEMP_FILE, EXITS_FILE, EXITS_TEMP_FILE, FIRST_SET_FILE,
+        FIRST_SET_TEMP_FILE, GAPS_FILE, LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE,
+        METRICS_DIR, NANOS_PER_SEC, RAW_DIR, ROLLUP_DIR, SCANNED_FILE, SCANNED_TEMP_FILE,
+        SegmentName, StoreRoot, VERSION_DIR, run_exits,
+    },
+    metrics::policy::RETENTION,
 };
 
 const GIB: u64 = 1 << 30;
-const NANOS_PER_SEC: i64 = 1_000_000_000;
-const RAW_METRICS_AGE: Duration = Duration::from_secs(24 * 60 * 60);
-const ROLLUP_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
@@ -189,8 +189,8 @@ pub fn run(
 
     let hour_age_limit =
         |age: Duration| i64::try_from(now_secs.saturating_sub(age.as_secs())).unwrap_or(i64::MAX);
-    let raw_age_limit = hour_age_limit(RAW_METRICS_AGE);
-    let rollup_age_limit = hour_age_limit(ROLLUP_AGE);
+    let raw_age_limit = hour_age_limit(RETENTION.raw);
+    let rollup_age_limit = hour_age_limit(RETENTION.rollup);
     let age_limit = now
         .checked_sub(limits.max_age)
         .and_then(|limit| limit.duration_since(SystemTime::UNIX_EPOCH).ok())
@@ -1065,6 +1065,37 @@ mod tests {
         );
         assert_eq!(store.rollups(), [segment_name(1)]);
         assert_eq!(store.segments(), [segment_name(2)]);
+    }
+
+    #[test]
+    fn the_hour_a_23_hour_range_starts_in_is_never_deleted_while_that_range_is_served_raw() {
+        let store = store();
+        let raw = store.root.raw_metrics();
+        fs::create_dir_all(&raw).unwrap();
+        let hour = T0 - T0 % 3_600;
+        for hours_back in 0..30 {
+            fs::write(raw.join(segment_name(hours_back)), b"{}\n").unwrap();
+        }
+        for minutes_into_hour in [0, 1, 30, 59] {
+            let now_secs = hour + minutes_into_hour * 60;
+            let start = now_secs - 23 * 3_600;
+            let first = format!("{}.jsonl", start - start % 3_600);
+            let report = run(
+                &store.root,
+                &Limits::for_filesystem(u64::MAX),
+                Disk {
+                    total_bytes: u64::MAX,
+                    free_bytes: u64::MAX,
+                },
+                SystemTime::UNIX_EPOCH + Duration::from_secs(now_secs),
+                |_| true,
+            )
+            .unwrap();
+            assert!(
+                store.segments().contains(&first),
+                "{first} after {report:?} at +{minutes_into_hour} min"
+            );
+        }
     }
 
     #[test]

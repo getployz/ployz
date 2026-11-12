@@ -6,6 +6,7 @@ mod disk;
 pub(crate) mod history;
 mod host;
 mod net;
+pub(crate) mod policy;
 mod rate;
 pub(crate) mod rollup;
 pub(crate) mod sampler;

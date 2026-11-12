@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+use super::policy::RETENTION;
 use ployz_core::{
     ContainerId,
     metrics::{
@@ -22,7 +23,7 @@ use ployz_core::{
 const TARGET_BUCKETS: i64 = 300;
 /// The sampler's tick. A default bucket narrower than this would be empty
 /// between samples.
-const SAMPLE_NANOS: i64 = 10_000_000_000;
+const SAMPLE_NANOS: i64 = RETENTION.sample_nanos();
 /// Bounds the bucket table whatever step a caller asks for.
 const MAX_BUCKETS: i64 = 4_000;
 const NANOS_PER_SEC: f64 = 1e9;
@@ -331,11 +332,22 @@ impl ServiceFold {
         }
     }
 
-    pub(crate) fn finish(self) -> MetricHistoryReply {
-        let Self { buckets, table, .. } = self;
-        let gaps = buckets.gaps(&table);
-        let points = table
-            .into_iter()
+    /// Empties the bucket table onto `buckets` for the next range, keeping
+    /// every container's last reading so its first rate there spans the time
+    /// since the range before.
+    pub(crate) fn start(&mut self, buckets: Buckets) {
+        self.buckets = buckets;
+        self.table.clear();
+        self.table.resize_with(buckets.len, || None);
+    }
+
+    /// Answers the range added since `new` or `start`.
+    pub(crate) fn finish(&mut self) -> MetricHistoryReply {
+        let buckets = self.buckets;
+        let gaps = buckets.gaps(&self.table);
+        let points = self
+            .table
+            .drain(..)
             .enumerate()
             .filter_map(|(index, bucket)| Some(bucket?.into_point(buckets.start(index))))
             .collect();

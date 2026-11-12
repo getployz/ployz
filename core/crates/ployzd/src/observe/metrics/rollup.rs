@@ -13,7 +13,7 @@
 //! segment changed after its rollup was written.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Write as _},
     os::unix::fs::OpenOptionsExt,
@@ -31,14 +31,12 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 
 use super::{
+    policy::RETENTION,
     rate::{self, Buckets},
     segment::{self, Prefilter, Stamped},
 };
 use crate::observe::layout::{self, METRICS_DIR, SegmentName, StoreRoot};
 
-const NANOS_PER_SEC: i64 = 1_000_000_000;
-/// Width of one rollup point.
-pub const STEP_NANOS: i64 = 5 * 60 * NANOS_PER_SEC;
 const TEMP_SUFFIX: &str = ".tmp";
 
 /// One Service: the group a fold sums.
@@ -82,36 +80,47 @@ pub enum Rolled {
 }
 
 /// Folds every closed hour whose raw segment has no rollup yet, or changed
-/// after its rollup was written. Returns how many hours it folded.
+/// after its rollup was written, oldest hour first. Returns how many hours it
+/// folded.
 ///
 /// # Errors
 ///
 /// Returns an error when the raw segment dir exists but cannot be listed. An
-/// hour that fails to fold is logged and tried again on the next call.
+/// hour that fails to fold is logged and tried again on the next call; the
+/// hours after it still fold.
 pub fn fold_pending(store: &StoreRoot, now: SystemTime) -> io::Result<usize> {
-    let now_secs = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    let entries = match fs::read_dir(store.raw_metrics()) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(error),
-    };
-    let rollups = store.rollup_metrics();
     let mut folded = 0;
-    for entry in entries.filter_map(Result::ok) {
-        let Some(hour) = SegmentName::parse(entry.file_name().as_encoded_bytes()) else {
-            continue;
-        };
-        if hour.end_secs() > now_secs || !stale(&entry, &rollups.join(hour.to_string())) {
-            continue;
-        }
+    for hour in pending(store, now)? {
         match fold_hour(store, hour) {
             Ok(()) => folded += 1,
             Err(error) => tracing::warn!(%hour, %error, "could not fold a metric hour"),
         }
     }
     Ok(folded)
+}
+
+/// The closed hours whose raw segment has no rollup yet or changed after it
+/// was written, in hour order.
+fn pending(store: &StoreRoot, now: SystemTime) -> io::Result<Vec<SegmentName>> {
+    let now_secs = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let entries = match fs::read_dir(store.raw_metrics()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let rollups = store.rollup_metrics();
+    let mut hours: Vec<SegmentName> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let hour = SegmentName::parse(entry.file_name().as_encoded_bytes())?;
+            (hour.end_secs() <= now_secs && stale(&entry, &rollups.join(hour.to_string())))
+                .then_some(hour)
+        })
+        .collect();
+    hours.sort();
+    Ok(hours)
 }
 
 /// Whether the rollup at `rollup` is missing or no newer than its raw
@@ -134,19 +143,14 @@ fn stale(raw: &fs::DirEntry, rollup: &Path) -> bool {
 /// Returns an error when the raw segments cannot be listed or the rollup
 /// cannot be written.
 pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
-    let nanos = |secs: u64| {
-        i64::try_from(secs)
-            .unwrap_or(i64::MAX)
-            .saturating_mul(NANOS_PER_SEC)
-    };
     let range = MetricRange {
-        since_nanos: nanos(hour.start_secs()),
-        until_nanos: nanos(hour.end_secs()),
+        since_nanos: hour.start_nanos(),
+        until_nanos: hour.end_nanos(),
     };
     // One step of lead-in gives each container's first rate of the hour its
     // previous sample.
     let lead_in = MetricRange {
-        since_nanos: range.since_nanos.saturating_sub(STEP_NANOS),
+        since_nanos: range.since_nanos.saturating_sub(RETENTION.step_nanos()),
         ..range
     };
     let mut hosts = Vec::new();
@@ -176,7 +180,7 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
         },
     )?;
 
-    let buckets = Buckets::new(range, Some(STEP_NANOS));
+    let buckets = Buckets::new(range, Some(RETENTION.step_nanos()));
     let mut rows = Vec::new();
     if let MetricPoints::Machine(points) = rate::machine_history(&hosts, buckets).points {
         rows.extend(points.into_iter().map(Row::Host));
@@ -257,28 +261,22 @@ pub fn read(
     Ok((rolled, markers))
 }
 
-/// The end of the newest folded hour in Unix nanoseconds, or `None` before
-/// the first fold. Raw segments answer for the time after it.
+/// The hours that have a rollup file. History answers an hour in this set
+/// from its rollup and any other hour from raw rows.
 ///
 /// # Errors
 ///
 /// Returns an error when the rollup dir exists but cannot be listed.
-pub fn folded_until(store: &StoreRoot) -> io::Result<Option<i64>> {
+pub fn folded(store: &StoreRoot) -> io::Result<BTreeSet<SegmentName>> {
     let entries = match fs::read_dir(store.rollup_metrics()) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
         Err(error) => return Err(error),
     };
     Ok(entries
         .filter_map(Result::ok)
         .filter_map(|entry| SegmentName::parse(entry.file_name().as_encoded_bytes()))
-        .map(SegmentName::end_secs)
-        .max()
-        .map(|secs| {
-            i64::try_from(secs)
-                .unwrap_or(i64::MAX)
-                .saturating_mul(NANOS_PER_SEC)
-        }))
+        .collect())
 }
 
 #[cfg(test)]
@@ -296,11 +294,16 @@ mod tests {
         },
     };
 
-    use super::{self as rollup, Rolled, STEP_NANOS, ServiceRow, fold_hour, fold_pending, read};
+    use super::{
+        self as rollup, Rolled, ServiceRow, fold_hour, fold_pending, folded, pending, read,
+    };
     use crate::{
         observe::{
             layout::{SegmentName, StoreRoot},
-            metrics::segment::{self, Row},
+            metrics::{
+                policy::RETENTION,
+                segment::{self, Row},
+            },
         },
         test_dir::TestDir,
     };
@@ -430,7 +433,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), first);
 
         let points = service_points(&store, 1);
-        let starts: Vec<i64> = (0..12).map(|i| T0 + i * STEP_NANOS).collect();
+        let starts: Vec<i64> = (0..12).map(|i| T0 + i * RETENTION.step_nanos()).collect();
         assert_eq!(
             points.iter().map(|p| p.point.ts).collect::<Vec<_>>(),
             starts
@@ -599,6 +602,118 @@ mod tests {
         let rolled = fs::metadata(rollup).unwrap().modified().unwrap();
         touch(T0, rolled + Duration::from_secs(1));
         assert_eq!(fold_pending(&store, time(T0 + 2 * HOUR)).unwrap(), 2);
+    }
+
+    /// Raw segments for the three hours from `T0`, one host row each, last
+    /// written long ago so a rollup written now is never redone for its mtime.
+    fn write_three_hours(store: &StoreRoot) {
+        for tick in [0, 360, 720] {
+            segment::append(store, &[Row::Host(host(tick))]).unwrap();
+        }
+        for hours in 0..3 {
+            fs::File::options()
+                .write(true)
+                .open(
+                    store
+                        .raw_metrics()
+                        .join(hour(T0 + hours * HOUR).to_string()),
+                )
+                .unwrap()
+                .set_modified(time(T0))
+                .unwrap();
+        }
+    }
+
+    fn rollup_names(store: &StoreRoot) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(store.rollup_metrics())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn an_hour_that_fails_to_fold_does_not_stop_the_hours_after_it_and_is_retried() {
+        let (_dir, store) = store();
+        write_three_hours(&store);
+        let middle = hour(T0 + HOUR).to_string();
+        let blocked = store.rollup_metrics().join(format!("{middle}.tmp"));
+        fs::create_dir_all(&blocked).unwrap();
+
+        assert_eq!(fold_pending(&store, time(T0 + 3 * HOUR)).unwrap(), 2);
+        assert_eq!(
+            rollup_names(&store),
+            [
+                hour(T0).to_string(),
+                format!("{middle}.tmp"),
+                hour(T0 + 2 * HOUR).to_string()
+            ]
+        );
+
+        fs::remove_dir(&blocked).unwrap();
+        assert_eq!(fold_pending(&store, time(T0 + 3 * HOUR)).unwrap(), 1);
+        assert_eq!(
+            rollup_names(&store),
+            [
+                hour(T0).to_string(),
+                middle,
+                hour(T0 + 2 * HOUR).to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_hours_come_oldest_first_whatever_order_their_segments_were_written_in() {
+        let (_dir, store) = store();
+        for tick in [720, 0, 1_080, 360] {
+            segment::append(&store, &[Row::Host(host(tick))]).unwrap();
+        }
+        for hours in 0..4 {
+            fs::File::options()
+                .write(true)
+                .open(
+                    store
+                        .raw_metrics()
+                        .join(hour(T0 + hours * HOUR).to_string()),
+                )
+                .unwrap()
+                .set_modified(time(T0))
+                .unwrap();
+        }
+
+        let want: Vec<SegmentName> = (0..3).map(|hours| hour(T0 + hours * HOUR)).collect();
+        assert_eq!(pending(&store, time(T0 + 3 * HOUR)).unwrap(), want);
+        let all: Vec<SegmentName> = (0..4).map(|hours| hour(T0 + hours * HOUR)).collect();
+        assert_eq!(pending(&store, time(T0 + 4 * HOUR)).unwrap(), all);
+
+        fold_hour(&store, hour(T0 + HOUR)).unwrap();
+        assert_eq!(
+            pending(&store, time(T0 + 4 * HOUR)).unwrap(),
+            [hour(T0), hour(T0 + 2 * HOUR), hour(T0 + 3 * HOUR)]
+        );
+    }
+
+    #[test]
+    fn folded_is_the_set_of_hours_with_a_rollup_whatever_hours_follow_them() {
+        let (_dir, store) = store();
+        assert!(folded(&store).unwrap().is_empty());
+        write_three_hours(&store);
+        fold_hour(&store, hour(T0 + 2 * HOUR)).unwrap();
+        fold_hour(&store, hour(T0)).unwrap();
+        fs::write(
+            store
+                .rollup_metrics()
+                .join(format!("{}.tmp", hour(T0 + HOUR))),
+            b"x",
+        )
+        .unwrap();
+
+        let want = [hour(T0), hour(T0 + 2 * HOUR)];
+        assert_eq!(
+            folded(&store).unwrap().into_iter().collect::<Vec<_>>(),
+            want
+        );
     }
 
     #[test]
