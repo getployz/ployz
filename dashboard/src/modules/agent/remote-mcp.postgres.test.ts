@@ -51,6 +51,9 @@ const hostedPolar: PolarService = {
   mode: "hosted",
   productId: HOSTED_ENV.POLAR_PRODUCT_ID,
   listActiveSubscriptions: () => Effect.die("not used"),
+  createCheckout: () => Effect.die("not used"),
+  setSubscriptionUnits: () => Effect.die("not used"),
+  clearPendingUpdate: () => Effect.die("not used"),
   createCustomerPortal: () => Effect.die("not used"),
 };
 

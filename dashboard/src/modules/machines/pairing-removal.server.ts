@@ -242,7 +242,7 @@ export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
   function* (input: { organizationId: string; machineId: MachineId; generation: string; removal: "reset" | "membership" | "unconfirmed" }) {
     const { organizationId, generation } = input;
     const database = yield* Database;
-    return yield* database.transaction(Effect.gen(function* () {
+    const released = yield* database.transaction(Effect.gen(function* () {
       const pairing = yield* lockWitnessedPairing(organizationId, generation);
       if (pairing.kind === "gone") return { kind: "released" } as const;
       if (pairing.kind === "replaced") return replaced;
@@ -265,6 +265,8 @@ export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
       }
       return { kind: "last" } as const;
     }));
+    yield* requestBillingSync(organizationId, "server-removed");
+    return released;
   },
 );
 
