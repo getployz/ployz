@@ -20,6 +20,7 @@ mod serve;
 mod settled;
 mod ship;
 pub(crate) mod unit;
+mod wire;
 
 use std::{
     fs,

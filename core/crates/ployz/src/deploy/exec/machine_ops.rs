@@ -85,6 +85,17 @@ pub(crate) trait CopyLifecycle: Session {
             unanswered: Vec::new(),
         })
     }
+    /// `service`'s copies on `machine_id`, listed by that Machine alone, so no other
+    /// Machine's silence fails it. The default asks every Machine and keeps its copies.
+    async fn target_copies(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        let mut copies = self.service_containers(service).await?;
+        copies.retain(|copy| copy.machine_id == *machine_id);
+        Ok(copies)
+    }
     /// Every Container row in the entry Machine's store, which keeps the rows of
     /// a Machine that does not answer.
     async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
@@ -257,6 +268,54 @@ impl CopyLifecycle for Client {
             })
             .collect();
         Ok(Listed { copies, unanswered })
+    }
+
+    async fn target_copies(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        let listed = self
+            .clone()
+            .call::<op::ListContainers>(
+                ListContainersRequest {
+                    environment: EnvironmentValues::Redacted,
+                },
+                Call::read()
+                    .to(&MachineTarget::from(machine_id))
+                    .budget(crate::connect::target_read_timeout()),
+            )
+            .await
+            .map_err(crate::cluster::unanswered_kept);
+        let listed = match listed {
+            Ok(listed) => listed.containers,
+            // The Server's name and id ride on the error, as they did when every Machine was listed.
+            Err(error) if error.target_unanswered() => {
+                let mut client = self.clone();
+                let machines = client.machines().await.map_err(RpcError::from)?;
+                return Err(
+                    match machines
+                        .iter()
+                        .find(|machine| machine.machine.id == *machine_id)
+                    {
+                        Some(machine) => naming_machine(
+                            crate::cluster::unanswered_by(&machine.machine.name, error),
+                            machine_id,
+                        ),
+                        None => error,
+                    },
+                );
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(listed
+            .into_iter()
+            .filter(|observed| {
+                observed.machine_id == *machine_id
+                    && observed.kind == ContainerKind::ServiceContainer
+                    && observed.identity() == *service
+            })
+            .collect())
     }
 
     async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {

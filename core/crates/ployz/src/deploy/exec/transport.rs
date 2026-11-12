@@ -96,6 +96,7 @@ restart_policy! {
     CopyLifecycle {
         wait fn service_containers(&self, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
         wait fn listed_copies(&self, service: &QualifiedService) -> Result<Listed, RpcError>;
+        wait fn target_copies(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
         once("a failed read leaves the gen to the live answers") fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
         wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
         wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
@@ -133,7 +134,9 @@ where
     // A send whose answer was lost: the Machine may have done it.
     let mut lost: Option<RpcError> = None;
     // A Machine that didn't answer: stronger news than an earlier lost reply, as
-    // `keep_lost_call` holds.
+    // `keep_lost_call` holds. That fold and `keep_target_reply` are this one's twin for
+    // `Client::repeat`; they differ only in a refused redial, where this wait keeps saying
+    // what the lost send may have done (`still_lost`) and `keep_lost_call` does not.
     let mut silent: Option<RpcError> = None;
     loop {
         let error = match op().await {

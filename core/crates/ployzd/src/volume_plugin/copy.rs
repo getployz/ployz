@@ -22,8 +22,8 @@ use super::{
     Dataset, DockerVolumeName, VolumeError, VolumeStorage,
     inspect::{answering, internal},
     marks::{Mark, Marks},
-    mirror,
     pool::UnlabeledBacking,
+    slot,
     transfer::{Busy, ReceiveFailure, Stop, pulling},
 };
 
@@ -142,7 +142,7 @@ fn no_room(bound: u64, name: &DockerVolumeName) -> RpcError {
 
 impl VolumeStorage {
     async fn admit(&self, wire: &WireName) -> Result<Admitted, RpcError> {
-        let name = mirror::name(wire)?;
+        let name = slot::name(wire)?;
         let (held, installation) = self.admit_mutation().await.map_err(internal)?;
         Ok(Admitted {
             held,
@@ -267,12 +267,7 @@ impl VolumeStorage {
                 )),
             };
         };
-        let (root_name, readonly, mounted, refquota) = (
-            root.name.clone(),
-            root.readonly,
-            root.mounted,
-            root.refquota,
-        );
+        let (root_name, readonly, mounted) = (root.name.clone(), root.readonly, root.mounted);
         let taken = self
             .snapshots(&root_name)
             .await
@@ -314,43 +309,10 @@ impl VolumeStorage {
         if mounted {
             self.z(&["unmount", &root_name]).await?;
         }
-        self.ensure_mirror_root(&scope.pool, &scope.datasets)
+        self.park_root_in_slot(&scope.pool, &scope.datasets, name, root)
             .await
             .map_err(internal)?;
-        let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
-        if scope.slot().is_none() {
-            self.create_bounded_slot(&parent, refquota).await?;
-        }
-        self.marks(&parent)
-            .set_role(SlotRole::OldCopy)
-            .await
-            .map_err(internal)?;
-        self.z(&[
-            "rename",
-            &root_name,
-            &DatasetLayout::of(&scope.pool).slot_fs(name),
-        ])
-        .await?;
         self.copy_now(&scope).await
-    }
-
-    /// A slot parent bounded like the copy it will hold.
-    pub(super) async fn create_bounded_slot(
-        &self,
-        parent: &str,
-        bound: u64,
-    ) -> Result<(), RpcError> {
-        self.z(&[
-            "create",
-            "-o",
-            "canmount=off",
-            "-o",
-            "readonly=on",
-            "-o",
-            &format!("refquota={bound}"),
-            parent,
-        ])
-        .await
     }
 
     /// Writer to Snapshot: take `snapshot` when anything was written since the newest
@@ -503,9 +465,9 @@ impl VolumeStorage {
         marks.promote_slot(request.epoch).await.map_err(internal)?;
         // A Machine that only ever mirrored has no managed parent for the root yet.
         let parent = DatasetLayout::of(&scope.pool).root_parent();
-        if !scope.datasets.iter().any(|dataset| dataset.name == parent) {
-            self.create_root(&parent).await.map_err(internal)?;
-        }
+        self.ensure_root(&scope.datasets, &parent)
+            .await
+            .map_err(internal)?;
         self.z(&["rename", &fs_name, &root_name]).await?;
         self.z(&["destroy", &DatasetLayout::of(&scope.pool).slot_parent(name)])
             .await?;
@@ -626,7 +588,7 @@ impl VolumeStorage {
                 self.ensure_mirror_root(&scope.pool, &scope.datasets)
                     .await
                     .map_err(internal)?;
-                self.create_bounded_slot(&parent, bound).await?;
+                self.create_slot(&parent, bound).await.map_err(internal)?;
                 ployzd::faults::kill_inside(
                     "SetVolumeCopy.NoneToMirror",
                     Some(Identity {

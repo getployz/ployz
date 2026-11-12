@@ -53,6 +53,18 @@ pub(super) struct Carried {
     pub(super) teardown: Option<Box<TeardownApproval>>,
 }
 
+impl Carried {
+    pub(super) fn none() -> Self {
+        Self {
+            rule: None,
+            preview: None,
+            restart: None,
+            deploy: None,
+            teardown: None,
+        }
+    }
+}
+
 impl DeployContext {
     pub(super) fn set_restart(&mut self, approval: Option<Signed<RestartApproval>>) {
         Arc::make_mut(&mut self.approvals).restart = approval;

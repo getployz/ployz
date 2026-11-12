@@ -31,7 +31,15 @@ use crate::{
 };
 
 const CERTS_DIR: &str = "certs";
-pub(crate) const ACCESS_LOG: &str = "requests/access.log";
+/// The run dir's subdirectory the Ingress Proxy's runtime mount shows.
+const RUNTIME_DIR: &str = "ingress";
+/// Where the Ingress Proxy's runtime mount holds the access log, relative to that mount.
+const ACCESS_LOG: &str = "requests/access.log";
+
+/// The access log the Ingress Proxy writes, as the daemon sees it under its `run_dir`.
+pub(crate) fn access_log_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(RUNTIME_DIR).join(ACCESS_LOG)
+}
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 const WATCH_RESNAPSHOT: Duration = Duration::from_secs(5);

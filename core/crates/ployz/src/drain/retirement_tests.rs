@@ -9,16 +9,18 @@ use ployz_core::service::proxy_routes;
 use ployz_core::{
     ContainerAddress, ContainerDetails, ContainerId, ContainerLocator, ContainerNow,
     ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
-    EnsuredContainer, HealthVerdict, Machine, MachineId, MachineName, ObservedGlobalSlotSpec,
-    Placement, ProxyRoutes, QualifiedService, ResolvedUpdateConfig, RoutesRead, RpcError,
-    RpcErrorCode, ServiceContainer, ServiceMode, ServiceObservation,
+    EnsuredContainer, HealthVerdict, LiveServices, Machine, MachineId, MachineName,
+    ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService, ResolvedUpdateConfig,
+    RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode, ServiceObservation,
 };
 
 use super::*;
 use crate::deploy::Session;
+use crate::deploy::cleanup::ACK_WAIT;
 use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
+use crate::global_slot::{Sentence, retire_copies, retire_ingress_proxy};
 
 struct Cluster {
     containers: Mutex<Vec<ContainerObservation>>,
@@ -337,8 +339,8 @@ async fn retire_copies_takes_an_in_copy_out_waits_it_unlisted_then_removes_it() 
         &cluster,
         &drained.id,
         &qualified("app", "api"),
-        &Names::new(),
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
     )
     .await
     .expect("another In copy lets the drained one go Out");
@@ -357,8 +359,8 @@ async fn retire_copies_refuses_the_last_in_copy_and_leaves_it_serving() {
         &cluster,
         &drained.id,
         &qualified("app", "api"),
-        &Names::new(),
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
     )
     .await
     .expect_err("the last copy In refuses to go Out");
@@ -383,8 +385,8 @@ async fn retire_copies_removes_pending_and_out_copies_with_a_plain_gone() {
         &cluster,
         &drained.id,
         &qualified("app", "api"),
-        &Names::new(),
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
     )
     .await
     .expect("no copy was routed");
@@ -411,8 +413,8 @@ async fn retire_copies_names_the_proxy_that_did_not_confirm_and_keeps_the_copy()
         &cluster,
         &drained.id,
         &qualified("app", "api"),
-        &vec![(stuck.id, stuck.name.clone())],
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::listing([(stuck.id, stuck.name.clone())])),
     )
     .await
     .expect_err("a proxy still listing the copy keeps it");
@@ -452,8 +454,8 @@ async fn retire_copies_gives_the_refusal_or_the_cancel_as_its_error() {
         &refused,
         &drained.id,
         &qualified("app", "api"),
-        &Names::new(),
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
     )
     .await
     .expect_err("the last copy in rotation stays");
@@ -483,8 +485,8 @@ async fn retire_copies_gives_the_refusal_or_the_cancel_as_its_error() {
         &cancelled,
         &drained.id,
         &qualified("app", "api"),
-        &Names::new(),
         &cancellation,
+        &Sentence::Drain(&ServerNames::default()),
     )
     .await
     .expect_err("a cancelled drain retires nothing more");
@@ -649,8 +651,8 @@ struct FakeRetireClient {
 }
 
 impl RetireClient for FakeRetireClient {
-    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), ConnectError> {
-        let live = LiveServices {
+    async fn live_services(&mut self) -> Result<Live, ConnectError> {
+        let services = LiveServices {
             containers: ployz_core::PartialResult {
                 successes: vec![ployz_core::MachineSuccess {
                     machine_id: self.machine_id,
@@ -665,14 +667,17 @@ impl RetireClient for FakeRetireClient {
                 omissions: self.silent.iter().map(|(id, _)| *id).collect(),
             },
         };
-        Ok((live, self.silent.iter().cloned().collect()))
+        Ok(Live {
+            services,
+            names: ServerNames::listing(self.silent.iter().cloned()),
+        })
     }
 
     async fn retire_slot(
         &mut self,
         _machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
-        _names: &Names,
+        _names: &ServerNames,
         _cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
         self.retire_calls.push(slot.identity().clone());

@@ -17,22 +17,23 @@
 use crate::cluster::Call;
 use ployz_core::error_chain;
 use ployz_core::{
-    AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, EnvironmentValues,
-    HealthFailure, HealthVerdict, Hint, IngressDoors, IngressDoorsSet, InspectRequest,
+    AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerNow,
+    ContainerObservation, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
+    EnvironmentValues, HealthFailure, HealthVerdict, Hint, IngressDoors, IngressDoorsSet,
     ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
     PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
-    RunTarget, ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
-    SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, op,
+    RunTarget, ServiceId, ServiceMode, ServiceObservation, SetIngressDoorsRequest,
+    SetPrivateAccessRequest, SlotKey, op,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::deploy::cleanup::{
     self, BroughtIn, Copy, EmptyPolicy, NotIn, Removal, Rotated, RotationFailure,
 };
-use crate::drain::retirement::{Names, server_name};
-use crate::failure::partial_failure_details;
-use crate::global_slot::{slot_eligibility, unknown_eligibility};
+use crate::global_slot::{
+    Eligibility, Live, Sentence, ServerNames, participating, retire_if_ineligible,
+    retire_ingress_proxy,
+};
 use crate::ingress::{ClusterDoors, DoorMachine};
 use crate::private_access::AccessMachine;
 use crate::{
@@ -63,26 +64,48 @@ impl std::fmt::Display for CatchUpError {
 
 /// What every Server runs, with each Server's name.
 pub(crate) struct Observed {
-    live: LiveServices<RpcError>,
-    names: Names,
+    live: Live,
     /// Omitted Servers that are Unarrived Machines, which hold no copy to wait on.
-    unarrived: Names,
+    unarrived: ServerNames,
     /// The Doors the Cluster declares, as the entry Machine's replica holds them.
     declared: Option<IngressDoors>,
 }
 
-pub(crate) trait CatchUpClient {
-    async fn live_services(&mut self) -> Result<Observed, Failure>;
+/// What the policy of one Global slot needs from the joiner: its own listing, its own
+/// record, and the copies it holds.
+pub(crate) trait SlotIo {
+    /// `machine_id`'s Containers, as that Machine lists them.
+    async fn list_target(
+        &mut self,
+        machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, RpcError>;
     async fn bridge_capacity(
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure>;
+    /// Retire the slot's copies on `machine_id` when fresh evidence says it is ineligible
+    /// there, answering whether it was.
     async fn retire_if_ineligible(
         &mut self,
         machine_id: &MachineId,
         new: &NewContainer,
         cancel: &CancellationToken,
     ) -> Result<bool, RpcError>;
+    async fn retire_copy(
+        &mut self,
+        copy: &Copy,
+        cancel: &CancellationToken,
+    ) -> Result<Rotated, RpcError>;
+    /// Ask `container` run Pending on `target`, resending until it answers.
+    async fn ensure_pending(
+        &mut self,
+        target: &MachineTarget,
+        container: RunTarget,
+    ) -> Result<ContainerNow, RpcError>;
+}
+
+pub(crate) trait CatchUpClient: SlotIo {
+    async fn live_services(&mut self) -> Result<Observed, Failure>;
     async fn run_slot(
         &mut self,
         machine_id: &MachineId,
@@ -109,11 +132,6 @@ pub(crate) trait CatchUpClient {
         copy: &Copy,
         spec: &ResolvedServiceSpec,
     ) -> Result<BroughtIn, RpcError>;
-    async fn retire_copy(
-        &mut self,
-        copy: &Copy,
-        cancel: &CancellationToken,
-    ) -> Result<Rotated, RpcError>;
     async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError>;
     async fn target_containers(
         &mut self,
@@ -121,28 +139,22 @@ pub(crate) trait CatchUpClient {
     ) -> Result<Vec<ContainerObservation>, Failure>;
 }
 
-impl CatchUpClient for Client {
-    async fn live_services(&mut self) -> Result<Observed, Failure> {
-        let list = self.machine_list().await.map_err(Failure::from)?;
-        let declared = list.enrollment.and_then(|snapshot| snapshot.doors);
-        let machines = list.machines;
-        let live = self
-            .live_services_from(&machines, EnvironmentValues::Included)
-            .await
-            .map_err(Failure::from)?;
-        let named = |machine: &ployz_core::MachineObservation| {
-            (machine.machine.id, machine.machine.name.clone())
-        };
-        Ok(Observed {
-            live,
-            names: machines.iter().map(named).collect(),
-            unarrived: machines
-                .iter()
-                .filter(|machine| machine.unarrived())
-                .map(named)
-                .collect(),
-            declared,
-        })
+impl SlotIo for Client {
+    async fn list_target(
+        &mut self,
+        machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        self.call::<op::ListContainers>(
+            ListContainersRequest {
+                environment: EnvironmentValues::Included,
+            },
+            Call::read()
+                .to(&MachineTarget::from(machine_id))
+                .budget(crate::connect::target_read_timeout()),
+        )
+        .await
+        .map(|list| list.containers)
+        .map_err(crate::connect::rpc_error)
     }
 
     async fn bridge_capacity(
@@ -151,7 +163,7 @@ impl CatchUpClient for Client {
     ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
         let details = self
             .call::<op::Inspect>(
-                InspectRequest {
+                ployz_core::InspectRequest {
                     telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
                     ..Default::default()
                 },
@@ -171,47 +183,131 @@ impl CatchUpClient for Client {
         new: &NewContainer,
         cancel: &CancellationToken,
     ) -> Result<bool, RpcError> {
-        match slot_eligibility(self, machine_id, &new.slot.namespace, &new.resolved_spec).await? {
-            ServicePlacementEligibility::Eligible => Ok(false),
-            ServicePlacementEligibility::Ineligible(_) => {
-                let service = QualifiedService::new(
-                    new.slot.namespace.clone(),
-                    new.resolved_spec.name.clone(),
-                );
-                let listed = self
-                    .call::<op::ListContainers>(
-                        ListContainersRequest {
-                            environment: EnvironmentValues::Included,
-                        },
-                        Call::read()
-                            .to(&MachineTarget::from(machine_id))
-                            .budget(crate::connect::target_read_timeout()),
-                    )
-                    .await
-                    .map_err(crate::connect::rpc_error)?
-                    .containers;
-                let own = listed.iter().filter(|observed| {
-                    observed.machine_id == *machine_id
-                        && observed.kind == ContainerKind::ServiceContainer
-                        && observed.identity() == service
-                });
-                for observed in own {
-                    let copy = Copy::observed(observed);
-                    step_error(
-                        cleanup::retire(
-                            &*self,
-                            &copy,
-                            EmptyPolicy::RequireOtherIn,
-                            AnonymousVolumes::Remove,
-                            cancel,
-                        )
-                        .await?,
-                    )?;
-                }
-                Ok(true)
-            }
-            ServicePlacementEligibility::Unknown(reason) => Err(unknown_eligibility(reason)),
+        let retired = retire_if_ineligible(
+            self,
+            machine_id,
+            &new.slot.namespace,
+            &new.resolved_spec,
+            cancel,
+            &Sentence::CatchUp,
+        )
+        .await?;
+        Ok(retired == Eligibility::Retired)
+    }
+
+    async fn retire_copy(
+        &mut self,
+        copy: &Copy,
+        cancel: &CancellationToken,
+    ) -> Result<Rotated, RpcError> {
+        cleanup::retire(
+            &*self,
+            copy,
+            EmptyPolicy::RequireOtherIn,
+            AnonymousVolumes::Remove,
+            cancel,
+        )
+        .await
+    }
+
+    async fn ensure_pending(
+        &mut self,
+        target: &MachineTarget,
+        container: RunTarget,
+    ) -> Result<ContainerNow, RpcError> {
+        let want = ContainerWant::Running {
+            container,
+            rotation: RunRotation::Pending,
+        };
+        self.ensure_retried(target, want).await?.into_result()
+    }
+}
+
+/// Place `new`, the copy of one observed Global, on `machine_id`: nothing when the Machine
+/// rules the slot out, the copy already there when one of the same shape runs, and
+/// otherwise a keyed create.
+async fn place_slot<C: SlotIo>(
+    client: &mut C,
+    machine_id: &MachineId,
+    new: NewContainer,
+    cancel: &CancellationToken,
+) -> Result<Option<Copy>, RpcError> {
+    let target = MachineTarget::from(machine_id);
+    if client
+        .retire_if_ineligible(machine_id, &new, cancel)
+        .await?
+    {
+        return Ok(None);
+    }
+    let existing = client
+        .list_target(machine_id)
+        .await?
+        .into_iter()
+        .find(|observed| {
+            observed.machine_id == *machine_id
+                && observed.kind == ContainerKind::ServiceContainer
+                && observed.namespace == new.slot.namespace
+                && observed.resolved_spec == new.resolved_spec
+        });
+    // The keyed create below answers with a Container that already holds the
+    // creation key's name, so an Out copy must go before a new one is made.
+    let existing = match existing {
+        Some(existing) if matches!(existing.rotation(), CopyRotation::Held(_)) => {
+            return Err(RpcError::conflict(format!(
+                "copy {} is stopped on this Machine by a user; start or remove it there first",
+                existing.container_id.as_str()
+            )));
         }
+        Some(existing) if *existing.rotation() == CopyRotation::Out => {
+            step_error(
+                client
+                    .retire_copy(&Copy::observed(&existing), cancel)
+                    .await?,
+            )?;
+            None
+        }
+        existing => existing,
+    };
+    if let Some(existing) = existing {
+        let now = client
+            .ensure_pending(
+                &target,
+                RunTarget::Existing(ployz_core::ContainerLocator::Id(existing.container_id)),
+            )
+            .await?;
+        return Ok(Some(
+            now.present()
+                .map_or_else(|| Copy::observed(&existing), Copy::observed),
+        ));
+    }
+    let capacity = client
+        .bridge_capacity(machine_id)
+        .await
+        .map_err(|error| error_chain::rpc_error(ployz_core::RpcErrorCode::Unavailable, &error))?;
+    if let Some(error) = endpoint_capacity_error(1, capacity.as_ref()) {
+        return Err(RpcError::conflict(error.to_string()));
+    }
+    let now = client.ensure_pending(&target, RunTarget::New(new)).await?;
+    Ok(now.present().map(Copy::observed))
+}
+
+impl CatchUpClient for Client {
+    async fn live_services(&mut self) -> Result<Observed, Failure> {
+        let list = self.machine_list().await.map_err(Failure::from)?;
+        let declared = list.enrollment.and_then(|snapshot| snapshot.doors);
+        let machines = list.machines;
+        let services = self
+            .live_services_from(&machines, EnvironmentValues::Included)
+            .await
+            .map_err(Failure::from)?;
+        Ok(Observed {
+            live: Live {
+                services,
+                names: ServerNames::of(&machines),
+            },
+            unarrived: ServerNames::unarrived(&machines),
+            declared,
+        })
     }
 
     async fn run_slot(
@@ -220,62 +316,7 @@ impl CatchUpClient for Client {
         new: NewContainer,
         cancel: &CancellationToken,
     ) -> Result<Option<Copy>, RpcError> {
-        let target = MachineTarget::from(machine_id);
-        if self.retire_if_ineligible(machine_id, &new, cancel).await? {
-            return Ok(None);
-        }
-        let listed = self
-            .call::<op::ListContainers>(
-                ListContainersRequest {
-                    environment: EnvironmentValues::Included,
-                },
-                Call::read()
-                    .to(&target)
-                    .budget(crate::connect::target_read_timeout()),
-            )
-            .await
-            .map_err(crate::connect::rpc_error)?;
-        let existing = listed.containers.into_iter().find(|observed| {
-            observed.machine_id == *machine_id
-                && observed.kind == ContainerKind::ServiceContainer
-                && observed.namespace == new.slot.namespace
-                && observed.resolved_spec == new.resolved_spec
-        });
-        // The keyed create below answers with a Container that already holds the
-        // creation key's name, so an Out copy must go before a new one is made.
-        let existing = match existing {
-            Some(existing) if matches!(existing.rotation(), CopyRotation::Held(_)) => {
-                return Err(RpcError::conflict(format!(
-                    "copy {} is stopped on this Machine by a user; start or remove it there first",
-                    existing.container_id.as_str()
-                )));
-            }
-            Some(existing) if *existing.rotation() == CopyRotation::Out => {
-                step_error(self.retire_copy(&Copy::observed(&existing), cancel).await?)?;
-                None
-            }
-            existing => existing,
-        };
-        if let Some(existing) = existing {
-            let now = ensure_retried(
-                self,
-                &target,
-                RunTarget::Existing(ployz_core::ContainerLocator::Id(existing.container_id)),
-            )
-            .await?;
-            return Ok(Some(
-                now.present()
-                    .map_or_else(|| Copy::observed(&existing), Copy::observed),
-            ));
-        }
-        let capacity = self.bridge_capacity(machine_id).await.map_err(|error| {
-            error_chain::rpc_error(ployz_core::RpcErrorCode::Unavailable, &error)
-        })?;
-        if let Some(error) = endpoint_capacity_error(1, capacity.as_ref()) {
-            return Err(RpcError::conflict(error.to_string()));
-        }
-        let now = ensure_retried(self, &target, RunTarget::New(new)).await?;
-        Ok(now.present().map(Copy::observed))
+        place_slot(self, machine_id, new, cancel).await
     }
 
     async fn run_doors(
@@ -285,8 +326,12 @@ impl CatchUpClient for Client {
         doors: ClusterDoors,
         cancel: &CancellationToken,
     ) -> Result<Option<IngressDoorsSet>, RpcError> {
-        if !takes_ingress(self, machine_id).await? {
-            crate::drain::retirement::retire_ingress_proxy(&*self, machine_id, cancel).await?;
+        if !participating(self, machine_id, false)
+            .await?
+            .machine
+            .accepts_ingress
+        {
+            retire_ingress_proxy(&*self, machine_id, cancel).await?;
             return Ok(None);
         }
         self.set_ingress_doors(
@@ -325,21 +370,6 @@ impl CatchUpClient for Client {
         cleanup::bring_in(&*self, copy, spec, None).await
     }
 
-    async fn retire_copy(
-        &mut self,
-        copy: &Copy,
-        cancel: &CancellationToken,
-    ) -> Result<Rotated, RpcError> {
-        cleanup::retire(
-            &*self,
-            copy,
-            EmptyPolicy::RequireOtherIn,
-            AnonymousVolumes::Remove,
-            cancel,
-        )
-        .await
-    }
-
     async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
         cleanup::remove(&*self, copy, AnonymousVolumes::Remove).await
     }
@@ -348,85 +378,14 @@ impl CatchUpClient for Client {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Failure> {
-        self.call::<op::ListContainers>(
-            ListContainersRequest {
-                environment: EnvironmentValues::Included,
-            },
-            Call::read()
-                .to(&MachineTarget::from(machine_id))
-                .budget(crate::connect::target_read_timeout()),
-        )
-        .await
-        .map_err(crate::connect::rpc_error)
-        .map(|list| list.containers)
-        .map_err(Failure::from)
+        self.list_target(machine_id).await.map_err(Failure::from)
     }
 }
 
-/// Whether `machine_id` holds the ingress role, by its own record.
-async fn takes_ingress(client: &mut Client, machine_id: &MachineId) -> Result<bool, RpcError> {
-    let details = client
-        .call::<op::Inspect>(
-            InspectRequest::default(),
-            Call::read()
-                .to(&MachineTarget::from(machine_id))
-                .budget(crate::connect::target_read_timeout()),
-        )
-        .await
-        .map_err(crate::connect::rpc_error)?;
-    details
-        .machine
-        .filter(|machine| {
-            machine.id == *machine_id
-                && details.phase == ployz_core::LocalMachinePhase::Participating
-        })
-        .map(|machine| machine.accepts_ingress)
-        .ok_or_else(|| RpcError::conflict("the Server does not observe itself participating"))
-}
-
 fn step_error(rotated: Rotated) -> Result<(), RpcError> {
-    rotated.failure().map_err(|failure| match failure {
-        RotationFailure::Refused(refusal) => refusal.into_error(),
-        RotationFailure::NotConfirmed(machines) => RpcError::unavailable(format!(
-            "{} did not confirm the copy left its routes",
-            machines
-                .machines
-                .iter()
-                .map(MachineId::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-        RotationFailure::Cancelled => {
-            error_chain::rpc_error(ployz_core::RpcErrorCode::Internal, &Failure::cancelled())
-        }
-    })
-}
-
-async fn ensure_retried(
-    client: &mut Client,
-    target: &MachineTarget,
-    container: RunTarget,
-) -> Result<ployz_core::ContainerNow, RpcError> {
-    let want = ContainerWant::Running {
-        container,
-        rotation: RunRotation::Pending,
-    };
-    crate::sealed_compat::admit(client, target, &want).await?;
-    client
-        .call::<op::EnsureContainer>(
-            ployz_core::EnsureContainerRequest {
-                teardown: None,
-                preview: None,
-                want,
-                approval: None,
-                deploy: None,
-                rule: None,
-            },
-            Call::keyed().to(target),
-        )
-        .await
-        .map_err(RpcError::from)?
-        .into_result()
+    rotated
+        .failure()
+        .map_err(|failure| Sentence::CatchUp.error(failure))
 }
 
 pub(crate) fn joined_catch_up_error(
@@ -479,7 +438,7 @@ pub(crate) enum CatchUpFact {
     Running(QualifiedService),
     Failed(QualifiedService),
     /// Omitted Unarrived Machines the plan did not wait on.
-    NotArrived(Names),
+    NotArrived(ServerNames),
 }
 
 /// Follow target-only catch-up with the shared progress block. Returns the Unarrived
@@ -501,7 +460,7 @@ pub(crate) async fn follow_globals(
         notices: Vec::new(),
     };
     let mut progress = Progress::start(frame.clone());
-    let mut not_arrived = Names::new();
+    let mut not_arrived = ServerNames::default();
     let result = catch_up_globals(client, assigned, &signal, |fact| {
         let (identity, state) = match fact {
             CatchUpFact::NotArrived(names) => {
@@ -797,7 +756,6 @@ async fn observe_complete<C: CatchUpClient>(
     for attempt in 1..=OBSERVATION_ATTEMPTS {
         let Observed {
             mut live,
-            names,
             mut unarrived,
             declared,
         } = tokio::select! {
@@ -808,18 +766,18 @@ async fn observe_complete<C: CatchUpClient>(
             }
         };
         // The joiner's own row may still be its Register row; it is arriving now.
-        unarrived.retain(|(id, _)| id != this_machine);
-        live.containers
+        unarrived.without(this_machine);
+        live.services
+            .containers
             .omissions
-            .retain(|id| !unarrived.iter().any(|(unarrived, _)| unarrived == id));
-        if live.containers.all_targets_succeeded() {
+            .retain(|id| !unarrived.contains(id));
+        let Some(details) = live.partial() else {
             observe(CatchUpFact::NotArrived(unarrived));
-            return Ok((live, declared));
-        }
+            return Ok((live.services, declared));
+        };
         if attempt == OBSERVATION_ATTEMPTS {
             observe(CatchUpFact::NotArrived(unarrived));
-            let details = partial_failure_details(&live.containers, |id| server_name(&names, id));
-            let next = partial_next_step(&live.containers, |id| server_name(&names, id));
+            let next = partial_next_step(&live.services.containers, |id| live.names.name(id));
             return Err(CatchUpError::new(
                 Failure::unavailable(format!(
                     "Global catch-up cannot plan from partial Service observations: {details}; \
@@ -837,6 +795,244 @@ async fn observe_complete<C: CatchUpClient>(
     unreachable!("the last attempt returns")
 }
 
+/// What one slot came to.
+enum SlotOutcome {
+    Resolved,
+    /// This Machine takes no part in the slot.
+    Excluded,
+    Failed(SlotFailure),
+}
+
+/// Why a slot is unresolved: each cause, as the sentence a person reads.
+struct SlotFailure {
+    chains: Vec<String>,
+}
+
+impl SlotOutcome {
+    fn failed(chain: String) -> Self {
+        Self::Failed(SlotFailure {
+            chains: vec![chain],
+        })
+    }
+}
+
+/// Every slot's outcome, folded into the facts catch-up reports and what is left to say
+/// when it ends.
+struct Tally<F> {
+    observe: F,
+    unresolved: Vec<QualifiedService>,
+    failures: Vec<(QualifiedService, String)>,
+}
+
+impl<F: FnMut(CatchUpFact)> Tally<F> {
+    fn new(identities: Vec<QualifiedService>, mut observe: F) -> Self {
+        observe(CatchUpFact::Identified(identities.clone()));
+        Self {
+            observe,
+            unresolved: identities,
+            failures: Vec::new(),
+        }
+    }
+
+    fn creating(&mut self, identity: &QualifiedService) {
+        (self.observe)(CatchUpFact::Creating(identity.clone()));
+    }
+
+    fn record(&mut self, identity: QualifiedService, outcome: SlotOutcome) {
+        let fact = match outcome {
+            SlotOutcome::Resolved => {
+                self.unresolved.retain(|service| service != &identity);
+                CatchUpFact::Running(identity)
+            }
+            SlotOutcome::Excluded => {
+                self.unresolved.retain(|service| service != &identity);
+                CatchUpFact::Excluded(identity)
+            }
+            SlotOutcome::Failed(failure) => {
+                for chain in failure.chains {
+                    self.failures.push((identity.clone(), chain));
+                }
+                CatchUpFact::Failed(identity)
+            }
+        };
+        (self.observe)(fact);
+    }
+
+    fn error(&self, cause: Failure) -> CatchUpError {
+        CatchUpError::new(cause, self.unresolved.clone())
+    }
+
+    fn finish(self, cancel: &CancellationToken) -> Result<(), CatchUpError> {
+        if cancel.is_cancelled() {
+            return Err(CatchUpError::new(Failure::cancelled(), self.unresolved));
+        }
+        if self.unresolved.is_empty() {
+            return Ok(());
+        }
+        let details = self
+            .failures
+            .iter()
+            .map(|(identity, error)| format!("{identity}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let cause = if details.is_empty() {
+            Failure::unavailable("eligible Globals are not running after catch-up")
+        } else {
+            Failure::unavailable(format!("Global catch-up incomplete: {details}"))
+        };
+        Err(CatchUpError::new(cause, self.unresolved))
+    }
+}
+
+async fn place_private_access<C: CatchUpClient>(
+    client: &mut C,
+    this_machine: &Machine,
+    sealed: Ciphertext,
+) -> SlotOutcome {
+    let answer = match AccessMachine::of(this_machine).refusal() {
+        Some(refusal) => Err(refusal),
+        None => client.run_private_access(&this_machine.id, sealed).await,
+    };
+    let failure = match answer {
+        Ok(set) => crate::private_access::failure_of(&set),
+        Err(error) => Some(error_chain::row(&error)),
+    };
+    failure.map_or(SlotOutcome::Resolved, SlotOutcome::failed)
+}
+
+async fn place_ingress<C: CatchUpClient>(
+    client: &mut C,
+    this_machine: &Machine,
+    proxy_service: ServiceId,
+    doors: ClusterDoors,
+    cancel: &CancellationToken,
+) -> SlotOutcome {
+    let refusal = this_machine
+        .accepts_ingress
+        .then(|| DoorMachine::of(this_machine).refusal(&doors.doors))
+        .flatten();
+    let answer = match refusal {
+        Some(refusal) => Err(refusal),
+        None => {
+            client
+                .run_doors(&this_machine.id, proxy_service, doors, cancel)
+                .await
+        }
+    };
+    let failure = match answer {
+        Ok(None) => return SlotOutcome::Excluded,
+        // The daemon answers once both run, so nothing is left to wait on.
+        Ok(Some(set)) => crate::ingress::failure_of(&set).map(|failure| failure.cause().to_owned()),
+        Err(error) => Some(error_chain::row(&error)),
+    };
+    failure.map_or(SlotOutcome::Resolved, SlotOutcome::failed)
+}
+
+/// Create `origin`'s copy on this Machine and bring it In, so it is `Started`; the slot's
+/// outcome otherwise.
+async fn start_copy<C: CatchUpClient>(
+    client: &mut C,
+    machine_id: &MachineId,
+    identity: QualifiedService,
+    origin: &ContainerObservation,
+    cancel: &CancellationToken,
+) -> Result<Started, SlotOutcome> {
+    let spec = origin.resolved_spec.clone();
+    let copy = match client.run_slot(machine_id, new_copy(origin), cancel).await {
+        Ok(Some(copy)) => copy,
+        Ok(None) => return Err(SlotOutcome::Excluded),
+        Err(error) => return Err(SlotOutcome::failed(error_chain::row(&error))),
+    };
+    if copy.rotation != CopyRotation::In {
+        let message = match client.bring_in(&copy, &spec).await.map(BroughtIn::not_in) {
+            Ok(Ok(())) => None,
+            Ok(Err(NotIn::Health(health))) => Some(not_in_message(health)),
+            Ok(Err(NotIn::OlderThanIn(_))) => {
+                Some(remove_started(client, &copy, OUTDATED.to_owned()).await)
+            }
+            Ok(Err(NotIn::Refused(refusal))) => {
+                Some(remove_started(client, &copy, refusal.message).await)
+            }
+            Err(error) => Some(error_chain::row(&error)),
+        };
+        if let Some(message) = message {
+            return Err(SlotOutcome::failed(message));
+        }
+    }
+    Ok(Started {
+        identity,
+        copy,
+        spec,
+    })
+}
+
+/// What `target`, this Machine's Containers after the wait, makes of `started`: running,
+/// and with its superseded copies retired.
+async fn settle<C: CatchUpClient>(
+    client: &mut C,
+    machine_id: &MachineId,
+    started: &Started,
+    target: &[ContainerObservation],
+    cancel: &CancellationToken,
+) -> SlotOutcome {
+    let Started { identity, copy, .. } = started;
+    if !runs_here(target, started, machine_id) {
+        let seen = target
+            .iter()
+            .find(|observed| observed.container_id == copy.container_id)
+            .map_or_else(
+                || "gone".to_owned(),
+                |observed| observed.runtime.to_string(),
+            );
+        return SlotOutcome::failed(format!(
+            "copy {} is not running on this Machine after catch-up; it is {seen}",
+            copy.container_id.as_str()
+        ));
+    }
+    let superseded = target.iter().filter(|observed| {
+        observed.machine_id == *machine_id
+            && observed.kind == ContainerKind::ServiceContainer
+            && observed.identity() == *identity
+            && observed.container_id != copy.container_id
+    });
+    let mut chains = Vec::new();
+    for old in superseded {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let left = match client
+            .retire_copy(&Copy::observed(old), cancel)
+            .await
+            .map(Rotated::failure)
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(RotationFailure::Cancelled)) => break,
+            Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
+            Ok(Err(RotationFailure::NotConfirmed(machines))) => Some(format!(
+                "{} did not confirm it left the routes",
+                machines
+                    .machines
+                    .iter()
+                    .map(MachineId::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            Err(error) => Some(error_chain::row(&error)),
+        };
+        if let Some(message) = left {
+            chains.push(format!(
+                "superseded copy {} stays: {message}",
+                old.container_id.as_str()
+            ));
+        }
+    }
+    if chains.is_empty() {
+        SlotOutcome::Resolved
+    } else {
+        SlotOutcome::Failed(SlotFailure { chains })
+    }
+}
+
 pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,
@@ -846,130 +1042,44 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     let (live, declared) = observe_complete(client, &this_machine.id, cancel, &mut observe).await?;
     let services = live.services();
     let sources = sources(&services, this_machine.accepts_ingress, declared);
-    let mut unresolved: Vec<QualifiedService> = sources
-        .iter()
-        .map(|source| source.identity.clone())
-        .collect();
-    observe(CatchUpFact::Identified(unresolved.clone()));
-    let mut failures: Vec<(QualifiedService, String)> = Vec::new();
+    let mut tally = Tally::new(
+        sources
+            .iter()
+            .map(|source| source.identity.clone())
+            .collect(),
+        observe,
+    );
     let mut started: Vec<Started> = Vec::new();
     for source in sources {
         if cancel.is_cancelled() {
             break;
         }
         let identity = source.identity;
-        let origin = match source.work {
-            CatchUpWork::Service(origin) => origin,
+        let outcome = match source.work {
             CatchUpWork::PrivateAccess(sealed) => {
-                observe(CatchUpFact::Creating(identity.clone()));
-                let answer = match AccessMachine::of(this_machine).refusal() {
-                    Some(refusal) => Err(refusal),
-                    None => client.run_private_access(&this_machine.id, sealed).await,
-                };
-                let failure = match answer {
-                    Ok(set) => crate::private_access::failure_of(&set),
-                    Err(error) => Some(error_chain::row(&error)),
-                };
-                match failure {
-                    None => {
-                        unresolved.retain(|service| service != &identity);
-                        observe(CatchUpFact::Running(identity));
-                    }
-                    Some(failure) => {
-                        failures.push((identity.clone(), failure));
-                        observe(CatchUpFact::Failed(identity));
-                    }
-                }
-                continue;
+                tally.creating(&identity);
+                place_private_access(client, this_machine, sealed).await
             }
             CatchUpWork::Ingress(proxy_service, doors) => {
-                observe(CatchUpFact::Creating(identity.clone()));
-                let refusal = this_machine
-                    .accepts_ingress
-                    .then(|| DoorMachine::of(this_machine).refusal(&doors.doors))
-                    .flatten();
-                let answer = match refusal {
-                    Some(refusal) => Err(refusal),
-                    None => {
-                        client
-                            .run_doors(&this_machine.id, proxy_service, doors, cancel)
-                            .await
-                    }
-                };
-                let failure = match answer {
-                    Ok(None) => {
-                        unresolved.retain(|service| service != &identity);
-                        observe(CatchUpFact::Excluded(identity));
+                tally.creating(&identity);
+                place_ingress(client, this_machine, proxy_service, doors, cancel).await
+            }
+            CatchUpWork::Service(None) => {
+                SlotOutcome::failed(format!("no copy of it is In or Pending; {OUTDATED}"))
+            }
+            CatchUpWork::Service(Some(origin)) => {
+                tally.creating(&identity);
+                match start_copy(client, &this_machine.id, identity.clone(), &origin, cancel).await
+                {
+                    Ok(copy) => {
+                        started.push(copy);
                         continue;
                     }
-                    // The daemon answers once both run, so nothing is left to wait on.
-                    Ok(Some(set)) => {
-                        crate::ingress::failure_of(&set).map(|failure| failure.cause().to_owned())
-                    }
-                    Err(error) => Some(error_chain::row(&error)),
-                };
-                match failure {
-                    None => {
-                        unresolved.retain(|service| service != &identity);
-                        observe(CatchUpFact::Running(identity));
-                    }
-                    Some(failure) => {
-                        failures.push((identity.clone(), failure));
-                        observe(CatchUpFact::Failed(identity));
-                    }
+                    Err(outcome) => outcome,
                 }
-                continue;
             }
         };
-        let Some(origin) = origin else {
-            failures.push((
-                identity.clone(),
-                format!("no copy of it is In or Pending; {OUTDATED}"),
-            ));
-            observe(CatchUpFact::Failed(identity));
-            continue;
-        };
-        let spec = origin.resolved_spec.clone();
-        observe(CatchUpFact::Creating(identity.clone()));
-        let copy = match client
-            .run_slot(&this_machine.id, new_copy(&origin), cancel)
-            .await
-        {
-            Ok(Some(copy)) => copy,
-            Ok(None) => {
-                unresolved.retain(|service| service != &identity);
-                observe(CatchUpFact::Excluded(identity));
-                continue;
-            }
-            Err(error) => {
-                failures.push((identity.clone(), error_chain::row(&error)));
-                observe(CatchUpFact::Failed(identity));
-                continue;
-            }
-        };
-        if copy.rotation != CopyRotation::In {
-            let outcome = match client.bring_in(&copy, &spec).await.map(BroughtIn::not_in) {
-                Ok(Ok(())) => None,
-                Ok(Err(NotIn::Health(health))) => Some(not_in_message(health)),
-                Ok(Err(NotIn::OlderThanIn(_))) => {
-                    Some(remove_started(client, &copy, OUTDATED.to_owned()).await)
-                }
-                Ok(Err(NotIn::Refused(refusal))) => {
-                    Some(remove_started(client, &copy, refusal.message).await)
-                }
-                Err(error) => Some(error_chain::row(&error)),
-            };
-            if let Some(message) = outcome {
-                failures.push((identity.clone(), message));
-                observe(CatchUpFact::Failed(identity));
-                continue;
-            }
-        }
-        started.push(Started {
-            identity,
-            copy,
-            spec,
-        });
+        tally.record(identity, outcome);
     }
     // A copy that started may have stopped again until Docker's restart policy starts it:
     // give each a moment to run before calling it not running.
@@ -979,12 +1089,11 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             .target_containers(&this_machine.id)
             .await
             .map_err(|error| {
-                let error = if cancel.is_cancelled() {
+                tally.error(if cancel.is_cancelled() {
                     error.interrupted()
                 } else {
                     error
-                };
-                CatchUpError::new(error, unresolved.clone())
+                })
             })?;
         let starting = started.iter().any(|copy| {
             !runs_here(&target, copy, &this_machine.id) && may_still_run(&target, copy)
@@ -999,89 +1108,10 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         }
     };
     for started in started {
-        let runs = runs_here(&target, &started, &this_machine.id);
-        let Started { identity, copy, .. } = started;
-        if !runs {
-            let seen = target
-                .iter()
-                .find(|observed| observed.container_id == copy.container_id)
-                .map_or_else(
-                    || "gone".to_owned(),
-                    |observed| observed.runtime.to_string(),
-                );
-            failures.push((
-                identity.clone(),
-                format!(
-                    "copy {} is not running on this Machine after catch-up; it is {seen}",
-                    copy.container_id.as_str()
-                ),
-            ));
-            observe(CatchUpFact::Failed(identity));
-            continue;
-        }
-        let superseded = target.iter().filter(|observed| {
-            observed.machine_id == this_machine.id
-                && observed.kind == ContainerKind::ServiceContainer
-                && observed.identity() == identity
-                && observed.container_id != copy.container_id
-        });
-        for old in superseded {
-            if cancel.is_cancelled() {
-                break;
-            }
-            let left = match client
-                .retire_copy(&Copy::observed(old), cancel)
-                .await
-                .map(Rotated::failure)
-            {
-                Ok(Ok(())) => None,
-                Ok(Err(RotationFailure::Cancelled)) => break,
-                Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
-                Ok(Err(RotationFailure::NotConfirmed(machines))) => Some(format!(
-                    "{} did not confirm it left the routes",
-                    machines
-                        .machines
-                        .iter()
-                        .map(MachineId::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-                Err(error) => Some(error_chain::row(&error)),
-            };
-            if let Some(message) = left {
-                failures.push((
-                    identity.clone(),
-                    format!(
-                        "superseded copy {} stays: {message}",
-                        old.container_id.as_str()
-                    ),
-                ));
-            }
-        }
-        if failures.iter().any(|(failed, _)| failed == &identity) {
-            observe(CatchUpFact::Failed(identity));
-            continue;
-        }
-        unresolved.retain(|service| service != &identity);
-        observe(CatchUpFact::Running(identity));
+        let outcome = settle(client, &this_machine.id, &started, &target, cancel).await;
+        tally.record(started.identity, outcome);
     }
-    if cancel.is_cancelled() {
-        return Err(CatchUpError::new(Failure::cancelled(), unresolved));
-    }
-    if !unresolved.is_empty() {
-        let details = failures
-            .iter()
-            .map(|(identity, error)| format!("{identity}: {error}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let cause = if details.is_empty() {
-            Failure::unavailable("eligible Globals are not running after catch-up")
-        } else {
-            Failure::unavailable(format!("Global catch-up incomplete: {details}"))
-        };
-        return Err(CatchUpError::new(cause, unresolved));
-    }
-    Ok(())
+    tally.finish(cancel)
 }
 
 #[cfg(test)]
