@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use super::{At, ServiceConfig, Setting};
+use super::{Place, ServiceConfig, Setting};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether an owned setting appeared, changed, or disappeared.
@@ -119,13 +119,12 @@ const REVIEW_ORDER: [Setting; 17] = [
 ];
 
 /// Compare settings against an available authored baseline, keeping derived effects separate.
-/// Each change comes with where in its node its row is; none for a mount, whose Volume
-/// lineage only the Store knows.
+/// Each change comes with where in its node its row is.
 #[must_use]
 pub fn compare_service_settings(
     current: &ServiceConfig,
     baseline: Option<&ServiceConfig>,
-) -> Vec<(ServiceSettingChange, Option<At>)> {
+) -> Vec<(ServiceSettingChange, Place)> {
     // A git branch that comes or goes with its source is the source's change.
     let switched = baseline.is_some_and(|baseline| {
         std::mem::discriminant(&baseline.settings.source)
@@ -151,11 +150,7 @@ pub fn compare_service_settings(
         if before == after || (baseline.is_none() && after == setting.default()) {
             continue;
         }
-        changes.push(change(
-            (setting.path(), Some(At::Setting(setting))),
-            before,
-            after,
-        ));
+        changes.push(change(Place::Setting(setting), before, after));
     }
     let current = json!(current);
     let baseline = baseline.map_or(Value::Null, |value| json!(value));
@@ -168,12 +163,8 @@ pub(super) fn at<'a>(value: &'a Value, path: &str) -> &'a Value {
         .fold(value, |value, key| value.get(key).unwrap_or(&Value::Null))
 }
 
-/// A change at `path`, in the row at `at` of its node.
-pub(super) fn change(
-    (path, at): (&str, Option<At>),
-    before: Value,
-    after: Value,
-) -> (ServiceSettingChange, Option<At>) {
+/// A change in the row at `place` of its node.
+pub(super) fn change(place: Place, before: Value, after: Value) -> (ServiceSettingChange, Place) {
     let kind = if before.is_null() {
         ChangeKind::Add
     } else if after.is_null() {
@@ -182,7 +173,7 @@ pub(super) fn change(
         ChangeKind::Update
     };
     let change = ServiceSettingChange {
-        path: path.into(),
+        path: place.path(),
         kind,
         before,
         after,
@@ -191,19 +182,26 @@ pub(super) fn change(
         config_name: None,
         hostnames: None,
     };
-    (change, at)
+    (change, place)
 }
 
 fn compare_related_settings(
     current: &Value,
     baseline: &Value,
-) -> Vec<(ServiceSettingChange, Option<At>)> {
+) -> Vec<(ServiceSettingChange, Place)> {
     let mut changes = Vec::new();
-    for (family, identity) in [
-        ("routes", "id"),
-        ("mounts", "volumeResourceId"),
-        ("configs", "configResourceId"),
-    ] {
+    // Each family, the key of its id, and the place a row of it has.
+    type Family = (&'static str, &'static str, fn(String) -> Place);
+    let places: [Family; 3] = [
+        ("routes", "id", Place::Route),
+        ("mounts", "volumeResourceId", |volume_resource_id| {
+            Place::Mount { volume_resource_id }
+        }),
+        ("configs", "configResourceId", |config_resource_id| {
+            Place::ConfigMount { config_resource_id }
+        }),
+    ];
+    for (family, identity, place) in places {
         let indexed = |value: &Value| -> BTreeMap<String, Value> {
             value[family]
                 .as_array()
@@ -223,12 +221,7 @@ fn compare_related_settings(
                 _ => before == after,
             };
             if !equal {
-                let at = (family == "routes").then_some(At::Setting(Setting::Routes));
-                changes.push(change(
-                    (&format!("{family}.{id}"), at),
-                    before.clone(),
-                    after.clone(),
-                ));
+                changes.push(change(place(id.clone()), before.clone(), after.clone()));
             }
         }
     }
@@ -246,7 +239,7 @@ fn compare_related_settings(
             continue;
         }
         changes.push(change(
-            (&format!("env.{key}"), Some(At::Variable(key.clone()))),
+            Place::Variable(key.clone()),
             redacted_env(before),
             redacted_env(after),
         ));

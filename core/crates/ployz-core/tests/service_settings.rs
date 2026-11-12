@@ -4,7 +4,7 @@
 )]
 
 use ployz_core::config::{
-    At, Setting, compare_service_settings, parse_service_config, parse_service_setting,
+    Place, Setting, compare_service_settings, parse_service_config, parse_service_setting,
 };
 use serde_json::{Value, json};
 
@@ -35,8 +35,10 @@ fn service_comparison_keeps_the_git_branch_with_its_source() {
         ["source", "source.branch", "startCommand"]
     );
     assert_eq!(
-        rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
-        [Setting::Source, Setting::Branch, Setting::StartCommand].map(|s| Some(At::Setting(s)))
+        rows.iter()
+            .map(|(_, place)| place.clone())
+            .collect::<Vec<_>>(),
+        [Setting::Source, Setting::Branch, Setting::StartCommand].map(Place::Setting)
     );
 
     let mut image = config();
@@ -45,9 +47,9 @@ fn service_comparison_keeps_the_git_branch_with_its_source() {
     let image = parse_service_config(image).unwrap();
     let rows = compare_service_settings(&image, Some(&baseline));
     assert_eq!(rows.len(), 1, "the branch goes with its source");
-    let (switched, at) = &rows[0];
+    let (switched, place) = &rows[0];
     assert_eq!(switched.path, "source");
-    assert_eq!(*at, Some(At::Setting(Setting::Source)));
+    assert_eq!(*place, Place::Setting(Setting::Source));
     assert_eq!(
         switched.after["credentials"],
         json!(true),
@@ -66,7 +68,7 @@ fn an_emptied_source_is_the_source_row() {
     assert_eq!(rows.len(), 1);
     assert_eq!(
         (rows[0].0.path.as_str(), &rows[0].0.after, &rows[0].1),
-        ("source", &Value::Null, &Some(At::Setting(Setting::Source)))
+        ("source", &Value::Null, &Place::Setting(Setting::Source))
     );
 }
 
@@ -87,8 +89,10 @@ fn compound_settings_compare_the_edited_field() {
         ["healthcheck", "build.dockerfilePath"]
     );
     assert_eq!(
-        rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
-        [Setting::Healthcheck, Setting::DockerfilePath].map(|s| Some(At::Setting(s)))
+        rows.iter()
+            .map(|(_, place)| place.clone())
+            .collect::<Vec<_>>(),
+        [Setting::Healthcheck, Setting::DockerfilePath].map(Place::Setting)
     );
 }
 
@@ -199,16 +203,19 @@ fn related_settings_preserve_ownership_and_redact_secrets() {
     let current = parse_service_config(after).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(rows.len(), 2, "volume rename is not a mount edit");
-    let (_, at) = rows
+    let (_, place) = rows
         .iter()
         .find(|(row, _)| row.path == "env.TOKEN")
         .unwrap();
-    assert_eq!(*at, Some(At::Variable("TOKEN".into())));
-    let (_, at) = rows
+    assert_eq!(*place, Place::Variable("TOKEN".into()));
+    let (_, place) = rows
         .iter()
         .find(|(row, _)| row.path.starts_with("routes."))
         .unwrap();
-    assert_eq!(*at, Some(At::Setting(Setting::Routes)));
+    assert_eq!(
+        *place,
+        Place::Route("22222222-2222-4222-8222-222222222222".into())
+    );
     let rows: Vec<_> = rows.into_iter().map(|(row, _)| row).collect();
     let output = serde_json::to_string(&rows).unwrap();
     assert!(!output.contains("private-"));
@@ -256,9 +263,13 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
     assert_eq!(added.len(), 1);
     assert_eq!(added[0].0.kind, ployz_core::config::ChangeKind::Add);
     assert_eq!(
-        added[0].1, None,
+        added[0].1,
+        Place::Mount {
+            volume_resource_id: "volume".into()
+        },
         "a mount's Volume lineage is the Store's to find"
     );
+    assert_eq!(added[0].1.at(), None);
     before["mounts"][0]["mountPath"] = json!("/other");
     let moved = compare_service_settings(&parse_service_config(before).unwrap(), Some(&mounted));
     assert_eq!(moved.len(), 1);
@@ -324,11 +335,11 @@ fn every_setting() -> Value {
 }
 
 /// Each row as a review shows it, keyed by path so the pin does not depend on row order.
-fn shown(rows: Vec<(ployz_core::config::ServiceSettingChange, Option<At>)>) -> Value {
+fn shown(rows: Vec<(ployz_core::config::ServiceSettingChange, Place)>) -> Value {
     let rows: std::collections::BTreeMap<_, _> = rows
         .into_iter()
-        .map(|(row, at)| {
-            let at = at.map(|at| at.to_string());
+        .map(|(row, place)| {
+            let at = place.at().map(|at| at.to_string());
             (
                 row.path,
                 json!({"kind": row.kind, "before": row.before, "after": row.after, "at": at}),
@@ -434,4 +445,46 @@ fn a_changed_service_lists_before_and_after_of_each_setting_that_moved() {
             "replicas": {"kind": "update", "before": 2, "after": 3, "at": "replicas"},
         })
     );
+}
+
+#[test]
+fn a_place_names_its_row_as_its_path_always_did() {
+    let file = ployz_core::ConfigFileName::parse("app/config.toml").unwrap();
+    for (place, path, at) in [
+        (Place::Name, "name", Some("name")),
+        (Place::Storage, "storage", Some("storage")),
+        (
+            Place::File(file),
+            "files.app/config.toml",
+            Some("files.app/config.toml"),
+        ),
+        (
+            Place::Setting(Setting::BuildCommand),
+            "build.command",
+            Some("build.command"),
+        ),
+        (Place::Route("r1".into()), "routes.r1", Some("routes")),
+        (
+            Place::Variable("KEY".into()),
+            "env.KEY",
+            Some("variables.KEY"),
+        ),
+        (
+            Place::Mount {
+                volume_resource_id: "v1".into(),
+            },
+            "mounts.v1",
+            None,
+        ),
+        (
+            Place::ConfigMount {
+                config_resource_id: "c1".into(),
+            },
+            "configs.c1",
+            None,
+        ),
+    ] {
+        assert_eq!(place.path(), path);
+        assert_eq!(place.at().map(|at| at.to_string()).as_deref(), at);
+    }
 }

@@ -46,7 +46,7 @@ pub fn compare_resource_settings(
     node_type: EnvironmentNodeType,
     current: Value,
     baseline: Value,
-) -> Result<Vec<(ServiceSettingChange, Option<At>)>, ConfigError> {
+) -> Result<Vec<(ServiceSettingChange, Place)>, ConfigError> {
     if node_type == EnvironmentNodeType::Service {
         let current = parse_service_config(current)?;
         let baseline = parse_service_config(baseline)?;
@@ -55,10 +55,10 @@ pub fn compare_resource_settings(
     let current = parse_resource_config(node_type, current)?;
     let baseline = parse_resource_config(node_type, baseline)?;
     let mut changes = Vec::new();
-    for (path, row) in [("name", At::Name), ("storage", At::Storage)] {
+    for (path, place) in [("name", Place::Name), ("storage", Place::Storage)] {
         if at(&current, path) != at(&baseline, path) {
             changes.push(change(
-                (path, Some(row)),
+                place,
                 at(&baseline, path).clone(),
                 at(&current, path).clone(),
             ));
@@ -78,11 +78,7 @@ pub fn compare_resource_settings(
             if before != after {
                 let file = ConfigFileName::parse(name.clone())
                     .map_err(|_| ConfigError::at("config.files", "Invalid Config file name"))?;
-                changes.push(change(
-                    (&format!("files.{name}"), Some(At::File(file))),
-                    before,
-                    after,
-                ));
+                changes.push(change(Place::File(file), before, after));
             }
         }
     }
