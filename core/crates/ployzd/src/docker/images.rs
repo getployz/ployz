@@ -18,6 +18,8 @@ use ployz_core::{
 
 use super::{ContainerRuntime, Error, Status, classify};
 
+/// What follows a repository in the tag that keeps a pinned image from being pruned. A
+/// daemon of another version reads these tags, so the text does not change.
 const RETENTION_TAG: &str = ":ployz-sha256-";
 /// Unused images kept for rollback.
 const KEEP: usize = 3;
@@ -178,6 +180,17 @@ impl ContainerRuntime {
     }
 }
 
+/// The tag a pinned `image` is kept under, `repository:ployz-sha256-<hex>`. A pin that also
+/// names a tag (`redis:7-alpine@sha256:…`) drops it, since a Docker reference holds one tag.
+pub(super) fn retention_tag(image: &str) -> Option<String> {
+    let (name, hex) = image.split_once("@sha256:")?;
+    let repository = match name.rsplit_once(':') {
+        Some((repository, tag)) if !tag.contains('/') => repository,
+        _ => name,
+    };
+    Some(format!("{repository}{RETENTION_TAG}{hex}"))
+}
+
 /// Retention tags in `repository` to remove, newest kept. Images a Container uses,
 /// or whose use Docker did not count, are neither kept nor removed.
 fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i64) -> Vec<String> {
@@ -323,6 +336,38 @@ fn refusal(error: DockerError) -> ImageRemovalOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_image_is_kept_under_its_repository_whatever_tag_the_pin_names() {
+        let hex = "1".repeat(64);
+        for (image, kept) in [
+            (
+                format!("redis:7-alpine@sha256:{hex}"),
+                format!("redis:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("example.test/api@sha256:{hex}"),
+                format!("example.test/api:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("localhost:5000/api@sha256:{hex}"),
+                format!("localhost:5000/api:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("localhost:5000/api:v1@sha256:{hex}"),
+                format!("localhost:5000/api:ployz-sha256-{hex}"),
+            ),
+        ] {
+            let tag = retention_tag(&image).unwrap();
+            assert_eq!(tag, kept);
+            assert!(ployz_core::is_image_reference(&tag), "{tag}");
+        }
+    }
+
+    #[test]
+    fn the_retention_tag_text_is_the_one_other_daemons_read() {
+        assert_eq!(RETENTION_TAG, ":ployz-sha256-");
+    }
 
     const NOW: i64 = 100 * 24 * 60 * 60;
     const DAY: i64 = 24 * 60 * 60;
