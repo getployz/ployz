@@ -1,3 +1,4 @@
+use ployz_core::labels;
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
@@ -43,11 +44,6 @@ use super::{
     settled::{Key, Settlement, Settlements, Unfinished},
     ship::Outbox,
 };
-use crate::docker::{
-    LABEL_DEPLOYMENT, LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
-    LABEL_SERVICE_NAME,
-};
-use crate::sealed_env::LABEL_SEALED;
 
 const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
 const LOCAL_LOGS_DIR: &str = "local-logs";
@@ -1722,7 +1718,7 @@ fn retained_env(inspected: &ContainerInspectResponse) -> Option<RetainedEnv> {
     let label = config
         .labels
         .as_ref()
-        .and_then(|labels| labels.get(LABEL_SEALED));
+        .and_then(|labels| labels.get(labels::SEALED_ENV));
     RetainedEnv::from_inspected(
         config.env.as_deref().unwrap_or_default(),
         label.map(String::as_str),
@@ -1736,14 +1732,14 @@ fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {
 
 pub(super) fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta> {
     let labels = inspected.config.as_ref()?.labels.as_ref()?;
-    if !labels.contains_key(LABEL_MANAGED) && !labels.contains_key(LABEL_SYSTEM_MANAGED) {
+    if !labels.contains_key(labels::MANAGED) && !labels.contains_key(LABEL_SYSTEM_MANAGED) {
         return None;
     }
-    let kind = if labels.contains_key(LABEL_HOOK) {
+    let kind = if labels.contains_key(labels::HOOK) {
         ContainerKind::PreDeployHook
-    } else if labels.get(LABEL_NAMESPACE).map(String::as_str) == Some(Namespace::SYSTEM) {
+    } else if labels.get(labels::NAMESPACE).map(String::as_str) == Some(Namespace::SYSTEM) {
         ContainerKind::System
-    } else if labels.contains_key(LABEL_SERVICE_NAME) {
+    } else if labels.contains_key(labels::SERVICE_NAME) {
         ContainerKind::Service
     } else {
         ContainerKind::System
@@ -1757,9 +1753,9 @@ pub(super) fn container_meta(inspected: &ContainerInspectResponse) -> Option<Con
         && (state.and_then(|state| state.running) != Some(true)
             || state.and_then(|state| state.restarting) == Some(true));
     Some(ContainerMeta {
-        service: labels.get(LABEL_SERVICE_NAME).cloned(),
-        namespace: labels.get(LABEL_NAMESPACE).cloned(),
-        deployment: labels.get(LABEL_DEPLOYMENT).cloned(),
+        service: labels.get(labels::SERVICE_NAME).cloned(),
+        namespace: labels.get(labels::NAMESPACE).cloned(),
+        deployment: labels.get(labels::DEPLOYMENT_ID).cloned(),
         replica: inspected
             .name
             .as_deref()
@@ -1806,7 +1802,7 @@ fn service_event(
     let labelled = labelled_by_event(message);
     let meta = container_meta(&labelled).filter(|meta| meta.kind == ContainerKind::Service)?;
     let attributes = labelled.config.and_then(|config| config.labels)?;
-    let service_id = ServiceId::parse(attributes.get(LABEL_SERVICE_ID)?.clone()).ok()?;
+    let service_id = ServiceId::parse(attributes.get(labels::SERVICE_ID)?.clone()).ok()?;
     let service = QualifiedService::new(
         Namespace::parse(meta.namespace.as_deref()?).ok()?,
         ServiceName::parse(meta.service.as_deref()?).ok()?,

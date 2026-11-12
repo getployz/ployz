@@ -1,3 +1,4 @@
+use ployz_core::labels;
 use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{
@@ -68,7 +69,7 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
                 name: unique_volume("managed"),
                 driver: "local".into(),
                 options: BTreeMap::new(),
-                labels: BTreeMap::from([(LABEL_MANAGED.to_owned(), String::new())]),
+                labels: BTreeMap::from([(labels::MANAGED.to_owned(), String::new())]),
             },
         )
         .await

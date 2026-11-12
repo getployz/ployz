@@ -13,6 +13,7 @@
 //! is made and stamped on each router created to mount it, and a router is the one
 //! wanted only while its ID is the one on disk.
 
+use ployz_core::labels;
 use std::{
     fs, io,
     os::unix::fs::PermissionsExt,
@@ -28,7 +29,7 @@ use ployz_core::{
 };
 use zeroize::Zeroizing;
 
-use super::{ContainerRuntime, Error, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_NAME};
+use super::{ContainerRuntime, Error};
 use crate::filesystem::atomic_write;
 use crate::sealed_env::{self, OpenError};
 
@@ -131,9 +132,9 @@ impl super::LocalDocker {
         let identity = QualifiedService::system_tailscale();
         Ok(self
             .labelled(vec![
-                LABEL_MANAGED.to_owned(),
-                format!("{LABEL_NAMESPACE}={}", identity.namespace),
-                format!("{LABEL_SERVICE_NAME}={}", identity.name),
+                labels::MANAGED.to_owned(),
+                format!("{}={}", labels::NAMESPACE, identity.namespace),
+                format!("{}={}", labels::SERVICE_NAME, identity.name),
             ])
             .await?
             .into_iter()

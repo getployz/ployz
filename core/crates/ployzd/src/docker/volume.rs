@@ -1,3 +1,4 @@
+use ployz_core::labels;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bollard::{
@@ -14,7 +15,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ContainerRuntime, Error, LABEL_NAMESPACE, LABEL_SERVICE_NAME, some_map};
+use super::{ContainerRuntime, Error, some_map};
 use crate::VolumePluginStatus;
 
 const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
@@ -393,8 +394,8 @@ impl ContainerRuntime {
 
 fn holder_service(labels: Option<&HashMap<String, String>>) -> Option<QualifiedService> {
     let labels = labels?;
-    let namespace = Namespace::parse(labels.get(LABEL_NAMESPACE)?).ok()?;
-    let name = ServiceName::parse(labels.get(LABEL_SERVICE_NAME)?).ok()?;
+    let namespace = Namespace::parse(labels.get(labels::NAMESPACE)?).ok()?;
+    let name = ServiceName::parse(labels.get(labels::SERVICE_NAME)?).ok()?;
     Some(QualifiedService::new(namespace, name))
 }
 

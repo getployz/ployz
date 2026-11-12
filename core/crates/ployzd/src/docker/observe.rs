@@ -1,3 +1,4 @@
+use ployz_core::labels;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
@@ -14,7 +15,7 @@ use ployz_core::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ContainerRuntime, Error, LABEL_MANAGED, LABEL_NAMESPACE,
+    ContainerRuntime, Error,
     doors::{Door, DoorFacts, door_facts},
 };
 use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot, ReplicatedStore};
@@ -229,7 +230,7 @@ impl ContainerRuntime {
             HashMap::from([
                 ("type", vec!["container"]),
                 ("scope", vec!["local"]),
-                ("label", vec![LABEL_MANAGED, LABEL_NAMESPACE]),
+                ("label", vec![labels::MANAGED, labels::NAMESPACE]),
                 (
                     "event",
                     vec![

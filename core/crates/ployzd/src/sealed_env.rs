@@ -25,8 +25,6 @@ use crate::{
     sealing_key::SealingKey,
 };
 
-pub(crate) const LABEL_SEALED: &str = "ployz.env.sealed";
-
 pub use ployz_core::SealedRecord;
 
 #[derive(Debug, Error)]

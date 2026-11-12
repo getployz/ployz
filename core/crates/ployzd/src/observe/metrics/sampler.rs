@@ -12,6 +12,7 @@
 //! the Pool's objset kstats. The Machine row's disk breakdown takes the last
 //! 60 s reading from [`disk`] and never waits for it.
 
+use ployz_core::labels;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, hash_map::Entry},
     fs, io,
@@ -43,7 +44,6 @@ use super::{
     zfs_usage::{ZFS_LIST_TIMEOUT, ZfsUsageReader},
 };
 use crate::{
-    docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_SERVICE_ID},
     machine::store,
     network::DOCKER_NETWORK_NAME,
     observe::{
@@ -227,8 +227,8 @@ async fn refresh(docker: &Docker, roots: &Roots, tracked: &mut HashMap<Container
 /// Service's labels but is not one of its replicas, so it stays out of the
 /// Service's numbers.
 fn sampled(labels: &HashMap<String, String>) -> bool {
-    (labels.contains_key(LABEL_MANAGED) || labels.contains_key(LABEL_SYSTEM_MANAGED))
-        && !labels.contains_key(LABEL_HOOK)
+    (labels.contains_key(labels::MANAGED) || labels.contains_key(LABEL_SYSTEM_MANAGED))
+        && !labels.contains_key(labels::HOOK)
 }
 
 fn track(
@@ -247,7 +247,7 @@ fn track(
         .config
         .as_ref()
         .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get(LABEL_SERVICE_ID))
+        .and_then(|labels| labels.get(labels::SERVICE_ID))
         .and_then(|label| ServiceId::parse(label.clone()).ok());
     let service = meta.namespace.as_deref().zip(meta.service.as_deref());
     let service = service.and_then(|(namespace, name)| {
@@ -717,16 +717,16 @@ Inter-|   Receive                                                |  Transmit
 
     #[test]
     fn ployz_containers_are_sampled_and_hooks_are_not() {
-        use crate::docker::{LABEL_HOOK, LABEL_MANAGED};
+        use ployz_core::labels;
         let labels = |keys: &[&str]| -> std::collections::HashMap<String, String> {
             keys.iter()
                 .map(|key| ((*key).to_owned(), String::new()))
                 .collect()
         };
-        assert!(super::sampled(&labels(&[LABEL_MANAGED])));
+        assert!(super::sampled(&labels(&[labels::MANAGED])));
         assert!(super::sampled(&labels(&[super::LABEL_SYSTEM_MANAGED])));
         assert!(
-            !super::sampled(&labels(&[LABEL_MANAGED, LABEL_HOOK])),
+            !super::sampled(&labels(&[labels::MANAGED, labels::HOOK])),
             "a pre-deploy Hook is not a replica"
         );
         assert!(!super::sampled(&labels(&["com.example.other"])));
@@ -898,8 +898,8 @@ Inter-|   Receive                                                |  Transmit
 
     #[test]
     fn a_service_container_is_keyed_by_name_as_well_as_id() {
-        use crate::docker::{LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID, LABEL_SERVICE_NAME};
         use bollard::models::{ContainerConfig, ContainerInspectResponse, ContainerState};
+        use ployz_core::labels;
 
         let fixture = Fixture::new();
         let web = fixture.start(1);
@@ -922,18 +922,18 @@ Inter-|   Receive                                                |  Transmit
         };
 
         let labelled = inspect(&[
-            (LABEL_MANAGED, String::new()),
-            (LABEL_SERVICE_ID, service(1).to_string()),
-            (LABEL_NAMESPACE, "default".to_owned()),
-            (LABEL_SERVICE_NAME, "web-1".to_owned()),
+            (labels::MANAGED, String::new()),
+            (labels::SERVICE_ID, service(1).to_string()),
+            (labels::NAMESPACE, "default".to_owned()),
+            (labels::SERVICE_NAME, "web-1".to_owned()),
         ]);
         let tracked = super::track(&fixture.roots.proc, web.id, &labelled).unwrap();
         assert_eq!(tracked.labels.service_id, Some(service(1)));
         assert_eq!(tracked.labels.service, Some(qualified(1)));
 
         let half = inspect(&[
-            (LABEL_MANAGED, String::new()),
-            (LABEL_SERVICE_ID, service(1).to_string()),
+            (labels::MANAGED, String::new()),
+            (labels::SERVICE_ID, service(1).to_string()),
         ]);
         let tracked = super::track(&fixture.roots.proc, web.id, &half).unwrap();
         assert_eq!(
