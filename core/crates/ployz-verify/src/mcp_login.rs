@@ -12,7 +12,7 @@
 //!
 //! Each login is its own `ployz mcp login` process, and its Cloud calls block its one thread
 //! (`in_cloud`, core/crates/ployz/src/handlers/account.rs:133-142, on the current-thread
-//! `runtime` of core/crates/ployz/src/handlers/mod.rs:472-476). So one login's steps run in
+//! `runtime` of core/crates/ployz/src/handlers/mod.rs:480-484). So one login's steps run in
 //! order, and another login can step between any two of them. No lock covers them, and the
 //! rename (:79) does not read `mcp.json` again.
 //!
