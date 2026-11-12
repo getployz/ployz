@@ -14,7 +14,7 @@ use std::{
 };
 
 use ployz_core::metrics::{
-    DiskBreakdown, HostMemory, HostPoint, InterfaceRate, MetricGap, MetricGapReason,
+    DiskBreakdown, HostMemory, HostPoint, HostSample, InterfaceRate, MetricGap, MetricGapReason,
     MetricHistoryReply, MetricHistoryRequest, MetricMarker, MetricPoints, MetricRange, MetricScope,
     ServicePoint,
 };
@@ -64,18 +64,21 @@ pub(crate) fn history(
         return raw(store, range, &request.scope, buckets, now);
     }
     let (rolled, mut markers) = rollup::read(store, range, &request.scope)?;
+    let raw_hours = segment::hours(store)?;
+    let mut reader = Raw::new(
+        store,
+        &request.scope,
+        now,
+        raw_hours.first().map(|hour| hour.start_nanos()),
+    );
     let mut fresh = Vec::new();
-    for tail in unfolded(&segment::hours(store)?, &rollup::folded(store)?, range) {
-        let tail = raw(
-            store,
-            tail,
-            &request.scope,
-            Buckets::new(tail, Some(RETENTION.step_nanos())),
-            now,
-        )?;
+    for stretch in unfolded(&raw_hours, &rollup::folded(store)?, range) {
+        let buckets = Buckets::new(stretch, Some(RETENTION.step_nanos()));
+        let tail = reader.read(stretch, buckets)?;
         markers.extend(tail.markers);
         fresh.push(tail.points);
     }
+    markers.sort_by_key(|marker| marker.ts);
     let mut reply = match rolled {
         Rolled::Machine(mut points) => {
             for fresh in fresh {
@@ -99,35 +102,47 @@ pub(crate) fn history(
     Ok(reply)
 }
 
-/// The stretches of `range` to read from raw rows: each run of consecutive
-/// raw hours that has no rollup, cut to `range`, oldest first. An hour is
-/// either folded or read raw, so an older hour that failed to fold is not
-/// taken as folded because a newer one is. An hour with neither a rollup nor
-/// a raw segment is in no stretch and shows as a gap.
+/// The stretches of `range` to read from raw rows, oldest first: what the
+/// rollups leave of it, cut at each hour that has one and no other, and kept
+/// where a raw segment lies in it. An hour is either folded or read raw, so
+/// an older hour that failed to fold is not taken as folded because a newer
+/// one is. An hour with no rollup and no raw segment does not end a stretch:
+/// its time is read with the raw hours around it, so the first bucket after
+/// it spans it, and shows as a gap when nothing follows it.
 fn unfolded(
     raw_hours: &BTreeSet<SegmentName>,
     folded: &BTreeSet<SegmentName>,
     range: MetricRange,
 ) -> Vec<MetricRange> {
-    let mut runs: Vec<MetricRange> = Vec::new();
-    for hour in raw_hours.difference(folded) {
-        let (start, end) = (hour.start_nanos(), hour.end_nanos());
-        if start >= range.until_nanos || end <= range.since_nanos {
+    let mut stretches = Vec::new();
+    let mut from = range.since_nanos;
+    for hour in folded {
+        if hour.end_nanos() <= from {
             continue;
         }
-        match runs.last_mut() {
-            Some(run) if run.until_nanos == start => run.until_nanos = end,
-            _ => runs.push(MetricRange {
-                since_nanos: start,
-                until_nanos: end,
-            }),
+        if hour.start_nanos() >= range.until_nanos {
+            break;
         }
+        if hour.start_nanos() > from {
+            stretches.push(MetricRange {
+                since_nanos: from,
+                until_nanos: hour.start_nanos(),
+            });
+        }
+        from = hour.end_nanos();
     }
-    for run in &mut runs {
-        run.since_nanos = run.since_nanos.max(range.since_nanos);
-        run.until_nanos = run.until_nanos.min(range.until_nanos);
+    if from < range.until_nanos {
+        stretches.push(MetricRange {
+            since_nanos: from,
+            until_nanos: range.until_nanos,
+        });
     }
-    runs
+    stretches.retain(|stretch| {
+        raw_hours.iter().any(|hour| {
+            hour.start_nanos() < stretch.until_nanos && hour.end_nanos() > stretch.since_nanos
+        })
+    });
+    stretches
 }
 
 /// The newest `MAX_MARKERS` of `markers`, oldest first.
@@ -154,13 +169,76 @@ pub(crate) fn timed_out(request: &MetricHistoryRequest, now: i64) -> MetricHisto
     }
 }
 
-/// Reads `range` from raw segments one hour at a time.
+/// Reads ranges from raw segments one hour at a time, oldest range first.
 ///
 /// A Service's samples fold into the bucket table hour by hour, and each
 /// hour's are dropped before the next is read. Peak memory is one hour of
 /// samples plus the table, however wide the range. A Machine's host samples
-/// are one per tick, so its hours are kept and folded at the end. Hours before the
-/// oldest segment or past `now` hold none and are not scanned.
+/// are one per tick, so they are kept and folded at the end of each range.
+/// Hours before the oldest segment or past `now` hold none and are not
+/// scanned. A sample's predecessor carries from one range to the next, so a
+/// rate across hours with no raw rows covers them.
+struct Raw<'a> {
+    store: &'a StoreRoot,
+    scope: &'a MetricScope,
+    now: i64,
+    oldest: Option<i64>,
+    hosts: Vec<HostSample>,
+    fold: Option<rate::ServiceFold>,
+}
+
+impl<'a> Raw<'a> {
+    fn new(store: &'a StoreRoot, scope: &'a MetricScope, now: i64, oldest: Option<i64>) -> Self {
+        Self {
+            store,
+            scope,
+            now,
+            oldest,
+            hosts: Vec::new(),
+            fold: None,
+        }
+    }
+
+    /// Reads `range` onto `buckets`, after the ranges read before it.
+    fn read(&mut self, range: MetricRange, buckets: Buckets) -> io::Result<MetricHistoryReply> {
+        let oldest = self.oldest.unwrap_or(range.until_nanos);
+        let since = range.since_nanos.saturating_sub(LEAD_IN).max(oldest);
+        let fold = self
+            .fold
+            .get_or_insert_with(|| rate::ServiceFold::new(buckets));
+        fold.start(buckets);
+        let mut markers = Vec::new();
+        let mut hour = since - since.rem_euclid(HOUR_NANOS);
+        let last = range.until_nanos.min(self.now.saturating_add(HOUR_NANOS));
+        while hour < last {
+            let next = hour.saturating_add(HOUR_NANOS);
+            let within = MetricRange {
+                since_nanos: since.max(hour),
+                until_nanos: range.until_nanos.min(next),
+            };
+            let (selected, found) = segment::read(self.store, within, self.scope)?;
+            match selected {
+                Selected::Machine(samples) => self.hosts.extend(samples),
+                Selected::Service(samples) => fold.add(&samples),
+            }
+            markers.extend(
+                found
+                    .into_iter()
+                    .filter(|marker| marker.ts >= range.since_nanos),
+            );
+            markers = newest(markers);
+            hour = next;
+        }
+        let mut reply = match self.scope {
+            MetricScope::Machine => rate::machine_history(&self.hosts, buckets),
+            MetricScope::Service { .. } => fold.finish(),
+        };
+        reply.markers = markers;
+        Ok(reply)
+    }
+}
+
+/// Reads `range` from raw segments.
 fn raw(
     store: &StoreRoot,
     range: MetricRange,
@@ -170,38 +248,8 @@ fn raw(
 ) -> io::Result<MetricHistoryReply> {
     let oldest = segment::hours(store)?
         .first()
-        .map_or(range.until_nanos, |hour| hour.start_nanos());
-    let since = range.since_nanos.saturating_sub(LEAD_IN).max(oldest);
-    let mut hosts = Vec::new();
-    let mut fold = rate::ServiceFold::new(buckets);
-    let mut markers = Vec::new();
-    let mut hour = since - since.rem_euclid(HOUR_NANOS);
-    let last = range.until_nanos.min(now.saturating_add(HOUR_NANOS));
-    while hour < last {
-        let next = hour.saturating_add(HOUR_NANOS);
-        let within = MetricRange {
-            since_nanos: since.max(hour),
-            until_nanos: range.until_nanos.min(next),
-        };
-        let (selected, found) = segment::read(store, within, scope)?;
-        match selected {
-            Selected::Machine(samples) => hosts.extend(samples),
-            Selected::Service(samples) => fold.add(&samples),
-        }
-        markers.extend(
-            found
-                .into_iter()
-                .filter(|marker| marker.ts >= range.since_nanos),
-        );
-        markers = newest(markers);
-        hour = next;
-    }
-    let mut reply = match scope {
-        MetricScope::Machine => rate::machine_history(&hosts, buckets),
-        MetricScope::Service { .. } => fold.finish(),
-    };
-    reply.markers = markers;
-    Ok(reply)
+        .map(|hour| hour.start_nanos());
+    Raw::new(store, scope, now, oldest).read(range, buckets)
 }
 
 fn rates(point: &ServicePoint) -> [Option<f64>; 5] {
@@ -894,6 +942,9 @@ pub(crate) mod tests {
                 container(2, Some(1), 2, ts, 20),
             ]
         });
+        let markers =
+            [T0, T0 + HOUR, T0 + 2 * HOUR].map(|hour| marker(1, hour + 10 * MIN, MarkerKind::Oom));
+        append_markers(&store, &markers);
         // The middle hour did not fold, and cleanup already took the raw
         // rows of the two that did.
         for hour in [T0, T0 + 2 * HOUR] {
@@ -908,6 +959,7 @@ pub(crate) mod tests {
             service: qualified(1),
         };
         let reply = history(&store, &request(scope, since, now, Some(STEP_NANOS)), now).unwrap();
+        assert_eq!(reply.markers, markers);
         let points = service_points(&reply);
         let first = T0 + HOUR;
         let ts: Vec<i64> = points
@@ -931,6 +983,7 @@ pub(crate) mod tests {
 
         let asked = request(MetricScope::Machine, since, now, Some(STEP_NANOS));
         let reply = history(&store, &asked, now).unwrap();
+        assert_eq!(reply.markers, markers);
         let points = host_points(&reply);
         let ts: Vec<i64> = points
             .iter()
@@ -942,7 +995,195 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_range_reads_raw_only_for_the_runs_of_hours_without_a_rollup() {
+    fn a_raw_hour_older_than_the_oldest_rollup_is_read_from_raw_with_its_markers_in_order() {
+        let (_dir, store) = store();
+        write(&store, T0, T0 + 3 * HOUR, |ts| {
+            vec![host(ts), container(1, Some(1), 1, ts, 10)]
+        });
+        let markers =
+            [T0, T0 + HOUR, T0 + 2 * HOUR].map(|hour| marker(1, hour + 10 * MIN, MarkerKind::Oom));
+        append_markers(&store, &markers);
+        // Only the middle hour folded, and cleanup took its raw rows.
+        let name = SegmentName::containing(T0 + HOUR).unwrap();
+        rollup::fold_hour(&store, name).unwrap();
+        fs::remove_file(store.raw_metrics().join(name.to_string())).unwrap();
+        let now = T0 + 3 * HOUR;
+        let since = now - 7 * DAY;
+
+        let scope = MetricScope::Service {
+            service: qualified(1),
+        };
+        let reply = history(&store, &request(scope, since, now, Some(STEP_NANOS)), now).unwrap();
+        assert_eq!(reply.markers, markers);
+        let ts: Vec<i64> = service_points(&reply)
+            .iter()
+            .map(|point| point.ts)
+            .filter(|&ts| ts < T0 + HOUR)
+            .collect();
+        assert_eq!(ts, (0..12).map(|i| T0 + i * STEP_NANOS).collect::<Vec<_>>());
+
+        let asked = request(MetricScope::Machine, since, now, Some(STEP_NANOS));
+        let reply = history(&store, &asked, now).unwrap();
+        assert_eq!(reply.markers, markers);
+        assert_eq!(
+            host_points(&reply)
+                .iter()
+                .filter(|point| point.ts < T0 + HOUR)
+                .count(),
+            12
+        );
+    }
+
+    /// A Service container whose counters run `before` per second up to
+    /// `jump_at` and `after` per second from there, jumping by `jump` at it.
+    fn bent(ts: i64, jump_at: i64, before: u64, after: u64, jump: u64) -> Row {
+        let total = if ts < jump_at {
+            before * secs(ts)
+        } else {
+            before * secs(jump_at) + after * (secs(ts) - secs(jump_at)) + jump
+        };
+        let Row::Container(mut sample) = container(1, Some(1), 1, ts, 0) else {
+            unreachable!("container returns a container row");
+        };
+        sample.cpu_usec = Some(total);
+        Row::Container(sample)
+    }
+
+    #[test]
+    fn with_no_rollup_in_range_the_raw_grid_starts_at_the_range_start() {
+        let (_dir, store) = store();
+        write(&store, T0, T0 + HOUR, |ts| vec![host(ts)]);
+        let now = T0 + 4 * HOUR;
+        let since = T0 - 24 * HOUR + 17 * MIN;
+
+        let asked = request(MetricScope::Machine, since, now, Some(7 * MIN));
+        let reply = history(&store, &asked, now).unwrap();
+
+        let points = host_points(&reply);
+        assert_eq!(points.len(), 10, "{points:?}");
+        assert_eq!(points[0].ts, T0 - 9 * MIN);
+        assert_eq!(
+            reply.gaps.first(),
+            Some(&MetricGap {
+                from: since,
+                to: T0 - 9 * MIN,
+                reason: MetricGapReason::NotSampled
+            })
+        );
+    }
+
+    #[test]
+    fn a_counter_keeps_its_previous_reading_across_an_hour_with_no_raw_rows() {
+        let (_dir, store) = store();
+        let jump_at = T0 + 3 * HOUR;
+        write(&store, T0, T0 + HOUR, |ts| {
+            vec![bent(ts, jump_at, 10, 10, 5_000_000)]
+        });
+        let now = jump_at + 5 * MIN;
+        write(&store, jump_at, now, |ts| {
+            vec![bent(ts, jump_at, 10, 10, 5_000_000)]
+        });
+
+        let scope = MetricScope::Service {
+            service: qualified(1),
+        };
+        let asked = request(scope, now - 2 * DAY, now, Some(STEP_NANOS));
+        let reply = history(&store, &asked, now).unwrap();
+
+        let after = service_points(&reply)
+            .iter()
+            .find(|point| point.ts == jump_at)
+            .unwrap();
+        // The first reading after the hole spans it: its delta and the 29
+        // ten second ones, over the 2 hours 10 seconds and 290 seconds
+        // they cover.
+        let amount = 10 * 7_210 + 5_000_000 + 29 * 100;
+        assert!(
+            near(after.cpu_usec, f64::from(amount) / 7_500.0),
+            "{after:?}"
+        );
+    }
+
+    #[test]
+    fn an_older_unfolded_hours_markers_do_not_displace_newer_rolled_ones() {
+        let (_dir, store) = store();
+        let hour_of = |hour: i64| -> Vec<MetricMarker> {
+            (0..1_000)
+                .map(|i| marker(1, hour + i * SEC, MarkerKind::Restart))
+                .collect()
+        };
+        write(&store, T0, T0 + 2 * HOUR, |ts| vec![host(ts)]);
+        let (older, newer) = (hour_of(T0), hour_of(T0 + HOUR));
+        append_markers(&store, &older);
+        append_markers(&store, &newer);
+        // The older hour never folded; the newer did, and cleanup took it.
+        let name = SegmentName::containing(T0 + HOUR).unwrap();
+        rollup::fold_hour(&store, name).unwrap();
+        fs::remove_file(store.raw_metrics().join(name.to_string())).unwrap();
+        let now = T0 + 2 * HOUR;
+
+        let asked = request(MetricScope::Machine, now - 7 * DAY, now, None);
+        let reply = history(&store, &asked, now).unwrap();
+        assert_eq!(reply.markers, newer);
+        assert!(older[0].ts < newer[0].ts);
+    }
+
+    #[test]
+    fn markers_of_an_unfolded_hour_come_in_timestamp_order_with_the_rolled_ones() {
+        let (_dir, store) = store();
+        write(&store, T0, T0 + 3 * HOUR, |ts| vec![host(ts)]);
+        let all = [
+            marker(1, T0 + 10 * MIN, MarkerKind::Oom),
+            marker(2, T0 + 20 * MIN, MarkerKind::Restart),
+            marker(1, T0 + HOUR + 10 * MIN, MarkerKind::Restart),
+            marker(2, T0 + 2 * HOUR + 10 * MIN, MarkerKind::Oom),
+        ];
+        append_markers(&store, &all);
+        // Hours 1 and 2 fold, cleanup takes them; hour 0 did not fold.
+        for hour in [T0 + HOUR, T0 + 2 * HOUR] {
+            let name = SegmentName::containing(hour).unwrap();
+            rollup::fold_hour(&store, name).unwrap();
+            fs::remove_file(store.raw_metrics().join(name.to_string())).unwrap();
+        }
+        let now = T0 + 3 * HOUR;
+
+        let asked = request(MetricScope::Machine, now - 7 * DAY, now, None);
+        let reply = history(&store, &asked, now).unwrap();
+        assert_eq!(reply.markers, all);
+    }
+
+    #[test]
+    fn an_hour_with_no_data_before_the_unfolded_tail_is_spanned_by_its_first_bucket() {
+        let (_dir, store) = store();
+        let now = T0 + 29 * HOUR + 5 * MIN;
+        write(&store, T0 + 26 * HOUR, T0 + 28 * HOUR, |ts| {
+            vec![container(1, Some(1), 1, ts, 10)]
+        });
+        // The daemon was down for all of hour 28 and counters grew faster.
+        write(&store, T0 + 29 * HOUR, now, |ts| {
+            vec![container(1, Some(1), 1, ts, 40)]
+        });
+        for hour in [T0 + 26 * HOUR, T0 + 27 * HOUR] {
+            rollup::fold_hour(&store, SegmentName::containing(hour).unwrap()).unwrap();
+        }
+
+        let scope = MetricScope::Service {
+            service: qualified(1),
+        };
+        let asked = request(scope, now - 2 * DAY, now, Some(STEP_NANOS));
+        let reply = history(&store, &asked, now).unwrap();
+
+        let first = service_points(&reply)
+            .iter()
+            .find(|point| point.ts == T0 + 29 * HOUR)
+            .unwrap();
+        let last_before = 10 * secs(T0 + 28 * HOUR - 10 * SEC);
+        let amount = 40 * secs(T0 + 29 * HOUR) - last_before + 29 * 400;
+        assert!(near(first.cpu_usec, amount as f64 / 3_900.0), "{first:?}");
+    }
+
+    #[test]
+    fn a_range_reads_raw_for_what_the_rollups_leave_of_it_cut_only_at_folded_hours() {
         let hours = |starts: &[i64]| -> std::collections::BTreeSet<SegmentName> {
             starts
                 .iter()
@@ -955,14 +1196,9 @@ pub(crate) mod tests {
         };
         let raw = hours(&[T0, T0 + HOUR, T0 + 2 * HOUR, T0 + 4 * HOUR]);
 
+        // An hour with no raw segment is not a cut: the stretch spans it.
         let nothing_folded = unfolded(&raw, &hours(&[]), range(T0 - DAY, T0 + 5 * HOUR));
-        assert_eq!(
-            nothing_folded,
-            [
-                range(T0, T0 + 3 * HOUR),
-                range(T0 + 4 * HOUR, T0 + 5 * HOUR)
-            ]
-        );
+        assert_eq!(nothing_folded, [range(T0 - DAY, T0 + 5 * HOUR)]);
 
         let middle_failed = unfolded(
             &raw,
@@ -973,9 +1209,17 @@ pub(crate) mod tests {
             middle_failed,
             [
                 range(T0 + HOUR, T0 + 2 * HOUR),
-                range(T0 + 4 * HOUR, T0 + 5 * HOUR)
+                range(T0 + 3 * HOUR, T0 + 5 * HOUR)
             ]
         );
+
+        // Folded hours and then an hour with no raw segment leave nothing to read.
+        let outage_between = unfolded(
+            &raw,
+            &hours(&[T0 + 2 * HOUR, T0 + 3 * HOUR, T0 + 4 * HOUR]),
+            range(T0 + 2 * HOUR, T0 + 6 * HOUR),
+        );
+        assert_eq!(outage_between, []);
 
         let cut = unfolded(
             &raw,
