@@ -9,14 +9,13 @@ use clap::ArgMatches;
 use ployz_core::authority::{
     ApprovedVolumeChange, Signed, Timestamp, VolumeApproval, VolumeWorkflow,
 };
-use ployz_core::{MachineName, RpcErrorCode, SlotRole, VolumeCopy, WantedCopy};
+use ployz_core::{Hint, MachineName, RpcErrorCode, SlotRole, VolumeCopy, WantedCopy};
 use ployz_store::{EnvironmentSummary, VolumeId, VolumeName};
 use serde_json::json;
 
 use super::super::{Error, leaf_matches, store};
 use super::approve::{approval, context, device, named};
 use super::restore::{Planned, Seen, Unseen, copies, docker_volume, plan};
-use crate::ui::Hint;
 
 /// A signed approval and the change it approved.
 pub(super) struct LossApproval {
