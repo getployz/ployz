@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use ployz_core::authority::{ApprovalDigest, CommitApproval, CommitAuthority, Signed};
 use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
+use ployz_decide::github_build::{EndKind, Hold, Target, github_end_holds};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -1509,14 +1510,25 @@ pub(crate) fn github_end(
 ) -> Result<BuildStatus, RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
-    let holds = match (run_id, end) {
-        (Some(run_id), GithubEnd::Unstarted { .. }) => {
-            matches!(row.building_on(run_id), Some(GithubHold::Dispatched { .. }))
-        }
-        (Some(run_id), _) => row.building_on(run_id).is_some(),
-        (None, _) => matches!(row.stage, Stage::Waiting) && row.github_skipped.is_none(),
+    let kind = match end {
+        GithubEnd::Built { .. } => EndKind::Built,
+        GithubEnd::Failed { .. } => EndKind::Failed,
+        GithubEnd::Skipped { .. } => EndKind::Skipped,
+        GithubEnd::Unstarted { .. } => EndKind::Unstarted,
     };
-    if !holds {
+    let target = match run_id {
+        Some(run_id) => Target::Run {
+            building_on: row.building_on(run_id).map(|hold| match hold {
+                GithubHold::Dispatched { .. } => Hold::Dispatched,
+                GithubHold::CheckedIn { .. } => Hold::CheckedIn,
+                GithubHold::Reported { .. } => Hold::Reported,
+            }),
+        },
+        None => Target::BeforeGithub {
+            waiting_unskipped: matches!(row.stage, Stage::Waiting) && row.github_skipped.is_none(),
+        },
+    };
+    if !github_end_holds(kind, target) {
         return Err(error::conflict("This build already ended", json!({})));
     }
     let token = match end {

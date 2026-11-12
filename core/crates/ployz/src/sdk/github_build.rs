@@ -9,6 +9,8 @@
 //! skipped: the next Builder of the build's walk takes it. A failed build step fails it.
 
 use ployz_core::error_chain;
+pub use ployz_decide::github_build::GithubLook;
+use ployz_decide::github_build::{self, EndedRun, Ending, First, GrantRead};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -895,19 +897,6 @@ pub enum GithubFinish {
     Ended(BuildStatus),
 }
 
-/// Which of Cloud's looks at a GitHub build calls [`github_finish`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GithubLook {
-    /// No run checked in by the time another Builder could take the build. It passes
-    /// on only a run that still hasn't: one that checked in meanwhile started in time.
-    StartLimit,
-    /// The run ran past its budget, and Cloud cancelled it.
-    Budget,
-    /// The run reported its end, or GitHub says it completed.
-    Ended,
-}
-
 /// End a GitHub build at Cloud's `look`: read its grant on the Machine that minted it,
 /// and write the receipt from the digest it received. A run that never checked in, or
 /// that GitHub failed for its own reasons, is skipped for the next Builder. With
@@ -937,43 +926,33 @@ pub async fn github_finish(
         return Ok(GithubFinish::Ended(build.status));
     }
     let run_id = build.run.run_id;
-    let end = match (&build.grant, look) {
-        // The start limit ends only a run that never checked in, whatever the re-read
-        // found: the Store's Unstarted refuses a run whose check-in committed.
-        (None, _) | (_, GithubLook::StartLimit) => {
-            let message = match look {
-                GithubLook::StartLimit | GithubLook::Budget => {
-                    "no runner started the build in time"
-                }
-                GithubLook::Ended => "the run ended before it started the build",
+    let (end, waits) = match github_build::first(build.grant.as_ref(), look) {
+        First::Unstarted(why) => (
+            GithubEnd::Unstarted {
+                message: why.message().to_owned(),
+            },
+            true,
+        ),
+        First::ReadGrant(grant) => {
+            let read = inspect_grant(grant, connections, expect).await;
+            let ended = build.ended.as_ref().map(|ended| match ended {
+                RunEnd::Built { platforms, .. } => EndedRun::Built(platforms),
+                RunEnd::Failed => EndedRun::Failed,
+            });
+            let Some(ending) = github_build::after_read(ended, look, read) else {
+                return Ok(GithubFinish::Waiting);
             };
-            let end = GithubEnd::Unstarted {
-                message: message.to_owned(),
-            };
-            // It checked in meanwhile: the next look finds it started.
-            return match settle(&store, id, run_id, end).await {
-                Err(error) if error.code == RpcErrorCode::Conflict => Ok(GithubFinish::Waiting),
-                finished => finished,
-            };
-        }
-        (Some(grant), GithubLook::Budget | GithubLook::Ended) => {
-            let pushed = match inspect_grant(grant, connections, expect).await {
-                GrantRead::Pushed(pushed) => pushed,
-                GrantRead::Refused(message) => {
-                    return settle(&store, id, run_id, GithubEnd::Failed { message }).await;
-                }
-                GrantRead::Unreachable if look == GithubLook::Ended => {
-                    return Ok(GithubFinish::Waiting);
-                }
-                GrantRead::Unreachable => {
-                    let end = GithubEnd::Failed {
-                        message: "your Machine couldn't be reached to confirm the push".to_owned(),
-                    };
-                    return settle(&store, id, run_id, end).await;
-                }
-            };
-            match (pushed, &build.ended) {
-                (Some(pushed), Some(RunEnd::Built { platforms, .. })) => {
+            let end = match ending {
+                Ending::Failed(why) => GithubEnd::Failed {
+                    message: why.message().to_owned(),
+                },
+                Ending::Skipped(why) => GithubEnd::Skipped {
+                    message: why.message().to_owned(),
+                },
+                Ending::Built {
+                    pushed,
+                    run: platforms,
+                } => {
                     let tag = format!(
                         "{}:{RETAINED_DIGEST_TAG_PREFIX}{}",
                         repository(&id)?,
@@ -994,19 +973,15 @@ pub async fn github_finish(
                         receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),
                     }
                 }
-                (_, Some(RunEnd::Failed)) => GithubEnd::Failed {
-                    message: "a build step failed".to_owned(),
-                },
-                _ if look == GithubLook::Budget => GithubEnd::Skipped {
-                    message: "the run ran out of time".to_owned(),
-                },
-                _ => GithubEnd::Skipped {
-                    message: "the run ended without pushing an image".to_owned(),
-                },
-            }
+            };
+            (end, false)
         }
     };
-    settle(&store, id, run_id, end).await
+    match settle(&store, id, run_id, end).await {
+        // It checked in meanwhile: the next look finds it started.
+        Err(error) if waits && error.code == RpcErrorCode::Conflict => Ok(GithubFinish::Waiting),
+        finished => finished,
+    }
 }
 
 async fn settle(
@@ -1020,19 +995,6 @@ async fn settle(
     })
     .await
     .map(GithubFinish::Ended)
-}
-
-/// What reading a grant on the Machine that minted it found.
-#[derive(Debug, Eq, PartialEq)]
-enum GrantRead {
-    /// What it received, if anything. A grant that expired or whose Machine restarted
-    /// received nothing more.
-    Pushed(Option<ployz_core::ImageDigest>),
-    /// The Machine cannot read grants, or belongs to another Cluster; the build fails
-    /// with this sentence.
-    Refused(String),
-    /// The Machine can't be reached now.
-    Unreachable,
 }
 
 async fn inspect_grant(

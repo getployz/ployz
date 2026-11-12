@@ -10,6 +10,7 @@ base64 = "0.22.1"
 hex = "0.4.3"
 idna = "1.1.0"
 ployz-core.workspace = true
+ployz-decide.workspace = true
 postgres = "0.19.14"
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-postgres-rustls = "0.14.0"
