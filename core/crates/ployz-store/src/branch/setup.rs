@@ -13,6 +13,14 @@ pub struct SetBranchSetup {
     pub setup: Vec<crate::SetupCommand>,
 }
 
+/// A Setup Command, by the Service lineage it runs in, so renames keep it. The stored
+/// form of a Branch's own Setup Commands, a Branch's defaults and a PR plan's.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Setup {
+    pub(crate) lineage: String,
+    pub(crate) command: String,
+}
+
 pub(crate) fn set_branch_setup(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -188,16 +196,7 @@ pub(crate) fn set_own(
         .filter(|setup| setup.lineage != lineage)
         .collect();
     setup.extend(command.map(|command| Setup { lineage, command }));
-    tx.execute(
-        "UPDATE config_environment_branch SET setup = ?1 WHERE environment_id = ?2",
-        &[
-            serde_json::to_string(&setup)
-                .expect("Setup Commands are JSON")
-                .as_str()
-                .into(),
-            environment.summary.id.as_str().into(),
-        ],
-    )?;
+    rows::set_setup(tx, &environment.summary.id, &setup)?;
     Ok(true)
 }
 
@@ -234,11 +233,20 @@ pub(crate) fn setup_is_not_staged(path: &crate::SettingPath) -> RpcError {
 
 /// The IDs of the Services that have deployed in Environment `id`.
 pub(super) fn deployed(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<BTreeSet<String>, RpcError> {
-    tx.query(
-        "SELECT node_id FROM config_applied WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?
-    .iter()
-    .map(|row| row.text(0).map(str::to_owned))
-    .collect()
+    Ok(crate::deployment::applied::node_ids(tx, id)?
+        .into_iter()
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_branch_rows_setup_text_round_trips() {
+        let text = r#"[{"lineage":"lineage-1","command":"pnpm db:seed"}]"#;
+        let setup: Vec<Setup> = serde_json::from_str(text).unwrap();
+        assert_eq!(setup.len(), 1);
+        assert_eq!(serde_json::to_string(&setup).unwrap(), text);
+    }
 }

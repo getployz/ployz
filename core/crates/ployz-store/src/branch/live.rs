@@ -99,9 +99,7 @@ pub(crate) fn branch_plan(
                     BranchNodeRole::Live | BranchNodeRole::LeftOut => None,
                 },
                 toggled,
-                owner: chain
-                    .iter()
-                    .find(|ancestor| holds(&ancestor.applied, lineage))
+                owner: owner_of(&chain, lineage)
                     .map(|ancestor| ancestor.environment.summary.name.clone()),
                 data: holds_data(working, lineage),
             })
@@ -252,9 +250,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
     let live = uses
         .keys()
         .map(|lineage| {
-            let owner = chain
-                .iter()
-                .find(|ancestor| holds(&ancestor.applied, lineage));
+            let owner = owner_of(&chain, lineage);
             LiveNode {
                 name: branch
                     .live
@@ -318,12 +314,9 @@ pub(super) fn live_producers(
         let lineages: Vec<LiveLineageUse> = uses
             .iter()
             .filter(|(lineage, _)| {
-                chain
-                    .iter()
-                    .find(|ancestor| holds(&ancestor.applied, lineage))
-                    .is_some_and(|found| {
-                        found.environment.summary.id == owner.environment.summary.id
-                    })
+                owner_of(&chain, lineage).is_some_and(|found| {
+                    found.environment.summary.id == owner.environment.summary.id
+                })
             })
             .map(|(lineage, keys)| LiveLineageUse {
                 lineage_id: lineage.clone(),

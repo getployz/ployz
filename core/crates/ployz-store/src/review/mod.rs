@@ -11,6 +11,7 @@ pub(crate) mod diff;
 pub(crate) mod history;
 pub(crate) mod publish;
 mod required;
+pub(crate) mod saved;
 pub(crate) mod sealed;
 mod version;
 
@@ -35,6 +36,7 @@ pub(crate) use approval::{
 pub use required::{
     ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, OperationVerb,
 };
+pub(crate) use saved::{Saved, latest_saved};
 pub use version::{MalformedReviewVersion, ReviewVersion};
 
 use crate::Actor;
@@ -256,16 +258,6 @@ pub enum DataEffect {
     Deleted,
     /// A Volume is detached, and it keeps its data.
     Kept,
-}
-
-/// One Saved revision.
-pub(crate) struct Saved {
-    pub(crate) revision: Revision,
-    pub(crate) intent: SavedEnvironmentIntent,
-    /// The Volume losses accepted when this revision was saved, each with the
-    /// Docker Volumes seen holding its data then. They cover the next Deploy of
-    /// this revision until the evidence changes.
-    pub(crate) accepted: Vec<crate::VolumeLoss>,
 }
 
 /// What the Change Set compares Working State against: the submitted Deployment's
@@ -942,28 +934,18 @@ pub(crate) fn publish(
     }
     guard_saving(tx, environment, latest, &intent)?;
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
-    let accepted = (!accepted.is_empty())
-        .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
     let changed = latest.map_or_else(Vec::new, |latest| value_changes(&latest.intent, &intent));
-    let changed = (!changed.is_empty())
-        .then(|| serde_json::to_string(&changed).expect("value changes are JSON"));
-    tx.execute(
-        "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at, accepted_losses, value_changes) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        &[
-            environment.as_str().into(),
-            revision_param(revision)?.into(),
-            who.organization.as_str().into(),
-            serde_json::to_string(&intent)
-                .expect("Saved State is JSON")
-                .as_str()
-                .into(),
-            message.map(str::trim).filter(|message| !message.is_empty()).into(),
-            who.principal.as_ref().map(crate::Principal::as_str).into(),
-            crate::deployment::now().into(),
-            accepted.as_deref().into(),
-            changed.as_deref().into(),
-        ],
+    saved::insert(
+        tx,
+        who,
+        environment,
+        &saved::Insert {
+            revision,
+            intent: &intent,
+            message,
+            accepted,
+            changed: &changed,
+        },
     )?;
     sealed::SealLedger::record(tx, environment.as_str(), &intent)?;
     // Saving a sealed value again clears what an earlier seal left plain below.
@@ -1072,17 +1054,7 @@ pub(crate) fn reconsent(
     revision: Revision,
     accepted: &[crate::VolumeLoss],
 ) -> Result<(), RpcError> {
-    let accepted = (!accepted.is_empty())
-        .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
-    tx.execute(
-        "UPDATE config_saved SET accepted_losses = ?3 WHERE environment_id = ?1 AND revision = ?2",
-        &[
-            environment.as_str().into(),
-            revision_param(revision)?.into(),
-            accepted.as_deref().into(),
-        ],
-    )?;
-    Ok(())
+    saved::set_accepted_losses(tx, environment, revision, accepted)
 }
 
 /// Sealing a value removes every earlier copy of it from History: plain text
@@ -1201,17 +1173,7 @@ pub(crate) fn scrub_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Resu
         if scrub.apply(earlier, &mut saved) {
             // A scrub matched by key seals a variable under its own ID.
             sealed::SealLedger::record(tx, environment.as_str(), &saved)?;
-            tx.execute(
-                "UPDATE config_saved SET intent = ?3 WHERE environment_id = ?1 AND revision = ?2",
-                &[
-                    environment.as_str().into(),
-                    revision_param(earlier)?.into(),
-                    serde_json::to_string(&saved)
-                        .expect("Saved State is JSON")
-                        .as_str()
-                        .into(),
-                ],
-            )?;
+            saved::rewrite_intent(tx, environment, earlier, &saved)?;
         }
     }
     Ok(())
@@ -1227,35 +1189,6 @@ pub(crate) fn introductions(
         &[environment.summary.id.as_str().into()],
     )?;
     crate::scope::nodes(&rows, &environment.working, "Node Introduction")
-}
-
-pub(crate) fn latest_saved(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-) -> Result<Option<Saved>, RpcError> {
-    let rows = tx.query(
-        "SELECT revision, intent, accepted_losses FROM config_saved WHERE environment_id = ?1 \
-         ORDER BY revision DESC LIMIT 1",
-        &[environment.as_str().into()],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    let mut intent = canonicalize_environment_intent(row.intent(1, "Saved State")?);
-    // The revision keeps the size it asked for as history; read as the latest
-    // Saved State, it says the size the Servers hold, as Head does.
-    crate::volume::size::held(tx, environment, &mut intent.volumes)?;
-    let accepted = match row.optional_text(2)? {
-        Some(json) => {
-            serde_json::from_str(json).map_err(|_| error::corrupt("accepted Volume losses"))?
-        }
-        None => Vec::new(),
-    };
-    Ok(Some(Saved {
-        revision: Revision(row.number(0, "revision")?),
-        intent,
-        accepted,
-    }))
 }
 
 fn projection(

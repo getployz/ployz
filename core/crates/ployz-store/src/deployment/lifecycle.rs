@@ -509,10 +509,7 @@ pub(crate) fn forget(
         .iter()
         .map(|node| (node.id().to_owned(), NodeStatus::Unknown))
         .collect();
-    tx.execute(
-        "DELETE FROM config_applied WHERE environment_id = ?1",
-        &[stored.summary.environment_id.as_str().into()],
-    )?;
+    applied::forget(tx, &stored.summary.environment_id)?;
     end(tx, stored, outcome, End::Applied)
 }
 
@@ -2701,28 +2698,15 @@ fn advance(
                 deployed.insert(lineage.to_owned());
             }
             match applied {
-                Some(applied) => tx.execute(
-                    "INSERT INTO config_applied \
-                     (environment_id, node_id, organization_id, deployment_id, node, node_type) \
-                     SELECT environment_id, ?2, organization_id, id, ?3, ?4 \
-                     FROM config_deployment WHERE id = ?1 \
-                     ON CONFLICT (environment_id, node_id) \
-                     DO UPDATE SET deployment_id = excluded.deployment_id, node = excluded.node",
-                    &[
-                        stored.summary.id.as_str().into(),
-                        node.id().into(),
-                        applied.document().as_str().into(),
-                        name_of(applied.node_type()).as_str().into(),
-                    ],
+                Some(applied) => applied::confirm(
+                    tx,
+                    stored.summary.id.as_str(),
+                    node.id(),
+                    applied.document().as_str(),
+                    name_of(applied.node_type()).as_str(),
                 )?,
-                None => tx.execute(
-                    "DELETE FROM config_applied WHERE environment_id = ?1 AND node_id = ?2",
-                    &[
-                        stored.summary.environment_id.as_str().into(),
-                        node.id().into(),
-                    ],
-                )?,
-            };
+                None => applied::remove_node(tx, &stored.summary.environment_id, node.id())?,
+            }
         }
         crate::branch::deployed(tx, &stored.summary.environment_id, &saved, &deployed)?;
         crate::branch::follow(

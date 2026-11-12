@@ -132,7 +132,7 @@ fn ran_as(
          ORDER BY number DESC",
         &[
             environment.as_str().into(),
-            format!("%\"{id}\"%").as_str().into(),
+            node_pattern(id.as_str()).as_str().into(),
         ],
     )?;
     let mut torn_down = BTreeSet::new();
