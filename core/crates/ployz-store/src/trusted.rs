@@ -196,6 +196,15 @@ impl Trusted {
         Ok(Cow::Owned(trusted))
     }
 
+    /// What seals and refuses secrets for `who` under this evidence.
+    pub(crate) fn sealer<'a>(&'a self, who: &'a crate::Actor) -> crate::client_sealed::Sealer<'a> {
+        crate::client_sealed::Sealer {
+            organization: &who.organization,
+            recipient: self.sealing.as_ref(),
+            from_cli: self.from_cli,
+        }
+    }
+
     /// Cloud counted no Server: nothing runs, and nothing is left on one.
     pub(crate) const fn no_servers(&self) -> bool {
         matches!(self.servers, Some(0))

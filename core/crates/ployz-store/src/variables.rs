@@ -25,7 +25,7 @@ use serde_json::{Map, Value, json};
 use crate::scope::Environment;
 use crate::sealing::plain_fingerprint;
 use crate::typed_address::{self, Typed};
-use crate::{client_sealed, error, old_cli};
+use crate::{client_sealed, error};
 
 /// A variable's name: letters, digits and `_`, not starting with a digit, at most
 /// 128 characters. Stored uppercase, as the dashboard stores it.
@@ -146,14 +146,14 @@ pub(crate) fn find<'intent>(
 /// Set variable `key` of `service` from `value`: text, `{"secret": true}` to keep
 /// a secret, a value sealed in the browser, `{"secret": {"generate": true}}` for one
 /// `sealer` seals, or `{"value": …, "exported": …}` with either field. A secret's
-/// plain text is refused, through `guard` for the CLI. Returns whether Working State
-/// changed, and the Typed Addresses in a new value.
+/// plain text is refused, and `sealer` names the update when it came from the CLI.
+/// Returns whether Working State changed, and the Typed Addresses in a new value.
+/// The CLI's update message replaces the refusal, never adding to it.
 pub(crate) fn set(
     environment: &mut Environment,
     service: &ServiceName,
     key: &VariableKey,
     value: Value,
-    guard: old_cli::Guard,
     sealer: client_sealed::Sealer<'_>,
 ) -> Result<(bool, Option<Typed>), RpcError> {
     let (input, exported) = parse(key, value)?;
@@ -240,7 +240,7 @@ pub(crate) fn set(
             }
         }
         (Some(Input::Seal(_)), _) => {
-            return Err(guard.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
+            return Err(sealer.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
         }
         (Some(Input::ClientSealed(value)), _) => {
             let receiver = client_sealed::Receiver {

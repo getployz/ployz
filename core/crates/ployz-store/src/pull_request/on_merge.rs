@@ -503,7 +503,7 @@ pub(crate) fn set_merge_value(
                 &label,
                 value,
                 &landing.into,
-                crate::old_cli::Guard::from(trusted),
+                trusted.sealer(who),
             )?),
             (SecretValue::ClientSealed(_), false) => {
                 return Err(error::invalid(
