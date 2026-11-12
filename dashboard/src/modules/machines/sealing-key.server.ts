@@ -7,7 +7,12 @@ import type { Actor } from "#/modules/identity/actor";
 import { createClusterResealRequestedEvent } from "#/modules/inngest/events";
 import { currentFounder, currentGeneration } from "#/modules/machines/connections.server";
 import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
-import type { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
+import type {
+  CliReadRecipientRecoveryInput,
+  CliReadSealingRecoveryInput,
+  CliRotateRecipientRecoveryInput,
+  CliRotateSealingRecoveryInput,
+} from "#/modules/machines/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey, sealingKeyOwner } from "#/modules/machines/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccessById } from "#/modules/organization/access.server";
@@ -168,10 +173,15 @@ export const recordFirstRecoveryBackup = Effect.fn("SealingKey.recordFirstRecove
   return recoveryDigest(backup);
 });
 
-export const readSealingRecovery = Effect.fn("SealingKey.readRecovery")(function* (organizationId: string) {
+/** Records the current Cluster's key as the Organization's, while no backup holds another. */
+const recordCurrentSealingKey = Effect.fn("SealingKey.recordCurrent")(function* (organizationId: string) {
   const generation = yield* currentGeneration(organizationId);
   const clusterKey = generation === null ? undefined : yield* readSealingPublicKey(organizationId, generation);
   if (clusterKey !== undefined) yield* recordOrganizationSealingKey(organizationId, clusterKey);
+});
+
+export const readSealingRecovery = Effect.fn("SealingKey.readRecovery")(function* (organizationId: string) {
+  yield* recordCurrentSealingKey(organizationId);
   const stored = yield* readOrganizationSealingKey(organizationId);
   if (stored === undefined) return yield* new NotFound({ message: "This Organization has no Sealing Key." });
   return {
@@ -213,6 +223,64 @@ export const rotateCliSealingRecovery = Effect.fn("SealingKey.rotateRecoveryForC
 ) {
   yield* requireAccessById(actor, input.organizationId, "servers:operate");
   return yield* rotateRecoveryBackup(input.organizationId, input.publicKey, input.currentDigest, input.backup);
+});
+
+const noRecipientBackup = () => new NotFound({ message: "This Organization keeps no backup of a recipient key." });
+
+export const readRecipientRecovery = Effect.fn("SealingKey.readRecipientRecovery")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [stored] = yield* drizzle.select({
+    publicKey: organizationSealingKey.recipientPublicKey,
+    backup: organizationSealingKey.recipientBlob,
+    rotation: organizationSealingKey.recipientRotation,
+  }).from(organizationSealingKey).where(organizationKeyOf(organizationId));
+  if (stored?.publicKey == null || stored.backup === null || stored.rotation === null) return yield* noRecipientBackup();
+  return { publicKey: stored.publicKey, backup: stored.backup, digest: recoveryDigest(stored.backup), rotation: stored.rotation };
+});
+
+/**
+ * Replaces the recipient key's backup only over the one the caller read, as `rotateRecoveryBackup` does for the
+ * identity. Cloud can't check the rotation; the Server that recovers the key does.
+ */
+export const rotateRecipientRecovery = Effect.fn("SealingKey.rotateRecipientRecovery")(function* (
+  organizationId: string, input: Omit<CliRotateRecipientRecoveryInput, "organizationId">,
+) {
+  yield* recordCurrentSealingKey(organizationId);
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [stored] = yield* drizzle.select({
+      publicKey: organizationSealingKey.recipientPublicKey,
+      backup: organizationSealingKey.recipientBlob,
+    }).from(organizationSealingKey).where(organizationKeyOf(organizationId)).for("update");
+    if (stored === undefined) return yield* new NotFound({ message: "This Organization has no Sealing Key." });
+    const digest = recoveryDigest(input.backup);
+    const storedDigest = stored.backup === null ? null : recoveryDigest(stored.backup);
+    if (storedDigest === digest && stored.publicKey === input.publicKey) return { digest };
+    if (storedDigest !== input.currentDigest) return yield* backupConflict();
+    yield* drizzle.update(organizationSealingKey).set({
+      recipientPublicKey: input.publicKey,
+      recipientBlob: input.backup,
+      recipientRotation: input.rotation,
+      updatedAt: new Date(),
+    }).where(organizationKeyOf(organizationId));
+    return { digest };
+  }));
+});
+
+export const readCliRecipientRecovery = Effect.fn("SealingKey.readRecipientRecoveryForCli")(function* (
+  actor: Actor, input: CliReadRecipientRecoveryInput,
+) {
+  yield* requireAccessById(actor, input.organizationId, "servers:operate");
+  return yield* readRecipientRecovery(input.organizationId);
+});
+
+export const rotateCliRecipientRecovery = Effect.fn("SealingKey.rotateRecipientRecoveryForCli")(function* (
+  actor: Actor, input: CliRotateRecipientRecoveryInput,
+) {
+  yield* requireAccessById(actor, input.organizationId, "servers:operate");
+  const { organizationId, ...rotated } = input;
+  return yield* rotateRecipientRecovery(organizationId, rotated);
 });
 
 export const readSealingKeyGenerator = Effect.fn("SealingKey.readGenerator")(function* (organizationId: string, clusterKey: string) {

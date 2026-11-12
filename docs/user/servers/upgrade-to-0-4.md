@@ -30,7 +30,8 @@ works for every cluster.
 dashboard offers **Activate** on the **Servers** page. Your passkey approves the list of servers.
 A second passkey prompt approves the cluster's new key for sealed values, which one of your
 servers makes. If the dashboard says a server holds keys from before, activate from your
-computer instead.
+computer instead. The dashboard never shows a recovery code, so make one afterwards from your
+computer, as in [Your recovery code after activation](#your-recovery-code-after-activation).
 
 Activation:
 
@@ -41,7 +42,8 @@ Activation:
   was. Run `ployz device enforce` again once you can reach it.
 - cancels any build Ployz Cloud approved and any volume change waiting on an approval. Start them
   again from an approved device or with your passkey.
-- gives the cluster a new key for sealed values. Values you seal from then on use it.
+- gives the cluster a new key for sealed values. Values you seal from then on use it. A server
+  you add later gets the new key when it joins.
 
 Each server restarts once to activate. Your services keep running.
 
@@ -58,15 +60,31 @@ enforcement was off:
   shell when it restarts to activate, but a command already running can finish.
 - **Web traffic and Private Access set up before activation.** Each server keeps the
   [Cloudflare Tunnel or public ports](../services/cloudflare-tunnel.md) and the
-  [Private Access](../services/private-networking.md) router it had, exactly as they were. If you don't recognize the tailnet your router joined, turn Private Access off, then on
-  again from an approved device.
+  [Private Access](../services/private-networking.md) router it had, exactly as they were.
+  `ployz device enforce` names each server that keeps a router, and the tailnet it joined. If
+  you don't recognize that tailnet, run `ployz private-access off`, then turn it on again from
+  an approved device.
 
 ## Your recovery code after activation
 
-Your [recovery code](recovery-code.md) opens only values sealed before activation. Values sealed
-after it open only on the servers that activated, and no recovery code opens them yet. A server
-you add after activation can't open them yet either, so run services that need those values on
-the servers that activated. Keep at least two of them running. If you lose every one, set those
-values again.
+Values sealed after activation use the new key, so they need a recovery code of their own. Your
+[recovery code](recovery-code.md) from before still opens values sealed before activation. Keep
+both codes.
+
+- **From your computer.** `ployz device enforce` prints the new **Recovery code** once, in a
+  terminal, while you're signed in with `ployz login`. It says that the code opens values sealed
+  after activation and that your earlier code still opens values sealed before.
+- **From the dashboard, or if you got no code.** From your computer, signed in, run:
+
+  ```sh
+  ployz recovery rotate --connect ssh://root@203.0.113.10
+  ```
+
+  Give it a server that activated. It prints a code for the new key and changes nothing about
+  your earlier code.
+
+To use it, run `ployz recover` as in [When a server shows Needs recovery](recovery-code.md#when-a-server-shows-needs-recovery):
+type your earlier code first to get back the old key, then run `ployz recover` again with the
+new code to get back the new key.
 
 Next: [approve a server's join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).

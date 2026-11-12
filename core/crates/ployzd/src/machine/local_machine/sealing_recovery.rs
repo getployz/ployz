@@ -7,8 +7,10 @@
 use std::io;
 
 use ployz_core::{
-    EnrollForRecoveryRequest, Enrolled, LocalMachinePhase, RecoverSealingKeyRequest,
-    SealingKeyRecovered, SealingKeyWrapped, SealingPublicKey, WrapSealingKeyRequest,
+    EnrollForRecoveryRequest, Enrolled, LocalMachinePhase, RecoverSealingKeyRequest, RecoveryCode,
+    SealingKeyBackup, SealingKeyRecovered, SealingKeyRole, SealingKeyWrapped, SealingPublicKey,
+    WrapSealingKeyRequest,
+    authority::{AuthorityRefusal, SealingRotation, Signed, Timestamp, rotation},
 };
 use thiserror::Error as ThisError;
 
@@ -45,6 +47,10 @@ pub enum Error {
         held: SealingPublicKey,
         recovered: SealingPublicKey,
     },
+    #[error("this Machine holds no recipient key a rotation named")]
+    NoRecipient,
+    #[error("the rotation naming the recipient key was refused")]
+    RotationRefused(#[source] AuthorityRefusal),
 }
 
 impl LocalMachine {
@@ -70,25 +76,42 @@ impl LocalMachine {
     /// [`Error::NotHeld`] without a key.
     pub(crate) fn wrap_sealing_key(
         &self,
-        WrapSealingKeyRequest { code }: WrapSealingKeyRequest,
+        WrapSealingKeyRequest { code, key: role }: WrapSealingKeyRequest,
         cloud_routed: bool,
     ) -> Result<SealingKeyWrapped, super::Error> {
         if cloud_routed {
             return Err(Error::CloudRouted.into());
         }
         self.require_management_access()?;
-        let key = SealingKey::load(self.owner.data_dir())
-            .map_err(Error::Unreadable)?
-            .ok_or(Error::NotHeld)?;
+        let data_dir = self.owner.data_dir();
+        let (key, rotation) = match role {
+            SealingKeyRole::Identity => (
+                SealingKey::load(data_dir)
+                    .map_err(Error::Unreadable)?
+                    .ok_or(Error::NotHeld)?,
+                None,
+            ),
+            SealingKeyRole::Recipient => {
+                let (Some(key), Some(rotation)) = (
+                    SealingKey::load_recipient(data_dir).map_err(Error::Unreadable)?,
+                    SealingKey::load_recipient_rotation(data_dir).map_err(Error::Unreadable)?,
+                ) else {
+                    return Err(Error::NoRecipient.into());
+                };
+                (key, Some(rotation))
+            }
+        };
         let public_key = key.public_key();
         tracing::info!(
             machine = %self.record().id(),
             %public_key,
-            "wrapped the Cluster's Sealing Key under a recovery code"
+            ?role,
+            "wrapped a Sealing key of the Cluster under a recovery code"
         );
         Ok(SealingKeyWrapped {
             public_key,
             backup: back_up(&key, &code),
+            rotation,
         })
     }
 
@@ -135,8 +158,15 @@ impl LocalMachine {
     /// (a no-op when a key is already published there) and answers it.
     async fn recover_admitted(
         &self,
-        RecoverSealingKeyRequest { code, backup }: RecoverSealingKeyRequest,
+        RecoverSealingKeyRequest {
+            code,
+            backup,
+            rotation,
+        }: RecoverSealingKeyRequest,
     ) -> Result<SealingKeyRecovered, super::Error> {
+        if let Some(rotation) = rotation {
+            return self.recover_recipient(&code, backup, &rotation);
+        }
         let record = self.record();
         if record.phase() != LocalMachinePhase::Participating {
             return Err(super::Error::NotParticipating);
@@ -189,6 +219,72 @@ impl LocalMachine {
         );
         Ok(SealingKeyRecovered {
             public_key: expected,
+        })
+    }
+
+    /// Recover the recipient key `rotation` names. The rotation must verify against this
+    /// Machine's trusted keys and name its identity, and a Machine that committed another
+    /// activation refuses it. Neither membership nor this activation is required: a Server
+    /// that joined later isn't among the Members, and after every holder is gone the
+    /// recovering founder never committed it.
+    fn recover_recipient(
+        &self,
+        code: &RecoveryCode,
+        backup: Option<SealingKeyBackup>,
+        signed: &Signed<SealingRotation>,
+    ) -> Result<SealingKeyRecovered, super::Error> {
+        let record = self.record();
+        if record.phase() != LocalMachinePhase::Participating {
+            return Err(super::Error::NotParticipating);
+        }
+        let data_dir = self.owner.data_dir();
+        let identity = SealingKey::load(data_dir)
+            .map_err(Error::Unreadable)?
+            .ok_or(Error::NotHeld)?
+            .public_key();
+        // The code is checked first, so a caller trying a code on each backup learns a
+        // wrong one before anything about the rotation.
+        let named = signed.open().map_err(Error::RotationRefused)?.recipient;
+        let backup = backup.ok_or(Error::NoBackup)?;
+        let key = restore(&backup, code, &named).map_err(|error| match error {
+            RestoreError::Malformed => Error::Malformed,
+            RestoreError::OtherKey => Error::OtherKey(named),
+            RestoreError::WrongCode => Error::WrongCode,
+        })?;
+        let (body, approver) =
+            rotation::verify_for_join(signed, &record.trusted_keys(), identity, Timestamp::now())
+                .map_err(Error::RotationRefused)?;
+        if record
+            .activation()
+            .is_some_and(|activation| activation != body.operation)
+        {
+            return Err(Error::RotationRefused(AuthorityRefusal::Mismatch {
+                field: "an activation",
+            })
+            .into());
+        }
+        match SealingKey::load_recipient(data_dir).map_err(Error::Unreadable)? {
+            Some(held) if held.public_key() != body.recipient => {
+                return Err(Error::HeldAnother {
+                    held: held.public_key(),
+                    recovered: body.recipient,
+                }
+                .into());
+            }
+            Some(_) => {}
+            None => {
+                SealingKey::set_recipient_rotation(data_dir, signed).map_err(Error::Unwritable)?;
+                SealingKey::set_recipient(data_dir, &key).map_err(Error::Unwritable)?;
+            }
+        }
+        tracing::info!(
+            machine = %record.id(),
+            recipient = %body.recipient,
+            %approver,
+            "recovered the Cluster's recipient key"
+        );
+        Ok(SealingKeyRecovered {
+            public_key: body.recipient,
         })
     }
 }

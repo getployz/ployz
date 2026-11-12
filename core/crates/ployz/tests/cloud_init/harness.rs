@@ -25,6 +25,7 @@ pub fn fake_wrapped() -> SealingKeyWrapped {
     SealingKeyWrapped {
         public_key: SealingPublicKey::from_bytes([7; 32]),
         backup: SealingKeyBackup::from_bytes(b"wrapped sealing key".to_vec()),
+        rotation: None,
     }
 }
 

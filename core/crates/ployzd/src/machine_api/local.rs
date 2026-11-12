@@ -1827,6 +1827,8 @@ fn recovery_error(error: RecoveryError) -> RpcError {
         RecoveryError::OtherKey(_) => (RpcErrorCode::InvalidArgument, Refusal::OtherKey),
         RecoveryError::WrongCode => (RpcErrorCode::InvalidArgument, Refusal::WrongCode),
         RecoveryError::HeldAnother { .. } => (RpcErrorCode::Conflict, Refusal::HeldAnother),
+        RecoveryError::NoRecipient => (RpcErrorCode::Conflict, Refusal::NoRecipient),
+        RecoveryError::RotationRefused(_) => (RpcErrorCode::Conflict, Refusal::RotationRefused),
     };
     RpcError::caused(code, &error).with_evidence(&refusal)
 }

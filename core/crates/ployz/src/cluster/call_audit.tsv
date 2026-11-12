@@ -90,7 +90,8 @@ src/handlers/device/enforce.rs::install_recipient	op::SetRecipientKey	invoke	sin
 src/handlers/device/enforce.rs::settled	op::Inspect	call	setup	wait(WAIT)	redial	read
 src/handlers/recovery.rs::recover_with	op::RecoverSealingKey	call_repeatable	setup	wait(WAIT)	redial	keyed
 src/handlers/recovery.rs::require	op::DescribeContract	call_repeatable	setup	wait(WAIT)	redial	read
-src/handlers/recovery.rs::wrap_sealing_key	op::WrapSealingKey	call_repeatable	setup	wait(WAIT)	redial	keyed
+src/handlers/recovery.rs::rotate_for	op::Inspect	call	setup	wait(WAIT)	redial	read
+src/handlers/recovery.rs::wrap	op::WrapSealingKey	call_repeatable	setup	wait(WAIT)	redial	keyed
 src/handlers/server.rs::apply_update	op::UpdateMachine	invoke_answered	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/handlers/server.rs::connect_avoiding	op::DescribeContract	call	unary	-	redial	read
 src/handlers/server.rs::connect_full_avoiding	op::DescribeContract	call	unary	-	redial	read

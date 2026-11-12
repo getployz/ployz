@@ -4098,7 +4098,9 @@ name = "ployz-core"
 version = "0.3.17"
 dependencies = [
  "base64 0.22.1",
+ "chacha20poly1305",
  "ed25519-dalek",
+ "hkdf",
  "hpke",
  "ipnet",
  "minisign-verify",
@@ -4112,6 +4114,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2 0.10.9",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.20",
@@ -4218,7 +4221,6 @@ dependencies = [
  "base64 0.22.1",
  "bollard",
  "bytes",
- "chacha20poly1305",
  "chrono",
  "clap",
  "defguard_wireguard_rs",

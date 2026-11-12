@@ -5,7 +5,8 @@
 //! person confirmed against `ployz status` on that Server. Cloud's Server Access supplies
 //! addresses only. A legacy key survives only when the person confirms it. Each Server
 //! decides for itself whether it admits the set, and restarts to commit it. Then this Device
-//! generates the recipient key new values seal to and installs it on each activated Server.
+//! generates the recipient key new values seal to, installs it on each activated Server, and
+//! backs it up in Cloud under a recovery code it prints once.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,8 +14,8 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
     ActivationReport, ActivationState, DeviceCode, DeviceKey, ENFORCED_CAPABILITY, Hint,
     InspectRequest, LegacyKey, MachineDetails, MachineId, MachineTarget, OperationId,
-    RecipientSecret, RpcError, Sealing, SealingPublicKey, SetDeviceEnforcementRequest,
-    SetRecipientKeyRequest, TrustedKeyKind,
+    RecipientSecret, RecoveryCode, RpcError, Sealing, SealingPublicKey,
+    SetDeviceEnforcementRequest, SetRecipientKeyRequest, TrustedKeyKind,
     authority::{
         Member, SealingRotation, Signed, Signer, SignerKey, StartingSet, Timestamp,
         rotation::sealed_key_binding, validity,
@@ -23,6 +24,7 @@ use ployz_core::{
 };
 use serde::Serialize;
 
+use super::super::recovery::{KEEP_BOTH_CODES, print_code, store_recipient_backup};
 use super::super::{Error, config_path, leaf_matches, runtime, server};
 use super::{Reach, compat, context, key, known::KnownMachines};
 use crate::cli::{base, yes};
@@ -586,10 +588,47 @@ async fn install_recipient(
         }
     }
     crate::sealing_pin::Pins::beside(config).name_recipient(identity, rotation.recipient)?;
-    ui::note(
-        "Values sealed from now on open only on your activated Servers. Your recovery code opens only values sealed before.",
-    );
-    Ok(())
+    ui::note("Values sealed from now on open only on your activated Servers.");
+    recovery_code(config, &secret, &signed).await
+}
+
+/// Back up the recipient key in Cloud under a fresh recovery code and print the code once,
+/// on a terminal only, since no one else will see it. Activation already happened, so a
+/// failure here only says how to make the code later.
+async fn recovery_code(
+    config: &std::path::Path,
+    secret: &RecipientSecret,
+    rotation: &Signed<SealingRotation>,
+) -> Result<(), Error> {
+    const LATER: &str = "Make a recovery code for values sealed from now on with `ployz recovery rotate` on an activated Server, or over SSH to one.";
+    if ui::json() || !ui::stdout_is_terminal() {
+        ui::note(LATER);
+        return Ok(());
+    }
+    let store = crate::cloud_login::CredentialStore::beside(config);
+    let Ok(credential) = crate::cloud_account::from_env(&store).await else {
+        ui::note(format!(
+            "Not signed in, so no recovery code was made. {LATER}"
+        ));
+        return Ok(());
+    };
+    let code = RecoveryCode::generate();
+    let wrapped = crate::cloud_enroll::RecoveryBackup {
+        public_key: secret.public(),
+        backup: ployz_core::sealing_backup::back_up(secret.secret(), &code),
+    };
+    let stored = async {
+        let organization = crate::cloud_account::acting_in(&credential).await?;
+        store_recipient_backup(&credential, &organization.id, &wrapped, rotation).await
+    }
+    .await;
+    if let Err(error) = stored {
+        ui::warn(format!(
+            "Cloud didn't keep the recovery backup, so no recovery code was made: {error} {LATER}"
+        ));
+        return Ok(());
+    }
+    print_code(secret.public(), &code, KEEP_BOTH_CODES)
 }
 
 #[cfg(test)]

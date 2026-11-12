@@ -4,9 +4,12 @@ use std::sync::Arc;
 
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    DescribeContractRequest, Hint, MachineLayout, RECOVER_SEALING_KEY_CAPABILITY,
-    RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup,
-    SealingPublicKey, WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest, op,
+    DescribeContractRequest, Hint, InspectRequest, MachineLayout, RECIPIENT_RECOVERY_CAPABILITY,
+    RECOVER_SEALING_KEY_CAPABILITY, RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal,
+    RpcErrorCode, SealingKeyBackup, SealingKeyRole, SealingKeyWrapped, SealingPublicKey,
+    WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest,
+    authority::{SealingRotation, Signed},
+    op,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -23,12 +26,16 @@ use crate::ui::{self, Fields};
 pub(crate) const RECOVERY_CODE_NOT_SAVED: &str =
     "Recovery code not saved. Run ployz recovery rotate now to make one.";
 pub(crate) const KEEP_THE_CODE: &str = "Keep the recovery code safe; ployz recover needs it.";
+pub(crate) const KEEP_BOTH_CODES: &str = "Keep this recovery code safe: it opens values sealed \
+     after activation. Your earlier recovery code still opens values sealed before it.";
 const CODE_LIMIT: usize = 256;
 const NOT_AVAILABLE: &str = "Sealing Key recovery isn't available for this organization.";
 const ROTATE_AGAIN: &str =
     "The old recovery code may no longer work. Run ployz recovery rotate now.";
 const RECOVERY_ROW: &str = "sealing/recovery";
 const ROTATE_ROW: &str = "sealing/rotate";
+const RECIPIENT_ROW: &str = "sealing/recipient";
+const ROTATE_RECIPIENT_ROW: &str = "sealing/recipient/rotate";
 const NO_ONE_SEES_THE_CODE: &str = "No terminal to show the new recovery code; nothing was \
      rotated. Run it in a terminal, or pass --json --show-recovery-code.";
 
@@ -50,8 +57,10 @@ pub(super) fn rotate_command(command: Command) -> Command {
     base(command, "Make a new recovery code")
         .long_about(
             "Wraps the Sealing Key under a fresh code, stores that backup in Cloud, then prints \
-         the code once. The old code stops working. Runs on the Server or over --connect; \
-         never through Cloud.",
+         the code once. The old code stops working. Once the Cluster activated, it wraps the \
+         recipient key that opens values sealed after activation instead, and the code from \
+         before keeps opening older values. Runs on the Server or over --connect; never \
+         through Cloud.",
         )
         .arg(switch("show-recovery-code", None).help("Print the recovery code under --json"))
 }
@@ -80,40 +89,91 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
         "ployz recover",
     ))?;
     let code = read_code(matches, stdin)?;
-    let recovered = match runtime.block_on(recover_with(&mut client, &code, None)) {
-        Ok(recovered) => recovered,
+    let (recovered, role) = match runtime.block_on(recover_with(&mut client, &code, None, None)) {
+        Ok(recovered) => (recovered, SealingKeyRole::Identity),
         Err(refused) => {
             let why = refusal(&refused);
-            let backup = if why == Some(RecoveryRefusal::NoBackup) {
-                let credential = server::signed_in(&runtime, matches)?;
-                runtime
-                    .block_on(cloud_backup(credential.as_ref()))?
-                    .ok_or_else(|| {
-                        Error::conflict(
-                            "Nothing to recover from: neither this Server nor Cloud holds a backup.",
-                        )
-                    })?
-            } else if why == Some(RecoveryRefusal::WrongCode) {
-                // A rotation may have left Cloud a backup under a newer code than the seed's.
-                let Ok(Some(credential)) = server::signed_in(&runtime, matches) else {
-                    return Err(recover_failure(refused));
-                };
-                let Some(backup) = runtime.block_on(cloud_backup(Some(&credential)))? else {
-                    return Err(recover_failure(refused));
-                };
-                backup
-            } else {
+            if !matches!(
+                why,
+                Some(RecoveryRefusal::NoBackup | RecoveryRefusal::WrongCode)
+            ) {
+                return Err(recover_failure(refused));
+            }
+            // A rotation may have left Cloud a backup under a newer code than the seed's,
+            // and after activation Cloud also keeps the recipient key's.
+            let credential = match server::signed_in(&runtime, matches) {
+                Ok(credential) => credential,
+                Err(error) if why == Some(RecoveryRefusal::NoBackup) => return Err(error),
+                Err(_) => None,
+            };
+            let Some(credential) = credential else {
+                if why == Some(RecoveryRefusal::NoBackup) {
+                    return Err(sign_in_for_backup());
+                }
                 return Err(recover_failure(refused));
             };
-            runtime
-                .block_on(recover_with(&mut client, &code, Some(backup)))
-                .map_err(recover_failure)?
+            runtime.block_on(recover_from_cloud(&mut client, &credential, &code, refused))?
         }
     };
+    let label = match role {
+        SealingKeyRole::Identity => "Sealing key",
+        SealingKeyRole::Recipient => "Recipient key",
+    };
     ui::fields(
-        &json!({ "publicKey": recovered }),
-        &Fields::new().field("Sealing key", recovered),
+        &json!({ "publicKey": recovered, "key": role }),
+        &Fields::new().field(label, recovered),
     )
+}
+
+/// Try Cloud's backup of the identity key, then, while the code is still wrong, Cloud's
+/// backup of the recipient key with the rotation that named it.
+async fn recover_from_cloud(
+    client: &mut Client,
+    credential: &Credential,
+    code: &RecoveryCode,
+    refused: ConnectError,
+) -> Result<(SealingPublicKey, SealingKeyRole), Error> {
+    let organization = cloud_account::acting_in(credential).await?;
+    let identity = recovery_row(credential, &organization.id)
+        .await?
+        .and_then(|row| row.backup);
+    let recipient = recipient_row(credential, &organization.id).await?;
+    if refusal(&refused) == Some(RecoveryRefusal::NoBackup)
+        && identity.is_none()
+        && recipient.is_none()
+    {
+        return Err(Error::conflict(
+            "Nothing to recover from: neither this Server nor Cloud holds a backup.",
+        ));
+    }
+    let mut last = refused;
+    if let Some(backup) = identity {
+        match recover_with(client, code, Some(backup), None).await {
+            Ok(recovered) => return Ok((recovered, SealingKeyRole::Identity)),
+            Err(error) => last = error,
+        }
+    }
+    let wrong = matches!(
+        refusal(&last),
+        Some(RecoveryRefusal::WrongCode | RecoveryRefusal::NoBackup)
+    );
+    if let Some(row) = recipient.filter(|_| wrong) {
+        require(client, RECIPIENT_RECOVERY_CAPABILITY, "ployz recover").await?;
+        match recover_with(client, code, Some(row.backup), Some(row.rotation)).await {
+            Ok(recovered) => return Ok((recovered, SealingKeyRole::Recipient)),
+            Err(error) if refusal(&error) == Some(RecoveryRefusal::WrongCode) => {}
+            Err(error) => last = error,
+        }
+    }
+    Err(recover_failure(last))
+}
+
+fn sign_in_for_backup() -> Error {
+    Error::coded(
+        RpcErrorCode::Unauthenticated,
+        "This Server holds no backup of the Sealing Key. Sign in so ployz recover can use Cloud's.",
+    )
+    .hint(Hint::Next("ployz login".to_owned()))
 }
 
 pub(super) fn rotate(root: &ArgMatches) -> Result<(), Error> {
@@ -140,8 +200,52 @@ fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> 
         WRAP_SEALING_KEY_CAPABILITY,
         "ployz recovery rotate",
     ))?;
-    let (public_key, code) = runtime.block_on(async {
+    let config = config_path(matches)?;
+    let (public_key, code, role) = runtime.block_on(async {
         let organization = cloud_account::acting_in(&credential).await?;
+        let details = client
+            .call::<op::Inspect>(
+                InspectRequest::default(),
+                Call::read().waiting(Wait::standard()),
+            )
+            .await?;
+        if let Some(recipient) = details.sealing_recipient {
+            let pinned = crate::sealing_pin::Pins::beside(&config)
+                .get(&organization.id)?
+                .and_then(|pin| pin.recipient);
+            if let Some(pinned) = pinned.filter(|pinned| *pinned != recipient) {
+                return Err(Error::conflict(format!(
+                    "This Server holds recipient key {recipient}, not key {pinned} this computer pinned, so no code was made."
+                )));
+            }
+            require(
+                &mut client,
+                RECIPIENT_RECOVERY_CAPABILITY,
+                "ployz recovery rotate",
+            )
+            .await?;
+            let code = RecoveryCode::generate();
+            let wrapped = wrap(&mut client, &code, SealingKeyRole::Recipient).await?;
+            let rotation = wrapped
+                .rotation
+                .filter(|_| wrapped.public_key == recipient)
+                .ok_or_else(|| {
+                    Error::conflict(
+                        "This Server wrapped a key other than its recipient key; nothing was rotated.",
+                    )
+                })?;
+            store_recipient_backup(
+                &credential,
+                &organization.id,
+                &RecoveryBackup {
+                    public_key: recipient,
+                    backup: wrapped.backup,
+                },
+                &rotation,
+            )
+            .await?;
+            return Ok((recipient, code, SealingKeyRole::Recipient));
+        }
         let row = recovery_row(&credential, &organization.id)
             .await?
             .ok_or_else(|| Error::unavailable(NOT_AVAILABLE))?;
@@ -170,28 +274,86 @@ fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> 
                 "Cloud stored a backup other than the one this Server wrapped. {ROTATE_AGAIN}"
             )));
         }
-        Ok((wrapped.public_key, code))
+        Ok((wrapped.public_key, code, SealingKeyRole::Identity))
     })?;
-    print_code(public_key, &code)
+    print_code(
+        public_key,
+        &code,
+        match role {
+            SealingKeyRole::Identity => KEEP_THE_CODE,
+            SealingKeyRole::Recipient => KEEP_BOTH_CODES,
+        },
+    )
+}
+
+/// Store `wrapped`, the recipient key under a fresh code, as Cloud's backup of it, beside the
+/// signed rotation a recovering Server verifies.
+///
+/// # Errors
+/// Fails when Cloud refuses, another rotation reached it first, or it stored other bytes.
+pub(crate) async fn store_recipient_backup(
+    credential: &Credential,
+    organization_id: &str,
+    wrapped: &RecoveryBackup,
+    rotation: &Signed<SealingRotation>,
+) -> Result<(), Error> {
+    let current = recipient_row(credential, organization_id)
+        .await?
+        .map(|row| row.digest);
+    let rotated: Rotated = cloud_account::call(
+        credential,
+        reqwest::Method::POST,
+        ROTATE_RECIPIENT_ROW,
+        Some(&json!({
+            "organizationId": organization_id,
+            "publicKey": wrapped.public_key,
+            "rotation": rotation,
+            "currentDigest": current,
+            "backup": wrapped.backup,
+        })),
+    )
+    .await
+    .map_err(rotate_failure)?;
+    if rotated.digest != wrapped.digest() {
+        return Err(Error::unavailable(format!(
+            "Cloud stored a backup other than the one this Server wrapped. {ROTATE_AGAIN}"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) async fn wrap_sealing_key(
     client: &mut Client,
     code: &RecoveryCode,
 ) -> Result<RecoveryBackup, Error> {
-    let wrapped = client
-        .call::<op::WrapSealingKey>(
-            WrapSealingKeyRequest { code: code.clone() },
-            Call::keyed().waiting(Wait::standard()),
-        )
-        .await?;
+    let wrapped = wrap(client, code, SealingKeyRole::Identity).await?;
     Ok(RecoveryBackup {
         public_key: wrapped.public_key,
         backup: wrapped.backup,
     })
 }
 
-fn print_code(public_key: SealingPublicKey, code: &RecoveryCode) -> Result<(), Error> {
+async fn wrap(
+    client: &mut Client,
+    code: &RecoveryCode,
+    key: SealingKeyRole,
+) -> Result<SealingKeyWrapped, Error> {
+    Ok(client
+        .call::<op::WrapSealingKey>(
+            WrapSealingKeyRequest {
+                code: code.clone(),
+                key,
+            },
+            Call::keyed().waiting(Wait::standard()),
+        )
+        .await?)
+}
+
+pub(crate) fn print_code(
+    public_key: SealingPublicKey,
+    code: &RecoveryCode,
+    keep: &str,
+) -> Result<(), Error> {
     let code = code.reveal();
     if ui::json() {
         return ui::emit(&json!({ "publicKey": public_key, "recoveryCode": code.as_str() }))
@@ -200,7 +362,7 @@ fn print_code(public_key: SealingPublicKey, code: &RecoveryCode) -> Result<(), E
     ui::write_fields(&Fields::new().field("Recovery code", code.as_str())).map_err(|error| {
         Error::caused(RpcErrorCode::Unavailable, RECOVERY_CODE_NOT_SAVED, error)
     })?;
-    ui::note(KEEP_THE_CODE);
+    ui::note(keep);
     Ok(())
 }
 
@@ -291,12 +453,14 @@ async fn recover_with(
     client: &mut Client,
     code: &RecoveryCode,
     backup: Option<SealingKeyBackup>,
+    rotation: Option<Signed<SealingRotation>>,
 ) -> Result<SealingPublicKey, ConnectError> {
     let recovered = client
         .call::<op::RecoverSealingKey>(
             RecoverSealingKeyRequest {
                 code: code.clone(),
                 backup,
+                rotation,
             },
             Call::keyed().waiting(Wait::standard()),
         )
@@ -342,21 +506,13 @@ fn recover_failure(error: ConnectError) -> Error {
             RpcErrorCode::InvalidArgument,
             "The Server refused the recovery code as malformed.",
         ),
+        RecoveryRefusal::NoRecipient => {
+            Error::conflict("This Server holds no recipient key from activation.")
+        }
+        RecoveryRefusal::RotationRefused => Error::conflict(
+            "This Server doesn't trust the Device or passkey that named this recipient key, or it activated under another one, so nothing was recovered.",
+        ),
     }
-}
-
-async fn cloud_backup(credential: Option<&Credential>) -> Result<Option<SealingKeyBackup>, Error> {
-    let Some(credential) = credential else {
-        return Err(Error::coded(
-            RpcErrorCode::Unauthenticated,
-            "This Server holds no backup of the Sealing Key. Sign in so ployz recover can use Cloud's.",
-        )
-        .hint(Hint::Next("ployz login".to_owned())));
-    };
-    let organization = cloud_account::acting_in(credential).await?;
-    Ok(recovery_row(credential, &organization.id)
-        .await?
-        .and_then(|row| row.backup))
 }
 
 #[derive(Deserialize)]
@@ -370,6 +526,32 @@ pub(super) struct RecoveryRow {
 #[derive(Deserialize)]
 struct Rotated {
     digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecipientRow {
+    backup: SealingKeyBackup,
+    digest: String,
+    rotation: Signed<SealingRotation>,
+}
+
+async fn recipient_row(
+    credential: &Credential,
+    organization_id: &str,
+) -> Result<Option<RecipientRow>, Error> {
+    match cloud_account::call::<RecipientRow>(
+        credential,
+        reqwest::Method::POST,
+        RECIPIENT_ROW,
+        Some(&json!({ "organizationId": organization_id })),
+    )
+    .await
+    {
+        Ok(row) => Ok(Some(row)),
+        Err(LoginError::Status { status: 404, .. }) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(super) async fn recovery_row(
@@ -437,6 +619,7 @@ mod tests {
     use crate::handlers::verbs;
 
     const CODE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const RECIPIENT_CODE: &str = "BCDEFGHIJKLMNOPQRSTUVWXYZA";
     const ROTATE: &[&str] = &["recovery", "rotate", "--show-recovery-code"];
     const CAPABILITY_LEN: usize = 86;
 
@@ -457,7 +640,15 @@ mod tests {
         requests: Arc<Mutex<Vec<(String, String)>>>,
     }
 
+    /// A Cloud that keeps no recipient backup, as before any activation.
     fn cloud(reply: impl Fn(&str, &Value) -> (u16, Value) + Send + 'static) -> Cloud {
+        recipient_cloud(move |route, body| match route {
+            "POST /api/cli/sealing/recipient" => (404, json!({ "error": "not found" })),
+            _ => reply(route, body),
+        })
+    }
+
+    fn recipient_cloud(reply: impl Fn(&str, &Value) -> (u16, Value) + Send + 'static) -> Cloud {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen = requests.clone();
         let url = fake_cloud(move |route, body| {
@@ -539,6 +730,47 @@ mod tests {
         seed: Option<&'static str>,
         capabilities: &'static [&'static str],
     ) -> Daemon {
+        serving(dir, held, seed, capabilities, None)
+    }
+
+    /// An activated Server holding `recipient` under `rotation`, whose recipient backups open
+    /// under [`RECIPIENT_CODE`].
+    fn activated(dir: &Path, held: SealingPublicKey, recipient: SealingPublicKey) -> Daemon {
+        serving(
+            dir,
+            held,
+            None,
+            &[
+                WRAP_SEALING_KEY_CAPABILITY,
+                RECOVER_SEALING_KEY_CAPABILITY,
+                RECIPIENT_RECOVERY_CAPABILITY,
+            ],
+            Some(recipient),
+        )
+    }
+
+    fn rotation(recipient: SealingPublicKey) -> Signed<SealingRotation> {
+        let signer = ployz_core::authority::Signer::from_seed(&[7; 32]);
+        Signed::sign(
+            &SealingRotation {
+                cluster: key(1),
+                operation: ployz_core::OperationId::random(),
+                recipient,
+                members: Vec::new(),
+                signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
+            },
+            &signer,
+        )
+        .unwrap()
+    }
+
+    fn serving(
+        dir: &Path,
+        held: SealingPublicKey,
+        seed: Option<&'static str>,
+        capabilities: &'static [&'static str],
+        recipient: Option<SealingPublicKey>,
+    ) -> Daemon {
         let socket = dir.join("ployzd.sock");
         let contract = ContractDescription {
             attest: None,
@@ -560,13 +792,24 @@ mod tests {
             counted.fetch_add(1, Ordering::SeqCst);
             let seen = seen.clone();
             async move {
-                if let RpcRequestBody::WrapSealingKey(_) = body {
+                if let RpcRequestBody::Inspect(_) = body {
+                    return Ok(RpcResponse::from(inspected(machine_id, held, recipient)));
+                }
+                if let RpcRequestBody::WrapSealingKey(request) = body {
                     if !capabilities.contains(&WRAP_SEALING_KEY_CAPABILITY) {
                         return Err(tonic::Status::unimplemented(WRAP_SEALING_KEY_CAPABILITY));
                     }
-                    return Ok(RpcResponse::from(SealingKeyWrapped {
-                        public_key: held,
-                        backup: wrapped_backup(),
+                    return Ok(RpcResponse::from(match (request.key, recipient) {
+                        (SealingKeyRole::Recipient, Some(recipient)) => SealingKeyWrapped {
+                            public_key: recipient,
+                            backup: wrapped_backup(),
+                            rotation: Some(rotation(recipient)),
+                        },
+                        _ => SealingKeyWrapped {
+                            public_key: held,
+                            backup: wrapped_backup(),
+                            rotation: None,
+                        },
                     }));
                 }
                 let RpcRequestBody::RecoverSealingKey(request) = body else {
@@ -576,6 +819,13 @@ mod tests {
                     return Err(tonic::Status::unimplemented(RECOVER_SEALING_KEY_CAPABILITY));
                 }
                 seen.lock().unwrap().push(request.backup.clone());
+                if let Some(rotation) = &request.rotation {
+                    if request.code.as_bytes() != RECIPIENT_CODE.as_bytes() {
+                        return Ok(refused(RecoveryRefusal::WrongCode));
+                    }
+                    let named = rotation.open().unwrap().recipient;
+                    return Ok(RpcResponse::from(SealingKeyRecovered { public_key: named }));
+                }
                 let opens = match (&request.backup, seed) {
                     (Some(_), _) => CODE,
                     (None, Some(seed)) => seed,
@@ -593,6 +843,32 @@ mod tests {
             requests,
             recoveries,
             _runtime: runtime,
+        }
+    }
+
+    fn inspected(
+        id: MachineId,
+        held: SealingPublicKey,
+        recipient: Option<SealingPublicKey>,
+    ) -> ployz_core::MachineDetails {
+        ployz_core::MachineDetails {
+            activation: None,
+            sealing_recipient: recipient,
+            id,
+            public_key: ployz_core::WireGuardPublicKey([3; 32]),
+            machine: None,
+            phase: ployz_core::LocalMachinePhase::Participating,
+            advertised_endpoints: Vec::new(),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            management_clients: Vec::new(),
+            passkeys: Vec::new(),
+            storage: None,
+            upgrade: None,
+            telemetry: None,
+            token: None,
+            sealing: Some(ployz_core::Sealing::Held { public_key: held }),
+            founding: Default::default(),
         }
     }
 
@@ -865,7 +1141,10 @@ mod tests {
         let (result, printed) = recover_json(&root, "abcde-fghij-klmno-pqrst-uvwxyz\n");
 
         result.unwrap();
-        assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
+        assert_eq!(
+            printed.unwrap(),
+            json!({ "publicKey": key(1), "key": "identity" })
+        );
         assert_eq!(*daemon.recoveries.lock().unwrap(), [None]);
     }
 
@@ -885,7 +1164,10 @@ mod tests {
 
             if opened {
                 result.unwrap();
-                assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
+                assert_eq!(
+                    printed.unwrap(),
+                    json!({ "publicKey": key(1), "key": "identity" })
+                );
             } else {
                 assert_eq!(
                     result.unwrap_err().to_string(),
@@ -915,7 +1197,10 @@ mod tests {
         let (result, printed) = recover_json(&root, CODE);
 
         result.unwrap();
-        assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
+        assert_eq!(
+            printed.unwrap(),
+            json!({ "publicKey": key(1), "key": "identity" })
+        );
         assert_eq!(
             *daemon.recoveries.lock().unwrap(),
             [None, Some(cloud_backup_bytes())]
@@ -948,7 +1233,10 @@ mod tests {
         let (result, printed) = recover_json(&root, CODE);
 
         result.unwrap();
-        assert_eq!(printed.unwrap(), json!({ "publicKey": key(1) }));
+        assert_eq!(
+            printed.unwrap(),
+            json!({ "publicKey": key(1), "key": "identity" })
+        );
         assert_eq!(
             *daemon.recoveries.lock().unwrap(),
             [None, Some(cloud_backup_bytes())]
@@ -1196,5 +1484,100 @@ mod tests {
         RecoveryCode::parse(code).unwrap();
         assert!(!stderr.contains(code.as_str()), "{stderr}");
         assert!(stderr.contains(KEEP_THE_CODE), "{stderr}");
+    }
+
+    #[test]
+    fn rotate_after_activation_backs_up_the_recipient_key_with_its_rotation() {
+        let cloud = recipient_cloud(|route, body| match route {
+            "POST /api/cli/sealing/recipient" => (404, json!({ "error": "not found" })),
+            "POST /api/cli/sealing/recipient/rotate" => (200, json!({ "digest": digest_of(body) })),
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = activated(dir.path(), key(1), key(5));
+        let root = root(dir.path(), Some(&daemon.socket), ROTATE);
+
+        let (result, printed) = rotate_json(&root);
+
+        result.unwrap();
+        let printed = printed.unwrap();
+        let code = dashless(printed.get("recoveryCode").unwrap().as_str().unwrap());
+        assert_eq!(printed.get("publicKey"), Some(&json!(key(5))));
+        let rotate = cloud.body_of("POST /api/cli/sealing/recipient/rotate");
+        assert_eq!(rotate.get("publicKey"), Some(&json!(key(5))));
+        assert_eq!(rotate.get("currentDigest"), Some(&Value::Null));
+        let posted: Signed<SealingRotation> =
+            serde_json::from_value(rotate.get("rotation").unwrap().clone()).unwrap();
+        assert_eq!(posted.open().unwrap().recipient, key(5));
+        assert!(
+            !cloud
+                .routes()
+                .contains(&"POST /api/cli/sealing/rotate".to_owned())
+        );
+        cloud.never_saw(&code);
+    }
+
+    #[test]
+    fn rotate_refuses_a_recipient_other_than_the_one_this_computer_pinned() {
+        let cloud = recipient_cloud(|route, _| panic!("unexpected {route}"));
+        let dir = config_dir(Some(&cloud.url), "");
+        crate::sealing_pin::Pins::beside(&dir.path().join("config.yaml"))
+            .set(
+                "o1",
+                crate::sealing_pin::Pin {
+                    public_key: key(1),
+                    server: ployz_core::MachineName::parse("web-1").unwrap(),
+                    recipient: Some(key(9)),
+                },
+            )
+            .unwrap();
+        let daemon = activated(dir.path(), key(1), key(5));
+        let root = root(dir.path(), Some(&daemon.socket), ROTATE);
+
+        let (result, printed) = rotate_json(&root);
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("no code was made"), "{error}");
+        assert_eq!(printed, None);
+        assert!(cloud.routes().is_empty());
+    }
+
+    #[test]
+    fn recover_opens_the_recipient_backup_when_the_code_opens_no_identity_backup() {
+        let cloud = recipient_cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => {
+                (200, recovery_row(key(1), Some(cloud_backup_bytes())))
+            }
+            "POST /api/cli/sealing/recipient" => (
+                200,
+                json!({
+                    "publicKey": key(5),
+                    "backup": wrapped_backup(),
+                    "digest": "recipient-digest",
+                    "rotation": rotation(key(5)),
+                }),
+            ),
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = activated(dir.path(), key(1), key(5));
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, printed) = recover_json(&root, RECIPIENT_CODE);
+
+        result.unwrap();
+        assert_eq!(
+            printed.unwrap(),
+            json!({ "publicKey": key(5), "key": "recipient" })
+        );
+        assert_eq!(
+            *daemon.recoveries.lock().unwrap(),
+            [None, Some(cloud_backup_bytes()), Some(wrapped_backup())]
+        );
+        cloud.never_saw(RECIPIENT_CODE);
     }
 }

@@ -14,6 +14,7 @@ import {
 import { DRAIN_END_CODES, DRAIN_STATES, type DrainEndCode, type DrainState } from "#/modules/machines/server-drain";
 import { WEB_TRAFFIC_STATES, WEB_TRAFFIC_WANTS, type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic";
 
+import type { RecipientRotation } from "#/modules/machines/sealing-key";
 import { organization } from "#/modules/organization/tables";
 
 import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -551,11 +552,22 @@ export const organizationSealingKey = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     publicKey: text("public_key").notNull(),
     recoveryBlob: text("recovery_blob"),
+    /** The recipient key a Cluster's activation added, wrapped under its own recovery code. */
+    recipientPublicKey: text("recipient_public_key"),
+    recipientBlob: text("recipient_blob"),
+    /** The signed rotation that named the recipient key, which a recovering Server verifies. */
+    recipientRotation: jsonb("recipient_rotation").$type<RecipientRotation>(),
     createdAt,
     updatedAt,
   },
   (table) => [
     check("organization_sealing_key_public_key_check", sql`${table.publicKey} ~ '^[A-Za-z0-9+/]{43}=$'`),
     check("organization_sealing_key_recovery_blob_check", sql`${table.recoveryBlob} ~ '^[A-Za-z0-9+/]{103}=$'`),
+    check("organization_sealing_key_recipient_public_key_check", sql`${table.recipientPublicKey} ~ '^[A-Za-z0-9+/]{43}=$'`),
+    check("organization_sealing_key_recipient_blob_check", sql`${table.recipientBlob} ~ '^[A-Za-z0-9+/]{103}=$'`),
+    check(
+      "organization_sealing_key_recipient_whole_check",
+      sql`(${table.recipientPublicKey} IS NULL) = (${table.recipientBlob} IS NULL) AND (${table.recipientBlob} IS NULL) = (${table.recipientRotation} IS NULL)`,
+    ),
   ],
 );

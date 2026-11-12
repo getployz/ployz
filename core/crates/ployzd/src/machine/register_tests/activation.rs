@@ -453,3 +453,78 @@ async fn a_joiner_refuses_a_forged_rotation_in_its_capsule() {
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+async fn a_lost_recipient_key_comes_back_only_under_its_code_and_a_trusted_rotation() {
+    use crate::machine::local_machine::RecoveryError;
+    use ployz_core::{
+        RecoverSealingKeyRequest, RecoveryCode, SealingKeyRole, WrapSealingKeyRequest,
+    };
+
+    let console_key = Signer::from_seed(&[1; 32]);
+    let (entry, identity, recipient, directory, server) = with_recipient(&console_key).await;
+    let code = RecoveryCode::generate();
+    let wrapped = entry
+        .wrap_sealing_key(
+            WrapSealingKeyRequest {
+                code: code.clone(),
+                key: SealingKeyRole::Recipient,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(wrapped.public_key, recipient);
+    let named = wrapped.rotation.clone().unwrap();
+    std::fs::remove_file(directory.join("recipient.key")).unwrap();
+    let recover = |code: &RecoveryCode, rotation| RecoverSealingKeyRequest {
+        code: code.clone(),
+        backup: Some(wrapped.backup.clone()),
+        rotation: Some(rotation),
+    };
+
+    assert!(matches!(
+        entry
+            .recover_sealing_key(recover(&RecoveryCode::generate(), named.clone()), false)
+            .await,
+        Err(LocalMachineError::Recovery(RecoveryError::WrongCode))
+    ));
+    let untrusted = rotation(
+        &Signer::from_seed(&[9; 32]),
+        identity,
+        named.open().unwrap().operation,
+        recipient,
+        Vec::new(),
+    );
+    assert!(matches!(
+        entry
+            .recover_sealing_key(recover(&code, untrusted), false)
+            .await,
+        Err(LocalMachineError::Recovery(RecoveryError::RotationRefused(
+            _
+        )))
+    ));
+    assert!(matches!(
+        entry
+            .recover_sealing_key(recover(&code, named.clone()), true)
+            .await,
+        Err(LocalMachineError::Recovery(RecoveryError::CloudRouted))
+    ));
+    assert_eq!(
+        entry.held_recipient(ployz_core::LocalMachinePhase::Participating),
+        None
+    );
+
+    let recovered = entry
+        .recover_sealing_key(recover(&code, named), false)
+        .await
+        .unwrap();
+
+    assert_eq!(recovered.public_key, recipient);
+    assert_eq!(
+        entry.held_recipient(ployz_core::LocalMachinePhase::Participating),
+        Some(recipient)
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}

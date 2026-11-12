@@ -119,6 +119,8 @@ macro_rules! rpc_catalog {
                 JOIN_APPROVAL_CAPABILITY: ("ployz.machine.join.device-approval.v1", Always),
                 /// The daemon gates every route the coverage table classes `Signed`, publishes an approved joiner only after its confirmation, keeps a trusted snapshot of the Members and keys it holds evidence for, and never gives a mesh caller Full scope. Activation admits only a set inside that snapshot or one sent over its local socket, commits it across a restart, and can't be undone. Its meaning is fixed and never widens.
                 ENFORCED_CAPABILITY: ("ployz.machine.enforced.v1", Always),
+                /// `WrapSealingKey` takes `key: recipient` and answers the rotation that named it, and `RecoverSealingKey` takes a rotation and recovers the recipient key it names.
+                RECIPIENT_RECOVERY_CAPABILITY: ("ployz.sealing.recipient-recovery.v1", Always),
                 /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
                 VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
                 /// `SetVolumeSize` takes `allow_shrink` and lowers a bound down to its floor.
