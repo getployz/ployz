@@ -101,9 +101,16 @@ pub(super) fn sign_removal(
         Ok(Some(workflow)) => workflow,
         Ok(None) => return Ok(None),
         Err(error) if error.report().code == RpcErrorCode::ConfirmationRequired => {
-            let retry = super::run::removal_words(volume, slot, if_old_copy, Some(volume.as_str()));
-            let retry: Vec<&str> = retry.iter().map(String::as_str).collect();
-            return Err(error.hint(Hint::Retry(store::next(matches, &retry))));
+            // The command as typed keeps --yes and --wait; a wrong name is replaced instead.
+            let retry = if confirm.is_none() {
+                super::super::typed_with(&["--confirm", volume.as_str()])
+            } else {
+                let words =
+                    super::run::removal_words(volume, slot, if_old_copy, Some(volume.as_str()));
+                let words: Vec<&str> = words.iter().map(String::as_str).collect();
+                store::next(matches, &words)
+            };
+            return Err(error.hint(Hint::Retry(retry)));
         }
         Err(error) => return Err(error),
     };

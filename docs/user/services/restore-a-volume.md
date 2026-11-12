@@ -72,10 +72,11 @@ approve it.
 With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
 on, a server makes its copy the writer only for a restore an approved device signed. Run
 `ployz volume restore data --from web-2` on an approved device. It prints what it approves, with
-the copy's newest snapshot and its time in your computer's time zone, and asks first:
+the copy's newest snapshot by its number and that snapshot's time in your computer's time zone, and
+asks first:
 
 ```
-Approved: make the copy of data on web-2 its writer, at snapshot 1027. Writes to data after 2026-10-08T10:27:00+02:00 are lost. Nothing starts until you deploy.
+Approved: make the copy of data on web-2 its writer, at snapshot 8930444429013805166. Writes to data after 2026-10-08T10:27:00+02:00 are lost. Nothing starts until you deploy.
 Approve restoring data from web-2?
 ```
 
@@ -85,8 +86,9 @@ copy is the writer, it refuses that approval again.
 
 This is also how a volume comes back after a move's old server handed it to the new one and the
 new one is gone for good. Forget the new server first, since a restore needs every server to
-answer. The old server refuses to write the volume again for the move, but takes a restore you
-approve. **Use mirror** in Ployz Cloud can't restore on these servers on its own and says to run
+answer. Until the move notices the new server is gone, the restore says `data is starting on
+<new server>; it finishes there`. Run it again once the move's run has failed. The old server refuses to
+write the volume again for the move, but takes a restore you approve. **Use mirror** in Ployz Cloud can't restore on these servers on its own and says to run
 the command from an approved device.
 
 Without Ployz Cloud, the CLI runs the restore itself, with the same checks. It refuses while any
