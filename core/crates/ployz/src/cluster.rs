@@ -48,6 +48,7 @@ mod call_audit;
 mod capacity;
 mod container_health;
 mod deploy_context;
+mod fan_out;
 #[cfg(test)]
 mod retry;
 mod routes;
@@ -60,6 +61,7 @@ pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Wai
 pub(crate) use container_health::HealthWaitError;
 use deploy_context::DeployContext;
 pub use deploy_context::RuleProofs;
+pub(crate) use fan_out::{fan_out, fan_out_entry_last};
 pub(crate) use routes::FullRoutes;
 pub(crate) use session::Refusal;
 use session::Session;
@@ -440,29 +442,15 @@ impl Client {
         &self,
         machines: &[MachineObservation],
     ) -> PartialResult<VolumeInventory, RpcError> {
-        let mut requests = Vec::new();
-        let mut omissions = Vec::new();
-        for machine in machines {
-            if !machine.invites_rpc() {
-                omissions.push(machine.machine.id);
-                continue;
-            }
-            let machine_id = machine.machine.id;
+        fan_out(machines, |machine| {
             let client = self.clone();
-            requests.push(async move { list_volumes_on_machine(client, machine_id).await });
-        }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions,
-        };
-        for outcome in join_all(requests).await {
-            match outcome {
-                Ok(success) => result.successes.push(success),
-                Err(failure) => result.failures.push(failure),
+            async move {
+                list_volumes_on_machine(client, machine.machine.id)
+                    .await
+                    .map(Some)
             }
-        }
-        result
+        })
+        .await
     }
 
     /// Inspect storage on each Machine that invites an RPC.
@@ -470,40 +458,22 @@ impl Client {
         &self,
         machines: &[MachineObservation],
     ) -> PartialResult<StorageCapacity, RpcError> {
-        let mut requests = Vec::new();
-        let mut omissions = Vec::new();
-        for machine in machines {
-            if !machine.invites_rpc() {
-                omissions.push(machine.machine.id);
-                continue;
-            }
+        fan_out(machines, |machine| {
             let mut client = self.clone();
-            let machine_id = machine.machine.id;
-            requests.push(async move {
-                let result = client
+            async move {
+                client
                     .call::<op::InspectStorage>(
                         InspectStorageRequest {},
                         Call::read()
-                            .to(&MachineTarget::from(&machine_id))
+                            .to(&MachineTarget::from(&machine.machine.id))
                             .budget(crate::connect::target_read_timeout()),
                     )
                     .await
-                    .map_err(crate::connect::rpc_error);
-                (machine_id, result)
-            });
-        }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions,
-        };
-        for (machine_id, outcome) in join_all(requests).await {
-            match outcome {
-                Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
-                Err(error) => result.failures.push(MachineFailure { machine_id, error }),
+                    .map(Some)
+                    .map_err(crate::connect::rpc_error)
             }
-        }
-        result
+        })
+        .await
     }
 
     /// Destroy named Docker Volumes. The list is the confirmation.
@@ -863,45 +833,29 @@ impl Client {
         reference: Option<String>,
         targets: &[Machine],
     ) -> PartialResult<MachineImagesObservation, RpcError> {
-        let tasks = targets.iter().map(|machine| {
+        fan_out(targets, |machine| {
             let mut client = self.clone();
-            let machine_id = machine.id;
-            let machine_name = machine.name.clone();
             let reference = reference.clone();
             async move {
-                let response = client
+                let images = client
                     .call::<op::ListImages>(
                         ListImagesRequest {
                             reference,
                             last_tagged: false,
                         },
                         Call::read()
-                            .to(&MachineTarget::from(&machine_id))
+                            .to(&MachineTarget::from(&machine.id))
                             .budget(crate::connect::target_read_timeout()),
                     )
                     .await
-                    .map_err(crate::connect::rpc_error);
-                (machine_id, machine_name, response)
+                    .map_err(crate::connect::rpc_error)?;
+                Ok(Some(MachineImagesObservation {
+                    machine_name: machine.name.clone(),
+                    images,
+                }))
             }
-        });
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
-        for (machine_id, machine_name, outcome) in join_all(tasks).await {
-            match outcome {
-                Ok(images) => result.successes.push(MachineSuccess {
-                    machine_id,
-                    value: MachineImagesObservation {
-                        machine_name,
-                        images,
-                    },
-                }),
-                Err(error) => result.failures.push(MachineFailure { machine_id, error }),
-            }
-        }
-        result
+        })
+        .await
     }
 
     pub async fn dial_proxy(
@@ -953,30 +907,22 @@ impl Client {
         &self,
         machines: &mut [MachineObservation],
     ) -> StorageGaps {
-        let mut tasks = JoinSet::new();
-        for (index, machine) in machines.iter().enumerate() {
-            if machine.invites_rpc() {
-                tasks.spawn(observe_machine_storage(
-                    self.clone(),
-                    index,
-                    machine.machine.id,
-                ));
+        let observed = fan_out(&*machines, |machine| {
+            observe_machine_storage(self.clone(), machine.machine.id)
+        })
+        .await;
+        for success in observed.successes {
+            if let Some(machine) = machines
+                .iter_mut()
+                .find(|machine| machine.machine.id == success.machine_id)
+            {
+                machine.storage = success.value;
             }
         }
-        let mut result = StorageGaps::default();
-        while let Some(observed) = tasks.join_next().await {
-            let (index, observed) = observed.expect("Machine storage observation does not panic");
-            let Some(machine) = machines.get_mut(index) else {
-                continue;
-            };
-            let machine_id = machine.machine.id;
-            match observed {
-                Some(Ok(storage)) => machine.storage = storage,
-                Some(Err(error)) => result.failures.push(MachineFailure { machine_id, error }),
-                None => result.omissions.push(machine_id),
-            }
+        StorageGaps {
+            failures: observed.failures,
+            omissions: observed.omissions,
         }
-        result
     }
 
     /// Read the space under each reachable Machine's Docker root. A Machine that fails or is
@@ -985,28 +931,28 @@ impl Client {
         &self,
         machines: &[MachineObservation],
     ) -> Vec<(MachineId, ByteCapacity)> {
-        let reads = machines
-            .iter()
-            .filter(|observed| observed.invites_rpc())
-            .map(|observed| async move {
-                let machine = observed.machine.id;
-                let request = InspectRequest {
-                    telemetry: InspectTelemetry::Full,
-                    ..Default::default()
-                };
-                let target = MachineTarget::from(&machine);
-                let read = self.call_shared::<op::Inspect>(request, Call::once().to(&target));
+        let read = fan_out(machines, |observed| async move {
+            let request = InspectRequest {
+                telemetry: InspectTelemetry::Full,
+                ..Default::default()
+            };
+            let target = MachineTarget::from(&observed.machine.id);
+            let read = self.call_shared::<op::Inspect>(request, Call::once().to(&target));
+            Ok::<_, ()>(
                 match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, read).await {
                     Ok(Ok(details)) => match details.telemetry {
-                        Some(TelemetryObservation::Full { host, .. }) => {
-                            Some((machine, host.docker_root()))
-                        }
+                        Some(TelemetryObservation::Full { host, .. }) => Some(host.docker_root()),
                         _ => None,
                     },
                     Ok(Err(_)) | Err(_) => None,
-                }
-            });
-        join_all(reads).await.into_iter().flatten().collect()
+                },
+            )
+        })
+        .await;
+        read.successes
+            .into_iter()
+            .map(|success| (success.machine_id, success.value))
+            .collect()
     }
 
     /// List Containers on every visible Machine and derive the observed Services.
@@ -1889,12 +1835,12 @@ async fn data_loss_on_machine(
     }
     let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
-        .map_err(|failure| {
-            let message = format!("Server {name}: {}", error_chain::row(&failure.error));
-            failure.error.with_message(message)
+        .map_err(|error| {
+            let message = format!("Server {name}: {}", error_chain::row(&error));
+            error.with_message(message)
         })?;
     Ok(ObservedDataLoss {
-        data_loss: volumes_lost(volumes.value),
+        data_loss: volumes_lost(volumes),
     })
 }
 
@@ -1923,15 +1869,12 @@ pub(crate) struct StorageGaps {
     pub omissions: Vec<MachineId>,
 }
 
-/// `None` when the Machine did not answer within the storage budget.
+/// `Ok(None)` when the Machine did not answer within the storage budget, and `Some(None)`
+/// when it answered that it cannot report storage.
 async fn observe_machine_storage(
     client: Client,
-    index: usize,
     machine_id: MachineId,
-) -> (
-    usize,
-    Option<Result<Option<MachineStorageObservation>, RpcError>>,
-) {
+) -> Result<Option<Option<MachineStorageObservation>>, RpcError> {
     let target = MachineTarget::from(&machine_id);
     let observation = async {
         let description = client
@@ -1956,16 +1899,16 @@ async fn observe_machine_storage(
             .map_err(crate::connect::rpc_error)?
             .storage)
     };
-    let storage = tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation)
-        .await
-        .ok();
-    (index, storage)
+    match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation).await {
+        Ok(observed) => observed.map(Some),
+        Err(_) => Ok(None),
+    }
 }
 
 async fn list_volumes_on_machine(
     mut client: Client,
     machine_id: MachineId,
-) -> Result<MachineSuccess<VolumeInventory>, MachineFailure<RpcError>> {
+) -> Result<VolumeInventory, RpcError> {
     client
         .call::<op::ListVolumes>(
             ListVolumesRequest {},
@@ -1976,11 +1919,6 @@ async fn list_volumes_on_machine(
         .await
         .map_err(crate::connect::rpc_error)
         .and_then(|inventory| validate_volume_inventory(machine_id, inventory))
-        .map(|list| MachineSuccess {
-            machine_id,
-            value: list,
-        })
-        .map_err(|error| MachineFailure { machine_id, error })
 }
 
 fn validate_volume_inventory(

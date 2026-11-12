@@ -8,8 +8,9 @@ use ployz_core::authority::{RestartApproval, Signed};
 use ployz_core::metrics::{MarkerKind, MetricMarker, MetricRange};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    EnvironmentValues, HealthObservation, HealthVerdict, LogHistoryRequest, MachineId,
-    MachineObservation, MachineStorageObservation, Namespace, RpcError, ServiceName, StopOptions,
+    EnvironmentValues, HealthObservation, HealthVerdict, LiveServices, LogHistoryRequest,
+    MachineId, MachineObservation, MachineStorageObservation, Namespace, RpcError, ServiceName,
+    StopOptions,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -98,16 +99,9 @@ async fn servers(
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await
                 .map_err(RpcError::from)?;
-            let mut unanswered = uninvited(&machines);
+            let mut unanswered = unanswered_live(&machines, &live);
             unanswered.extend(gaps.failures.iter().map(|failure| failure.machine_id));
             unanswered.extend(gaps.omissions.iter().copied());
-            unanswered.extend(
-                live.containers
-                    .failures
-                    .iter()
-                    .map(|failure| failure.machine_id),
-            );
-            unanswered.extend(live.containers.omissions.iter().copied());
             let mut namespaces = BTreeMap::<MachineId, BTreeSet<Namespace>>::new();
             for container in live
                 .containers
@@ -185,14 +179,7 @@ async fn containers(
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await
                 .map_err(RpcError::from)?;
-            let mut unanswered = uninvited(&machines);
-            unanswered.extend(
-                live.containers
-                    .failures
-                    .iter()
-                    .map(|failure| failure.machine_id),
-            );
-            unanswered.extend(live.containers.omissions.iter().copied());
+            let unanswered = unanswered_live(&machines, &live);
             let names: BTreeMap<MachineId, &ServerName> = machines
                 .iter()
                 .map(|machine| (machine.machine.id, &machine.machine.name))
@@ -507,14 +494,7 @@ pub async fn observe_service(
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await
                 .map_err(RpcError::from)?;
-            let mut unanswered = uninvited(&machines);
-            unanswered.extend(
-                live.containers
-                    .failures
-                    .iter()
-                    .map(|failure| failure.machine_id),
-            );
-            unanswered.extend(live.containers.omissions.iter().copied());
+            let unanswered = unanswered_live(&machines, &live);
             let names: BTreeMap<MachineId, &ServerName> = machines
                 .iter()
                 .map(|machine| (machine.machine.id, &machine.machine.name))
@@ -724,6 +704,23 @@ fn health(observed: &HealthObservation) -> Option<Health> {
         | HealthObservation::Stopping
         | HealthObservation::Unrecognized(_) => None,
     }
+}
+
+/// The Servers a live Container read did not hear from: those that never invited it, and
+/// those that failed or were left out of it.
+fn unanswered_live(
+    machines: &[MachineObservation],
+    live: &LiveServices<RpcError>,
+) -> BTreeSet<MachineId> {
+    let mut unanswered = uninvited(machines);
+    unanswered.extend(
+        live.containers
+            .failures
+            .iter()
+            .map(|failure| failure.machine_id),
+    );
+    unanswered.extend(live.containers.omissions.iter().copied());
+    unanswered
 }
 
 fn uninvited(machines: &[MachineObservation]) -> BTreeSet<MachineId> {
