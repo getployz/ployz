@@ -874,39 +874,6 @@ impl Error for Failure {
     }
 }
 
-/// Error lines kept as a source chain, when the errors themselves can't be kept.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct JoinedChain {
-    line: String,
-    next: Option<Box<JoinedChain>>,
-}
-
-impl JoinedChain {
-    /// A chain of `lines`, outermost first; `None` when there are none.
-    pub(crate) fn of(lines: Vec<String>) -> Option<Self> {
-        lines.into_iter().rev().fold(None, |next, line| {
-            Some(Self {
-                line,
-                next: next.map(Box::new),
-            })
-        })
-    }
-}
-
-impl fmt::Display for JoinedChain {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.line)
-    }
-}
-
-impl Error for JoinedChain {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.next
-            .as_deref()
-            .map(|next| next as &(dyn Error + 'static))
-    }
-}
-
 macro_rules! from_error {
     ($($t:ty),+ $(,)?) => {
         $(impl From<$t> for Failure {

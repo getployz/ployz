@@ -4,11 +4,12 @@ use clap::{ArgMatches, Command};
 use serde::Serialize;
 
 use super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{env, switch, value};
+use crate::cli::{switch, value};
 use crate::cloud_login::{
     self, Account, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Pending, SignedIn,
     Start,
 };
+use crate::env;
 
 pub(super) fn login_command(command: Command) -> Command {
     command

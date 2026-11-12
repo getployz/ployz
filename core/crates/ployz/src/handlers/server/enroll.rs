@@ -19,9 +19,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{base, env, positional, switch, value};
+use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, DEFAULT_CLOUD, LoginError, Organization};
+use crate::env;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);

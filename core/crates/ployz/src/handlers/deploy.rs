@@ -121,8 +121,7 @@ pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
 pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 /// How long a followed Deployment may sit queued before the follow says why it waits.
 fn unclaimed_wait() -> Duration {
-    crate::cli::env::seconds(crate::cli::env::DEPLOY_UNCLAIMED_SECONDS)
-        .unwrap_or(Duration::from_secs(30))
+    crate::env::seconds(crate::env::DEPLOY_UNCLAIMED_SECONDS).unwrap_or(Duration::from_secs(30))
 }
 
 pub(super) fn deployment_group(command: Command) -> Command {

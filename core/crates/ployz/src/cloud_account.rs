@@ -21,6 +21,10 @@ use crate::cloud_login::{
 /// would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Outlasts the longest wait a tool may ask for and matches the default build limit. A
+/// Deployment or a Cloud operation goes on after ployz mcp stops waiting for it.
+pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Via {
     Cli,
@@ -102,7 +106,7 @@ pub(crate) async fn credential(
 /// `PLOYZ_TOKEN` as set, without the whitespace a paste into a CI secret or
 /// `.env` file leaves around it; a token never holds any.
 pub(crate) fn env_token() -> Option<String> {
-    pasted(std::env::var(crate::cli::env::TOKEN).ok())
+    pasted(std::env::var(crate::env::TOKEN).ok())
 }
 
 fn pasted(token: Option<String>) -> Option<String> {
@@ -148,7 +152,7 @@ pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, Logi
     credential(
         store,
         env_token(),
-        std::env::var(crate::cli::env::CLOUD_URL).ok(),
+        std::env::var(crate::env::CLOUD_URL).ok(),
     )
     .await
 }
@@ -864,7 +868,7 @@ pub(crate) async fn follow_operation<T: DeserializeOwned>(
         credential,
         path,
         doing,
-        tokio::time::Instant::now() + crate::handlers::mcp::CALL_DEADLINE,
+        tokio::time::Instant::now() + CALL_DEADLINE,
     )
     .await
 }
@@ -881,7 +885,7 @@ async fn follow_operation_until<T: DeserializeOwned>(
             StoreCallError::Refused(RpcError::unavailable(format!(
                 "Stopped waiting after {} minutes. {doing} keeps running in Ployz Cloud and \
                      finishes on its own; this command no longer reports it.",
-                crate::handlers::mcp::CALL_DEADLINE.as_secs() / 60
+                CALL_DEADLINE.as_secs() / 60
             )))
         })
 }

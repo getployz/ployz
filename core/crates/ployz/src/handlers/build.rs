@@ -10,7 +10,8 @@ mod rule;
 use clap::{ArgMatches, ValueHint};
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::{env, value};
+use crate::cli::value;
+use crate::env;
 use ployz_core::{
     BuildGrant, OpenedSealed, RETAINED_DIGEST_TAG_PREFIX, SealedRecord, ServiceName,
     config::{ServiceSource, parse_service_config},

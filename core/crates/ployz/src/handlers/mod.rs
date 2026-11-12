@@ -345,7 +345,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let Some(verb) = verbs::find(&path) else {
         let setup = crate::published::Setup::beside(
             &config_path(leaf_matches(matches))?,
-            std::env::var(crate::cli::env::CLOUD_URL).ok(),
+            std::env::var(crate::env::CLOUD_URL).ok(),
         );
         if let Some(cached) = setup.cached()
             && let Some(published) = cached.find(&path)
@@ -421,7 +421,7 @@ pub(super) fn completion(root: &ArgMatches) -> Result<(), Error> {
         .completer(&shell.to_string())
         .ok_or_else(|| Error::usage("unsupported completion shell"))?;
     completer.write_registration(
-        crate::cli::env::COMPLETE,
+        crate::env::COMPLETE,
         "ployz",
         "ployz",
         "ployz",

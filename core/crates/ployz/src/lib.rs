@@ -18,6 +18,7 @@ pub mod deploy;
 pub mod dns;
 pub mod drain;
 pub mod enrollment;
+pub mod env;
 pub mod failure;
 mod global_catch_up;
 #[cfg(test)]

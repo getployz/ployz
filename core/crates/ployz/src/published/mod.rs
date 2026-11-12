@@ -230,7 +230,7 @@ impl Setup {
     /// The setup the process environment names, as `cli::command()` reads it before
     /// any argument is parsed.
     pub(crate) fn from_env() -> Self {
-        use crate::cli::env;
+        use crate::env;
         let config = std::env::var(env::CONFIG)
             .ok()
             .filter(|path| !path.is_empty())

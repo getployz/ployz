@@ -22,8 +22,9 @@ use crate::checkin::{
     self, CheckinClient, CheckinEnd, CheckinKey, FleetToken, Hold, Next, Paths, StopReason, System,
     unit,
 };
-use crate::cli::{base, env, switch, value};
+use crate::cli::{base, switch, value};
 use crate::cloud_login::DEFAULT_CLOUD;
+use crate::env;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SKIP_ZFS: &str = "PLOYZ_SKIP_ZFS";

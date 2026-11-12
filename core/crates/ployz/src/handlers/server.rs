@@ -9,8 +9,9 @@ use std::{
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 
 use crate::cli::{
-    base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
+    base, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
+use crate::env;
 use ployz_core::{
     AdvertisedEndpoint, BuildConcurrencyUpdate, EnvironmentValues, Hint, IngressDoors,
     InspectRequest, ListContainersRequest, Machine, MachineId, MachineName, MachineObservation,

@@ -19,7 +19,7 @@ use super::{Error, leaf_matches, required};
 /// in, it is their Cloud Servers. `PLOYZ_CONTEXT` outlives both and sends them back here, so
 /// with it set no command does. Read from local state only: choosing a hint never asks Cloud.
 pub(super) fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
-    if std::env::var_os(crate::cli::env::CONTEXT).is_some() {
+    if std::env::var_os(crate::env::CONTEXT).is_some() {
         return None;
     }
     let command: &[&str] = if super::server::signed_in_locally(leaf) {
