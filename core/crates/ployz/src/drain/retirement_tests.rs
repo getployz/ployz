@@ -7,15 +7,15 @@ use std::time::Duration;
 
 use ployz_core::service::proxy_routes;
 use ployz_core::{
-    ContainerAddress, ContainerDetails, ContainerId, ContainerLimitsUpdated, ContainerLocator,
-    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
-    CopyRotation, DockerVolumeId, EnsuredContainer, HealthVerdict, ImagePulled, Machine, MachineId,
-    MachineName, ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RoutesRead, RpcError, RpcErrorCode,
-    ServiceContainer, ServiceMode, ServiceObservation, SlotKey,
+    ContainerAddress, ContainerDetails, ContainerId, ContainerLocator, ContainerNow,
+    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
+    EnsuredContainer, HealthVerdict, Machine, MachineId, MachineName, ObservedGlobalSlotSpec,
+    Placement, ProxyRoutes, QualifiedService, ResolvedUpdateConfig, RoutesRead, RpcError,
+    RpcErrorCode, ServiceContainer, ServiceMode, ServiceObservation,
 };
 
 use super::*;
+use crate::deploy::Session;
 use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
@@ -110,15 +110,9 @@ fn id_of(locator: &ContainerLocator) -> ContainerId {
     }
 }
 
-impl MachineOperations for Cluster {
-    async fn prepare_volumes(
-        &self,
-        _machine_id: &MachineId,
-        _specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        unreachable!("retirement prepares no volumes")
-    }
+impl Session for Cluster {}
 
+impl CopyLifecycle for Cluster {
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -143,44 +137,6 @@ impl MachineOperations for Cluster {
         want: ContainerWant,
     ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         unreachable!("retirement settles nothing: {want:?}")
-    }
-
-    async fn inspect_container(
-        &self,
-        _machine_id: &MachineId,
-        _container_id: &ContainerId,
-    ) -> Result<ContainerDetails, RpcError> {
-        unreachable!("retirement inspects nothing")
-    }
-
-    async fn remove_volume(&self, _id: &DockerVolumeId) -> Result<(), RpcError> {
-        unreachable!("retirement removes no volumes")
-    }
-
-    async fn update_container_limits(
-        &self,
-        _machine_id: &MachineId,
-        _container_id: &ContainerId,
-        _spec: &ResolvedServiceSpec,
-    ) -> Result<ContainerLimitsUpdated, RpcError> {
-        unreachable!("retirement changes no limits")
-    }
-
-    async fn runs_global(
-        &self,
-        _machine_id: &MachineId,
-        _slot: &SlotKey,
-        _spec: &ResolvedServiceSpec,
-    ) -> Result<bool, RpcError> {
-        unreachable!("retirement starts nothing")
-    }
-
-    async fn ensure_image(
-        &self,
-        _machine_id: &MachineId,
-        _spec: &ResolvedServiceSpec,
-    ) -> Result<ImagePulled, RpcError> {
-        unreachable!("retirement pulls nothing")
     }
 
     async fn ensure_unsettled(
@@ -254,6 +210,14 @@ impl MachineOperations for Cluster {
         }
     }
 
+    async fn inspect_container(
+        &self,
+        _machine_id: &MachineId,
+        _container_id: &ContainerId,
+    ) -> Result<ContainerDetails, RpcError> {
+        unreachable!("retirement inspects nothing")
+    }
+
     async fn read_routes(
         &self,
         _machine_id: &MachineId,
@@ -288,22 +252,6 @@ impl MachineOperations for Cluster {
 
     async fn read_entry_routes(&self, _service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         unreachable!("retirement reads routes through the copy's own Machine")
-    }
-
-    async fn set_ingress_doors(
-        &self,
-        _machine_id: &MachineId,
-        _request: ployz_core::SetIngressDoorsRequest,
-    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
-        unreachable!("retirement never places the Ingress Proxy")
-    }
-
-    async fn set_private_access(
-        &self,
-        _machine_id: &MachineId,
-        _request: ployz_core::SetPrivateAccessRequest,
-    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
-        unreachable!("retirement never places the Private Access router")
     }
 }
 

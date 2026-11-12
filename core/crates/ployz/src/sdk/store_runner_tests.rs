@@ -1234,26 +1234,20 @@ struct Recording {
     wants: std::sync::Mutex<Vec<ployz_core::ContainerWant>>,
 }
 
-impl MachineOperations for Recording {
-    async fn prepare_volumes(
-        &self,
-        machine_id: &MachineId,
-        specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        MachineOperations::prepare_volumes(&self.client, machine_id, specs).await
-    }
+impl crate::deploy::Session for Recording {}
 
+impl CopyLifecycle for Recording {
     async fn service_containers(
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
-        MachineOperations::service_containers(&self.client, service).await
+        CopyLifecycle::service_containers(&self.client, service).await
     }
 
     async fn replicated_containers(
         &self,
     ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
-        MachineOperations::replicated_containers(&self.client).await
+        CopyLifecycle::replicated_containers(&self.client).await
     }
 
     async fn ensure_container(
@@ -1262,46 +1256,7 @@ impl MachineOperations for Recording {
         want: ployz_core::ContainerWant,
     ) -> Result<(ployz_core::ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
         self.wants.lock().unwrap().push(want.clone());
-        MachineOperations::ensure_container(&self.client, machine_id, want).await
-    }
-
-    async fn inspect_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Result<ployz_core::ContainerDetails, RpcError> {
-        MachineOperations::inspect_container(&self.client, machine_id, container_id).await
-    }
-
-    async fn update_container_limits(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        spec: &ployz_core::ResolvedServiceSpec,
-    ) -> Result<ployz_core::ContainerLimitsUpdated, RpcError> {
-        MachineOperations::update_container_limits(&self.client, machine_id, container_id, spec)
-            .await
-    }
-
-    async fn remove_volume(&self, id: &ployz_core::DockerVolumeId) -> Result<(), RpcError> {
-        MachineOperations::remove_volume(&self.client, id).await
-    }
-
-    async fn runs_global(
-        &self,
-        machine_id: &MachineId,
-        slot: &ployz_core::SlotKey,
-        spec: &ployz_core::ResolvedServiceSpec,
-    ) -> Result<bool, RpcError> {
-        MachineOperations::runs_global(&self.client, machine_id, slot, spec).await
-    }
-
-    async fn ensure_image(
-        &self,
-        machine_id: &MachineId,
-        spec: &ployz_core::ResolvedServiceSpec,
-    ) -> Result<ployz_core::ImagePulled, RpcError> {
-        MachineOperations::ensure_image(&self.client, machine_id, spec).await
+        CopyLifecycle::ensure_container(&self.client, machine_id, want).await
     }
 
     async fn ensure_unsettled(
@@ -1311,7 +1266,15 @@ impl MachineOperations for Recording {
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         self.wants.lock().unwrap().push(want.clone());
-        MachineOperations::ensure_unsettled(&self.client, machine_id, want, timeout).await
+        CopyLifecycle::ensure_unsettled(&self.client, machine_id, want, timeout).await
+    }
+
+    async fn inspect_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+    ) -> Result<ployz_core::ContainerDetails, RpcError> {
+        CopyLifecycle::inspect_container(&self.client, machine_id, container_id).await
     }
 
     async fn read_routes(
@@ -1319,30 +1282,14 @@ impl MachineOperations for Recording {
         machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<ployz_core::RoutesRead, RpcError> {
-        MachineOperations::read_routes(&self.client, machine_id, service).await
+        CopyLifecycle::read_routes(&self.client, machine_id, service).await
     }
 
     async fn read_entry_routes(
         &self,
         service: &QualifiedService,
     ) -> Result<ployz_core::RoutesRead, RpcError> {
-        MachineOperations::read_entry_routes(&self.client, service).await
-    }
-
-    async fn set_ingress_doors(
-        &self,
-        machine_id: &MachineId,
-        request: ployz_core::SetIngressDoorsRequest,
-    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
-        MachineOperations::set_ingress_doors(&self.client, machine_id, request).await
-    }
-
-    async fn set_private_access(
-        &self,
-        machine_id: &MachineId,
-        request: ployz_core::SetPrivateAccessRequest,
-    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
-        MachineOperations::set_private_access(&self.client, machine_id, request).await
+        CopyLifecycle::read_entry_routes(&self.client, service).await
     }
 }
 

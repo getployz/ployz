@@ -30,15 +30,9 @@ impl Recording {
     }
 }
 
-impl MachineOperations for Recording {
-    async fn prepare_volumes(
-        &self,
-        machine_id: &MachineId,
-        specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        self.fake.prepare_volumes(machine_id, specs).await
-    }
+impl Session for Recording {}
 
+impl CopyLifecycle for Recording {
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -59,12 +53,47 @@ impl MachineOperations for Recording {
         self.fake.ensure_container(machine_id, want).await
     }
 
+    async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<EnsuredContainer, RpcError> {
+        if matches!(want, ContainerWant::Stopped { .. }) {
+            self.stop_deadlines.lock().unwrap().push(timeout);
+        }
+        self.wants.lock().unwrap().push(want.clone());
+        self.fake.ensure_unsettled(machine_id, want, timeout).await
+    }
+
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerDetails, RpcError> {
         self.fake.inspect_container(machine_id, container_id).await
+    }
+
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        self.fake.read_routes(machine_id, service).await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        self.fake.read_entry_routes(service).await
+    }
+}
+
+impl DeployOperations for Recording {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        self.fake.prepare_volumes(machine_id, specs).await
     }
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
@@ -98,32 +127,9 @@ impl MachineOperations for Recording {
     ) -> Result<ImagePulled, RpcError> {
         self.fake.ensure_image(machine_id, spec).await
     }
+}
 
-    async fn ensure_unsettled(
-        &self,
-        machine_id: &MachineId,
-        want: ContainerWant,
-        timeout: Option<Duration>,
-    ) -> Result<EnsuredContainer, RpcError> {
-        if matches!(want, ContainerWant::Stopped { .. }) {
-            self.stop_deadlines.lock().unwrap().push(timeout);
-        }
-        self.wants.lock().unwrap().push(want.clone());
-        self.fake.ensure_unsettled(machine_id, want, timeout).await
-    }
-
-    async fn read_routes(
-        &self,
-        machine_id: &MachineId,
-        service: &QualifiedService,
-    ) -> Result<RoutesRead, RpcError> {
-        self.fake.read_routes(machine_id, service).await
-    }
-
-    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
-        self.fake.read_entry_routes(service).await
-    }
-
+impl ProxyPlacement for Recording {
     async fn set_ingress_doors(
         &self,
         machine_id: &MachineId,

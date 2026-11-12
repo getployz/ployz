@@ -278,6 +278,37 @@ async fn a_run_whose_reply_was_lost_is_resent_to_the_same_slot() {
 }
 
 #[tokio::test]
+async fn a_move_names_its_slot_by_its_old_copy_or_by_a_global_spec() {
+    for (global, key) in [
+        (false, format!("move:{}", container('a'))),
+        (true, crate::cluster::global_creation_key(&global_spec())),
+    ] {
+        let client = moving(served());
+        let spec = if global {
+            global_spec()
+        } else {
+            spec(Some(0), None, None)
+        };
+        move_container(
+            &client,
+            &test_namespace(),
+            &spec,
+            &machine(TO),
+            (&machine(FROM), &container('a')),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let slots = client.slots.lock().unwrap();
+        let [slot] = slots.as_slice() else {
+            panic!("expected one creation, got {slots:?}");
+        };
+        assert_eq!(slot.kind, ContainerKind::ServiceContainer);
+        assert_eq!(slot.creation_key.as_str(), key);
+    }
+}
+
+#[tokio::test]
 async fn a_failed_run_removes_its_slot() {
     let client = moving(vec![
         failed(

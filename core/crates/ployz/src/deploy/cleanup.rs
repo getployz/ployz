@@ -11,7 +11,7 @@ use ployz_core::{
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::MachineOperations;
+use super::CopyLifecycle;
 use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
 use ployz_core::error_chain::{then_sentence, with_reason};
 
@@ -87,7 +87,7 @@ impl BroughtIn {
 
 /// An unanswered ask re-reads the copy: the owner may have written In after
 /// the deadline passed.
-pub(crate) async fn bring_in<C: MachineOperations>(
+pub(crate) async fn bring_in<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     spec: &ResolvedServiceSpec,
@@ -166,7 +166,7 @@ pub(crate) struct Unconfirmed {
     pub(crate) unanswered: Vec<MachineId>,
 }
 
-pub(crate) async fn wait_listed<C: MachineOperations>(
+pub(crate) async fn wait_listed<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     service: &QualifiedService,
@@ -189,7 +189,7 @@ pub(crate) async fn wait_listed<C: MachineOperations>(
 /// [`wait_listed`] that ends at [`Waited::Gapped`] once only `gaps`' proxies are
 /// unconfirmed. A gap Server is one this Deploy already reports unobserved, such as
 /// an Up one whose daemon the entry couldn't dial: nothing there writes its ack.
-pub(crate) async fn wait_listed_beside<C: MachineOperations>(
+pub(crate) async fn wait_listed_beside<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     service: &QualifiedService,
@@ -210,7 +210,7 @@ pub(crate) async fn wait_listed_beside<C: MachineOperations>(
 
 /// Read through the entry Machine: every Machine reads the same replicated ack rows,
 /// so a cut-off owner in the group does not stop the wait.
-pub(crate) async fn wait_none_listed<C: MachineOperations>(
+pub(crate) async fn wait_none_listed<C: CopyLifecycle>(
     client: &C,
     service: &QualifiedService,
     copies: &BTreeSet<ContainerId>,
@@ -226,7 +226,7 @@ pub(crate) async fn wait_none_listed<C: MachineOperations>(
     .await
 }
 
-pub(crate) async fn wait_unlisted<C: MachineOperations>(
+pub(crate) async fn wait_unlisted<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     service: &QualifiedService,
@@ -338,7 +338,7 @@ impl From<Waited> for Rotated {
     }
 }
 
-pub(crate) async fn hold<C: MachineOperations>(
+pub(crate) async fn hold<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     run: DeploymentLogId,
@@ -394,7 +394,7 @@ impl From<ployz_core::RemoveContainerPurpose> for EmptyPolicy {
     }
 }
 
-pub(crate) async fn take_out<C: MachineOperations>(
+pub(crate) async fn take_out<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     empty: EmptyPolicy,
@@ -416,7 +416,7 @@ pub(crate) async fn take_out<C: MachineOperations>(
 
 /// Asks the copy Out without waiting for proxies to drop it, giving the Machine's
 /// refusal when it has one.
-pub(crate) async fn send_out<C: MachineOperations>(
+pub(crate) async fn send_out<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     empty: EmptyPolicy,
@@ -437,7 +437,7 @@ pub(crate) async fn send_out<C: MachineOperations>(
     Ok(None)
 }
 
-pub(crate) async fn retire<C: MachineOperations>(
+pub(crate) async fn retire<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     empty: EmptyPolicy,
@@ -462,7 +462,7 @@ pub(crate) async fn retire<C: MachineOperations>(
 /// Retires the copy without waiting for proxies to drop it. A removal beside a
 /// copy on a Server this Deploy cannot reach: every proxy keeps the route while
 /// its store lists that copy In, so the drain would never confirm.
-pub(crate) async fn retire_unconfirmed<C: MachineOperations>(
+pub(crate) async fn retire_unconfirmed<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     empty: EmptyPolicy,
@@ -499,7 +499,7 @@ impl From<Removal> for Rotated {
     }
 }
 
-pub(crate) async fn remove<C: MachineOperations>(
+pub(crate) async fn remove<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     anonymous_volumes: AnonymousVolumes,
@@ -531,7 +531,7 @@ pub(crate) enum Gone {
     Refused(ContainerRefusal),
 }
 
-pub(crate) async fn gone<C: MachineOperations>(
+pub(crate) async fn gone<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     container: ContainerLocator,
@@ -573,7 +573,7 @@ pub(crate) enum UserStarted {
     NotIn(Option<HealthVerdict>),
 }
 
-pub(crate) async fn user_stop<C: MachineOperations>(
+pub(crate) async fn user_stop<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -617,7 +617,7 @@ pub(crate) async fn user_stop<C: MachineOperations>(
     stopped(client, &copy, &observed.resolved_spec, stop, queued).await
 }
 
-pub(crate) async fn user_start<C: MachineOperations>(
+pub(crate) async fn user_start<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -642,7 +642,7 @@ pub(crate) async fn user_start<C: MachineOperations>(
     )
 }
 
-pub(crate) async fn user_restart<C: MachineOperations>(
+pub(crate) async fn user_restart<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -711,7 +711,7 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     started(&held, brought?)
 }
 
-pub(crate) async fn user_remove<C: MachineOperations>(
+pub(crate) async fn user_remove<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -756,7 +756,7 @@ fn kept_without_spec(container_id: &ContainerId, inspected: RpcError) -> RpcErro
             .collect())
 }
 
-async fn observe<C: MachineOperations>(
+async fn observe<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -792,7 +792,7 @@ fn routable(observed: &ContainerObservation) -> bool {
     observed.kind == ContainerKind::ServiceContainer && !observed.identity().is_ingress_door()
 }
 
-async fn stopped<C: MachineOperations>(
+async fn stopped<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     spec: &ResolvedServiceSpec,
@@ -823,7 +823,7 @@ async fn stopped<C: MachineOperations>(
         .map(|_| ())
 }
 
-async fn restart_pending<C: MachineOperations>(
+async fn restart_pending<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     spec: &ResolvedServiceSpec,
@@ -836,10 +836,7 @@ async fn restart_pending<C: MachineOperations>(
     started
 }
 
-async fn run_pending<C: MachineOperations>(
-    client: &C,
-    copy: &Copy,
-) -> Result<UserStarted, RpcError> {
+async fn run_pending<C: CopyLifecycle>(client: &C, copy: &Copy) -> Result<UserStarted, RpcError> {
     let want = ContainerWant::Running {
         container: RunTarget::Existing(copy.locator()),
         rotation: RunRotation::Pending,
@@ -890,7 +887,7 @@ fn rotation_name(rotation: &CopyRotation) -> &'static str {
 /// A stop that ends while its proxies drop the copy withdrew a serving copy for
 /// nothing, so it goes back In, as a restart does when its wait fails. A refusal was
 /// answered before the Machine acted, so the copy is as it was and only the reason is said.
-async fn not_stopped<C: MachineOperations>(
+async fn not_stopped<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     spec: &ResolvedServiceSpec,
