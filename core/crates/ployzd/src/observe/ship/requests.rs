@@ -10,15 +10,22 @@ use serde::Serialize;
 use tokio::sync::Notify;
 
 use super::{
-    CAP, Held, Ledger, REQUESTS, StoreRoot, Stream, create_store_dir, entry_name, remove_entry,
-    seqs,
+    push::{Held, NotFound, PushLimits, Stream},
+    store::{Ledger, entry_name, remove_entry, seqs},
 };
+use crate::observe::layout::{StoreRoot, create_store_dir};
+
+const REQUESTS: &str = "requests";
 
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const SEGMENT_ROWS: usize = 100;
 const SEGMENT_BYTES: usize = 16 * 1024;
-/// Cloud answers 413 past 256 KiB. A whole batch body, envelope included, stays under this.
-const BATCH_BYTES: usize = 192 * 1024;
+/// What a requests push carries: as many rows as Cloud takes, and a body that, envelope
+/// included, stays well under the bytes Cloud takes.
+const PUSH: PushLimits = PushLimits {
+    rows: PushLimits::CLOUD.rows,
+    bytes: PushLimits::CLOUD.bytes / 4 * 3,
+};
 const SEGMENT_AGE: Duration = Duration::from_secs(1);
 pub(in crate::observe) const ROW_CAP: usize = 50_000;
 
@@ -201,6 +208,7 @@ impl RequestOutbox {
 
 impl Stream for RequestOutbox {
     const NAME: &'static str = REQUESTS;
+    const ON_NOT_FOUND: NotFound = NotFound::NotYetTaken;
 
     fn next(&self) -> io::Result<Option<Held>> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -210,7 +218,7 @@ impl Stream for RequestOutbox {
         let mut rows = 0;
         let mut bytes = frame;
         for (seq, segment) in &state.segments {
-            if rows + segment.rows > CAP || bytes + segment.bytes > BATCH_BYTES {
+            if rows + segment.rows > PUSH.rows || bytes + segment.bytes > PUSH.bytes {
                 if taken.is_empty() {
                     oversized.push(*seq);
                     continue;
@@ -487,7 +495,7 @@ mod tests {
         outbox.tick().unwrap();
         let sizes = batches_until_empty(&outbox);
         assert!(sizes.iter().sum::<usize>() > 262_144, "{sizes:?}");
-        assert!(sizes.iter().all(|size| *size <= BATCH_BYTES), "{sizes:?}");
+        assert!(sizes.iter().all(|size| *size <= PUSH.bytes), "{sizes:?}");
     }
 
     #[test]
@@ -511,18 +519,29 @@ mod tests {
         let (_root, store) = store();
         let outbox = RequestOutbox::open(&store).unwrap();
         outbox
-            .push(&serde_json::json!({ "blob": "x".repeat(BATCH_BYTES) }))
+            .push(&serde_json::json!({ "blob": "x".repeat(PUSH.bytes) }))
             .unwrap();
         push(&outbox, 0..100);
         assert_eq!(segments(&store).len(), 2);
 
         let held = outbox.next().unwrap().unwrap();
-        assert!(held.body.len() <= BATCH_BYTES);
+        assert!(held.body.len() <= PUSH.bytes);
         let body: serde_json::Value = serde_json::from_slice(&held.body).unwrap();
         assert_eq!(body["dropped"], 1);
         assert_eq!(body["rows"].as_array().unwrap().len(), 100);
         assert_eq!(segments(&store), held.seqs);
         assert_eq!(outbox.held_rows(), 100);
+    }
+
+    #[test]
+    fn a_requests_push_takes_cloud_rows_and_three_quarters_of_its_bytes() {
+        assert_eq!(
+            PUSH,
+            PushLimits {
+                rows: 1000,
+                bytes: 192 * 1024,
+            }
+        );
     }
 
     #[test]
