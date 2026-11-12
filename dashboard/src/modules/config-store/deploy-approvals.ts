@@ -11,12 +11,13 @@
  *                        ─▶ builds end ─▶ the same commits again, new times, no ask ─▶ ApproveDeployment
  *   other Environment    plan ─▶ draft DeployApproval ─▶ review ─▶ sign ─▶ Deploy { approval, version }
  */
-import type { ConfigWritten, DeploymentView, EnvironmentRef, PlanView, Retry, RuleView, Signed } from "@ployz/sdk";
+import type { ConfigWritten, DeploymentView, EnvironmentRef, PlanView, RemovalsView, Retry, RuleView, Signed } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { deployApprovalScope, type DeployTarget, ensureApproval, type Review } from "#/modules/approval-session/approval-prompt";
 import {
   type ApprovalScope, COMMIT_CAPABILITIES, type CommitTerms, draftCommits, draftDeploy, type Drafted, SessionRefused, signDrafted,
 } from "#/modules/approval-session/approval-session";
+import { approveTeardown } from "#/modules/approval-session/teardown-approval";
 
 /** The Store reads an approval takes, fresh: a plan, of a Deployment's redeploy when named, a rule, a Deployment, a Namespace. */
 export type Reads = {
@@ -24,6 +25,8 @@ export type Reads = {
   readonly namespace: (environment: EnvironmentRef) => Promise<string>;
   readonly rule: (environment: EnvironmentRef) => Promise<RuleView>;
   readonly deployment: (id: string) => Promise<DeploymentView>;
+  /** The Volumes a Deploy of the Environment deletes, or a redeploy of Deployment `deployment`. */
+  readonly removals: (environment: EnvironmentRef, deployment?: string) => Promise<RemovalsView>;
 };
 
 /** Every Server, and those running a Namespace now, as this tab last saw them: where a deploy may place. */
@@ -70,6 +73,27 @@ export async function approveEnvironmentDeploy(approving: Approving, environment
   const signed = await reviewed(approving, await draftDeploy(scope, id, plan), `Deploy ${plan.environment.name}?`);
   const [approval] = signed ?? [];
   return approval === undefined ? null : { approval, version: plan.version };
+}
+
+/**
+ * The person's teardown of the Volumes a Deploy of `environment`, or a redeploy of Deployment `deployment`, deletes
+ * under `accept`, read fresh and approved by their passkey, as `ployz deploy --accept-volume-loss` signs its own.
+ * Undefined when it deletes none, or no Server enforces; throws, before anything is sent, when they don't approve it.
+ */
+export async function approveVolumeLoss(approving: Approving, environment: EnvironmentRef, accept: readonly string[], deployment?: string) {
+  const { reads, servers } = approving;
+  if (accept.length === 0 || !enforcing(servers)) return undefined;
+  const lost = (await reads.removals(environment, deployment)).volumes.filter((volume) => accept.includes(volume.name));
+  if (lost.length === 0) return undefined;
+  const near = servers.running(await reads.namespace(environment));
+  return approveTeardown({
+    machines: servers.machines,
+    near,
+    scope: (machines) => ({ kind: "volumes", machines, volumes: lost.map((volume) => volume.docker_volume) }),
+    volumes: Object.fromEntries(lost.map((volume) => [volume.docker_volume, volume.name])),
+    title: `Delete the data of ${lost.map((volume) => volume.name).join(", ")}?`,
+    action: "Delete",
+  }, approving.review);
 }
 
 /** A redeploy's approvals, as the Store's Retry takes them, and what its builds wait on before it runs. */

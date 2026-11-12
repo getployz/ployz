@@ -303,7 +303,7 @@ export type Drafted = { readonly bodies: readonly string[]; readonly lines: read
 const fromHex = (text: string) => new Uint8Array((text.match(/../g) ?? []).map((pair) => Number.parseInt(pair, 16)));
 
 /** `2026-11-11T03:19:09Z`: a time a body signs, in UTC, as the CLI prints it. */
-const utc = (at: number) => new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
+export const utc = (at: number) => new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 /** The terms every body of one draft shares, as this browser wrote them: the Cluster, the signer and the window. */
 const SharedTerms = Schema.fromJsonString(Schema.Struct({
@@ -429,7 +429,7 @@ export async function approveDeploy(scope: ApprovalScope, deployment: string, ve
   return { approval, lines: drafted.lines };
 }
 
-type ScopeMachine = {
+export type ScopeMachine = {
   readonly id: string;
   readonly sealing: { readonly kind: string; readonly public_key?: string } | null;
   readonly deviceEnforcement?: boolean | null;
@@ -439,6 +439,18 @@ const heldKey = (machine: ScopeMachine) => machine.sealing?.kind === "held" && m
 
 /** Every Server holding `cluster`'s Sealing Key. */
 const clusterMachines = <M extends ScopeMachine>(cluster: string, machines: readonly M[]) => machines.filter((machine) => heldKey(machine) === cluster);
+
+/**
+ * The Cluster the Servers `near` hold the Sealing Key of, or the only one, and every Server in it; every Server when
+ * Cloud can't tell which Cluster it is.
+ */
+export function clusterOf<M extends ScopeMachine>(near: readonly string[], machines: readonly M[]) {
+  const running = new Set(near);
+  const keys = new Set(machines.map(heldKey).filter((key) => key !== undefined));
+  const cluster = machines.filter((machine) => running.has(machine.id)).map(heldKey).find((key) => key !== undefined)
+    ?? (keys.size === 1 ? [...keys][0] : undefined);
+  return { cluster, members: cluster === undefined ? machines : clusterMachines(cluster, machines) };
+}
 
 /**
  * Whether a press on these copies needs an approval, and the scope its grant names: the Cluster the copies' Servers hold
@@ -474,11 +486,7 @@ export function deployScope(
   machines: readonly (ScopeMachine & { readonly name: string; readonly capabilities: readonly string[] })[],
   capabilities: readonly string[] = DEPLOY_CAPABILITIES,
 ): DeployScope {
-  const running = new Set(environmentMachines);
-  const keys = new Set(machines.map(heldKey).filter((key) => key !== undefined));
-  const cluster = machines.filter((machine) => running.has(machine.id)).map(heldKey).find((key) => key !== undefined)
-    ?? (keys.size === 1 ? [...keys][0] : undefined);
-  const members = cluster === undefined ? machines : clusterMachines(cluster, machines);
+  const { cluster, members } = clusterOf(environmentMachines, machines);
   const enforcing = members.filter((machine) => machine.deviceEnforcement === true);
   const older = enforcing.find((machine) => !capabilities.every((capability) => machine.capabilities.includes(capability)))?.name ?? null;
   return {

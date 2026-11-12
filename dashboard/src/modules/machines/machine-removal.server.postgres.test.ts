@@ -1,4 +1,4 @@
-import type { MachineId } from "@ployz/sdk";
+import type { MachineId, TeardownApproval } from "@ployz/sdk";
 import { Effect, Result } from "effect";
 import {
   afterAll,
@@ -22,7 +22,7 @@ import {
   prepareMachineRemoveAttemptActivity,
   startMachineRemove,
 } from "#/modules/machines/machine-removal.server";
-import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
+import { loadMachineRemoveAttempt, requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { Conflict } from "#/server/public-error";
 import type { Inngest } from "inngest";
 
@@ -64,6 +64,21 @@ describe("machine removal durable ownership", () => {
       insert into "user" (id, email, name)
       values ('${userId}', 'remove@example.com', 'Owner');
     `);
+  });
+
+  it("keeps the person's teardown on the attempt, for the run that removes the Server to carry", async () => {
+    const teardown: TeardownApproval = {
+      passkey: {
+        body: '{"kind":"server"}',
+        assertion: { credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" },
+      },
+    };
+    const attempt = await runEffect(requestMachineRemoveAttempt({
+      organizationId, requestedByUserId: userId, machineId: ids.machineId("e"), serverName: null, confirmDataLoss: [], teardown,
+    }));
+
+    expect((await runEffect(loadMachineRemoveAttempt(attempt.id)))?.teardown).toEqual(teardown);
+    expect((await request(harness, ids.machineId("f")).then((other) => runEffect(loadMachineRemoveAttempt(other.id))))?.teardown).toBeNull();
   });
 
   it("keeps the attempt and its unsent event when delivery after commit fails", async () => {

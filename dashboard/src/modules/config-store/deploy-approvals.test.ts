@@ -1,4 +1,4 @@
-import type { BuildView, ConfigWritten, DeploymentView, PlanView, RequestedServiceSpec, RuleView, Signed } from "@ployz/sdk";
+import type { BuildView, ConfigWritten, DeploymentView, PlanView, RemovalsView, RequestedServiceSpec, RuleView, Signed } from "@ployz/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonValue } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
@@ -54,6 +54,7 @@ const reads = (over: Partial<Reads> = {}): Reads => ({
   namespace: vi.fn(async () => NAMESPACE),
   rule: vi.fn(async () => rule(JSON.stringify({ rule: RULE, generation: 2, extra: "kept by Cloud" }))),
   deployment: vi.fn(async () => deployment()),
+  removals: vi.fn(async () => asTestDouble<RemovalsView>()({ environment: ENVIRONMENT, volumes: [] })),
   ...over,
 });
 

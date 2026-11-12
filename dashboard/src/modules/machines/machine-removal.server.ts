@@ -125,7 +125,7 @@ function carriedOnlyBy(name: string, others: readonly string[]) {
  * go of anything.
  */
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
-  function* (attempt: Pick<MachineRemoveAttemptContext, "id" | "organizationId" | "machineId" | "confirmDataLoss" | "noReset"> & {
+  function* (attempt: Pick<MachineRemoveAttemptContext, "id" | "organizationId" | "machineId" | "confirmDataLoss" | "noReset" | "teardown"> & {
     readonly inngestRunId: string;
   }, left: { readonly resetWarning: string | null } | null = null) {
     const forgetOnly = attempt.noReset || left !== null;
@@ -169,10 +169,10 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     const owned = yield* markOwnedMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId });
     if (!owned) return { kind: "superseded" } as const;
     const outcome = yield* asRemoveMachineOutcome(forgetOnly
-      ? session.connected.removeMachineMembership(machine).pipe(Effect.as(left === null
+      ? session.connected.removeMachineMembership(machine, attempt.teardown).pipe(Effect.as(left === null
         ? { reset_warning: null }
         : { reset_warning: left.resetWarning, departed: { kind: "reset", row_warning: left.resetWarning } as const }))
-      : session.connected.removeMachine(machine, { confirmed: [...attempt.confirmDataLoss] }), servers);
+      : session.connected.removeMachine(machine, { confirmed: [...attempt.confirmDataLoss] }, attempt.teardown), servers);
     return { ...outcome, generation: access.generation };
   },
 );
@@ -368,6 +368,7 @@ export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
       machineId: input.machineId,
       serverName: plan.name,
       confirmDataLoss: [...input.confirmDataLoss],
+      teardown: input.teardown ?? null,
     });
   },
 );
