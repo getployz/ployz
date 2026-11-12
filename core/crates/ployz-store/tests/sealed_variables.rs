@@ -121,6 +121,7 @@ fn try_deploy(store: &ConfigStore) -> Result<ployz_store::Claimed, RpcError> {
     store.write_trusted(
         &who(),
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id.clone(),
             environment: EnvironmentRef::default(),
             services: Vec::new(),

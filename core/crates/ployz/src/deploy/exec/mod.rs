@@ -486,7 +486,7 @@ impl MachineOperations for Client {
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
         self.call_shared::<op::RemoveVolume>(
             RemoveVolumeRequest {
-                teardown: None,
+                teardown: self.deploy.teardown(),
                 name: id.name.clone(),
                 force: false,
             },

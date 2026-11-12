@@ -5,7 +5,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use ployz_core::{
     ContainerLocator, ContainerWant, DeploymentLogId, RegistryAuth, RunTarget, ServiceName,
-    authority::{DeployApproval, PreviewProof, RestartApproval, RuleProof, Signed},
+    authority::{
+        DeployApproval, PreviewProof, RestartApproval, RuleProof, Signed, TeardownApproval,
+    },
 };
 
 /// The Deploy this client executes, shared by its clones as their Deploy's own.
@@ -29,6 +31,9 @@ struct Approvals {
     /// A rule's proof for each Service it built, when a rule deploys in place of a
     /// person's approval.
     proofs: RuleProofs,
+    /// The teardown that takes what the Deploy removes off each Server: its Containers,
+    /// when nothing else approves the step, and the Volumes it deletes.
+    teardown: Option<TeardownApproval>,
 }
 
 /// The proof each Service a rule built carries to every Server, in place of a person's
@@ -45,6 +50,7 @@ pub(super) struct Carried {
     pub(super) preview: Option<Box<PreviewProof>>,
     pub(super) restart: Option<Signed<RestartApproval>>,
     pub(super) deploy: Option<Signed<DeployApproval>>,
+    pub(super) teardown: Option<Box<TeardownApproval>>,
 }
 
 impl DeployContext {
@@ -60,6 +66,15 @@ impl DeployContext {
         Arc::make_mut(&mut self.approvals).proofs = proofs;
     }
 
+    pub(super) fn set_teardown(&mut self, teardown: Option<TeardownApproval>) {
+        Arc::make_mut(&mut self.approvals).teardown = teardown;
+    }
+
+    /// The teardown a Volume this client deletes carries.
+    pub(crate) fn teardown(&self) -> Option<Box<TeardownApproval>> {
+        self.approvals.teardown.clone().map(Box::new)
+    }
+
     /// What a change of `want` carries.
     pub(super) fn carried(&self, want: &ContainerWant) -> Carried {
         Carried {
@@ -67,6 +82,7 @@ impl DeployContext {
             preview: proof_for(&self.approvals.proofs.previews, want),
             restart: self.approvals.restart.clone(),
             deploy: self.approvals.deploy.clone(),
+            teardown: self.teardown(),
         }
     }
 }

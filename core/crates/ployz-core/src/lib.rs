@@ -88,8 +88,7 @@ pub const SEED_REFUSED_BY_ENFORCEMENT: &str = "This server restores into a new v
 
 /// What a Machine that enforces Device approval says when an Operator asks it to `Leave`.
 /// Clients compare against it to show the refusal as it is.
-pub const LEAVE_REFUSED_BY_ENFORCEMENT: &str =
-    "This server leaves only when you approve it, with ployz server rm from an approved device or your passkey in the dashboard";
+pub const LEAVE_REFUSED_BY_ENFORCEMENT: &str = "This server leaves only when you approve it, with ployz server rm from an approved device or your passkey in the dashboard";
 
 /// What a Machine that enforces Device approval says when an Operator asks it to `Forget`
 /// another Machine.

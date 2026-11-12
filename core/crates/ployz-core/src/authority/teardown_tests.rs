@@ -30,11 +30,8 @@ fn namespace(name: &str) -> Namespace {
     Namespace::parse(name).unwrap()
 }
 
-fn volume(on: char, name: &str) -> DockerVolumeId {
-    DockerVolumeId {
-        machine_id: machine(on),
-        name: DockerVolumeName::parse(name).unwrap(),
-    }
+fn volume(name: &str) -> DockerVolumeName {
+    DockerVolumeName::parse(name).unwrap()
 }
 
 fn trusted(passkey: &Authenticator) -> TrustedKeys {
@@ -51,7 +48,7 @@ fn shop() -> TeardownScope {
     TeardownScope::Namespace {
         namespaces: vec![namespace("shop")],
         machines: vec![machine('a'), machine('b')],
-        volumes: vec![volume('a', "shop_data")],
+        volumes: vec![volume("shop_data")],
     }
 }
 
@@ -143,7 +140,7 @@ fn a_device_or_a_passkeys_own_prompt_takes_the_namespace_off_the_servers_it_name
             Ok(Approver::Passkey(passkey.passkey().code()))
         );
     }
-    let data = DockerVolumeName::parse("shop_data").unwrap();
+    let data = volume("shop_data");
     assert!(
         check(
             &by_device(self::shop()),
@@ -192,15 +189,16 @@ fn another_namespace_machine_or_volume_is_refused() {
             field: "a Namespace on this Server"
         })
     );
-    let data = DockerVolumeName::parse("shop_data").unwrap();
+    let data = volume("shop_data");
+    assert!(check(&approval, &trusted, 'b', TeardownStep::Volume(&data)).is_ok());
     assert_eq!(
-        check(&approval, &trusted, 'b', TeardownStep::Volume(&data)),
+        check(&approval, &trusted, 'c', TeardownStep::Volume(&data)),
         Err(AuthorityRefusal::Mismatch {
             field: "a Volume on this Server"
         }),
-        "a Volume is named on its Server, not by name alone"
+        "a Volume goes only on the Servers named"
     );
-    let other = DockerVolumeName::parse("shop_cache").unwrap();
+    let other = volume("shop_cache");
     assert!(check(&approval, &trusted, 'a', TeardownStep::Volume(&other)).is_err());
 }
 
@@ -210,7 +208,7 @@ fn a_volume_outside_the_named_namespaces_spoils_the_whole_teardown() {
     let approval = by_device(TeardownScope::Namespace {
         namespaces: vec![namespace("shop")],
         machines: vec![machine('a')],
-        volumes: vec![volume('a', "staging_data")],
+        volumes: vec![volume("staging_data")],
     });
     assert_eq!(
         check(
@@ -226,12 +224,11 @@ fn a_volume_outside_the_named_namespaces_spoils_the_whole_teardown() {
 #[test]
 fn a_deploys_volume_teardown_takes_no_container_off() {
     let passkey = Authenticator::es256(4);
-    let approval = by_device(TeardownScope::Namespace {
-        namespaces: vec![namespace("shop")],
-        machines: Vec::new(),
-        volumes: vec![volume('a', "shop_data")],
+    let approval = by_device(TeardownScope::Volumes {
+        machines: vec![machine('a')],
+        volumes: vec![volume("shop_data")],
     });
-    let data = DockerVolumeName::parse("shop_data").unwrap();
+    let data = volume("shop_data");
     assert!(
         check(
             &approval,
@@ -247,6 +244,15 @@ fn a_deploys_volume_teardown_takes_no_container_off() {
             &trusted(&passkey),
             'a',
             remove_in(&namespace("shop"))
+        )
+        .is_err()
+    );
+    assert!(
+        check(
+            &approval,
+            &trusted(&passkey),
+            'b',
+            TeardownStep::Volume(&data)
         )
         .is_err()
     );
@@ -459,8 +465,15 @@ fn each_scope_signs_its_golden_canonical_body() {
         (
             shop(),
             format!(
-                r#"{{"kind":"namespace","machines":["{a}","{b}"],"namespaces":["shop"],"volumes":[{{"machine_id":"{a}","name":"shop_data"}}]}}"#
+                r#"{{"kind":"namespace","machines":["{a}","{b}"],"namespaces":["shop"],"volumes":["shop_data"]}}"#
             ),
+        ),
+        (
+            TeardownScope::Volumes {
+                machines: vec![machine('a')],
+                volumes: vec![volume("shop_data")],
+            },
+            format!(r#"{{"kind":"volumes","machines":["{a}"],"volumes":["shop_data"]}}"#),
         ),
         (
             web_3(),
@@ -483,31 +496,46 @@ fn a_draft_sorts_its_lists_and_the_lines_name_every_loss() {
         TeardownScope::Namespace {
             namespaces: vec![namespace("shop"), namespace("shop")],
             machines: vec![machine('b'), machine('a')],
-            volumes: vec![volume('a', "shop_data")],
+            volumes: vec![volume("shop_data")],
         },
         SignerKey::Passkey(OwnPrompt::Passkey),
     );
     assert_eq!(drafted.scope, shop());
     let name = |machine: &MachineId| format!("web-{}", &machine.to_string()[..1]);
+    let label = |volume: &DockerVolumeName| match volume.as_str() {
+        "shop_data" => "data".to_owned(),
+        other => other.to_owned(),
+    };
     assert_eq!(
-        drafted.lines(name),
+        drafted.lines(name, label),
         [
             "Approved: stop and remove every service of shop on web-a, web-b.",
-            "Approved: delete volume shop_data on web-a. Its data is gone for good.",
+            "Approved: delete volume data (shop_data) there. Its data is gone for good.",
         ]
     );
     assert_eq!(
-        teardown(web_3(), SignerKey::Passkey(OwnPrompt::Passkey)).lines(name),
+        teardown(
+            TeardownScope::Volumes {
+                machines: vec![machine('b'), machine('a')],
+                volumes: vec![volume("shop_data")],
+            },
+            SignerKey::Passkey(OwnPrompt::Passkey),
+        )
+        .lines(name, label),
+        ["Approved: delete volume data (shop_data) on web-a, web-b. Its data is gone for good."]
+    );
+    assert_eq!(
+        teardown(web_3(), SignerKey::Passkey(OwnPrompt::Passkey)).lines(name, label),
         [
             "Approved: remove web-c from the Cluster. Its services stop there.",
             "Approved: web-a, web-b forget web-c.",
-            "The Cluster can no longer reach its copies of shop_data.",
+            "The Cluster can no longer reach its copies of data (shop_data).",
         ]
     );
     let relayed = |_: &MachineId| "web\u{1b}[2J".to_owned();
     assert!(
         teardown(web_3(), SignerKey::Passkey(OwnPrompt::Passkey))
-            .lines(relayed)
+            .lines(relayed, label)
             .iter()
             .all(|line| !line.contains('\u{1b}')),
         "a relayed name never reaches the terminal raw"

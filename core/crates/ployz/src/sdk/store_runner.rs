@@ -797,6 +797,7 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let approval = claimed.approval.clone();
+        let teardown = claimed.teardown.clone();
         pin_approved(&mut claimed.intent.target, approval.as_ref());
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
@@ -833,7 +834,13 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, approval, rules) {
+        let running = match prepared.confirm_approved(
+            log_id,
+            ImageCleanup::Auto,
+            approval,
+            rules,
+            teardown.clone(),
+        ) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
@@ -858,7 +865,8 @@ impl Run {
                 self.record_warnings(&mut warnings).await;
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
-                    self.renewing(remove_volumes(session, deletes), || ()).await
+                    self.renewing(remove_volumes(session, deletes, teardown), || ())
+                        .await
                 } else {
                     Vec::new()
                 };
@@ -1891,13 +1899,14 @@ fn refused_before_deletes(
 async fn remove_volumes(
     session: &Session,
     volumes: Vec<ployz_core::DockerVolumeId>,
+    teardown: Option<ployz_core::authority::TeardownApproval>,
 ) -> Vec<ployz_core::VolumeRemoval> {
     if volumes.is_empty() {
         return Vec::new();
     }
     session
         .remove_volumes(ployz_core::RemoveVolumesRequest {
-            teardown: None,
+            teardown: teardown.map(Box::new),
             volumes,
             force: false,
         })

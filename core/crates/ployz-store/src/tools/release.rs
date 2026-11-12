@@ -332,6 +332,7 @@ impl Tool for DeployInput {
             environment: scope.clone(),
         })?;
         let deployment = cx.write(&Admit::Deploy(Deploy {
+            teardown: None,
             id: cx.mint(self.request_key)?,
             environment: scope,
             services: self.services,

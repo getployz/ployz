@@ -312,6 +312,7 @@ pub(super) fn upload_and_ship(
     }
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
+            teardown: None,
             id,
             environment,
             services,
@@ -1409,6 +1410,7 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
     let mut device = built::prepare(matches, &store, &source)?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
+            teardown: None,
             id: DeploymentId::parse(mint())?,
             deployment: source.clone(),
             rolls_back,

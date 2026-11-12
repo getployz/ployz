@@ -178,6 +178,16 @@ impl Client {
         self
     }
 
+    /// Hand every Server the teardown of what this client's Deploy takes off it.
+    #[must_use]
+    pub(crate) fn with_teardown(
+        mut self,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
+    ) -> Self {
+        self.deploy.set_teardown(teardown);
+        self
+    }
+
     /// What the first dial confirmed about the entry's Cluster; None when it expected none.
     /// A redial checks the Cluster again but leaves this as the first dial found it.
     #[must_use]
@@ -1143,7 +1153,7 @@ impl Client {
         crate::sealed_compat::admit(self, &target, &want).await?;
         let carried = self.deploy.carried(&want);
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
-            teardown: None,
+            teardown: carried.teardown,
             preview: carried.preview,
             want,
             approval: carried.restart,
@@ -1327,7 +1337,13 @@ async fn remove_volumes_on(
     machines: &[MachineObservation],
     request: RemoveVolumesRequest,
 ) -> Vec<VolumeRemoval> {
-    join_all(request.volumes.into_iter().map(|id| async move {
+    let RemoveVolumesRequest {
+        volumes,
+        force,
+        teardown,
+    } = request;
+    let teardown = &teardown;
+    join_all(volumes.into_iter().map(|id| async move {
         let outcome = if machines
             .iter()
             .any(|machine| machine.machine.id == id.machine_id && machine.invites_rpc())
@@ -1335,9 +1351,9 @@ async fn remove_volumes_on(
             match client
                 .call_shared::<op::RemoveVolume>(
                     RemoveVolumeRequest {
-                        teardown: None,
+                        teardown: teardown.clone(),
                         name: id.name.clone(),
-                        force: request.force,
+                        force,
                     },
                     Call::once()
                         .to(&MachineTarget::from(&id.machine_id))

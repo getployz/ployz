@@ -28,6 +28,7 @@ fn uuid(n: u8) -> String {
 /// Remove an Environment as a person does: asked to confirm, again with the version.
 fn remove_environment(db: &Db, environment: &str) {
     let remove = ployz_store::Remove {
+        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: Some(EnvironmentName::parse(environment).unwrap()),
         version: None,

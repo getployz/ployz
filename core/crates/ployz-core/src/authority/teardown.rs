@@ -4,8 +4,8 @@
 //! A teardown only removes. A Machine admits under one a step that stops, holds, takes out
 //! of routing or removes a Container of a named Namespace, the removal of a named Docker
 //! Volume, or a named Server's `Leave` and the others' `Forget` of it. It never admits a
-//! creation or a start, so it can't run code, and it names each Volume whose data goes, so
-//! the loss a person confirmed is the loss every Machine allows.
+//! creation or a start, so it can't run code, and it names each Volume whose data goes and
+//! the Servers it goes on, so the loss a person confirmed is the loss every Machine allows.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -21,7 +21,7 @@ use super::{
     shown::Shown,
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
-use crate::{DockerVolumeId, DockerVolumeName, MachineId, Namespace, SealingPublicKey};
+use crate::{DockerVolumeName, MachineId, Namespace, SealingPublicKey};
 
 /// A person approves taking a Namespace or a Server off one Cluster, for a bounded
 /// lifetime.
@@ -46,8 +46,7 @@ impl Statement for Teardown {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TeardownScope {
     /// Every Container of `namespaces` on `machines` stops and goes, and each of `volumes`
-    /// is deleted with its data. A Deploy that deletes Volumes signs one with no Machines,
-    /// which takes no Container off.
+    /// is deleted there with its data.
     Namespace {
         /// Sorted and distinct.
         #[serde(deserialize_with = "canonical::sorted_distinct")]
@@ -57,7 +56,17 @@ pub enum TeardownScope {
         machines: Vec<MachineId>,
         /// Each a Docker Volume of one of `namespaces`. Sorted and distinct.
         #[serde(deserialize_with = "canonical::sorted_distinct")]
-        volumes: Vec<DockerVolumeId>,
+        volumes: Vec<DockerVolumeName>,
+    },
+    /// Each of `volumes` is deleted with its data on `machines`, and nothing else goes: what
+    /// a Deploy that accepts losing Volumes signs beside its deploy approval.
+    Volumes {
+        /// Sorted and distinct.
+        #[serde(deserialize_with = "canonical::sorted_distinct")]
+        machines: Vec<MachineId>,
+        /// Sorted and distinct.
+        #[serde(deserialize_with = "canonical::sorted_distinct")]
+        volumes: Vec<DockerVolumeName>,
     },
     /// `leaving` resets and leaves the Cluster, and each of `forgetting` drops it. The
     /// Cluster loses `volumes`, the copies `leaving` holds.
@@ -105,9 +114,13 @@ impl TeardownScope {
                     && namespaces.binary_search(namespace).is_ok()
                     && machines.binary_search(machine).is_ok()
             }
-            (Self::Namespace { volumes, .. }, TeardownStep::Volume(name)) => volumes
-                .iter()
-                .any(|volume| &volume.machine_id == machine && &volume.name == name),
+            (
+                Self::Namespace {
+                    machines, volumes, ..
+                }
+                | Self::Volumes { machines, volumes },
+                TeardownStep::Volume(name),
+            ) => volumes.binary_search(name).is_ok() && machines.binary_search(machine).is_ok(),
             (Self::Server { leaving, .. }, TeardownStep::Leave) => leaving == machine,
             (
                 Self::Server {
@@ -136,8 +149,9 @@ impl TeardownScope {
             } => volumes.iter().all(|volume| {
                 namespaces
                     .iter()
-                    .any(|namespace| owns_volume(namespace, &volume.name))
+                    .any(|namespace| owns_volume(namespace, volume))
             }),
+            Self::Volumes { .. } => true,
             Self::Server {
                 leaving,
                 forgetting,
@@ -217,6 +231,10 @@ impl Teardown {
                 machines: sorted(machines),
                 volumes: sorted(volumes),
             },
+            TeardownScope::Volumes { machines, volumes } => TeardownScope::Volumes {
+                machines: sorted(machines),
+                volumes: sorted(volumes),
+            },
             TeardownScope::Server {
                 leaving,
                 forgetting,
@@ -237,12 +255,23 @@ impl Teardown {
     }
 
     /// The lines a person reads before they approve, from this body. `name` gives each
-    /// Server the name the client knows it by. Every name is relayed, so it shows through
-    /// [`Shown`].
+    /// Server the name the client knows it by, and `label` each Docker Volume the Volume's
+    /// name, which shows beside it. Every name is relayed, so it shows through [`Shown`].
     #[must_use]
-    pub fn lines(&self, name: impl Fn(&MachineId) -> String) -> Vec<String> {
+    pub fn lines(
+        &self,
+        name: impl Fn(&MachineId) -> String,
+        label: impl Fn(&DockerVolumeName) -> String,
+    ) -> Vec<String> {
         let servers = |machines: &[MachineId]| {
             Shown::list(machines.iter().map(|machine| Shown::text(&name(machine))))
+        };
+        let volume = |volume: &DockerVolumeName| match label(volume) {
+            label if label == volume.as_str() => Shown::text(volume.as_str()),
+            label => Shown::text(&label)
+                .and_words(" (")
+                .and_text(volume.as_str())
+                .and_words(")"),
         };
         match &self.scope {
             TeardownScope::Namespace {
@@ -250,27 +279,22 @@ impl Teardown {
                 machines,
                 volumes,
             } => {
-                let mut lines = Vec::new();
-                if !machines.is_empty() {
-                    lines.push(
-                        Shown::words("Approved: stop and remove every service of ")
-                            .and(Shown::list(
-                                namespaces
-                                    .iter()
-                                    .map(|namespace| Shown::text(namespace.as_str())),
-                            ))
-                            .and_words(" on ")
-                            .and(servers(machines))
-                            .and_words(".")
-                            .into(),
-                    );
-                }
-                lines.extend(volumes.iter().map(|volume| {
-                    Shown::words("Approved: delete volume ")
-                        .and_text(volume.name.as_str())
+                let mut lines = vec![
+                    Shown::words("Approved: stop and remove every service of ")
+                        .and(Shown::list(
+                            namespaces
+                                .iter()
+                                .map(|namespace| Shown::text(namespace.as_str())),
+                        ))
                         .and_words(" on ")
-                        .and_text(&name(&volume.machine_id))
-                        .and_words(". Its data is gone for good.")
+                        .and(servers(machines))
+                        .and_words(".")
+                        .into(),
+                ];
+                lines.extend(volumes.iter().map(|name| {
+                    Shown::words("Approved: delete volume ")
+                        .and(volume(name))
+                        .and_words(" there. Its data is gone for good.")
                         .into()
                 }));
                 if volumes.is_empty() {
@@ -278,6 +302,17 @@ impl Teardown {
                 }
                 lines
             }
+            TeardownScope::Volumes { machines, volumes } => volumes
+                .iter()
+                .map(|name| {
+                    Shown::words("Approved: delete volume ")
+                        .and(volume(name))
+                        .and_words(" on ")
+                        .and(servers(machines))
+                        .and_words(". Its data is gone for good.")
+                        .into()
+                })
+                .collect(),
             TeardownScope::Server {
                 leaving,
                 forgetting,
@@ -302,9 +337,7 @@ impl Teardown {
                 lines.push(match volumes.as_slice() {
                     [] => Shown::words("It holds no volume copies.").into(),
                     volumes => Shown::words("The Cluster can no longer reach its copies of ")
-                        .and(Shown::list(
-                            volumes.iter().map(|volume| Shown::text(volume.as_str())),
-                        ))
+                        .and(Shown::list(volumes.iter().map(volume)))
                         .and_words(".")
                         .into(),
                 });

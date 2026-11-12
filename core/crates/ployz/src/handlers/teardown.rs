@@ -173,6 +173,7 @@ pub(super) fn remove(
         }
     }
     let mut request = Remove {
+        teardown: None,
         project: project.clone(),
         environment: environment.cloned(),
         version: matches.get_one::<String>("expect-version").cloned(),
@@ -296,6 +297,7 @@ pub(super) fn remove(
                 admitted.push(
                     store
                         .admit(&Admit::Remove(AdmitRemoval {
+                            teardown: None,
                             id: DeploymentId::parse(mint())?,
                             environment: at(&summary.name),
                         }))
@@ -1006,6 +1008,7 @@ mod tests {
 
     fn request() -> Remove {
         Remove {
+            teardown: None,
             project: ProjectName::parse("shop").unwrap(),
             environment: None,
             version: None,

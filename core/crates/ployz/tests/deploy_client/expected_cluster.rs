@@ -157,6 +157,7 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
     store.write_trusted(&who, &service, &evidence).unwrap();
     let deployment = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
     let deploy = Admit::Deploy(Deploy {
+        teardown: None,
         id: deployment.clone(),
         environment: EnvironmentRef::default(),
         services: Vec::new(),

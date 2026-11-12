@@ -1094,8 +1094,8 @@ mod teardown {
         SignerKey, Teardown, TeardownApproval, TeardownScope, TeardownTerms, Timestamp,
     };
     use ployz_core::{
-        DockerVolumeId, DockerVolumeName, EnsureContainerRequest, ForgetRequest, LeaveRequest,
-        Namespace, RemoveVolumeRequest,
+        DockerVolumeName, EnsureContainerRequest, ForgetRequest, LeaveRequest, Namespace,
+        RemoveVolumeRequest,
     };
 
     use super::*;
@@ -1126,7 +1126,7 @@ mod teardown {
     fn namespace(
         name: &str,
         machines: Vec<MachineId>,
-        volumes: Vec<DockerVolumeId>,
+        volumes: Vec<DockerVolumeName>,
     ) -> TeardownScope {
         TeardownScope::Namespace {
             namespaces: vec![Namespace::parse(name).unwrap()],
@@ -1135,11 +1135,8 @@ mod teardown {
         }
     }
 
-    fn data(machine: &Enforcing) -> DockerVolumeId {
-        DockerVolumeId {
-            machine_id: machine.machine.id,
-            name: DockerVolumeName::parse("app_data").unwrap(),
-        }
+    fn data() -> DockerVolumeName {
+        DockerVolumeName::parse("app_data").unwrap()
     }
 
     async fn remove_volume(machine: &Enforcing, teardown: Option<TeardownApproval>) -> Answer {
@@ -1238,9 +1235,11 @@ mod teardown {
             &remove_volume(&machine, Some(containers_only)).await,
             ployz_core::TEARDOWN_CAPABILITY,
         );
-        let mut peers = data(&machine);
-        peers.machine_id = machine.peer.id;
-        let on_the_peer = approval(&machine, &device(), namespace("app", vec![], vec![peers]));
+        let on_the_peer = approval(
+            &machine,
+            &device(),
+            namespace("app", vec![machine.peer.id], vec![data()]),
+        );
         refused(
             &remove_volume(&machine, Some(on_the_peer)).await,
             ployz_core::TEARDOWN_CAPABILITY,
@@ -1253,7 +1252,10 @@ mod teardown {
         let named = approval(
             &machine,
             &device(),
-            namespace("app", vec![], vec![data(&machine)]),
+            TeardownScope::Volumes {
+                machines: vec![machine.machine.id],
+                volumes: vec![data()],
+            },
         );
         let answer = remove_volume(&machine, Some(named)).await;
         assert!(!answer.for_authority(), "{answer:?}");

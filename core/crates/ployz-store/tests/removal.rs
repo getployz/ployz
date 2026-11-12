@@ -301,6 +301,7 @@ fn admit_deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
         .write(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: at(environment),
                 services: Vec::new(),
@@ -334,6 +335,7 @@ fn volumes(given: &[(&str, &[&str])]) -> BTreeMap<EnvironmentName, Vec<VolumeNam
 /// Remove `environment` of `shop`, or all of it.
 fn request(environment: Option<&str>) -> Remove {
     Remove {
+        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: environment.map(|name| EnvironmentName::parse(name).unwrap()),
         version: None,
@@ -423,6 +425,7 @@ fn admit_removal(
     store.write_trusted(
         who,
         &Admit::Remove(AdmitRemoval {
+            teardown: None,
             id: id(n),
             environment: at(environment),
         }),
@@ -1001,6 +1004,7 @@ fn with_no_server_left_a_removal_applies_at_once() {
     let refused = refusal(store.write_trusted(
         &who,
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id(3),
             environment: at("staging"),
             services: Vec::new(),
@@ -1026,6 +1030,7 @@ fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
         .write(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(3),
                 environment: at("staging"),
                 services: Vec::new(),
@@ -1135,6 +1140,7 @@ fn shutting_down_what_never_ran_applies_at_once() {
     let again = store.write_trusted(
         &who,
         &Admit::Retry(ployz_store::Retry {
+            teardown: None,
             id: id(2),
             deployment: id(1),
             rolls_back: None,
@@ -1697,6 +1703,7 @@ fn retrying_a_failed_shutdown_asks_again() {
         store.write_trusted(
             &owner,
             &Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: id(4),
                 deployment: shutdown.id.clone(),
                 rolls_back: None,
@@ -1737,6 +1744,7 @@ fn an_agent_retrying_a_shutdown_with_no_server_left_still_asks_a_human() {
         store.write_trusted(
             &agent,
             &Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: id(4),
                 deployment: shutdown.id.clone(),
                 rolls_back: None,
@@ -2000,6 +2008,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
             .map(|written| serde_json::to_value(written).unwrap())
     };
     being_removed(write(ployz_store::Command::Admit(Admit::Deploy(Deploy {
+        teardown: None,
         id: id(3),
         environment: at("production"),
         services: Vec::new(),
@@ -2325,4 +2334,89 @@ fn a_sweep_queued_behind_a_cancel_keeps_the_environment_whose_queued_removal_it_
         store.write(who, &request(Some("production"))).unwrap();
         admit_removal(store, who, "production", 2, &Trusted::default()).unwrap();
     });
+}
+
+/// A teardown a Device signed for `production`'s Namespace and its Volume on Server `a…`.
+fn signed_teardown() -> ployz_core::authority::TeardownApproval {
+    use ployz_core::authority::{
+        Signed, Signer, SignerKey, Teardown, TeardownApproval, TeardownScope, TeardownTerms,
+        Timestamp,
+    };
+    let signer = Signer::from_seed(&[7; 32]);
+    let body = Teardown::drafted(TeardownTerms {
+        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+        scope: TeardownScope::Namespace {
+            namespaces: vec![ployz_core::Namespace::parse("shop-production").unwrap()],
+            machines: vec![server('a')],
+            volumes: vec![held().name],
+        },
+        issued_at: Timestamp::now(),
+        signer: SignerKey::Device(signer.public().into()),
+    });
+    TeardownApproval::Signed(Signed::sign(&body, &signer).unwrap())
+}
+
+#[test]
+fn the_teardown_a_person_signed_reaches_the_runner_of_the_removal_it_admitted() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    set_default(&store, &who, "staging");
+    let teardown = signed_teardown();
+    let removing = confirmed(
+        &store,
+        &who,
+        Remove {
+            teardown: Some(Box::new(teardown.clone())),
+            ..accepting_data(Some("production"))
+        },
+        &observing(observed()),
+    )
+    .unwrap();
+    let first = taking_off(&removing, "production");
+    assert_eq!(
+        store.claim(&first, &runner()).unwrap().teardown,
+        Some(teardown)
+    );
+    fail(&store, &first, &["web"]);
+
+    // A removal admitted again without one carries none, and an enforcing Server takes
+    // nothing off under it.
+    let again = confirmed(
+        &store,
+        &who,
+        accepting_data(Some("production")),
+        &observing(observed()),
+    )
+    .unwrap();
+    let second = taking_off(&again, "production");
+    assert_ne!(second, first);
+    assert_eq!(store.claim(&second, &runner()).unwrap().teardown, None);
+}
+
+#[test]
+fn a_deploy_hands_its_runner_the_teardown_of_the_volumes_it_deletes() {
+    let (store, who) = shop();
+    let teardown = signed_teardown();
+    store
+        .write(
+            &who,
+            &Admit::Deploy(Deploy {
+                teardown: Some(Box::new(teardown.clone())),
+                id: id(1),
+                environment: at("production"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        store.claim(&id(1), &runner()).unwrap().teardown,
+        Some(teardown)
+    );
 }
