@@ -4147,6 +4147,29 @@ describe("volume runs", () => {
       }]);
     });
 
+    it("a primary that refuses the grow's expired approval ends the run, saying so, and shows each Server's answer", async () => {
+      const workflow = { kind: "resize", machines: ["fsn-1", "fsn-2", "fsn-3"].map(idOf), maximum_bytes: 20 * GB, shrink: false };
+      const expired: Signed = { body: JSON.stringify({ volume: "data", workflow, expires_at: Date.now() - 1 }), signatures: APPROVAL.signatures };
+      failNext.set("size@fsn-1", approvalRefused("the approval expired"));
+      const run = await requested({ kind: "resize", args: { maximum_bytes: 20 * GB, approval: expired } });
+
+      await execute(run.id);
+
+      expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([]);
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "Approval expired. Nothing new can start. fsn-1 didn't take the next step for data. data stays 10 GB. fsn-2, fsn-3 already hold 20 GB. Approve the change again.",
+      }]);
+      const { rows: [row] } = await harness.pool.query<{ answers: Array<{ name: string; step: string; accepted: boolean }> }>(
+        "select answers from volume_run where id = $1", [run.id]);
+      expect(row?.answers.map(({ name, step, accepted }) => ({ name, step, accepted }))).toEqual([
+        { name: "fsn-2", step: "size", accepted: true },
+        { name: "fsn-3", step: "size", accepted: true },
+        { name: "fsn-1", step: "size", accepted: false },
+      ]);
+    });
+
     it("a mirror gone from its Server ends the run before the rest are asked", async () => {
       failNext.set("size@fsn-2", refusal({ reason: "not_found" }));
       const run = await requested(grow(20));
@@ -4551,6 +4574,22 @@ describe("volume runs", () => {
 
       expect(await as(approval_id)).toMatchObject({ ok: false });
       expect(await rows()).toEqual([]);
+    });
+
+    it("a restore asks with what it loses, so the card leads with it", async () => {
+      // The writer is gone, so its mirror on fsn-2 is the only copy left to restore.
+      machines = machines.map((fake) => ({ ...fake, copy: null }));
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), enforces: true };
+      const admitted = await runEffect(runVolume(caller, { volumeId, environment, kind: "restore", args: { from: "fsn-2" } }, { key: null, approvalId: null }));
+      if (admitted.ok || admitted.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(admitted)}`);
+      // SAFETY: an approval_required refusal carries the id of the approval it recorded.
+      const { approval_id } = admitted.refusal.details as { approval_id: string };
+      const { rows: [asked] } = await harness.pool.query<{ review: unknown }>("select review from operation_approvals where id = $1", [approval_id]);
+
+      expect(asked?.review).toMatchObject({
+        effects: [{ kind: "restores_volume", name: "data", node: volumeId, path: `volumes/${volumeId}` }],
+        operation: { verb: "restore", preview: { run: { kind: "restore", args: { from: "fsn-2" } } } },
+      });
     });
   });
 

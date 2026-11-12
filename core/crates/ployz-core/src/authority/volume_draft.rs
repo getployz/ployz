@@ -107,7 +107,7 @@ pub enum VolumeDraftError {
         "{service} runs {image}, which isn't pinned by digest, so it can't be approved to start on another server. Deploy it again, then move the volume."
     )]
     Unpinned { service: String, image: String },
-    #[error("the approval has no canonical form: {0}")]
+    #[error("the approval has no canonical form")]
     Canonical(#[from] canonical::CanonicalError),
 }
 

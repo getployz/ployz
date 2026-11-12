@@ -356,7 +356,7 @@ fn starting(
     recorded: Option<ProvisionedVolumeMaximumBytes>,
 ) -> Result<ResolvedServiceSpec, Error> {
     move_start(running, docker, recorded)
-        .map_err(|error| Error::coded(RpcErrorCode::Conflict, error.to_string()))
+        .map_err(|error| Error::caused(RpcErrorCode::Conflict, "Can't approve this move", error))
 }
 
 /// The Server that writes `volume` and the one that keeps its Mirror, from what each Server

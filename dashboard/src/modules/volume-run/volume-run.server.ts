@@ -46,7 +46,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, approvalExpiredMessage, approvalRefusedMessage, approvesMirror, approvesMove, approvesRemoval, approvesRestore, enforcedMessage, otherMoveApprovalMessage, otherRemovalApprovalMessage, otherRestoreApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
+  alreadyOn, approvalExpiredMessage, approvalExpiredReason, approvalRefusedMessage, approvalRefusedReason, approvesMirror, approvesMove, approvesRemoval, approvesRestore, enforcedMessage, otherMoveApprovalMessage, otherRemovalApprovalMessage, otherRestoreApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
   type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -156,8 +156,12 @@ const expired = (approval: Signed) => {
 };
 
 /** Why `server` refused a step under `approval`: it expired, so nothing new starts, or it is for another change. */
-const refusedUnder = (approval: Signed | undefined, name: string, server: string) =>
+export const refusedUnder = (approval: Signed | undefined, name: string, server: string) =>
   approval !== undefined && expired(approval) ? approvalExpiredMessage(name, server) : approvalRefusedMessage(name, server);
+
+/** `refusedUnder` without what to do next, for a message that ends with its own advice. */
+export const refusedReasonUnder = (approval: Signed | undefined, name: string, server: string) =>
+  approval !== undefined && expired(approval) ? approvalExpiredReason(name, server) : approvalRefusedReason(name, server);
 
 export function laneInputOf(lane: Pick<VolumeRunRow, "kind" | "args">): VolumeLaneInput {
   // SAFETY: the row's kind and args were written together from one VolumeLaneInput.
@@ -634,7 +638,10 @@ export const enforcedAsk = Effect.fn("VolumeRun.enforcedAsk")(function* (organiz
     verb,
     name: requestName(volume, input),
     preview: { volume: input.volumeId, environment: { project: input.environment.project, environment: input.environment.environment }, run: { kind: input.kind, args: unapproved(input).args } },
-    effects: [],
+    // A restore loses the writes after its restore point; the approver's browser names that point from what it signs.
+    effects: input.kind === "restore"
+      ? [{ kind: "restores_volume", name: volume.volumeName, node: input.volumeId, path: `volumes/${input.volumeId}` }]
+      : [],
     alwaysAsks: true,
   };
   return asked;
@@ -1180,6 +1187,7 @@ export const volumeApprovalTerms = Effect.fn("VolumeRun.approvalTerms")(function
   const namespace = parseDockerVolumeName(volume.dockerVolume)?.namespace ?? "";
   const terms = {
     namespace, dockerVolume: volume.dockerVolume, name: volume.volumeName, members,
+    place: `${volume.environment.project}/${volume.environment.name}`,
     recorded: volume.recordedBytes > 0 ? volume.recordedBytes : null,
   };
   if (from === null || holders === null) return { ...terms, running: null };
@@ -1322,7 +1330,7 @@ const EnforcementRefusal = Schema.Struct({ details: Schema.Struct({ capability: 
 /** Whether the Server enforces device approval and refused a Container start or a seed from Ployz Cloud. */
 export const refusedByEnforcement = (error: PloyzSdkError) => Schema.is(EnforcementRefusal)("cause" in error ? error.cause : undefined);
 
-const ApprovalRefusal = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.volume.approval.v1") }) });
+export const ApprovalRefusal = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.volume.approval.v1") }) });
 
 /** Whether the Server refused a step for the Volume approval it carried, or lacked. */
 const refusedApproval = (error: PloyzSdkError) => Schema.is(ApprovalRefusal)("cause" in error ? error.cause : undefined);

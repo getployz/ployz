@@ -278,11 +278,18 @@ export const otherApprovalMessage = (name: string, server: string) =>
   `The approval from your device is for another change, not mirroring ${name} to ${server}.`;
 
 /** Why `server` refused a step under the Mirror approval a run or a sync sent it. */
-export const approvalExpiredMessage = (name: string, server: string) =>
-  `Approval expired. Nothing new can start. ${server} didn't take the next step for ${name}. Approve the change again.`;
+/** What a refusal of a Volume approval asks of the person, after it says why. The reasons end without a full stop. */
+export const APPROVE_AGAIN = "Approve the change again.";
 
-export const approvalRefusedMessage = (name: string, server: string) =>
-  `${server} didn't accept the approval for ${name}. It may have expired, or be for another change. Approve the change again.`;
+export const approvalExpiredReason = (name: string, server: string) =>
+  `Approval expired. Nothing new can start. ${server} didn't take the next step for ${name}`;
+
+export const approvalRefusedReason = (name: string, server: string) =>
+  `${server} didn't accept the approval for ${name}. It may have expired, or be for another change`;
+
+export const approvalExpiredMessage = (name: string, server: string) => `${approvalExpiredReason(name, server)}. ${APPROVE_AGAIN}`;
+
+export const approvalRefusedMessage = (name: string, server: string) => `${approvalRefusedReason(name, server)}. ${APPROVE_AGAIN}`;
 
 
 /**

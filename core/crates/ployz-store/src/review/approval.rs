@@ -76,6 +76,8 @@ pub enum DestructiveKind {
     UnprotectsEnvironment,
     /// An Organization is deleted, with its tokens, settings and Servers' pairing.
     RemovesOrganization,
+    /// A Volume goes back to a snapshot, and the writes after it are lost.
+    RestoresVolume,
 }
 
 impl DestructiveEffect {
@@ -97,6 +99,7 @@ impl DestructiveEffect {
             DestructiveKind::RestartsService => format!("restart Service {name}"),
             DestructiveKind::UnprotectsEnvironment => format!("unprotect Environment {name}"),
             DestructiveKind::RemovesOrganization => format!("remove Organization {name}"),
+            DestructiveKind::RestoresVolume => format!("restore Volume {name}"),
         }
     }
 }

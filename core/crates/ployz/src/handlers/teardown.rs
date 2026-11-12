@@ -540,9 +540,9 @@ impl Listed {
     fn has(&self, effect: &DestructiveEffect) -> bool {
         match effect.kind {
             DestructiveKind::RemovesService => self.services.contains(&effect.name),
-            DestructiveKind::DeletesVolume | DestructiveKind::DetachesVolume => {
-                self.volumes.contains(&effect.name)
-            }
+            DestructiveKind::DeletesVolume
+            | DestructiveKind::DetachesVolume
+            | DestructiveKind::RestoresVolume => self.volumes.contains(&effect.name),
             DestructiveKind::RemovesDomain
             | DestructiveKind::RemovesServer
             | DestructiveKind::RemovesMember

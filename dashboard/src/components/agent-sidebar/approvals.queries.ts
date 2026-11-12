@@ -1,10 +1,11 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { Signed } from "@ployz/sdk";
 import { Option, Schema } from "effect";
-import { approveVolume } from "#/modules/approval-session/volume-approval";
+import type { DeletionItem } from "#/components/deletion-dialog";
+import { approveVolume, type VolumeChange } from "#/modules/approval-session/volume-approval";
 import type { KeptVolumeApproval } from "#/modules/approvals/approvals";
 import { movesFrom, runChange } from "#/modules/volume-run/run-approval";
-import { readVolumeScope } from "#/modules/volume-run/volume-approval-scope";
+import { readVolumeScope, type VolumeTermsRead } from "#/modules/volume-run/volume-approval-scope";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { actApprovals, type ActTarget } from "#/modules/approval-session/approval-prompt";
 import { type ApprovalDecision, approvalSubject, shownServiceAct } from "#/modules/approvals/approvals";
@@ -127,19 +128,42 @@ export function askedVolumeRun(approval: Pick<ApprovalView, "review">) {
   return Option.isSome(asked) ? { ...asked.value, run: asked.value.run as VolumeRunInput } : null;
 }
 
+/** The workflow of the Volume run an approval asks for, with the terms it was drafted from. */
+export type AskedVolumeDraft = { readonly read: VolumeTermsRead; readonly change: VolumeChange };
+
 /**
- * The approver's passkey answer to the Volume run `approval` asks for, drafted afresh over what its Servers answer now
- * and shown line by line first. Undefined when no Server it names enforces; null when the person cancels.
+ * The Volume run `approval` asks for, drafted afresh over what its Servers answer now. Undefined for an approval that
+ * asks for no Volume run.
  */
-export async function approverVolumeApproval(
+export async function draftAskedVolume(
   queryClient: QueryClient, organizationSlug: string, approval: Pick<ApprovalView, "review">,
-): Promise<KeptVolumeApproval | null | undefined> {
+): Promise<AskedVolumeDraft | undefined> {
   const asked = askedVolumeRun(approval);
   if (asked === null) return undefined;
   const scope = await readVolumeScope(queryClient, organizationSlug, asked.environment, asked.volume);
   const from = movesFrom(asked.run, scope.members);
   const read = from === null ? scope : await readVolumeScope(queryClient, organizationSlug, asked.environment, asked.volume, from);
-  const approved = await approveVolume(read, runChange(read.name, asked.run, read.members, read));
+  return { read, change: runChange(read.name, asked.run, read.members, read) };
+}
+
+/**
+ * What a drafted restore loses, read from the workflow the passkey signs, and the `project/environment` the person types
+ * to confirm it. Null for any other workflow, and for a restore that loses no writes.
+ */
+export function askedLoss({ read, change }: AskedVolumeDraft): { place: string; item: DeletionItem } | null {
+  const { workflow } = change;
+  if (workflow.kind !== "restore" || workflow.loses_after === undefined) return null;
+  const from = read.members.find((member) => member.machine.id === workflow.machine)?.machine.name;
+  const item: DeletionItem = { kind: "volume", name: read.name, lostAfter: new Date(workflow.loses_after), ...(from !== undefined && { detail: `from ${from}` }) };
+  return { place: read.place, item };
+}
+
+/**
+ * The approver's passkey answer to a drafted Volume run, shown line by line first. Undefined when no Server it names
+ * enforces; null when the person cancels.
+ */
+export async function signAskedVolume({ read, change }: AskedVolumeDraft): Promise<KeptVolumeApproval | null | undefined> {
+  const approved = await approveVolume(read, change);
   if (approved === null || approved === undefined) return approved;
   return { approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) };
 }

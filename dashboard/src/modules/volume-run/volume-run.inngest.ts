@@ -15,7 +15,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, restoreLine, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, APPROVE_AGAIN, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, restoreLine, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -536,6 +536,7 @@ function refusedMessage(
   const again = `run ployz volume set ${name} --size ${gigabytes(phase.to)} again`;
   const advice = () => {
     if (outcome.reason === "no_capacity") return `Free space on ${refusedBy.name}, then ${again}.`;
+    if (outcome.reason === "unapproved") return APPROVE_AGAIN;
     if (outcome.reason !== "below_floor" || outcome.floorBytes === null) return `Run ${again.slice("run ".length)}.`;
     if (!holdsSize) return `Shrink ${name} to at least ${gbAtLeast(outcome.floorBytes)} instead, or free space in it on ${refusedBy.name}, then ${again}.`;
     if (refused.role === "mirror") return `Free space in ${name}, run ployz volume sync ${name} so ${refusedBy.name}'s copy follows, then ${again}.`;

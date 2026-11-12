@@ -253,6 +253,7 @@ const destroys = {
   restarts_service: { verb: "Restarts", noun: "service", after: "" },
   unprotects_environment: { verb: "Unprotects", noun: "environment", after: "" },
   removes_organization: { verb: "Removes", noun: "organization", after: ". Not recoverable." },
+  restores_volume: { verb: "Restores", noun: "volume", after: "" },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
 /**

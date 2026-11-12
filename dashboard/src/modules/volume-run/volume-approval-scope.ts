@@ -4,8 +4,11 @@ import { type VolumeScope, VolumeNotApproved } from "#/modules/approval-session/
 import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { volumeApprovalTermsServerFn } from "#/modules/volume-run/volume-run.functions";
 
-/** A Volume's scope read afresh for an approval, with its recorded size and, for a Move off `from`, the spec it runs there. */
-export type VolumeTermsRead = VolumeScope & { readonly recorded: number | null; readonly running: ResolvedServiceSpec | null };
+/**
+ * A Volume's scope read afresh for an approval, with its recorded size, `project/environment` it lives in and, for a Move
+ * off `from`, the spec it runs there.
+ */
+export type VolumeTermsRead = VolumeScope & { readonly recorded: number | null; readonly place: string; readonly running: ResolvedServiceSpec | null };
 
 /**
  * `volumeId`'s names, its Servers' answers and its Cluster's public key, each read afresh, since an approval names them
