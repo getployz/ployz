@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::domain::DomainEvidence;
+use crate::followup::FollowUp;
 use crate::git::AuthorizedRepository;
 use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId, Hostname};
 use crate::permission::Permission;
@@ -153,7 +154,7 @@ impl Trusted {
         if self.no_servers() {
             return Err(crate::error::conflict(
                 NO_SERVERS,
-                serde_json::json!({ "next": "ployz server add" }),
+                FollowUp::ServerAdd.details(),
             ));
         }
         Ok(())

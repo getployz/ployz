@@ -28,7 +28,7 @@ use crate::{
 };
 
 /// The deployed Service `service` names, by the runtime name its containers carry.
-fn deployed<'a>(
+pub(super) fn deployed<'a>(
     namespace: &'a NamespaceView,
     service: &ServiceName,
 ) -> Result<&'a ServiceName, Stop> {

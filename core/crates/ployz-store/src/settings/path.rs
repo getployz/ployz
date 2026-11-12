@@ -9,6 +9,7 @@ use ts_rs::TS;
 
 use super::ServiceSetting;
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{ConfigRef, VolumeName};
 use crate::policy::PolicySetting;
 use crate::variables::VariableKey;
@@ -462,11 +463,10 @@ impl From<SettingPath> for String {
 
 /// `SERVICE.domains` read-only: an edit to it points at the command that changes them.
 pub(crate) fn domains_are_read_only(path: &SettingPath, service: &ServiceName) -> RpcError {
-    let next = format!("ployz domain add {service}");
-    error::invalid(
-        format!("{path}: use {next} instead"),
-        json!({ "next": next }),
-    )
+    let next = FollowUp::DomainAdd {
+        service: service.to_string(),
+    };
+    error::invalid(format!("{path}: use {next} instead"), next.details())
 }
 
 /// A path that stops at its node: name one of its Settings.

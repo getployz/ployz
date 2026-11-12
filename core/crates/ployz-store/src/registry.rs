@@ -12,9 +12,10 @@ use ployz_core::config::{
 };
 use ployz_core::{RegistryAuth, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::EnvironmentId;
 use crate::scope::Environment;
 use crate::sealing::SealingKey;
@@ -176,7 +177,10 @@ pub(crate) fn freeze(
         let sealed = sealed(tx, environment, &service.id)?.ok_or_else(|| {
             error::conflict(
                 format!("{} has no registry credential: set one", service.slug),
-                json!({ "next": format!("ployz set {}.registryCredential --secret", service.slug) }),
+                FollowUp::SetRegistryCredential {
+                    service: service.slug.clone(),
+                }
+                .details(),
             )
         })?;
         credentials.insert(service.config.private_dns.clone(), sealed);

@@ -31,6 +31,7 @@ use crate::deployment::loss::{VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::digest::short_digest;
 use crate::error;
+use crate::followup::{FollowUp, Place};
 use crate::id::{
     ApprovalDigest, DeploymentId, EnvironmentId, EnvironmentName, ProjectId, ProjectName,
     RemovalId, VolumeName,
@@ -39,6 +40,7 @@ use crate::review::{ApprovalRequired, ApprovalSubject, DestructiveEffect, approv
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::teardown::{EnvironmentRemoval, RemovedBecause};
+use crate::tools::Call;
 use crate::trusted::Approval;
 use crate::{Actor, Trusted};
 
@@ -199,16 +201,13 @@ pub(crate) enum Target {
     Project(ProjectId),
 }
 
-/// What a refusal's caller does next: a tool and its input.
-pub(crate) fn next(tool: &str, input: Value) -> Value {
-    json!({ "tool": tool, "input": input })
-}
-
-fn show(project: &ProjectName, environment: &EnvironmentName) -> Value {
-    next(
-        "environment_show",
-        json!({ "project": project, "environment": environment }),
-    )
+fn show(project: &ProjectName, environment: &EnvironmentName) -> FollowUp {
+    FollowUp::ShowEnvironment {
+        place: Place {
+            project: project.clone(),
+            environment: environment.clone(),
+        },
+    }
 }
 
 /// One member's review: what taking it off the Servers deletes.
@@ -294,7 +293,7 @@ pub(crate) fn remove(
 ) -> Result<Removal, RpcError> {
     let project = scope::project(tx, who, Some(&remove.project)).map_err(|refused| {
         match refused.code == RpcErrorCode::NotFound {
-            true => error::not_found(refused.message, json!({ "next": "ployz project ls" })),
+            true => error::not_found(refused.message, FollowUp::ProjectList.details()),
             false => refused,
         }
     })?;
@@ -616,7 +615,7 @@ fn refuse_unanswered(
          Remove those Servers, or give up every copy of it wherever one turns up",
         json!({
             "waiting_on": waiting_on,
-            "every_copy": next("remove", json!({
+            "every_copy": Call::new("remove", json!({
                 "project": remove.project,
                 "environment": remove.environment,
                 "accept_volume_loss": accept,
@@ -911,7 +910,7 @@ pub(crate) fn marked(tx: &mut dyn Tx, environment: &Environment) -> Result<(), R
     let summary = &environment.summary;
     Err(error::conflict(
         format!("{} is being removed", summary.name),
-        json!({ "next": show(&summary.project, &summary.name) }),
+        show(&summary.project, &summary.name).details(),
     ))
 }
 
@@ -930,7 +929,10 @@ pub(crate) fn project_marked(
     }
     Err(error::conflict(
         format!("{name} is being removed"),
-        json!({ "next": next("project_show", json!({ "project": name })) }),
+        FollowUp::ShowProject {
+            project: name.clone(),
+        }
+        .details(),
     ))
 }
 
@@ -984,7 +986,7 @@ pub(crate) fn guard_removal(tx: &mut dyn Tx, environment: &Environment) -> Resul
                 summary.name,
                 names(&running)
             ),
-            json!({ "branches": running, "next": show(&summary.project, first) }),
+            show(&summary.project, first).within(json!({ "branches": running })),
         ));
     }
     if summary.id != project.default_environment {
@@ -1002,7 +1004,7 @@ pub(crate) fn guard_removal(tx: &mut dyn Tx, environment: &Environment) -> Resul
                 summary.name,
                 names(&running)
             ),
-            json!({ "environments": running, "next": show(&summary.project, first) }),
+            show(&summary.project, first).within(json!({ "environments": running })),
         ));
     }
     Ok(())
@@ -1043,23 +1045,16 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
                 "{} is the Default Environment: it goes only with Project {}",
                 summary.name, summary.project
             ),
-            json!({ "next": show(&summary.project, &summary.name) }),
+            show(&summary.project, &summary.name).details(),
         ));
     }
     if crate::scope::protected(tx, &summary.id)? {
         return Err(error::unsupported(
             format!("{} is Protected: unprotect it first", summary.name),
-            json!({
-                "protected": summary.name,
-                "next": next(
-                    "environment_protect",
-                    json!({
-                        "project": summary.project,
-                        "environment": summary.name,
-                        "protected": false,
-                    }),
-                ),
-            }),
+            FollowUp::UnprotectEnvironment {
+                place: Place::of(summary),
+            }
+            .within(json!({ "protected": summary.name })),
         ));
     }
     let branches = tx
@@ -1079,7 +1074,7 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
                 summary.name,
                 names(&branches)
             ),
-            json!({ "branches": branches, "next": show(&summary.project, first) }),
+            show(&summary.project, first).within(json!({ "branches": branches })),
         ));
     }
     Ok(())

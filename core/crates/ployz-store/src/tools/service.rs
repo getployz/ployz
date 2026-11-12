@@ -12,6 +12,7 @@ use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting
 use super::schema;
 use super::step::{DashboardPage, Fix};
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
+use crate::followup::FollowUp;
 use crate::{
     BatchCommand, BranchName, Change, CreateGitService, CreateService, DomainsQuery, Edit,
     EnvironmentRef, RemoveService, RenameService, RepositoryName, ServiceQuery, ServicesQuery,
@@ -483,9 +484,7 @@ fn refuse_referenced_rename(mut error: RpcError, call: &Call, writes: Writes) ->
         return from_store(error, call, writes);
     };
     // The Store's next is the CLI form of the retry below.
-    if let Value::Object(details) = &mut error.details {
-        details.remove("next");
-    }
+    FollowUp::remove_from(&mut error.details);
     let mut retry = call.input.clone();
     if let Value::Object(fields) = &mut retry {
         fields.insert("update_references".into(), true.into());

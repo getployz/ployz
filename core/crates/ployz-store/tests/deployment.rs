@@ -5512,6 +5512,7 @@ fn a_deploy_token_cant_prune_what_its_environment_never_held() {
         "{}",
         refused.message
     );
+    assert_eq!(refused.details["next"], "ployz deploy --no-prune");
     // When Cloud couldn't look, it can't tell the prune removes nothing.
     let unseen = deploy_trusted(&store, &who, 2, &token(None)).unwrap_err();
     assert_eq!(unseen.code.as_str(), "forbidden", "{unseen:?}");

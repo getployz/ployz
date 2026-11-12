@@ -1380,7 +1380,11 @@ fn the_refusal_of_a_merge_value_s_plain_text_is_pinned_for_the_cli_and_for_anyon
         (
             RpcErrorCode::Unsupported,
             "TOKEN: update ployz to set a Sealed value.",
-            json!({ "variable": "TOKEN", "next": "curl -fsSL https://ployz.sh | sh" }),
+            json!({
+                "variable": "TOKEN",
+                "next": "curl -fsSL https://ployz.sh | sh",
+                "follow_up": { "kind": "update_client", "beta": false },
+            }),
         )
     );
     let error = store.write(&who, &plain).unwrap_err();

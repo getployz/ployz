@@ -36,6 +36,7 @@ pub use crate::volume::{
 };
 
 use crate::error;
+use crate::followup::FollowUp;
 use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
 use crate::tools::ToolId;
@@ -522,10 +523,8 @@ commands! {
                     command.apply(&c.environment, &mut at).map_err(|mut refused| {
                         // Its `next` reads what the commands before it wrote, and the
                         // refusal rolls them back.
-                        if index > 0
-                            && let Some(details) = refused.details.as_object_mut()
-                        {
-                            details.remove("next");
+                        if index > 0 {
+                            FollowUp::remove_from(&mut refused.details);
                         }
                         refused
                     })

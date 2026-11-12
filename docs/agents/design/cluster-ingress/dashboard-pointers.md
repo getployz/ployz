@@ -38,7 +38,7 @@ Paths are repo-relative. `D` = `dashboard/src`. `O` = `D/routes/_protected/cloud
 - The gate is `gateOperation` at `D/modules/approvals/approvals.server.ts:542`. The dashboard skips it unless the Environment is Protected. It passes when there are no effects or no human approver, and otherwise digests the ask and calls `requestOperationApproval`. `OperationAsked` (`subject`, `verb`, `name`, `preview`, `effects`, `protected`, `apply`) is at :452.
 - The operation path is `D/modules/operations/operations.server.ts`. `gate()` is at :55. `setServer` at :121-132 is the template: `planIngressOff` (`D/modules/machines/server-operations.server.ts:117,236`) builds an `OperationAsked` only when ingress goes off, and otherwise calls `unasked(...)`.
 - The registry is `D/modules/operations/operations.ts`. `OPERATION_TOOLS` is at :16. `OPERATIONS` is at :96, and `server.set` at :190 shows `requires`, `gate: "approval"`, `idempotency` and `surfaces` (cli, agent, ui).
-- Destructive Effects are `DestructiveKind` in `core/crates/ployz-store/src/review/approval.rs:54-79` (TS through `@ployz/sdk`). A Publish's effects come from the Store review (`core/crates/ployz-store/src/review/`). A "DNS effect in the Publish review" would be a new `DestructiveKind` or a separate review row there.
+- Destructive Effects are `DestructiveKind` in `core/crates/ployz-store/src/review/approval.rs:55-80` (TS through `@ployz/sdk`). A Publish's effects come from the Store review (`core/crates/ployz-store/src/review/`). A "DNS effect in the Publish review" would be a new `DestructiveKind` or a separate review row there.
 
 **Steps to add a new verb (for example `use_ingress`).**
 1. Append it to the `OperationVerb` union (`approvals.ts:11`).
@@ -63,7 +63,7 @@ Paths are repo-relative. `D` = `dashboard/src`. `O` = `D/routes/_protected/cloud
 ## 4. Managed hostname expansion
 
 - Cloud supplies the Cluster Domain as evidence. `gatherDomainEvidence` (`D/modules/config-store/domain-evidence.server.ts:140-180`) puts `clusterDomain(row)` (:37) into `ConfigDomainEvidence.cluster_domain`.
-- The Store expands it. `DomainEvidence.cluster_domain` is in `core/crates/ployz-store/src/domain/mod.rs:43`. `expand()` at :998-1022 turns each `managed_hostnames` `prefix` into a route `"{prefix}.{cluster_domain}"`. It is called from `core/crates/ployz-store/src/deployment/lowering.rs:623`. Prefix uniqueness and the 63-char label checks are at `domain/mod.rs:702-715,1032-1045`.
+- The Store expands it. `DomainEvidence.cluster_domain` is in `core/crates/ployz-store/src/domain/mod.rs:44`. `expand()` at :998-1022 turns each `managed_hostnames` `prefix` into a route `"{prefix}.{cluster_domain}"`. It is called from `core/crates/ployz-store/src/deployment/lowering.rs:623`. Prefix uniqueness and the 63-char label checks are at `domain/mod.rs:706-719,1032-1045`.
 - Generated prefixes are already one label, so `svc-env.<zone>` falls out unchanged.
 - **Tunnel Zone plug-in point.** Either make `cluster_domain` evidence carry the Tunnel Zone when the Cluster is in tunnel mode (Cloud-only change in `domain-evidence.server.ts`), or add a sibling `tunnel_zone` field to `DomainEvidence` that `expand()` prefers. The second keeps the two terms distinct, as decision 2 asks.
 - Also gated on the Cluster Domain, and in need of a tunnel branch:
@@ -95,4 +95,4 @@ verify-dashboard (`.claude/skills/verify-dashboard/SKILL.md`) in 5 lines:
 2. Founding sets services, ingress and builds all on (`enroll-sheet.tsx:36`, `enroll.server.ts:442`). The Cluster Domain is reserved lazily on the first generated hostname, not at founding.
 3. Cluster-level toggles belong in `O/_org/~/settings.tsx` (General beside `ClusterDomainSettings`, or a new `section` literal). Per-Server web traffic is `server-web-traffic-section.tsx` and `web-traffic-dialog.tsx`.
 4. A new verb touches `approvals.ts:11`, Rust `Verb` (`approval.rs:103`), `operations.ts` and `operations.server.ts`. Machine ops follow `server-web-traffic.inngest.ts` with `attemptLifecycle`. Session methods go Rust `sdk.rs`, then napi `lib.rs`, then `pnpm sdk`, then `ployz.server.ts:86`.
-5. Expansion is `ployz-store/src/domain/mod.rs:998` fed by `domain-evidence.server.ts`, which is the Tunnel Zone hook. Verify with `pnpm typecheck`, `pnpm lint`, focused `vitest --project unit|postgres`, and `SERVERS=1 scripts/verify/up.sh` for runtime UI.
+5. Expansion is `ployz-store/src/domain/mod.rs:1002` fed by `domain-evidence.server.ts`, which is the Tunnel Zone hook. Verify with `pnpm typecheck`, `pnpm lint`, focused `vitest --project unit|postgres`, and `SERVERS=1 scripts/verify/up.sh` for runtime UI.

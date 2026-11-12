@@ -11,7 +11,7 @@
 //! `Standing` it returns. Meanwhile a user cancels the Deployment (ployz-store
 //! deployment/lifecycle.rs:1494), a newer Deployment of the Environment is claimed and
 //! sets it Unknown (lifecycle.rs:1320-1332), or forgetting the Cluster cancels it without
-//! waiting on the runner (lifecycle.rs:1525, teardown.rs:458).
+//! waiting on the runner (lifecycle.rs:1525, teardown.rs:460).
 //!
 //! The model found two problems in the code before `Standing` (#3839), and the code
 //! now keeps out all but one path of the first. Each fixed part has a `Broken` flag
@@ -1075,7 +1075,7 @@ const TAKEOVER_KEEPS_OUTCOME: &str =
 /// lists the deleted Volume under the fix, since a run that was taken over moves no Applied
 /// State (lifecycle.rs:1789-1799). `cancel_in_flight` is exempt: `forget_cluster`, which
 /// runs it, lets go of the Organization's Applied State and Volumes' fixed storage
-/// (teardown.rs:442-445, :458-469).
+/// (teardown.rs:444-447, :460-471).
 const DELETIONS_KEPT: &str = "once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless cancel_in_flight ended the Deployment";
 const NO_WORK_AFTER_END: &str = "once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes";
 const HEEDS_CANCEL: &str = "while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes";

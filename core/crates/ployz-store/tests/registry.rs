@@ -368,3 +368,41 @@ fn a_credential_arrives_only_as_a_secret_and_is_never_echoed() {
     assert_eq!(schema["x-ployz-secret"], true);
     assert_eq!(schema["x-ployz-apply"], "immediate");
 }
+
+#[test]
+fn a_credential_lost_from_the_store_says_to_set_it_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    set(
+        &store,
+        PATH,
+        json!({ "username": "octocat", "secret": "first-token" }),
+    )
+    .unwrap();
+    backend::execute(&url, "DELETE FROM config_registry_credential");
+    let refused = store
+        .write_trusted(
+            &who(),
+            &Admit::Deploy(Deploy {
+                teardown: None,
+                id: DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        refused.details["next"],
+        "ployz set web.registryCredential --secret"
+    );
+}

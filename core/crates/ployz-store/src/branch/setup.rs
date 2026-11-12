@@ -212,16 +212,15 @@ pub(crate) fn refuse_service_named_setup(environment: &Environment) -> Result<()
     {
         return Ok(());
     }
-    let next = format!(
-        "ployz service rename setup NAME --env {} --project {}",
-        environment.summary.name, environment.summary.project
-    );
+    let next = FollowUp::RenameSetupService {
+        place: Place::of(&environment.summary),
+    };
     Err(error::invalid(
         format!(
             "A Service in {} is named setup, and setup.SERVICE now means a Branch's Setup Command; rename it first: {next}",
             environment.summary.name
         ),
-        json!({ "service": "setup", "next": next }),
+        next.within(json!({ "service": "setup" })),
     ))
 }
 

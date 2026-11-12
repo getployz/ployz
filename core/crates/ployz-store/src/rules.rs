@@ -25,6 +25,7 @@ use ts_rs::TS;
 
 use crate::SetupCommand;
 use crate::error;
+use crate::followup::{FollowUp, Place, SetupLeft, Storage};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 
@@ -500,10 +501,8 @@ struct Refusing<'a> {
 }
 
 impl<'a> Refusing<'a> {
-    /// `--env … --project …`, for a `next` command.
-    fn scope(&self) -> String {
-        let EnvironmentSummary { name, project, .. } = self.environment;
-        format!("--env {name} --project {project}")
+    fn place(&self) -> Place {
+        Place::of(self.environment)
     }
 
     fn name(&self, lineage: &str) -> String {
@@ -539,16 +538,22 @@ impl<'a> Refusing<'a> {
         let old = was
             .map(|was| writers(self.before.working, &was.resource_id))
             .unwrap_or_default();
-        let scope = self.scope();
         let name = &node.name;
         let allow = format!("ployz volume set {name} --shared-writes");
+        let allow_here = FollowUp::VolumeAllowSharedWrites {
+            volume: name.clone(),
+            place: self.place(),
+        };
         let (message, next) = match writing.as_slice() {
             _ if turned_off => (
                 format!(
                     "{name} is written by {}; leave one Service with 1 replica before turning shared writes off",
                     slugs(&writing)
                 ),
-                format!("ployz volume inspect {name} {scope}"),
+                FollowUp::VolumeInspect {
+                    volume: name.clone(),
+                    place: self.place(),
+                },
             ),
             [service] if was.is_none() => (
                 format!(
@@ -562,7 +567,7 @@ impl<'a> Refusing<'a> {
                     "{name} is attached to {}; set replicas to 1, or allow shared writes: {allow}",
                     service.slug
                 ),
-                format!("{allow} {scope}"),
+                allow_here,
             ),
             _ if was.is_none() => (
                 format!(
@@ -581,48 +586,43 @@ impl<'a> Refusing<'a> {
                         slugs(&old)
                     }
                 ),
-                format!("{allow} {scope}"),
+                allow_here,
             ),
             [] => unreachable!("more than one writer means a Service writes it"),
         };
         error::conflict(
             message,
-            json!({ "volume": name, "writers": replicas, "next": next }),
+            next.within(json!({ "volume": name, "writers": replicas })),
         )
     }
 
-    /// `ployz volume add` for Volume `node`, new to this write, with shared writes on.
-    fn add(&self, node: &SavedVolumeIntent) -> String {
-        let mut words = vec![
-            "ployz".to_owned(),
-            "volume".into(),
-            "add".into(),
-            node.name.clone(),
-        ];
-        for service in &self.after.working.services {
-            for mount in &service.volume_attachments {
-                if mount.volume_resource_id == node.resource_id {
-                    words.push("--mount".into());
-                    words.push(format!("{}:{}", service.slug, mount.mount_path));
-                }
-            }
-        }
-        match node.storage {
-            VolumeKind::Docker {} => words.push("--docker".into()),
+    /// Add Volume `node`, new to this write, with shared writes on.
+    fn add(&self, node: &SavedVolumeIntent) -> FollowUp {
+        let mounts = self
+            .after
+            .working
+            .services
+            .iter()
+            .flat_map(|service| {
+                service
+                    .volume_attachments
+                    .iter()
+                    .filter(|mount| mount.volume_resource_id == node.resource_id)
+                    .map(|mount| format!("{}:{}", service.slug, mount.mount_path))
+            })
+            .collect();
+        let storage = match node.storage {
+            VolumeKind::Docker {} => Storage::Docker,
             VolumeKind::Provisioned { maximum_bytes } => {
-                words.push("--size".into());
-                words.push(maximum_bytes.to_string().replace(' ', ""));
+                Storage::Size(maximum_bytes.to_string().replace(' ', ""))
             }
+        };
+        FollowUp::VolumeAdd {
+            volume: node.name.clone(),
+            mounts,
+            storage,
+            place: self.place(),
         }
-        let EnvironmentSummary { name, project, .. } = self.environment;
-        words.extend([
-            "--shared-writes".into(),
-            "--env".into(),
-            name.to_string(),
-            "--project".into(),
-            project.to_string(),
-        ]);
-        shell_words::join(words)
     }
 
     /// Service `service` updates start-first and mounts Volume `volume` (lineages),
@@ -642,11 +642,11 @@ impl<'a> Refusing<'a> {
             format!(
                 "{service} mounts {volume}, and start-first runs two copies on it; set {service}.updateOrder=stop-first, or allow shared writes: {allow}"
             ),
-            json!({
-                "service": service,
-                "volume": volume,
-                "next": format!("ployz set {service}.updateOrder=stop-first {}", self.scope()),
-            }),
+            FollowUp::SetStopFirst {
+                service: service.clone(),
+                place: self.place(),
+            }
+            .within(json!({ "service": service, "volume": volume })),
         )
     }
 
@@ -691,16 +691,19 @@ impl<'a> Refusing<'a> {
                     .map(|service| service.slug.as_str()),
             );
         }
-        let scope = self.scope();
-        let next = match self.after.setup {
-            [_] => format!("ployz env setup --clear {scope}"),
-            _ => format!("ployz env setup --setup SERVICE=COMMAND {scope}"),
+        let left = match self.after.setup {
+            [_] => SetupLeft::One,
+            _ => SetupLeft::Several,
         };
         error::conflict(
             format!(
                 "New Branches run a Setup Command in {service}; set the Setup Commands without it first"
             ),
-            json!({ "service": service, "next": next }),
+            FollowUp::EnvironmentSetup {
+                place: self.place(),
+                left,
+            }
+            .within(json!({ "service": service })),
         )
     }
 }
@@ -1094,6 +1097,17 @@ pub(crate) mod tests {
             ("redis.env.OTHER", json!("${{ SELF }}")),
         ];
         set(&store, &who, &wider).unwrap_err();
+    }
+
+    #[test]
+    fn several_setup_commands_say_to_set_them_all() {
+        let (store, who) = shop();
+        setup(&store, &who, &["db", "redis"]).unwrap();
+        let refused = remove(&store, &who, "db").unwrap_err();
+        assert_eq!(
+            refused.details["next"],
+            "ployz env setup --setup SERVICE=COMMAND --env production --project shop"
+        );
     }
 
     #[test]

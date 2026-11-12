@@ -13,8 +13,9 @@ use super::ToolId;
 use super::act::{resolve, roster, servers};
 use super::cloud::{MetricEvent, MetricsAnswer};
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, place_of, store};
-use super::refusal::{Call, Refusal};
+use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::refusal::Refusal;
+use super::runtime::deployed;
 use super::step::{
     Ask, CloudQuery, MetricsQuery, MetricsSince, MetricsSubject, ServerName, Timestamp,
 };
@@ -141,22 +142,7 @@ impl Tool for ServiceMetrics {
                             .with_valid(names()),
                     )
                 })?,
-            None => namespace
-                .services
-                .get(&self.service)
-                .cloned()
-                .ok_or_else(|| {
-                    let names = || namespace.services.keys().map(ServiceName::as_str);
-                    Stop::from(
-                        Refusal::not_found("No deployed Service by that name here")
-                            .with_did_you_mean(did_you_mean(self.service.as_str(), names()))
-                            .with_valid(names())
-                            .with_next(Call::to(
-                                ToolId::EnvironmentShow,
-                                place_of(&namespace.environment),
-                            )),
-                    )
-                })?,
+            None => deployed(&namespace, &self.service).cloned()?,
         };
         let since = match (self.since_minutes, &deployment) {
             (Some(minutes), _) => MetricsSince::MinutesAgo { minutes },

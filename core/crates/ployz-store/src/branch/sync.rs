@@ -375,7 +375,10 @@ fn target(
     (from, into): (&EnvironmentRef, Option<&EnvironmentRef>),
 ) -> Result<Target, RpcError> {
     let summary = scope::environment(tx, who, from)?.summary;
-    let next = json!({ "next": format!("ployz env sync --to ENV --project {} --env {}", summary.project, summary.name) });
+    let next = FollowUp::EnvironmentSync {
+        place: Place::of(&summary),
+    }
+    .details();
     let into = match into {
         Some(into) => scope::environment(tx, who, into)?.summary,
         None => match row(tx, &summary.id)? {
@@ -497,14 +500,13 @@ pub(crate) fn sealing_targets(
                 return Err(refuse("it isn't a secret"));
             };
             let service = receiving(&into, &row).ok_or_else(|| {
-                let EnvironmentSummary { name, project, .. } = &into.summary;
-                let set = format!("ployz set {label} --secret --env {name} --project {project}");
                 error::invalid(
                     format!("{label}: {NOT_THERE}"),
-                    json!({
-                        "row": row,
-                        "next": format!("sync without --value first, then {set}"),
-                    }),
+                    FollowUp::SyncThenSetSecret {
+                        label: label.to_string(),
+                        place: Place::of(&into.summary),
+                    }
+                    .within(json!({ "row": row })),
                 )
             })?;
             let service = Uuid::parse_str(&service.id)
@@ -636,7 +638,10 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
     if branch_row(tx, branch)?.kept {
         return Err(error::invalid(
             format!("{} is kept: stop keeping it to close it", summary.name),
-            json!({ "next": crate::removal::next("keep_branch", json!({ "environment": { "project": summary.project, "environment": summary.name }, "kept": false })) }),
+            FollowUp::StopKeepingBranch {
+                place: Place::of(summary),
+            }
+            .details(),
         ));
     }
     crate::removal::guard(tx, branch)

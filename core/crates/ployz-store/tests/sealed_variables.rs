@@ -585,7 +585,11 @@ fn an_old_cli_s_plain_text_secret_is_told_to_update_and_everything_else_passes()
         );
         assert_eq!(
             error.details,
-            json!({ "variable": key, "next": "curl -fsSL https://ployz.sh | sh" })
+            json!({
+                "variable": key,
+                "next": "curl -fsSL https://ployz.sh | sh",
+                "follow_up": { "kind": "update_client", "beta": false },
+            })
         );
         assert!(!format!("{error:?}").contains(SECRET), "{error:?}");
     };
@@ -1027,7 +1031,11 @@ fn the_refusal_of_a_secret_s_plain_text_is_pinned_for_the_cli_and_for_anyone_els
             (
                 RpcErrorCode::Unsupported,
                 "TOKEN: update ployz to set a Sealed value.",
-                json!({ "variable": "TOKEN", "next": "curl -fsSL https://ployz.sh | sh" }),
+                json!({
+                    "variable": "TOKEN",
+                    "next": "curl -fsSL https://ployz.sh | sh",
+                    "follow_up": { "kind": "update_client", "beta": false },
+                }),
             )
         );
         let error = edit(&store, &path, value).unwrap_err();

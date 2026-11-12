@@ -2735,3 +2735,50 @@ fn a_fix_made_after_its_parent_sealed_a_value_the_failed_revision_held_plain_tak
     assert_eq!(web["env"]["API_KEY"], json!({ "secret": false }));
     only_what_production_ran(&url);
 }
+
+#[test]
+fn copying_a_node_waits_for_a_settled_branch() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-web", 2, true);
+    let copy = CopyNode {
+        environment: at("fix-web"),
+        node: ServiceName::parse("db").unwrap(),
+        expect: None,
+    };
+
+    set(&store, &who, "fix-web", &[("web.env.EXTRA", json!("x"))]);
+    let undeployed = store.write(&who, &copy).unwrap_err();
+    assert_eq!(
+        undeployed.details["next"],
+        "ployz diff --project shop --env fix-web"
+    );
+
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                teardown: None,
+                id: DeploymentId::parse(uuid(99)).unwrap(),
+                environment: at("fix-web"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let running = store.write(&who, &copy).unwrap_err();
+    assert_eq!(
+        running.details["next"],
+        "ployz deployment ls --project shop --env fix-web"
+    );
+}

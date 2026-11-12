@@ -13,6 +13,7 @@ pub use convert::Converted;
 use ployz_core::RpcError;
 
 use crate::error;
+use crate::followup::FollowUp;
 
 /// Migrations, applied once, in order: each a batch of SQL or a step in Rust.
 const MIGRATIONS: &[(&str, Step)] = &[
@@ -432,12 +433,6 @@ impl Storage {
     }
 }
 
-/// The highest published release on either channel: Publish only moves a pointer
-/// forward, and a stable Publish moves `beta` too (`core/scripts/promote-release.sh`).
-/// So it reaches whichever published Ployz upgraded the Store. The stable line
-/// reinstalls this same release when a beta did.
-const INSTALL_NEWEST: &str = "curl -fsSL https://ployz.sh | sh -s -- beta";
-
 /// A SQLite schema failure as `unsupported` when `config_migration` names a
 /// migration this binary doesn't know: a newer Ployz changed the schema its SQL
 /// expects. The failure stays the cause. Every other failure is returned as it was.
@@ -466,7 +461,7 @@ fn newer_store(sqlite: &sqlite::Sqlite, failed: sqlite::Failed, verb: &str) -> R
             "A newer Ployz upgraded this Config Store, and ployz {} could not {verb} it.",
             env!("CARGO_PKG_VERSION")
         ),
-        serde_json::json!({ "next": INSTALL_NEWEST, "migrations": newer }),
+        FollowUp::UpdateClient { beta: true }.within(serde_json::json!({ "migrations": newer })),
     );
     refused.cause = std::iter::once(failed.message)
         .chain(failed.cause)
@@ -816,7 +811,11 @@ mod mixed_version_tests {
         );
         assert_eq!(
             refused.details,
-            serde_json::json!({ "migrations": ["9999_required_column"], "next": NEXT })
+            serde_json::json!({
+                "migrations": ["9999_required_column"],
+                "next": NEXT,
+                "follow_up": { "kind": "update_client", "beta": true },
+            })
         );
         assert_eq!(
             refused.cause,
@@ -840,7 +839,11 @@ mod mixed_version_tests {
         );
         assert_eq!(
             refused.details,
-            serde_json::json!({ "migrations": ["9999_dropped_column"], "next": NEXT })
+            serde_json::json!({
+                "migrations": ["9999_dropped_column"],
+                "next": NEXT,
+                "follow_up": { "kind": "update_client", "beta": true },
+            })
         );
         let cause = "Config Store storage failed: no such column: written in \
                      SELECT written FROM config_create at offset 7";

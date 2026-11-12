@@ -1,6 +1,7 @@
 //! PR plans: which Environment a repository's pull requests start from, and how.
 
 use super::*;
+use crate::followup::FollowUp;
 
 /// A repository no plan was saved for: off, removed on close.
 pub(super) fn off() -> Stored {
@@ -77,7 +78,11 @@ pub(crate) fn set_plan(
         else {
             return Err(error::invalid(
                 "Pick the Environment PR Environments start from first: copies and Setup Commands name its nodes",
-                json!({ "next": format!("ployz env pr {} --from ENV --project {}", set.repository, project.name) }),
+                FollowUp::EnvironmentPr {
+                    repository: set.repository.to_string(),
+                    project: project.name.clone(),
+                }
+                .details(),
             ));
         };
         if let Some(copy) = &set.copy {

@@ -22,6 +22,7 @@ use ployz_core::{ConfigFileName, EnvPart, EnvValue, RpcError, SealedScope, Servi
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Map, Value, json};
 
+use crate::followup::{FollowUp, Place};
 use crate::scope::Environment;
 use crate::sealing::plain_fingerprint;
 use crate::typed_address::{self, Typed};
@@ -401,13 +402,13 @@ pub(crate) fn rename(
                 "{service}.{key} is used by {}; rename it with updated references to switch them to {to}",
                 names(&referrers).join(", ")
             ),
-            json!({
-                "variables": names(&referrers),
-                "next": format!(
-                    "ployz set {service}.env.{key} --rename {to} --update-references --env {} --project {}",
-                    summary.name, summary.project
-                ),
-            }),
+            FollowUp::RenameVariable {
+                service: service.to_string(),
+                key: key.to_string(),
+                to: to.to_string(),
+                place: Place::of(summary),
+            }
+            .within(json!({ "variables": names(&referrers) })),
         ));
     }
     for referrer in &mut environment.working.services {

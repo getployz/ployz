@@ -7,13 +7,14 @@ use ployz_core::config::{
     EnvironmentNodeType, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
     SavedVolumeIntent, parse_environment_intent,
 };
-use ployz_core::{ConfigName, Hint, RpcError, ServiceName};
+use ployz_core::{ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision, VolumeName};
 use crate::storage::Tx;
 
@@ -513,7 +514,7 @@ pub(crate) fn project(
             Some(name) => error::not_found(format!("No Project named {name}"), json!({})),
             None => error::not_found(
                 "This Organization has no Project yet",
-                json!({ "next": "ployz project new NAME" }),
+                FollowUp::ProjectNew.details(),
             ),
         }),
         rows => Err(error::ambiguous(
@@ -655,12 +656,11 @@ pub(crate) fn resolve(
             .collect::<Result<Vec<_>, _>>()?;
         return Err(error::not_found(
             format!("No Environment named {name} in Project {}", project.name),
-            error::suggest(name.as_str(), names.iter().copied()),
-        )
-        .with_hint(Hint::Next(format!(
-            "ployz env ls --project {}",
-            project.name
-        ))));
+            FollowUp::EnvironmentList {
+                project: project.name.clone(),
+            }
+            .within(error::suggest(name.as_str(), names.iter().copied())),
+        ));
     };
     Ok((project.name, row.parse::<EnvironmentId>(0, "identity")?))
 }

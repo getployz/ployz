@@ -18,6 +18,7 @@ mod digest;
 pub mod docs;
 mod domain;
 mod error;
+mod followup;
 mod git;
 mod github;
 mod id;

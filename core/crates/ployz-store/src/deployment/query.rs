@@ -11,6 +11,7 @@ use crate::Actor;
 use crate::deployment::loss::{VolumeLoss, removed};
 use crate::deployment::{self, DeploymentSummary, DeploymentView};
 use crate::error;
+use crate::followup::{FollowUp, Place};
 use crate::id::{DeploymentId, Hostname};
 use crate::review::{self, NodeChange};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
@@ -202,11 +203,14 @@ pub(crate) fn numbered(
         return Err(match query.number {
             Some(number) => error::not_found(
                 format!("{project}/{name} has no Deployment #{number}"),
-                json!({ "next": format!("ployz deployment ls --project {project} --env {name}") }),
+                FollowUp::DeploymentList {
+                    place: Place::of(&environment.summary),
+                }
+                .details(),
             ),
             None => error::not_found(
                 format!("{project}/{name} has no Deployment yet"),
-                json!({ "next": "ployz deploy" }),
+                FollowUp::Deploy { no_prune: false }.details(),
             ),
         });
     };

@@ -2100,3 +2100,34 @@ fn a_reapply_checks_the_hostnames_of_a_referenced_service_it_hands_the_runner() 
     let refused = reapply(&store, &who, 3, &["web"], &elsewhere).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
 }
+
+#[test]
+fn a_deploy_with_generated_domains_and_no_cluster_domain_says_how_to_remove_them() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add(None, None), &Trusted::default())
+        .unwrap();
+    let refused = store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                teardown: None,
+                id: DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        refused.details["next"],
+        "ployz domain rm web --project shop --env production"
+    );
+}
