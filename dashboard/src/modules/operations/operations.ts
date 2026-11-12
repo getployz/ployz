@@ -7,7 +7,7 @@ import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
 import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
-import { DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
+import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
@@ -77,6 +77,9 @@ const AGENT_ENVIRONMENT = { via: ["project", "environment"] } as const;
 const AGENT_LOSS = { via: ["accept_volume_loss", "version"] } as const;
 const STAGED = { absent: "The dashboard stages it in the Volume's placement, and the deploy runs it." } as const;
 const VOLUME_RUNS = "POST volumes/:id/runs";
+/** A person's teardown, which a Server that enforces Device approval needs before it takes anything off. */
+const Teardown = Schema.Unknown;
+const AGENT_TEARDOWN = { omitted: "An agent can't approve a teardown: only a person's Device or passkey can, and Servers that enforce refuse without one." } as const;
 
 /** Restart, start or stop a Service's containers, on one Server or all. */
 const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>(tool: T, gate: "approval" | "none") =>
@@ -98,30 +101,45 @@ const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>
 /** Every Cloud operation, and how each surface (CLI, agent, dashboard) carries each of its options. */
 export const OPERATIONS = {
   "server.remove": operation({
-    options: Schema.Struct({ server: Name, acceptLoss: Names }),
+    options: Schema.Struct({ server: Name, acceptLoss: Names, teardown: Teardown }),
     requires: "servers:remove",
     gate: "approval",
     idempotency: "server_remove",
     surfaces: {
-      cli: { route: "DELETE servers/:id", body: RemoveServer, options: { server: { via: ":id" }, acceptLoss: { via: "confirm_data_loss" } } },
-      agent: { tool: "server_remove", options: { server: { via: "server" }, acceptLoss: AGENT_LOSS } },
+      cli: {
+        route: "DELETE servers/:id",
+        body: RemoveServer,
+        options: {
+          server: { via: ":id" },
+          acceptLoss: { via: "confirm_data_loss" },
+          teardown: { omitted: "A Device's CLI removes a Server of a Cluster that enforces Device approval itself, under its own key." },
+        },
+      },
+      agent: { tool: "server_remove", options: { server: { via: "server" }, acceptLoss: AGENT_LOSS, teardown: AGENT_TEARDOWN } },
       ui: {
         fn: "enqueueMachineRemoveServerFn",
         input: EnqueueMachineRemoveInput,
-        ungated: "The human confirms in the page's own dialog.",
-        options: { server: { via: "machineId" }, acceptLoss: { via: "confirmDataLoss" } },
+        ungated: "The human confirms in the page's own dialog and, where a Server enforces, approves the departure with their passkey.",
+        options: { server: { via: "machineId" }, acceptLoss: { via: "confirmDataLoss" }, teardown: { via: "teardown" } },
       },
     },
   }),
   "server.forget": operation({
-    options: Schema.Struct({ server: Name }),
+    options: Schema.Struct({ server: Name, teardown: Teardown }),
     requires: "servers:remove",
     gate: "approval",
     idempotency: "server_forget",
     surfaces: {
-      cli: { route: "POST servers/:id/forget", body: ForgetServer, options: { server: { via: ":id" } } },
-      agent: { tool: "server_forget", options: { server: { via: "server" } } },
-      ui: { fn: "forgetServerServerFn", input: ForgetServerInput, options: { server: { via: "machineId" } } },
+      cli: {
+        route: "POST servers/:id/forget",
+        body: ForgetServer,
+        options: {
+          server: { via: ":id" },
+          teardown: { omitted: "A Device's CLI forgets a Server of a Cluster that enforces Device approval itself, under its own key." },
+        },
+      },
+      agent: { tool: "server_forget", options: { server: { via: "server" }, teardown: AGENT_TEARDOWN } },
+      ui: { fn: "forgetServerServerFn", input: ForgetServerInput, options: { server: { via: "machineId" }, teardown: { via: "teardown" } } },
     },
   }),
   "server.drain": operation({
@@ -225,18 +243,22 @@ export const OPERATIONS = {
     },
   }),
   "namespace.clean": operation({
-    options: Schema.Struct({ namespace: Name, acceptLoss: Names }),
+    options: Schema.Struct({ namespace: Name, acceptLoss: Names, teardown: Teardown }),
     requires: "servers:operate",
     gate: "approval",
     idempotency: "server_clean",
     surfaces: {
-      cli: { route: "POST namespaces/:id/clean", body: null, options: { namespace: { via: ":id" }, acceptLoss: CLI_APPROVAL } },
-      agent: { tool: "server_clean", options: { namespace: { via: "leftover" }, acceptLoss: AGENT_LOSS } },
+      cli: {
+        route: "POST namespaces/:id/clean",
+        body: CleanNamespace,
+        options: { namespace: { via: ":id" }, acceptLoss: CLI_APPROVAL, teardown: { via: "teardown" } },
+      },
+      agent: { tool: "server_clean", options: { namespace: { via: "leftover" }, acceptLoss: AGENT_LOSS, teardown: AGENT_TEARDOWN } },
       ui: {
         fn: "removeNamespaceServerFn",
         input: RemoveNamespaceInput,
-        ungated: "The human confirms in the page's own dialog.",
-        options: { namespace: { via: "namespace" }, acceptLoss: { via: "confirmDataLoss" } },
+        ungated: "The human confirms in the page's own dialog and, where a Server enforces, approves the teardown with their passkey.",
+        options: { namespace: { via: "namespace" }, acceptLoss: { via: "confirmDataLoss" }, teardown: { via: "teardown" } },
       },
     },
   }),

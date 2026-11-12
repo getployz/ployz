@@ -158,7 +158,7 @@ impl LocalMachine {
         Ok(pinned(want, observed.container_id))
     }
 
-    fn cluster_key(
+    pub(super) fn cluster_key(
         &self,
         phase: ployz_core::LocalMachinePhase,
     ) -> Option<ployz_core::SealingPublicKey> {

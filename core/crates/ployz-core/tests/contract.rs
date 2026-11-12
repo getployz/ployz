@@ -1522,8 +1522,9 @@ fn typed_errors_preserve_future_error_codes() {
 #[test]
 fn leave_and_forget_round_trip_under_stable_capabilities() {
     let requests = [
-        op::Leave::into_request(LeaveRequest {}),
+        op::Leave::into_request(LeaveRequest { teardown: None }),
         op::Forget::into_request(ForgetRequest {
+            teardown: None,
             machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         }),
     ];
@@ -1582,6 +1583,7 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     );
     assert_eq!(
         op::RemoveVolume::into_request(RemoveVolumeRequest {
+            teardown: None,
             name: name.clone(),
             force: true,
         })
@@ -1591,6 +1593,7 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         .unwrap()
         .body,
         RpcRequestBody::RemoveVolume(RemoveVolumeRequest {
+            teardown: None,
             name: name.clone(),
             force: true,
         })
@@ -1647,6 +1650,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         "creation_key": "deploy/slot-1"
     });
     let running = EnsureContainerRequest {
+        teardown: None,
         preview: None,
         approval: None,
         deploy: None,

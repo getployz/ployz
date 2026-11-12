@@ -21,7 +21,7 @@ const machine: RuntimeMachineRecord = {
 async function renderOffline(last = false) {
   vi.spyOn(runtime, "useClusterReleased").mockReturnValue(() => {});
   const root = createRootRoute({
-    component: () => <RemoveServerSection machine={machine} organizationSlug="ada" last={last} offline hint={null} gate={{ allowed: true, reason: undefined }} />,
+    component: () => <RemoveServerSection machine={machine} machines={[machine]} organizationSlug="ada" last={last} offline hint={null} gate={{ allowed: true, reason: undefined }} />,
   });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
   render(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);

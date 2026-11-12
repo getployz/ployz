@@ -40,6 +40,7 @@ pub(super) fn deployment() -> (Arc<ConfigStore>, Actor, DeploymentId) {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -138,6 +139,7 @@ async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
         .write_trusted(
             &actor,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: next.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),

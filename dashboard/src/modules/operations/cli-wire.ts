@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
+import { TeardownInput } from "#/modules/approval-session/approvals-input";
 import type { ResolvedServiceSpec } from "@ployz/sdk";
 import type { VolumeRunInput, VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
@@ -13,6 +14,9 @@ export const RemoveServer = Schema.Struct({ confirm_data_loss: Schema.Struct({ c
 export const ForgetServer = Schema.Struct(shownName);
 
 export const DrainServer = Schema.Struct(shownName);
+
+/** `server clean --namespace`: the teardown a Device signed, when a Server enforces Device approval. */
+export const CleanNamespace = Schema.Struct({ teardown: Schema.optionalKey(TeardownInput) });
 
 export const UpgradeServer = Schema.Struct({ channel: Schema.optional(Schema.String), ...shownName });
 

@@ -324,6 +324,7 @@ impl Tool for EnvironmentRemove {
             false => Volumes::from([(self.environment.clone(), volumes)]),
         };
         let command = Remove {
+            teardown: None,
             project,
             environment: Some(self.environment.clone()),
             version: self.version,
@@ -368,6 +369,7 @@ impl Tool for ProjectRemove {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         AcceptedLoss::from_input(self.accept_volume_loss.clone(), self.version.clone())?;
         let command = Remove {
+            teardown: None,
             project: self.project,
             environment: None,
             version: self.version,

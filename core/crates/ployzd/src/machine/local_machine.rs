@@ -48,6 +48,9 @@ const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 pub struct LocalMachine {
     owner: RecordOwner,
     management_client: Option<ClientKey>,
+    /// The Operator's teardown this call was admitted under, which each admitted turn
+    /// checks again before its effect.
+    teardown: Option<teardown::HeldTeardown>,
     /// Whether this call came over this Server's local socket, rather than the mesh.
     local_socket: bool,
     cluster: Option<ClusterContext>,
@@ -96,7 +99,9 @@ pub(crate) use resize_seed_approval::Landing;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
+mod teardown;
 pub(crate) use sealing_recovery::Error as RecoveryError;
+pub(crate) use teardown::{HeldStep, HeldTeardown};
 mod upgrade;
 mod volume_approval;
 pub(crate) use volume_approval::{Admitted, CopyStep};
@@ -229,10 +234,17 @@ pub enum Error {
     /// names `capability` in its details.
     #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
     BuildRefused { capability: &'static str },
-    /// Device enforcement refused an Operator's `Leave` or `Forget`, before any Container
-    /// stopped. The refusal names `capability` in its details.
-    #[error("{}", departure_text(.capability))]
-    DepartureRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's `Leave` or `Forget` that no teardown names,
+    /// before any Container stopped. The refusal names `capability` in its details.
+    #[error("{}: {refusal}", departure_text(.capability))]
+    DepartureRefused {
+        capability: &'static str,
+        refusal: ployz_core::authority::AuthorityRefusal,
+    },
+    /// Device enforcement refused an Operator's Container step or Volume removal that no
+    /// teardown names.
+    #[error("This server takes this off only under your approval: {0}")]
+    TeardownRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `SetPrivateAccess` turning Private Access on
     /// without an approval of its auth key.
     #[error("This Server joins a tailnet only with your approval: {0}")]
@@ -335,6 +347,7 @@ impl LocalMachine {
             approvals: owner.restart_approvals(),
             owner,
             management_client: None,
+            teardown: None,
             local_socket: false,
             cluster: None,
             containers: None,
@@ -393,6 +406,14 @@ impl LocalMachine {
     #[must_use]
     pub(crate) fn with_management_client(mut self, remote: ClientKey) -> Self {
         self.management_client = Some(remote);
+        self
+    }
+
+    /// Hold `teardown` for this call: each admitted turn checks it again under the turn,
+    /// so a key removed or enforcement turned on while the call waited stops it.
+    #[must_use]
+    pub(crate) fn with_teardown(mut self, teardown: teardown::HeldTeardown) -> Self {
+        self.teardown = Some(teardown);
         self
     }
 
@@ -494,11 +515,25 @@ impl LocalMachine {
         G: Send + 'static,
     {
         let installation = self.admit_installation()?;
+        // Under the turn: a trusted key removed or enforcement turned on while this waited
+        // has taken its own turn before this one.
+        self.recheck_teardown()?;
         tokio::spawn(async move {
             let _admission = (turn, installation);
             work.await
         })
         .await?
+    }
+
+    /// The exclusive admission turn, for work that takes it itself, with this call's held
+    /// teardown checked again under it.
+    ///
+    /// # Errors
+    /// As [`Self::recheck_teardown`].
+    async fn exclusive_turn(&self) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, Error> {
+        let turn = self.owner.admission_lock().write_owned().await;
+        self.recheck_teardown()?;
+        Ok(turn)
     }
 
     /// Run `work` holding the installation guard and no turn. `work` takes the turns it

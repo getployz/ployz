@@ -2,7 +2,7 @@
 
 use super::*;
 use ployz_core::OperationId;
-use ployz_core::authority::{DeployApproval, Signed};
+use ployz_core::authority::{DeployApproval, Signed, TeardownApproval};
 
 /// Which Deployment an admission queues.
 #[derive(Clone, Copy)]
@@ -281,6 +281,35 @@ pub(crate) fn approved_by_device(
         &[id.as_str().into(), approval.as_str().into()],
     )
     .map(drop)
+}
+
+/// Keep the teardown a person signed for what Deployment `id` takes off the Servers, for
+/// its runner to hand each Server. Cloud keeps it unread; every Server checks it.
+pub(crate) fn torn_down_under(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    teardown: &TeardownApproval,
+) -> Result<(), RpcError> {
+    let teardown = serde_json::to_string(teardown).map_err(|_| error::corrupt("Teardown"))?;
+    tx.execute(
+        "UPDATE config_deployment SET teardown = ?2 WHERE id = ?1",
+        &[id.as_str().into(), teardown.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// The teardown a person signed for Deployment `id`, if any.
+fn teardown(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Option<TeardownApproval>, RpcError> {
+    let rows = tx.query(
+        "SELECT teardown FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    rows.first()
+        .map(|row| row.optional_text(0))
+        .transpose()?
+        .flatten()
+        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt("Teardown")))
+        .transpose()
 }
 
 /// Keep a person's fresh approvals of the commits of queued Deployment
@@ -1578,6 +1607,12 @@ pub(crate) fn claim(
     let ended_runs = ended_runs(tx, &stored.summary)?;
     let approval = device_approval(tx, id)?;
     let preview = crate::preview_rule::of_deployment(tx, &stored)?;
+    // A preview's removal comes off under the rule that made it, when no person signed one.
+    let teardown = match teardown(tx, id)? {
+        Some(teardown) => Some(teardown),
+        None if stored.summary.remove => preview.clone().map(TeardownApproval::PreviewRule),
+        None => None,
+    };
     let review = match preview {
         Some(_) => preview_review(tx, id)?,
         None => None,
@@ -1630,6 +1665,7 @@ pub(crate) fn claim(
         review,
         image_tokens,
         approvals,
+        teardown,
     }))
 }
 

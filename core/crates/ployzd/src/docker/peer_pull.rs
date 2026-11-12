@@ -37,7 +37,7 @@ pub(crate) async fn pull_from_ingest(
         {
             return Err(Error::UnsupportedImageStore);
         }
-        Some(image.replace("@sha256:", ":ployz-sha256-"))
+        retention_tag(image)
     } else {
         None
     };
@@ -89,6 +89,17 @@ async fn pull_and_tag(
     .await;
     let _ = docker_cli(docker, &["image", "rm", pulled]).await;
     result
+}
+
+/// The tag a pinned `image` is kept under, `repository:ployz-sha256-<hex>`. A pin that also
+/// names a tag (`redis:7-alpine@sha256:…`) drops it, since a Docker reference holds one tag.
+fn retention_tag(image: &str) -> Option<String> {
+    let (name, hex) = image.split_once("@sha256:")?;
+    let repository = match name.rsplit_once(':') {
+        Some((repository, tag)) if !tag.contains('/') => repository,
+        _ => name,
+    };
+    Some(format!("{repository}:ployz-sha256-{hex}"))
 }
 
 fn localhost_registry_reference(port: u16, image: &str) -> String {
@@ -156,6 +167,33 @@ async fn docker_cli(docker: &std::path::Path, args: &[&str]) -> Result<String, E
 mod tests {
     use super::*;
     use ployz_core::UNREGISTRY_PORT;
+
+    #[test]
+    fn a_pinned_image_is_kept_under_its_repository_whatever_tag_the_pin_names() {
+        let hex = "1".repeat(64);
+        for (image, kept) in [
+            (
+                format!("redis:7-alpine@sha256:{hex}"),
+                format!("redis:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("example.test/api@sha256:{hex}"),
+                format!("example.test/api:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("localhost:5000/api@sha256:{hex}"),
+                format!("localhost:5000/api:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("localhost:5000/api:v1@sha256:{hex}"),
+                format!("localhost:5000/api:ployz-sha256-{hex}"),
+            ),
+        ] {
+            let tag = retention_tag(&image).unwrap();
+            assert_eq!(tag, kept);
+            assert!(ployz_core::is_image_reference(&tag), "{tag}");
+        }
+    }
 
     #[tokio::test]
     async fn invalid_digest_reference_is_rejected_before_any_docker_work() {

@@ -1138,7 +1138,7 @@ it.live(
         const userId = (yield* resolveCaller(signedIn(alice))).userId;
         let runs = 0;
         const removeServer = (server: MachineId, noReset: boolean) => Effect.gen(function* () {
-          const removal = { organizationId, machineId: server, serverName: null, confirmDataLoss: [], noReset };
+          const removal = { organizationId, machineId: server, serverName: null, confirmDataLoss: [], noReset, teardown: null };
           const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: userId });
           const inngestRunId = `run-${++runs}`;
           yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1225,7 +1225,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false, teardown: null };
         const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
         const inngestRunId = "run-retry";
         yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1290,7 +1290,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false, teardown: null };
         const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
         const inngestRunId = "run-left";
         yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1363,7 +1363,7 @@ const removeDialEntry = Effect.fn(function* (otherAnswers: boolean, frameAnswers
           : { status: "unreachable" as const, error: null }
         : { status: "connected" as const, connected: through(machineId) }),
   };
-  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false, teardown: null };
   const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
   const inngestRunId = "run-dial-entry";
   yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1453,7 +1453,7 @@ const removeServerReplying = Effect.fn(function* (
     removeMachine: () => Effect.succeed(reply),
   });
   const runtime = { cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected }) };
-  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false, teardown: null };
   const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
   const inngestRunId = "run-replying";
   yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });

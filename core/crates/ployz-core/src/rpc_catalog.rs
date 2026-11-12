@@ -151,6 +151,8 @@ macro_rules! rpc_catalog {
                 PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster),
                 /// A restart approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
                 PROPOSAL_APPROVAL_CAPABILITY: ("ployz.restart.proposal.v1", Always),
+                /// `EnsureContainer`, `RemoveVolume`, `Leave` and `Forget` take a person's teardown, signed by a Device or answered by a passkey's own prompt. Under Device enforcement an Operator's Container step that starts nothing, Volume removal, Leave or Forget runs only under one that names this Server and what the request takes off.
+                TEARDOWN_CAPABILITY: ("ployz.teardown.v1", Always),
                 /// `EnsureContainer` takes a deploy approval and, under Device enforcement, creates an Operator's Container only when its spec matches a digest it approves.
                 DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
                 /// A deploy approval may be an unsigned step of a signed proposal bundle that rides in its envelope.

@@ -35,6 +35,8 @@ pub(in crate::handlers) struct DeviceApproval {
 pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) cluster: SealingPublicKey,
     pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
+    /// The name each Server reports, which a person reads its signed lines by.
+    pub(in crate::handlers) names: BTreeMap<ployz_core::MachineId, String>,
     /// Whether every Server listed checks a person's approval of a commit in place of
     /// its branch head. An older one refuses the approval as an unknown field.
     pub(in crate::handlers) commit_approval: bool,
@@ -270,9 +272,14 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
             .capabilities
             .contains(ployz_core::COMMIT_APPROVAL_CAPABILITY)
     });
+    let names = observed
+        .iter()
+        .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
+        .collect();
     Probe::Enforcing(Enforcing {
         cluster,
         machines,
+        names,
         commit_approval,
     })
 }

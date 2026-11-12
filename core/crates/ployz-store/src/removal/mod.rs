@@ -65,6 +65,13 @@ pub struct Remove {
     #[serde(default)]
     #[ts(as = "Option<BTreeMap<EnvironmentName, Vec<VolumeName>>>", optional)]
     pub every_copy: BTreeMap<EnvironmentName, Vec<VolumeName>>,
+    /// The teardown a person signed for what this takes off the Servers. Each removal
+    /// Deployment it admits hands it to every Server, and one that enforces Device
+    /// approval takes nothing off without it. A preview's removal needs none: the rule
+    /// that made it closes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<ployz_core::authority::TeardownApproval>")]
+    pub teardown: Option<Box<ployz_core::authority::TeardownApproval>>,
 }
 
 /// Stop removing an Environment or a Project: what is running is cancelled, and
@@ -427,9 +434,18 @@ pub(crate) fn remove(
             Mark::new(who, (target, target_name), members, accepted)
         }
     };
+    if let Some(teardown) = &remove.teardown {
+        mark.teardown = Some((**teardown).clone());
+    }
     mark::save(tx, who, &mark)?;
     let waiting_on = waiting_on(tx, who, &reviews, trusted, &mark.target_name)?;
-    due::go_on(tx, who, &mut mark, trusted, waiting_on)
+    due::go_on(
+        tx,
+        who,
+        &mut mark,
+        (trusted, remove.teardown.as_deref()),
+        waiting_on,
+    )
 }
 
 /// The Servers a removal waits on: each one that didn't answer whether it holds a

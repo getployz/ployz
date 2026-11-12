@@ -8,6 +8,7 @@ import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/st
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
+import { useDeployApprovals } from "#/modules/config-store/use-deploy-approvals";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
 import { useDeployApproval } from "./useDeployApproval";
 type Action = "deploy" | "publish";
@@ -40,6 +41,7 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
  *
  * On Servers that enforce Device approval, a Deploy asks for a passkey session first, unless one covers it, and carries
  * this browser's approval of the plan it ships, which it then lists; Saved State changes reach a Server only through it.
+ * One that deletes Volume data also carries the person's passkey teardown of exactly the Volumes they typed for.
  * Each staged Volume workflow such a Server takes part in then asks the passkey once, after the loss dialog, so the loss
  * the person confirmed is the loss each approval names.
  */
@@ -55,6 +57,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
   const approval = useDeployApproval(organizationSlug, environment);
+  const approvals = useDeployApprovals(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
   const [loss, setLoss] = useState<Loss | null>(null);
@@ -91,8 +94,10 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     const placements = action === "deploy" ? preparePlacements() : null;
     placements?.catch(() => undefined);
     let scope;
+    let teardown;
     try {
       scope = action === "deploy" ? await approval.scope() : undefined;
+      if (scope !== null && action === "deploy") teardown = await approvals.volumeLoss(environment, accept);
     } catch (error) {
       toast.error(toErrorMessage(error, "Couldn't approve the deploy"));
       return { status: "failed" };
@@ -113,6 +118,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
       : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words };
     // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
     if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
+    if (command.command === "admit" && command.admit === "deploy" && teardown !== undefined) command.teardown = teardown;
     try {
       // What this browser signed, shown as `ployz deploy` prints it.
       let lines: readonly string[] = [];

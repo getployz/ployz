@@ -1,0 +1,21 @@
+# Lane 6: preview close. Not run live: a preview rule needs a Service that builds from GitHub and a real
+# GitHub Actions build, whose tokens each Server checks. On the lab:
+$ ployz github preview approve api --env production
+error: api doesn't build from GitHub, so a preview can't build it.
+
+# The Machine's check for a preview close, run on this branch:
+  PASS [   0.009s] ( 1/14) ployz-core authority::teardown::tests::each_scope_signs_its_golden_canonical_body
+  PASS [   0.009s] ( 2/14) ployz-core authority::teardown::tests::a_draft_sorts_its_lists_and_the_lines_name_every_loss
+  PASS [   0.015s] ( 3/14) ployz-core authority::teardown::tests::an_unknown_device_is_refused
+  PASS [   0.019s] ( 4/14) ployz-core authority::teardown::tests::a_passkey_answer_over_another_body_or_inside_an_envelope_is_refused
+  PASS [   0.020s] ( 5/14) ployz-core authority::teardown::tests::a_volume_outside_the_named_namespaces_spoils_the_whole_teardown
+  PASS [   0.024s] ( 6/14) ployz-core authority::teardown::tests::a_teardown_never_starts_a_container
+  PASS [   0.030s] ( 7/14) ployz-core authority::teardown::tests::a_browser_key_under_a_session_grant_is_refused
+  PASS [   0.034s] ( 8/14) ployz-core authority::teardown::tests::the_device_the_body_names_approves_whatever_order_its_signature_comes_in
+  PASS [   0.035s] ( 9/14) ployz-core authority::teardown::tests::another_cluster_or_an_expired_teardown_is_refused
+  PASS [   0.045s] (10/14) ployz-core authority::teardown::tests::a_deploys_volume_teardown_takes_no_container_off
+  PASS [   0.055s] (11/14) ployz-core authority::teardown::tests::another_namespace_machine_or_volume_is_refused
+  PASS [   0.066s] (12/14) ployz-core authority::teardown::tests::a_server_teardown_lets_only_the_named_server_leave_and_the_others_forget_it
+  PASS [   0.072s] (13/14) ployz-core authority::teardown::tests::a_device_or_a_passkeys_own_prompt_takes_the_namespace_off_the_servers_it_names
+  PASS [   0.082s] (14/14) ployz-core authority::preview::tests::a_rule_closes_only_its_own_previews_and_starts_nothing
+  Summary [   0.084s] 14 tests run: 14 passed, 885 skipped

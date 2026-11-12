@@ -297,6 +297,13 @@ hour after that. A volume whose copies Ployz couldn't all check is
 deleted only if you chose to delete every copy. Then a mirror of it made after the delete started
 goes too.
 
+On servers that enforce device approval, Ployz shows what your passkey approves after you type the
+name, and asks your passkey once. Each server takes off only that environment's services and the
+volumes you agreed to lose. `ployz env rm` from an approved device prints the same lines and asks
+before it signs them. A server that answers more than 15 minutes later keeps its part: delete
+again. See
+[Take things off servers that enforce](../servers/manage-servers.md#take-things-off-servers-that-enforce).
+
 ### Delete a project
 
 1. Open **Settings → Project**.

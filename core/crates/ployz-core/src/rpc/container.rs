@@ -100,6 +100,13 @@ pub struct EnsureContainerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub preview: Option<Box<crate::authority::PreviewProof>>,
+    /// A person's teardown of the Container's Namespace, or the preview rule whose own
+    /// preview it closes. A Machine under Device enforcement takes it from an Operator
+    /// caller for a step that starts nothing. Sent only to a daemon advertising
+    /// [`crate::TEARDOWN_CAPABILITY`]; an older daemon ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
 }
 
 /// The state a driver wants one Container in. The Machine converges to it and

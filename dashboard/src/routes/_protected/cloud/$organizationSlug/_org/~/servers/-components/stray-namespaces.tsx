@@ -11,6 +11,9 @@ import { OPERATE_REFUSED } from "#/modules/machines/server-policy.hooks";
 import type { Server } from "#/modules/machines/use-servers";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { reviewApproval } from "#/modules/approval-session/approval-prompt";
+import { approveTeardown } from "#/modules/approval-session/teardown-approval";
 
 /**
  * Namespaces running on this Server that no Environment owns, left behind by a failed teardown or a reset Store: they
@@ -21,6 +24,7 @@ export function StrayNamespaces({ organizationSlug, server, servers }: { organiz
   const strays = useStrayNamespaces(organizationSlug, namespaces);
   const [removing, setRemoving] = useState<string | null>(null);
   const gate = useRoleGate(organizationSlug, "servers:operate", OPERATE_REFUSED);
+  const { machines } = useRuntimeLens(organizationSlug);
   if (strays.size === 0) return null;
   const servicesOf = (namespace: string) => server.services.filter((service) => service.namespace === namespace);
   const volumes = (lost: readonly DataLossIdentity[]) => lost.map((identity): DeletionItem => ({
@@ -64,7 +68,18 @@ export function StrayNamespaces({ organizationSlug, server, servers }: { organiz
           },
           confirm: async (lost) => {
             const namespace = removing ?? "";
-            const outcome = await removeNamespaceServerFn({ data: { organizationSlug, namespace, confirmDataLoss: lost } });
+            // Where a Server enforces Device approval, the person's passkey approves exactly the loss they typed for.
+            const docker = [...new Set(lost.map((identity) => identity.id.name))];
+            const teardown = await approveTeardown({
+              machines,
+              near: servers.filter((other) => other.services.some((service) => service.namespace === namespace)).map((other) => other.machine.id),
+              scope: (members) => ({ kind: "namespace", namespaces: [namespace], machines: members, volumes: docker }),
+              volumes: {},
+              title: `Remove ${namespace}?`,
+              action: "Remove",
+            }, reviewApproval);
+            const data = { organizationSlug, namespace, confirmDataLoss: lost };
+            const outcome = await removeNamespaceServerFn({ data: teardown === undefined ? data : { ...data, teardown } });
             if ("missing" in outcome) {
               // The Servers hold more by now: the dialog lists it, to be typed for again.
               const all = [...lost, ...outcome.missing];

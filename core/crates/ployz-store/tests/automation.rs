@@ -733,6 +733,7 @@ fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
         store.write_trusted(
             &who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                teardown: None,
                 id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000103")
                     .unwrap(),
                 environment: EnvironmentRef::default(),
@@ -1251,6 +1252,7 @@ fn deploy_pr_5(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployme
         .write_trusted(
             who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef {
                     project: None,
@@ -1393,6 +1395,7 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
         .write_trusted(
             &who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef {
                     project: None,
@@ -2302,6 +2305,7 @@ fn redeploy(
     approvals: Vec<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
 ) -> ployz_store::Retry {
     ployz_store::Retry {
+        teardown: None,
         id: ployz_store::DeploymentId::parse(format!("00000000-0000-4000-8000-0000000009{n:02}"))
             .unwrap(),
         deployment: source.clone(),

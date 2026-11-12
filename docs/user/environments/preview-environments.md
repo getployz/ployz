@@ -128,6 +128,8 @@ production secret the rule doesn't name.
   preview read and write it.
 - **A saved change waits for you.** After you change the settings of a service the rule covers,
   previews stop deploying it until you approve again. So does adding a server.
+- **Closing the pull request removes its preview** with no prompt. Each server checks the rule
+  that opened it and takes off only that preview's namespace and volumes.
 - **Stop it** with `ployz github preview end --env production`. The servers refuse every preview
   build and deploy under the rule from then on.
 

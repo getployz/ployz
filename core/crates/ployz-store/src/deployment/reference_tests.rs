@@ -111,6 +111,7 @@ fn admit(
         .write(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployment(n),
                 environment: EnvironmentRef::default(),
                 services: services.iter().map(|service| name(service)).collect(),
@@ -288,6 +289,7 @@ fn a_narrowed_deploy_lists_the_services_it_references_among_those_it_ships() {
         .write(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployment(2),
                 environment: EnvironmentRef::default(),
                 services: vec![name("client")],
@@ -332,6 +334,7 @@ fn a_rollback_reads_back_the_services_it_ships_as_admitted() {
         .write(
             &who,
             &Admit::Retry(crate::Retry {
+                teardown: None,
                 id: deployment(5),
                 deployment: first,
                 rolls_back: None,

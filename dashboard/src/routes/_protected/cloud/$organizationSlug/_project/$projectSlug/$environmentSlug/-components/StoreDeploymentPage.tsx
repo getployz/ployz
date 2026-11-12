@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
-import type { DeploymentView, DeploymentWarning } from "@ployz/sdk";
+import type { ConfigCommand, DeploymentView, DeploymentWarning } from "@ployz/sdk";
 import { ArrowLeftIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DeletionDialog } from "#/components/deletion-dialog";
@@ -239,18 +239,23 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
     setRedeploying(true);
     try {
       let approved;
+      let teardown;
       try {
         approved = await approvals.redeploy(deployment, id);
+        if (approved !== null) teardown = await approvals.volumeLoss(
+          { project: deployment.environment.project, environment: deployment.environment.name }, acceptance.accept, deployment.id);
       } catch (error) {
         toast.error(toErrorMessage(error, "Couldn't approve the redeploy"));
         return null;
       }
       if (approved === null) return null;
-      await writer.commit({
+      const command: Extract<ConfigCommand, { admit: "retry" }> = {
         command: "admit", admit: "retry", id, deployment: deployment.id, rolls_back: [...rollsBack],
         version: acceptance.version, accept_volume_loss: [...acceptance.accept],
         ...approved?.fields,
-      }, ["confirmation_required"]);
+      };
+      if (teardown !== undefined) command.teardown = teardown;
+      await writer.commit(command, ["confirmation_required"]);
       if (approved?.again) approvals.follow(id, approved.again);
       void navigate(deploymentDestination(params, id, { job: search.job, origin: search.origin }));
       return null;
