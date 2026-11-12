@@ -1,7 +1,7 @@
 use ployz_core::{
     AdvertisedEndpoint, GenerateSealingKeyRequest, InstallSealingKeyRequest, MachineName,
-    MachineRpc, RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal,
-    RecoverySeed, RpcErrorCode, RpcResponseBody, Sealing, SealingKeyBackup, SealingPublicKey,
+    MachineRpc, RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal, RecoverySeed,
+    RpcErrorCode, RpcResponseBody, Sealing, SealingKeyBackup, SealingPublicKey,
     ShareSealingKeyRequest, WrapSealingKeyRequest, op,
 };
 use tonic::{Code, Request};

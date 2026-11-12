@@ -74,3 +74,7 @@ pub fn sealed_key_binding(cluster: &SealingPublicKey, operation: &OperationId) -
     aad.extend(operation.to_string().as_bytes());
     aad
 }
+
+#[cfg(test)]
+#[path = "rotation_tests.rs"]
+mod tests;

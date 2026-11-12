@@ -346,7 +346,9 @@ struct NeedsFullAccess {
 struct NeedsManagementConnection;
 
 #[derive(Debug, thiserror::Error)]
-#[error("This Server takes this call only from an approved Device connected to it directly, or over SSH.")]
+#[error(
+    "This Server takes this call only from an approved Device connected to it directly, or over SSH."
+)]
 struct NeedsDirectDevice;
 
 fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Body>> {

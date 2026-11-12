@@ -604,7 +604,10 @@ async fn activated(machine: &Enforcing) -> ployz_core::OperationId {
 fn stranger_rotation(machine: &Enforcing, operation: ployz_core::OperationId) -> Value {
     let signer = Signer::from_seed(&[9; 32]);
     let rotation = ployz_core::authority::SealingRotation {
-        cluster: SealingKey::load(&machine.data_dir).unwrap().unwrap().public_key(),
+        cluster: SealingKey::load(&machine.data_dir)
+            .unwrap()
+            .unwrap()
+            .public_key(),
         operation,
         recipient: SealingKey::generate().public_key(),
         members: vec![(&machine.machine).into()],
@@ -789,11 +792,15 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
         }
         "the key is held unused until a verified rotation names it" => {
             assert!(
-                SealingKey::load_recipient(&machine.data_dir).unwrap().is_none(),
+                SealingKey::load_recipient(&machine.data_dir)
+                    .unwrap()
+                    .is_none(),
                 "{case:?}: a generated key was installed"
             );
             assert!(
-                SealingKey::load_generated(&machine.data_dir).unwrap().is_some(),
+                SealingKey::load_generated(&machine.data_dir)
+                    .unwrap()
+                    .is_some(),
                 "{case:?}: no key was generated"
             );
         }

@@ -1057,7 +1057,8 @@ async fn activation_refuses_a_missing_foreign_or_misscoped_starting_set_and_has_
     let refused = |result| {
         matches!(
             result,
-            Err(LocalMachineError::EnforcementRefused(_) | LocalMachineError::ActivationRefused { .. })
+            Err(LocalMachineError::EnforcementRefused(_)
+                | LocalMachineError::ActivationRefused { .. })
         )
     };
     let unsigned = SetDeviceEnforcementRequest {

@@ -6612,7 +6612,10 @@ mod ensure_container {
             service.local.commit_activation_as_if_restarted().await;
 
             assert!(service.local.record().device_enforcement());
-            let off = service.set_device_enforcement(switch(false)).await.unwrap_err();
+            let off = service
+                .set_device_enforcement(switch(false))
+                .await
+                .unwrap_err();
             assert_eq!(off.code(), tonic::Code::PermissionDenied);
             assert!(service.local.record().device_enforcement());
             std::fs::remove_dir_all(data_dir).unwrap();
