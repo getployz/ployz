@@ -907,9 +907,10 @@ impl Client {
         &self,
         machines: &mut [MachineObservation],
     ) -> StorageGaps {
-        let observed = fan_out(&*machines, |machine| {
-            observe_machine_storage(self.clone(), machine.machine.id)
-        })
+        let observed = fan_out(
+            machines.iter().filter(|machine| machine.invites_rpc()),
+            |machine| observe_machine_storage(self.clone(), machine.machine.id),
+        )
         .await;
         for success in observed.successes {
             if let Some(machine) = machines
