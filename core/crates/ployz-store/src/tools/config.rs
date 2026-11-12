@@ -4,54 +4,44 @@ use std::collections::BTreeMap;
 
 use ployz_core::config::FileMode;
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
-    AttachConfig, BatchCommand, ConfigsQuery, CreateConfig, DeleteConfig, EnvironmentName,
-    ProjectName, PutConfigFile, RemoveConfigFile, RenameConfig, Written,
+    AttachConfig, BatchCommand, ConfigsQuery, CreateConfig, DeleteConfig, PutConfigFile,
+    RemoveConfigFile, RenameConfig, Written,
 };
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ConfigWrite {
-    /// Config name. Created when it does not exist.
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    config: ConfigName,
-    /// File name to contents.
-    #[schemars(length(min = 1))]
-    files: BTreeMap<String, String>,
-    /// Octal, e.g. 0440. Omit to keep.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern("^0?[0-7]{1,3}$"))]
-    mode: Option<FileMode>,
-    #[serde(default)]
-    uid: Option<u32>,
-    #[serde(default)]
-    gid: Option<u32>,
-    /// Service to mount it into, with path.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    service: Option<ServiceName>,
-    /// Absolute directory in the Service's containers, with service.
-    #[serde(default)]
-    #[schemars(pattern("^/"))]
-    path: Option<String>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ConfigWrite {
+        /// Config name. Created when it does not exist.
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        config: ConfigName,
+        /// File name to contents.
+        #[schemars(length(min = 1))]
+        files: BTreeMap<String, String>,
+        /// Octal, e.g. 0440. Omit to keep.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern("^0?[0-7]{1,3}$"))]
+        mode: Option<FileMode>,
+        #[serde(default)]
+        uid: Option<u32>,
+        #[serde(default)]
+        gid: Option<u32>,
+        /// Service to mount it into, with path.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        service: Option<ServiceName>,
+        /// Absolute directory in the Service's containers, with service.
+        #[serde(default)]
+        #[schemars(pattern("^/"))]
+        path: Option<String>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for ConfigWrite {
@@ -69,6 +59,7 @@ impl Tool for ConfigWrite {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(&self);
         let mount = match (self.service, self.path) {
             (Some(service), Some(dir)) => Some((service, dir)),
             (None, None) => None,
@@ -94,7 +85,6 @@ impl Tool for ConfigWrite {
         if files.is_empty() {
             return Err(Refusal::invalid("Give at least one file", "files").into());
         }
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let configs = cx.one(&ConfigsQuery {
             environment: scope.clone(),
         })?;
@@ -153,25 +143,16 @@ impl Tool for ConfigWrite {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ConfigRename {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    config: ConfigName,
-    /// New name.
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    to: ConfigName,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name. Omit for the one you are in.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ConfigRename {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        config: ConfigName,
+        /// New name.
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        to: ConfigName,
+        @revision,
+        @place(here),
+    }
 }
 
 impl Tool for ConfigRename {
@@ -184,7 +165,7 @@ impl Tool for ConfigRename {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let rename = BatchCommand::RenameConfig(RenameConfig {
             environment: scope.clone(),
             config: self.config.clone(),
@@ -207,26 +188,17 @@ impl Tool for ConfigRename {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ConfigRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    config: ConfigName,
-    /// One file to remove. Omit to remove the whole Config and unmount it everywhere.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", length(min = 1))]
-    file: Option<ConfigFileName>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ConfigRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        config: ConfigName,
+        /// One file to remove. Omit to remove the whole Config and unmount it everywhere.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", length(min = 1))]
+        file: Option<ConfigFileName>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for ConfigRemove {
@@ -240,7 +212,7 @@ impl Tool for ConfigRemove {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let command = match &self.file {
             Some(file) => BatchCommand::RemoveConfigFile(RemoveConfigFile {
                 environment: scope.clone(),

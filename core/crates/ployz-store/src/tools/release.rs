@@ -5,19 +5,17 @@ use std::collections::BTreeMap;
 
 use ployz_core::config::{ChangeKind, EnvironmentNodeType, ReviewLifecycleKind};
 use ployz_core::{ConfigName, ServiceName};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ToolId;
+use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::{Call, Refusal};
-use super::step::{AcceptedLoss, Gate, RequestKey};
+use super::step::{AcceptedLoss, Gate};
 use crate::catalog::NODE_NAME;
 use crate::{
-    Admit, BatchCommand, Deploy, DestructiveKind, DiffQuery, Discard, DomainChange,
-    EnvironmentName, NodeChange, ProjectName, Publish, ServicesQuery, SettingPath, VolumeName,
-    Written,
+    Admit, BatchCommand, Deploy, DestructiveKind, DiffQuery, Discard, DomainChange, NodeChange,
+    Publish, ServicesQuery, SettingPath, VolumeName, Written,
 };
 
 /// The longest value a review line shows before it cuts.
@@ -35,17 +33,10 @@ pub(crate) fn version_for_loss(
     .map(drop)
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Review {
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct Review {
+        @place(named),
+    }
 }
 
 impl Tool for Review {
@@ -58,7 +49,7 @@ impl Tool for Review {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let diff = cx.one(&DiffQuery { environment: scope })?;
         let destroys = diff
             .effects
@@ -162,32 +153,23 @@ fn shown(value: &Value) -> String {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DiscardInput {
-    /// Only this Service. Omit service, volume and config for everything.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    service: Option<ServiceName>,
-    /// Only this Volume.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    volume: Option<VolumeName>,
-    /// Only this Config.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    config: Option<ConfigName>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DiscardInput {
+        /// Only this Service. Omit service, volume and config for everything.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        service: Option<ServiceName>,
+        /// Only this Volume.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        volume: Option<VolumeName>,
+        /// Only this Config.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        config: Option<ConfigName>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for DiscardInput {
@@ -223,7 +205,7 @@ impl Tool for DiscardInput {
             .map(|path| SettingPath::parse(&path))
             .transpose()
             .map_err(|_| Refusal::internal("A discard path did not parse"))?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let discard = Discard {
             environment: scope.clone(),
             target: None,
@@ -255,42 +237,32 @@ impl Tool for DiscardInput {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeployInput {
-    /// Deploy only these Services. Omit to deploy every Service.
-    #[serde(default)]
-    #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
-    services: Vec<ServiceName>,
-    /// What this ships, in a few words. Shown on the Deployment.
-    #[serde(default)]
-    #[schemars(length(max = 200))]
-    message: Option<String>,
-    /// The reviewed version; refused if what is staged changed since. Required with accept_volume_loss.
-    #[serde(default)]
-    version: Option<String>,
-    /// Volumes whose data this may delete.
-    #[serde(default)]
-    #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
-    accept_volume_loss: Vec<VolumeName>,
-    /// Any id you choose. A call that repeats a key gets the first call's result, not a second deploy.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-    request_key: Option<RequestKey>,
-    /// Save everything staged for the next deploy instead of deploying it.
-    #[serde(default)]
-    skip_deploy: bool,
-    /// Keep running Services the Environment doesn't hold.
-    #[serde(default)]
-    no_prune: bool,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DeployInput {
+        /// Deploy only these Services. Omit to deploy every Service.
+        #[serde(default)]
+        #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
+        services: Vec<ServiceName>,
+        /// What this ships, in a few words. Shown on the Deployment.
+        #[serde(default)]
+        #[schemars(length(max = 200))]
+        message: Option<String>,
+        /// The reviewed version; refused if what is staged changed since. Required with accept_volume_loss.
+        #[serde(default)]
+        version: Option<String>,
+        /// Volumes whose data this may delete.
+        #[serde(default)]
+        #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
+        accept_volume_loss: Vec<VolumeName>,
+        @key["Any id you choose. A call that repeats a key gets the first call's result, not a second deploy."],
+        /// Save everything staged for the next deploy instead of deploying it.
+        #[serde(default)]
+        skip_deploy: bool,
+        /// Keep running Services the Environment doesn't hold.
+        #[serde(default)]
+        no_prune: bool,
+        @place(named),
+    }
 }
 
 impl Tool for DeployInput {
@@ -305,7 +277,7 @@ impl Tool for DeployInput {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         version_for_loss(&self.accept_volume_loss, self.version.as_ref())?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         if self.skip_deploy {
             if !self.services.is_empty() {
                 return Err(Refusal::invalid(

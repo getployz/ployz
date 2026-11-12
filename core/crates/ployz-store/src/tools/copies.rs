@@ -1,22 +1,19 @@
 //! Tools on where a Volume's data is: show it, mirror and sync it, remove the
 //! mirror, move it, release a move that stopped, and restore it from a copy.
 
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{CopiesAnswer, OperationsAnswer, VolumeCopies};
+use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
     AcceptedLoss, Action, Ask, CloudQuery, Gate, RequestKey, ServerName, Subject, VolumeRun,
 };
 use crate::catalog::NODE_NAME;
-use crate::{
-    EnvironmentName, NamespaceQuery, ProjectName, VolumeName, VolumeQuery, VolumeView, VolumesQuery,
-};
+use crate::{EnvironmentRef, NamespaceQuery, VolumeName, VolumeQuery, VolumeView, VolumesQuery};
 
 /// `volume_show` for `volume` where the call is.
 fn volume_show(cx: &Cx<'_>, volume: &VolumeName) -> Call {
@@ -28,12 +25,10 @@ fn volume_show(cx: &Cx<'_>, volume: &VolumeName) -> Call {
 /// The Volume the call names, read alone.
 fn volume(
     cx: &mut Cx<'_>,
+    environment: EnvironmentRef,
     volume: VolumeName,
-    project: Option<&ProjectName>,
-    environment: Option<&EnvironmentName>,
     also: Option<Ask>,
 ) -> Result<(VolumeView, Option<Result<Value, ployz_core::RpcError>>), Stop> {
-    let environment = cx.scope(project, environment);
     let mut asks = vec![store(&VolumeQuery {
         environment,
         volume,
@@ -62,19 +57,14 @@ fn on_volume(
     operate(cx, run, key, wait_seconds)
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeShow {
-    /// Omit for every Volume here.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    volume: Option<VolumeName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeShow {
+        /// Omit for every Volume here.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        volume: Option<VolumeName>,
+        @place,
+    }
 }
 
 impl Tool for VolumeShow {
@@ -89,7 +79,7 @@ impl Tool for VolumeShow {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let environment = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let environment = cx.scope(&self);
         let first = match &self.volume {
             Some(volume) => store(&VolumeQuery {
                 environment: environment.clone(),
@@ -175,28 +165,19 @@ fn copies_of<'a>(
         })
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeMirror {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    server: Option<ServerName>,
-    #[serde(default)]
-    full: bool,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeMirror {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        server: Option<ServerName>,
+        #[serde(default)]
+        full: bool,
+        @wait,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeMirror {
@@ -212,7 +193,7 @@ impl Tool for VolumeMirror {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let mut asks = vec![
             store(&VolumeQuery {
                 environment: scope.clone(),
@@ -279,24 +260,14 @@ impl Tool for VolumeMirror {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeMirrorRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[serde(default)]
-    accept_volume_loss: Vec<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeMirrorRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        @loss,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeMirrorRemove {
@@ -313,14 +284,9 @@ impl Tool for VolumeMirrorRemove {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
+        let scope = cx.scope(&self);
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
-        let (view, _) = volume(
-            cx,
-            self.volume,
-            self.project.as_ref(),
-            self.environment.as_ref(),
-            None,
-        )?;
+        let (view, _) = volume(cx, scope, self.volume, None)?;
         on_volume(
             cx,
             &view,
@@ -331,25 +297,16 @@ impl Tool for VolumeMirrorRemove {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeMove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    to: ServerName,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeMove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        to: ServerName,
+        @wait,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeMove {
@@ -365,13 +322,8 @@ impl Tool for VolumeMove {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let (view, answer) = volume(
-            cx,
-            self.volume,
-            self.project.as_ref(),
-            self.environment.as_ref(),
-            Some(servers()),
-        )?;
+        let scope = cx.scope(&self);
+        let (view, answer) = volume(cx, scope, self.volume, Some(servers()))?;
         let answer = roster(cx, answer)?;
         let to = resolve(&answer, &self.to, "to", true)?.reference();
         on_volume(
@@ -384,27 +336,15 @@ impl Tool for VolumeMove {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeRelease {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[serde(default)]
-    accept_volume_loss: Vec<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeRelease {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        @loss,
+        @wait,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeRelease {
@@ -420,14 +360,9 @@ impl Tool for VolumeRelease {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
+        let scope = cx.scope(&self);
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
-        let (view, _) = volume(
-            cx,
-            self.volume,
-            self.project.as_ref(),
-            self.environment.as_ref(),
-            None,
-        )?;
+        let (view, _) = volume(cx, scope, self.volume, None)?;
         let mut moving = cx.place_args();
         moving.insert("volume".into(), view.volume.volume.name.as_str().into());
         on_volume(
@@ -441,25 +376,16 @@ impl Tool for VolumeRelease {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeRestore {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    from: ServerName,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeRestore {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        from: ServerName,
+        @wait,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeRestore {
@@ -475,13 +401,8 @@ impl Tool for VolumeRestore {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let (view, answer) = volume(
-            cx,
-            self.volume,
-            self.project.as_ref(),
-            self.environment.as_ref(),
-            Some(servers()),
-        )?;
+        let scope = cx.scope(&self);
+        let (view, answer) = volume(cx, scope, self.volume, Some(servers()))?;
         let answer = roster(cx, answer)?;
         let from = resolve(&answer, &self.from, "from", true)?.reference();
         on_volume(

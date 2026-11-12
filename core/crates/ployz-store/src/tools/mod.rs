@@ -11,6 +11,7 @@ mod domain;
 mod environment;
 mod github;
 mod history;
+mod input;
 pub mod logs;
 mod machine;
 mod metrics;
