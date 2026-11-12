@@ -65,6 +65,24 @@ pub fn verify(
     Ok((body, approver))
 }
 
+/// Open a rotation for `cluster` as a Server joining after activation does: signed by one
+/// of `trusted`, the keys its verified join approval names. The joiner is not among the
+/// rotation's Members, so membership is not checked; the join approval vouches for it.
+///
+/// # Errors
+/// Returns the refusal of [`verify_signature`], and [`AuthorityRefusal::Mismatch`] naming a
+/// Cluster for a rotation of another one.
+pub fn verify_for_join(
+    signed: &Signed<SealingRotation>,
+    trusted: &TrustedKeys,
+    cluster: SealingPublicKey,
+    now: Timestamp,
+) -> Result<(SealingRotation, Approver), AuthorityRefusal> {
+    let (body, approver) = verify_signature(signed, trusted, now)?;
+    first_mismatch([(field::CLUSTER, body.cluster == cluster)])?;
+    Ok((body, approver))
+}
+
 /// HPKE associated data binding a recipient key's sealed private half to one rotation, so a
 /// blob sealed for one activation never installs under another.
 #[must_use]

@@ -55,11 +55,77 @@ pub(crate) struct PreparedReset {
 pub(crate) struct Installation {
     body: LocalMachineBody,
     sealing_key: Option<SealingKey>,
+    recipient: Option<JoinedRecipient>,
     devices: Vec<DeviceKey>,
     device_enforcement: bool,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
     enrollment: EnrollRequest,
+}
+
+/// The recipient key a joiner after activation opened from its registration, under a
+/// rotation it verified against the keys its join approval names.
+struct JoinedRecipient {
+    key: SealingKey,
+    rotation: ployz_core::authority::Signed<ployz_core::authority::SealingRotation>,
+    operation: ployz_core::OperationId,
+}
+
+/// What an enrollment installs: the body, the Cluster's key, its approved Devices, whether
+/// it enforces, and the recipient key after activation.
+type Enrolled = (
+    LocalMachineBody,
+    Option<SealingKey>,
+    Vec<DeviceKey>,
+    bool,
+    Option<JoinedRecipient>,
+);
+
+/// The recipient key in `recipient`, when its rotation is for the join's Cluster and signed by
+/// a Device the verified join approval `body` names, and its sealed key opens to the key the
+/// rotation names. Anything else is refused: the joiner installs no recipient key and says so.
+fn joined_recipient(
+    recipient: &ployz_core::JoinRecipient,
+    body: &ployz_core::authority::JoinApproval,
+    wireguard: &crate::network::WireGuardPrivateKey,
+) -> Option<JoinedRecipient> {
+    let trusted = ployz_core::authority::TrustedKeys {
+        devices: body.devices.clone(),
+        passkeys: Vec::new(),
+    };
+    let verified = ployz_core::authority::rotation::verify_for_join(
+        &recipient.rotation,
+        &trusted,
+        body.cluster,
+        ployz_core::authority::Timestamp::now(),
+    );
+    let rotation = match verified {
+        Ok((rotation, _)) => rotation,
+        Err(refusal) => {
+            tracing::warn!(
+                %refusal,
+                "joined without the Cluster's recipient key: its rotation did not verify"
+            );
+            return None;
+        }
+    };
+    let opened = ployz_core::RecipientSecret::open(
+        wireguard.as_bytes(),
+        &ployz_core::authority::rotation::sealed_key_binding(&body.cluster, &rotation.operation),
+        &recipient.sealed,
+    )
+    .map(|secret| SealingKey::from_secret(*secret.secret()))
+    .filter(|key| key.public_key() == rotation.recipient);
+    if opened.is_none() {
+        tracing::warn!(
+            "joined without the Cluster's recipient key: it did not open to the key its rotation names"
+        );
+    }
+    opened.map(|key| JoinedRecipient {
+        key,
+        rotation: recipient.rotation.clone(),
+        operation: rotation.operation,
+    })
 }
 
 impl Installation {
@@ -377,6 +443,7 @@ impl LocalMachineStore {
                 Installation {
                     body: self.record.body.clone(),
                     sealing_key: None,
+                    recipient: None,
                     devices: Vec::new(),
                     device_enforcement: self.record.device_enforcement,
                     wireguard_mtu: request.wireguard_mtu,
@@ -390,7 +457,7 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, devices, device_enforcement) = match role {
+        let (body, sealing_key, devices, device_enforcement, recipient) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -410,7 +477,7 @@ impl LocalMachineStore {
                     public_ip,
                     advertised_endpoints,
                 )?;
-                (body, sealing_key, Vec::new(), false)
+                (body, sealing_key, Vec::new(), false, None)
             }
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
@@ -429,6 +496,7 @@ impl LocalMachineStore {
             Installation {
                 body,
                 sealing_key,
+                recipient,
                 devices,
                 device_enforcement,
                 wireguard_mtu,
@@ -476,16 +544,14 @@ impl LocalMachineStore {
         ))
     }
 
-    fn member(
-        &self,
-        registration: Registered,
-    ) -> Result<(LocalMachineBody, Option<SealingKey>, Vec<DeviceKey>, bool), StoreError> {
+    fn member(&self, registration: Registered) -> Result<Enrolled, StoreError> {
         let Registered {
             assigned_machine: mut machine,
             mut visible_peers,
             target_versions,
             sealing_key,
             devices,
+            recipient,
         } = registration;
         if self.record.id() != machine.id {
             return Err(StoreError::IdentityMismatch);
@@ -506,6 +572,7 @@ impl LocalMachineStore {
             Some((key, approval)) => (Some(key), approval),
             None => (None, None),
         };
+        let mut joined = None;
         let (devices, device_enforcement) = if let Some(approval) = approval {
             let body = approval.open().map_err(StoreError::JoinRefused)?;
             let trusted = if self.record.device_enforcement() {
@@ -554,6 +621,9 @@ impl LocalMachineStore {
                 return Err(StoreError::MissingPeers);
             }
             machine.join_approval = Some(approval);
+            joined = recipient.and_then(|recipient| {
+                joined_recipient(&recipient, &body, &self.record.wireguard_private_key)
+            });
             (body.devices, true)
         } else {
             if self.record.device_enforcement() {
@@ -575,6 +645,7 @@ impl LocalMachineStore {
             sealing_key,
             devices,
             device_enforcement,
+            joined,
         ))
     }
 
@@ -601,7 +672,7 @@ impl LocalMachineStore {
         }
         installed
             .management_clients
-            .extend(installation.devices.into_iter().map(|key| {
+            .extend(installation.devices.iter().map(|&key| {
                 (
                     key.label(),
                     ManagementClientSlot::Live(LiveSlot::Active {
@@ -609,6 +680,33 @@ impl LocalMachineStore {
                     }),
                 )
             }));
+        if let Some(joined) = &installation.recipient {
+            SealingKey::set_recipient_rotation(&self.data_dir, &joined.rotation)?;
+            SealingKey::set_recipient(&self.data_dir, &joined.key)?;
+            let snapshot = installed
+                .trusted_snapshot
+                .get_or_insert_with(super::TrustedSnapshot::default);
+            for member in installed
+                .trusted_machines
+                .iter()
+                .chain(installed.body.machine().map(Into::into).as_ref())
+            {
+                snapshot.add_member(member.clone());
+            }
+            for key in &installation.devices {
+                snapshot.add_key(
+                    key.code(),
+                    super::Evidence::Activation {
+                        operation: joined.operation,
+                    },
+                );
+            }
+            installed.activation = Some(joined.operation);
+            tracing::info!(
+                operation = %joined.operation,
+                "installed the Cluster's recipient key from the join"
+            );
+        }
         self.set_sealing_key(installation.sealing_key.as_ref())?;
         save(&self.data_dir, &installed)?;
         self.record = installed;

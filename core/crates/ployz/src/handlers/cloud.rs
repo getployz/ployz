@@ -1722,6 +1722,7 @@ mod tests {
                             target_versions: Default::default(),
                             sealing_key: None,
                             devices: Vec::new(),
+                            recipient: None,
                         },
                     },
                     &policy,
@@ -1875,6 +1876,7 @@ mod tests {
                                 target_versions: Default::default(),
                                 sealing_key: None,
                                 devices: Vec::new(),
+                                recipient: None,
                             },
                         },
                         &policy,
@@ -2033,6 +2035,7 @@ mod tests {
                     target_versions: Default::default(),
                     devices: Vec::new(),
                     sealing_key: Some(ployz_core::SealedSealingKey::from_bytes(vec![7; 80])),
+                    recipient: None,
                 },
             };
             let identity = test_identity(&join.registration.assigned_machine);

@@ -1126,6 +1126,8 @@ impl LocalMachine {
             self.record().devices().collect(),
         );
         if let Some(approval) = approval {
+            registration.recipient =
+                self.join_recipient(&registration.assigned_machine.public_key)?;
             self.consume_join(restart_approval::JoinResult {
                 approval,
                 reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
@@ -1550,6 +1552,7 @@ fn registered(
         target_versions,
         sealing_key,
         devices,
+        recipient: None,
     }
 }
 

@@ -311,3 +311,145 @@ async fn a_machine_reseals_only_to_its_installed_recipient() {
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// An activated founder holding the recipient key `console_key` named, and the operation.
+async fn with_recipient(
+    console_key: &Signer,
+) -> (
+    LocalMachine,
+    ployz_core::SealingPublicKey,
+    ployz_core::SealingPublicKey,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
+    let (entry, founder, operation, directory, server) =
+        activated(console_key, &Signer::from_seed(&[3; 32])).await;
+    let identity = SealingKey::load(&directory).unwrap().unwrap().public_key();
+    let RecipientKeySet::Generated { recipient } = entry
+        .set_recipient_key(SetRecipientKeyRequest::Generate { operation })
+        .await
+        .unwrap()
+    else {
+        panic!("not generated");
+    };
+    entry
+        .set_recipient_key(SetRecipientKeyRequest::Install {
+            rotation: rotation(
+                console_key,
+                identity,
+                operation,
+                recipient,
+                vec![(&founder).into()],
+            ),
+            sealed: None,
+        })
+        .await
+        .unwrap();
+    (entry, identity, recipient, directory, server)
+}
+
+/// Approve `joiner`'s join through `entry` with `signer`, and the registration it answers.
+async fn approved_registration(
+    entry: &LocalMachine,
+    signer: &Signer,
+    joiner: &LocalMachineStore,
+) -> ployz_core::Registered {
+    let mut request = request("joiner", joiner.record().private_key().public_key());
+    request.machine_id = joiner.record().id();
+    assert!(entry.register(request.clone()).await.is_err());
+    let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    body.signer = signer.public().into();
+    entry
+        .approve_join(ployz_core::ApproveJoinRequest {
+            approval: Signed::sign(&body, signer).unwrap(),
+        })
+        .await
+        .unwrap();
+    entry.register(request).await.unwrap()
+}
+
+fn as_member(registration: ployz_core::Registered) -> ployz_core::EnrollRequest {
+    ployz_core::EnrollRequest {
+        role: ployz_core::EnrollAs::Member { registration },
+        wireguard_mtu: None,
+        pinned: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn a_server_joining_after_activation_opens_values_sealed_after_it() {
+    let console_key = Signer::from_seed(&[1; 32]);
+    let (entry, identity, recipient, directory, server) = with_recipient(&console_key).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let registration = approved_registration(&entry, &console_key, &joiner).await;
+    assert!(registration.recipient.is_some());
+
+    joiner.enroll(as_member(registration)).unwrap();
+
+    let keys = crate::sealing_key::ClusterKeys::load(join_dir.path())
+        .unwrap()
+        .unwrap();
+    assert_eq!(keys.sealing_to().public_key(), recipient);
+    let sealed = ployz_core::seal_platform(
+        &identity,
+        &recipient,
+        PlatformPurpose::PrivateAccess,
+        b"tskey",
+    )
+    .unwrap();
+    assert_eq!(
+        keys.open_platform(PlatformPurpose::PrivateAccess, &sealed)
+            .unwrap()
+            .as_slice(),
+        b"tskey"
+    );
+    assert!(joiner.record().activation().is_some());
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A compromised Cloud relays the registration, so it can swap the rotation for one its own
+/// key signed, naming a recipient it holds.
+#[tokio::test]
+async fn a_joiner_refuses_a_forged_rotation_in_its_capsule() {
+    let console_key = Signer::from_seed(&[1; 32]);
+    let (entry, identity, _, directory, server) = with_recipient(&console_key).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let mut registration = approved_registration(&entry, &console_key, &joiner).await;
+    let real = registration.recipient.clone().unwrap();
+    let operation = real.rotation.open().unwrap().operation;
+    let cloud_key = Signer::from_seed(&[7; 32]);
+    let cloud_recipient = ployz_core::RecipientSecret::generate();
+    let joiner_key = joiner.record().private_key().public_key();
+    let forged = ployz_core::JoinRecipient {
+        rotation: rotation(
+            &cloud_key,
+            identity,
+            operation,
+            cloud_recipient.public(),
+            Vec::new(),
+        ),
+        sealed: cloud_recipient
+            .seal_to(
+                &joiner_key,
+                &ployz_core::authority::rotation::sealed_key_binding(&identity, &operation),
+            )
+            .unwrap(),
+    };
+    registration.recipient = Some(forged);
+
+    joiner.enroll(as_member(registration)).unwrap();
+
+    assert!(
+        SealingKey::load_recipient(join_dir.path())
+            .unwrap()
+            .is_none()
+    );
+    assert!(joiner.record().activation().is_none());
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}

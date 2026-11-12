@@ -80,6 +80,10 @@ pub(crate) const DURABLE: &[(&str, Rule)] = &[
     ),
     ("recipient-generated.key", Rule::Deleted),
     (
+        "recipient-rotation.json",
+        Rule::Kept("the signed rotation that named recipient.key, which a joiner verifies"),
+    ),
+    (
         "machine.db",
         Rule::Kept("Container specs restore only what was placed, with pinned images"),
     ),

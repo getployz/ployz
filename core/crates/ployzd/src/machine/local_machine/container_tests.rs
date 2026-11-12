@@ -302,6 +302,7 @@ async fn joining_admits_direct_create() {
                         target_versions: Default::default(),
                         sealing_key: None,
                         devices: Vec::new(),
+                        recipient: None,
                     },
                 },
                 wireguard_mtu: None,

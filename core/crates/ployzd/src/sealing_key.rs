@@ -23,6 +23,9 @@ const RECIPIENT_FILE_NAME: &str = "recipient.key";
 /// A recipient key this Machine generated for one activation, held unused until a person
 /// names it: the 32-byte key, then the activation's operation ID.
 const GENERATED_FILE_NAME: &str = "recipient-generated.key";
+/// The signed rotation that named the installed recipient key, which a joiner after
+/// activation verifies before it installs the key.
+const ROTATION_FILE_NAME: &str = "recipient-rotation.json";
 const INFO: &[u8] = b"ployz-sealing-key-v1";
 const SHARE_INFO: &[u8] = b"ployz-sealing-key-share-v1";
 /// Distinct from every other label this key is expanded or sealed under, such as the join
@@ -220,6 +223,29 @@ impl SealingKey {
 
     pub(crate) fn set_recipient(data_dir: &Path, key: &Self) -> io::Result<()> {
         crate::filesystem::atomic_write(&data_dir.join(RECIPIENT_FILE_NAME), &key.0, 0o600)
+    }
+
+    /// Keep the signed rotation that named the installed recipient key.
+    pub(crate) fn set_recipient_rotation(
+        data_dir: &Path,
+        rotation: &ployz_core::authority::Signed<ployz_core::authority::SealingRotation>,
+    ) -> io::Result<()> {
+        let bytes = serde_json::to_vec(rotation).map_err(io::Error::other)?;
+        crate::filesystem::atomic_write(&data_dir.join(ROTATION_FILE_NAME), &bytes, 0o600)
+    }
+
+    /// The rotation [`Self::set_recipient_rotation`] kept, or `None` with no file.
+    pub(crate) fn load_recipient_rotation(
+        data_dir: &Path,
+    ) -> io::Result<Option<ployz_core::authority::Signed<ployz_core::authority::SealingRotation>>>
+    {
+        match fs::read(data_dir.join(ROTATION_FILE_NAME)) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// The key this Machine generated for `operation`, generating and keeping it on the

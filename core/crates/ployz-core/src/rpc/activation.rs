@@ -103,6 +103,17 @@ pub enum RecipientKeySet {
     Shared { to: MachineId, sealed: Ciphertext },
 }
 
+/// The Cluster's recipient key as an activated Machine hands it to a Server joining after
+/// activation: its private half sealed to the joiner's WireGuard key, bound to the rotation
+/// that named it. The joiner installs it only once that rotation verifies against the keys
+/// its own join approval names.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct JoinRecipient {
+    pub rotation: Signed<SealingRotation>,
+    pub sealed: Ciphertext,
+}
+
 /// One stored value to seal again to this Machine's recipient key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "kind")]

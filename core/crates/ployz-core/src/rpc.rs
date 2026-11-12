@@ -710,6 +710,7 @@ mod set_management_client_wire {
                     target_versions: BTreeMap::new(),
                     sealing_key: None,
                     devices: Vec::new(),
+                    recipient: None,
                 },
             },
             wireguard_mtu: Some(1380),

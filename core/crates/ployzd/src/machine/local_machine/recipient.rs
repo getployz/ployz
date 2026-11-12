@@ -102,9 +102,19 @@ impl LocalMachine {
                     return Err(refused("the recipient key"));
                 }
                 match SealingKey::load_recipient(data_dir).map_err(Error::RecipientKey)? {
-                    Some(held) if held.public_key() == body.recipient => {}
+                    Some(held) if held.public_key() == body.recipient => {
+                        if SealingKey::load_recipient_rotation(data_dir)
+                            .map_err(Error::RecipientKey)?
+                            .is_none()
+                        {
+                            SealingKey::set_recipient_rotation(data_dir, &rotation)
+                                .map_err(Error::RecipientKey)?;
+                        }
+                    }
                     Some(_) => return Err(refused("the recipient key")),
                     None => {
+                        SealingKey::set_recipient_rotation(data_dir, &rotation)
+                            .map_err(Error::RecipientKey)?;
                         SealingKey::set_recipient(data_dir, &key).map_err(Error::RecipientKey)?;
                         tracing::info!(
                             recipient = %body.recipient,
@@ -137,6 +147,40 @@ impl LocalMachine {
                 Ok(RecipientKeySet::Shared { to, sealed })
             }
         }
+    }
+
+    /// The recipient key this Machine holds, sealed to a joiner whose join approval it
+    /// verified, with the rotation that named it. `None` before a rotation installed one.
+    ///
+    /// # Errors
+    /// Returns [`Error::RecipientKey`] when the key or rotation can't be read, or the key
+    /// can't be sealed to `joiner`.
+    pub(crate) fn join_recipient(
+        &self,
+        joiner: &ployz_core::WireGuardPublicKey,
+    ) -> Result<Option<ployz_core::JoinRecipient>, Error> {
+        let data_dir = self.owner.data_dir();
+        let (Some(identity), Some(held), Some(rotation)) = (
+            SealingKey::load(data_dir).map_err(Error::RecipientKey)?,
+            SealingKey::load_recipient(data_dir).map_err(Error::RecipientKey)?,
+            SealingKey::load_recipient_rotation(data_dir).map_err(Error::RecipientKey)?,
+        ) else {
+            return Ok(None);
+        };
+        let body = rotation.open().map_err(|refusal| Error::RecipientRefused {
+            capability: ployz_core::SET_RECIPIENT_KEY_CAPABILITY,
+            refusal,
+        })?;
+        if body.recipient != held.public_key() {
+            return Ok(None);
+        }
+        let sealed = RecipientSecret::from_secret(*held.secret())
+            .seal_to(
+                joiner,
+                &sealed_key_binding(&identity.public_key(), &body.operation),
+            )
+            .map_err(|_| Error::RecipientKey(std::io::Error::other("a joiner's WireGuard key")))?;
+        Ok(Some(ployz_core::JoinRecipient { rotation, sealed }))
     }
 
     /// Seal each value again to this Machine's own recipient key. The request names no key,

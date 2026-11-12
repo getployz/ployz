@@ -449,6 +449,7 @@ fn join(path: &Path) {
                             target_versions: [("actor".into(), 1)].into(),
                             sealing_key: None,
                             devices: Vec::new(),
+                            recipient: None,
                         },
                     },
                     wireguard_mtu: None,

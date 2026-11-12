@@ -234,6 +234,11 @@ pub struct Registered {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<crate::DeviceKey>>")]
     pub devices: Vec<crate::DeviceKey>,
+    /// After activation, the Cluster's recipient key for the joiner. Absent before
+    /// activation, without a join approval, and from an issuer that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub recipient: Option<crate::JoinRecipient>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
