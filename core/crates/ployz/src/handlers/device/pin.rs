@@ -7,7 +7,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::SealingPublicKey;
 use serde::Serialize;
 
-use super::super::{Error, config_path, leaf_matches, recovery, runtime, server};
+use super::super::{Error, config_path, leaf_matches, recovery, route, runtime};
 use crate::cli::base;
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, Organization};
@@ -44,7 +44,7 @@ struct Pinned<'a> {
 pub(crate) fn pin(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let runtime = runtime()?;
-    let Some(credential) = server::signed_in(&runtime, matches)? else {
+    let Some(credential) = route::signed_in(&runtime, matches)? else {
         return Err(Error::coded(
             ployz_core::RpcErrorCode::Unauthenticated,
             "Sign in first: the key is pinned for the Organization you're signed in to.",

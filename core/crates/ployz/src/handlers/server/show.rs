@@ -10,7 +10,8 @@ use ployz_core::{
 };
 use serde_json::{Value, json};
 
-use super::{connect_or_none, has_no_servers, signed_in, waiting};
+use super::super::route::{connect_or_none, has_no_servers, signed_in};
+use super::waiting;
 use crate::{
     cluster::StorageGaps,
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
@@ -285,8 +286,8 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
         Err(Unshown::Failed(error)) => (error, false),
     };
     let report = error.report();
-    let missing = report.code == RpcErrorCode::NotFound || has_no_servers(&report);
-    let unreachable = super::servers_unanswered(&report);
+    let missing = report.code == RpcErrorCode::NotFound || has_no_servers(&error);
+    let unreachable = super::super::route::servers_unanswered(&error);
     // An inherited PLOYZ_CONNECT or PLOYZ_CONTEXT that reached no daemon was never asked.
     let unasked = unconnected && waiting::inherits_a_connection(leaf);
     if !(missing || unreachable || unasked) || waiting::points_elsewhere(leaf) {
@@ -324,7 +325,7 @@ fn server(root: &ArgMatches, selector: &str) -> Result<(), Unshown> {
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime().map_err(Unshown::Failed)?.block_on(async {
-        let (mut client, held) = super::connect_held(leaf, context)
+        let (mut client, held) = super::super::route::connect_held(leaf, context)
             .await
             .map_err(Unshown::of)?;
         let direct = Direct {
@@ -489,9 +490,10 @@ async fn read_direct(
         return None;
     }
     let name = target.name.clone();
-    let server = super::connect_only(direct.leaf, direct.context, direct.held, &target_id)
-        .await
-        .ok()??;
+    let server =
+        super::super::route::connect_only(direct.leaf, direct.context, direct.held, &target_id)
+            .await
+            .ok()??;
     // Untargeted, so the Server answers for itself rather than resolving the selector again
     // against its own view, where the name may lead elsewhere.
     let details = server

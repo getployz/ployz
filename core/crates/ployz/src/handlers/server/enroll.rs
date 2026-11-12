@@ -19,9 +19,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{base, env, positional, switch, value};
+use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{CredentialStore, DEFAULT_CLOUD, LoginError, Organization};
+use crate::cloud_login::{CredentialStore, LoginError, Organization};
+use crate::cloud_origin::{CloudOrigin, DEFAULT_CLOUD};
+use crate::env;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
@@ -374,7 +376,7 @@ async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(),
 /// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin, or reads
 /// an exported `PLOYZ_ENROLL_TOKEN`, which plain `sudo` would drop.
 fn pasted_command(cloud: &str, shape: &[String]) -> String {
-    let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
+    let cloud_flag = if cloud == CloudOrigin::default_cloud().as_str() {
         String::new()
     } else {
         format!(" --cloud-url '{cloud}'")

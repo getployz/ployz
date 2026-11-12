@@ -9,8 +9,8 @@ use std::{
 };
 
 use ployz_core::{
-    InspectRequest, LeaveRequest, ListMachinesRequest, ONE_TARGET_HEADER, OpaquePayload,
-    RpcRequestBody, SetDeviceEnforcementRequest,
+    InspectRequest, LeaveRequest, ListMachinesRequest, MembershipObservation, ONE_TARGET_HEADER,
+    OpaquePayload, RpcRequestBody, SetDeviceEnforcementRequest,
 };
 use tonic::{Request, Response, Status, Streaming, transport::Channel};
 
@@ -561,4 +561,59 @@ async fn machines_and_machine_list_give_up_after_the_machine_list_deadline() {
             .unwrap_err(),
     );
     silent_server.abort();
+}
+
+fn observed(id: char, membership: MembershipObservation) -> MachineObservation {
+    MachineObservation::new(
+        crate::global_fixtures::machine(id, &format!("machine-{id}")),
+        membership,
+    )
+}
+
+fn failed_ids<T>(result: &PartialResult<T, RpcError>) -> Vec<MachineId> {
+    result.failures.iter().map(|each| each.machine_id).collect()
+}
+
+/// A read to every Machine in a list leaves out the ones that do not invite an RPC, and reports
+/// the others in the order the list gave them, whichever answered first.
+#[tokio::test]
+async fn a_read_fan_out_omits_machines_that_do_not_invite_it_and_reports_the_rest_in_list_order() {
+    let (pinned, _) = pinned(false).await;
+    let machines = [
+        observed('c', MembershipObservation::Up),
+        observed('b', MembershipObservation::Down),
+        observed('a', MembershipObservation::Up),
+    ];
+
+    let storage = pinned.client.inspect_storage(&machines).await;
+    assert!(storage.successes.is_empty());
+    assert_eq!(failed_ids(&storage), [machine_id('c'), machine_id('a')]);
+    assert_eq!(storage.omissions, [machine_id('b')]);
+
+    let volumes = pinned.client.list_volumes(&machines).await;
+    assert!(volumes.successes.is_empty());
+    assert_eq!(failed_ids(&volumes), [machine_id('c'), machine_id('a')]);
+    assert_eq!(volumes.omissions, [machine_id('b')]);
+
+    // The Machines asked for images are named by the caller, not filtered by membership.
+    let targets = [
+        machines[0].machine.clone(),
+        machines[1].machine.clone(),
+        machines[2].machine.clone(),
+    ];
+    let images = pinned.client.list_images(None, &targets).await;
+    assert!(images.successes.is_empty());
+    assert_eq!(
+        failed_ids(&images),
+        [machine_id('c'), machine_id('b'), machine_id('a')]
+    );
+    assert!(images.omissions.is_empty());
+
+    assert!(
+        pinned
+            .client
+            .observe_docker_disks(&machines)
+            .await
+            .is_empty()
+    );
 }

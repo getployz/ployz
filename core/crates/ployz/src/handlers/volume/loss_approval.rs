@@ -45,7 +45,7 @@ pub(super) fn sign_restore(
     };
     let (namespace, docker) = docker_volume(store, volume, volume_id, environment)?;
     let seen = super::super::runtime()?.block_on(async {
-        let client = super::super::server::connect(matches, context(matches)).await?;
+        let client = super::super::route::connect(matches, context(matches)).await?;
         copies(&client, &docker).await
     })?;
     let Some(workflow) = restore_workflow(from, plan(volume, &docker, from, &seen)?)? else {
@@ -90,7 +90,7 @@ pub(super) fn sign_removal(
     };
     let (namespace, docker) = docker_volume(store, volume, volume_id, environment)?;
     let seen = super::super::runtime()?.block_on(async {
-        let client = super::super::server::connect(matches, context(matches)).await?;
+        let client = super::super::route::connect(matches, context(matches)).await?;
         copies(&client, &docker).await
     })?;
     let mirror = format!("{volume}-{slot}");

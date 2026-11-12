@@ -127,7 +127,7 @@ pub enum ProvisionError {
     CleanupAfter {
         primary: Box<ProvisionError>,
         #[source]
-        causes: Option<crate::failure::JoinedChain>,
+        causes: Option<ployz_core::error_chain::JoinedChain>,
         cleanup: Box<ProvisionError>,
         /// The command that removes what was left behind.
         remove: String,
@@ -562,7 +562,7 @@ fn finish_remote(
         (Err(primary), Ok(())) => Err(primary),
         (Ok(()), Err(cleanup)) => Err(cleanup),
         (Err(primary), Err(cleanup)) => Err(ProvisionError::CleanupAfter {
-            causes: crate::failure::JoinedChain::of(error_chain::causes(&primary)),
+            causes: error_chain::JoinedChain::of(error_chain::causes(&primary)),
             primary: Box::new(primary),
             cleanup: Box::new(cleanup),
             remove,

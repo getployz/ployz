@@ -33,10 +33,10 @@ use super::store::{
 };
 use super::{Error, config_path, leaf_matches};
 use crate::checkin::{LocalCheckin, Paths, Seen};
-use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
 use crate::context::{Config, ConfigError, ContextError, select_connections};
+use crate::env;
 use crate::ui::{Cell, Fields, Tone};
 
 pub(super) fn link_command(command: Command) -> Command {
@@ -1173,7 +1173,7 @@ impl Servers {
     }
 }
 
-/// In `server::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
+/// In `route::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
 fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     let via = |via, context| Servers {
         via,

@@ -19,7 +19,7 @@ use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
 use serde_json::json;
 
 use super::super::store::Store;
-use super::super::{Error, server};
+use super::super::{Error, route};
 use crate::image::{PinError, pin_public};
 
 /// A signed approval, the plan version it approves, and what it approved.
@@ -232,7 +232,7 @@ pub(in crate::handlers) fn probe(matches: &ArgMatches) -> Probe {
     };
     let observed = runtime.block_on(async {
         tokio::time::timeout(PROBE_TIMEOUT, async {
-            let mut client = server::connect(matches, context).await.ok()?;
+            let mut client = route::connect(matches, context).await.ok()?;
             client.machines().await.ok()
         })
         .await

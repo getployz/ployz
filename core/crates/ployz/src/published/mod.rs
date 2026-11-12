@@ -23,7 +23,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{self, CredentialStore, DEFAULT_CLOUD, LoginError};
+use crate::cloud_login::{self, CredentialStore, LoginError};
+use crate::cloud_origin::CloudOrigin;
 
 /// The manifest one Cloud serves, as `ployz` uses it.
 #[derive(Debug, Clone)]
@@ -182,7 +183,7 @@ impl Setup {
             .flatten();
         let configured = named.is_some() || token;
         Self {
-            cloud: named.unwrap_or_else(|| crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD)),
+            cloud: named.unwrap_or_else(|| CloudOrigin::default_cloud().into_string()),
             configured,
             config: config.to_path_buf(),
             dir: crate::config_dir::ConfigDir::new(config).published(),
@@ -230,14 +231,14 @@ impl Setup {
     /// The setup the process environment names, as `cli::command()` reads it before
     /// any argument is parsed.
     pub(crate) fn from_env() -> Self {
-        use crate::cli::env;
+        use crate::env;
         let config = std::env::var(env::CONFIG)
             .ok()
             .filter(|path| !path.is_empty())
             .unwrap_or_else(crate::context::default_config_path);
         Self::beside(
             &crate::context::expand_home(Path::new(&config)),
-            std::env::var(env::CLOUD_URL).ok(),
+            CloudOrigin::named_by_env(),
         )
     }
 

@@ -39,6 +39,7 @@ pub(crate) mod private_access;
 pub(crate) mod project;
 pub(crate) mod recovery;
 pub(crate) mod review;
+mod route;
 pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
@@ -345,7 +346,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let Some(verb) = verbs::find(&path) else {
         let setup = crate::published::Setup::beside(
             &config_path(leaf_matches(matches))?,
-            std::env::var(crate::cli::env::CLOUD_URL).ok(),
+            crate::cloud_origin::CloudOrigin::named_by_env(),
         );
         if let Some(cached) = setup.cached()
             && let Some(published) = cached.find(&path)
@@ -421,7 +422,7 @@ pub(super) fn completion(root: &ArgMatches) -> Result<(), Error> {
         .completer(&shell.to_string())
         .ok_or_else(|| Error::usage("unsupported completion shell"))?;
     completer.write_registration(
-        crate::cli::env::COMPLETE,
+        crate::env::COMPLETE,
         "ployz",
         "ployz",
         "ployz",
@@ -659,7 +660,7 @@ where
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        let mut client = server::connect(leaf, context).await?;
+        let mut client = route::connect(leaf, context).await?;
         work(&mut client).await
     })
 }
@@ -673,7 +674,7 @@ where
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        let mut client = server::connect_full(leaf, context).await?;
+        let mut client = route::connect_full(leaf, context).await?;
         work(&mut client).await
     })
 }
@@ -689,7 +690,7 @@ where
         &'a mut crate::connect::Client,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
 {
-    with_lister(root, || Err(server::no_servers()), work)
+    with_lister(root, || Err(route::no_servers()), work)
 }
 
 /// [`with_reader`] for a list: an Organization with no Servers yet runs `empty` instead.
@@ -706,9 +707,9 @@ where
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        match server::reach(leaf, context).await? {
-            Some(server::Reach::Dial(mut client)) => work(&mut client).await.map(|()| None),
-            Some(server::Reach::Ask(credential)) => Ok(Some(credential)),
+        match route::reach(leaf, context).await? {
+            Some(route::Reach::Dial(mut client)) => work(&mut client).await.map(|()| None),
+            Some(route::Reach::Ask(credential)) => Ok(Some(credential)),
             None => empty().map(|()| None),
         }
     })

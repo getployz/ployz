@@ -68,7 +68,7 @@ pub(in crate::handlers) fn set(root: &ArgMatches) -> Result<(), Error> {
         return Err(Error::usage("Give --channel, --automatic, or both."));
     }
     let runtime = runtime()?;
-    let credential = super::signed_in(&runtime, matches)?.ok_or_else(|| {
+    let credential = super::super::route::signed_in(&runtime, matches)?.ok_or_else(|| {
         Error::coded(
             RpcErrorCode::Unauthenticated,
             "Sign in with ployz login, then try again.",

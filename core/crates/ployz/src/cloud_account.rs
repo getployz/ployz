@@ -11,15 +11,17 @@ use ployz_core::{Departed, MachineId, MachineName, RpcError, cloud_contract};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::cloud_enroll::cloud_origin;
-use crate::cloud_login::{
-    self, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Secret, SignedIn,
-};
+use crate::cloud_login::{self, CredentialStore, LoginError, Organization, Secret, SignedIn};
+use crate::cloud_origin::CloudOrigin;
 
 /// How long a call Cloud answers only after reading the Servers waits for that answer.
 /// Cloud may spend up to 50s reading them to plan a clean, so the client's 15s default
 /// would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Outlasts the longest wait a tool may ask for and matches the default build limit. A
+/// Deployment or a Cloud operation goes on after ployz mcp stops waiting for it.
+pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Via {
@@ -93,7 +95,8 @@ pub(crate) async fn credential(
         return Err(LoginError::TokenMalformed);
     }
     Ok(Credential::Token {
-        cloud: named_cloud(store, true, cloud)?.unwrap_or_else(|| cloud_origin(DEFAULT_CLOUD)),
+        cloud: named_cloud(store, true, cloud)?
+            .unwrap_or_else(|| CloudOrigin::default_cloud().into_string()),
         token: Secret::new(token),
         from: TokenFrom::Env,
     })
@@ -102,7 +105,7 @@ pub(crate) async fn credential(
 /// `PLOYZ_TOKEN` as set, without the whitespace a paste into a CI secret or
 /// `.env` file leaves around it; a token never holds any.
 pub(crate) fn env_token() -> Option<String> {
-    pasted(std::env::var(crate::cli::env::TOKEN).ok())
+    pasted(std::env::var(crate::env::TOKEN).ok())
 }
 
 fn pasted(token: Option<String>) -> Option<String> {
@@ -135,7 +138,7 @@ pub(crate) fn named_cloud(
         },
         cloud => store.cloud()?.or(cloud),
     };
-    Ok(named.map(|cloud| cloud_origin(&cloud)))
+    Ok(named.map(|cloud| CloudOrigin::new(&cloud).into_string()))
 }
 
 /// [`credential`] from `PLOYZ_TOKEN` and `PLOYZ_CLOUD_URL`: the one way commands
@@ -145,12 +148,7 @@ pub(crate) fn named_cloud(
 ///
 /// Returns the stored sign-in's [`LoginError`] when there is no token.
 pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, LoginError> {
-    credential(
-        store,
-        env_token(),
-        std::env::var(crate::cli::env::CLOUD_URL).ok(),
-    )
-    .await
+    credential(store, env_token(), CloudOrigin::named_by_env()).await
 }
 
 /// The Organization `credential` acts in: the device's, or the token's own.
@@ -864,7 +862,7 @@ pub(crate) async fn follow_operation<T: DeserializeOwned>(
         credential,
         path,
         doing,
-        tokio::time::Instant::now() + crate::handlers::mcp::CALL_DEADLINE,
+        tokio::time::Instant::now() + CALL_DEADLINE,
     )
     .await
 }
@@ -881,7 +879,7 @@ async fn follow_operation_until<T: DeserializeOwned>(
             StoreCallError::Refused(RpcError::unavailable(format!(
                 "Stopped waiting after {} minutes. {doing} keeps running in Ployz Cloud and \
                      finishes on its own; this command no longer reports it.",
-                crate::handlers::mcp::CALL_DEADLINE.as_secs() / 60
+                CALL_DEADLINE.as_secs() / 60
             )))
         })
 }

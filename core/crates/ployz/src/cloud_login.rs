@@ -16,8 +16,6 @@ use ployz_core::cloud_contract::CLIENT_ID;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// The Cloud a sign-in goes to when none is named or stored.
-pub(crate) const DEFAULT_CLOUD: &str = "ployz.dev";
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -304,7 +302,7 @@ pub(crate) enum Start {
 ///
 /// Returns [`LoginError::OtherCloud`] when signed in elsewhere, or a Cloud or store failure.
 pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
-    let cloud = crate::cloud_enroll::cloud_origin(cloud);
+    let cloud = crate::cloud_origin::CloudOrigin::new(cloud).into_string();
     let http = http()?;
     match store.replaceable()? {
         Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {

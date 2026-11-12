@@ -89,10 +89,10 @@ src/handlers/device.rs::sign_waiting_join	op::PendingJoins	call	unary	-	redial	r
 src/handlers/recovery.rs::recover_with	op::RecoverSealingKey	call_repeatable	setup	wait(WAIT)	redial	keyed
 src/handlers/recovery.rs::require	op::DescribeContract	call_repeatable	setup	wait(WAIT)	redial	read
 src/handlers/recovery.rs::wrap_sealing_key	op::WrapSealingKey	call_repeatable	setup	wait(WAIT)	redial	keyed
+src/handlers/route.rs::connect_avoiding	op::DescribeContract	call	unary	-	redial	read
+src/handlers/route.rs::connect_full_avoiding	op::DescribeContract	call	unary	-	redial	read
+src/handlers/route.rs::connect_full_avoiding	op::DescribeContract	call	unary	-	redial	read
 src/handlers/server.rs::apply_update	op::UpdateMachine	invoke_answered	single	target(TARGET_RPC_TIMEOUT)	-	once
-src/handlers/server.rs::connect_avoiding	op::DescribeContract	call	unary	-	redial	read
-src/handlers/server.rs::connect_full_avoiding	op::DescribeContract	call	unary	-	redial	read
-src/handlers/server.rs::connect_full_avoiding	op::DescribeContract	call	unary	-	redial	read
 src/handlers/server.rs::ingress_off	op::Inspect	invoke_answered	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/handlers/server.rs::nothing_serves	op::Inspect	invoke_answered	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/handlers/server.rs::nothing_serves	op::ListContainers	invoke_answered	single	target(TARGET_RPC_TIMEOUT)	-	once

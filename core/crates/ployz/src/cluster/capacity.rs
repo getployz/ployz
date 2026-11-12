@@ -2,44 +2,39 @@
 
 use std::collections::BTreeMap;
 
-use futures_util::future::join_all;
 use ployz_core::{
-    BridgeEndpointCapacity, InspectRequest, MachineId, MachineObservation, MachineTarget, op,
+    BridgeEndpointCapacity, InspectRequest, MachineId, MachineObservation, MachineTarget, RpcError,
+    op,
 };
 
-use super::{Call, Client};
+use super::{Call, Client, fan_out};
 
 pub(super) async fn observe(
     client: &Client,
     machines: &[MachineObservation],
 ) -> BTreeMap<MachineId, BridgeEndpointCapacity> {
-    let requests = machines.iter().filter_map(|machine| {
-        let machine_id = machine.machine.id;
-        machine.invites_rpc().then(|| {
-            let mut client = client.clone();
-            async move {
-                let result = client
-                    .call::<op::Inspect>(
-                        InspectRequest {
-                            telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
-                            ..Default::default()
-                        },
-                        Call::read()
-                            .to(&MachineTarget::from(&machine_id))
-                            .budget(crate::connect::target_read_timeout()),
-                    )
-                    .await
-                    .map_err(crate::connect::rpc_error);
-                (machine_id, result)
-            }
-        })
-    });
-    join_all(requests)
-        .await
+    let observed = fan_out(machines, |machine| {
+        let mut client = client.clone();
+        async move {
+            let response = client
+                .call::<op::Inspect>(
+                    InspectRequest {
+                        telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
+                        ..Default::default()
+                    },
+                    Call::read()
+                        .to(&MachineTarget::from(&machine.machine.id))
+                        .budget(crate::connect::target_read_timeout()),
+                )
+                .await
+                .map_err(crate::connect::rpc_error)?;
+            Ok::<_, RpcError>(response.telemetry.map(|telemetry| telemetry.into_bridge()))
+        }
+    })
+    .await;
+    observed
+        .successes
         .into_iter()
-        .filter_map(|(machine_id, response)| {
-            let bridge = response.ok()?.telemetry?.into_bridge();
-            Some((machine_id, bridge))
-        })
+        .map(|success| (success.machine_id, success.value))
         .collect()
 }

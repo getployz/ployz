@@ -149,6 +149,25 @@ pub struct PartialResult<T, E> {
 }
 
 impl<T, E> PartialResult<T, E> {
+    /// No target has answered yet.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        }
+    }
+
+    /// Keep one target's outcome: a failure, an answer, or none, which is an omission.
+    pub fn record(&mut self, machine_id: MachineId, outcome: Result<Option<T>, E>) {
+        match outcome {
+            Ok(Some(value)) => self.successes.push(MachineSuccess { machine_id, value }),
+            Ok(None) => self.omissions.push(machine_id),
+            Err(error) => self.failures.push(MachineFailure { machine_id, error }),
+        }
+    }
+
     #[must_use]
     pub fn all_targets_succeeded(&self) -> bool {
         self.failures.is_empty() && self.omissions.is_empty()

@@ -115,7 +115,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
     args.extend(allow_downgrade.then_some("--allow-downgrade"));
     let rerun = super::super::rerun(matches, &args);
     let runtime = runtime()?;
-    if let Some(credential) = super::cloud_runs(&runtime, matches)? {
+    if let Some(credential) = super::super::route::cloud_runs(&runtime, matches)? {
         let direct = direct(root, &args)?;
         return through_cloud(&runtime, matches, &credential, &release, &selectors, direct);
     }
@@ -183,7 +183,7 @@ fn through_cloud(
     };
     // Ids route the runs, and only the Engine knows the names prose says.
     let servers = runtime.block_on(async {
-        let mut client = super::connect(matches, None).await?;
+        let mut client = super::super::route::connect(matches, None).await?;
         selected_machines(&mut client, selectors).await
     })?;
     let unattempted = |from: usize| servers.get(from..).unwrap_or_default();

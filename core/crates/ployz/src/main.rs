@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     clap_complete::CompleteEnv::with_factory(ployz::cli::command)
-        .var(ployz::cli::env::COMPLETE)
+        .var(ployz::env::COMPLETE)
         .complete();
     ployz::ui::exit(ployz::handlers::run())
 }

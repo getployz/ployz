@@ -121,8 +121,7 @@ pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
 pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 /// How long a followed Deployment may sit queued before the follow says why it waits.
 fn unclaimed_wait() -> Duration {
-    crate::cli::env::seconds(crate::cli::env::DEPLOY_UNCLAIMED_SECONDS)
-        .unwrap_or(Duration::from_secs(30))
+    crate::env::seconds(crate::env::DEPLOY_UNCLAIMED_SECONDS).unwrap_or(Duration::from_secs(30))
 }
 
 pub(super) fn deployment_group(command: Command) -> Command {
@@ -1147,7 +1146,7 @@ fn undecided(unresolved: &[String]) -> Option<String> {
 }
 
 /// The plan's warning when no Server answers: the deploy waits on one.
-fn cant_run(silent: &super::server::Silent) -> String {
+fn cant_run(silent: &super::route::Silent) -> String {
     let until = if let [_] = silent.names() {
         "it does"
     } else {
@@ -1162,7 +1161,7 @@ fn cant_run(silent: &super::server::Silent) -> String {
 /// Why ingress went unchecked, and whether that is because no Server answered.
 struct Unchecked {
     cause: String,
-    silent: Option<super::server::Silent>,
+    silent: Option<super::route::Silent>,
 }
 
 fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, Unchecked> {
@@ -1178,11 +1177,11 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, U
     runtime()
         .map_err(|error| unchecked(error.to_string()))?
         .block_on(async {
-            let mut client = super::server::connect(matches, context)
+            let mut client = super::route::connect(matches, context)
                 .await
                 .map_err(|error| Unchecked {
                     cause: crate::ingress::unchecked(&error, None, None),
-                    silent: super::server::Silent::of(&error),
+                    silent: super::route::Silent::of(&error),
                 })?;
             let server = client.server();
             crate::ingress::planned_slots(&mut client)

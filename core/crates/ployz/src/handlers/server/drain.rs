@@ -27,7 +27,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?;
     let target = MachineTarget::parse(selector)?;
     let runtime = runtime()?;
-    if let Some(credential) = super::cloud_runs(&runtime, matches)? {
+    if let Some(credential) = super::super::route::cloud_runs(&runtime, matches)? {
         let machine = super::cloud_machine(&runtime, matches, selector)?;
         let report = through_cloud(&runtime, matches, &credential, &machine, selector)?;
         let server = &report.server;
