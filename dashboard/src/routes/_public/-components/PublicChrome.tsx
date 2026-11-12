@@ -17,7 +17,7 @@ export function PublicHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background">
       <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-5 sm:gap-6 md:grid md:grid-cols-3">
-        <a href={marketingSite ? "/home" : "/"} className="relative -top-0.5 text-xl font-bold tracking-tighter md:justify-self-start">
+        <a href={marketingSite ? "/home" : "/"} className="relative -top-0.5 text-2xl font-bold tracking-tighter md:justify-self-start">
           ployz
         </a>
         {marketingSite && (

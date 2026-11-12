@@ -1,6 +1,6 @@
 # Engine exploration for E1..E4 (inspect only, nothing changed)
 
-Paths are relative to `core/`. Test commands run from `core/` (rungs per `core/AGENTS.md`).
+Paths are relative to `core/`. Test commands run from `core/`.
 
 ## Contradictions between the design and the code (read first)
 

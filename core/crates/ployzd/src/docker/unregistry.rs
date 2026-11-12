@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(detect_socket(Some(&socket)), Some(socket.clone()));
         let alias = root.join("configured.sock");
         std::os::unix::fs::symlink(&socket, &alias).unwrap();
-        assert_eq!(detect_socket(Some(&alias)), Some(socket.clone()));
+        assert_eq!(detect_socket(Some(&alias)), Some(socket));
         drop(listener);
         std::fs::remove_dir_all(root).unwrap();
     }

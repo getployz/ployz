@@ -42,10 +42,6 @@ added here slows every PR, so add none.
 - CodeRabbit sits outside the gate. Change code only for a finding you accept on its
   merits.
 
-Why the bound: across 45 PRs and 566 findings, 41% of real bugs came from earlier review
-fixes. Speculative findings rose from 24 in round 1 to 76 in round 3 and later. The Codex
-panel had a 60% real-bug rate; CodeRabbit had 11%.
-
 ## Land
 
 - Open PRs as drafts. CI skips drafts, so push freely while the work settles.
@@ -53,11 +49,7 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
   runs it again. `gh pr ready <n> --undo` pauses CI while you rework.
 - Once review is clean, queue the PR: `gh pr merge <n> --auto`. Never merge with
   `--admin`, which skips the queue.
-- Main has a merge queue. A PR joins it once "CI ready" passes on its head and it has no
-  conflicts. The queue then runs CI again on the PR merged with main and the PRs ahead of
-  it, and merges it (as a merge commit) only if that run passes. Two PRs that pass alone
-  but break main together fail there instead of on main. The branch does not need to be
-  up to date with main.
+- Main has a merge queue that reruns CI on the PR merged with main and merges only if that passes.
 - A PR the queue drops for a failed run stays open. Fix it if the failure is real,
   then queue it again with `gh pr merge <n> --auto`.
 - Keep stacks short and merge each layer as soon as it is green. Ship unfinished work
@@ -74,8 +66,4 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
 
 ### Main is red
 
-Revert the culprit first, then fix forward in a new PR. A push to main runs no CI: each main commit's
-checks are those of its merge queue run, on that same commit, so `gh run list --branch main` shows none
-of them. Find them with `gh run list --commit <sha>`. A queue run that fails never merges, so a red on
-main comes from a manual run (`gh workflow run ci.yml --ref main`), usually something outside the code,
-such as Docker Hub.
+Revert the culprit first, then fix forward in a new PR. Main's checks are its merge queue runs: find them with `gh run list --commit <sha>`.

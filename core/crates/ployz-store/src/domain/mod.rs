@@ -795,8 +795,7 @@ fn taken_prefixes<'t>(
                 .filter_map(|published| {
                     let prefix = published.hostname.as_str().strip_suffix(&under)?;
                     Some((prefix.to_owned(), Holder::Published(published)))
-                })
-                .collect::<Vec<_>>(),
+                }),
         );
     }
     Ok(taken)

@@ -72,7 +72,7 @@ impl Tool for ConfigWrite {
             .files
             .into_iter()
             .map(|(name, content)| {
-                ConfigFileName::parse(name.clone())
+                ConfigFileName::parse(name)
                     .map(|file| (file, content))
                     .map_err(|_| {
                         Stop::from(Refusal::invalid(

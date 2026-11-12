@@ -396,12 +396,7 @@ fn a_full_deploy_removes_the_whole_namespace() {
     // The choice outlives a read of the row.
     assert!(
         store
-            .read(
-                &who,
-                &crate::DeploymentQuery {
-                    id: admitted.id.clone()
-                }
-            )
+            .read(&who, &crate::DeploymentQuery { id: admitted.id })
             .unwrap()
             .deployment
             .prune
@@ -829,12 +824,7 @@ fn a_targeted_deploy_superseding_a_teardown_keeps_it() {
     assert_eq!(replacement.services, [name("web"), name("api")]);
     assert_eq!(
         store
-            .read(
-                &who,
-                &crate::DeploymentQuery {
-                    id: admitted.id.clone()
-                }
-            )
+            .read(&who, &crate::DeploymentQuery { id: admitted.id })
             .unwrap()
             .deployment
             .status,

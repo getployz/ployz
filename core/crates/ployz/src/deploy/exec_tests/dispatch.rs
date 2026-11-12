@@ -1212,11 +1212,11 @@ fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
     let mut snapshot = servers(
         &[
             serving.clone(),
-            leaving_answered.clone(),
+            leaving_answered,
             leaving_silent.clone(),
             silent.clone(),
             empty.clone(),
-            versioned_answered.clone(),
+            versioned_answered,
             versioned_silent.clone(),
         ],
         vec![ingress_on('a', &serving)],
@@ -1308,17 +1308,12 @@ fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
     let mut now_leaving_versioned = marked_versioned.clone();
     now_leaving_versioned.runtime.daemon_version = "0.3.17".into();
     now_leaving_versioned.runtime.leaving = true;
-    let reread: Vec<_> = [
-        serving.clone(),
-        now_leaving,
-        silent.clone(),
-        now_leaving_versioned,
-    ]
-    .into_iter()
-    .map(|machine| {
-        ployz_core::MachineObservation::new(machine, ployz_core::MembershipObservation::Up)
-    })
-    .collect();
+    let reread: Vec<_> = [serving, now_leaving, silent.clone(), now_leaving_versioned]
+        .into_iter()
+        .map(|machine| {
+            ployz_core::MachineObservation::new(machine, ployz_core::MembershipObservation::Up)
+        })
+        .collect();
     assert_eq!(
         unchecked(&without_departed(planned.clone(), Some(&reread))),
         [silent.id]

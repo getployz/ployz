@@ -112,7 +112,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let created = store::store(root)?.write(&CreateVolume {
         id: VolumeId::parse(store::mint())?,
         environment: store::environment(matches)?,
-        name: name.clone(),
+        name,
         storage,
         mounts,
         shared_writes: matches.get_one("shared-writes") == Some(&true),
@@ -364,7 +364,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let volume = volume_name(matches, "volume")?;
     let view = store::store(root)?.read(&VolumeQuery {
         environment: store::environment(matches)?,
-        volume: volume.clone(),
+        volume,
     })?;
     let listing = &view.volume;
     let mut record = Fields::new()
@@ -406,8 +406,8 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let name = volume_name(matches, "name")?;
     let renamed = store::store(root)?.write(&ployz_store::RenameVolume {
         environment: store::environment(matches)?,
-        volume: volume.clone(),
-        name: name.clone(),
+        volume,
+        name,
     })?;
     staged(
         matches,
@@ -423,7 +423,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let volume = volume_name(matches, "volume")?;
     let removed = store::store(root)?.write(&RemoveVolume {
         environment: store::environment(matches)?,
-        volume: volume.clone(),
+        volume,
     })?;
     staged(matches, &removed, "Staged removal of Volume", "", false)
 }

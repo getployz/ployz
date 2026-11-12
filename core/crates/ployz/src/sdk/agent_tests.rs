@@ -201,7 +201,7 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
 
     let answer = summarize(
         &history,
-        &[one.clone(), two],
+        &[one, two],
         Some(&ours),
         &Readable::All,
         (Timestamp(900), 1_000 * SECOND),

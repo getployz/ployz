@@ -366,7 +366,10 @@ impl DiscoveryService {
         self.watch.live.lock().unwrap().clear();
     }
 
-    #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the RPC error type"
+    )]
     fn copy(
         &self,
         locator: &ployz_core::ContainerLocator,
@@ -1191,7 +1194,10 @@ impl FakeMachine for DiscoveryService {
         ))
     }
 
-    #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the RPC error type"
+    )]
     async fn exec(
         &self,
         request: Request<Streaming<OpaquePayload>>,

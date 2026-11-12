@@ -2798,8 +2798,8 @@ mod tests {
         for events in [
             vec![oom.clone(), die.clone(), killed.clone()],
             vec![die.clone(), oom.clone(), killed.clone()],
-            vec![die.clone(), killed.clone(), oom.clone()],
-            vec![die.clone(), killed.clone()],
+            vec![die.clone(), killed.clone(), oom],
+            vec![die, killed],
         ] {
             let steps = [vec![Step::Inspect(running(1))], events].concat();
             let (_, meta) = removed_after(&steps);

@@ -537,7 +537,7 @@ impl Daemon {
                 let unplaced = match machine.restore_doors().await {
                     Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
                     Ok(None) => None,
-                    Err(error) => Some(ployz_core::error_chain::inline(&error).to_string()),
+                    Err(error) => Some(ployz_core::error_chain::inline(&error)),
                 };
                 if let Some(error) = unplaced {
                     tracing::warn!(
@@ -1062,7 +1062,6 @@ mod tests {
             .unwrap()
             .decode::<op::DescribeContract>()
             .unwrap()
-            .clone()
     }
 
     async fn leave(path: &Path) -> ployz_core::Left {

@@ -993,10 +993,7 @@ fn management_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_contex
             first.to_string(),
             vec![first.clone(), second.clone(), ssh.clone()],
         ),
-        (
-            ssh.to_string(),
-            vec![ssh.clone(), first.clone(), second.clone()],
-        ),
+        (ssh.to_string(), vec![ssh, first, second]),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
             .arg("--ployz-config")

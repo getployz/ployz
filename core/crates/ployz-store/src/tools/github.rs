@@ -71,7 +71,7 @@ impl Tool for GithubLs {
         let query = GithubFileQuery {
             repository: self.repository,
             path: file.to_owned(),
-            git_ref: Some(tree.git_ref.clone()),
+            git_ref: Some(tree.git_ref),
         };
         let mut answers = cx
             .read(vec![Ask::Cloud(CloudQuery::GithubFile(query))])?

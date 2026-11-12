@@ -489,7 +489,7 @@ fn a_secret_follows_into_a_branch_that_never_set_its_own_and_not_one_that_did() 
         &store,
         &who,
         "qa",
-        &[("web.env.TOKEN", json!({ "secret": qa_own.clone() }))],
+        &[("web.env.TOKEN", json!({ "secret": qa_own }))],
     );
 
     // production rotates it: fix-web follows, qa keeps its own and gets no hint.

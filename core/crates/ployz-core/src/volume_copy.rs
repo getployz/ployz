@@ -881,7 +881,7 @@ mod tests {
             ),
             (
                 "mirror landed under its own pull finishes whatever expect",
-                Some(slot(Some(g.clone()), Some(pull.clone()))),
+                Some(slot(Some(g.clone()), Some(pull))),
                 false,
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
@@ -981,7 +981,7 @@ mod tests {
             ),
             (
                 "snapshot mismatch",
-                Some(root(1, false, Some(w.clone()))),
+                Some(root(1, false, Some(w))),
                 false,
                 ExpectedCopy::None,
                 snapshot_want("f-1"),
@@ -1087,7 +1087,7 @@ mod tests {
             ),
             (
                 "destroy the slot mismatch",
-                Some(slot(Some(g.clone()), None)),
+                Some(slot(Some(g), None)),
                 false,
                 ExpectedCopy::None,
                 WantedCopy::Forget { recipient: None },
@@ -1174,7 +1174,7 @@ mod tests {
                 "{copy:?}"
             );
         }
-        let mut again = restarted.clone();
+        let mut again = restarted;
         if let VolumeCopy::Slot { slot, .. } = &mut again {
             *slot = SlotId::new(2);
         }

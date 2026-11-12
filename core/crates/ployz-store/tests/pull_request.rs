@@ -2117,7 +2117,7 @@ fn every_standing_a_store_before_phases_stored_reads_the_same_after_the_migratio
             ),
             (
                 8,
-                pr_8.clone(),
+                pr_8,
                 Standing::Approved(backend::sha(NEXT)),
                 Some("pr-8".to_owned())
             ),

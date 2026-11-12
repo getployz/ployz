@@ -1738,7 +1738,7 @@ fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
         PlanOptions::default(),
     )
     .with_dependencies(BTreeMap::from([(
-        web.name.clone(),
+        web.name,
         vec![ServiceDependency {
             service: db.name.clone(),
             condition: DependencyCondition::ServiceHealthy,
@@ -1903,7 +1903,7 @@ fn a_silent_volume_server_leaves_a_deploy_of_another_service_alone() {
     );
 
     let depends = intent.clone().with_dependencies(BTreeMap::from([(
-        web.name.clone(),
+        web.name,
         vec![ployz_core::ServiceDependency {
             service: db.name.clone(),
             condition: ployz_core::DependencyCondition::ServiceStarted,
@@ -1915,7 +1915,7 @@ fn a_silent_volume_server_leaves_a_deploy_of_another_service_alone() {
             if matches!(*source, PlanError::CopiesUnknown { .. })
     ));
 
-    let mut pinned = intent.clone();
+    let mut pinned = intent;
     for service in &mut pinned.target {
         if service.name == db.name {
             service.placement.constraints = [label_constraint("second")].into();
@@ -1947,7 +1947,7 @@ fn a_blocked_dependent_gives_back_the_endpoint_its_shared_reservation_took() {
     .with_dependencies(BTreeMap::from([(
         api.name.clone(),
         vec![ServiceDependency {
-            service: db.name.clone(),
+            service: db.name,
             condition: DependencyCondition::ServiceHealthy,
         }],
     )]));
@@ -1969,7 +1969,7 @@ fn a_blocked_dependent_gives_back_the_endpoint_its_shared_reservation_took() {
         .iter()
         .filter_map(|operation| operation.service_name().cloned())
         .collect();
-    assert_eq!(planned, [worker.name.clone(), web.name.clone()]);
+    assert_eq!(planned, [worker.name, web.name.clone()]);
     assert_eq!(
         preview.placed_on.get(&web.name),
         Some(&[machine_id('1')].into())
@@ -2692,7 +2692,7 @@ fn a_silent_volume_server_blocks_only_the_service_that_mounts_its_volume() {
         (
             "writer known, timed out",
             vec![('2', CopyRole::Writer)],
-            Some(timed_out.clone()),
+            Some(timed_out),
             false,
         ),
         (
@@ -2843,10 +2843,7 @@ fn services_sharing_a_volume_on_a_down_server_block_only_themselves() {
         .iter()
         .map(|blocked| blocked.service.clone())
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        blocked,
-        BTreeSet::from([db.name.clone(), worker.name.clone()])
-    );
+    assert_eq!(blocked, BTreeSet::from([db.name.clone(), worker.name]));
     assert!(
         operations(&preview)
             .iter()

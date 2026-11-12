@@ -492,7 +492,7 @@ impl LocalMachineStore {
             let trusted = if self.record.device_enforcement() {
                 self.record.devices().collect()
             } else {
-                body.devices.clone()
+                body.devices
             };
             let body = ployz_core::authority::join::verify_signature(
                 &approval,
@@ -1184,7 +1184,7 @@ mod plan_enroll_tests {
             ),
             (
                 "same joining record replays",
-                joining.clone(),
+                joining,
                 Some(1400),
                 EnrollPlan::Replay(wanted.clone()),
             ),

@@ -594,7 +594,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             }
             fake.volumes.lock().unwrap().insert(name.clone(), observed);
             if fake.fail_after_create.lock().unwrap().contains(&name) {
-                fake.fail_inspect_once.lock().unwrap().insert(name.clone());
+                fake.fail_inspect_once.lock().unwrap().insert(name);
             }
             (StatusCode::CREATED, response)
         }

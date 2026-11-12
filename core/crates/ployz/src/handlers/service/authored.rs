@@ -72,7 +72,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         store.write(&CreateGitService {
             id,
             environment,
-            name: name.clone(),
+            name,
             repository: ployz_store::RepositoryName::parse(repository)?,
             branch,
         })?
@@ -81,7 +81,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         store.write(&CreateService {
             id,
             environment,
-            name: name.clone(),
+            name,
             image,
             template: None,
         })?

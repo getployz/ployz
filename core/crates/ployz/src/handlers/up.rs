@@ -87,7 +87,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     let linked = super::link::record_unless_linked(&config, listed.environment.clone())?;
     let environment = EnvironmentRef {
         project: Some(listed.environment.project.clone()),
-        environment: Some(listed.environment.name.clone()),
+        environment: Some(listed.environment.name),
     };
     if let Some(name) = added {
         add_service(&store, &environment, name, &directory)?;

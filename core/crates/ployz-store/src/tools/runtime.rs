@@ -308,7 +308,10 @@ impl Tool for ServiceLogs {
 }
 
 /// Restart, start or stop `service`'s containers, on one server or all.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is one field of the agent tool call"
+)]
 fn service_act(
     cx: &mut Cx<'_>,
     verb: ServiceVerb,

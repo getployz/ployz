@@ -317,11 +317,7 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
         .map(Cell::clone)
     };
     let node_cells = |lineage: &str| cells_at(&RowId::node(lineage));
-    for lineage in from_nodes
-        .keys()
-        .chain(into_nodes.keys())
-        .collect::<BTreeSet<_>>()
-    {
+    for lineage in from_nodes.keys().chain(into_nodes.keys()) {
         let in_base = base_nodes.contains_key(lineage);
         match (from_nodes.get(lineage), into_nodes.get(lineage)) {
             (Some(&from_node), Some(&into_node)) => {
@@ -329,7 +325,6 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                     .places(lineage)
                     .chain(into_cells.places(lineage))
                     .map(|(id, _)| id)
-                    .collect::<BTreeSet<_>>()
                 {
                     let id = id.clone();
                     let sides = cells_at(&id);

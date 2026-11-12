@@ -301,7 +301,7 @@ fn health_failures_quote_the_last_check() {
         ),
         (
             HealthFailure::Runtime {
-                observation: unhealthy.clone(),
+                observation: unhealthy,
                 last_check: Some(LastHealthCheck::HttpUnreachable {
                     error: HttpCheckError::ConnectionRefused,
                 }),

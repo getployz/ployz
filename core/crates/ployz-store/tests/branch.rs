@@ -286,7 +286,7 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
     let made = store.write(&who, &create).unwrap();
     // A replay returns the same; the ID with another body is a conflict.
     assert_eq!(store.write(&who, &create).unwrap(), made);
-    let mut other = create.clone();
+    let mut other = create;
     other.keep = false;
     assert_eq!(code(store.write(&who, &other)), RpcErrorCode::Conflict);
 
@@ -725,7 +725,7 @@ fn a_failed_deployment_is_fixed_on_a_branch_and_the_parent_stays() {
     let mut fix = branch("fix", "production", &[]);
     fix.fix = Some(applied);
     assert_eq!(code(store.write(&who, &fix)), RpcErrorCode::InvalidArgument);
-    fix.fix = Some(failed.clone());
+    fix.fix = Some(failed);
     fix.copy = vec![node("volumes.data")];
     assert_eq!(code(store.write(&who, &fix)), RpcErrorCode::InvalidArgument);
 

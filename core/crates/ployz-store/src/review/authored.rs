@@ -509,12 +509,7 @@ impl Plan {
                             field: ConfigField::Name(delta),
                         });
                     }
-                    for file in before
-                        .files
-                        .keys()
-                        .chain(files.keys())
-                        .collect::<BTreeSet<_>>()
-                    {
+                    for file in before.files.keys().chain(files.keys()) {
                         if let Some(delta) = Delta::between(
                             &before.files.get(file).cloned(),
                             &files.get(file).cloned(),
@@ -848,7 +843,7 @@ fn service_changes(
             .collect()
     }
     let (earlier, later) = (by_key(&before.variables), by_key(variables));
-    for key in earlier.keys().chain(later.keys()).collect::<BTreeSet<_>>() {
+    for key in earlier.keys().chain(later.keys()) {
         variable_changes(
             effects,
             id,

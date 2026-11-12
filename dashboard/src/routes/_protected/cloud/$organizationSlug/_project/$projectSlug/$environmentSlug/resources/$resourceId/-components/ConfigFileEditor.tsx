@@ -120,7 +120,7 @@ const highlight = HighlightStyle.define([
 ]);
 
 const theme = EditorView.theme({
-  "&": { height: "100%", backgroundColor: "var(--background)", color: "var(--foreground)", fontSize: "12px" },
+  "&": { height: "100%", backgroundColor: "var(--background)", color: "var(--foreground)", fontSize: "var(--text-xs)" },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6" },
   ".cm-content": { caretColor: "var(--foreground)" },
@@ -137,8 +137,8 @@ const theme = EditorView.theme({
     backgroundColor: "var(--popover)", color: "var(--popover-foreground)",
     border: "1px solid var(--border)", borderRadius: "6px", overflow: "hidden",
   },
-  ".cm-config-tooltip": { padding: "4px 8px", fontFamily: "var(--font-sans)", fontSize: "12px" },
-  ".cm-tooltip-autocomplete > ul": { fontFamily: "var(--font-mono)", fontSize: "12px" },
+  ".cm-config-tooltip": { padding: "4px 8px", fontFamily: "var(--font-sans)", fontSize: "var(--text-xs)" },
+  ".cm-tooltip-autocomplete > ul": { fontFamily: "var(--font-mono)", fontSize: "var(--text-xs)" },
   ".cm-tooltip-autocomplete > ul > li": { padding: "2px 8px" },
   ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--muted)", color: "var(--foreground)" },
   ".cm-completionDetail": { marginLeft: "12px", fontStyle: "normal", color: "var(--muted-foreground)" },

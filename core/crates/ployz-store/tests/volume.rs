@@ -1364,7 +1364,7 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
     let approved = Approval::Approved(
         ApprovalDigest::parse(asked.details["approval"].as_str().unwrap()).unwrap(),
     );
-    let unaccepted = publish(&[], Some(observed(&['a'])), None, approved.clone()).unwrap_err();
+    let unaccepted = publish(&[], Some(observed(&['a'])), None, approved).unwrap_err();
     assert_eq!(unaccepted.code, RpcErrorCode::ConfirmationRequired);
 
     store
@@ -2335,7 +2335,7 @@ fn a_stale_version_hands_back_the_version_that_binds_the_fresh_loss() {
     }
 
     // Without the observation that finds the data, it is the plain conflict.
-    let unobserved = admit_at(&store, &who, 2, &["data"], None, Some(stale.clone())).unwrap_err();
+    let unobserved = admit_at(&store, &who, 2, &["data"], None, Some(stale)).unwrap_err();
     assert_eq!(unobserved.code, RpcErrorCode::Conflict);
     assert!(
         unobserved.details.get("volume_loss").is_none(),

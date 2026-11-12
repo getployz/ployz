@@ -375,7 +375,7 @@ fn each_refusal_names_what_the_approval_lacks() {
         })
     );
 
-    let mut unsigned = signed.clone();
+    let mut unsigned = signed;
     unsigned.signatures.clear();
     assert_eq!(
         check(&unsigned, &a(), &cut(), 200_000),

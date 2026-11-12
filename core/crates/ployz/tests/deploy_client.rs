@@ -8,7 +8,7 @@ mod operate;
 #[path = "deploy_client/runner_cancellation.rs"]
 mod runner_cancellation;
 #[path = "deploy_client/support.rs"]
-#[allow(
+#[expect(
     dead_code,
     reason = "the SDK agent tests share this mock and use helpers this suite does not"
 )]

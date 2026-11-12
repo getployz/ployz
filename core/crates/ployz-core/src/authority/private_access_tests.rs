@@ -198,7 +198,7 @@ fn a_browser_key_under_a_session_grant_is_refused() {
         ..HONEST
     });
     let grant = SessionGrant {
-        body: unsigned.body.clone(),
+        body: unsigned.body,
         assertion,
     };
     let signed = Signed::sign_under(

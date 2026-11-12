@@ -190,7 +190,7 @@ mod tests {
             "id": id, "grant": grant.to_secret_string(), "expires_in_seconds": 10,
         });
         assert_eq!(
-            serde_json::from_value::<BuildGrantMinted>(legacy.clone()).unwrap(),
+            serde_json::from_value::<BuildGrantMinted>(legacy).unwrap(),
             BuildGrantMinted {
                 id,
                 key: MintedKey::Grant { grant },

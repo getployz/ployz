@@ -933,7 +933,7 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
         }),
         (true, |leaf| {
             vec![
-                patch_change("web", json!({ "env": { "A": leaf.clone() } })),
+                patch_change("web", json!({ "env": { "A": leaf } })),
                 set_change("web.env.B", leaf),
             ]
         }),

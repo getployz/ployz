@@ -196,7 +196,7 @@ fn a_git_service_round_trips_get_edit_publish() {
     assert_eq!(after["dockerfilePath"], "web.Dockerfile");
     let again = Change::Patch {
         path: SettingPath::parse("web").unwrap(),
-        value: after.clone(),
+        value: after,
     };
     let Written::Edited(edited) = store
         .write_trusted(&who, &edit(vec![again]), &Trusted::default())
@@ -596,7 +596,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
             &Admit::Retry(Retry {
                 teardown: None,
                 id: again.clone(),
-                deployment: first.clone(),
+                deployment: first,
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
@@ -607,7 +607,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
             &ployz_store::Trusted::default(),
         )
         .unwrap();
-    assert_eq!(store.sources(&again).unwrap()[0].commit, Some(a.clone()));
+    assert_eq!(store.sources(&again).unwrap()[0].commit, Some(a));
 
     // A new Deployment pins afresh and gets the receipt as a hint.
     let retry = admit(&store, &who, 2, &[]);
@@ -676,7 +676,7 @@ fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
             &Admit::Retry(Retry {
                 teardown: None,
                 id: back.clone(),
-                deployment: first.clone(),
+                deployment: first,
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
@@ -883,7 +883,7 @@ fn a_github_check_in_must_come_from_the_dispatched_repository_workflow_and_run()
         ),
         (
             GithubClaims {
-                job_workflow_ref: WORKFLOW.replace("main", "evil").clone(),
+                job_workflow_ref: WORKFLOW.replace("main", "evil"),
                 ..claims()
             },
             "another workflow",
@@ -1002,13 +1002,7 @@ fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_repor
 
     let receipt = json!({ "fingerprint": "f".repeat(64), "machine_id": grant().machine });
     let ended = store
-        .github_end(
-            &id,
-            Some(RUN),
-            &GithubEnd::Built {
-                receipt: receipt.clone(),
-            },
-        )
+        .github_end(&id, Some(RUN), &GithubEnd::Built { receipt })
         .unwrap();
     assert_eq!(ended, BuildStatus::Built);
     // Ending again, or the run failing afterwards, changes nothing.

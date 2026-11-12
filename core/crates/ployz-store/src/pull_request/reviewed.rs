@@ -58,7 +58,7 @@ pub(crate) fn preview_review(
 ) -> Result<PreviewReviewView, RpcError> {
     let invalid = |message: &str| error::invalid(message.to_owned(), json!({}));
     let environment = scope::environment(tx, who, &q.environment)?;
-    let id = environment.summary.id.clone();
+    let id = environment.summary.id;
     let pr = crate::pr_environment::of(tx, &id)?
         .ok_or_else(|| invalid("This environment isn't a pull request's preview"))?;
     let facts = super::facts(tx, who, pr.repository_id, pr.number)?

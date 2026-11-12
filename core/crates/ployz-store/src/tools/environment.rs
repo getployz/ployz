@@ -170,9 +170,7 @@ impl Tool for EnvironmentPr {
                 store(&PrPlansQuery {
                     project: scope.project.clone(),
                 })?,
-                store(&ServicesQuery {
-                    environment: scope.clone(),
-                })?,
+                store(&ServicesQuery { environment: scope })?,
             ])?
             .into_iter();
         let plans = cx.view::<PrPlansQuery>(answers.next())?;
@@ -249,7 +247,7 @@ impl Tool for EnvironmentProtect {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(&self);
         let written = cx.write(&SetEnvironmentProtected {
-            environment: scope.clone(),
+            environment: scope,
             protected: self.protected,
             seen: None,
         })?;
