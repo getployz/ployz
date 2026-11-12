@@ -1053,15 +1053,17 @@ impl Session {
     /// Management Client other than Cloud holds a key, the Machine did not respond so Data Loss cannot
     /// be listed, the confirmation does not cover the fresh Data Loss, or
     /// reset or shared-row removal fails. Unconfirmed names are in
-    /// `UnconfirmedDataLoss` details.
+    /// `UnconfirmedDataLoss` details. `teardown` is the person's approval of the
+    /// removal, which a Server that enforces Device approval needs to leave or forget.
     pub async fn remove_machine(
         &self,
         machine: &str,
         confirm_data_loss: &DataLossConfirmation,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<LocalMachineRemoved, RpcError> {
         let target = MachineTarget::parse(machine)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
-        let mut client = self.client()?;
+        let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.remove_machine(
             &target,
             confirm_data_loss,
@@ -1289,10 +1291,14 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, `machine` is not a
     /// Machine Target or not visible, it is the last Machine and a Management Client
     /// holds a key or its holders can't be read, or shared-row removal fails.
-    pub async fn remove_machine_membership(&self, machine: &str) -> Result<(), RpcError> {
+    pub async fn remove_machine_membership(
+        &self,
+        machine: &str,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
+    ) -> Result<(), RpcError> {
         let target = MachineTarget::parse(machine)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
-        let mut client = self.client()?;
+        let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.remove_machine_membership(&target))
             .await
     }
@@ -1482,16 +1488,18 @@ impl Session {
     /// is not a Namespace or is reserved, the Namespace is not visible, the
     /// snapshot is incomplete, or the confirmation does not cover the fresh
     /// Data Loss. Unconfirmed names are in `UnconfirmedDataLoss` details.
-    /// Execution failure is a [`DeployOutcome::Failed`].
+    /// Execution failure is a [`DeployOutcome::Failed`]. `teardown` is the person's
+    /// approval, which a Server that enforces Device approval needs to take it off.
     pub async fn destroy_namespace(
         &self,
         namespace: &str,
         confirm_data_loss: &DataLossConfirmation,
         volumes: VolumeFate,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let namespace = Namespace::parse(namespace)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
-        let mut client = self.client()?;
+        let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.destroy_namespace(
             &namespace,
             confirm_data_loss,

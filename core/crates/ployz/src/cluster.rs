@@ -1801,7 +1801,9 @@ async fn depart(
 ) -> Result<LocalMachineRemoved, RpcError> {
     let departed = match client
         .call::<op::Leave>(
-            LeaveRequest { teardown: None },
+            LeaveRequest {
+                teardown: client.deploy.teardown(),
+            },
             Call::keyed().to(&MachineTarget::from(&machine)),
         )
         .await
@@ -1856,12 +1858,13 @@ impl LeftNotForgotten {
     }
 }
 
-/// Delete `machine_id`'s shared row through the entry Machine.
+/// Delete `machine_id`'s shared row through the entry Machine, under the teardown the
+/// client carries.
 pub(crate) async fn forget(client: &mut Client, machine_id: MachineId) -> Result<(), RpcError> {
     match client
         .call::<op::Forget>(
             ForgetRequest {
-                teardown: None,
+                teardown: client.deploy.teardown(),
                 machine_id,
             },
             Call::keyed(),
