@@ -31,14 +31,15 @@ use ts_rs::TS;
 use crate::cluster::{Call, Deadline, RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Converged, LastIn, Moving, can_move, converge, named};
 
+pub(crate) mod placement;
 pub(crate) mod retirement;
 
 use crate::global_slot::copies_on;
+use placement::{Converged, LastIn, Moving, can_move, converge, named};
 use retirement::{Retirement, let_go, retire_globals};
 
-pub use crate::deploy::{
+pub use placement::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
 };
 
@@ -224,10 +225,36 @@ pub enum DrainOutcome {
 }
 
 impl DrainOutcome {
+    /// Whether a move's old copy, or one an earlier move left Out, is still on the Server.
+    #[must_use]
+    pub fn left_old_copy(&self) -> bool {
+        match self {
+            Self::Moved { moves } => moves.iter().any(|step| step.old != OldCopyEnd::Stopped),
+            Self::OldCopies { ends } => ends.iter().any(|end| *end != OldCopyEnd::Stopped),
+            Self::NothingToMove
+            | Self::Failed { .. }
+            | Self::Stays { .. }
+            | Self::Held
+            | Self::Retired
+            | Self::NotRetired { .. }
+            | Self::Interrupted { .. }
+            | Self::NotAttempted => false,
+        }
+    }
+
+    /// Whether the Drain went wrong on this Service: a Global may still run, or a move
+    /// failed or was interrupted.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        matches!(
+            self,
+            Self::NotRetired { .. } | Self::Failed { .. } | Self::Interrupted { .. }
+        )
+    }
+
     fn complete(&self) -> bool {
         match self {
-            Self::Moved { moves } => moves.iter().all(|step| step.old == OldCopyEnd::Stopped),
-            Self::OldCopies { ends } => ends.iter().all(|end| *end == OldCopyEnd::Stopped),
+            Self::Moved { .. } | Self::OldCopies { .. } => !self.left_old_copy(),
             Self::NothingToMove | Self::Retired => true,
             Self::Failed { .. }
             | Self::Stays { .. }

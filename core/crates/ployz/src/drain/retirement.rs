@@ -8,9 +8,10 @@ use ployz_core::{
 };
 use tokio_util::sync::CancellationToken;
 
+use super::placement::{MachineRef, OldCopyEnd, Unconfirmed};
 use crate::connect::{Client, ConnectError};
+use crate::deploy::CopyLifecycle;
 use crate::deploy::cleanup::{self, Copy};
-use crate::deploy::{CopyLifecycle, MachineRef, OldCopyEnd, Unconfirmed};
 use crate::global_slot::{Eligibility, Live, Sentence, ServerNames, retire_if_ineligible};
 
 /// What retiring one Global on the drained Server came to.

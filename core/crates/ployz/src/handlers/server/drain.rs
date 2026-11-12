@@ -141,16 +141,7 @@ fn incomplete(report: &DrainReport) -> Error {
                 ..
             }
             | DrainOutcome::Held => stays.push(entry.service.to_string()),
-            DrainOutcome::Moved { moves }
-                if moves.iter().any(|step| step.old != OldCopyEnd::Stopped) =>
-            {
-                left.push(entry.service.to_string());
-            }
-            DrainOutcome::OldCopies { ends }
-                if ends.iter().any(|end| *end != OldCopyEnd::Stopped) =>
-            {
-                left.push(entry.service.to_string());
-            }
+            outcome if outcome.left_old_copy() => left.push(entry.service.to_string()),
             DrainOutcome::Stays { .. }
             | DrainOutcome::Moved { .. }
             | DrainOutcome::OldCopies { .. }
@@ -227,20 +218,9 @@ fn step_line(step: DrainStep<'_>) -> String {
 fn went_wrong(step: DrainStep<'_>) -> bool {
     match step {
         DrainStep::ServicesOff { .. } => false,
-        DrainStep::Service { service, .. } => match &service.outcome {
-            DrainOutcome::NotRetired { .. }
-            | DrainOutcome::Failed { .. }
-            | DrainOutcome::Interrupted { .. } => true,
-            DrainOutcome::Moved { moves } => {
-                moves.iter().any(|step| step.old != OldCopyEnd::Stopped)
-            }
-            DrainOutcome::OldCopies { ends } => ends.iter().any(|end| *end != OldCopyEnd::Stopped),
-            DrainOutcome::Retired
-            | DrainOutcome::Stays { .. }
-            | DrainOutcome::Held
-            | DrainOutcome::NothingToMove
-            | DrainOutcome::NotAttempted => false,
-        },
+        DrainStep::Service { service, .. } => {
+            service.outcome.failed() || service.outcome.left_old_copy()
+        }
     }
 }
 

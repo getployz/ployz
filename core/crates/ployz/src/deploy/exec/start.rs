@@ -12,6 +12,7 @@ use ployz_core::{
     ContainerWant, CopyRotation, DeploymentLogId, Drain, ExecutionError, Gen, HealthVerdict,
     MachineAction, MachineId, Namespace, NewContainer, OperationPhase, OutOfMemory,
     QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey,
+    error_chain,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -148,22 +149,43 @@ pub(super) async fn remove_stray<C: MachineOperations>(
     rows.leave_unrouted(progress, service, *machine_id, container_id, error);
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("The new Container did not serve.")]
-pub(in crate::deploy) struct MoveContainerError {
-    #[source]
-    pub(in crate::deploy) error: ExecutionError,
-    pub(in crate::deploy) replacement_removed: bool,
+/// Why a move's replacement never served, and whether none of it is left on its
+/// destination; otherwise it may still be there.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct MoveError {
+    pub(crate) end: MoveEnd,
+    pub(crate) replacement_removed: bool,
 }
 
-pub(in crate::deploy) async fn move_container<C: MachineOperations>(
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum MoveEnd {
+    Cancelled,
+    NotServing { detail: String },
+}
+
+impl From<ExecutionError> for MoveEnd {
+    fn from(error: ExecutionError) -> Self {
+        match error {
+            ExecutionError::Cancelled => Self::Cancelled,
+            error @ (ExecutionError::Machine { .. }
+            | ExecutionError::Health { .. }
+            | ExecutionError::DependencyHealth { .. }
+            | ExecutionError::Hook { .. }
+            | ExecutionError::NewerServing { .. }) => Self::NotServing {
+                detail: error_chain::row(&error),
+            },
+        }
+    }
+}
+
+pub(crate) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
     cancellation: &CancellationToken,
-) -> Result<(ContainerId, Option<DeploymentLogId>), MoveContainerError> {
+) -> Result<(ContainerId, Option<DeploymentLogId>), MoveError> {
     let client = RestartTolerant::new(client, cancellation);
     let policy = SlotPolicy::of(ContainerKind::ServiceContainer, &spec.mode);
     let global = policy.keyed_by_spec();
@@ -178,8 +200,8 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     let source = match client.inspect_container(from, old).await {
         Ok(details) => details.container,
         Err(error) => {
-            return Err(MoveContainerError {
-                error: machine_error(MachineAction::InspectContainer, error),
+            return Err(MoveError {
+                end: machine_error(MachineAction::InspectContainer, error).into(),
                 replacement_removed: !adopts,
             });
         }
@@ -204,8 +226,8 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         Err(error) => {
             let keep = adopts || (global && !cancellation.is_cancelled());
             let replacement_removed = !keep && discard_attempt(&client, to, slot).await.is_ok();
-            Err(MoveContainerError {
-                error,
+            Err(MoveError {
+                end: error.into(),
                 replacement_removed,
             })
         }
