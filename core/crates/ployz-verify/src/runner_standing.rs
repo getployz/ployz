@@ -1317,11 +1317,16 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use stateright::{Checker, Expectation, HasDiscoveries};
+    use stateright::Checker;
 
     use super::*;
+    use crate::harness::{Narrated, breaks, breaks_where, check, last, took_action};
 
-    type Path = Vec<(State, Option<Action>)>;
+    impl Narrated for RunnerStanding {
+        fn story(&self, path: &[(State, Option<Action>)]) -> String {
+            story(self, path)
+        }
+    }
 
     /// The code as it is, with every `standing()` call's read answering.
     fn as_is() -> RunnerStanding {
@@ -1365,84 +1370,6 @@ mod tests {
             failures: 1,
             ..model
         }
-    }
-
-    fn check(model: RunnerStanding) -> impl Checker<RunnerStanding> {
-        model.checker().threads(4).spawn_bfs().join()
-    }
-
-    /// The first path in BFS order whose last state breaks `property` under `model`, so
-    /// no shorter path breaks it, printed as a story under the test's name. For a
-    /// `sometimes`, such as a `COVERAGE` row's name, it is the first path that reaches it.
-    /// It panics when no path does, as for an `always` that holds. The checker's
-    /// own discovery is not that path: `check_block` stores every violation it visits,
-    /// each overwriting the last, and `finish_when` is read once per 1500-state block, so
-    /// a visitor keeps the first. One thread keeps the path the same from run to run.
-    fn breaks(model: RunnerStanding, property: &'static str) -> Path {
-        first_break(model, property, |_| true, true)
-    }
-
-    /// As `breaks`, the first such path that also satisfies `and`. It explores the whole
-    /// model, since the first discovery may not pass `and`.
-    fn breaks_where(model: RunnerStanding, property: &'static str, and: fn(&Path) -> bool) -> Path {
-        first_break(model, property, and, false)
-    }
-
-    fn first_break(
-        model: RunnerStanding,
-        property: &'static str,
-        and: fn(&Path) -> bool,
-        stop_at_discovery: bool,
-    ) -> Path {
-        let named = model
-            .properties()
-            .into_iter()
-            .find(|candidate| candidate.name == property)
-            .expect("a model property");
-        let holds = named.condition;
-        let reached = matches!(named.expectation, Expectation::Sometimes);
-        let first = Arc::new(Mutex::new(None));
-        let seen = Arc::clone(&first);
-        let checker =
-            model
-                .checker()
-                .threads(1)
-                .visitor(move |path: stateright::Path<State, Action>| {
-                    let mut first = seen.lock().expect("the first break");
-                    if first.is_none() && holds(&model, path.last_state()) == reached {
-                        let path = path.into_vec();
-                        if and(&path) {
-                            *first = Some(path);
-                        }
-                    }
-                });
-        let checker = if stop_at_discovery {
-            checker.finish_when(HasDiscoveries::AllOf([property].into()))
-        } else {
-            checker
-        };
-        checker.spawn_bfs().join();
-        let path = first
-            .lock()
-            .expect("the first break")
-            .take()
-            .expect("a path breaks the property");
-        let test = std::thread::current();
-        println!(
-            "[{}] {property} {} under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            if reached { "is reached" } else { "fails" },
-            story(&model, &path)
-        );
-        path
-    }
-
-    fn last(path: &Path) -> State {
-        path.last().expect("a path has a state").0
-    }
-
-    fn took_action(path: &Path, action: Action) -> bool {
-        path.iter().any(|(_, taken)| *taken == Some(action))
     }
 
     /// Every state, in the whole of `model`, that breaks the `always` named `property`.

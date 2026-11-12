@@ -15,7 +15,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ContainerRuntime, Error, some_map};
+use super::{ContainerRuntime, Error, Status, classify, some_map};
 use crate::VolumePluginStatus;
 
 const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
@@ -442,21 +442,19 @@ fn verify_volume(source: &VolumeSource, observed: &DockerVolume) -> Result<(), E
 }
 
 fn volume_not_found(error: &Error) -> bool {
-    docker_status(error, 404)
+    volume_status(error) == Status::Absent
 }
 
 fn volume_conflict(error: &Error) -> bool {
-    docker_status(error, 409)
+    volume_status(error) == Status::Conflict
 }
 
-fn docker_status(error: &Error, expected: u16) -> bool {
-    matches!(
-        error,
-        Error::Docker(bollard::errors::Error::DockerResponseServerError {
-            status_code,
-            ..
-        }) if *status_code == expected
-    )
+fn volume_status(error: &Error) -> Status {
+    if let Error::Docker(error) = error {
+        classify(error)
+    } else {
+        Status::Other
+    }
 }
 
 // Bollard models Volume Status as key-only data, so valid plugin values use raw JSON recovery.

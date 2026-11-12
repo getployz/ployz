@@ -1,10 +1,11 @@
 //! `server forget`: Forget one Server without a reset, or with no Server named, every
 //! Server of the Organization when they were deleted.
 
+use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 
-use super::super::{Error, config_path, leaf_matches, rerun, runtime, store::Next};
+use super::super::{Error, config_path, leaf_matches, rerun, runtime};
 use crate::approval;
 use crate::cli::{base, positional, value};
 use crate::cloud_account::{self, Credential, ForgetCheck, ObservedServer, ServersForgotten};

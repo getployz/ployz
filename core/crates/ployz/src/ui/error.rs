@@ -53,48 +53,17 @@ pub(super) fn write_hint(out: &mut dyn io::Write, hint: &Hint) -> io::Result<()>
     }
 }
 
-pub use ployz_core::error_chain::causes;
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the one-line sinks below are the only callers"
-)]
-fn inline(error: Chain<'_>) -> String {
-    one_line(&ployz_core::error_chain::inline(error))
-}
-
-/// Foreign text on one line: a registry's `denied\ndenied` would break the
-/// indented line it lands in. Repeated lines print once.
-fn one_line(text: &str) -> String {
-    joined(text.lines().map(str::trim))
-}
-
-/// [`one_line`] for the human `cause:` line: a trim keeps an [`unprintable`] character
-/// other than a tab, so [`escaped`] can show it.
+/// [`ployz_core::error_chain::one_line`] for the human `cause:` line: a trim keeps an
+/// [`unprintable`] character other than a tab, so [`escaped`] can show it.
 fn shown_line(text: &str) -> String {
     let blank = |c: char| c == '\t' || (c.is_whitespace() && !unprintable(c));
-    joined(text.split('\n').map(|line| line.trim_matches(blank)))
-}
-
-fn joined<'a>(trimmed: impl Iterator<Item = &'a str>) -> String {
-    let mut lines: Vec<&str> = Vec::new();
-    for line in trimmed.filter(|line| !line.is_empty()) {
-        if lines.last() != Some(&line) {
-            lines.push(line);
-        }
-    }
-    lines.join("; ")
+    ployz_core::error_chain::joined(text.split('\n').map(|line| line.trim_matches(blank)))
 }
 
 type Chain<'a> = &'a (dyn std::error::Error + 'static);
 
-/// A per-Server row, record or report field.
-pub(crate) fn row(error: Chain<'_>) -> String {
-    inline(error)
-}
-
 pub(crate) fn warn_cause(what: impl std::fmt::Display, error: Chain<'_>) {
-    super::warn(format!("{what}: {}", inline(error)));
+    super::warn(format!("{what}: {}", ployz_core::error_chain::row(error)));
 }
 
 /// Prints a wait's notice on stderr.
@@ -118,42 +87,8 @@ impl crate::setup_retry::Observer for WaitNotices {
 fn retrying_line(operation: &str, error: Chain<'_>, seconds: u64) -> String {
     format!(
         "{operation}: {}; retrying for up to {seconds}s. Check outbound firewall access if this connection is blocked.",
-        inline(error)
+        ployz_core::error_chain::row(error)
     )
-}
-
-pub(crate) fn rpc_error(code: ployz_core::RpcErrorCode, error: Chain<'_>) -> ployz_core::RpcError {
-    ployz_core::RpcError::new(code, inline(error))
-}
-
-/// `text` as a failure's first line: a sentence, ending with a period.
-pub(crate) fn sentence(mut text: String) -> String {
-    if !text.ends_with(['.', '!', '?']) {
-        text.push('.');
-    }
-    text
-}
-
-/// `next` follows `message` as its own sentence, with one break however
-/// `message` ended. A dangling colon introduces nothing, so it becomes the break.
-pub(crate) fn then_sentence(message: &str, next: &str) -> String {
-    match message.trim_end().trim_end_matches(':').trim_end() {
-        "" => next.to_owned(),
-        message => format!("{} {next}", sentence(message.to_owned())),
-    }
-}
-
-/// `what`, then `: reason` when there is a reason to give.
-pub(crate) fn with_reason(what: impl std::fmt::Display, reason: &str) -> String {
-    match reason.trim() {
-        "" => what.to_string(),
-        reason => format!("{what}: {reason}"),
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn chain_text(error: Chain<'_>) -> String {
-    inline(error)
 }
 
 /// Write the human error: `error:` with our sentence, one `cause:` line with the
@@ -247,18 +182,6 @@ mod tests {
             String::from_utf8(out.into_inner()).unwrap(),
             "error: Config app has no file a.txt\\u{d}\n  Shown as stored.\n  \
              cause: refused a.txt\\u{d}; denied\n"
-        );
-    }
-
-    #[test]
-    fn a_foreign_line_end_trims_off_the_one_line_form() {
-        let error = io::Error::other("refused a.txt\r\n\tdenied \r\n");
-        assert_eq!(chain_text(&error), "refused a.txt; denied");
-        assert_eq!(row(&error), "refused a.txt; denied");
-        let wire = serde_json::to_value(rpc_error(ployz_core::RpcErrorCode::Internal, &error));
-        assert_eq!(
-            wire.unwrap().pointer("/message").unwrap(),
-            "refused a.txt; denied"
         );
     }
 

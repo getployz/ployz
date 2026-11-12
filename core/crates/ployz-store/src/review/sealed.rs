@@ -400,12 +400,9 @@ impl Chain {
             return Ok(());
         }
         let mut sealed = SealedAbove::default();
-        for row in tx.query(
-            "SELECT parent_id, made_with FROM config_environment_branch WHERE environment_id = ?1",
-            &[environment.into()],
-        )? {
-            let parent = row.text(0)?;
-            for service in row.intent(1, "Branch")?.services {
+        if let Some((parent, made_with)) = crate::branch::parent_and_made_with(tx, environment)? {
+            let parent = parent.as_str();
+            for service in made_with.services {
                 for variable in &service.variables {
                     if ledger(tx, &mut self.ledgers, parent)?.holds_id(&service.id, variable)
                         || self.kept_and_sealed(tx, parent, &service, variable)?
@@ -635,14 +632,7 @@ impl Chain {
         environment: &str,
     ) -> Result<Option<&(String, SavedEnvironmentIntent)>, RpcError> {
         if !self.shared.contains_key(environment) {
-            let parent = tx
-                .query(
-                    "SELECT parent_id FROM config_environment_branch WHERE environment_id = ?1",
-                    &[environment.into()],
-                )?
-                .first()
-                .map(|row| row.text(0).map(str::to_owned))
-                .transpose()?;
+            let parent = crate::branch::parent_of(tx, environment)?;
             let shared = match parent {
                 Some(parent) => {
                     let pair = if environment <= parent.as_str() {
@@ -767,13 +757,7 @@ pub(crate) fn names(tx: &mut dyn Tx, environment: &str) -> Result<BTreeSet<Strin
     )? {
         names.insert(row.text(0)?.to_owned());
     }
-    let mut intents = Vec::new();
-    for row in tx.query(
-        "SELECT intent FROM config_saved WHERE environment_id = ?1",
-        &[environment.into()],
-    )? {
-        intents.push(row.intent(0, "Saved State")?);
-    }
+    let mut intents = super::saved::intents(tx, environment)?;
     for row in tx.query(
         "SELECT working FROM config_environment WHERE id = ?1",
         &[environment.into()],
@@ -892,11 +876,8 @@ impl SealLedger {
     // shares the database during a rolling deploy and saves seals it never records.
     pub(crate) fn load_with_saves(tx: &mut dyn Tx, environment: &str) -> Result<Self, RpcError> {
         let mut ledger = Self::load(tx, environment)?;
-        for row in tx.query(
-            "SELECT intent FROM config_saved WHERE environment_id = ?1",
-            &[environment.into()],
-        )? {
-            for (service, variable) in sealed_in(&row.intent(0, "Saved State")?) {
+        for saved in super::saved::intents(tx, environment)? {
+            for (service, variable) in sealed_in(&saved) {
                 ledger.ids.insert((service.to_owned(), variable.id.clone()));
                 ledger
                     .keys
@@ -964,11 +945,8 @@ impl SealLedger {
             };
             hold(&environment.intent(1, "Working State")?);
             // One Environment's saves at a time, so a Store of many holds only one in memory.
-            for row in tx.query(
-                "SELECT intent FROM config_saved WHERE environment_id = ?1",
-                &[id.into()],
-            )? {
-                hold(&row.intent(0, "Saved State")?);
+            for saved in super::saved::intents(tx, id)? {
+                hold(&saved);
             }
             let seals: Vec<_> = seals
                 .iter()
@@ -1049,12 +1027,7 @@ pub(crate) fn sealed_rows(
     )? {
         intents.push(row.intent(0, "Working State")?);
     }
-    for row in tx.query(
-        "SELECT intent FROM config_saved WHERE environment_id = ?1",
-        &[environment.into()],
-    )? {
-        intents.push(row.intent(0, "Saved State")?);
-    }
+    intents.extend(super::saved::intents(tx, environment)?);
     Ok(intents
         .iter()
         .flat_map(|intent| &intent.services)

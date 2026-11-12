@@ -555,7 +555,7 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
     client.deploy.registry_auth =
         std::collections::BTreeMap::from([(private.name.clone(), auth.clone())]);
     for specification in [&private, &public] {
-        MachineOperations::ensure_image(&client, &machine('1'), specification)
+        DeployOperations::ensure_image(&client, &machine('1'), specification)
             .await
             .unwrap();
     }
@@ -1053,7 +1053,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     else {
         panic!("inactive replacement replans as a run");
     };
-    let replay = MachineOperations::ensure_container(
+    let replay = CopyLifecycle::ensure_container(
         &client,
         machine_id,
         ContainerWant::Running {

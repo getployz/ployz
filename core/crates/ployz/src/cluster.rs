@@ -1,3 +1,4 @@
+use ployz_core::error_chain;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
@@ -383,7 +384,7 @@ impl Client {
             ));
         };
         decode_runtime_watch_frame(&frame)
-            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
+            .map_err(|error| error_chain::rpc_error(RpcErrorCode::Internal, &error))
     }
 
     /// [`Self::send_path`] for an RPC of the catalog.
@@ -1470,10 +1471,10 @@ pub(crate) async fn refuse_last_managed(
         .await
         .map_err(crate::connect::rpc_error)
         .map_err(|error| {
-            RpcError::unavailable(crate::ui::then_sentence(
+            RpcError::unavailable(error_chain::then_sentence(
                 &format!(
                     "cannot read who manages Machine {selected}, the last Machine: {}",
-                    crate::ui::row(&error)
+                    error_chain::row(&error)
                 ),
                 "No changes made.",
             ))
@@ -1813,7 +1814,7 @@ async fn depart(
         },
         Ok(Left::Refused { error, .. }) => return Err(error),
         Err(error) if error.is_unreachable() => Departed::Unreachable {
-            cause: crate::ui::row(&error),
+            cause: error_chain::row(&error),
         },
         Err(error) => match RpcError::from(error) {
             gone if gone.code == RpcErrorCode::NotFound => Departed::AlreadyForgotten,
@@ -1889,7 +1890,7 @@ async fn data_loss_on_machine(
     let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
         .map_err(|failure| {
-            let message = format!("Server {name}: {}", crate::ui::row(&failure.error));
+            let message = format!("Server {name}: {}", error_chain::row(&failure.error));
             failure.error.with_message(message)
         })?;
     Ok(ObservedDataLoss {

@@ -1211,11 +1211,11 @@ impl Connector for Unreachable {
 
 #[tokio::test]
 async fn a_deploys_redial_tells_a_refusal_from_a_failed_dial() {
-    use crate::deploy::{MachineOperations, RedialFailure};
+    use crate::deploy::{RedialFailure, Session};
 
     let connector = Resealing::new(vec![held(7), held(9)]);
     let client = connector.open(expecting(7, false)).await;
-    let refused = MachineOperations::redial(&client).await;
+    let refused = Session::redial(&client).await;
     assert!(
         matches!(
             &refused,
@@ -1230,7 +1230,7 @@ async fn a_deploys_redial_tells_a_refusal_from_a_failed_dial() {
     let connector = Resealing::new(vec![held(7)]);
     let mut client = connector.open(expecting(7, false)).await;
     client.session.use_connector(Arc::new(Unreachable));
-    let failed = MachineOperations::redial(&client).await;
+    let failed = Session::redial(&client).await;
     assert!(
         matches!(failed, Some(Err(RedialFailure::Failed))),
         "{failed:?}"

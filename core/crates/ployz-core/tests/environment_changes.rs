@@ -41,14 +41,13 @@ fn project(value: Value) -> Value {
 
 #[test]
 fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
-    for (node_type, original, changed, setting, resettable) in [
-        ("service", service(1), service(2), "replicas", true),
+    for (node_type, original, changed, setting) in [
+        ("service", service(1), service(2), "replicas"),
         (
             "volume",
             json!({"version":2,"name":"Data","storage":{"kind":"docker"}}),
             json!({"version":2,"name":"Renamed","storage":{"kind":"docker"}}),
             "name",
-            true,
         ),
     ] {
         for submitted in [false, true] {
@@ -73,7 +72,10 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
                     assert_eq!(result["totalCount"], 1);
                     if lifecycle == "update" {
                         assert_eq!(groups[0]["settings"][0]["path"], setting);
-                        assert_eq!(groups[0]["settings"][0]["canRestore"], resettable);
+                        assert_eq!(
+                            groups[0]["settings"][0]["canRestore"], false,
+                            "the Store fills it"
+                        );
                     }
                 } else {
                     assert!(groups.is_empty(), "{node_type}, submitted={submitted}");
@@ -92,7 +94,7 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
         assert_eq!(result["groups"][0]["lifecycle"], "create");
         assert_eq!(result["totalCount"], 2);
         assert_eq!(row["path"], setting);
-        assert_eq!(row["canRestore"], resettable);
+        assert_eq!(row["canRestore"], false, "the Store fills it");
         let result = project(input(
             node_type,
             &original,

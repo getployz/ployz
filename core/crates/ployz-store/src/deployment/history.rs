@@ -36,10 +36,7 @@ pub(crate) fn applied_state(
     environment: &EnvironmentId,
     like: &SavedEnvironmentIntent,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
-    let rows = tx.query(
-        "SELECT node, node_type FROM config_applied WHERE environment_id = ?1 ORDER BY node_id",
-        &[environment.as_str().into()],
-    )?;
+    let rows = applied::rows(tx, environment)?;
     scope::nodes(&rows, like, "Applied State")
 }
 

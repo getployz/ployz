@@ -308,7 +308,7 @@ fn no_failure_message_flattens_a_cause() {
     ];
     const FLATTENERS: [&str; 12] = [
         "inline(",
-        "ui::row(",
+        "error_chain::row(",
         "error.to_string()",
         "{error}",
         "{error:",

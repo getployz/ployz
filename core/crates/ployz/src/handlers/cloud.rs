@@ -1295,6 +1295,7 @@ pub(super) fn reset(root: &ArgMatches) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::error_chain;
 
     fn test_identity(machine: &Machine) -> EnrollIdentity {
         EnrollIdentity::from_machine_token(
@@ -1568,7 +1569,7 @@ mod tests {
         .expect("a refusal ends the wait")
         .err()
         .expect("a refusing daemon is not ready");
-        let text = crate::ui::chain_text(&refused);
+        let text = error_chain::row(&refused);
         assert!(
             text.contains(
                 "ployzd refused to start: refusing to change the retained WireGuard interface"

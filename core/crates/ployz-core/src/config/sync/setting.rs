@@ -334,7 +334,7 @@ impl Setting {
 
     /// Its cell in `config`: normalized so copies compare with their originals, with
     /// generated addresses stripped of `suffix`.
-    pub(super) fn read(self, config: &AuthoredServiceConfig, suffix: &str) -> Value {
+    pub(in crate::config) fn read(self, config: &AuthoredServiceConfig, suffix: &str) -> Value {
         (self.def().read)(config, suffix)
     }
 

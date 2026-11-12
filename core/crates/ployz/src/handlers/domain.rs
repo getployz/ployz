@@ -3,6 +3,7 @@
 //! Both are staged until a Deploy, and each reads Ready, Setting up or Needs attention
 //! with at most one action.
 
+use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::{DomainPrefix, Hint, RpcErrorCode};
 use ployz_store::{
@@ -10,7 +11,7 @@ use ployz_store::{
     DomainsQuery, Hostname, RemoveDomain, SetGeneratedDomain,
 };
 
-use super::store::{self, Next};
+use super::store;
 use super::{Error, leaf_matches, required};
 use crate::cli::{positional, value};
 use crate::ui::{self, Cell, Fields, Table, Tone};
@@ -223,7 +224,8 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     for row in &view.domains {
         table.row(cells(row));
     }
-    ui::list(&Next::new(&view, next.clone()), &table)?;
+    let next = Next::new(&view, next);
+    ui::list(&next, &table)?;
     for row in &view.domains {
         say_dns(row);
     }
@@ -233,7 +235,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
             &["domain", "add", "SERVICE"],
         )));
     }
-    say_next(next);
+    next.say();
     Ok(())
 }
 
@@ -253,9 +255,10 @@ pub(super) fn check(root: &ArgMatches) -> Result<(), Error> {
         .field("port", port)
         .field("status", status)
         .field("reason", reason);
-    ui::fields(&Next::new(&view, next.clone()), &record)?;
+    let next = Next::new(&view, next);
+    ui::fields(&next, &record)?;
     say_dns(row);
-    say_next(next);
+    next.say();
     Ok(())
 }
 

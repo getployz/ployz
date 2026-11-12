@@ -1,5 +1,6 @@
 //! Tests for bounded Global catch-up and target storage eligibility.
 
+use ployz_core::error_chain;
 use std::num::NonZeroU64;
 
 use ployz_core::{
@@ -32,7 +33,7 @@ fn with_gen(mut observed: ContainerObservation, r#gen: u64) -> ContainerObservat
 }
 
 fn message(error: CatchUpError, joiner: &Machine) -> String {
-    crate::ui::chain_text(&joined_catch_up_error(error, joiner, |args| {
+    error_chain::row(&joined_catch_up_error(error, joiner, |args| {
         shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
     }))
 }
@@ -1019,7 +1020,7 @@ async fn a_router_tailscale_refused_fails_catch_up_and_names_the_way_to_retry() 
     let failure = joined_catch_up_error(error, &joiner, |args| {
         shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
     });
-    let said = crate::ui::chain_text(&failure);
+    let said = error_chain::row(&failure);
 
     assert!(said.contains("refused the auth key"), "{said}");
     assert!(!said.contains("redeploy"), "{said}");

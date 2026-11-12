@@ -131,9 +131,11 @@ impl Move {
         let pair = (&from.summary.id, &into.summary.id);
         let base = match stored(tx, pair)? {
             Some(base) => base,
-            None => match made_with(tx, &from.summary.id)? {
+            None => match rows::made_with(tx, &from.summary.id)? {
                 Some(base) => base,
-                None => made_with(tx, &into.summary.id)?.unwrap_or_else(|| into.working.clone()),
+                None => {
+                    rows::made_with(tx, &into.summary.id)?.unwrap_or_else(|| into.working.clone())
+                }
             },
         };
         // Syncing anywhere but into its Parent, a Branch's own changes are those since
@@ -554,20 +556,6 @@ pub(super) fn stored(
     )?
     .first()
     .map(|row| row.intent(0, "Sync base"))
-    .transpose()
-}
-
-/// What Branch `id` was made with; none for a root.
-fn made_with(
-    tx: &mut dyn Tx,
-    id: &EnvironmentId,
-) -> Result<Option<SavedEnvironmentIntent>, RpcError> {
-    tx.query(
-        "SELECT made_with FROM config_environment_branch WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?
-    .first()
-    .map(|row| row.intent(0, "Branch"))
     .transpose()
 }
 
@@ -1369,22 +1357,10 @@ pub(crate) fn empty_in_bases(
     if rows.is_empty() {
         return Ok(());
     }
-    for row in tx.query(
-        "SELECT environment_id, made_with FROM config_environment_branch \
-         WHERE environment_id = ?1 OR parent_id = ?1",
-        &[environment.into()],
-    )? {
-        let mut made_with = row.intent(1, "Branch")?;
+    for read in rows::made_with_around(tx, environment)? {
+        let mut made_with = read.intent.clone();
         if review::sealed::empty_plain_in(&mut made_with, rows) {
-            tx.execute(
-                "UPDATE config_environment_branch SET made_with = ?2 \
-                 WHERE environment_id = ?1 AND made_with = ?3",
-                &[
-                    row.text(0)?.into(),
-                    document(&made_with).as_str().into(),
-                    row.text(1)?.into(),
-                ],
-            )?;
+            read.replace(tx, &made_with)?;
         }
     }
     for row in tx.query(
@@ -1559,11 +1535,7 @@ fn below(tx: &mut dyn Tx, environment: &str) -> Result<Vec<String>, RpcError> {
     let mut below = Vec::new();
     let mut next = std::collections::VecDeque::from([environment.to_owned()]);
     while let Some(parent) = next.pop_front() {
-        for row in tx.query(
-            "SELECT environment_id FROM config_environment_branch WHERE parent_id = ?1",
-            &[parent.as_str().into()],
-        )? {
-            let branch = row.text(0)?.to_owned();
+        for branch in rows::children(tx, &parent)? {
             next.push_back(branch.clone());
             below.push(branch);
         }
@@ -1636,23 +1608,17 @@ fn held(
     // what it shares with its Parent or a Branch, which starts as what the Branch
     // was made with and moves only by what lands. A Sync base with any other
     // Environment can start as that one's value.
-    for (sql, what) in [
-        (
-            "SELECT made_with FROM config_environment_branch \
-             WHERE environment_id = ?1 OR parent_id = ?1",
-            "Branch",
-        ),
-        (
-            "SELECT b.base FROM config_sync_base b JOIN config_environment_branch e \
-             ON (e.environment_id = b.environment_id AND e.parent_id = b.other_id) \
-             OR (e.environment_id = b.other_id AND e.parent_id = b.environment_id) \
-             WHERE b.environment_id = ?1 OR b.other_id = ?1",
-            "Sync base",
-        ),
-    ] {
-        for row in tx.query(sql, &[environment.into()])? {
-            review::sealed::hold(&mut held, &row.intent(0, what)?, rows);
-        }
+    for read in rows::made_with_around(tx, environment)? {
+        review::sealed::hold(&mut held, &read.intent, rows);
+    }
+    for row in tx.query(
+        "SELECT b.base FROM config_sync_base b JOIN config_environment_branch e \
+         ON (e.environment_id = b.environment_id AND e.parent_id = b.other_id) \
+         OR (e.environment_id = b.other_id AND e.parent_id = b.environment_id) \
+         WHERE b.environment_id = ?1 OR b.other_id = ?1",
+        &[environment.into()],
+    )? {
+        review::sealed::hold(&mut held, &row.intent(0, "Sync base")?, rows);
     }
     Ok(held)
 }
@@ -1668,21 +1634,10 @@ fn empty_below(
     }
     for branch in below {
         let branch = branch.as_str();
-        for row in tx.query(
-            "SELECT made_with FROM config_environment_branch WHERE environment_id = ?1",
-            &[branch.into()],
-        )? {
-            let mut made_with = row.intent(0, "Branch")?;
+        if let Some(read) = rows::made_with_of(tx, branch)? {
+            let mut made_with = read.intent.clone();
             if review::sealed::empty_held_in(&mut made_with, held) {
-                tx.execute(
-                    "UPDATE config_environment_branch SET made_with = ?2 \
-                     WHERE environment_id = ?1 AND made_with = ?3",
-                    &[
-                        branch.into(),
-                        document(&made_with).as_str().into(),
-                        row.text(0)?.into(),
-                    ],
-                )?;
+                read.replace(tx, &made_with)?;
             }
         }
     }
@@ -1884,7 +1839,7 @@ fn inherited(
     if !shared {
         return Ok(None);
     }
-    let made = made_with(tx, &branch.summary.id)?.is_some_and(|mut made| {
+    let made = rows::made_with(tx, &branch.summary.id)?.is_some_and(|mut made| {
         variable(&mut made, lineage, key)
             .is_some_and(|made| made.value.stored_fingerprint() == fingerprint)
     });

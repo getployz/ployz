@@ -170,10 +170,19 @@ impl PoolStorage {
         self
     }
 
-    pub(super) async fn lock_mutation(&self) -> Result<fs::File> {
+    /// The file other daemon versions may hold during an upgrade, so its name is fixed.
+    fn lock_path(&self) -> PathBuf {
         let mut lock_path = self.backing.as_os_str().to_owned();
         lock_path.push(".lock");
-        let lock_path = PathBuf::from(lock_path);
+        PathBuf::from(lock_path)
+    }
+
+    fn device_marker(&self) -> PathBuf {
+        self.backing.with_extension("device")
+    }
+
+    pub(super) async fn lock_mutation(&self) -> Result<fs::File> {
+        let lock_path = self.lock_path();
         let lock = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -211,12 +220,7 @@ impl PoolStorage {
     ///
     /// Returns an error for failed inspection, conflicting backing, or failed ownership recording.
     pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
-        let args = [
-            "list",
-            "-Hp",
-            "-o",
-            "name,size,allocated,free,health,readonly",
-        ];
+        let args = machine_pool::ZPOOL_LIST;
         let output = match run_command(&self.zpool, &args).await {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             output => checked_output(&self.zpool, &args, output)?,
@@ -234,7 +238,7 @@ impl PoolStorage {
                 );
             }
             if device {
-                let marker = self.backing.with_extension("device");
+                let marker = self.device_marker();
                 if !matches!(
                     fs::read_to_string(&marker).as_deref(),
                     Ok(machine_pool::CONFIRMED_DEVICE_POOL_MARKER)
@@ -366,10 +370,7 @@ impl PoolStorage {
     }
 
     fn has_device_pool(&self) -> Result<bool> {
-        path_exists(
-            &self.backing.with_extension("device"),
-            "device Machine Pool marker",
-        )
+        path_exists(&self.device_marker(), "device Machine Pool marker")
     }
 
     fn backing_text(&self) -> Result<&str> {

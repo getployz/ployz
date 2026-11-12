@@ -1065,6 +1065,7 @@ mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
+    use ployz_core::error_chain;
 
     #[tokio::test]
     async fn public_conflict_messages_follow_clouds_enroll_contract() {
@@ -1173,7 +1174,7 @@ mod tests {
                     );
                     continue;
                 }
-                for printed in [crate::ui::chain_text(&error), format!("{error:?}")] {
+                for printed in [error_chain::row(&error), format!("{error:?}")] {
                     if let Some(expected) = expected {
                         assert!(printed.contains(expected), "path={path}: {printed}");
                     } else {
@@ -1219,7 +1220,7 @@ mod tests {
         .await
         .unwrap_err();
         server.await.unwrap();
-        assert_eq!(crate::ui::chain_text(&error), said);
+        assert_eq!(error_chain::row(&error), said);
         assert_eq!(
             crate::failure::Failure::from(error).report().code,
             ployz_core::rpc::RpcErrorCode::Conflict
@@ -1854,7 +1855,7 @@ mod tests {
             timeout.to_string(),
             "Enrollment timed out waiting for Cloud."
         );
-        assert!(!crate::ui::chain_text(&timeout).contains(&hang));
+        assert!(!error_chain::row(&timeout).contains(&hang));
 
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused = format!("http://{}", closed.local_addr().unwrap());
@@ -1864,7 +1865,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(connect.to_string(), "Could not connect to Cloud.");
         assert_ne!(timeout.to_string(), connect.to_string());
-        let connect = crate::ui::chain_text(&connect);
+        let connect = error_chain::row(&connect);
         assert!(connect.contains("Connection refused"), "{connect}");
         assert!(!connect.contains(&refused));
     }
@@ -1897,7 +1898,7 @@ mod tests {
             .await
             .expect("lost response must return without retrying")
             .unwrap_err();
-            let rendered = crate::ui::chain_text(&error);
+            let rendered = error_chain::row(&error);
             assert!(rendered.contains("uncertain"), "{rendered}");
             let message = error.to_string();
             match command {
@@ -1948,7 +1949,7 @@ mod tests {
         .await
         .expect("the retry budget ends the held request")
         .unwrap_err();
-        let rendered = crate::ui::chain_text(&error);
+        let rendered = error_chain::row(&error);
         assert!(rendered.contains("uncertain"), "{rendered}");
         assert!(!rendered.contains("did not recover"), "{rendered}");
         assert!(error.to_string().contains("without --reset"), "{error}");
@@ -2297,7 +2298,7 @@ mod tests {
         .await
         .unwrap_err();
         server.await.unwrap();
-        crate::ui::chain_text(&error)
+        error_chain::row(&error)
     }
 
     #[tokio::test]
@@ -2407,12 +2408,12 @@ mod tests {
             .await
             .unwrap_err();
             server.await.unwrap();
-            for printed in [crate::ui::chain_text(&error), format!("{error:?}")] {
+            for printed in [error_chain::row(&error), format!("{error:?}")] {
                 assert!(!printed.contains(&echoed), "{echoed}: {printed}");
                 assert!(!printed.contains("Refused"), "{echoed}: {printed}");
             }
             assert!(
-                crate::ui::chain_text(&error).contains("HTTP 409: candidate publication rejected"),
+                error_chain::row(&error).contains("HTTP 409: candidate publication rejected"),
                 "{echoed}"
             );
         }
@@ -2474,13 +2475,11 @@ mod tests {
                 )
             };
             let error = result.unwrap_err();
-            for rendered in [crate::ui::chain_text(&error), format!("{error:?}")] {
+            for rendered in [error_chain::row(&error), format!("{error:?}")] {
                 assert!(!rendered.contains(&secret));
                 assert!(!rendered.contains(pairing));
             }
-            assert!(
-                crate::ui::chain_text(&error).contains(&format!("HTTP 400: {operation} rejected"))
-            );
+            assert!(error_chain::row(&error).contains(&format!("HTTP 400: {operation} rejected")));
             assert!(error.to_string().contains("without --reset"));
         }
     }

@@ -314,29 +314,6 @@ impl SettingPath {
         }
     }
 
-    /// Core's change-row `field` of Service `service` as a path: `SERVICE.SETTING`,
-    /// `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME` or `SERVICE.configs.CONFIG`, naming
-    /// a Volume or Config by `named(family, id)`. Text, not a parsed path: a row may
-    /// name a field no path does.
-    pub(crate) fn from_core(
-        service: &str,
-        field: &str,
-        named: impl Fn(&str, &str) -> String,
-    ) -> String {
-        let key = field
-            .strip_prefix("env.")
-            .or_else(|| field.strip_prefix("variables."));
-        let field = match (key, field.split_once('.')) {
-            (Some(key), _) => format!("env.{key}"),
-            (_, Some(("configs", id))) => format!("configs.@{id}"),
-            (_, Some((family @ "mounts", id))) => {
-                format!("{family}.{}", named(family, id))
-            }
-            _ => field.to_owned(),
-        };
-        format!("{service}.{field}")
-    }
-
     /// The Service it is in; none for a Volume or a Config.
     #[must_use]
     pub const fn service(&self) -> Option<&ServiceName> {
@@ -481,6 +458,17 @@ pub(crate) fn name_a_setting(node: impl std::fmt::Display) -> RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_core_setting_and_its_path_name_the_same_service_setting() {
+        for setting in ployz_core::config::Setting::ALL {
+            assert_eq!(
+                ServiceSetting::of(setting),
+                ServiceSetting::of_field(setting.path()),
+                "{setting:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_path_naming_no_setting_lists_every_setting_and_an_example() {

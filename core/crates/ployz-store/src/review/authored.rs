@@ -8,13 +8,13 @@ use crate::storage::Tx;
 use crate::{Trusted, error, scope};
 use ployz_core::config::{
     At, AuthoredServiceConfig, BuildMethod, ChangeKind, CompiledNodeConfig, ConfigAttachment,
-    EnvironmentNodeType, PlainText, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity,
-    RowId, SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVariableIntent, SavedVolumeIntent, ServiceBuildConfig, ServiceGitAccess, ServiceGitBranch,
-    ServiceHealthcheck, ServiceManagedHostname, ServiceRestartPolicy, ServiceRoute,
-    ServiceSettingChange, ServiceSource, ServiceTemplate, ServiceUpdateOrder, Setting, ValuePart,
-    VariableValue, VolumeAttachment, VolumeKind, compare_service_settings,
-    compile_environment_intent, render_variable_parts,
+    EnvironmentNodeType, Place, PlainText, ReviewComparisonRole, ReviewLifecycleKind,
+    ReviewNodeIdentity, RowId, SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent,
+    SavedServiceIntent, SavedVariableIntent, SavedVolumeIntent, ServiceBuildConfig,
+    ServiceGitAccess, ServiceGitBranch, ServiceHealthcheck, ServiceManagedHostname,
+    ServiceRestartPolicy, ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate,
+    ServiceUpdateOrder, Setting, ValuePart, VariableValue, VolumeAttachment, VolumeKind,
+    compare_service_settings, compile_environment_intent, render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
 use serde_json::{Value, json};
@@ -1826,7 +1826,7 @@ impl Plan {
                 change.settings = lifecycle_rows(effect, before, after, &name, &lineage, &names)?;
                 rows.push(Row {
                     node: node.clone(),
-                    path: node_path(change),
+                    path: change.path(),
                     effects: vec![index],
                 });
                 rows.extend(change.settings.iter().map(|row| Row {
@@ -2163,13 +2163,6 @@ fn node_info(
                 }),
         })
         .ok_or_else(|| error::corrupt("Authored owner"))
-}
-fn node_path(change: &NodeChange) -> String {
-    match change.node.node_type {
-        EnvironmentNodeType::Service => change.name.clone(),
-        EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
-        EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
-    }
 }
 /// `recorded` lists variables, as service id and key, shown changed in value even
 /// where both sides read the same.
@@ -2730,7 +2723,7 @@ fn prevent_plaintext(
     Ok(())
 }
 
-fn public_setting(path: &str, at: Option<&At>, value: Value) -> Value {
+pub(super) fn public_setting(path: &str, at: Option<&At>, value: Value) -> Value {
     if let Some(At::Setting(setting)) = at
         && let Some(setting) = ServiceSetting::of(*setting)
     {
@@ -2760,58 +2753,25 @@ fn lifecycle_rows(
             let CompiledNodeConfig::Service(config) = config.snapshot.0 else {
                 return Err(error::corrupt("Service lifecycle type"));
             };
+            let lookup = super::Lookup {
+                lineage_in: &[intent],
+                named_in: &[after, before],
+            };
             compare_service_settings(&config, None)
                 .into_iter()
-                .filter_map(|(mut row, at)| {
-                    if let Some(At::Variable(key)) = &at
-                        && !record.variables.iter().any(|variable| &variable.key == key)
-                    {
-                        return None;
+                .filter(|(_, place)| match place {
+                    Place::Variable(key) => {
+                        record.variables.iter().any(|variable| &variable.key == key)
                     }
-                    let at = match row.path.split_once('.') {
-                        Some(("mounts", id)) => intent
-                            .volumes
-                            .iter()
-                            .find(|volume| volume.resource_id == id)
-                            .map(|volume| At::Mount(volume.resource_lineage_id.clone())),
-                        Some(("configs", id)) => intent
-                            .configs
-                            .iter()
-                            .find(|config| config.resource_id == id)
-                            .map(|config| At::ConfigMount(config.resource_lineage_id.clone())),
-                        _ => at,
-                    };
-                    let path = if let Some(At::Setting(setting)) = &at
-                        && let Some(setting) = ServiceSetting::of(*setting)
-                    {
-                        format!("{name}.{}", setting.name())
-                    } else {
-                        SettingPath::from_core(name, &row.path, |family, id| {
-                            if family == "configs" {
-                                super::config_name(&[after, before], id)
-                            } else {
-                                super::volume_name(&[after, before], id)
-                            }
-                            .unwrap_or_default()
-                        })
-                    };
-                    row.after = if row.path.starts_with("mounts.") {
-                        row.after.get("mountPath").cloned().unwrap_or_default()
-                    } else if row.path.starts_with("configs.") {
-                        row.after.get("mountDir").cloned().unwrap_or_default()
-                    } else {
-                        public_setting(&row.path, at.as_ref(), row.after)
-                    };
-                    row.row = at.map(|at| RowId::of(lineage, at));
-                    row.config_name = row
-                        .path
-                        .strip_prefix("configs.")
-                        .and_then(|id| super::config_name(&[after, before], id))
-                        .and_then(|name| ConfigName::parse(name).ok());
-                    row.path = path;
-                    row.can_restore = false;
-                    Some(row)
+                    Place::Name
+                    | Place::Storage
+                    | Place::File(_)
+                    | Place::Setting(_)
+                    | Place::Route(_)
+                    | Place::Mount { .. }
+                    | Place::ConfigMount { .. } => true,
                 })
+                .map(|row| super::service_row(row, name, lineage, &lookup))
                 .collect()
         }
         Effect::ConfigLifecycle(change) => change

@@ -3,6 +3,7 @@
 //! rename and delete it. Every change is staged in Working State until a Deploy.
 //! A file reads Service variables as `${{ SERVICE.KEY }}`.
 
+use crate::ui::Next;
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::{FileMode, ReviewLifecycleKind};
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
@@ -12,7 +13,7 @@ use ployz_store::{
     RemoveConfigFile, RenameConfig,
 };
 
-use super::store::{self, Next};
+use super::store;
 use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded, required};
 use crate::cli::{base, positional, switch, value};
 use crate::failure::io_code;

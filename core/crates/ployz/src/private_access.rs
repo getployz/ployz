@@ -20,7 +20,7 @@ use ts_rs::TS;
 
 use crate::{
     connect::Client,
-    deploy::{MachineOperations, RestartTolerant},
+    deploy::{ProxyPlacement, RestartTolerant},
     failure::Failure,
     ingress::unsupported,
 };
@@ -216,7 +216,7 @@ enum Answer {
     Cancelled,
 }
 
-async fn set_all<C: MachineOperations>(
+async fn set_all<C: ProxyPlacement>(
     client: &C,
     machines: &[AccessMachine],
     request: &SetPrivateAccessRequest,
@@ -245,7 +245,7 @@ async fn set_all<C: MachineOperations>(
 /// # Errors
 ///
 /// Never; a Machine's refusal or failed router is one of the result's failures.
-pub(crate) async fn turn_on<C: MachineOperations>(
+pub(crate) async fn turn_on<C: ProxyPlacement>(
     client: &C,
     machines: Vec<AccessMachine>,
     sealed: Ciphertext,
@@ -298,7 +298,7 @@ pub(crate) async fn turn_on<C: MachineOperations>(
 
 /// Remove the router and its auth key from every Machine. A Machine whose daemon
 /// predates Private Access runs no router, so it has nothing to remove.
-pub(crate) async fn turn_off<C: MachineOperations>(
+pub(crate) async fn turn_off<C: ProxyPlacement>(
     client: &C,
     machines: Vec<AccessMachine>,
     cancel: &CancellationToken,

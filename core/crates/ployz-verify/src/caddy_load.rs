@@ -50,7 +50,7 @@
 
 use std::fmt::Write as _;
 
-use stateright::{Checker, HasDiscoveries, Model, Property};
+use stateright::{Model, Property};
 
 /// The newest local ingress container (`newest_local_ingress`).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -1502,59 +1502,17 @@ fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use stateright::Checker;
 
     use super::*;
+    use crate::harness::{self, Narrated, breaks, check, last};
 
-    type Path = Vec<(State, Option<Action>)>;
+    type Path = harness::Path<CaddyLoad>;
 
-    fn check(model: CaddyLoad) -> impl Checker<CaddyLoad> {
-        model.checker().threads(1).spawn_bfs().join()
-    }
-
-    /// The first path in BFS order whose last state breaks `property` under `model`,
-    /// so no shorter path breaks it, printed as a story under the test's name. The
-    /// checker's own discovery is not that path: `check_block` stores every violation
-    /// it visits, each overwriting the last, and `finish_when` is read once per
-    /// 1500-state block, so a visitor keeps the first. One thread keeps the path the
-    /// same from run to run.
-    fn breaks(model: CaddyLoad, property: &'static str) -> Path {
-        let holds = model
-            .properties()
-            .into_iter()
-            .find(|candidate| candidate.name == property)
-            .expect("a model property")
-            .condition;
-        let first = Arc::new(Mutex::new(None));
-        let seen = Arc::clone(&first);
-        model
-            .checker()
-            .threads(1)
-            .visitor(move |path: stateright::Path<State, Action>| {
-                let mut first = seen.lock().expect("the first break");
-                if first.is_none() && !holds(&model, path.last_state()) {
-                    *first = Some(path.into_vec());
-                }
-            })
-            .finish_when(HasDiscoveries::AllOf([property].into()))
-            .spawn_bfs()
-            .join();
-        let path = first
-            .lock()
-            .expect("the first break")
-            .take()
-            .expect("a path breaks the property");
-        let test = std::thread::current();
-        println!(
-            "[{}] {property} fails under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            story(&model, &path)
-        );
-        path
-    }
-
-    fn last(path: &Path) -> State {
-        path.last().expect("a path has a state").0
+    impl Narrated for CaddyLoad {
+        fn story(&self, path: &[(State, Option<Action>)]) -> String {
+            story(self, path)
+        }
     }
 
     fn took(path: &Path, action: Action) -> bool {

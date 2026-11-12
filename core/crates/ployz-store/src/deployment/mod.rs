@@ -5,6 +5,7 @@
 //! The Head that reviews compare against comes from here too.
 
 pub(crate) mod admit;
+pub(crate) mod applied;
 mod history;
 mod landing;
 mod lifecycle;
@@ -24,7 +25,7 @@ pub(crate) use lowering::*;
 pub(crate) use rows::servers;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
-    StoppedBy, starts_container,
+    StoppedBy,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -650,6 +651,11 @@ pub(crate) enum TargetNode {
         id: ConfigId,
         name: ConfigName,
     },
+}
+
+/// The `LIKE` pattern matching a Deployment's `nodes` text when it targets node `id`.
+pub(crate) fn node_pattern(id: &str) -> String {
+    format!("%\"{id}\"%")
 }
 
 /// The Services among `nodes`.
@@ -1901,16 +1907,8 @@ pub(crate) fn saved_at(
         return scope::load_by_id(tx, environment)
             .map(|loaded| crate::scope::empty(&loaded.working.environment_slug));
     }
-    let rows = tx.query(
-        "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
-        &[
-            environment.as_str().into(),
-            revision_param(revision)?.into(),
-        ],
-    )?;
-    rows.first()
-        .ok_or_else(|| error::corrupt("Saved State"))?
-        .intent(0, "Saved State")
+    crate::review::saved::intent_at(tx, environment, revision)?
+        .ok_or_else(|| error::corrupt("Saved State"))
         .map(canonicalize_environment_intent)
 }
 
@@ -2132,5 +2130,27 @@ mod parity_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod node_pattern_tests {
+    use super::{TargetNode, node_pattern};
+
+    #[test]
+    fn a_nodes_pattern_is_the_quoted_id_a_targeted_node_serializes_with() {
+        let id = "6f1c2a9e-4d3b-4f7a-9c1e-0a5b7d8e2f31";
+        let nodes = vec![
+            serde_json::from_value::<TargetNode>(serde_json::json!({
+                "type": "service", "id": id, "name": "web", "runtime": "web-1",
+            }))
+            .expect("a Service node"),
+        ];
+        let text = serde_json::to_string(&nodes).expect("nodes are JSON");
+        assert_eq!(node_pattern(id), format!("%\"{id}\"%"));
+        assert!(text.contains(node_pattern(id).trim_matches('%')));
+        assert!(
+            !text.contains(node_pattern("0a5b7d8e-2f31-4f7a-9c1e-6f1c2a9e4d3b").trim_matches('%'))
+        );
     }
 }

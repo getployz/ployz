@@ -11,6 +11,7 @@ pub(crate) mod diff;
 pub(crate) mod history;
 pub(crate) mod publish;
 mod required;
+pub(crate) mod saved;
 pub(crate) mod sealed;
 mod version;
 
@@ -18,11 +19,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
-    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedConfigIntent,
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, ServiceGitBranch,
-    ServiceSettingChange, ServiceSource, Setting, VariableValue, canonicalize_environment_intent,
-    compile_environment_intent, project_environment_changes,
+    At, ChangeKind, ChangeSetInput, EnvironmentNodeType, Place, ReviewComparisonRole,
+    ReviewLifecycleKind, ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId,
+    SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
+    ServiceGitBranch, ServiceSettingChange, ServiceSource, Setting, VariableValue,
+    canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,6 +36,7 @@ pub(crate) use approval::{
 pub use required::{
     ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, OperationVerb,
 };
+pub(crate) use saved::{Saved, latest_saved};
 pub use version::{MalformedReviewVersion, ReviewVersion};
 
 use crate::Actor;
@@ -42,8 +44,9 @@ use crate::error;
 use crate::git::GitSetting;
 use crate::id::{EnvironmentId, Hostname, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
-use crate::settings::{ServiceSetting, SettingPath, shown};
+use crate::settings::{ServiceSetting, SettingPath};
 use crate::storage::Tx;
+use authored::public_setting;
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -182,6 +185,15 @@ pub struct NodeChange {
 }
 
 impl NodeChange {
+    /// Its path as a whole node: the Service's name, `volumes.NAME` or `configs.@ID`.
+    pub(crate) fn path(&self) -> String {
+        match self.node.node_type {
+            EnvironmentNodeType::Service => self.name.clone(),
+            EnvironmentNodeType::Volume => format!("volumes.{}", self.name),
+            EnvironmentNodeType::Config => format!("configs.@{}", self.node.id),
+        }
+    }
+
     /// Each Setting row of `changes`, by path, as people read them shown together.
     #[must_use]
     pub fn labels(changes: &[Self]) -> BTreeMap<String, String> {
@@ -246,16 +258,6 @@ pub enum DataEffect {
     Deleted,
     /// A Volume is detached, and it keeps its data.
     Kept,
-}
-
-/// One Saved revision.
-pub(crate) struct Saved {
-    pub(crate) revision: Revision,
-    pub(crate) intent: SavedEnvironmentIntent,
-    /// The Volume losses accepted when this revision was saved, each with the
-    /// Docker Volumes seen holding its data then. They cover the next Deploy of
-    /// this revision until the evidence changes.
-    pub(crate) accepted: Vec<crate::VolumeLoss>,
 }
 
 /// What the Change Set compares Working State against: the submitted Deployment's
@@ -482,59 +484,25 @@ fn compare(
                 let settings: Vec<ServiceSettingChange> = group
                     .settings
                     .into_iter()
-                    .map(|(mut row, at)| {
-                        let at = match row.path.split_once('.') {
-                            Some(("mounts", id)) => every
-                                .iter()
-                                .flat_map(|intent| &intent.volumes)
-                                .find(|volume| volume.resource_id == id)
-                                .map(|volume| At::Mount(volume.resource_lineage_id.clone())),
-                            Some(("configs", id)) => every
-                                .iter()
-                                .flat_map(|intent| &intent.configs)
-                                .find(|config| config.resource_id == id)
-                                .map(|config| At::ConfigMount(config.resource_lineage_id.clone())),
-                            _ => at,
-                        };
-                        // A row's Setting is what Discard takes, whichever part of it changed.
-                        let setting = match &at {
-                            Some(At::Setting(setting)) => ServiceSetting::of(*setting),
-                            _ => None,
-                        };
-                        row.row = at.map(|at| RowId::of(&lineage, at));
-                        if row.path.starts_with("mounts.") {
-                            row.before = row.before.get("mountPath").cloned().unwrap_or_default();
-                            row.after = row.after.get("mountPath").cloned().unwrap_or_default();
-                        }
-                        if row.path.starts_with("configs.") {
-                            row.before = row.before.get("mountDir").cloned().unwrap_or_default();
-                            row.after = row.after.get("mountDir").cloned().unwrap_or_default();
-                        }
-                        if group.node.node_type == EnvironmentNodeType::Volume {
-                            row.path = format!("volumes.{name}.{}", row.path);
-                        } else if group.node.node_type == EnvironmentNodeType::Config {
-                            row.before = crate::config_item::shown_file(row.before, &names);
-                            row.after = crate::config_item::shown_file(row.after, &names);
-                            row.path = format!("configs.@{}.{}", group.node.id, row.path);
-                        } else {
-                            row.config_name = row
-                                .path
-                                .strip_prefix("configs.")
-                                .and_then(|id| config_name(&intents, id))
-                                .and_then(|name| ployz_core::ConfigName::parse(&name).ok());
-                            row.before = shown(&row.path, row.before);
-                            row.after = shown(&row.path, row.after);
-                            row.path = match setting {
-                                Some(setting) => format!("{name}.{}", setting.name()),
-                                None => SettingPath::from_core(&name, &row.path, |family, id| {
-                                    if family == "configs" {
-                                        config_name(&intents, id)
-                                    } else {
-                                        volume_name(&intents, id)
-                                    }
-                                    .unwrap_or_default()
-                                }),
-                            };
+                    .map(|(mut row, place)| {
+                        match group.node.node_type {
+                            EnvironmentNodeType::Volume => {
+                                row.row = place.at().map(|at| RowId::of(&lineage, at));
+                                row.path = format!("volumes.{name}.{}", row.path);
+                            }
+                            EnvironmentNodeType::Config => {
+                                row.row = place.at().map(|at| RowId::of(&lineage, at));
+                                row.before = crate::config_item::shown_file(row.before, &names);
+                                row.after = crate::config_item::shown_file(row.after, &names);
+                                row.path = format!("configs.@{}.{}", group.node.id, row.path);
+                            }
+                            EnvironmentNodeType::Service => {
+                                let lookup = Lookup {
+                                    lineage_in: &every,
+                                    named_in: &intents,
+                                };
+                                row = service_row((row, place), &name, &lineage, &lookup);
+                            }
                         }
                         // `discard` takes exactly the paths that parse.
                         row.can_restore = SettingPath::parse(&row.path).is_ok();
@@ -791,6 +759,68 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
 }
 
 /// The name of Volume `id` in Working State or Head.
+/// Where a Service row's Volume or Config is looked for.
+pub(super) struct Lookup<'a> {
+    /// The intents a mount's Volume or Config lineage is found in.
+    pub(super) lineage_in: &'a [&'a SavedEnvironmentIntent],
+    /// The intents that name a mounted Volume or Config.
+    pub(super) named_in: &'a [&'a SavedEnvironmentIntent; 2],
+}
+
+/// A row of Service `name` as core made it, as the Store lists it: its Sync row,
+/// the path people address it by, and its values as `get` shows them. Whether Discard
+/// takes it is for the caller to say.
+pub(super) fn service_row(
+    (mut row, place): (ServiceSettingChange, Place),
+    name: &str,
+    lineage: &str,
+    lookup: &Lookup<'_>,
+) -> ServiceSettingChange {
+    if !matches!(place, Place::Mount { .. } | Place::ConfigMount { .. }) {
+        row.before = public_setting(&row.path, place.at().as_ref(), row.before);
+        row.after = public_setting(&row.path, place.at().as_ref(), row.after);
+    }
+    let (at, path) = match &place {
+        Place::Mount { volume_resource_id } => {
+            row.before = row.before.get("mountPath").cloned().unwrap_or_default();
+            row.after = row.after.get("mountPath").cloned().unwrap_or_default();
+            let at = lookup
+                .lineage_in
+                .iter()
+                .flat_map(|intent| &intent.volumes)
+                .find(|volume| volume.resource_id == *volume_resource_id)
+                .map(|volume| At::Mount(volume.resource_lineage_id.clone()));
+            let volume = volume_name(lookup.named_in, volume_resource_id).unwrap_or_default();
+            (at, format!("mounts.{volume}"))
+        }
+        Place::ConfigMount { config_resource_id } => {
+            row.before = row.before.get("mountDir").cloned().unwrap_or_default();
+            row.after = row.after.get("mountDir").cloned().unwrap_or_default();
+            row.config_name = config_name(lookup.named_in, config_resource_id)
+                .and_then(|name| ployz_core::ConfigName::parse(&name).ok());
+            let at = lookup
+                .lineage_in
+                .iter()
+                .flat_map(|intent| &intent.configs)
+                .find(|config| config.resource_id == *config_resource_id)
+                .map(|config| At::ConfigMount(config.resource_lineage_id.clone()));
+            (at, format!("configs.@{config_resource_id}"))
+        }
+        Place::Setting(setting) => (
+            place.at(),
+            ServiceSetting::of(*setting)
+                .map_or(setting.path(), ServiceSetting::name)
+                .to_owned(),
+        ),
+        Place::Name | Place::Storage | Place::File(_) | Place::Route(_) | Place::Variable(_) => {
+            (place.at(), place.path())
+        }
+    };
+    row.path = format!("{name}.{path}");
+    row.row = at.map(|at| RowId::of(lineage, at));
+    row
+}
+
 fn volume_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<String> {
     intents
         .iter()
@@ -904,28 +934,18 @@ pub(crate) fn publish(
     }
     guard_saving(tx, environment, latest, &intent)?;
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
-    let accepted = (!accepted.is_empty())
-        .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
     let changed = latest.map_or_else(Vec::new, |latest| value_changes(&latest.intent, &intent));
-    let changed = (!changed.is_empty())
-        .then(|| serde_json::to_string(&changed).expect("value changes are JSON"));
-    tx.execute(
-        "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at, accepted_losses, value_changes) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        &[
-            environment.as_str().into(),
-            revision_param(revision)?.into(),
-            who.organization.as_str().into(),
-            serde_json::to_string(&intent)
-                .expect("Saved State is JSON")
-                .as_str()
-                .into(),
-            message.map(str::trim).filter(|message| !message.is_empty()).into(),
-            who.principal.as_ref().map(crate::Principal::as_str).into(),
-            crate::deployment::now().into(),
-            accepted.as_deref().into(),
-            changed.as_deref().into(),
-        ],
+    saved::insert(
+        tx,
+        who,
+        environment,
+        &saved::Insert {
+            revision,
+            intent: &intent,
+            message,
+            accepted,
+            changed: &changed,
+        },
     )?;
     sealed::SealLedger::record(tx, environment.as_str(), &intent)?;
     // Saving a sealed value again clears what an earlier seal left plain below.
@@ -1034,17 +1054,7 @@ pub(crate) fn reconsent(
     revision: Revision,
     accepted: &[crate::VolumeLoss],
 ) -> Result<(), RpcError> {
-    let accepted = (!accepted.is_empty())
-        .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
-    tx.execute(
-        "UPDATE config_saved SET accepted_losses = ?3 WHERE environment_id = ?1 AND revision = ?2",
-        &[
-            environment.as_str().into(),
-            revision_param(revision)?.into(),
-            accepted.as_deref().into(),
-        ],
-    )?;
-    Ok(())
+    saved::set_accepted_losses(tx, environment, revision, accepted)
 }
 
 /// Sealing a value removes every earlier copy of it from History: plain text
@@ -1163,17 +1173,7 @@ pub(crate) fn scrub_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Resu
         if scrub.apply(earlier, &mut saved) {
             // A scrub matched by key seals a variable under its own ID.
             sealed::SealLedger::record(tx, environment.as_str(), &saved)?;
-            tx.execute(
-                "UPDATE config_saved SET intent = ?3 WHERE environment_id = ?1 AND revision = ?2",
-                &[
-                    environment.as_str().into(),
-                    revision_param(earlier)?.into(),
-                    serde_json::to_string(&saved)
-                        .expect("Saved State is JSON")
-                        .as_str()
-                        .into(),
-                ],
-            )?;
+            saved::rewrite_intent(tx, environment, earlier, &saved)?;
         }
     }
     Ok(())
@@ -1189,35 +1189,6 @@ pub(crate) fn introductions(
         &[environment.summary.id.as_str().into()],
     )?;
     crate::scope::nodes(&rows, &environment.working, "Node Introduction")
-}
-
-pub(crate) fn latest_saved(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-) -> Result<Option<Saved>, RpcError> {
-    let rows = tx.query(
-        "SELECT revision, intent, accepted_losses FROM config_saved WHERE environment_id = ?1 \
-         ORDER BY revision DESC LIMIT 1",
-        &[environment.as_str().into()],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    let mut intent = canonicalize_environment_intent(row.intent(1, "Saved State")?);
-    // The revision keeps the size it asked for as history; read as the latest
-    // Saved State, it says the size the Servers hold, as Head does.
-    crate::volume::size::held(tx, environment, &mut intent.volumes)?;
-    let accepted = match row.optional_text(2)? {
-        Some(json) => {
-            serde_json::from_str(json).map_err(|_| error::corrupt("accepted Volume losses"))?
-        }
-        None => Vec::new(),
-    };
-    Ok(Some(Saved {
-        revision: Revision(row.number(0, "revision")?),
-        intent,
-        accepted,
-    }))
 }
 
 fn projection(

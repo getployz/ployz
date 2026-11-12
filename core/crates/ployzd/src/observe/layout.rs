@@ -70,17 +70,53 @@ const STORE_DIR: &str = "ployz-observe";
 pub const VERSION_DIR: &str = "v1";
 pub const CONTAINERS_DIR: &str = "containers";
 pub const META_FILE: &str = "meta.json";
-pub const META_TEMP_FILE: &str = "meta.tmp";
 pub const ENV_FILE: &str = "env.json";
-pub const ENV_TEMP_FILE: &str = "env.tmp";
 pub const GAPS_FILE: &str = "gaps.jsonl";
 pub const EXITS_FILE: &str = "exits.jsonl";
-pub const EXITS_TEMP_FILE: &str = "exits.tmp";
 pub const LINKING_FILE: &str = "linking.tmp";
 pub const SCANNED_FILE: &str = "scanned";
-pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
 pub const FIRST_SET_FILE: &str = "first-set.json";
-pub const FIRST_SET_TEMP_FILE: &str = "first-set.tmp";
+
+/// What a Container's directory holds, with whether the file is written through
+/// [`crate::filesystem::atomic_write`] and so has a temporary twin beside it. A new
+/// per-Container file is added here, or cleanup leaves it behind when it removes the
+/// directory.
+const STORE_FILES: [(&str, bool); 7] = [
+    (META_FILE, true),
+    (ENV_FILE, true),
+    (GAPS_FILE, false),
+    (EXITS_FILE, true),
+    (LINKING_FILE, false),
+    (SCANNED_FILE, true),
+    (FIRST_SET_FILE, true),
+];
+
+/// The names cleanup may unlink from a Container's directory: each stored file and the
+/// temporary twin a crash can leave beside it.
+pub(crate) fn store_file_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for (name, has_twin) in STORE_FILES {
+        names.push(name.to_owned());
+        if has_twin && let Some(twin) = crate::filesystem::temporary_path(Path::new(name)).to_str()
+        {
+            names.push(twin.to_owned());
+        }
+    }
+    names
+}
+
+/// `meta.json` in `dir`: `None` when it is not there, `InvalidData` when it does not
+/// parse.
+pub(crate) fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
+    match fs::read(dir.join(META_FILE)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub const METRICS_DIR: &str = "metrics";
 pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";
@@ -445,8 +481,45 @@ pub fn run_exits(bytes: &[u8]) -> impl Iterator<Item = RunExit> + '_ {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogFileName, SegmentName, StoreRoot};
+    use std::{fs, io};
+
+    use super::{LogFileName, SegmentName, StoreRoot, read_meta, store_file_names};
     use crate::test_dir::TestDir;
+
+    #[test]
+    fn cleanup_may_unlink_exactly_the_files_a_container_directory_holds() {
+        let mut names = store_file_names();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "env.json",
+                "env.tmp",
+                "exits.jsonl",
+                "exits.tmp",
+                "first-set.json",
+                "first-set.tmp",
+                "gaps.jsonl",
+                "linking.tmp",
+                "meta.json",
+                "meta.tmp",
+                "scanned",
+                "scanned.tmp",
+            ]
+        );
+    }
+
+    #[test]
+    fn stored_metadata_is_absent_or_invalid_data_never_another_error() {
+        let test = TestDir::new("ployzd-observe-meta");
+        fs::create_dir_all(&test.0).unwrap();
+        assert!(read_meta(&test.0).unwrap().is_none());
+        fs::write(test.0.join("meta.json"), "{").unwrap();
+        assert_eq!(
+            read_meta(&test.0).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 
     #[test]
     fn a_segment_spans_its_hour_in_unix_nanoseconds() {

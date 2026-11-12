@@ -12,9 +12,9 @@ use ployzd::{
     faults::{Identity, Want},
     machine_pool::MachinePool,
     volume_copy::{
-        BOUND_PATH_PREFIX, CopyRequest, CutRequest, ForgetRequest, PullRequest, SnapshotRequest,
-        WriterRequest,
+        CopyRequest, CutRequest, ForgetRequest, PullRequest, SnapshotRequest, WriterRequest,
     },
+    volume_send::protocol,
 };
 
 use super::{
@@ -850,10 +850,7 @@ impl VolumeStorage {
 
     /// The writer's bound for the Volume, from its send port.
     async fn fetch_bound(&self, request: &PullRequest) -> Result<u64, RpcError> {
-        let url = format!(
-            "http://[{}]:{}{BOUND_PATH_PREFIX}{}",
-            request.from.0, self.send_port, request.name
-        );
+        let url = protocol::bound_url(request.from, self.send_port, &request.name);
         let client = reqwest::Client::builder()
             .connect_timeout(self.receive_stall)
             .timeout(self.receive_stall)
@@ -883,8 +880,7 @@ impl VolumeStorage {
             .text()
             .await
             .map_err(|error| internal(format!("GET {url}: {}", inline(&error)).into()))?;
-        body.trim()
-            .parse()
+        protocol::parse_bound(&body)
             .map_err(|error| internal(format!("GET {url} answered {body:?}: {error}").into()))
     }
 

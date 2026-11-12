@@ -17,7 +17,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::docker_image::{is_not_found, prepare_image};
 
-use super::{Error, LocalDocker};
+use super::{Error, LocalDocker, Status, classify};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SpecDigest(String);
@@ -245,7 +245,7 @@ impl ManagedService {
             .await
         {
             Ok(()) => Ok(()),
-            Err(error) if is_already_stopped(&error) || is_not_found(&error) => Ok(()),
+            Err(error) if matches!(classify(&error), Status::Unchanged | Status::Absent) => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -279,16 +279,6 @@ impl ManagedService {
     }
 }
 
-fn is_already_stopped(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 304,
-            ..
-        }
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -296,18 +286,6 @@ mod tests {
     use bollard::models::HostConfig;
 
     use super::*;
-
-    #[test]
-    fn stopped_and_missing_services_are_idempotent_stop_outcomes() {
-        let response = |status_code| DockerError::DockerResponseServerError {
-            status_code,
-            message: String::new(),
-        };
-        assert!(is_already_stopped(&response(304)));
-        assert!(is_not_found(&response(404)));
-        assert!(!is_already_stopped(&response(500)));
-        assert!(!is_not_found(&response(500)));
-    }
 
     fn body(image: &str) -> ContainerCreateBody {
         ContainerCreateBody {

@@ -1,6 +1,7 @@
 //! `ployz mcp`: the agent tools over stdio. Each call steps the registry's plan,
 //! answering its reads and its one write from the Config Store and Ployz Cloud.
 
+use ployz_core::error_chain;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1127,8 +1128,8 @@ impl Server {
         if approved {
             return Ok(Answer::Approved);
         }
-        Ok(Answer::Refused(refused(crate::ui::then_sentence(
-            &crate::ui::with_reason(
+        Ok(Answer::Refused(refused(error_chain::then_sentence(
+            &error_chain::with_reason(
                 format_args!("The human denied this {}", verb.noun()),
                 reason.as_deref().unwrap_or_default(),
             ),

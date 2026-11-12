@@ -12,6 +12,7 @@ mod live;
 mod never_sync;
 mod pair;
 mod proposal;
+mod rows;
 mod setup;
 mod sync;
 pub(crate) use create::*;
@@ -25,9 +26,11 @@ pub(crate) use proposal::remove as remove_proposal;
 pub use proposal::{Included, ProposalSource, RemoveProposal, Removed};
 pub(crate) use proposal::{Owners, release_changed};
 pub(crate) use proposal::{end_included, included};
+pub(crate) use rows::{Row, parent_and_made_with, parent_of, row};
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{
-    Own, branch_setup, refuse_service_named_setup, set_branch_setup, set_own, setup_is_not_staged,
+    Own, Setup, branch_setup, refuse_service_named_setup, set_branch_setup, set_own,
+    setup_is_not_staged,
 };
 pub use sync::{
     Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
@@ -519,20 +522,6 @@ pub(crate) fn not_set(
     Ok(not_set)
 }
 
-/// A Branch's row.
-pub(crate) struct Row {
-    pub(crate) parent: EnvironmentId,
-    pub(crate) kept: bool,
-    setup: Vec<Setup>,
-}
-
-/// A Setup Command, by the Service lineage it runs in, so renames keep it.
-#[derive(Serialize, Deserialize)]
-struct Setup {
-    lineage: String,
-    command: String,
-}
-
 /// An Environment a Branch comes from, with what it runs.
 struct Ancestor {
     environment: Environment,
@@ -553,6 +542,13 @@ fn chain(tx: &mut dyn Tx, parent: &EnvironmentId) -> Result<Vec<Ancestor>, RpcEr
     Ok(chain)
 }
 
+/// The nearest of `chain` that runs the node of lineage `lineage`.
+fn owner_of<'a>(chain: &'a [Ancestor], lineage: &str) -> Option<&'a Ancestor> {
+    chain
+        .iter()
+        .find(|ancestor| holds(&ancestor.applied, lineage))
+}
+
 /// The Environments `id` comes from, nearest first: none for a root.
 pub(crate) fn ancestors(
     tx: &mut dyn Tx,
@@ -568,21 +564,6 @@ pub(crate) fn ancestors(
         at = row.parent;
     }
     Ok(found)
-}
-
-pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, RpcError> {
-    let rows = tx.query(
-        "SELECT parent_id, kept, setup FROM config_environment_branch WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    Ok(Some(Row {
-        parent: row.parse::<EnvironmentId>(0, "Branch")?,
-        kept: row.int(1)? != 0,
-        setup: row.json(2, "Branch")?,
-    }))
 }
 
 /// `environment`'s Branch row, or why only a Branch does this.

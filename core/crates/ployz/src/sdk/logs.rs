@@ -1,6 +1,7 @@
 //! On-demand Container log transport for SDK readers.
 use crate::cluster::{Call, Deadline};
 use futures_util::future::join_all;
+use ployz_core::error_chain;
 use ployz_core::{
     ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LastRun,
     LiveLogTarget, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogsOptions,
@@ -132,7 +133,7 @@ impl Session {
             },
         })
         .encode()
-        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+        .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let stream = self
             .until_closed(async {
                 client
@@ -164,7 +165,7 @@ impl Session {
         request.validate().map_err(RpcError::invalid_argument)?;
         let payload = op::LogHistory::into_request(request)
             .encode()
-            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+            .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let client = self.client()?;
         let target = MachineTarget::from(&input.machine_id);
         let stream = self
@@ -238,7 +239,7 @@ fn nanos(value: Option<&str>, field: &str) -> Result<Option<i64>, RpcError> {
 
 fn history_row(payload: &OpaquePayload) -> Result<Option<HistoryRow>, RpcError> {
     match HistoryRow::decode(payload)
-        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?
+        .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?
     {
         HistoryRow::Heartbeat => Ok(None),
         HistoryRow::Error(message) => Err(RpcError::unavailable(message)),
@@ -307,7 +308,7 @@ impl ContainerLogStream {
                 return Ok(None);
             };
             let entry = LogEntry::decode(&payload)
-                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+                .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
             if !matches!(entry.body, LogBody::Heartbeat) {
                 return Ok(Some(entry));
             }
@@ -534,7 +535,7 @@ pub(crate) async fn process_tail(
         },
     })
     .encode()
-    .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+    .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
     let read = async {
         let mut stream = client
             .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
@@ -547,7 +548,7 @@ pub(crate) async fn process_tail(
             .map_err(|error| RpcError::from(ConnectError::from(error)))?
         {
             let entry = LogEntry::decode(&payload)
-                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+                .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
             match entry.body {
                 LogBody::Stdout(bytes) | LogBody::Stderr(bytes) => {
                     frames.push(String::from_utf8_lossy(&bytes).into_owned());
@@ -632,7 +633,7 @@ async fn newest_lines(
             ..selector.clone()
         })
         .encode()
-        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+        .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let mut stream = client
             .open_stream::<op::LogHistory>(Some(target), tokio_stream::once(request))
             .await
@@ -643,7 +644,7 @@ async fn newest_lines(
             .map_err(|error| RpcError::from(ConnectError::from(error)))?
         {
             let row = HistoryRow::decode(&payload)
-                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+                .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
             match row {
                 HistoryRow::Line {
                     container_id, text, ..

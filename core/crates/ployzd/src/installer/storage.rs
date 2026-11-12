@@ -164,12 +164,7 @@ fn existing_device_pool(device: &Path) -> Result<bool, Error> {
     if !command_exists("zpool") {
         return Ok(false);
     }
-    let pools = zpool_stdout([
-        "list",
-        "-Hp",
-        "-o",
-        "name,size,allocated,free,health,readonly",
-    ])?;
+    let pools = zpool_stdout(crate::machine_pool::ZPOOL_LIST)?;
     let pool = crate::machine_pool::one_usable(&pools)
         .map_err(|error| refuse(STAGE, error.to_string()))?;
     let device = fs::canonicalize(device).map_err(|source| Error::Io {
@@ -213,12 +208,7 @@ fn existing_device_pool(device: &Path) -> Result<bool, Error> {
     }
     let status = zpool_stdout(["status", "-LP", DEVICE_BACKED_POOL_NAME])?;
     require_device_backing(&status, &device)?;
-    let pools = zpool_stdout([
-        "list",
-        "-Hp",
-        "-o",
-        "name,size,allocated,free,health,readonly",
-    ])?;
+    let pools = zpool_stdout(crate::machine_pool::ZPOOL_LIST)?;
     match crate::machine_pool::one_usable(&pools)
         .map_err(|error| refuse(STAGE, error.to_string()))?
     {

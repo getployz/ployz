@@ -22,6 +22,7 @@ mod followup;
 mod git;
 mod github;
 mod id;
+mod merge_deploy;
 mod names;
 mod old_cli;
 mod permission;
@@ -82,7 +83,7 @@ pub use deployment::{
     CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
     NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RowTransition, RunEvidence,
-    ServerProgress, ServerRow, StoppedBy, Unclaimed, UploadBase, UploadedSource, starts_container,
+    ServerProgress, ServerRow, StoppedBy, Unclaimed, UploadBase, UploadedSource,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,

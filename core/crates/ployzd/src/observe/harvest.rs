@@ -35,7 +35,7 @@ use super::{
     layout::{
         ContainerKind, ContainerMeta, ENV_FILE, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason,
         LINKING_FILE, LogFileName, META_FILE, RetainedEnv, SCANNED_FILE, StoreRoot,
-        create_private_dir,
+        create_private_dir, read_meta,
     },
     metrics::sampler,
     ship::Outbox,
@@ -1373,16 +1373,6 @@ fn write_gap_line(file: &mut fs::File, line: &[u8]) -> io::Result<()> {
     file.write_all(line)
 }
 
-fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
-    match fs::read(dir.join(META_FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
 // Docker never changes a Container's env, so the first write stands.
 fn keep_env(id: &ContainerId, dir: &Path, inspected: &ContainerInspectResponse) {
     if dir.join(ENV_FILE).exists() {
@@ -1685,7 +1675,7 @@ mod tests {
     use super::{
         DamageCursor, GAPS_FILE, Harvester, Inspected, Link, Newest, SETTLED_LIMIT, Synced,
         UNFINISHED_FOR_NANOS, container_meta, foreign_log_driver, judge_first_set, link_exact,
-        read_meta, read_resume_from, record_damage, settle_removed, sync_container, write_meta,
+        read_resume_from, record_damage, settle_removed, sync_container, write_meta,
     };
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
@@ -1694,7 +1684,7 @@ mod tests {
             frame::{Piece, Stream, tests::frame},
             layout::{
                 ContainerKind, ContainerMeta, ENV_FILE, Gap, GapReason, LINKING_FILE, LogFileName,
-                RetainedEnv, StoreRoot,
+                RetainedEnv, StoreRoot, read_meta,
             },
             metrics::segment::Row,
             ship::{self, Outbox},

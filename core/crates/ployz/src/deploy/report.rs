@@ -2,7 +2,7 @@
 
 use crate::ui::progress::{GraphService, Row, State, Subject, Timing, Work};
 use ployz_core::{DeployOperation, MachineId, OperationRow, QualifiedService, ServiceName};
-use ployz_store::{RowPhase, RowState, StoppedBy, starts_container};
+use ployz_store::{RowPhase, RowState, StoppedBy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -64,7 +64,7 @@ pub(crate) fn starts(
     operations.iter().any(|row| {
         row.machine_id == machine
             && row.service_name() == Some(service)
-            && starts_container(&row.operation)
+            && row.operation.serves_new_spec()
     })
 }
 

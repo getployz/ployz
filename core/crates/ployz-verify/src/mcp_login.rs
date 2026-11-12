@@ -1385,16 +1385,25 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeSet,
-        sync::{Arc, Mutex},
-    };
-
-    use stateright::{Checker, Expectation, HasDiscoveries};
+    use stateright::{Checker, Expectation};
 
     use super::*;
+    use crate::harness::{
+        self, Narrated, breaks, breaks_where, check, first_break, follow_from, last,
+    };
 
-    type Path = Vec<(State, Option<Action>)>;
+    type Path = harness::Path<McpLogin>;
+
+    impl Narrated for McpLogin {
+        fn story(&self, path: &[(State, Option<Action>)]) -> String {
+            story(self, path)
+        }
+    }
+
+    /// Steps `actions` from `start`.
+    fn follow(model: McpLogin, start: Start, actions: &[Action]) -> Path {
+        follow_from(model, McpLogin::start(start), actions)
+    }
 
     const A: usize = 0;
     const B: usize = 1;
@@ -1423,86 +1432,6 @@ mod tests {
 
     fn fixed_without(broken: Broken) -> McpLogin {
         McpLogin { broken, ..fixed() }
-    }
-
-    fn check(model: McpLogin) -> impl Checker<McpLogin> {
-        model.checker().threads(4).spawn_bfs().join()
-    }
-
-    /// The first path in BFS order whose last state breaks `property` under `model`, so no
-    /// shorter path breaks it, printed as a story under the test's name. For a
-    /// `sometimes`, such as a `COVERAGE` row's name, it is the first path that reaches it.
-    /// It panics when no path does, as for an `always` that holds. The checker's own
-    /// discovery is not that path: `check_block` stores every violation it visits, each
-    /// overwriting the last, so a visitor keeps the first. One thread keeps the path the
-    /// same from run to run.
-    fn breaks(model: McpLogin, property: &'static str) -> Path {
-        first_break(model, property, |_| true, true).expect("a path breaks the property")
-    }
-
-    /// As `first_break` over the whole model, and it panics when no path breaks.
-    fn breaks_where(
-        model: McpLogin,
-        property: &'static str,
-        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
-    ) -> Path {
-        first_break(model, property, and, false).expect("a path breaks the property")
-    }
-
-    /// The first path in BFS order that breaks `property` and satisfies `and`, or `None`.
-    /// The checker keeps one path to each state, the first in BFS order, so `and` sees only
-    /// the first path to the state it ends in: a filter must read a fact the state holds,
-    /// such as `raced`, not one only the path shows. Unless `stop_at_discovery`, it explores
-    /// the whole model, since the first discovery may not pass `and`.
-    fn first_break(
-        model: McpLogin,
-        property: &'static str,
-        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
-        stop_at_discovery: bool,
-    ) -> Option<Path> {
-        let named = model
-            .properties()
-            .into_iter()
-            .find(|candidate| candidate.name == property)
-            .expect("a model property");
-        let reached = matches!(named.expectation, Expectation::Sometimes);
-        let holds = named.condition;
-        let first = Arc::new(Mutex::new(None));
-        let seen = Arc::clone(&first);
-        let checker =
-            model
-                .checker()
-                .threads(1)
-                .visitor(move |path: stateright::Path<State, Action>| {
-                    let mut first = seen.lock().expect("the first break");
-                    if first.is_none() && holds(&model, path.last_state()) == reached {
-                        let path = path.into_vec();
-                        if and(&path) {
-                            *first = Some(path);
-                        }
-                    }
-                });
-        // The default, `HasDiscoveries::All`, stops once every property has a discovery.
-        // An empty `AnyOf` never matches, so the checker visits every state.
-        let checker = checker.finish_when(if stop_at_discovery {
-            HasDiscoveries::AllOf([property].into())
-        } else {
-            HasDiscoveries::AnyOf(BTreeSet::new())
-        });
-        checker.spawn_bfs().join();
-        let path = first.lock().expect("the first break").take()?;
-        let test = std::thread::current();
-        println!(
-            "[{}] {property} {} under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            if reached { "is reached" } else { "fails" },
-            story(&model, &path)
-        );
-        Some(path)
-    }
-
-    fn last(path: &Path) -> State {
-        path.last().expect("a path has a state").0
     }
 
     /// The branch each step of `who` took, in order.
@@ -1536,30 +1465,6 @@ mod tests {
 
     fn is_note(branch: Branch) -> bool {
         matches!(branch, Branch::Noted { .. })
-    }
-
-    /// Steps `actions` from `start` under `model`, each one offered where it is taken, and
-    /// prints the path as a story under the test's name.
-    fn follow(model: McpLogin, start: Start, actions: &[Action]) -> Path {
-        let mut state = McpLogin::start(start);
-        assert!(model.init_states().contains(&state), "{start:?} is a start");
-        let mut path = Vec::new();
-        for &action in actions {
-            let mut offered = Vec::new();
-            model.actions(&state, &mut offered);
-            assert!(offered.contains(&action), "{action:?} is offered");
-            let next = model.next_state(&state, action).expect("a next state");
-            path.push((state, Some(action)));
-            state = next;
-        }
-        path.push((state, None));
-        let test = std::thread::current();
-        println!(
-            "[{}] a schedule under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            story(&model, &path)
-        );
-        path
     }
 
     const fn goes(who: usize) -> Action {

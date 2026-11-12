@@ -7,6 +7,7 @@ use ployz_build::{
     Progress, Stage,
     remote::{self, Definition, Event, Input, Outcome},
 };
+use ployz_core::error_chain;
 use ployz_core::{MachineId, MachineTarget, op};
 use std::{
     sync::{Arc, Mutex},
@@ -199,7 +200,7 @@ async fn open_and_admit(
                 Stage::Admission,
                 format!(
                     "Machine {machine_id} cannot accept the Build: {}",
-                    crate::ui::row(&error)
+                    error_chain::row(&error)
                 ),
             )
             .into());
@@ -444,7 +445,7 @@ fn validate_outcome(
 fn disconnected(status: tonic::Status) -> String {
     format!(
         "Build stream disconnected: {}",
-        crate::ui::row(&crate::connect::TransportError::from(status))
+        error_chain::row(&crate::connect::TransportError::from(status))
     )
 }
 

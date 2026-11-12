@@ -10,6 +10,7 @@
 //! returns an error: whatever moved before a failure stays in its result.
 
 use crate::cluster::{Call, Deadline};
+use ployz_core::error_chain;
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -304,7 +305,7 @@ pub(crate) async fn converge<C: ConvergenceClient>(
     let entry_lost = |moves: Vec<C::Moved>, error: &ConnectError| Converged::Stopped {
         moves,
         stop: DrainStop::EntryUnreachable {
-            detail: crate::ui::row(error),
+            detail: error_chain::row(error),
         },
     };
     let snapshot = match client.observe().await {
@@ -396,7 +397,7 @@ fn refusal(
     super::planning::place_one(&spec.to_requested(), &service.namespace, snapshot)
         .err()
         .map(|error| StayReason::NoDestination {
-            detail: crate::ui::row(&error),
+            detail: error_chain::row(&error),
         })
 }
 
@@ -568,7 +569,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
             | ExecutionError::DependencyHealth { .. }
             | ExecutionError::Hook { .. }
             | ExecutionError::NewerServing { .. }) => RelocateError::NotServing {
-                detail: crate::ui::row(&error),
+                detail: error_chain::row(&error),
                 replacement_removed,
             },
         },
@@ -585,12 +586,12 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     {
         Ok(Ok(())) => None,
         Ok(Err(NotIn::OlderThanIn(refusal) | NotIn::Refused(refusal))) => Some(refusal.message),
-        Ok(Err(NotIn::Health(health))) => Some(crate::ui::row(&super::exec::health_error(
+        Ok(Err(NotIn::Health(health))) => Some(error_chain::row(&super::exec::health_error(
             new.container_id,
             health,
             spec,
         ))),
-        Err(error) => Some(crate::ui::row(&error)),
+        Err(error) => Some(error_chain::row(&error)),
     };
     if let Some(detail) = not_in {
         let removed = cleanup::remove(client, &new, AnonymousVolumes::Remove).await;
@@ -614,7 +615,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
             .err()
             .map(|failure| Unconfirmed::of(failure, name)),
         Err(error) => Some(Unconfirmed::Failed {
-            detail: crate::ui::row(&error),
+            detail: error_chain::row(&error),
         }),
     };
     if let Some(unconfirmed) = unconfirmed {
@@ -651,7 +652,7 @@ pub(in crate::deploy) async fn retire_old<C: MachineOperations>(
         }
         Ok(Err(failure)) => Unconfirmed::of(failure, name),
         Err(error) => Unconfirmed::Failed {
-            detail: crate::ui::row(&error),
+            detail: error_chain::row(&error),
         },
     };
     Ok(OldCopyEnd::Running { unconfirmed })
@@ -669,7 +670,7 @@ async fn move_one(
     let dest = super::planning::place_one(&spec.to_requested(), &container.namespace, snapshot)
         .map_err(|error| MoveFailure::NoDestination {
             from: from.clone(),
-            detail: crate::ui::row(&error),
+            detail: error_chain::row(&error),
         })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
@@ -679,7 +680,7 @@ async fn move_one(
         .map_err(|error| MoveFailure::CopyImage {
             from: from.clone(),
             to: to.clone(),
-            detail: crate::ui::row(&error),
+            detail: error_chain::row(&error),
         })?;
     // The image is on `dest` by now; a registry pull could fetch a different one.
     let mut spec = spec.clone();
@@ -770,7 +771,7 @@ async fn image_id(
         .map_err(|error| MoveFailure::ReadImage {
             from: from.clone(),
             to: to.clone(),
-            detail: crate::ui::row(&error),
+            detail: error_chain::row(&error),
         })?
         .image_id
         .ok_or_else(|| MoveFailure::SourceTooOld { from: from.clone() })

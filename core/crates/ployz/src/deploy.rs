@@ -1,3 +1,4 @@
+use ployz_core::error_chain;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -15,9 +16,9 @@ use thiserror::Error;
 pub(crate) mod cleanup;
 mod convergence;
 mod exec;
+pub(crate) use exec::{CopyLifecycle, ProxyPlacement, RestartTolerant};
 #[cfg(test)]
-pub(crate) use exec::RedialFailure;
-pub(crate) use exec::{MachineOperations, RestartTolerant};
+pub(crate) use exec::{RedialFailure, Session};
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
@@ -91,7 +92,7 @@ impl VolumeSnapshot {
             |error| {
                 RpcError::internal(format!(
                     "invalid Docker Volume snapshot: {}",
-                    crate::ui::row(&error)
+                    error_chain::row(&error)
                 ))
                 .with_details(error.details)
             },
@@ -233,7 +234,7 @@ impl VolumeSnapshot {
             .map(|failure| {
                 format!(
                     "Docker Volume inventory failed: {}",
-                    crate::ui::row(&failure.error)
+                    error_chain::row(&failure.error)
                 )
             })
             .or_else(|| {
@@ -255,7 +256,7 @@ impl VolumeSnapshot {
             .map(|failure| {
                 format!(
                     "inspect of Docker Volume {name} failed: {}",
-                    crate::ui::row(&failure.error)
+                    error_chain::row(&failure.error)
                 )
             })
     }
@@ -268,7 +269,7 @@ impl VolumeSnapshot {
                 kind: ObservationKind::Volume,
                 machine_id: failure.machine_id,
                 machine_name: None,
-                message: crate::ui::row(&failure.error),
+                message: error_chain::row(&failure.error),
             })
             .chain(
                 self.omissions
@@ -345,7 +346,7 @@ pub(crate) fn dropped_large_packets(machine: &MachineObservation, error: &RpcErr
 /// [`large_packets_note`]. Planning and execution word the same failure alike, so its
 /// notice shows once.
 pub(crate) fn unanswered_message(machine: &MachineObservation, error: &RpcError) -> String {
-    let message = crate::ui::row(error);
+    let message = error_chain::row(error);
     match large_packets_note(machine, error) {
         Some(note) => format!("{message}{note}"),
         None => message,
@@ -1037,7 +1038,7 @@ pub(super) fn observation_warnings(
             kind,
             machine_id: failure.machine_id,
             machine_name: None,
-            message: crate::ui::row(&failure.error),
+            message: error_chain::row(&failure.error),
         })
         .chain(
             omissions

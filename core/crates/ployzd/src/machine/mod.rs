@@ -917,14 +917,7 @@ fn filesystem_name(magic: u32) -> String {
 
 async fn local_storage(program: &Path, timeout: Duration) -> Option<MachineStorageObservation> {
     let mut command = tokio::process::Command::new(program);
-    command
-        .args([
-            "list",
-            "-Hp",
-            "-o",
-            "name,size,allocated,free,health,readonly",
-        ])
-        .kill_on_drop(true);
+    command.args(machine_pool::ZPOOL_LIST).kill_on_drop(true);
     match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) if output.status.success() => {
             let output = String::from_utf8(output.stdout).ok()?;

@@ -64,10 +64,10 @@ impl VolumeStorage {
         mirrors: Mirrors,
     ) -> super::Result<StorageDeparture> {
         let _guard = self.admit_mutation().await?;
+        let _pool_guard = self.pool.lock_mutation().await?;
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(StorageDeparture::default());
         };
-        let _pool_guard = self.pool.lock_mutation().await?;
         // Every receive starts under admission, so once these stop only this departure
         // changes a slot until it ends. A stuck receive may still write, so its Volume is
         // not judged.

@@ -60,13 +60,7 @@ pub(crate) async fn prepare_image(
 }
 
 pub(crate) fn is_not_found(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
+    crate::docker::classify(error) == crate::docker::Status::Absent
 }
 
 #[cfg(test)]

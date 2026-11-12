@@ -1,4 +1,5 @@
 use crate::cluster::Call;
+use ployz_core::error_chain;
 use std::{fs, os::unix::fs::symlink, process::Command as StdCommand, time::Duration};
 
 use super::*;
@@ -37,7 +38,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
             last: Some(Box::new(ssh_error)),
         };
         assert_eq!(error.retry(), aggregate);
-        let text = crate::ui::chain_text(&error);
+        let text = error_chain::row(&error);
         assert!(detail.lines().all(|line| text.contains(line)), "{text}");
         assert_eq!(
             text.contains("ssh-add"),
@@ -70,7 +71,7 @@ async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
         assert_eq!(error.retry() != Retry::Never, retryable, "{error}");
         if !retryable {
             assert!(
-                crate::ui::chain_text(&error).contains("unlock your key with ssh-add"),
+                error_chain::row(&error).contains("unlock your key with ssh-add"),
                 "{error}"
             );
         }
@@ -212,7 +213,7 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
     let error = TransportError::from(status);
     assert_eq!(error.to_string(), "invalid log time \"notatime\"");
     assert_eq!(
-        crate::ui::chain_text(&ConnectError::Rpc(error)),
+        error_chain::row(&ConnectError::Rpc(error)),
         "Ployz's call to your Server's daemon failed: invalid log time \"notatime\""
     );
 }
@@ -228,7 +229,7 @@ fn a_daemon_status_carries_its_causes_to_cause_lines() {
     let status = ployz_core::rpc::caused_status(tonic::Code::Unavailable, &sent);
     let error = TransportError::from(status);
     assert_eq!(error.to_string(), "transport error");
-    assert_eq!(crate::ui::causes(&error), ["keep-alive timed out"]);
+    assert_eq!(error_chain::causes(&error), ["keep-alive timed out"]);
     let rpc = error.to_rpc_error();
     assert_eq!(rpc.cause, ["keep-alive timed out"]);
     assert_eq!(rpc.details, Value::Null);
@@ -865,7 +866,7 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
         Ok(_) => panic!("a daemon that never serves must not be confirmed"),
     };
     assert!(
-        crate::ui::chain_text(&error).contains("may still be starting"),
+        error_chain::row(&error).contains("may still be starting"),
         "{error}"
     );
     assert_eq!(error.retry(), Retry::AfterRestart, "{error}");
@@ -1148,7 +1149,7 @@ fn a_dropped_connection_keeps_the_network_reason_as_the_deepest_cause() {
     ))));
     let error = TransportError::from(status);
     assert_eq!(error.to_string(), "transport error");
-    assert_eq!(crate::ui::causes(&error), ["connection reset by peer"]);
+    assert_eq!(error_chain::causes(&error), ["connection reset by peer"]);
 }
 
 async fn prepare_volumes_answered_with(answer: Result<RpcError, tonic::Status>) -> RpcError {
@@ -1411,7 +1412,7 @@ async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
     assert!(on_closed_session(&error), "{error:?}");
     assert_eq!(error.details, closed_session_error().details);
     assert!(
-        crate::ui::chain_text(&error).contains("connection to the daemon closed"),
+        error_chain::row(&error).contains("connection to the daemon closed"),
         "{error:?}"
     );
 }
@@ -1488,7 +1489,7 @@ async fn a_resend_after_a_keepalive_timeout_ends_on_the_closed_session() {
         rpc.describe_contract(describe()).await.unwrap_err(),
     ));
     assert!(
-        crate::ui::chain_text(&timed_out).contains("keep-alive timed out"),
+        error_chain::row(&timed_out).contains("keep-alive timed out"),
         "{timed_out:?}"
     );
     let resent = rpc_error(ConnectError::from(
@@ -1703,7 +1704,7 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
     .await
     .err()
     .expect("a refusing daemon must fail the connect");
-    let text = crate::ui::chain_text(&refused);
+    let text = error_chain::row(&refused);
     assert!(
         text.contains("ployzd refused to start: refusing to change the retained WireGuard interface: the existing device listen port differs from the mesh port; safe recovery: delete ployz-wg"),
         "{text}"
@@ -1740,7 +1741,7 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
     .await
     .err()
     .expect("a session that closes unanswered must fail the connect");
-    let text = crate::ui::chain_text(&closed);
+    let text = error_chain::row(&closed);
     assert!(!text.contains("Permanently added"), "{text}");
     assert!(closed.is_start_retryable(), "{text}");
 }
@@ -1826,7 +1827,7 @@ async fn a_local_daemon_that_refused_to_start_names_its_refusal() {
         .err()
         .expect("a refusing daemon must fail the connect");
 
-    let text = crate::ui::chain_text(&error);
+    let text = error_chain::row(&error);
     assert!(
         text.contains(
             "ployzd refused to start: refusing to change the retained WireGuard interface"
@@ -1916,7 +1917,7 @@ async fn a_local_daemon_that_refused_mid_call_names_its_refusal() {
     .expect("a refusing daemon must fail the connect");
     drop(done);
 
-    let text = crate::ui::chain_text(&error);
+    let text = error_chain::row(&error);
     assert_eq!(
         text.matches(
             "ployzd refused to start: refusing to change the retained WireGuard interface"
@@ -2142,7 +2143,7 @@ async fn an_entry_whose_daemon_predates_the_sealing_key_says_to_upgrade_it() {
         matches!(**last, ConnectError::PredatesSealing { ref version, .. } if version.to_string() == "0.3.2"),
         "{last}"
     );
-    let text = crate::ui::chain_text(&error);
+    let text = error_chain::row(&error);
     assert!(
         text.contains("runs Ployz 0.3.2") && text.contains("Upgrade it to 0.3.3 or later"),
         "{text}"
@@ -2189,7 +2190,7 @@ async fn a_server_that_needs_an_upgrade_outlasts_a_failure_tried_after_it() {
     };
     assert!(reached);
     assert!(last.needs_upgrade(), "{last}");
-    assert!(crate::ui::chain_text(&error).contains("runs Ployz 0.3.2"));
+    assert!(error_chain::row(&error).contains("runs Ployz 0.3.2"));
 }
 
 #[tokio::test(start_paused = true)]

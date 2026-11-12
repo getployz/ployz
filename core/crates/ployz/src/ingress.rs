@@ -2,6 +2,7 @@
 //! holder, the Caddy in its network and the Tunnel Connector to the wiring that daemon
 //! pins, through SetIngressDoors. Nothing here builds a spec or names an image.
 
+use ployz_core::error_chain;
 use std::collections::BTreeMap;
 
 use futures_util::{StreamExt, stream};
@@ -23,7 +24,7 @@ use ts_rs::TS;
 use crate::{
     cluster::Call,
     connect::{Client, ConnectError},
-    deploy::{MachineOperations, RestartTolerant, SlotAction},
+    deploy::{ProxyPlacement, RestartTolerant, SlotAction},
     failure::Failure,
     ui::progress::{Detail, Diagnostic, StartFailure},
 };
@@ -392,7 +393,7 @@ async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Res
 /// Ask each of `machines` to set `doors` for `proxy`, `at_once` at a time, in order.
 /// A call whose reply was lost, or that met a restarting daemon, is sent again, since
 /// the daemon converges on a resend.
-async fn set_doors<C: MachineOperations>(
+async fn set_doors<C: ProxyPlacement>(
     client: &C,
     machines: &[DoorMachine],
     proxy: ServiceId,
@@ -410,7 +411,7 @@ async fn set_doors<C: MachineOperations>(
         .await
 }
 
-async fn set_door<C: MachineOperations>(
+async fn set_door<C: ProxyPlacement>(
     client: &C,
     machine: DoorMachine,
     proxy: ServiceId,
@@ -706,8 +707,8 @@ fn followed(
                 Some(failure) => failed.push(Unfollowed::of_set(machine, &set, failure)),
             },
             Answer::Refused(error) => failed.push(Unfollowed {
-                said: crate::ui::row(&error),
-                cause: crate::ui::row(&error),
+                said: error_chain::row(&error),
+                cause: error_chain::row(&error),
                 machine,
                 refused: None,
                 start: None,
@@ -870,16 +871,16 @@ fn checked(machine: &DoorMachine, answer: Answer) -> Result<Option<IngressRepair
             "{server} was still starting its Ingress Proxy when the Deploy was cancelled"
         )),
         Answer::Refused(error) if error.code == RpcErrorCode::Unsupported => {
-            Err(crate::ui::row(&error))
+            Err(error_chain::row(&error))
         }
         Answer::Refused(error) if error.target_unanswered() => Err(format!(
             "Server {server} isn't answering ({})",
-            crate::ui::row(&error)
+            error_chain::row(&error)
         )),
         Answer::Refused(error) => repair(
             IngressAction::Create,
             Some(IngressFailure::Failed {
-                cause: crate::ui::row(&error),
+                cause: error_chain::row(&error),
             }),
         ),
         Answer::Set(set) => {
@@ -958,7 +959,7 @@ fn crash_looping(container_id: &ContainerId) -> String {
 
 /// A port only the holder publishes, so only its stage can find one taken.
 fn stage_failure(failure: &IngressDoorsFailure) -> IngressFailure {
-    let cause = crate::ui::row(&failure.error);
+    let cause = error_chain::row(&failure.error);
     let held = failure.stage == IngressStage::Holder
         && std::iter::once(&failure.error.message)
             .chain(&failure.error.cause)
@@ -999,7 +1000,7 @@ async fn plan_slots(client: &mut Client) -> Result<Planned, Failure> {
         };
         let server = machine.name.to_string();
         if !machine.supported && !matches!(repair.action, SlotAction::Unchecked(_)) {
-            check.unchecked.push(crate::ui::row(&unsupported(
+            check.unchecked.push(error_chain::row(&unsupported(
                 &machine.name,
                 SET_INGRESS_DOORS_CAPABILITY,
             )));
@@ -1047,7 +1048,7 @@ pub(crate) fn unchecked(
     known: Option<(&MachineId, &MachineName)>,
 ) -> String {
     let Some(connect) = failure.connect_error() else {
-        return crate::ui::row(failure);
+        return error_chain::row(failure);
     };
     let named = if let ConnectError::AllFailed { server, .. } = connect {
         server.clone()
@@ -1067,8 +1068,8 @@ pub(crate) fn unchecked(
             }
         }
         // The failure names the Server it tried itself.
-        (Some(_), _) | (None, None) => crate::ui::row(failure),
-        (None, Some(server)) => format!("{} (on Server {server})", crate::ui::row(failure)),
+        (Some(_), _) | (None, None) => error_chain::row(failure),
+        (None, Some(server)) => format!("{} (on Server {server})", error_chain::row(failure)),
     }
 }
 
