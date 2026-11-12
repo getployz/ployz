@@ -502,8 +502,9 @@ impl ConfigRef {
                 .collect();
             return Err(crate::error::ambiguous(
                 "More than one Config has this name.",
-                serde_json::json!({ "config": self, "valid_children": valid }),
-            ));
+                serde_json::json!({ "config": self }),
+            )
+            .with_hint(ployz_core::Hint::valid(valid)));
         }
         Ok(first)
     }

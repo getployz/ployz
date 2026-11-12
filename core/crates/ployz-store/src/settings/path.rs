@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigFileName, ConfigName, Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -285,7 +285,7 @@ impl SettingPath {
                     Some(_) => {
                         return Err(error::invalid(
                             "Unknown variable field",
-                            json!({ "valid_children": ["exported", "description"] }),
+                            error::valid(["exported", "description"]),
                         ));
                     }
                 },
@@ -473,11 +473,9 @@ pub(crate) fn domains_are_read_only(path: &SettingPath, service: &ServiceName) -
 pub(crate) fn name_a_setting(node: impl std::fmt::Display) -> RpcError {
     error::invalid(
         "Name a Setting: SERVICE.SETTING",
-        json!({
-            "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
-            "example": format!("{node}.replicas"),
-        }),
+        json!({ "example": format!("{node}.replicas") }),
     )
+    .with_hint(Hint::valid(ServiceSetting::ALL.map(ServiceSetting::name)))
 }
 
 #[cfg(test)]

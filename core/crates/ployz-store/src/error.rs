@@ -1,6 +1,8 @@
 //! The Store's errors: the RPC error vocabulary. An invalid value is never echoed back.
 
-use ployz_core::{RpcError, RpcErrorCode};
+use std::fmt::Display;
+
+use ployz_core::{Hint, RpcError, RpcErrorCode};
 use serde_json::Value;
 
 fn error(code: RpcErrorCode, message: impl Into<String>, details: Value) -> RpcError {
@@ -64,19 +66,19 @@ pub(crate) fn choices<'a>(
 
 /// Details for a mistyped name: the closest of `names`, if one is close, and every
 /// one there is.
-pub(crate) fn suggest<'a>(
-    input: &str,
-    names: impl IntoIterator<Item = &'a str> + Clone,
-) -> serde_json::Value {
-    let mut details = serde_json::Map::new();
-    if let Some(closest) = did_you_mean(input, names.clone()) {
-        details.insert("did_you_mean".into(), closest.into());
-    }
-    details.insert(
-        "valid_children".into(),
-        names.into_iter().collect::<Vec<_>>().into(),
-    );
-    details.into()
+pub(crate) fn suggest<'a>(input: &str, names: impl IntoIterator<Item = &'a str> + Clone) -> Value {
+    let closest = did_you_mean(input, names.clone()).map(|closest| Hint::Closest(closest.into()));
+    Hint::details(
+        &closest
+            .into_iter()
+            .chain([Hint::valid(names)])
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Details naming every choice there is, when no mistyped name stands for the choice.
+pub(crate) fn valid<S: Display>(names: impl IntoIterator<Item = S>) -> Value {
+    Hint::details(&[Hint::valid(names.into_iter().map(|name| name.to_string()))])
 }
 
 /// Levenshtein distance.
@@ -170,6 +172,25 @@ mod tests {
             refused.details,
             json!({ "did_you_mean": "web", "valid_children": ["web", "db"] })
         );
+    }
+
+    #[test]
+    fn named_choices_list_as_the_strings_they_serialize_to() {
+        use crate::id::{EnvironmentName, VolumeName};
+        let environments = [
+            EnvironmentName::parse("staging").unwrap(),
+            EnvironmentName::parse("production").unwrap(),
+        ];
+        let volume = VolumeName::parse("data").unwrap();
+        assert_eq!(
+            valid(&environments),
+            json!({ "valid_children": serde_json::to_value(environments).unwrap() })
+        );
+        assert_eq!(
+            valid([&volume]),
+            json!({ "valid_children": [serde_json::to_value(&volume).unwrap()] })
+        );
+        assert_eq!(valid(Vec::<String>::new()), json!({ "valid_children": [] }));
     }
 
     #[test]
