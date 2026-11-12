@@ -2973,16 +2973,20 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeSet,
-        sync::{Arc, Mutex},
-    };
-
-    use stateright::{Checker, Expectation, HasDiscoveries};
+    use stateright::Checker;
 
     use super::*;
+    use crate::harness::{
+        self, Narrated, breaks, breaks_where, check, first_break, follow, last, reaches,
+    };
 
-    type Path = Vec<(State, Option<Action>)>;
+    type Path = harness::Path<BridgeNotes>;
+
+    impl Narrated for BridgeNotes {
+        fn story(&self, path: &[(State, Option<Action>)]) -> String {
+            story(self, path)
+        }
+    }
 
     /// The code as it is, with one member.
     fn as_is() -> BridgeNotes {
@@ -2993,125 +2997,12 @@ mod tests {
         }
     }
 
-    /// Every state of `model`. The default, `HasDiscoveries::All`, stops once every property
-    /// has a discovery, at a state count that varies with the threads; an empty `AnyOf` never
-    /// matches, so the count is the same from run to run.
-    fn check(model: BridgeNotes) -> impl Checker<BridgeNotes> {
-        model
-            .checker()
-            .threads(4)
-            .finish_when(HasDiscoveries::AnyOf(BTreeSet::new()))
-            .spawn_bfs()
-            .join()
-    }
-
-    /// The first path in BFS order whose last state breaks `property` under `model`, so no
-    /// shorter path breaks it, printed as a story under the test's name. For a `sometimes`,
-    /// such as a `COVERAGE` row's name, it is the first path that reaches it. It panics when
-    /// no path does. The checker's own discovery is not that path: `check_block` stores every
-    /// violation it visits, each overwriting the last, so a visitor keeps the first. One
-    /// thread keeps the path the same from run to run.
-    fn breaks(model: BridgeNotes, property: &'static str) -> Path {
-        first_break(model, property, |_| true, true).expect("a path breaks the property")
-    }
-
-    /// As `breaks`, the first such path that also satisfies `and`. It explores the whole
-    /// model, since the first discovery may not pass `and`. The checker keeps one path to
-    /// each state, so `and` sees only the first path to the state it ends in.
-    fn breaks_where(
-        model: BridgeNotes,
-        property: &'static str,
-        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
-    ) -> Path {
-        first_break(model, property, and, false).expect("a path breaks the property")
-    }
-
-    /// As `breaks_where`, or `None` when no path breaks `property` and satisfies `and`.
-    fn first_break(
-        model: BridgeNotes,
-        property: &'static str,
-        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
-        stop_at_discovery: bool,
-    ) -> Option<Path> {
-        let named = model
-            .properties()
-            .into_iter()
-            .find(|candidate| candidate.name == property)
-            .expect("a model property");
-        let reached = matches!(named.expectation, Expectation::Sometimes);
-        let holds = named.condition;
-        let first = Arc::new(Mutex::new(None));
-        let seen = Arc::clone(&first);
-        let checker =
-            model
-                .checker()
-                .threads(1)
-                .visitor(move |path: stateright::Path<State, Action>| {
-                    let mut first = seen.lock().expect("the first break");
-                    if first.is_none() && holds(&model, path.last_state()) == reached {
-                        let path = path.into_vec();
-                        if and(&path) {
-                            *first = Some(path);
-                        }
-                    }
-                });
-        // The default, `HasDiscoveries::All`, stops once every property has a discovery.
-        // An empty `AnyOf` never matches, so the checker visits every state.
-        let checker = checker.finish_when(if stop_at_discovery {
-            HasDiscoveries::AllOf([property].into())
-        } else {
-            HasDiscoveries::AnyOf(BTreeSet::new())
-        });
-        checker.spawn_bfs().join();
-        let path = first.lock().expect("the first break").take()?;
-        let test = std::thread::current();
-        println!(
-            "[{}] {property} {} under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            if reached { "is reached" } else { "fails" },
-            story(&model, &path)
-        );
-        Some(path)
-    }
-
-    fn last(path: &Path) -> State {
-        path.last().expect("a path has a state").0
-    }
-
     /// The branch each step took, in order.
     fn branches(path: &Path) -> Vec<Branch> {
         path.iter()
             .skip(1)
             .filter_map(|(state, _)| state.took)
             .collect()
-    }
-
-    /// Steps `actions` from the first start state (the default restart policy) under
-    /// `model`, each one offered where it is taken, and prints the path as a story under the
-    /// test's name.
-    fn follow(model: BridgeNotes, actions: &[Action]) -> Path {
-        let mut state = model
-            .init_states()
-            .into_iter()
-            .next()
-            .expect("a start state");
-        let mut path = Vec::new();
-        for &action in actions {
-            let mut offered = Vec::new();
-            model.actions(&state, &mut offered);
-            assert!(offered.contains(&action), "{action:?} is offered");
-            let next = model.next_state(&state, action).expect("a next state");
-            path.push((state, Some(action)));
-            state = next;
-        }
-        path.push((state, None));
-        let test = std::thread::current();
-        println!(
-            "[{}] a schedule under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            story(&model, &path)
-        );
-        path
     }
 
     const fn daemon(pick: Pick) -> Action {
@@ -3427,24 +3318,6 @@ mod tests {
             .filter(|row| checker.discovery(row.name).is_none())
             .map(|row| row.name)
             .collect()
-    }
-
-    /// Whether any state of `model` satisfies `reached`.
-    fn reaches(model: BridgeNotes, reached: fn(&State) -> bool) -> bool {
-        let found = Arc::new(Mutex::new(false));
-        let seen = Arc::clone(&found);
-        model
-            .checker()
-            .threads(4)
-            .visitor(move |path: stateright::Path<State, Action>| {
-                if reached(path.last_state()) {
-                    *seen.lock().expect("found") = true;
-                }
-            })
-            .finish_when(HasDiscoveries::AnyOf(BTreeSet::new()))
-            .spawn_bfs()
-            .join();
-        *found.lock().expect("found")
     }
 
     /// A P1 break whose member was loaded for anything but a failed note update.

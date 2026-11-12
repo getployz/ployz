@@ -53,7 +53,7 @@ use ployz_core::{
     ContainerId, CopyPlan, CopyRefusal, CopyTransition, Drain, ExpectedCopy, ManagementAddress,
     SlotId, SlotRole, Snapshot, SnapshotGuid, Start, VolumeCopy, WantedCopy, WriterEpoch,
 };
-use stateright::{Checker, HasDiscoveries, Model, Property};
+use stateright::{Checker, Model, Property};
 
 /// The Move's lane `gen`, and the Release's after it.
 const MOVE_GEN: u8 = 1;
@@ -2351,10 +2351,7 @@ fn done_holds(state: &State) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn check(model: VolumeRuns) -> impl Checker<VolumeRuns> {
-        model.checker().threads(4).spawn_bfs().join()
-    }
+    use crate::harness::{check, discoveries};
 
     /// Enforcement turning on at any moment of the Move: no Operator start runs, and the
     /// refused Release is the only run that may stop short.
@@ -2370,22 +2367,18 @@ mod tests {
 
     #[test]
     fn an_enforcing_machine_refuses_every_operator_start() {
-        let checker = VolumeRuns {
-            direction: Some(Direction::Grow),
-            enforce: true,
-            broken: Broken {
-                start_gate: true,
-                ..Broken::default()
+        let checker = discoveries(
+            VolumeRuns {
+                direction: Some(Direction::Grow),
+                enforce: true,
+                broken: Broken {
+                    start_gate: true,
+                    ..Broken::default()
+                },
+                ..VolumeRuns::default()
             },
-            ..VolumeRuns::default()
-        }
-        .checker()
-        .threads(4)
-        .finish_when(HasDiscoveries::AllOf(
-            [ENFORCED_STARTS_NOTHING].into_iter().collect(),
-        ))
-        .spawn_bfs()
-        .join();
+            &[ENFORCED_STARTS_NOTHING],
+        );
         let path = checker.assert_any_discovery(ENFORCED_STARTS_NOTHING);
         println!("{ENFORCED_STARTS_NOTHING} breaks with the gate out:\n{path}");
     }
@@ -2419,17 +2412,15 @@ mod tests {
         broken: Broken,
         properties: &[&'static str],
     ) {
-        let checker = VolumeRuns {
-            scenario,
-            direction,
-            broken,
-            ..VolumeRuns::default()
-        }
-        .checker()
-        .threads(4)
-        .finish_when(HasDiscoveries::AllOf(properties.iter().copied().collect()))
-        .spawn_bfs()
-        .join();
+        let checker = discoveries(
+            VolumeRuns {
+                scenario,
+                direction,
+                broken,
+                ..VolumeRuns::default()
+            },
+            properties,
+        );
         for property in properties {
             let path = checker.assert_any_discovery(property);
             println!("{property} breaks with {broken:?}:\n{path}");
@@ -2999,17 +2990,14 @@ mod removal {
         M's shell still reads its stream: a residual, not claimed)";
 
     mod tests {
-        use stateright::{Checker, HasDiscoveries};
+        use stateright::Checker;
 
         use super::*;
+        use crate::harness::{check, discoveries};
 
         #[test]
         fn mirror_removal_holds() {
-            let checker = MirrorRemoval::new(Broken::default())
-                .checker()
-                .threads(4)
-                .spawn_bfs()
-                .join();
+            let checker = check(MirrorRemoval::new(Broken::default()));
             println!("MirrorRemoval: {} states", checker.unique_state_count());
             checker.assert_properties();
         }
@@ -3022,13 +3010,7 @@ mod removal {
                 removal_no_withdrawal: true,
                 ..Broken::default()
             };
-            let checker = MirrorRemoval::new(broken)
-                .checker()
-                .finish_when(HasDiscoveries::AllOf(
-                    [NO_SLOT_AFTER_REMOVAL].into_iter().collect(),
-                ))
-                .spawn_bfs()
-                .join();
+            let checker = discoveries(MirrorRemoval::new(broken), &[NO_SLOT_AFTER_REMOVAL]);
             let path = checker.assert_any_discovery(NO_SLOT_AFTER_REMOVAL);
             println!("{NO_SLOT_AFTER_REMOVAL} breaks with {broken:?}:\n{path}");
         }
@@ -3822,18 +3804,15 @@ mod admission {
         "once A resumed, A takes no snapshot or cut under the Move, and B pulls nothing new";
 
     mod tests {
-        use stateright::{Checker, HasDiscoveries};
+        use stateright::Checker;
 
         use super::*;
+        use crate::harness::{check, discoveries};
 
         #[test]
         fn move_admission_holds() {
             let started = std::time::Instant::now();
-            let checker = MoveAdmission::new(Broken::default())
-                .checker()
-                .threads(4)
-                .spawn_bfs()
-                .join();
+            let checker = check(MoveAdmission::new(Broken::default()));
             println!(
                 "MoveAdmission: {} states in {:?}",
                 checker.unique_state_count(),
@@ -3843,11 +3822,7 @@ mod admission {
         }
 
         fn breaks(broken: Broken, property: &'static str) {
-            let checker = MoveAdmission::new(broken)
-                .checker()
-                .finish_when(HasDiscoveries::AllOf([property].into_iter().collect()))
-                .spawn_bfs()
-                .join();
+            let checker = discoveries(MoveAdmission::new(broken), &[property]);
             let path = checker.assert_any_discovery(property);
             println!("{property} breaks with {broken:?}:\n{path}");
         }
