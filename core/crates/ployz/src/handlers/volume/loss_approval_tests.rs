@@ -75,7 +75,7 @@ fn body(workflow: VolumeWorkflow) -> VolumeApproval {
 fn restored(seen: &[Seen], from: &str) -> VolumeWorkflow {
     let docker = DockerVolumeName::parse("shop_vol-1").unwrap();
     let planned = plan(&volume(), &docker, &server(from), seen).unwrap();
-    restore_workflow(&volume(), &server(from), seen, planned)
+    restore_workflow(&server(from), planned)
         .unwrap()
         .expect("a Restore to sign")
 }
@@ -98,6 +98,7 @@ fn a_restore_signs_the_snapshot_it_restores_and_shows_the_time_it_signs() {
     };
     assert_eq!(machine, seen[0].id);
     assert_eq!(at, newest.guid);
+    let loses_after = loses_after.expect("a slot's Restore loses later writes");
     assert_eq!(loses_after.as_millis(), 1_790_000_000_000);
     let body = body(workflow);
     let change = ApprovedVolumeChange::restoring(&body, "data", named(&seen), local_time).unwrap();
@@ -107,12 +108,39 @@ fn a_restore_signs_the_snapshot_it_restores_and_shows_the_time_it_signs() {
 }
 
 #[test]
+fn a_restore_of_a_read_only_root_signs_no_loss() {
+    let newest = snapshot(99, 1_790_000_000);
+    let root = VolumeCopy::Root {
+        readonly: true,
+        newest: Some(newest.clone()),
+        epoch: WriterEpoch::new(3),
+        seed: false,
+        mark: None,
+    };
+    let seen = [seen("web-1", Some(root))];
+    let workflow = restored(&seen, "web-1");
+    assert_eq!(
+        workflow,
+        VolumeWorkflow::Restore {
+            machine: seen[0].id,
+            at: newest.guid,
+            loses_after: None,
+        }
+    );
+    let change =
+        ApprovedVolumeChange::restoring(&body(workflow), "data", named(&seen), local_time).unwrap();
+    let line = change.line();
+    assert!(!line.contains("lost"), "{line}");
+    assert!(line.contains("It keeps every write it holds."), "{line}");
+}
+
+#[test]
 fn a_restore_of_a_writer_signs_nothing() {
     let seen = [seen("web-1", Some(writer()))];
     let docker = DockerVolumeName::parse("shop_vol-1").unwrap();
     let planned = plan(&volume(), &docker, &server("web-1"), &seen).unwrap();
     assert!(
-        restore_workflow(&volume(), &server("web-1"), &seen, planned)
+        restore_workflow(&server("web-1"), planned)
             .unwrap()
             .is_none()
     );

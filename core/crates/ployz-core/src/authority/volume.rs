@@ -82,11 +82,14 @@ pub enum VolumeWorkflow {
         role: SlotRole,
     },
     /// `machine` promotes its copy at `at` with no start, over a Move's handoff too. Writes
-    /// after `loses_after` are lost.
+    /// after `loses_after` are lost. With none the copy is a root, which keeps every write it
+    /// took, so the Restore loses none.
     Restore {
         machine: MachineId,
         at: SnapshotGuid,
-        loses_after: Timestamp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        loses_after: Option<Timestamp>,
     },
     /// Each of `machines` bounds the Volume at `maximum_bytes`. With `shrink` each request
     /// may lower a bound, and without it none may.
@@ -321,12 +324,12 @@ pub enum ApprovedVolumeChange {
     },
     /// `server` makes its copy of `volume` the Writer at snapshot `at`, starting nothing.
     /// Writes after `lost_after`, the time the client read the approval's `loses_after` as,
-    /// are lost.
+    /// are lost. With none the copy keeps every write it holds.
     Restore {
         volume: String,
         server: String,
         at: SnapshotGuid,
-        lost_after: String,
+        lost_after: Option<String>,
     },
     /// `server` deletes its copy of `volume`, held as `role`. `writer` keeps writing the
     /// Volume, or with none the copy may be its last.
@@ -405,7 +408,7 @@ impl ApprovedVolumeChange {
             volume: volume.to_owned(),
             server: name(machine),
             at: *at,
-            lost_after: time(*loses_after),
+            lost_after: loses_after.map(time),
         })
     }
 
@@ -532,18 +535,26 @@ impl ApprovedVolumeChange {
                 server,
                 at,
                 lost_after,
-            } => Shown::words("Approved: make the copy of ")
-                .and_text(volume)
-                .and_words(" on ")
-                .and_text(server)
-                .and_words(" its writer, at snapshot ")
-                .and_text(&at.to_string())
-                .and_words(". Writes to ")
-                .and_text(volume)
-                .and_words(" after ")
-                .and_text(lost_after)
-                .and_words(" are lost. Nothing starts until you deploy.")
-                .into(),
+            } => {
+                let change = Shown::words("Approved: make the copy of ")
+                    .and_text(volume)
+                    .and_words(" on ")
+                    .and_text(server)
+                    .and_words(" its writer, at snapshot ")
+                    .and_text(&at.to_string());
+                match lost_after {
+                    Some(lost_after) => change
+                        .and_words(". Writes to ")
+                        .and_text(volume)
+                        .and_words(" after ")
+                        .and_text(lost_after)
+                        .and_words(" are lost. Nothing starts until you deploy."),
+                    None => change.and_words(
+                        ". It keeps every write it holds. Nothing starts until you deploy.",
+                    ),
+                }
+                .into()
+            }
             Self::MirrorRemoval {
                 volume,
                 server,

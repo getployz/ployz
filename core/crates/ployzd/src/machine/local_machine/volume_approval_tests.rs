@@ -65,7 +65,7 @@ fn restore(machine: char) -> VolumeWorkflow {
     VolumeWorkflow::Restore {
         machine: id(machine),
         at: SnapshotGuid::new(7),
-        loses_after: at(1),
+        loses_after: Some(at(1)),
     }
 }
 
@@ -2170,7 +2170,7 @@ fn restore_of(machine: MachineId, guid: u64) -> VolumeWorkflow {
     VolumeWorkflow::Restore {
         machine,
         at: SnapshotGuid::new(guid),
-        loses_after: at(1_000),
+        loses_after: Some(at(1_000)),
     }
 }
 

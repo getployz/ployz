@@ -3551,7 +3551,9 @@ mod admission {
             let workflow = VolumeWorkflow::Restore {
                 machine: self.a,
                 at: Snap::Cut.guid(),
-                loses_after: ployz_core::authority::Timestamp::from_millis(1).expect("a timestamp"),
+                loses_after: Some(
+                    ployz_core::authority::Timestamp::from_millis(1).expect("a timestamp"),
+                ),
             };
             let expired = state.expired;
             let admitted = state

@@ -26,8 +26,8 @@ pub(super) struct LossApproval {
 
 /// Sign the Restore of `volume` from `from` with this CLI's Device key, when it holds one and
 /// a Server of the Cluster enforces Device approval, after the person reads what it loses and
-/// says yes. The approval names the snapshot the copy becomes the writer at, and the time of
-/// that snapshot: writes after it are not in the copy. None when there is nothing to sign: no
+/// says yes. The approval names the snapshot the copy becomes the writer at, and for a slot the
+/// time of that snapshot: writes after it are not in the copy. None when there is nothing to sign: no
 /// Device key, no Server enforcing, or `from` already writes the Volume.
 ///
 /// # Errors
@@ -49,9 +49,7 @@ pub(super) fn sign_restore(
         let client = super::super::server::connect(matches, context(matches)).await?;
         copies(&client, &docker).await
     })?;
-    let Some(workflow) =
-        restore_workflow(volume, from, &seen, plan(volume, &docker, from, &seen)?)?
-    else {
+    let Some(workflow) = restore_workflow(from, plan(volume, &docker, from, &seen)?)? else {
         return Ok(None);
     };
     let body = approval(&signer, &enforcing, namespace, docker, workflow);
@@ -128,17 +126,15 @@ pub(super) fn sign_removal(
     Ok(Some(LossApproval { signed, change }))
 }
 
-/// The Restore a cloudless plan of `seen` makes, as an approval names it: the copy, the snapshot
-/// it becomes the writer at, and that snapshot's time, after which writes are lost. None when
-/// `from` already writes the Volume.
-fn restore_workflow(
-    volume: &VolumeName,
-    from: &MachineName,
-    seen: &[Seen],
-    planned: Planned,
-) -> Result<Option<VolumeWorkflow>, Error> {
+/// The Restore a cloudless plan makes, as an approval names it: the copy, the snapshot it
+/// becomes the writer at, and for a slot that snapshot's time, after which writes are lost. A
+/// root keeps every write it took, so its Restore names no loss. None when `from` already
+/// writes the Volume.
+fn restore_workflow(from: &MachineName, planned: Planned) -> Result<Option<VolumeWorkflow>, Error> {
     let Planned::Restore {
-        machine, request, ..
+        machine,
+        request,
+        lost_after,
     } = planned
     else {
         return Ok(None);
@@ -146,22 +142,16 @@ fn restore_workflow(
     let WantedCopy::Writer { at, .. } = request.want else {
         unreachable!("a Restore asks for a Writer")
     };
-    let newest = seen
-        .iter()
-        .find(|seen| seen.id == machine)
-        .and_then(|seen| match seen.copy.as_ref().ok()?.as_ref()? {
-            VolumeCopy::Root { newest, .. } | VolumeCopy::Slot { newest, .. } => newest.clone(),
+    let loses_after = lost_after
+        .map(|newest| {
+            u64::try_from(newest.created_unix_seconds)
+                .ok()
+                .and_then(|seconds| Timestamp::from_millis(seconds.saturating_mul(1000)).ok())
+                .ok_or_else(|| {
+                    Error::conflict(format!("{from}'s newest snapshot has no valid time"))
+                })
         })
-        .filter(|newest| newest.guid == at)
-        .ok_or_else(|| {
-            Error::conflict(format!(
-                "{from}'s copy of {volume} holds no snapshot to restore"
-            ))
-        })?;
-    let loses_after = u64::try_from(newest.created_unix_seconds)
-        .ok()
-        .and_then(|seconds| Timestamp::from_millis(seconds.saturating_mul(1000)).ok())
-        .ok_or_else(|| Error::conflict(format!("{from}'s newest snapshot has no valid time")))?;
+        .transpose()?;
     Ok(Some(VolumeWorkflow::Restore {
         machine,
         at,

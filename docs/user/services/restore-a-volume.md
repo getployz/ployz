@@ -88,7 +88,9 @@ This is also how a volume comes back after a move's old server handed it to the 
 new one is gone for good. Forget the new server first, since a restore needs every server to
 answer. Until the move notices the new server is gone, the restore says `data is starting on
 <new server>; it finishes there`. Run it again once the move's run has failed. The old server refuses to
-write the volume again for the move, but takes a restore you approve. **Use mirror** in Ployz Cloud can't restore on these servers on its own and says to run
+write the volume again for the move, but takes a restore you approve. Its copy holds every write
+it took before the move, so the line names no lost writes: `… its writer, at snapshot <number>.
+It keeps every write it holds.` **Use mirror** in Ployz Cloud can't restore on these servers on its own and says to run
 the command from an approved device.
 
 Without Ployz Cloud, the CLI runs the restore itself, with the same checks. It refuses while any
