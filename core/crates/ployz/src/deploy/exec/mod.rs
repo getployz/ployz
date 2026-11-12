@@ -37,7 +37,7 @@ use ployz_core::EnvironmentValues;
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestoreAttempt,
     StopAttempt,
-    schedule::{Action, Event, Schedule, ServiceGroup, Step, Task, TaskKind, starts_container},
+    schedule::{Action, Event, Schedule, ServiceGroup, Stage, Task, TaskKind, starts_container},
 };
 
 use super::cleanup::{self, ACK_POLL, ACK_WAIT, EmptyPolicy, NotIn, RotationFailure};
@@ -1357,14 +1357,19 @@ async fn discard_new<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Withdrawn {
     let running = || Withdrawn::Running(*machine_id);
-    let want = ContainerWant::Gone {
-        container: ContainerLocator::Id(container_id),
-        drain: Drain::NONE,
-        anonymous_volumes: AnonymousVolumes::Remove,
-    };
-    let (now, refusal) = match client.ensure_unsettled(machine_id, want, None).await {
-        Ok(EnsuredContainer::Ensured { .. }) => return Withdrawn::Gone,
-        Ok(EnsuredContainer::Refused { now, refusal }) => (now, refusal),
+    let gone = cleanup::gone(
+        client,
+        machine_id,
+        ContainerLocator::Id(container_id),
+        Drain::NONE,
+        AnonymousVolumes::Remove,
+        None,
+    )
+    .await;
+    let now = match gone {
+        Ok(cleanup::Gone::Removed) => return Withdrawn::Gone,
+        Ok(cleanup::Gone::InRotation { now, .. }) => now,
+        Ok(cleanup::Gone::Refused(_)) => return running(),
         Err(error) => {
             if let Some(service) = service {
                 rows.leave_unrouted(progress, service, *machine_id, container_id, error);
@@ -1372,13 +1377,7 @@ async fn discard_new<C: MachineOperations>(
             return running();
         }
     };
-    if refusal.reason == ContainerRefusalReason::NotFound {
-        return Withdrawn::Gone;
-    }
-    let Some(observed) = now
-        .present()
-        .filter(|_| refusal.reason == ContainerRefusalReason::InRotation)
-    else {
+    let Some(observed) = now.present() else {
         return running();
     };
     let mut copy = cleanup::Copy::observed(observed);
@@ -1436,14 +1435,16 @@ async fn remove_stray<C: MachineOperations>(
     (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
     cancellation: &CancellationToken,
 ) {
-    let want = ContainerWant::Gone {
-        container: ContainerLocator::Id(container_id),
-        drain: Drain::NONE,
-        anonymous_volumes: AnonymousVolumes::Remove,
-    };
     let removed = tokio::time::timeout(
         RESTART_WAIT,
-        client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT)),
+        cleanup::gone(
+            client,
+            machine_id,
+            ContainerLocator::Id(container_id),
+            Drain::NONE,
+            AnonymousVolumes::Remove,
+            Some(RESTART_WAIT),
+        ),
     );
     let answer = tokio::select! {
         answer = removed => answer.unwrap_or_else(|_| {
@@ -1460,15 +1461,8 @@ async fn remove_stray<C: MachineOperations>(
         }
     };
     let error = match answer {
-        Ok(EnsuredContainer::Ensured { .. }) => return,
-        Ok(EnsuredContainer::Refused { refusal, .. })
-            if refusal.reason == ContainerRefusalReason::NotFound =>
-        {
-            return;
-        }
-        Ok(EnsuredContainer::Refused { refusal, .. })
-            if refusal.reason == ContainerRefusalReason::InRotation =>
-        {
+        Ok(cleanup::Gone::Removed) => return,
+        Ok(cleanup::Gone::InRotation { .. }) => {
             rows.name_left(
                 progress,
                 service,
@@ -1478,7 +1472,7 @@ async fn remove_stray<C: MachineOperations>(
             );
             return;
         }
-        Ok(EnsuredContainer::Refused { refusal, .. }) => refusal.into_error(),
+        Ok(cleanup::Gone::Refused(refusal)) => refusal.into_error(),
         Err(error) => error,
     };
     rows.leave_unrouted(progress, service, *machine_id, container_id, error);
@@ -1872,8 +1866,8 @@ fn old_copies(
         .steps
         .iter()
         .flat_map(|step| match step {
-            Step::Serial(index) => vec![*index],
-            Step::Parallel(indices) => indices.clone(),
+            Stage::Serial(index) => vec![*index],
+            Stage::Parallel(indices) => indices.clone(),
         })
         .filter_map(|index| match operation_at(operations, index) {
             DeployOperation::ReplaceContainer(replacement) => {
@@ -2081,8 +2075,8 @@ impl<'a> Rows<'a> {
             .flat_map(|group| &group.steps)
             .map(|step| {
                 let tasks = match step {
-                    Step::Serial(index) => vec![*index],
-                    Step::Parallel(indices) => indices.clone(),
+                    Stage::Serial(index) => vec![*index],
+                    Stage::Parallel(indices) => indices.clone(),
                 };
                 tasks
                     .into_iter()
@@ -2121,8 +2115,8 @@ impl<'a> Rows<'a> {
                 steps
                     .iter()
                     .flat_map(|step| match step {
-                        Step::Serial(index) => std::slice::from_ref(index),
-                        Step::Parallel(indices) => indices.as_slice(),
+                        Stage::Serial(index) => std::slice::from_ref(index),
+                        Stage::Parallel(indices) => indices.as_slice(),
                     })
                     .map(move |index| (*index, service))
             })
@@ -3586,10 +3580,7 @@ async fn remove_container<C: MachineOperations>(
         rows.leave_running(progress, &copy, Left::NotConfirmed(gaps));
         return Ok(Ran::default());
     }
-    let empty = match purpose {
-        RemoveContainerPurpose::Retire => EmptyPolicy::MayEmpty,
-        RemoveContainerPurpose::Rollout => EmptyPolicy::RequireOtherIn,
-    };
+    let empty = EmptyPolicy::from(purpose);
     let unreached = rows.unreached(client, &copy.service, cancellation).await?;
     let retired = if copy.drains() && unreached.may_keep_route() {
         cleanup::retire_unconfirmed(client, &copy, empty, purpose.into()).await

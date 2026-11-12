@@ -3,10 +3,10 @@ use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNotFoundReason,
-    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
-    DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId, QualifiedService,
-    ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions,
-    Unacked,
+    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
+    CopyRotation, DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId,
+    QualifiedService, ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation,
+    RunTarget, StopOptions, Unacked,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -385,6 +385,15 @@ pub(crate) enum EmptyPolicy {
     MayEmpty,
 }
 
+impl From<ployz_core::RemoveContainerPurpose> for EmptyPolicy {
+    fn from(purpose: ployz_core::RemoveContainerPurpose) -> Self {
+        match purpose {
+            ployz_core::RemoveContainerPurpose::Rollout => Self::RequireOtherIn,
+            ployz_core::RemoveContainerPurpose::Retire => Self::MayEmpty,
+        }
+    }
+}
+
 pub(crate) async fn take_out<C: MachineOperations>(
     client: &C,
     copy: &Copy,
@@ -495,23 +504,65 @@ pub(crate) async fn remove<C: MachineOperations>(
     copy: &Copy,
     anonymous_volumes: AnonymousVolumes,
 ) -> Result<Removal, RpcError> {
+    match gone(
+        client,
+        &copy.machine_id,
+        copy.locator(),
+        Drain::DEFAULT,
+        anonymous_volumes,
+        None,
+    )
+    .await?
+    {
+        Gone::Removed => Ok(Removal::Removed),
+        Gone::InRotation { refusal, .. } | Gone::Refused(refusal) => Ok(Removal::Refused(refusal)),
+    }
+}
+
+/// What asking a copy Gone came to. A copy that is not there is removed.
+#[derive(Debug)]
+pub(crate) enum Gone {
+    Removed,
+    /// The owner refuses Gone on a copy that is In or Held; `now` is what it observes.
+    InRotation {
+        now: Box<ContainerNow>,
+        refusal: ContainerRefusal,
+    },
+    Refused(ContainerRefusal),
+}
+
+pub(crate) async fn gone<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container: ContainerLocator,
+    drain: Drain,
+    anonymous_volumes: AnonymousVolumes,
+    budget: Option<Duration>,
+) -> Result<Gone, RpcError> {
     let want = ContainerWant::Gone {
-        container: copy.locator(),
-        drain: Drain::DEFAULT,
+        container,
+        drain,
         anonymous_volumes,
     };
-    match client
-        .ensure_unsettled(&copy.machine_id, want, None)
-        .await?
-    {
-        EnsuredContainer::Ensured { .. } => Ok(Removal::Removed),
-        EnsuredContainer::Refused { refusal, .. }
-            if refusal.reason == ContainerRefusalReason::NotFound =>
-        {
-            Ok(Removal::Removed)
-        }
-        EnsuredContainer::Refused { refusal, .. } => Ok(Removal::Refused(refusal)),
-    }
+    Ok(
+        match client.ensure_unsettled(machine_id, want, budget).await? {
+            EnsuredContainer::Ensured { .. } => Gone::Removed,
+            EnsuredContainer::Refused { refusal, .. }
+                if refusal.reason == ContainerRefusalReason::NotFound =>
+            {
+                Gone::Removed
+            }
+            EnsuredContainer::Refused { now, refusal }
+                if refusal.reason == ContainerRefusalReason::InRotation =>
+            {
+                Gone::InRotation {
+                    now: Box::new(now),
+                    refusal,
+                }
+            }
+            EnsuredContainer::Refused { refusal, .. } => Gone::Refused(refusal),
+        },
+    )
 }
 
 #[derive(Clone, Debug, PartialEq)]

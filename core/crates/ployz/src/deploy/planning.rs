@@ -14,7 +14,7 @@ use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
     EliminatingConstraint, HeldIngress, HostnameRefusal, PlanError, PlanOptions,
     ReplacementOperation,
-    schedule::{ServiceGroup, Step, TaskKind, starts_container},
+    schedule::{ServiceGroup, Stage, TaskKind, starts_container},
 };
 
 pub(super) mod capacity;
@@ -316,12 +316,12 @@ fn service_group(
             .spec()
             .is_some_and(|spec| spec.update.order == UpdateOrder::Rolling)
     });
-    let mut steps: Vec<Step> = Vec::new();
+    let mut steps: Vec<Stage> = Vec::new();
     let mut starts: Vec<usize> = Vec::new();
-    let flush = |steps: &mut Vec<Step>, starts: &mut Vec<usize>| {
+    let flush = |steps: &mut Vec<Stage>, starts: &mut Vec<usize>| {
         if !rolling {
             if !starts.is_empty() {
-                steps.push(Step::Parallel(std::mem::take(starts)));
+                steps.push(Stage::Parallel(std::mem::take(starts)));
             }
             return;
         }
@@ -339,18 +339,18 @@ fn service_group(
         steps.extend(
             machines
                 .into_iter()
-                .map(|(_, indices)| Step::Parallel(indices)),
+                .map(|(_, indices)| Stage::Parallel(indices)),
         );
     };
     let mut removals = Vec::new();
     for (index, operation) in indexed() {
         if publish && rollout_removal(operation) {
-            removals.push(Step::Serial(index));
+            removals.push(Stage::Serial(index));
         } else if starts_container(operation) {
             starts.push(index);
         } else {
             flush(&mut steps, &mut starts);
-            steps.push(Step::Serial(index));
+            steps.push(Stage::Serial(index));
         }
     }
     flush(&mut steps, &mut starts);
@@ -417,7 +417,7 @@ pub(super) fn prepare_namespace_removal(
         let range = first..planned.operations.len();
         match planned.groups.last_mut() {
             Some(tail) if tail.service.is_none() && !range.is_empty() => {
-                tail.steps.extend(range.map(Step::Serial));
+                tail.steps.extend(range.map(Stage::Serial));
             }
             _ if !range.is_empty() => {
                 let every_service = planned
@@ -743,7 +743,7 @@ fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<P
         ServiceGroup {
             service: None,
             dependencies: Vec::new(),
-            steps: vec![Step::Parallel((first..planned.operations.len()).collect())],
+            steps: vec![Stage::Parallel((first..planned.operations.len()).collect())],
             publish: false,
         },
     );
@@ -1422,7 +1422,7 @@ fn removal_operations(
     services: &[ServiceObservation],
     obsolete: &[QualifiedService],
     first: usize,
-) -> (Vec<DeployOperation>, Vec<Step>) {
+) -> (Vec<DeployOperation>, Vec<Stage>) {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
     let (pending, rest): (Vec<_>, Vec<_>) = services
         .iter()
@@ -1431,9 +1431,9 @@ fn removal_operations(
         .partition(|container| *container.as_observation().rotation() == CopyRotation::Pending);
     let serial = first..first + pending.len();
     let at_once = serial.end..serial.end + rest.len();
-    let mut steps: Vec<Step> = serial.map(Step::Serial).collect();
+    let mut steps: Vec<Stage> = serial.map(Stage::Serial).collect();
     if !at_once.is_empty() {
-        steps.push(Step::Parallel(at_once.collect()));
+        steps.push(Stage::Parallel(at_once.collect()));
     }
     let operations = pending
         .into_iter()

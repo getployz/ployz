@@ -1978,8 +1978,8 @@ fn removed_first(plan: &ployz::deploy::DeployPlan) -> Vec<ContainerId> {
         .filter(|group| group.service.is_none() && group.dependencies.is_empty())
         .flat_map(|group| &group.steps)
         .flat_map(|step| match step {
-            ployz::deploy::Step::Serial(index) => vec![*index],
-            ployz::deploy::Step::Parallel(indices) => indices.clone(),
+            ployz::deploy::Stage::Serial(index) => vec![*index],
+            ployz::deploy::Stage::Parallel(indices) => indices.clone(),
         })
         .filter_map(|index| {
             let DeployOperation::RemoveContainer { container_id, .. } =

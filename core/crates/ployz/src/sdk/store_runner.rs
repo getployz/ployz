@@ -34,7 +34,7 @@ use super::{
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::MachineOperations;
-use crate::deploy::cleanup::{self, Copy, EmptyPolicy, Rotated, RotationFailure};
+use crate::deploy::cleanup::{self, Copy, Rotated, RotationFailure};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -630,10 +630,7 @@ async fn retire_copy<C: MachineOperations>(
     let step = cleanup::retire(
         client,
         &Copy::observed(&observed),
-        match copy.purpose {
-            RemoveContainerPurpose::Retire => EmptyPolicy::MayEmpty,
-            RemoveContainerPurpose::Rollout => EmptyPolicy::RequireOtherIn,
-        },
+        copy.purpose.into(),
         copy.purpose.into(),
         &CancellationToken::new(),
     )

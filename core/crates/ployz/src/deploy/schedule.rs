@@ -59,7 +59,7 @@ impl TaskKind {
 
 /// Operation indices that run one after another, or together.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Step {
+pub enum Stage {
     Serial(usize),
     Parallel(Vec<usize>),
 }
@@ -71,7 +71,7 @@ pub struct ServiceGroup {
     /// as Volume preparation; `None` with dependencies is the namespace tail.
     pub service: Option<ServiceName>,
     pub dependencies: Vec<ServiceName>,
-    pub steps: Vec<Step>,
+    pub steps: Vec<Stage>,
     /// Flip this Service's pointer once its steps complete. A group without a
     /// Service never publishes.
     pub publish: bool,
@@ -194,8 +194,8 @@ impl Schedule {
             .iter()
             .position(|slot| {
                 slot.group.steps.iter().any(|step| match step {
-                    Step::Serial(index) => *index == task,
-                    Step::Parallel(indices) => indices.contains(&task),
+                    Stage::Serial(index) => *index == task,
+                    Stage::Parallel(indices) => indices.contains(&task),
                 })
             })
             .expect("every task belongs to one group")
@@ -374,7 +374,7 @@ impl Schedule {
             }
             let serial = matches!(
                 self.slot(group).group.steps.get(step),
-                Some(Step::Serial(_))
+                Some(Stage::Serial(_))
             );
             let mut still_pending = Vec::new();
             for task in pending.drain(..) {
@@ -496,10 +496,10 @@ pub(crate) fn starts_container(operation: &DeployOperation) -> bool {
     TaskKind::of(operation) == TaskKind::Start
 }
 
-fn step_tasks(step: &Step) -> Vec<usize> {
+fn step_tasks(step: &Stage) -> Vec<usize> {
     match step {
-        Step::Serial(index) => vec![*index],
-        Step::Parallel(indices) => indices.clone(),
+        Stage::Serial(index) => vec![*index],
+        Stage::Parallel(indices) => indices.clone(),
     }
 }
 
@@ -515,7 +515,7 @@ mod tests {
         ServiceName::parse(service).unwrap()
     }
 
-    fn group(service: &str, dependencies: &[&str], steps: Vec<Step>) -> ServiceGroup {
+    fn group(service: &str, dependencies: &[&str], steps: Vec<Stage>) -> ServiceGroup {
         ServiceGroup {
             service: Some(name(service)),
             dependencies: dependencies.iter().map(|name| self::name(name)).collect(),
@@ -568,9 +568,9 @@ mod tests {
     fn a_chain_starts_each_service_after_its_dependency_publishes_and_is_routed() {
         let mut schedule = Schedule::new(
             vec![
-                group("db", &[], vec![Step::Parallel(vec![0])]),
-                group("api", &["db"], vec![Step::Parallel(vec![1])]),
-                group("web", &["api"], vec![Step::Parallel(vec![2])]),
+                group("db", &[], vec![Stage::Parallel(vec![0])]),
+                group("api", &["db"], vec![Stage::Parallel(vec![1])]),
+                group("web", &["api"], vec![Stage::Parallel(vec![2])]),
             ],
             vec![start('1'), start('1'), start('1')],
         );
@@ -601,10 +601,10 @@ mod tests {
     fn a_diamond_starts_the_join_only_after_both_sides_publish() {
         let mut schedule = Schedule::new(
             vec![
-                group("db", &[], vec![Step::Parallel(vec![0])]),
-                group("cache", &["db"], vec![Step::Parallel(vec![1])]),
-                group("queue", &["db"], vec![Step::Parallel(vec![2])]),
-                group("api", &["cache", "queue"], vec![Step::Parallel(vec![3])]),
+                group("db", &[], vec![Stage::Parallel(vec![0])]),
+                group("cache", &["db"], vec![Stage::Parallel(vec![1])]),
+                group("queue", &["db"], vec![Stage::Parallel(vec![2])]),
+                group("api", &["cache", "queue"], vec![Stage::Parallel(vec![3])]),
             ],
             vec![start('1'), start('1'), start('2'), start('2')],
         );
@@ -631,9 +631,9 @@ mod tests {
     fn independent_services_start_together() {
         let mut schedule = Schedule::new(
             vec![
-                group("a", &[], vec![Step::Parallel(vec![0])]),
-                group("b", &[], vec![Step::Parallel(vec![1])]),
-                group("c", &[], vec![Step::Parallel(vec![2])]),
+                group("a", &[], vec![Stage::Parallel(vec![0])]),
+                group("b", &[], vec![Stage::Parallel(vec![1])]),
+                group("c", &[], vec![Stage::Parallel(vec![2])]),
             ],
             vec![start('1'), start('2'), start('3')],
         );
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn a_dependency_with_no_change_counts_as_complete() {
         let mut schedule = Schedule::new(
-            vec![group("api", &["db"], vec![Step::Parallel(vec![0])])],
+            vec![group("api", &["db"], vec![Stage::Parallel(vec![0])])],
             vec![start('1')],
         );
         assert_eq!(starts(&mut schedule), vec![0]);
@@ -652,7 +652,7 @@ mod tests {
 
     #[test]
     fn a_machine_starts_at_most_five_new_containers_at_once() {
-        let steps = vec![Step::Parallel((0..7).collect())];
+        let steps = vec![Stage::Parallel((0..7).collect())];
         let mut schedule = Schedule::new(
             vec![group("api", &[], steps)],
             (0..7).map(|_| start('1')).collect(),
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn the_window_counts_only_this_deploys_starts_and_is_per_machine() {
-        let steps = vec![Step::Parallel((0..12).collect())];
+        let steps = vec![Stage::Parallel((0..12).collect())];
         let mut tasks: Vec<Task> = (0..12)
             .map(|index| {
                 if index % 2 == 0 {
@@ -684,7 +684,7 @@ mod tests {
         let mut schedule = Schedule::new(
             vec![
                 group("api", &[], steps),
-                group("web", &[], vec![Step::Parallel(vec![12, 13])]),
+                group("web", &[], vec![Stage::Parallel(vec![12, 13])]),
             ],
             tasks,
         );
@@ -706,8 +706,8 @@ mod tests {
     fn a_window_starved_service_never_starts_after_a_failure() {
         let mut schedule = Schedule::new(
             vec![
-                group("a", &[], vec![Step::Parallel((0..6).collect())]),
-                group("b", &[], vec![Step::Parallel(vec![6])]),
+                group("a", &[], vec![Stage::Parallel((0..6).collect())]),
+                group("b", &[], vec![Stage::Parallel(vec![6])]),
             ],
             (0..7).map(|_| start('1')).collect(),
         );
@@ -725,8 +725,8 @@ mod tests {
     fn a_failed_services_running_starts_keep_their_slots() {
         let mut schedule = Schedule::new(
             vec![
-                group("a", &[], vec![Step::Parallel(vec![0, 1, 2])]),
-                group("b", &[], vec![Step::Parallel((3..8).collect())]),
+                group("a", &[], vec![Stage::Parallel(vec![0, 1, 2])]),
+                group("b", &[], vec![Stage::Parallel((3..8).collect())]),
             ],
             (0..8).map(|_| start('1')).collect(),
         );
@@ -747,8 +747,8 @@ mod tests {
     fn a_routed_dependency_admits_every_later_step_of_its_dependent() {
         let mut schedule = Schedule::new(
             vec![
-                group("db", &[], vec![Step::Parallel(vec![0])]),
-                group("app", &["db"], vec![Step::Serial(1), Step::Serial(2)]),
+                group("db", &[], vec![Stage::Parallel(vec![0])]),
+                group("app", &["db"], vec![Stage::Serial(1), Stage::Serial(2)]),
             ],
             vec![start('1'), start('1'), start('1')],
         );
@@ -767,9 +767,9 @@ mod tests {
     fn a_join_reads_every_dependency_it_lacks_in_one_round() {
         let mut schedule = Schedule::new(
             vec![
-                group("db", &[], vec![Step::Parallel(vec![0])]),
-                group("cache", &[], vec![Step::Parallel(vec![1])]),
-                group("app", &["db", "cache"], vec![Step::Parallel(vec![2])]),
+                group("db", &[], vec![Stage::Parallel(vec![0])]),
+                group("cache", &[], vec![Stage::Parallel(vec![1])]),
+                group("app", &["db", "cache"], vec![Stage::Parallel(vec![2])]),
             ],
             vec![start('1'), start('1'), start('1')],
         );
@@ -793,8 +793,8 @@ mod tests {
     fn a_hook_waits_until_a_changed_dependency_is_routed() {
         let mut schedule = Schedule::new(
             vec![
-                group("db", &[], vec![Step::Parallel(vec![0])]),
-                group("app", &["db"], vec![Step::Serial(1), Step::Serial(2)]),
+                group("db", &[], vec![Stage::Parallel(vec![0])]),
+                group("app", &["db"], vec![Stage::Serial(1), Stage::Serial(2)]),
             ],
             vec![start('1'), hook('2'), start('2')],
         );
@@ -813,7 +813,11 @@ mod tests {
 
     #[test]
     fn serial_steps_run_one_at_a_time_and_a_non_start_takes_no_window_slot() {
-        let steps = vec![Step::Serial(0), Step::Serial(1), Step::Parallel(vec![2, 3])];
+        let steps = vec![
+            Stage::Serial(0),
+            Stage::Serial(1),
+            Stage::Parallel(vec![2, 3]),
+        ];
         let tasks = vec![
             Task {
                 machine: machine('1'),
@@ -839,10 +843,10 @@ mod tests {
     fn after_a_failure_no_new_service_starts_while_running_ones_finish() {
         let mut schedule = Schedule::new(
             vec![
-                group("a", &[], vec![Step::Parallel(vec![0, 1])]),
-                group("b", &[], vec![Step::Parallel(vec![2])]),
-                group("c", &["b"], vec![Step::Parallel(vec![3])]),
-                group("d", &[], vec![Step::Serial(4), Step::Serial(5)]),
+                group("a", &[], vec![Stage::Parallel(vec![0, 1])]),
+                group("b", &[], vec![Stage::Parallel(vec![2])]),
+                group("c", &["b"], vec![Stage::Parallel(vec![3])]),
+                group("d", &[], vec![Stage::Serial(4), Stage::Serial(5)]),
             ],
             vec![
                 start('1'),
@@ -882,8 +886,8 @@ mod tests {
     fn a_service_handing_over_a_hostname_never_starts_when_the_one_taking_it_fails() {
         let mut schedule = Schedule::new(
             vec![
-                group("api", &[], vec![Step::Parallel(vec![0])]),
-                group("web", &["api"], vec![Step::Parallel(vec![1])]),
+                group("api", &[], vec![Stage::Parallel(vec![0])]),
+                group("web", &["api"], vec![Stage::Parallel(vec![1])]),
             ],
             vec![start('1'), start('1')],
         );
@@ -913,8 +917,8 @@ mod tests {
     fn a_publish_only_a_gap_servers_proxy_did_not_confirm_lets_dependents_start() {
         let mut schedule = Schedule::new(
             vec![
-                group("a", &[], vec![Step::Parallel(vec![0])]),
-                group("b", &["a"], vec![Step::Parallel(vec![1])]),
+                group("a", &[], vec![Stage::Parallel(vec![0])]),
+                group("b", &["a"], vec![Stage::Parallel(vec![1])]),
             ],
             vec![start('1'), start('1')],
         );
@@ -947,8 +951,8 @@ mod tests {
     fn a_lost_publish_fails_the_deploy() {
         let mut schedule = Schedule::new(
             vec![
-                group("a", &[], vec![Step::Parallel(vec![0])]),
-                group("b", &["a"], vec![Step::Parallel(vec![1])]),
+                group("a", &[], vec![Stage::Parallel(vec![0])]),
+                group("b", &["a"], vec![Stage::Parallel(vec![1])]),
             ],
             vec![start('1'), start('1')],
         );
@@ -968,11 +972,11 @@ mod tests {
                 ServiceGroup {
                     service: None,
                     dependencies: Vec::new(),
-                    steps: vec![Step::Serial(0)],
+                    steps: vec![Stage::Serial(0)],
                     publish: false,
                 },
-                group("a", &[], vec![Step::Serial(1)]),
-                group("b", &[], vec![Step::Serial(2)]),
+                group("a", &[], vec![Stage::Serial(1)]),
+                group("b", &[], vec![Stage::Serial(2)]),
             ],
             vec![
                 Task {
@@ -993,11 +997,11 @@ mod tests {
     fn the_namespace_tail_waits_for_every_service() {
         let mut schedule = Schedule::new(
             vec![
-                group("a", &[], vec![Step::Parallel(vec![0])]),
+                group("a", &[], vec![Stage::Parallel(vec![0])]),
                 ServiceGroup {
                     service: None,
                     dependencies: vec![name("a")],
-                    steps: vec![Step::Serial(1)],
+                    steps: vec![Stage::Serial(1)],
                     publish: false,
                 },
             ],
@@ -1023,7 +1027,7 @@ mod tests {
             vec![ServiceGroup {
                 service: None,
                 dependencies: Vec::new(),
-                steps: vec![Step::Serial(0)],
+                steps: vec![Stage::Serial(0)],
                 publish: true,
             }],
             vec![start('1')],
