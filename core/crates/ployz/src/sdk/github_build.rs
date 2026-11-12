@@ -797,7 +797,7 @@ fn minting(holder: Option<BuildGrantId>, capabilities: &BTreeSet<String>, sealed
 
 /// The one repository a runner's Build Grant may push into.
 fn repository(id: &GithubBuildId) -> Result<BuildGrantRepository, RpcError> {
-    BuildGrantRepository::parse(format!("ployz-build/{}", id.service))
+    BuildGrantRepository::for_service(&id.service)
         .map_err(|_| RpcError::internal("The Service has no Build Grant repository"))
 }
 

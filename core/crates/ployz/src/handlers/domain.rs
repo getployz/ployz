@@ -273,7 +273,7 @@ fn staged<T: serde::Serialize>(
     what: &str,
     already: &str,
 ) -> Result<Option<String>, Error> {
-    let where_ = format!("{}/{}", result.environment.project, result.environment.name);
+    let where_ = result.environment.to_string();
     if result.staged.is_empty() {
         ui::done(
             &Next::new(written, None),

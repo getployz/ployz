@@ -103,7 +103,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     };
     let followed = Next::new(&shown, hint);
     crate::ui::finish(&followed, || {
-        let where_ = format!("{}/{}", view.environment.project, view.environment.name);
+        let where_ = view.environment.to_string();
         if changes.is_empty() {
             crate::ui::note(format_args!("No staged changes in {where_}."));
         }

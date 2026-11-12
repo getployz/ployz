@@ -304,3 +304,18 @@ fn each_write_of_working_state_validates_or_meets_the_fence_as_it_always_did() {
         );
     }
 }
+
+#[test]
+fn an_environment_is_named_project_slash_environment() {
+    let summary = EnvironmentSummary {
+        id: EnvironmentId::parse(uuid(1)).unwrap(),
+        project: ProjectName::parse("shop").unwrap(),
+        name: EnvironmentName::parse("feature").unwrap(),
+        revision: Revision(3),
+    };
+    assert_eq!(summary.to_string(), "shop/feature");
+    assert_eq!(
+        environment_label(&summary.project, &summary.name),
+        "shop/feature"
+    );
+}

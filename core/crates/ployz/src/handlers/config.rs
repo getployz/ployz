@@ -601,7 +601,7 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let hint = (!edited.staged.is_empty()).then(|| next(matches, &["deploy"]));
     let followed = Next::new(&edited, hint);
     ui::finish(&followed, || {
-        let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
+        let where_ = edited.environment.to_string();
         if !edited.staged.is_empty() {
             crate::ui::stream(format_args!(
                 "Staged {} in {where_}.",

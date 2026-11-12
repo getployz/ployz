@@ -287,7 +287,7 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
 /// Whether `spec` runs the image a build or upload will make, which no Device can
 /// name by digest before it exists.
 fn built(spec: &RequestedServiceSpec) -> bool {
-    spec.container.image.starts_with("ployz-build/")
+    ployz_core::is_built_image(&spec.container.image)
 }
 
 /// Why `spec`'s tag has no pin, and the command that writes one by hand.

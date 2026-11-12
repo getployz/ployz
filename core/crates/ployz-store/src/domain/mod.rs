@@ -716,6 +716,20 @@ fn refuse_taken(
     }
 }
 
+/// The longest label a hostname can carry.
+const DNS_LABEL_MAX: usize = 63;
+
+/// The longest hostname DNS can name.
+const DNS_NAME_MAX: usize = 253;
+
+/// The hostname of a generated domain: the one label `prefix` under the Cluster Domain.
+pub(crate) fn generated_hostname(
+    prefix: &(impl std::fmt::Display + ?Sized),
+    cluster: &impl std::fmt::Display,
+) -> String {
+    format!("{prefix}.{cluster}")
+}
+
 /// The label of `hostname` one level under `cluster`, when it is one.
 fn label_under<'h>(hostname: &'h str, cluster: &Hostname) -> Option<&'h str> {
     let label = hostname.strip_suffix(cluster.as_str())?.strip_suffix('.')?;
@@ -737,11 +751,13 @@ fn taken_prefixes<'t>(
     let summary = &environment.summary;
     let environments = others
         .iter()
-        .map(|other| (format!("{}/{}", other.project, other.name), &other.working))
-        .chain(std::iter::once((
-            format!("{}/{}", summary.project, summary.name),
-            &environment.working,
-        )));
+        .map(|other| {
+            (
+                crate::scope::environment_label(&other.project, &other.name),
+                &other.working,
+            )
+        })
+        .chain(std::iter::once((summary.to_string(), &environment.working)));
     let mut taken = Vec::new();
     for (environment, intent) in environments {
         for service in &intent.services {
@@ -797,13 +813,13 @@ fn refuse_too_long(
     let Some(cluster) = cluster else {
         return Ok(());
     };
-    let hostname = format!("{prefix}.{cluster}");
+    let hostname = generated_hostname(prefix, cluster);
     let Err(refused) = IngressHost::parse(&hostname) else {
         return Ok(());
     };
-    let message = if hostname.len() > 253 {
+    let message = if hostname.len() > DNS_NAME_MAX {
         format!(
-            "{hostname} is {} characters, over a hostname's 253: choose a shorter {shorter}",
+            "{hostname} is {} characters, over a hostname's {DNS_NAME_MAX}: choose a shorter {shorter}",
             hostname.len()
         )
     } else {
@@ -825,11 +841,11 @@ pub(crate) fn refuse_long_subdomains(
     match plan
         .copied_prefixes(picks)
         .into_iter()
-        .find(|prefix| prefix.len() > 63)
+        .find(|prefix| prefix.len() > DNS_LABEL_MAX)
     {
         Some(prefix) => Err(error::invalid(
             format!(
-                "{prefix} is {} characters, over a subdomain's 63: choose a shorter branch name",
+                "{prefix} is {} characters, over a subdomain's {DNS_LABEL_MAX}: choose a shorter branch name",
                 prefix.len()
             ),
             json!({ "prefix": prefix }),
@@ -941,11 +957,13 @@ pub(crate) fn refuse_new_shared_hostnames(
     let summary = &environment.summary;
     let environments = others
         .iter()
-        .map(|other| (format!("{}/{}", other.project, other.name), &other.working))
-        .chain(std::iter::once((
-            format!("{}/{}", summary.project, summary.name),
-            after,
-        )));
+        .map(|other| {
+            (
+                crate::scope::environment_label(&other.project, &other.name),
+                &other.working,
+            )
+        })
+        .chain(std::iter::once((summary.to_string(), after)));
     for (place, intent) in environments {
         for service in &intent.services {
             let holder = || format!("{} in {place}", service.slug);
@@ -1009,7 +1027,7 @@ pub(crate) fn name_generated<'a>(
                 let cluster = deployed
                     .get(&(service.to_owned(), prefix.to_owned()))
                     .or(cluster.as_ref())?;
-                Some((prefix.to_owned(), format!("{prefix}.{cluster}")))
+                Some((prefix.to_owned(), generated_hostname(prefix, cluster)))
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         row.hostnames = (!hostnames.is_empty()).then_some(hostnames);
@@ -1203,7 +1221,7 @@ pub(crate) fn expand(
             target_port,
         } in managed
         {
-            let hostname = format!("{prefix}.{cluster_domain}");
+            let hostname = generated_hostname(&prefix, &cluster_domain);
             service.config.routes.push(ServiceRoute {
                 id: route_id(&hostname),
                 hostname,
@@ -1242,7 +1260,7 @@ fn generated(prefix: String, trusted: &Trusted) -> DomainName {
         .domains
         .cluster_domain
         .as_ref()
-        .map(|cluster| format!("{prefix}.{}", cluster.name));
+        .map(|cluster| generated_hostname(&prefix, &cluster.name));
     DomainName::Generated { prefix, hostname }
 }
 
@@ -1282,4 +1300,19 @@ fn no_domain(environment: &Environment, trusted: &Trusted) -> RpcError {
         format!("No such domain in Environment {}", environment.summary.name),
         error::valid(names),
     )
+}
+
+#[cfg(test)]
+mod generated_hostname_tests {
+    use super::{DNS_LABEL_MAX, DNS_NAME_MAX, generated_hostname, label_under};
+    use crate::id::Hostname;
+
+    #[test]
+    fn a_generated_hostname_is_one_label_under_the_cluster_domain() {
+        let cluster = Hostname::parse("apps.example.com").unwrap();
+        assert_eq!(generated_hostname("web", &cluster), "web.apps.example.com");
+        assert_eq!(label_under("web.apps.example.com", &cluster), Some("web"));
+        assert_eq!(label_under("a.web.apps.example.com", &cluster), None);
+        assert_eq!((DNS_LABEL_MAX, DNS_NAME_MAX), (63, 253));
+    }
 }

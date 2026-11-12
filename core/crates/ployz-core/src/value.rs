@@ -283,6 +283,33 @@ validated_string_newtype!(
         })
 );
 
+/// The repository path every built Service's image and Build Grant lives under.
+pub const BUILD_REPOSITORY_PREFIX: &str = "ployz-build/";
+
+impl BuildGrantRepository {
+    /// The one repository a build of the Service named `service` may push into.
+    ///
+    /// # Errors
+    /// Returns an error when `service` is not a repository path component.
+    pub fn for_service(service: &impl fmt::Display) -> Result<Self, ValueError> {
+        Self::parse(format!("{BUILD_REPOSITORY_PREFIX}{service}"))
+    }
+}
+
+/// The image a Service's plan names before its build or upload has made one, which binding
+/// replaces with the verified content.
+#[must_use]
+pub fn pending_image(service: &impl fmt::Display) -> String {
+    format!("{BUILD_REPOSITORY_PREFIX}{service}:pending")
+}
+
+/// Whether `image` is a built Service's image or its pending placeholder, which no Device
+/// can pin by digest before the build exists.
+#[must_use]
+pub fn is_built_image(image: &str) -> bool {
+    image.starts_with(BUILD_REPOSITORY_PREFIX)
+}
+
 pub(crate) fn is_swarm_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"_-.".contains(&byte)
 }
@@ -565,6 +592,17 @@ validated_string_newtype!(
     "a non-empty string",
     |value| !value.is_empty()
 );
+
+impl DockerVolumeName {
+    /// The Docker Volume a Volume's data lives in, before its Namespace scopes it:
+    /// `vol-{resource}`.
+    ///
+    /// # Errors
+    /// Returns an error when `resource` is empty text that cannot name a Docker Volume.
+    pub fn for_resource(resource: &str) -> Result<Self, ValueError> {
+        Self::parse(format!("vol-{resource}"))
+    }
+}
 
 validated_string_newtype!(
     ServiceVolumeReference,
@@ -1291,6 +1329,28 @@ mod tests {
                 "{refused}"
             );
         }
+    }
+
+    #[test]
+    fn derived_docker_names_keep_today_s_bytes() {
+        let id = "00000000-0000-4000-8000-000000000002";
+        assert_eq!(
+            super::DockerVolumeName::for_resource(id).unwrap().as_str(),
+            "vol-00000000-0000-4000-8000-000000000002"
+        );
+        assert!(super::DockerVolumeName::for_resource("a/b").is_ok());
+        let web = super::ServiceName::parse("web").unwrap();
+        assert_eq!(
+            super::BuildGrantRepository::for_service(&web)
+                .unwrap()
+                .as_str(),
+            "ployz-build/web"
+        );
+        assert_eq!(super::pending_image(&web), "ployz-build/web:pending");
+        assert!(super::is_built_image("ployz-build/web:pending"));
+        assert!(super::is_built_image("ployz-build/web"));
+        assert!(!super::is_built_image("ployz-builder/web"));
+        assert!(!super::is_built_image("nginx:latest"));
     }
 
     #[test]

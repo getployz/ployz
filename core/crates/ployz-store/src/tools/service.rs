@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 use super::domain::row;
 use super::environment::{REPOSITORY, source};
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, written};
+use super::machine::{Cx, Effect, Stop, Tool, written};
 use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting_sentence};
 use super::schema;
 use super::step::{DashboardPage, Fix};
@@ -64,7 +64,7 @@ impl Tool for ServiceInspect {
             .map(|change| own_path(name, &change.shown_path(&view.changes)))
             .collect::<Vec<_>>();
         Ok(json!({
-            "at": at(&view.environment),
+            "at": view.environment.to_string(),
             "revision": view.environment.revision.0,
             "service": name,
             "source": source(view.service.source),
@@ -174,7 +174,7 @@ impl Tool for ServiceAdd {
         };
         let (staged, source) = staged;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "service": staged.service.name,
             "source": source,
             "private_dns": staged.service.private_dns,
@@ -327,7 +327,7 @@ impl Tool for ServiceUpdate {
         let immediate = paths(&edited.immediate);
         let changed = staged.iter().chain(&immediate).cloned().collect::<Vec<_>>();
         Ok(json!({
-            "at": at(&edited.environment),
+            "at": edited.environment.to_string(),
             "service": name,
             "changed": changed,
             "immediate": immediate,
@@ -533,7 +533,7 @@ impl Tool for ServiceRename {
             name: self.to,
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "service": staged.service.name,
             "renamed_from": self.service,
             "staged": true,
@@ -576,7 +576,7 @@ impl Tool for ServiceRemove {
             service: self.service,
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "removed": staged.service.name,
             "asks_approval": asks_approval,
             "broken": staged.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),

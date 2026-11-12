@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::ToolId;
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
 use super::step::{Ask, CloudQuery, DashboardPage, Gate};
 use crate::{
@@ -91,7 +91,7 @@ impl Tool for EnvironmentShow {
             .as_ref()
             .map(|deployment| json!({ "number": deployment.number, "status": deployment.status }));
         Ok(json!({
-            "at": at(&diff.environment),
+            "at": diff.environment.to_string(),
             "revision": diff.environment.revision.0,
             "projects": projects,
             "services": services,
@@ -183,7 +183,7 @@ impl Tool for EnvironmentPr {
             (None, [only]) => only.repository.clone(),
             (None, []) if !self.enabled => {
                 return Ok(json!({
-                    "at": at(&services.environment),
+                    "at": services.environment.to_string(),
                     "pull_request_environments": false,
                 }));
             }
@@ -220,7 +220,7 @@ impl Tool for EnvironmentPr {
             .find(|plan| plan.repository == repository)
             .is_some_and(|plan| plan.enabled);
         Ok(json!({
-            "at": at(&services.environment),
+            "at": services.environment.to_string(),
             "pull_request_environments": enabled,
             "repository": repository,
         }))
@@ -336,7 +336,7 @@ impl Tool for EnvironmentSetup {
         .map(|(_, what, page)| json!({ "what": what, "where": page }))
         .collect::<Vec<_>>();
         Ok(json!({
-            "at": at(&services.environment),
+            "at": services.environment.to_string(),
             "ready": needs.is_empty(),
             "needs": needs,
         }))

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::ToolId;
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
 use super::release::version_for_loss;
 use super::step::Gate;
@@ -174,7 +174,7 @@ fn named(warning: &DeploymentWarning) -> bool {
 fn show(view: &DeploymentView) -> Value {
     let mut shown = summary(&view.deployment);
     if let Value::Object(object) = &mut shown {
-        object.insert("at".into(), json!(at(&view.environment)));
+        object.insert("at".into(), json!(view.environment.to_string()));
         object.insert(
             "nodes".into(),
             json!(view.nodes.iter().map(node).collect::<Vec<_>>()),
@@ -232,7 +232,7 @@ impl Tool for DeploymentList {
             cursor: self.cursor,
         })?;
         let mut listed = json!({
-            "at": at(&page.environment),
+            "at": page.environment.to_string(),
             "deployments": page.deployments.iter().map(summary).collect::<Vec<_>>(),
             "next_cursor": page.next_cursor,
         });
@@ -335,7 +335,7 @@ impl Tool for DeploymentCancel {
             deployment: view.deployment.id.clone(),
         })?;
         Ok(json!({
-            "at": at(&view.environment),
+            "at": view.environment.to_string(),
             "deployment": cancelled.number,
             "status": cancelled.status,
         }))
@@ -444,7 +444,7 @@ fn retried(
     rolls_back: &[u64],
 ) -> Value {
     json!({
-        "at": at(environment),
+        "at": environment.to_string(),
         "deployment": retried.number,
         "retries": retries,
         "rolls_back": rolls_back,
@@ -480,7 +480,7 @@ impl Tool for DeploymentStart {
             deployment: queued.deployment.id.clone(),
         })?;
         Ok(json!({
-            "at": at(&queued.environment),
+            "at": queued.environment.to_string(),
             "deployment": started.number,
             "status": started.status,
             "next": started.number.map(|number| follow(cx, number)),

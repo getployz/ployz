@@ -238,7 +238,7 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
     let saved = store
         .publish(&saving)
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
-    let where_ = format!("{}/{}", saved.environment.project, saved.environment.name);
+    let where_ = saved.environment.to_string();
     let Some(version) = saved.saved else {
         return ui::done(
             &Next::new(&saved, None),
@@ -1077,7 +1077,7 @@ fn plan(
     };
     let followed = Next::new(&shown, Some(hint));
     crate::ui::finish(&followed, || {
-        let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
+        let where_ = plan.environment.to_string();
         if plan.changes.is_empty() {
             crate::ui::stream(format_args!("No authored changes to deploy in {where_}."));
         }
@@ -1204,7 +1204,7 @@ fn provenance(deployment: &DeploymentSummary) -> Option<String> {
     let source = match &upload.base {
         Some(base) => format!(
             "uploaded by {who}, base {}{}",
-            base.commit.as_str().get(..7).unwrap_or_default(),
+            base.commit.short(),
             if base.changed { " + changes" } else { "" }
         ),
         None => format!("uploaded by {who}, sha256 {digest}"),
@@ -1615,9 +1615,10 @@ pub(super) fn say_view(view: &DeploymentView) {
         crate::ui::stream(format_args!("{line}"));
     }
     for build in &view.builds {
-        let commit = build.commit.as_ref().map_or("the upload", |commit| {
-            commit.as_str().get(..7).unwrap_or(commit.as_str())
-        });
+        let commit = build
+            .commit
+            .as_ref()
+            .map_or("the upload", ployz_store::CommitSha::short);
         let reason = build.message.as_deref().unwrap_or_default();
         let on = build
             .server

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::ToolId;
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, written};
+use super::machine::{Cx, Effect, Stop, Tool, written};
 use super::refusal::{Call, Refusal};
 use super::step::{AcceptedLoss, Gate};
 use crate::catalog::NODE_NAME;
@@ -75,7 +75,7 @@ impl Tool for Review {
             .collect::<Vec<_>>();
         let labels = NodeChange::labels(&diff.changes);
         Ok(json!({
-            "at": at(&diff.environment),
+            "at": diff.environment.to_string(),
             "revision": diff.environment.revision.0,
             "version": diff.version,
             "saved": diff.saved.map(|saved| json!({
@@ -226,7 +226,7 @@ impl Tool for DiscardInput {
             }
         })?;
         Ok(json!({
-            "at": at(&discarded.environment),
+            "at": discarded.environment.to_string(),
             "discarded": what,
             "changed": discarded.changed,
             "dropped": discarded.dropped,
@@ -295,7 +295,7 @@ impl Tool for DeployInput {
                 id: Some(cx.mint(self.request_key)?),
             })?;
             return Ok(json!({
-                "at": at(&saved.environment),
+                "at": saved.environment.to_string(),
                 "saved": {
                     "revision": saved.saved.map(|saved| saved.0),
                     "created": saved.created,
@@ -322,7 +322,7 @@ impl Tool for DeployInput {
         next.insert("deployment".into(), deployment.number.into());
         next.insert("wait_seconds".into(), 120.into());
         Ok(json!({
-            "at": at(&here.environment),
+            "at": here.environment.to_string(),
             "deployment": deployment.number,
             "status": deployment.status,
             "saved_revision": deployment.saved.0,
