@@ -6,6 +6,7 @@
 
 pub mod cleanup;
 mod client;
+mod exit_ledger;
 pub mod frame;
 mod harvest;
 #[cfg(test)]

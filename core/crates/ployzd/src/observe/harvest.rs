@@ -20,10 +20,9 @@ use bollard::{
 };
 use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
-use memchr::memmem::Finder;
 use ployz_core::{
     ContainerId, MachineId,
-    metrics::{MarkerKind, MetricMarker, MetricRange},
+    metrics::{MarkerKind, MetricMarker},
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -31,17 +30,14 @@ use tokio::sync::mpsc;
 use super::{
     cleanup::{self, Disk, Limits},
     docker_file_age,
+    exit_ledger::{ExitLedger, Late},
     frame::{self, DamageScan},
     layout::{
-        ContainerKind, ContainerMeta, ENV_FILE, EXITS_FILE, FIRST_SET_FILE, GAPS_FILE, Gap,
-        GapReason, LINKING_FILE, LogFileName, META_FILE, RetainedEnv, RunExit, SCANNED_FILE,
-        StoreRoot, create_private_dir,
+        ContainerKind, ContainerMeta, ENV_FILE, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason,
+        LINKING_FILE, LogFileName, META_FILE, RetainedEnv, SCANNED_FILE, StoreRoot,
+        create_private_dir,
     },
-    metrics::{
-        sampler,
-        segment::{self, Prefilter, Row},
-    },
-    settled::{Key, Settlement, Settlements, Unfinished},
+    metrics::sampler,
     ship::Outbox,
 };
 
@@ -61,8 +57,6 @@ const SIGNAL_ATTRIBUTE: &str = "signal";
 const SETTLED_LIMIT: usize = 64;
 /// How long a settlement may stay unfinished before it is given up.
 const UNFINISHED_FOR_NANOS: i64 = 24 * 60 * 60 * NANOS_PER_SEC;
-/// The raw segments one maintenance tick may read to resume settlements.
-const SETTLEMENT_SCANS_PER_TICK: usize = 8;
 const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 type DockerEvents = Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>>;
@@ -122,88 +116,7 @@ pub(super) struct Harvester {
     resume_from: Option<i64>,
     /// The newest time of each container's events, by action.
     delivered: HashMap<(ContainerId, String), i64>,
-    /// What the events said of each container's current run.
-    runs: HashMap<ContainerId, Run>,
-    /// Exits that wait on the inspect that follows them: Docker can send
-    /// `die` before `oom`, or drop the `oom` event.
-    exits: HashMap<ContainerId, Vec<Exit>>,
-    /// The `Config.StopSignal` the last inspect gave, for an exit whose own
-    /// inspect finds the container gone.
-    stop_signals: HashMap<ContainerId, Signal>,
-    crashes: Arc<Outbox>,
-    settlements: Settlements,
-    /// Whether this process knows a settlement's marker is in the raw
-    /// segment, so a resume reads the segment at most once.
-    marker_stored: HashMap<Key, bool>,
-}
-
-/// The evidence Docker's events gave about one run of a container.
-#[derive(Debug, Default)]
-struct Run {
-    oom: bool,
-    /// The signals Docker was asked to send it, as `docker stop` does.
-    kills: Vec<Signal>,
-    /// Docker's stop API stopped it, whatever signal it sent. A bare
-    /// `docker kill` sends no `stop` event.
-    stop_requested: bool,
-    exited: bool,
-}
-
-/// An exit and its run's evidence, waiting on the inspect that follows it.
-#[derive(Debug)]
-struct Exit {
-    marker: MetricMarker,
-    oom: bool,
-    kills: Vec<Signal>,
-    stop_requested: bool,
-    /// The harvester saw nothing of the run before its exit, as after a
-    /// restart of `ployz observe` while Docker stopped the container.
-    unseen: bool,
-    /// The stream had resumed from an earlier event, so it delivered the
-    /// `kill` of any `docker stop` that ended the run.
-    resumed: bool,
-    stop_signal: Option<Signal>,
-}
-
-impl Exit {
-    /// The exit's marker, with the OOM kill taken from `state` only when
-    /// `state` describes this run: a later run's inspect says nothing of it.
-    fn settle(self, state: Option<&ContainerState>, stop_signal: Option<Signal>) -> MetricMarker {
-        let Exit {
-            mut marker,
-            oom,
-            kills,
-            stop_requested,
-            unseen,
-            resumed,
-            stop_signal: stop_signal_at_exit,
-        } = self;
-        let died = marker.ts;
-        let stop_signal = stop_signal.or(stop_signal_at_exit);
-        let is_stop = |signal: Signal| is_stop_signal(signal, stop_signal);
-        if let MarkerKind::Exit {
-            exit_code,
-            oom: killed_by_oom,
-            stopped,
-        } = &mut marker.kind
-        {
-            *killed_by_oom = oom
-                || state
-                    .is_some_and(|state| ends_run(state, died) && state.oom_killed == Some(true));
-            // A stop signal's exit with no run to say who sent it is taken
-            // as `docker stop`, unless the stream resumed early enough to
-            // deliver that stop's `kill`.
-            *stopped = stop_requested
-                || kills.into_iter().any(is_stop)
-                || (unseen
-                    && !resumed
-                    && !*killed_by_oom
-                    && exit_code
-                        .and_then(|code| Signal::from_number(code.checked_sub(128)?))
-                        .is_some_and(is_stop));
-        }
-        marker
-    }
+    ledger: ExitLedger,
 }
 
 impl Harvester {
@@ -285,7 +198,7 @@ impl Harvester {
         Self {
             docker,
             docker_containers: docker_root.join("containers"),
-            settlements: Settlements::open(&store),
+            ledger: ExitLedger::new(&store, crashes),
             store,
             watches,
             watched: HashMap::new(),
@@ -300,11 +213,6 @@ impl Harvester {
             stream_since: resume_from,
             resume_from,
             delivered: HashMap::new(),
-            runs: HashMap::new(),
-            exits: HashMap::new(),
-            stop_signals: HashMap::new(),
-            crashes,
-            marker_stored: HashMap::new(),
         }
     }
 
@@ -327,7 +235,7 @@ impl Harvester {
         {
             return false;
         }
-        match self.settlements.count() {
+        match self.ledger.settler.count() {
             Ok(count) => count >= SETTLED_LIMIT,
             Err(error) => {
                 tracing::warn!(%error, "cannot count settlements");
@@ -382,9 +290,8 @@ impl Harvester {
         self.seen.retain(|id, _| present.contains(id));
         self.damage.retain(|id, _| present.contains(id));
         self.owned_by_event.retain(|id, _| present.contains(id));
-        self.runs.retain(|id, _| present.contains(id));
         self.delivered.retain(|(id, _), _| present.contains(id));
-        self.stop_signals.retain(|id, _| present.contains(id));
+        self.ledger.keep_present(&present);
         for id in present {
             self.discovered(id);
         }
@@ -441,7 +348,7 @@ impl Harvester {
             self.seen.get(&id),
             Some(Seen::Pending | Seen::Managed { .. })
         );
-        if held || self.exits.contains_key(&id) {
+        if held || self.ledger.waits_on(&id) {
             self.request_inspect(id);
         }
         if matches!(self.seen.get(&id), Some(Seen::Ignored)) {
@@ -492,224 +399,42 @@ impl Harvester {
             return;
         };
         match message.action.as_deref() {
-            Some("kill") => self.on_kill(id, attributes.get(SIGNAL_ATTRIBUTE)),
-            Some("stop") => self.on_stop(id),
-            Some("oom") => self.on_oom(marker(MarkerKind::Oom)),
-            Some("die") => self.on_die(marker(MarkerKind::Exit {
-                exit_code: attributes
-                    .get(EXIT_CODE_ATTRIBUTE)
-                    .and_then(|code| code.parse().ok()),
-                oom: false,
-                stopped: false,
-            })),
-            Some("start") => self.on_start(marker(MarkerKind::Restart)),
+            Some("kill") => {
+                if let Some(signal) = attributes
+                    .get(SIGNAL_ATTRIBUTE)
+                    .and_then(|signal| signal.parse().ok())
+                {
+                    self.ledger.late(id, Late::Kill(signal));
+                }
+            }
+            Some("stop") => self.ledger.late(id, Late::Stop),
+            Some("oom") => {
+                self.ledger.late(id, Late::Oom);
+                self.ledger.settler.settle(marker(MarkerKind::Oom));
+            }
+            Some("die") => self.ledger.died(
+                marker(MarkerKind::Exit {
+                    exit_code: attributes
+                        .get(EXIT_CODE_ATTRIBUTE)
+                        .and_then(|code| code.parse().ok()),
+                    oom: false,
+                    stopped: false,
+                }),
+                self.stream_since.is_some(),
+            ),
+            Some("start") => {
+                let marker = marker(MarkerKind::Restart);
+                if self.ledger.started(id) {
+                    self.ledger.settler.settle(marker);
+                }
+            }
             _ => {}
         }
     }
 
-    fn on_kill(&mut self, id: ContainerId, signal: Option<&String>) {
-        let Some(signal) = signal.and_then(|signal| signal.parse().ok()) else {
-            return;
-        };
-        let run = self.runs.entry(id).or_default();
-        if !run.exited {
-            run.kills.push(signal);
-        }
-    }
-
-    /// Docker can send `stop` after the `die` of the run it stopped, even
-    /// after a later run started. Its stop API signals a run before it sends
-    /// `stop`, so a live run with no `kill` is not the one stopped.
-    fn on_stop(&mut self, id: ContainerId) {
-        let run = self.runs.entry(id).or_default();
-        if !run.exited && !run.kills.is_empty() {
-            run.stop_requested = true;
-        } else if let Some(exit) = self.exits.get_mut(&id).and_then(|exits| exits.last_mut()) {
-            exit.stop_requested = true;
-        }
-    }
-
-    /// Docker can send `oom` after the `die` of the run it killed.
-    fn on_oom(&mut self, marker: MetricMarker) {
-        let id = marker.container_id;
-        let run = self.runs.entry(id).or_default();
-        if !run.exited {
-            run.oom = true;
-        } else if let Some(exit) = self.exits.get_mut(&id).and_then(|exits| exits.last_mut()) {
-            exit.oom = true;
-        }
-        self.record(marker);
-    }
-
-    fn on_die(&mut self, marker: MetricMarker) {
-        let id = marker.container_id;
-        let unseen = !self.runs.contains_key(&id);
-        let run = self.runs.entry(id).or_default();
-        run.exited = true;
-        let exit = Exit {
-            marker,
-            oom: std::mem::take(&mut run.oom),
-            kills: std::mem::take(&mut run.kills),
-            stop_requested: std::mem::take(&mut run.stop_requested),
-            unseen,
-            resumed: self.stream_since.is_some(),
-            stop_signal: self.stop_signals.get(&id).copied(),
-        };
-        self.exits.entry(id).or_default().push(exit);
-    }
-
-    fn on_start(&mut self, marker: MetricMarker) {
-        let previous = self.runs.insert(marker.container_id, Run::default());
-        if previous.is_some_and(|run| run.exited) {
-            self.record(marker);
-        }
-    }
-
-    /// Settles the exits waiting on `id` with what Docker says now. An
-    /// inspect that Docker did not answer leaves the events' evidence alone.
-    fn settle_exits(&mut self, id: &ContainerId, inspected: &Inspected) {
-        let Some(exits) = self.exits.remove(id) else {
-            return;
-        };
-        let found = match inspected {
-            Inspected::Found(inspected) => Some(&**inspected),
-            Inspected::Gone | Inspected::Unanswered => None,
-        };
-        let state = found.and_then(|inspected| inspected.state.as_ref());
-        let stop_signal = found.and_then(stop_signal);
-        for exit in exits {
-            let marker = exit.settle(state, stop_signal);
-            self.keep_exit(&marker);
-            self.record(marker);
-        }
-    }
-
-    /// Keeps the exit beside the container's logs, which hold every run.
-    /// A container the store does not hold has no directory to keep it in.
-    fn keep_exit(&self, marker: &MetricMarker) {
-        let MarkerKind::Exit { exit_code, oom, .. } = marker.kind else {
-            return;
-        };
-        let id = marker.container_id;
-        let exit = RunExit {
-            ts: marker.ts,
-            exit_code,
-            oom_killed: oom,
-        };
-        if let Err(error) = append_line(&self.store.container(&id).join(EXITS_FILE), &exit)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            tracing::warn!(container = %id, %error, "cannot keep a run's exit for history");
-        }
-    }
-
-    /// Records an exit or OOM kill once: a forgotten container's `die` or
-    /// `oom` can come again in a resumed stream, and its exit settled again
-    /// from less evidence.
-    fn record(&mut self, marker: MetricMarker) {
-        let Some(key) = Key::of(&marker) else {
-            if let Err(error) = segment::append(&self.store, &[Row::Marker(marker.clone())]) {
-                tracing::warn!(container = %marker.container_id, %error, "cannot append a metric marker");
-            }
-            return;
-        };
-        match self.settlements.get(&key) {
-            Ok(Settlement::New) => {
-                let unfinished = Unfinished {
-                    marker,
-                    appended: false,
-                    seq: None,
-                };
-                if let Err(error) = self.settlements.save(&key, &unfinished) {
-                    tracing::warn!(container = %key.container(), %error, "cannot record an exit before settling it");
-                    return;
-                }
-                self.finish(&key, unfinished, false);
-            }
-            Ok(Settlement::Unfinished(unfinished)) => self.finish(&key, *unfinished, true),
-            Ok(Settlement::Finished) => {}
-            Err(error) => {
-                tracing::warn!(container = %key.container(), %error, "cannot read whether an exit was settled");
-            }
-        }
-    }
-
-    /// Stores a settlement's marker and queues its crash, each once. One
-    /// `resumed` from an earlier attempt may have stored its marker before
-    /// it could say so.
-    fn finish(&mut self, key: &Key, mut unfinished: Unfinished, resumed: bool) {
-        let id = key.container();
-        if !unfinished.appended {
-            let stored = match self.marker_stored.get(key) {
-                Some(stored) => *stored,
-                None if resumed => match marker_stored(&self.store, &unfinished.marker) {
-                    Ok(stored) => stored,
-                    Err(error) => {
-                        tracing::warn!(container = %id, %error, "cannot read whether a metric marker was appended");
-                        return;
-                    }
-                },
-                None => false,
-            };
-            self.marker_stored.insert(*key, stored);
-            if !stored {
-                if let Err(error) =
-                    segment::append(&self.store, &[Row::Marker(unfinished.marker.clone())])
-                {
-                    tracing::warn!(container = %id, %error, "cannot append a metric marker");
-                    return;
-                }
-                self.marker_stored.insert(*key, true);
-            }
-            unfinished.appended = true;
-            if let Err(error) = self.settlements.save(key, &unfinished) {
-                tracing::warn!(container = %id, %error, "cannot record that a metric marker was appended");
-            }
-        }
-        if unfinished.marker.is_crash() {
-            let seq = match unfinished.seq {
-                Some(seq) => seq,
-                None => {
-                    let seq = match self.crashes.reserve(unfinished.marker.ts) {
-                        Ok(seq) => seq,
-                        Err(error) => {
-                            tracing::warn!(container = %id, %error, "cannot queue a crash for Cloud");
-                            return;
-                        }
-                    };
-                    unfinished.seq = Some(seq);
-                    if let Err(error) = self.settlements.save(key, &unfinished) {
-                        tracing::warn!(container = %id, %error, "cannot record a crash before queuing it");
-                        return;
-                    }
-                    seq
-                }
-            };
-            if let Err(error) = self.crashes.push_at(seq, unfinished.marker) {
-                tracing::warn!(container = %id, %error, "cannot queue a crash for Cloud");
-                return;
-            }
-        }
-        if let Err(error) = self.settlements.finish(key) {
-            tracing::warn!(container = %id, %error, "cannot record that an exit was settled");
-            return;
-        }
-        self.marker_stored.remove(key);
-    }
-
     /// Finishes the settlements a failed write or a stopped harvester left
-    /// unfinished, reading at most a few raw segments, and gives up those a
-    /// day old that no stream can repeat. A crash the outbox has not queued
-    /// is never given up: only a real crash can leave one, and it waits for
-    /// the outbox to take it.
+    /// unfinished, and gives up those a day old that no stream can repeat.
     fn finish_settlements(&mut self) {
-        let unfinished = match self.settlements.unfinished() {
-            Ok(unfinished) => unfinished,
-            Err(error) => {
-                tracing::warn!(%error, "cannot list unfinished settlements");
-                return;
-            }
-        };
         let give_up_before = self.forget_before().map_or(i64::MIN, |before| {
             before.min(
                 self.last_event_nanos
@@ -717,43 +442,7 @@ impl Harvester {
                     .saturating_sub(UNFINISHED_FOR_NANOS),
             )
         });
-        let mut kept = Vec::new();
-        for (key, entry) in unfinished {
-            if key.ts() >= give_up_before || self.crash_unqueued(&entry) {
-                kept.push((key, entry));
-                continue;
-            }
-            tracing::warn!(container = %key.container(), "giving up an exit that could not be settled for a day");
-            match self.settlements.forget(&key) {
-                Ok(()) => {
-                    self.marker_stored.remove(&key);
-                }
-                Err(error) => {
-                    tracing::warn!(container = %key.container(), %error, "cannot give up an exit settlement");
-                }
-            }
-        }
-        let reserved: Vec<u64> = kept.iter().filter_map(|(_, entry)| entry.seq).collect();
-        if let Err(error) = self.crashes.release_reserved(&reserved) {
-            tracing::warn!(%error, "cannot release crash seqs nothing will queue");
-        }
-        let mut scans = SETTLEMENT_SCANS_PER_TICK;
-        for (key, entry) in kept {
-            if !entry.appended && !self.marker_stored.contains_key(&key) {
-                if scans == 0 {
-                    continue;
-                }
-                scans -= 1;
-            }
-            self.finish(&key, entry, true);
-        }
-    }
-
-    fn crash_unqueued(&self, entry: &Unfinished) -> bool {
-        entry.marker.is_crash()
-            && entry
-                .seq
-                .is_none_or(|seq| self.crashes.is_reserved(seq).unwrap_or(true))
+        self.ledger.settler.resume_unfinished(give_up_before);
     }
 
     /// Settlements of events older than this cannot be repeated: the open
@@ -923,14 +612,22 @@ impl Harvester {
         if let Inspected::Found(found) = &inspected
             && let Some(signal) = stop_signal(found)
         {
-            self.stop_signals.insert(id, signal);
+            self.ledger.note_stop_signal(id, signal);
         }
         // An inspect asked for again began before the newest event, so it
         // cannot settle an exit that event reported.
         if self.inspecting.remove(&id) == Some(true) {
             self.request_inspect(id);
         } else {
-            self.settle_exits(&id, &inspected);
+            let found = match &inspected {
+                Inspected::Found(inspected) => Some(&**inspected),
+                Inspected::Gone | Inspected::Unanswered => None,
+            };
+            self.ledger.settle_exits(
+                &id,
+                found.and_then(|inspected| inspected.state.as_ref()),
+                found.and_then(stop_signal),
+            );
         }
         let Some(seen) = self.seen.get(&id).copied() else {
             return;
@@ -1038,8 +735,7 @@ impl Harvester {
     fn forget(&mut self, id: &ContainerId) {
         self.seen.insert(*id, Seen::Ignored);
         self.damage.remove(id);
-        self.runs.remove(id);
-        self.stop_signals.remove(id);
+        self.ledger.forget(id);
         self.owned_by_event.remove(id);
         self.unwatch_container(id);
     }
@@ -1060,7 +756,7 @@ impl Harvester {
 
     fn clean(&self) {
         if let Some(before) = self.forget_before()
-            && let Err(error) = self.settlements.forget_before(before)
+            && let Err(error) = self.ledger.settler.forget_before(before)
         {
             tracing::warn!(%error, "cannot forget settlements no stream can repeat");
         }
@@ -1531,19 +1227,6 @@ fn read_scanned(store_dir: &Path) -> io::Result<Option<u64>> {
     }
 }
 
-/// Whether a raw segment holds `marker`.
-fn marker_stored(store: &StoreRoot, marker: &MetricMarker) -> io::Result<bool> {
-    segment::find(
-        &store.raw_metrics(),
-        MetricRange {
-            since_nanos: marker.ts,
-            until_nanos: marker.ts.saturating_add(1),
-        },
-        &Prefilter::Contains(Finder::new(marker.container_id.to_string().as_bytes()).into_owned()),
-        |row: &Row| matches!(row, Row::Marker(found) if found == marker),
-    )
-}
-
 fn gap_recorded(store_dir: &Path, gap: &Gap) -> io::Result<bool> {
     let recorded = match fs::read_to_string(store_dir.join(GAPS_FILE)) {
         Ok(recorded) => recorded,
@@ -1654,7 +1337,7 @@ fn append_gap(store_dir: &Path, gap: &Gap) -> io::Result<()> {
 /// Appends one JSON line to `path`. A line an earlier append left unfinished
 /// is cut off first, and a failed append is cut back off, so every line the
 /// file ends up with is whole.
-fn append_line(path: &Path, value: &impl Serialize) -> io::Result<()> {
+pub(super) fn append_line(path: &Path, value: &impl Serialize) -> io::Result<()> {
     use std::{io::Read as _, os::unix::fs::OpenOptionsExt as _};
     let mut line = serde_json::to_vec(value).map_err(io::Error::other)?;
     line.push(b'\n');
@@ -1810,7 +1493,7 @@ fn service_event(
 
 /// Whether `state` describes the run that died at `died`. Docker sets
 /// `FinishedAt` before it sends `die`, and starts any later run after it.
-fn ends_run(state: &ContainerState, died: i64) -> bool {
+pub(super) fn ends_run(state: &ContainerState, died: i64) -> bool {
     let at = |time: &Option<String>| time.as_deref().and_then(rfc3339_nanos);
     at(&state.started_at)
         .zip(at(&state.finished_at))
@@ -1830,7 +1513,7 @@ fn stop_signal(inspected: &ContainerInspectResponse) -> Option<Signal> {
 /// A signal that stops a container: the image's `StopSignal`, or one
 /// `docker stop`, `docker kill` or a terminal sends. Any other signal, such as
 /// `HUP` to reload or `CONT`, leaves the run going.
-fn is_stop_signal(signal: Signal, stop_signal: Option<Signal>) -> bool {
+pub(super) fn is_stop_signal(signal: Signal, stop_signal: Option<Signal>) -> bool {
     [Signal::TERM, Signal::KILL, Signal::INT, Signal::QUIT].contains(&signal)
         || Some(signal) == stop_signal
 }
@@ -1838,11 +1521,11 @@ fn is_stop_signal(signal: Signal, stop_signal: Option<Signal>) -> bool {
 /// A Linux signal number. Realtime signals such as systemd's
 /// `SIGRTMIN+3` have no name in libc, so signals compare as numbers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Signal(u8);
+pub(super) struct Signal(u8);
 
 #[derive(Debug, thiserror::Error)]
 #[error("Docker names no such signal.")]
-struct UnknownSignal;
+pub(super) struct UnknownSignal;
 
 impl Signal {
     const INT: Self = Self(2);
@@ -1889,7 +1572,7 @@ impl Signal {
         ("XFSZ", 25),
     ];
 
-    fn from_number(number: i64) -> Option<Self> {
+    pub(super) fn from_number(number: i64) -> Option<Self> {
         let number = u8::try_from(number).ok()?;
         (1..=Self::RTMAX).contains(&number).then_some(Self(number))
     }
@@ -2000,10 +1683,9 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::{
-        DamageCursor, GAPS_FILE, Harvester, Inspected, Link, Newest, SETTLED_LIMIT, Settlements,
-        Synced, UNFINISHED_FOR_NANOS, container_meta, foreign_log_driver, judge_first_set,
-        link_exact, read_meta, read_resume_from, record_damage, settle_removed, sync_container,
-        write_meta,
+        DamageCursor, GAPS_FILE, Harvester, Inspected, Link, Newest, SETTLED_LIMIT, Synced,
+        UNFINISHED_FOR_NANOS, container_meta, foreign_log_driver, judge_first_set, link_exact,
+        read_meta, read_resume_from, record_damage, settle_removed, sync_container, write_meta,
     };
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
@@ -3700,7 +3382,7 @@ mod tests {
         fn settle_exits(&mut self, inspected: impl Fn() -> Inspected) {
             let id = ContainerId::parse(ID).unwrap();
             for _ in 0..3 {
-                if !self.harvester.exits.contains_key(&id) {
+                if !self.harvester.ledger.waits_on(&id) {
                     return;
                 }
                 self.harvester.on_inspected(id, inspected());
@@ -4124,7 +3806,7 @@ mod tests {
             .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "1")]));
         running.settle_exits(|| Inspected::Gone);
         let other = ContainerId::parse(&other).unwrap();
-        while running.harvester.exits.contains_key(&other) {
+        while running.harvester.ledger.waits_on(&other) {
             running.harvester.on_inspected(other, Inspected::Gone);
         }
         assert_eq!(crashes(&host).len(), 2);
@@ -4496,7 +4178,7 @@ mod tests {
         }
         drop(running);
         // A stop between appending each marker and saying so.
-        let settlements = Settlements::open(&host.store);
+        let settlements = crate::observe::settled::Settlements::open(&host.store);
         for (key, mut entry) in settlements.unfinished().unwrap() {
             entry.appended = false;
             settlements.save(&key, &entry).unwrap();
@@ -5060,7 +4742,8 @@ mod tests {
             fs::write(host.store.settled().join(format!("{name}.pending")), &json).unwrap();
             if left.stored {
                 let marker = serde_json::from_str(&marker_json(ts, left.code)).unwrap();
-                super::segment::append(&host.store, &[Row::Marker(marker)]).unwrap();
+                crate::observe::metrics::segment::append(&host.store, &[Row::Marker(marker)])
+                    .unwrap();
             }
             if left.reserved {
                 fs::write(outbox.join(format!("{}.reserved", outbox_name(ts))), b"").unwrap();
@@ -5081,8 +4764,8 @@ mod tests {
             assert_eq!(queued, queued_seqs, "{label}");
             if !queued.is_empty() {
                 assert_eq!(
-                    files[0],
-                    pair(outbox_name(ts), entry_json(ts, ts, 1)),
+                    files.first(),
+                    Some(&pair(outbox_name(ts), entry_json(ts, ts, 1))),
                     "{label}"
                 );
             }
@@ -5126,10 +4809,12 @@ mod tests {
             .into_iter()
             .filter_map(|(ts, kind)| match kind {
                 MarkerKind::Exit { oom, stopped, .. } => Some((ts, oom, stopped)),
-                _ => None,
+                MarkerKind::Oom | MarkerKind::Restart => None,
             })
             .collect()
     }
+
+    type Case = (&'static str, Vec<Late>, Vec<(i64, bool, bool)>);
 
     const TERM: &[(&str, &str)] = &[("signal", "15")];
     const HUP: &[(&str, &str)] = &[("signal", "1")];
@@ -5143,7 +4828,7 @@ mod tests {
     async fn a_late_stop_oom_or_kill_belongs_to_the_live_run_else_the_last_queued_exit() {
         use Late::{Event, Settle};
         let t = |at| T0 + at;
-        let cases: Vec<(&str, Vec<Late>, Vec<(i64, bool, bool)>)> = vec![
+        let cases: Vec<Case> = vec![
             (
                 "a kill of the live run stops its exit",
                 vec![
