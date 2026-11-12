@@ -23,6 +23,8 @@ const SHARE_INFO: &[u8] = b"ployz-sealing-key-share-v1";
 /// Distinct from every other label this key is expanded or sealed under, such as the join
 /// confirmation's and the Sealed values' associated data.
 const ATTEST_INFO: &[u8] = b"ployz build-secrets attest v1";
+/// The Cluster's Volume handoff receipt key, distinct from the attest key and every label above.
+const RECEIPT_INFO: &[u8] = b"ployz volume handoff v1";
 const ENCAPPED_KEY_LEN: usize = 32;
 
 type Kem = X25519HkdfSha256;
@@ -123,6 +125,17 @@ impl SealingKey {
             .expand(ATTEST_INFO, key.as_mut())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
         ployz_core::X25519Secret::from_bytes(*key)
+    }
+
+    /// The Cluster's receipt key, which a Move's source signs its handoff receipt with and
+    /// its target checks. Every Machine holding this Sealing Key derives the same one, and
+    /// nothing without the Sealing Key can, so any Machine of the Cluster could sign one.
+    pub(crate) fn receipt_signer(&self) -> ployz_core::authority::Signer {
+        let mut seed = Zeroizing::new([0; 32]);
+        hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
+            .expand(RECEIPT_INFO, seed.as_mut())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        ployz_core::authority::Signer::from_seed(&seed)
     }
 
     /// Classifies `<data_dir>/sealing.key`: 32 bytes are the key, no file is
@@ -715,6 +728,23 @@ mod tests {
         assert_eq!(
             attest.to_string(),
             "f68dfa2222a3be1f41768b8b1e5ddc3baeaa6b05b4462501fa74f583068ee215"
+        );
+    }
+
+    #[test]
+    fn every_holder_of_a_sealing_key_derives_the_same_receipt_key_and_no_other_key_does() {
+        let key = SealingKey([7; 32]);
+        let receipt = key.receipt_signer().public();
+        assert_eq!(SealingKey([7; 32]).receipt_signer().public(), receipt);
+        assert_ne!(SealingKey([8; 32]).receipt_signer().public(), receipt);
+        assert_ne!(receipt.as_bytes(), key.public_key().as_bytes());
+        assert_ne!(receipt.as_bytes(), key.attest().attest().as_bytes());
+        // Computed apart from this code, with Python's hmac and cryptography: HKDF-SHA256
+        // with no salt, then the Ed25519 public key of that seed. A change strands every
+        // receipt a Move's target has not yet promoted on.
+        assert_eq!(
+            receipt.to_string(),
+            "4c3a67d63762ee395941475f4fa5fa832568187702269718832a590e4175a4ea"
         );
     }
 

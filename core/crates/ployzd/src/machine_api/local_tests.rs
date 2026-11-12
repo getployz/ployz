@@ -4101,9 +4101,9 @@ mod set_volume_copy {
             DeviceKey, DockerVolumeName, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
             ResolvedServiceSpec, SealingPublicKey, VOLUME_APPROVAL_CAPABILITY,
             authority::{
-                ApprovedService, AuthorityRefusal, PayloadDigest, Purpose, Signed, Signer,
-                SignerKey, Timestamp, VolumeApproval, VolumeWorkflow,
-                validity::MAX_LIFETIME_MILLIS,
+                ApprovedService, AuthorityRefusal, HandoffReceipt, MachineSigned, PayloadDigest,
+                Purpose, Signed, Signer, SignerKey, StepDigest, Timestamp, VolumeApproval,
+                VolumeWorkflow, validity::MAX_LIFETIME_MILLIS,
             },
         };
         use tonic::Status;
@@ -4180,6 +4180,37 @@ mod set_volume_copy {
                 };
                 Signed::sign(&body, &self.signer).unwrap()
             }
+        }
+
+        /// `request` with the receipt `from` signs with this Cluster's receipt key, handing
+        /// `approval`'s Volume to this Machine at the snapshot `create_of` names.
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn receipted(
+            mut request: Value,
+            approval: &Signed<VolumeApproval>,
+            data_dir: &std::path::Path,
+            (from, to): (MachineId, MachineId),
+        ) -> Value {
+            let key = crate::sealing_key::SealingKey::load(data_dir)
+                .unwrap()
+                .unwrap();
+            let body = approval.open().unwrap();
+            let receipt = HandoffReceipt {
+                cluster: key.public_key(),
+                operation: body.operation,
+                approval: StepDigest::of(&approval.body),
+                volume: body.volume,
+                from,
+                to,
+                at: ployz_core::SnapshotGuid::new(900),
+                snapshot: "f-1".parse().unwrap(),
+                from_epoch: ployz_core::WriterEpoch::new(0),
+                epoch: ployz_core::WriterEpoch::new(1),
+            };
+            request["receipt"] =
+                serde_json::to_value(MachineSigned::sign(&receipt, &key.receipt_signer()).unwrap())
+                    .unwrap();
+            request
         }
 
         fn elsewhere() -> MachineId {
@@ -4338,6 +4369,49 @@ mod set_volume_copy {
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
+        /// A target that never admitted the Move starts the Service after the window on its
+        /// source's receipt, as it promotes on it: the receipt proves the Move began in time.
+        #[tokio::test]
+        async fn a_receipt_admits_the_targets_start_after_the_window() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-late").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let device = enforce_approving(&store, &data_dir, &service).await;
+            let spec = pinned_spec();
+            let mut body = device
+                .moving(VOLUME, (elsewhere(), device.this), &spec)
+                .open()
+                .unwrap();
+            body.issued_at = Timestamp::from_millis(
+                Timestamp::now().as_millis() - MAX_LIFETIME_MILLIS - 600_000,
+            )
+            .unwrap();
+            body.expires_at = body.issued_at.plus(MAX_LIFETIME_MILLIS);
+            let approval = Signed::sign(&body, &device.signer).unwrap();
+
+            let status = operator_set_copy(&service, approved(create_of(&spec), &approval))
+                .await
+                .expect_err("an expired approval with no receipt");
+            refused_step(&status, AuthorityRefusal::Expired);
+            reply(
+                &operator_set_copy(
+                    &service,
+                    receipted(
+                        approved(create_of(&spec), &approval),
+                        &approval,
+                        &data_dir,
+                        (elsewhere(), device.this),
+                    ),
+                )
+                .await
+                .unwrap(),
+            );
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
         /// Lane 4's attack, and the start it guards: a spec with one environment value changed
         /// is refused under the Move's approval, and the approved spec then starts.
         #[tokio::test]
@@ -4397,14 +4471,35 @@ mod set_volume_copy {
                 docker_writes(&fake)
             );
 
+            let status = operator_set_copy(&service, approved(create_of(&spec), &approval))
+                .await
+                .expect_err("a start under the Move with no receipt");
+            refused_step(&status, AuthorityRefusal::Unreceipted);
+            assert_eq!(
+                ployz_core::rpc::status_details(status.details())
+                    .unwrap()
+                    .get("next"),
+                Some(&json!(
+                    "ployz volume release asks the move's source where the move ends"
+                ))
+            );
+            assert!(docker_writes(&fake).is_empty());
+            let handed = |request| {
+                receipted(
+                    approved(request, &approval),
+                    &approval,
+                    &data_dir,
+                    (elsewhere(), device.this),
+                )
+            };
             reply(
-                &operator_set_copy(&service, approved(create_of(&spec), &approval))
+                &operator_set_copy(&service, handed(create_of(&spec)))
                     .await
                     .unwrap(),
             );
             assert_eq!(holder_status(&fake), vec![json!("running")]);
             reply(
-                &operator_set_copy(&service, approved(create_of(&spec), &approval))
+                &operator_set_copy(&service, handed(create_of(&spec)))
                     .await
                     .expect("a resent start under the same approval"),
             );

@@ -131,6 +131,7 @@ fn check(
             volume: &volume(),
             step,
             now: at(now),
+            handed: None,
         },
     )
 }
@@ -294,6 +295,7 @@ fn each_refusal_names_what_the_approval_lacks() {
                 volume: &other_volume,
                 step: &cut(),
                 now: at(200_000),
+                handed: None,
             },
         ),
         mismatch("a Volume")
@@ -308,6 +310,7 @@ fn each_refusal_names_what_the_approval_lacks() {
                 volume: &volume(),
                 step: &cut(),
                 now: at(200_000),
+                handed: None,
             },
         ),
         mismatch("a Cluster")
@@ -470,6 +473,7 @@ fn a_browser_key_under_a_grant_of_every_family_cannot_sign_a_volume_approval() {
                 volume: &volume(),
                 step: &cut(),
                 now: at(200_000),
+                handed: None,
             },
         ),
         mismatch("the signer")
@@ -643,5 +647,171 @@ fn a_resize_approval_shows_the_volume_its_size_every_server_and_whether_a_copy_s
             .unwrap()
             .line(),
         r#"Approved: set data to 1.500000001GB on web-1, "web 2\u{1b}[2K", lowering any copy above it."#
+    );
+}
+
+fn handed(signed: &Signed<VolumeApproval>) -> HandoffReceipt {
+    HandoffReceipt {
+        cluster: cluster(),
+        operation: OperationId::parse(OPERATION).unwrap(),
+        approval: StepDigest::of(&signed.body),
+        volume: volume(),
+        from: a(),
+        to: b(),
+        at: SnapshotGuid::new(9),
+        snapshot: "f-2".parse().unwrap(),
+        from_epoch: WriterEpoch::new(1),
+        epoch: WriterEpoch::new(2),
+    }
+}
+
+#[test]
+fn a_receipt_for_this_move_and_machine_stands_in_for_the_window() {
+    let signed = Signed::sign(&approval(moving()), &signer()).unwrap();
+    let pull = VolumeStep::Copy(CopyTransition::MirrorToMirror);
+    let late = |machine: &MachineId, receipt: Option<&HandoffReceipt>| {
+        verify(
+            &signed,
+            &VolumeFacts {
+                cluster: Some(cluster()),
+                machine,
+                trusted: &trusted(),
+                volume: &volume(),
+                step: &pull,
+                now: at(5_000_000),
+                handed: receipt,
+            },
+        )
+        .map(|approved| approved.body.operation)
+    };
+    assert_eq!(late(&b(), None), Err(AuthorityRefusal::Expired));
+    let receipt = handed(&signed);
+    assert!(late(&b(), Some(&receipt)).is_ok());
+    let other = Signed::sign(&approval(moving()).clone(), &Signer::from_seed(&[8; 32])).unwrap();
+    for receipt in [
+        HandoffReceipt {
+            operation: OperationId::parse("1f8fad5bd9cb469fa16570867728950e").unwrap(),
+            ..handed(&signed)
+        },
+        HandoffReceipt {
+            approval: StepDigest::of(&format!("{} ", other.body)),
+            ..handed(&signed)
+        },
+        HandoffReceipt {
+            to: c(),
+            ..handed(&signed)
+        },
+    ] {
+        assert_eq!(late(&b(), Some(&receipt)), Err(AuthorityRefusal::Expired));
+    }
+}
+
+#[test]
+fn a_machine_statement_verifies_only_under_its_own_key_and_never_as_a_devices() {
+    let receipt = handed(&Signed::sign(&approval(moving()), &signer()).unwrap());
+    let cluster_key = Signer::from_seed(&[3; 32]);
+    let signed = MachineSigned::sign(&receipt, &cluster_key).unwrap();
+    assert_eq!(signed.verify(cluster_key.public()), Ok(receipt.clone()));
+    assert_eq!(
+        signed.verify(Signer::from_seed(&[4; 32]).public()),
+        Err(AuthorityRefusal::ForeignMachineKey {
+            kind: "volume-handoff"
+        })
+    );
+    let mut flipped = signed.clone();
+    flipped.signature[63] ^= 1;
+    assert_eq!(
+        flipped.verify(cluster_key.public()),
+        Err(AuthorityRefusal::BadMachineSignature {
+            kind: "volume-handoff"
+        })
+    );
+    let mut rewritten = signed.clone();
+    rewritten.body = rewritten.body.replace("\"epoch\":2", "\"epoch\":3");
+    assert_ne!(rewritten.body, signed.body);
+    assert_eq!(
+        rewritten.verify(cluster_key.public()),
+        Err(AuthorityRefusal::BadMachineSignature {
+            kind: "volume-handoff"
+        })
+    );
+    let device_input = crate::authority::keys::signing_input(Purpose::Volume, &signed.body);
+    let device_signature = {
+        use ed25519_dalek::Signer as _;
+        ed25519_dalek::SigningKey::from_bytes(&[3; 32])
+            .sign(&device_input)
+            .to_bytes()
+    };
+    let mut as_device = signed.clone();
+    as_device.signature = device_signature;
+    assert_eq!(
+        as_device.verify(cluster_key.public()),
+        Err(AuthorityRefusal::BadMachineSignature {
+            kind: "volume-handoff"
+        }),
+        "a signature over a Device statement's input is no Machine's"
+    );
+    assert_eq!(
+        serde_json::to_value(&signed)
+            .unwrap()
+            .get("key")
+            .cloned()
+            .unwrap(),
+        serde_json::json!({ "kind": "cluster", "key": cluster_key.public().to_string() })
+    );
+}
+
+#[test]
+fn a_receipt_names_the_snapshot_and_epoch_the_step_lands_on() {
+    let signed = Signed::sign(&approval(moving()), &signer()).unwrap();
+    let cluster_key = Signer::from_seed(&[3; 32]);
+    let receipt = MachineSigned::sign(&handed(&signed), &cluster_key).unwrap();
+    let check = |at: Handed<'_>| {
+        verify_receipt(
+            &receipt,
+            &HandoffFacts {
+                key: cluster_key.public(),
+                cluster: cluster(),
+                machine: &b(),
+                operation: OperationId::parse(OPERATION).unwrap(),
+                approval: StepDigest::of(&signed.body),
+                volume: &volume(),
+                at,
+            },
+        )
+        .map(|_| ())
+    };
+    let guid = SnapshotGuid::new(9);
+    let named: SnapshotName = "f-2".parse().unwrap();
+    let other: SnapshotName = "f-3".parse().unwrap();
+    assert_eq!(
+        check(Handed::Writer {
+            at: &guid,
+            epoch: WriterEpoch::new(2)
+        }),
+        Ok(())
+    );
+    assert_eq!(check(Handed::Pull { snapshot: &named }), Ok(()));
+    assert_eq!(
+        check(Handed::Writer {
+            at: &SnapshotGuid::new(8),
+            epoch: WriterEpoch::new(2)
+        }),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a snapshot"
+        })
+    );
+    assert_eq!(
+        check(Handed::Writer {
+            at: &guid,
+            epoch: WriterEpoch::new(3)
+        }),
+        Err(AuthorityRefusal::Mismatch { field: "an epoch" })
+    );
+    assert_eq!(
+        check(Handed::Pull { snapshot: &other }),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a snapshot"
+        })
     );
 }

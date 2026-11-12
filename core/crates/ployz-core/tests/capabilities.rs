@@ -24,7 +24,8 @@ use ployz_core::{
     SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
     SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
     UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_HANDOFF_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -166,6 +167,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
         (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
         (VOLUME_APPROVAL_CAPABILITY, "ployz.volume.approval.v1"),
+        (VOLUME_HANDOFF_CAPABILITY, "ployz.volume.copy.handoff.v1"),
         (
             RESTART_SESSION_GRANT_CAPABILITY,
             "ployz.restart.session-grant.v2",
@@ -260,6 +262,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.volume.copy.floor.v1",
             "ployz.volume.size.shrink.v1",
             "ployz.volume.approval.v1",
+            "ployz.volume.copy.handoff.v1",
         ]
     );
     assert_eq!(
@@ -472,6 +475,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.volume.size.set.v1",
         "gated: a caller checks the contract first and refuses the resize, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.volume.copy.handoff.v1",
+        "gated: Cloud asks a Move's source for its handoff only when it advertises the capability, and otherwise commits as before; an enforcing target that has it refuses that promotion, so the Move releases back to its source. An older target ignores the receipt and promotes as before",
     ),
     (
         "ployz.volume.approval.v1",
@@ -754,6 +761,7 @@ mod coverage {
                 "a Writer want with a start",
                 "a pull",
                 "a cut",
+                "a handoff",
                 "promote, forget",
                 "floor, snapshot",
             ],

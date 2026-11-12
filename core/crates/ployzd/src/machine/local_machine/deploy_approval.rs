@@ -241,7 +241,11 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::ApproveOnly { .. }
         | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::NoClusterIdentity
-        | AuthorityRefusal::ProofReplayed => {
+        | AuthorityRefusal::ProofReplayed
+        | AuthorityRefusal::Unreceipted
+        | AuthorityRefusal::ForeignMachineKey { .. }
+        | AuthorityRefusal::BadMachineSignature { .. }
+        | AuthorityRefusal::MalformedMachineStatement { .. } => {
             return format!("This server can't check the deploy's approval: {refusal}.");
         }
     };

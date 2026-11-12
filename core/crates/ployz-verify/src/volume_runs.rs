@@ -628,6 +628,19 @@ struct Broken {
     /// A Machine admits a step of an operation it ended. Only [`admission::MoveAdmission`]
     /// reads it.
     admits_ended: bool,
+    /// A Move's source records no decision: its handoff signs a receipt and leaves the Move
+    /// open, and its resume ends the Move whatever it handed off. Only
+    /// [`admission::MoveAdmission`] reads it.
+    no_decision: bool,
+    /// A Move's target promotes with no receipt, or one it never checked. Only
+    /// [`admission::MoveAdmission`] reads it.
+    promote_unreceipted: bool,
+    /// A Move's source answers a handoff with its receipt before it syncs the decision.
+    /// Only [`admission::MoveAdmission`] reads it.
+    receipt_before_sync: bool,
+    /// A Move's target checks its receipt against the cut's snapshot the receipt names,
+    /// not the snapshot it promotes at. Only [`admission::MoveAdmission`] reads it.
+    receipt_any_snapshot: bool,
 }
 
 /// One bounded slice of the runs. Each is checked whole; together they cover the resize
@@ -836,7 +849,7 @@ fn refusal(reason: CopyRefusal) -> Refusal {
         CopyRefusal::NoTransition => Refusal::NoTransition,
         CopyRefusal::Behind => Refusal::Behind,
         CopyRefusal::NoCapacity => Refusal::NoCapacity,
-        CopyRefusal::Written | CopyRefusal::NoSource => Refusal::Other,
+        CopyRefusal::Written | CopyRefusal::NoSource | CopyRefusal::HandedOff => Refusal::Other,
     }
 }
 
@@ -3019,43 +3032,53 @@ mod removal {
     }
 }
 
-/// Each Machine's admission of one approved Move, against its window and its own record.
+/// Each Machine's admission of one approved Move, against its window, its own record and
+/// the source's decision.
 ///
 /// A Move of a Volume from A to B under one Device approval, op 1. A and B each hold
 /// their own [`ployz_decide::volume_records::VolumeRecords`], and the model calls the real
-/// `admit`, `cut`, `resume`, `stopped_by_cut` and `live` on them, as `admit_operator_copy`,
-/// `record_cut` and `admit_operator_volume_start` in ployzd's `volume_approval.rs` do. The
-/// window passes at any moment. A hostile driver sends any of the Move's steps to either
-/// Machine, in any order, any number of times:
+/// `admit`, `cut`, `resume`, `handoff`, `promote`, `stopped_by_cut` and `live` on them, and
+/// the real `MachineSigned::sign` and `verify_receipt` on the receipt, as `admitted`,
+/// `record_cut`, `hand_off`, `checked_receipt` and `admit_operator_volume_start` in
+/// ployzd's `volume_approval.rs` do. The window passes at any moment. A hostile driver
+/// sends any of the Move's steps to either Machine, in any order, any number of times, and
+/// replays the receipt it has seen, or one signed under another key:
 ///
 /// - on A: a warm snapshot, which grants B what A leaves newest; the cut, which records the
 ///   Container it stops and grants B its snapshot; the resume, which starts a Container
-///   by a Kept start, the cut's own or one Cloud planted, and ends the Move on A;
-/// - on B: a pull of A's newest snapshot, which lands only if A's send stream serves B; the
-///   promotion, after a pull of the cut's snapshot.
+///   by a Kept start, the cut's own or one Cloud planted, records `Resumed` and ends the
+///   Move on A; the handoff, which records `Handed` at A's newest snapshot, ends the Move
+///   on A and answers with the receipt;
+/// - on B: a pull of A's newest snapshot, with or without a receipt, which lands only if
+///   A's send stream serves B; the promotion at the newest snapshot B pulled, with no
+///   receipt, the receipt, or the foreign one.
 ///
-/// A Machine with no record admits a first step only inside the window. A Machine with
-/// an open record admits every later step its graph permits, at any time. An ended record
-/// admits only a resend of the resume.
+/// A Machine with no record admits a first step only inside the window, or later on a
+/// receipt that names it and this Move. A Machine with an open record admits every later
+/// step its graph permits, at any time. An ended record admits only a resend of the step
+/// that ended it. Each record is synced before the step's reply leaves, and A's daemon may
+/// restart at any moment, reloading what it synced.
 ///
-/// Bounds: one Move, two warm snapshots, one planted Container. Out of scope: the
-/// receipt (E5, so a hostile driver can still resume A and promote B), the payload digest
-/// of B's start (unit tests), a second Move, Mirrors that follow it, and withdrawals
-/// ([`removal::MirrorRemoval`]).
+/// Bounds: one Move, two warm snapshots, one planted Container. Out of scope: the payload
+/// digest of B's start (unit tests), a second Move and a receipt replayed across Moves
+/// (`ployzd` tests and live lane 5), Mirrors that follow it, and withdrawals
+/// ([`removal::MirrorRemoval`]). The scenarios of [`VolumeRuns`] still drive Cloud's own
+/// runs, which this driver's any-step-any-order covers at each Machine's door.
 mod admission {
     use std::hash::{Hash, Hasher};
 
     use ployz_core::{
-        ContainerId, CopyTransition, DockerVolumeName, MachineId, OperationId, SnapshotName,
+        ContainerId, CopyTransition, DockerVolumeName, MachineId, OperationId, SealingPublicKey,
+        SnapshotGuid, SnapshotName, WriterEpoch,
         authority::{
-            ApprovedService, AuthorityRefusal, PayloadDigest, StepDigest, VolumeStep,
-            VolumeWorkflow,
+            ApprovedService, AuthorityRefusal, Handed, HandoffFacts, HandoffReceipt, MachineSigned,
+            PayloadDigest, Signer, StepDigest, VolumeStep, VolumeWorkflow, volume::verify_receipt,
         },
     };
-    use ployz_decide::volume_records::VolumeRecords;
+    use ployz_decide::volume_records::{Decision, GrantScope, VolumeRecords};
     use stateright::{Model, Property};
 
-    use super::Broken;
+    use super::{Broken, MOVE_EPOCH, OLD_EPOCH};
 
     const WARM: u8 = 2;
 
@@ -3069,6 +3092,14 @@ mod admission {
         }
     }
 
+    impl Records {
+        /// What a restarted daemon reads back from the file this was synced to.
+        fn reloaded(&self) -> Self {
+            let file = serde_json::to_string(&self.0).expect("records serialize");
+            Self(serde_json::from_str(&file).expect("records read back"))
+        }
+    }
+
     #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
     enum Holder {
         /// The Service's Container on A, which the cut stops.
@@ -3077,35 +3108,59 @@ mod admission {
         Planted,
     }
 
+    /// The receipt a step to B carries.
+    #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+    enum Carried {
+        None,
+        /// The receipt A answered a handoff with, once the driver has seen one.
+        Seen,
+        /// A receipt for this Move signed under a key that is not the Cluster's.
+        Foreign,
+    }
+
     #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
     enum Step {
         Snapshot,
         Cut,
         Resume(Holder),
-        Pull,
-        Promote,
+        Handoff,
+        Pull(Carried),
+        Promote(Carried),
     }
 
     impl Step {
-        const ALL: [Self; 6] = [
+        const ALL: [Self; 11] = [
             Self::Snapshot,
             Self::Cut,
             Self::Resume(Holder::Service),
             Self::Resume(Holder::Planted),
-            Self::Pull,
-            Self::Promote,
+            Self::Handoff,
+            Self::Pull(Carried::None),
+            Self::Pull(Carried::Seen),
+            Self::Pull(Carried::Foreign),
+            Self::Promote(Carried::None),
+            Self::Promote(Carried::Seen),
+            Self::Promote(Carried::Foreign),
         ];
     }
 
     #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
     enum Action {
         Expire,
+        /// A's daemon restarts and reads back what it synced.
+        RestartA,
         Send(Step),
     }
 
     #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+    #[expect(
+        clippy::struct_excessive_bools,
+        reason = "each flag records one thing a property reads"
+    )]
     struct State {
         a: Records,
+        /// What A last synced, which a restart reads back.
+        a_synced: Records,
         b: Records,
         expired: bool,
         /// A's newest snapshot: a warm round's number, or the cut's.
@@ -3116,15 +3171,33 @@ mod admission {
         service_running: bool,
         planted_ran: bool,
         cut: bool,
+        /// A became the Writer again under the Move.
         resumed: bool,
-        promoted: bool,
-        /// A Machine admitted a first step after the window.
+        /// The snapshot B became the Writer at.
+        promoted: Option<Snap>,
+        /// The snapshot the receipt the driver has seen hands B.
+        receipt: Option<Snap>,
+        /// A Machine admitted a first step after the window with no receipt.
         late_first: bool,
+        /// B admitted its first step after the window on A's receipt.
+        late_on_receipt: bool,
         /// A snapshot or a cut ran on A after A's resume ended the Move there.
         after_end: bool,
         /// B pulled a snapshot A took after its resume.
         pulled_after_end: bool,
         refused_expired: bool,
+        /// A's decision changed after it was first recorded.
+        second_decision: bool,
+        /// A refused a resume after it handed the Volume off.
+        refused_resume: bool,
+        /// B refused a promotion that carried no receipt, or the foreign one.
+        refused_unreceipted: bool,
+    }
+
+    impl State {
+        fn writers(&self) -> usize {
+            usize::from(!self.cut || self.resumed) + usize::from(self.promoted.is_some())
+        }
     }
 
     #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -3142,6 +3215,13 @@ mod admission {
             .parse()
             .expect("a run snapshot name")
         }
+
+        fn guid(self) -> SnapshotGuid {
+            SnapshotGuid::new(match self {
+                Self::Warm(round) => u64::from(round) + 1,
+                Self::Cut => 9,
+            })
+        }
     }
 
     struct MoveAdmission {
@@ -3153,6 +3233,11 @@ mod admission {
         digest: StepDigest,
         service: ContainerId,
         planted: ContainerId,
+        cluster: SealingPublicKey,
+        /// The Cluster's receipt key, which every Machine derives from its Sealing Key.
+        receipts: Signer,
+        /// A key outside the Cluster, a Device's, that signs the foreign receipt.
+        foreign: Signer,
     }
 
     impl MoveAdmission {
@@ -3168,6 +3253,9 @@ mod admission {
                 digest: StepDigest::of("op 1"),
                 service: container('c'),
                 planted: container('d'),
+                cluster: SealingPublicKey::from_bytes([9; 32]),
+                receipts: Signer::from_seed(&[7; 32]),
+                foreign: Signer::from_seed(&[8; 32]),
             }
         }
 
@@ -3184,10 +3272,73 @@ mod admission {
             }
         }
 
-        /// `admit_volume_step` on `machine`: its record decides, and with none the
-        /// approval's check, which refuses once the window has passed.
-        fn admit(&self, state: &mut State, machine: &MachineId, step: &VolumeStep) -> bool {
-            let expired = state.expired && !self.broken.admits_expired;
+        /// `receipt_of` on A: the receipt for a handoff at `at`.
+        fn receipt(&self, at: Snap, signer: &Signer) -> MachineSigned<HandoffReceipt> {
+            let receipt = HandoffReceipt {
+                cluster: self.cluster,
+                operation: self.operation,
+                approval: self.digest,
+                volume: self.volume.clone(),
+                from: self.a,
+                to: self.b,
+                at: at.guid(),
+                snapshot: at.name(),
+                from_epoch: WriterEpoch::new(OLD_EPOCH),
+                epoch: WriterEpoch::new(MOVE_EPOCH),
+            };
+            MachineSigned::sign(&receipt, signer).expect("a receipt signs")
+        }
+
+        /// `checked_receipt` on B: the receipt a step carries, checked against the snapshot it
+        /// lands on. `None` when it carries none or the driver has none to carry.
+        fn checked(
+            &self,
+            state: &State,
+            carried: Carried,
+            lands: Handed<'_>,
+        ) -> Option<Result<HandoffReceipt, AuthorityRefusal>> {
+            let envelope = match carried {
+                Carried::None => return None,
+                Carried::Seen => self.receipt(state.receipt?, &self.receipts),
+                Carried::Foreign => self.receipt(Snap::Cut, &self.foreign),
+            };
+            let cut = Snap::Cut.guid();
+            let lands = match lands {
+                Handed::Writer { epoch, .. } if self.broken.receipt_any_snapshot => {
+                    Handed::Writer { at: &cut, epoch }
+                }
+                lands @ (Handed::Writer { .. } | Handed::Pull { .. }) => lands,
+            };
+            Some(verify_receipt(
+                &envelope,
+                &HandoffFacts {
+                    key: self.receipts.public(),
+                    cluster: self.cluster,
+                    machine: &self.b,
+                    operation: self.operation,
+                    approval: self.digest,
+                    volume: &self.volume,
+                    at: lands,
+                },
+            ))
+        }
+
+        /// `admit_handed_step` on `machine`: its record decides, and with none the
+        /// approval's check, which refuses once the window has passed unless `handed`, a
+        /// receipt `machine` checked, names this Move and it.
+        fn admit(
+            &self,
+            state: &mut State,
+            machine: &MachineId,
+            step: &VolumeStep,
+            handed: Option<&HandoffReceipt>,
+        ) -> bool {
+            let on_receipt = handed.is_some_and(|receipt| {
+                receipt.operation == self.operation
+                    && receipt.approval == self.digest
+                    && receipt.to == *machine
+            });
+            let expired = state.expired && !self.broken.admits_expired && !on_receipt;
             let records = if *machine == self.a {
                 &mut state.a
             } else {
@@ -3214,7 +3365,11 @@ mod admission {
                     )
                     .is_ok();
             if admitted && new && state.expired {
-                state.late_first = true;
+                if on_receipt {
+                    state.late_on_receipt = true;
+                } else {
+                    state.late_first = true;
+                }
             }
             if !admitted && new && state.expired {
                 state.refused_expired = true;
@@ -3225,6 +3380,139 @@ mod admission {
         fn serves(&self, state: &State, snap: Snap) -> bool {
             state.a.0.live(&self.volume, &self.b, Some(&snap.name()))
         }
+
+        /// A's handoff at its newest snapshot. Returns `false` when A refuses.
+        fn hand_off(&self, state: &mut State) -> bool {
+            let Some(newest) = state.newest else {
+                return false;
+            };
+            if !state.cut
+                || state.resumed
+                || !self.admit(state, &self.a, &VolumeStep::Handoff, None)
+            {
+                return false;
+            }
+            // With no decision, A checks the handoff on a copy and records nothing.
+            let mut records = state.a.0.clone();
+            let handed = records.handoff(
+                self.operation,
+                &self.a,
+                self.b,
+                (newest.guid(), &newest.name()),
+                WriterEpoch::new(MOVE_EPOCH),
+            );
+            if handed.is_err() {
+                return false;
+            }
+            if !self.broken.no_decision {
+                state.a.0 = records;
+            }
+            state.receipt = Some(newest);
+            true
+        }
+
+        /// A's resume of `holder` by a Kept start. Returns `false` when A refuses.
+        fn resume(&self, state: &mut State, holder: Holder) -> bool {
+            let container = match holder {
+                Holder::Service => self.service,
+                Holder::Planted => self.planted,
+            };
+            let handed = matches!(
+                state.a.0.decision(self.operation),
+                Some(Decision::Handed(_))
+            );
+            let admitted = self.admit(state, &self.a, &VolumeStep::Start, None)
+                && state.a.0.stopped_by_cut(self.operation, &container)
+                && self.admit(
+                    state,
+                    &self.a,
+                    &VolumeStep::Copy(CopyTransition::MirrorToWriter),
+                    None,
+                );
+            let resumed = admitted
+                && if self.broken.no_decision {
+                    state.a.0.end(self.operation);
+                    true
+                } else {
+                    state.a.0.resume(self.operation).is_ok()
+                };
+            if !resumed {
+                state.refused_resume |= handed;
+                return false;
+            }
+            state.resumed = true;
+            match holder {
+                Holder::Service => state.service_running = true,
+                Holder::Planted => state.planted_ran = true,
+            }
+            true
+        }
+
+        /// B's promotion at the newest snapshot it pulled. Returns `false` when B refuses.
+        fn promote(&self, state: &mut State, carried: Carried) -> bool {
+            let Some(at) = state.pulled else {
+                return false;
+            };
+            let step = VolumeStep::Copy(CopyTransition::MirrorToWriter);
+            if self.broken.promote_unreceipted {
+                if !self.admit(state, &self.b, &step, None) {
+                    return false;
+                }
+                state.promoted = Some(at);
+                return true;
+            }
+            let epoch = WriterEpoch::new(MOVE_EPOCH);
+            let guid = at.guid();
+            let checked = self.checked(state, carried, Handed::Writer { at: &guid, epoch });
+            let Some(Ok(handed)) = checked else {
+                state.refused_unreceipted |= matches!(carried, Carried::None | Carried::Foreign);
+                return false;
+            };
+            if !self.admit(state, &self.b, &step, Some(&handed)) {
+                return false;
+            }
+            let envelope = self.receipt(state.receipt.expect("checked above"), &self.receipts);
+            if state
+                .b
+                .0
+                .promote(self.operation, &self.b, (guid, epoch), envelope)
+                .is_err()
+            {
+                return false;
+            }
+            state.promoted = Some(at);
+            true
+        }
+
+        /// B's pull of A's newest snapshot. Returns `false` when B refuses or A's stream
+        /// does not serve it.
+        fn pull(&self, state: &mut State, carried: Carried) -> bool {
+            let Some(newest) = state.newest else {
+                return false;
+            };
+            if state.pulled == Some(newest) || state.promoted.is_some() {
+                return false;
+            }
+            let name = newest.name();
+            let handed = match self.checked(state, carried, Handed::Pull { snapshot: &name }) {
+                None => None,
+                Some(Ok(handed)) => Some(handed),
+                Some(Err(_)) => return false,
+            };
+            if !self.admit(
+                state,
+                &self.b,
+                &VolumeStep::Copy(CopyTransition::MirrorToMirror),
+                handed.as_ref(),
+            ) || !self.serves(state, newest)
+            {
+                return false;
+            }
+            state.pulled_after_end |=
+                state.resumed && matches!(newest, Snap::Warm(_)) && state.after_end;
+            state.pulled = Some(newest);
+            true
+        }
     }
 
     impl Model for MoveAdmission {
@@ -3232,9 +3520,11 @@ mod admission {
         type Action = Action;
 
         fn init_states(&self) -> Vec<State> {
+            let empty = Records(VolumeRecords::default());
             vec![State {
-                a: Records(VolumeRecords::default()),
-                b: Records(VolumeRecords::default()),
+                a: empty.clone(),
+                a_synced: empty.clone(),
+                b: empty,
                 expired: false,
                 newest: None,
                 warm: 0,
@@ -3243,11 +3533,16 @@ mod admission {
                 planted_ran: false,
                 cut: false,
                 resumed: false,
-                promoted: false,
+                promoted: None,
+                receipt: None,
                 late_first: false,
+                late_on_receipt: false,
                 after_end: false,
                 pulled_after_end: false,
                 refused_expired: false,
+                second_decision: false,
+                refused_resume: false,
+                refused_unreceipted: false,
             }]
         }
 
@@ -3255,109 +3550,95 @@ mod admission {
             if !state.expired {
                 actions.push(Action::Expire);
             }
+            if state.a != state.a_synced {
+                actions.push(Action::RestartA);
+            }
             actions.extend(Step::ALL.map(Action::Send));
         }
 
         fn next_state(&self, last: &State, action: Action) -> Option<State> {
-            use CopyTransition::{
-                MirrorToMirror, MirrorToWriter, WriterToMirror, WriterToSnapshot,
-            };
+            use CopyTransition::{WriterToMirror, WriterToSnapshot};
             let mut next = last.clone();
-            let (a, b) = (self.a, self.b);
+            let a = self.a;
             match action {
                 Action::Expire => next.expired = true,
+                Action::RestartA => next.a = next.a_synced.reloaded(),
                 Action::Send(Step::Snapshot) => {
                     if next.cut || next.warm == WARM {
                         return None;
                     }
-                    if !self.admit(&mut next, &a, &VolumeStep::Copy(WriterToSnapshot)) {
-                        return (next != *last).then_some(next);
+                    if self.admit(&mut next, &a, &VolumeStep::Copy(WriterToSnapshot), None) {
+                        next.after_end |= next.resumed;
+                        let snap = Snap::Warm(next.warm);
+                        next.warm += 1;
+                        next.newest = Some(snap);
+                        let _ = next.a.0.grant(
+                            self.operation,
+                            self.b,
+                            GrantScope::Snapshots(vec![snap.name()]),
+                        );
                     }
-                    next.after_end |= next.resumed;
-                    let snap = Snap::Warm(next.warm);
-                    next.warm += 1;
-                    next.newest = Some(snap);
-                    let _ = next.a.0.grant(
-                        self.operation,
-                        b,
-                        ployz_decide::volume_records::GrantScope::Snapshots(vec![snap.name()]),
-                    );
                 }
                 Action::Send(Step::Cut) => {
                     if next.cut && !next.resumed {
                         return None;
                     }
-                    if !self.admit(&mut next, &a, &VolumeStep::Copy(WriterToMirror)) {
-                        return (next != *last).then_some(next);
+                    if self.admit(&mut next, &a, &VolumeStep::Copy(WriterToMirror), None) {
+                        next.after_end |= next.resumed;
+                        let running: Vec<ContainerId> = next
+                            .service_running
+                            .then_some(self.service)
+                            .into_iter()
+                            .collect();
+                        let cut = next.a.0.cut(
+                            self.operation,
+                            &a,
+                            &Snap::Cut.name(),
+                            WriterEpoch::new(OLD_EPOCH),
+                            &running,
+                        );
+                        if cut.is_ok() {
+                            next.service_running = false;
+                            next.cut = true;
+                            next.newest = Some(Snap::Cut);
+                        }
                     }
-                    next.after_end |= next.resumed;
-                    let running: Vec<ContainerId> = next
-                        .service_running
-                        .then_some(self.service)
-                        .into_iter()
-                        .collect();
-                    if next
-                        .a
-                        .0
-                        .cut(self.operation, &a, &Snap::Cut.name(), &running)
-                        .is_err()
-                    {
-                        return (next != *last).then_some(next);
-                    }
-                    next.service_running = false;
-                    next.cut = true;
-                    next.newest = Some(Snap::Cut);
                 }
                 Action::Send(Step::Resume(holder)) => {
-                    if !next.cut || next.promoted {
+                    if !next.cut {
                         return None;
                     }
-                    let container = match holder {
-                        Holder::Service => self.service,
-                        Holder::Planted => self.planted,
-                    };
-                    if !self.admit(&mut next, &a, &VolumeStep::Start)
-                        || !next.a.0.stopped_by_cut(self.operation, &container)
-                        || !self.admit(&mut next, &a, &VolumeStep::Copy(MirrorToWriter))
-                    {
-                        return (next != *last).then_some(next);
-                    }
-                    next.a.0.resume(self.operation);
-                    next.resumed = true;
-                    match holder {
-                        Holder::Service => next.service_running = true,
-                        Holder::Planted => next.planted_ran = true,
-                    }
+                    self.resume(&mut next, holder);
                 }
-                Action::Send(Step::Pull) => {
-                    let newest = next.newest?;
-                    if next.pulled == Some(newest) {
-                        return None;
-                    }
-                    if !self.admit(&mut next, &b, &VolumeStep::Copy(MirrorToMirror)) {
-                        return (next != *last).then_some(next);
-                    }
-                    if self.serves(&next, newest) {
-                        next.pulled_after_end |=
-                            next.resumed && matches!(newest, Snap::Warm(_)) && next.after_end;
-                        next.pulled = Some(newest);
-                    }
+                Action::Send(Step::Handoff) => {
+                    self.hand_off(&mut next);
                 }
-                Action::Send(Step::Promote) => {
-                    if next.pulled != Some(Snap::Cut) || next.promoted {
-                        return None;
-                    }
-                    if !self.admit(&mut next, &b, &VolumeStep::Copy(MirrorToWriter)) {
-                        return (next != *last).then_some(next);
-                    }
-                    next.promoted = true;
+                Action::Send(Step::Pull(carried)) => {
+                    self.pull(&mut next, carried);
+                }
+                Action::Send(Step::Promote(carried)) => {
+                    self.promote(&mut next, carried);
                 }
             }
+            // A syncs each change to its records before the step replies; a broken handoff
+            // replies first, and a restart before A's next write loses its decision.
+            let unsynced = self.broken.receipt_before_sync && action == Action::Send(Step::Handoff);
+            if next.a != last.a && !unsynced {
+                next.a_synced = next.a.clone();
+            }
+            let decided = last.a.0.decision(self.operation);
+            next.second_decision |=
+                decided.is_some() && next.a.0.decision(self.operation) != decided;
             (next != *last).then_some(next)
         }
 
         fn properties(&self) -> Vec<Property<Self>> {
             vec![
+                Property::always(ONE_WRITER, |_, state: &State| state.writers() <= 1),
+                Property::always(ONE_DECISION, |_, state: &State| !state.second_decision),
+                Property::always(PROMOTES_AT_CUT, |_, state: &State| {
+                    state.promoted.is_none_or(|at| at == Snap::Cut)
+                }),
                 Property::always(NO_LATE_FIRST_STEP, |_, state: &State| !state.late_first),
                 Property::always(NOTHING_AFTER_THE_END, |_, state: &State| {
                     !state.after_end && !state.pulled_after_end
@@ -3368,11 +3649,23 @@ mod admission {
                 ),
                 Property::sometimes(
                     "a Move admitted inside its window promotes B after the window",
-                    |_, state: &State| state.promoted && state.expired && state.cut,
+                    |_, state: &State| state.promoted.is_some() && state.expired && state.cut,
+                ),
+                Property::sometimes(
+                    "B, which saw nothing of the Move inside its window, promotes on A's receipt",
+                    |_, state: &State| state.late_on_receipt && state.promoted.is_some(),
                 ),
                 Property::sometimes("A resumes after the window", |_, state: &State| {
                     state.resumed && state.expired
                 }),
+                Property::sometimes(
+                    "A refuses a resume after its handoff",
+                    |_, state: &State| state.refused_resume,
+                ),
+                Property::sometimes(
+                    "B refuses a promotion with no receipt or a foreign one",
+                    |_, state: &State| state.refused_unreceipted,
+                ),
                 Property::sometimes(
                     "a first step after the window is refused Expired",
                     |_, state: &State| state.refused_expired,
@@ -3381,8 +3674,11 @@ mod admission {
         }
     }
 
+    const ONE_WRITER: &str = "A and B are never both the Writer";
+    const ONE_DECISION: &str = "A's decision never changes once recorded";
+    const PROMOTES_AT_CUT: &str = "B becomes the Writer only at the cut's snapshot";
     const NO_LATE_FIRST_STEP: &str =
-        "no Machine admits its first step of the Move after the window";
+        "no Machine admits its first step of the Move after the window without A's receipt";
     const NOTHING_AFTER_THE_END: &str =
         "once A resumed, A takes no snapshot or cut under the Move, and B pulls nothing new";
 
@@ -3393,12 +3689,17 @@ mod admission {
 
         #[test]
         fn move_admission_holds() {
+            let started = std::time::Instant::now();
             let checker = MoveAdmission::new(Broken::default())
                 .checker()
                 .threads(4)
                 .spawn_bfs()
                 .join();
-            println!("MoveAdmission: {} states", checker.unique_state_count());
+            println!(
+                "MoveAdmission: {} states in {:?}",
+                checker.unique_state_count(),
+                started.elapsed()
+            );
             checker.assert_properties();
         }
 
@@ -3431,6 +3732,50 @@ mod admission {
                     ..Broken::default()
                 },
                 NOTHING_AFTER_THE_END,
+            );
+        }
+
+        #[test]
+        fn a_source_records_its_decision() {
+            breaks(
+                Broken {
+                    no_decision: true,
+                    ..Broken::default()
+                },
+                ONE_WRITER,
+            );
+        }
+
+        #[test]
+        fn a_target_promotes_only_on_a_receipt() {
+            breaks(
+                Broken {
+                    promote_unreceipted: true,
+                    ..Broken::default()
+                },
+                ONE_WRITER,
+            );
+        }
+
+        #[test]
+        fn a_receipt_leaves_only_after_its_decision_is_synced() {
+            breaks(
+                Broken {
+                    receipt_before_sync: true,
+                    ..Broken::default()
+                },
+                ONE_WRITER,
+            );
+        }
+
+        #[test]
+        fn a_receipt_promotes_only_at_its_snapshot() {
+            breaks(
+                Broken {
+                    receipt_any_snapshot: true,
+                    ..Broken::default()
+                },
+                PROMOTES_AT_CUT,
             );
         }
     }

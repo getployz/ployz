@@ -1,4 +1,4 @@
-import type { ContainerId, ExpectedCopy, MachineId, Signed, SlotRole, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
+import type { ContainerId, ExpectedCopy, MachineId, MachineSigned, Signed, SlotRole, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
@@ -15,7 +15,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN } from "#/modules/volume-run/plan";
+import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, restoreLine, ROLE_NOUN } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -23,6 +23,7 @@ import {
   closeStaleVolumeRuns,
   closeVolumeRun,
   commitAndStart,
+  commitMove,
   type CopyAnswer,
   copyImage,
   DRAIN_MS,
@@ -32,6 +33,7 @@ import {
   failRun,
   findHolder,
   findKept,
+  handedTo,
   inspectCopy,
   offerRunApproval,
   laneTarget,
@@ -97,7 +99,10 @@ export async function runVolume(
 
   if (request.took !== undefined) await step.run("01-fence", () => runEffect(fenceTaken(run, runId)));
   const steps: RunSteps = { step, runEffect, run, runId, attempt };
-  if (run.kind === "release" && run.phase === "committed" && run.current !== null) return finishRelease(steps, run.current, run.args.plan);
+  // An approved Move's commitment goes forward on its source's receipt. One with none goes back to the source, which
+  // resumes or answers with the receipt it signed: the row alone never decides which side the Move ends on.
+  const forward = run.kind === "release" && (run.receipt != null || run.args.approval === undefined);
+  if (forward && run.phase === "committed" && run.current !== null) return finishRelease(steps, run.current, run.args.plan, run.receipt ?? undefined);
   if (run.kind === "release" && run.args.plan?.forward !== undefined) {
     return fail(steps, "01-changed", releaseChangedMessage(run.volumeName));
   }
@@ -630,6 +635,21 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
         + `Run ployz volume release ${run.volumeName} again`,
     );
     if (plan !== undefined && !plan.sources.includes(A.id)) throw changed();
+    const resumeA = (id: string) => setCopy(steps, id, A, expectOf(cut), {
+      kind: "writer",
+      at: at.guid,
+      epoch,
+      start: { kind: "kept", container_id: source.containerId },
+    }, `${A.name} is still starting ${run.volumeName}'s Service`, approval);
+    // A source that signs handoffs decides first, whatever B runs: it resumes, or refuses with the receipt it signed and
+    // the Move goes forward. The floors above keep a late start of the run this ends from reaching B meanwhile. A
+    // release with no approval asks too, so it fails at A before it forgets the copy a handoff left the only writer.
+    const asksFirst = owner.handoff === true && owner.enforces === true;
+    if (asksFirst) {
+      const decided = await resumeA("04-source");
+      if (!decided.ok && decided.reason === "handed_off" && decided.receipt !== undefined) throw new HandedOff(decided.receipt);
+      if (!decided.ok) throw new NonRetriableError(decided.message);
+    }
     const doomed: Array<{ machine: MachineRef; expect: ExpectedCopy }> = [];
     for (const { machine } of from.slots.filter((slot) => slot !== owner)) {
       const now = await steps.step.run(`04-inspect-${machine.name}`, () => steps.runEffect(inspectCopy(run, steps.runId, machine)));
@@ -645,17 +665,39 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     for (const { machine, expect } of doomed) {
       await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
     }
-    await mustSet(steps, "05-resume", A, expectOf(cut), {
-      kind: "writer",
-      at: at.guid,
-      epoch,
-      start: { kind: "kept", container_id: source.containerId },
-    }, `${A.name} is still starting ${run.volumeName}'s Service`, approval);
+    if (!asksFirst) {
+      const resumed = await resumeA("05-resume");
+      if (!resumed.ok) throw new NonRetriableError(resumed.message);
+    }
     await finish(steps, "06-finish");
     return { runId: run.id, released: A.name };
   } catch (error) {
+    if (error instanceof HandedOff) return handOn(steps, error.receipt);
     return stopped(steps, "06-failed", error instanceof Error ? error : new Error(String(error)));
   }
+}
+
+/** A source's answer that it already handed the Volume off, with the receipt it signed. */
+class HandedOff extends Error {
+  constructor(readonly receipt: MachineSigned) {
+    super("the source handed the Volume off");
+  }
+}
+
+/**
+ * A release that went back to a source which had already handed the Volume off: it records the commitment the
+ * source's receipt names, then finishes the Move forward there, as a release of a committed Move does.
+ */
+async function handOn(steps: RunSteps, receipt: MachineSigned) {
+  const { step, runEffect, run, runId } = steps;
+  const handed = handedTo(receipt);
+  if (handed === null) return fail(steps, "07-unreadable", `${run.volumeName}'s source handed it off under a receipt Ployz Cloud can't read`);
+  const committed = await step.run("07-handed", () => runEffect(commitMove(run, runId, handed.to, receipt)));
+  if (!committed) return fail(steps, "07-taken", `a newer run took ${run.volumeName} before it finished on its new Server`);
+  await step.run("07-note", () => runEffect(noteRun(run, runId, `${run.volumeName}'s source handed it off; finishing on its new Server`)));
+  // A release that asks the source was planned from the copies, back to it. The receipt overrules that plan: the Move
+  // it finishes was approved.
+  return finishRelease(steps, handed.to, undefined, receipt, "fw-");
 }
 
 const FORWARD_WAITS = waitsFor(15 * 60);
@@ -665,47 +707,58 @@ const FORWARD_WAITS = waitsFor(15 * 60);
  * waits for every Server to answer, since starting a slot B reads A's stopped Container, and fails once the waits run
  * out, leaving the commitment for the next release.
  */
-async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleasePlan | undefined) {
+async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleasePlan | undefined, receipt?: MachineSigned, prefix = "") {
   const { step, runEffect, run, runId } = steps;
+  const id = (name: string) => `${prefix}${name}`;
+  // B becomes the writer at the epoch its source's receipt names, which it checks.
+  const handed = receipt === undefined ? null : handedTo(receipt);
   for (let check = 0; ; check += 1) {
-    const members = await step.run(check === 0 ? "01-observe" : `01-observe-${check}`, () => runEffect(observeReachable(run, runId)));
+    const members = await step.run(id(check === 0 ? "01-observe" : `01-observe-${check}`), () => runEffect(observeReachable(run, runId)));
     const to = members?.find((member) => member.machine.id === current)?.machine
-      ?? { id: current, name: (await step.run(check === 0 ? "02-target" : `02-target-${check}`, () => runEffect(laneTarget(run)))) ?? current };
+      ?? { id: current, name: (await step.run(id(check === 0 ? "02-target" : `02-target-${check}`), () => runEffect(laneTarget(run)))) ?? current };
     const forward = members === null ? null : planForwardRelease(run.volumeName, to, members);
-    if (forward?.kind === "blocked") return fail(steps, "02-failed", forward.message);
+    if (forward?.kind === "blocked") return fail(steps, id("02-failed"), forward.message);
     if (members === null || forward === null || forward.kind === "waiting") {
       const silent = forward?.kind === "waiting" ? forward.servers.map((machine) => machine.name).join(" and ") : "the Servers";
       const wait = FORWARD_WAITS[check];
       if (wait === undefined) {
-        return fail(steps, "02-unanswered", `${silent} did not answer for 15m; ${run.volumeName} still finishes on ${to.name}; ployz volume release ${run.volumeName} tries again`);
+        // After a handoff the source never takes the Volume back, so with B gone it has no writer until B returns or a
+        // Restore from the source's copy.
+        const gone = handed !== null && forward?.kind === "waiting" && forward.servers.some((machine) => machine.id === current);
+        const source = members?.find((member) => member.machine.id === handed?.from)?.machine.name;
+        const restore = gone ? restoreLine(run.volumeName, source) : "";
+        return fail(steps, id("02-unanswered"), `${silent} did not answer for 15m; ${run.volumeName} still finishes on ${to.name}; ployz volume release ${run.volumeName} tries again${restore}`);
       }
-      await step.run(`01-note-${check}`, () => runEffect(noteRun(run, runId, `waiting for ${silent} to answer (check ${check + 1} of ${FORWARD_WAITS.length})`)));
-      await step.sleep(`01-wait-${check}`, `${wait}s`);
+      await step.run(id(`01-note-${check}`), () => runEffect(noteRun(run, runId, `waiting for ${silent} to answer (check ${check + 1} of ${FORWARD_WAITS.length})`)));
+      await step.sleep(id(`01-wait-${check}`), `${wait}s`);
       continue;
     }
     const removeOn = forward.removeOn.map((machine) => machine.id);
     const pinned = plan?.forward;
-    if (plan !== undefined && (pinned?.to !== current || pinned.removeOn.length !== removeOn.length || removeOn.some((id) => !pinned.removeOn.includes(id)))) {
-      return fail(steps, "02-failed", releaseChangedMessage(run.volumeName));
+    if (plan !== undefined && (pinned?.to !== current || pinned.removeOn.length !== removeOn.length || removeOn.some((machine) => !pinned.removeOn.includes(machine)))) {
+      return fail(steps, id("02-failed"), releaseChangedMessage(run.volumeName));
     }
     const { target, copy } = forward;
-    const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
+    const epoch = handed?.epoch ?? (await step.run(id("02-epoch"), () => runEffect(takeEpoch(run, runId, observedEpoch(members))))).epoch;
+    // The receipt names the source, so B starts from the Container its cut stopped, not one an earlier Move left elsewhere.
+    const source = members.find((member) => member.machine.id === handed?.from)?.machine ?? null;
     let stays: readonly string[] | null;
     try {
-      const started = await settle(steps, "03-start", commitAndStart(run, runId, {
+      const started = await settle(steps, id("03-start"), commitAndStart(run, runId, {
         to: target.machine,
-        from: null,
+        from: source,
         expect: expectOf(copy),
         at: copy.newest.guid,
         epoch: copy.kind === "root" ? copy.epoch : epoch,
         approved: run.kind === "release" ? moveApproved(run.args) : undefined,
+        receipt,
       }), `${target.machine.name} is still starting ${run.volumeName}'s Service`);
       if (!started.ok) throw new NonRetriableError(started.message);
-      stays = await step.run("04-remove", () => runEffect(removeKept(run, runId, forward.removeOn)));
+      stays = await step.run(id("04-remove"), () => runEffect(removeKept(run, runId, forward.removeOn)));
     } catch (error) {
-      return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
+      return stopped(steps, id("05-failed"), error instanceof Error ? error : new Error(String(error)));
     }
-    await finish(steps, "05-finish", doneMessage(stays));
+    await finish(steps, id("05-finish"), doneMessage(stays));
     return { runId: run.id, moved: target.machine.name };
   }
 }
@@ -779,14 +832,25 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     const cut = slotAt(source);
     if (cut === null) throw new NonRetriableError(`${copyName(name, A.name)} holds no final snapshot`);
     if (phase.start !== "start") copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest, approval });
+    const writerEpoch = copy?.kind === "root" ? copy.epoch : epoch;
+    // A Move's source that signs handoffs decides here, after B holds the cut's snapshot: it hands the Volume to B and
+    // never writes it again under the Move. B becomes the writer only on that receipt.
+    let receipt: MachineSigned | undefined;
+    if (approval !== undefined && phase.writer.handoff === true && phase.start !== "start") {
+      const handed = await setCopy(steps, "06-handoff", A, expectOf(source), { kind: "handoff", to: B.id, at: cut.newest.guid, epoch: writerEpoch }, `${A.name} is still handing ${name} off`, approval);
+      if (!handed.ok) throw new NonRetriableError(handed.message);
+      if (handed.receipt === undefined) throw new NonRetriableError(`${A.name} handed ${name} off without a receipt`);
+      receipt = handed.receipt;
+    }
     await note("07-starting", `Starting ${service} on ${B.name}`);
     const started = await settle(steps, "07-start", commitAndStart(run, runId, {
       to: B,
       from: A,
       expect: expectOf(copy),
       at: cut.newest.guid,
-      epoch: copy?.kind === "root" ? copy.epoch : epoch,
+      epoch: writerEpoch,
       approved,
+      receipt,
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
     stays = await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));

@@ -9,6 +9,7 @@ export const requirements = {
   olderLogs: { capability: "ployz.logs.history.v2", feature: "Older logs", plural: true },
   volumeMove: { capability: "ployz.volume.copy.set.v1", feature: "Volume move" },
   volumeFloor: { capability: "ployz.volume.copy.floor.v1", feature: "Volume move" },
+  volumeHandoff: { capability: "ployz.volume.copy.handoff.v1", feature: "Volume move" },
   volumeSize: { capability: "ployz.volume.size.set.v1", feature: "Volume resize" },
   volumeShrink: { capability: "ployz.volume.size.shrink.v1", feature: "Volume shrink" },
   pruneImages: { capability: "ployz.image.prune.v1", feature: "Image cleanup" },

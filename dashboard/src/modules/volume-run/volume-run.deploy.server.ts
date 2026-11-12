@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, MachineName, VolumeCopy } from "@ployz/sdk";
+import type { MachineId, MachineName, MachineSigned, VolumeCopy } from "@ployz/sdk";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { NonRetriableError } from "inngest";
@@ -10,15 +10,19 @@ import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeNa
 import {
   admitRun,
   askCopy,
+  carriedApproval,
   commitment,
   contextOf,
   type CopyAnswer,
   ended,
+  handedTo,
   holdDeployLane,
   keptOn,
   laneInputOf,
   laneTarget,
   type MachineRef,
+  moveApproved,
+  type MoveApproved,
   nameRefusal,
   observeMembers,
   observeVolumeMembers,
@@ -112,8 +116,14 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       }
       const hold = deploy?.hold === true;
       const resume = input.kind === "move" ? input.args : (deploy?.resume ?? null);
+      // A release of a Move carries its approval, which covers the resume or start this Deploy ends it with.
+      const taken = input.kind === "release" ? carriedApproval(lane) : deploy?.taken;
       const { run } = yield* takeDeployLane(CLOUD(organizationId), {
-        input: { volumeId: lane.volumeId, kind: "deploy", args: hold ? { deployment: deploymentId, resume: null, hold } : { deployment: deploymentId, resume } },
+        input: {
+          volumeId: lane.volumeId,
+          kind: "deploy",
+          args: hold ? { deployment: deploymentId, resume: null, hold } : { deployment: deploymentId, resume, ...(taken && { taken }) },
+        },
         volume: { environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes, recordedBytes: lane.recordedBytes },
         id: crypto.randomUUID(),
       }, inngestRunId);
@@ -239,10 +249,35 @@ export const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunC
     // nothing else would.
     const { epoch } = yield* takeEpoch(run, inngestRunId, observedEpoch(floored.members));
     const start = { kind: "kept", container_id: kept.containerId } as const;
-    const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start });
+    // The Move's approval covers the resume or the start that ends it, as it covers its release.
+    const taken = run.kind === "deploy" ? (run.args.resume ?? run.args.taken ?? null) : null;
+    const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start }, taken?.approval);
+    // A source that already handed the Volume off refuses with its receipt, and the Move it decided finishes forward.
+    if (!promoted.ok && promoted.reason === "handed_off" && promoted.receipt !== undefined) {
+      return yield* startHanded(run, inngestRunId, floored.members, writer.machine, promoted.receipt, moveApproved(taken ?? {}));
+    }
     if (!promoted.ok) return yield* Effect.fail(retriable(promoted.reason) ? new Error(promoted.message) : new NonRetriableError(promoted.message));
     return { on: writer.machine.name };
   }
+});
+
+/** Starts the Service on the Server a source's receipt handed the Volume to, at the snapshot and epoch it names. */
+const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
+  run: RunContext,
+  inngestRunId: string,
+  members: readonly AnsweredMember[],
+  from: MachineRef,
+  receipt: MachineSigned,
+  approved: MoveApproved | undefined,
+) {
+  const handed = handedTo(receipt);
+  const target = handed === null ? undefined : members.find((member) => member.machine.id === handed.to);
+  if (handed === null || target === undefined || target.view.copy === null) {
+    return yield* Effect.fail(new NonRetriableError(`${run.volumeName} was handed off to a Server that did not answer with its copy; Deploy again once it does`));
+  }
+  const started = yield* startWriter(run, inngestRunId, { to: target.machine, from, expect: expectOf(target.view.copy), at: handed.at, epoch: handed.epoch, approved, receipt });
+  if (!started.ok) return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
+  return { on: target.machine.name };
 });
 
 const retriable = (reason: string) => reason === "busy" || reason === "mismatch";
@@ -263,7 +298,10 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
   const successor = yield* tookOver(lane);
   const members = yield* observeVolumeMembers(run.organizationId, run.dockerVolume);
   const isB = (member: Member) => (lane.machine === null ? member.machine.name === to : member.machine.id === lane.machine);
-  const writes = (copy: VolumeCopy | null) => copy?.kind === "root" && !copy.readonly && copy.epoch === lane.epoch;
+  let receipt = run.receipt ?? undefined;
+  // B takes the epoch its source's receipt names, which it checks; a commitment with none takes the lane's.
+  let owedEpoch = (receipt === undefined ? null : handedTo(receipt))?.epoch ?? lane.epoch;
+  const writes = (copy: VolumeCopy | null) => copy?.kind === "root" && !copy.readonly && copy.epoch === owedEpoch;
   const restore = () => restoreLine(run.volumeName, restoreSource(members.filter((member) => !isB(member))));
   const b = answered(members).find(isB);
   if (b === undefined) {
@@ -276,11 +314,19 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
     return yield* Effect.fail(new NonRetriableError(`${run.volumeName} finishes on ${machine.name}, which holds no copy to start. Remove it with ployz server rm ${machine.name}` + restore()));
   }
   if (writes(copy)) return { on: machine.name };
-  const epoch = copy.kind === "root" ? copy.epoch : lane.epoch;
+  if (receipt === undefined && run.kind !== "restore") {
+    const decided = yield* askSource(lane, answered(members).filter((member) => !isB(member)));
+    if (decided?.kind === "resumed") return { on: decided.on };
+    if (decided?.kind === "handed") {
+      receipt = decided.receipt;
+      owedEpoch = handedTo(receipt)?.epoch ?? owedEpoch;
+    }
+  }
+  const epoch = copy.kind === "root" ? copy.epoch : owedEpoch;
   if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
   const started = run.kind === "restore"
     ? yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null })
-    : yield* startWriter(run, null, { to: machine, from: null, expect: expectOf(copy), at: copy.newest.guid, epoch });
+    : yield* startWriter(run, null, { to: machine, from: null, expect: expectOf(copy), at: copy.newest.guid, epoch, approved: carriedApproval(run), receipt });
   if (started.ok) return { on: machine.name };
   if (started.reason === "stale" && successor) {
     // The successor floored B above this Deploy's gen, so only B's copy says whether it started the writer.
@@ -289,6 +335,32 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
     return yield* Effect.fail(new NonRetriableError(`${run.volumeName} is finishing its move on ${machine.name}; Deploy again`));
   }
   return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
+});
+
+/**
+ * An approved commitment with no receipt does not say its source handed the Volume off, so a source that signs
+ * handoffs decides first, as a release asks it: it resumes at the lane's epoch and the Deploy runs there, or it
+ * answers with the receipt B starts on. A source this Deploy's earlier fence resumed writes at the lane's epoch, which
+ * no other root holds, so it is followed as it is. Null when the commitment carries no approval or its source signs
+ * no handoffs.
+ */
+const askSource = Effect.fn("VolumeRun.askSource")(function* (lane: FollowLane, others: readonly AnsweredMember[]) {
+  const { run } = lane;
+  const approved = carriedApproval(run);
+  const asks = (member: AnsweredMember) => member.handoff === true && member.enforces === true;
+  const resumed = others.find(({ view: { copy } }) => copy?.kind === "root" && !copy.readonly && copy.epoch === lane.epoch);
+  if (approved !== undefined && resumed !== undefined && asks(resumed)) return { kind: "resumed", on: resumed.machine.name } as const;
+  const slots = others.filter((member) => member.view.copy?.kind === "slot");
+  if (approved === undefined || slots.length === 0 || lane.epoch === null) return null;
+  const kept = yield* keptOn(run.organizationId, run.dockerVolume, slots.map((member) => member.machine));
+  const source = kept === null ? undefined : slots.find((member) => member.machine.id === kept.machine.id);
+  const copy = source?.view.copy;
+  if (kept === null || source === undefined || !asks(source) || copy?.kind !== "slot" || copy.newest === null) return null;
+  const start = { kind: "kept", container_id: kept.containerId } as const;
+  const asked = yield* askCopy(run, source.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch: lane.epoch, start }, approved.approval);
+  if (asked.ok) return { kind: "resumed", on: source.machine.name } as const;
+  if (asked.reason === "handed_off" && asked.receipt !== undefined) return { kind: "handed", receipt: asked.receipt } as const;
+  return yield* Effect.fail(retriable(asked.reason) ? new Error(asked.message) : new NonRetriableError(asked.message));
 });
 
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>

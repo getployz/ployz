@@ -1,4 +1,4 @@
-import type { MachineId, Signed } from "@ployz/sdk";
+import type { MachineId, MachineSigned, Signed } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -56,6 +56,11 @@ export const volumeRun = pgTable(
     phase: text("phase").default("warm").notNull().$type<VolumeRunPhase>(),
     /** The Machine a committed Move made the writer. */
     current: text("current").$type<MachineId>(),
+    /**
+     * The receipt the Move's source signed when it handed the Volume to `current`, which that Server checks before it
+     * becomes the writer. Cloud carries it and cannot make one.
+     */
+    receipt: jsonb("receipt").$type<MachineSigned>(),
     /** The Service spec seen when the run started; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),

@@ -33,7 +33,10 @@ pub use deploy::{
     DeployApproved, DeployFacts, DeployTerms, PayloadDigest,
 };
 pub use join::JoinApproval;
-pub use keys::{Approver, KeySignature, Purpose, Signed, Signer, SigningPublicKey, Statement};
+pub use keys::{
+    Approver, KeySignature, MachineKey, MachineSigned, MachineStatement, Purpose, Signed, Signer,
+    SigningPublicKey, Statement,
+};
 pub use preview::{
     CheckedReview, PreviewCreation, PreviewFacts, PreviewKey, PreviewProof, PreviewReview,
     PreviewRule, PreviewService, Review, ReviewDraft, ReviewDraftError, ReviewSigner, ReviewTerms,
@@ -62,5 +65,6 @@ pub use trusted_key::{
     TrustedPasskey,
 };
 pub use volume::{
-    ApprovedVolumeChange, VolumeApproval, VolumeApproved, VolumeFacts, VolumeStep, VolumeWorkflow,
+    ApprovedVolumeChange, Handed, HandoffFacts, HandoffReceipt, VolumeApproval, VolumeApproved,
+    VolumeFacts, VolumeStep, VolumeWorkflow,
 };

@@ -9,6 +9,7 @@ import type {
   ExpectedCopy,
   MachineId,
   MachineName,
+  MachineSigned,
   ResolvedServiceSpec,
   Signed,
   SnapshotGuid,
@@ -96,6 +97,8 @@ type RunBase = {
   readonly gen: number;
   readonly phase: VolumeRunPhase;
   readonly current: MachineId | null;
+  /** The receipt a committed Move's source handed the Volume to `current` with, if it signed one. */
+  readonly receipt?: MachineSigned | null;
 };
 
 /** Plain JSON: Inngest memoizes step output as JSON. */
@@ -137,6 +140,23 @@ export function laneInputOf(lane: Pick<VolumeRunRow, "kind" | "args">): VolumeLa
   return { kind: lane.kind, args: lane.args } as VolumeLaneInput;
 }
 
+/**
+ * The approval and spec a Move carries, or the release that carried them on. One approval covers the Move and the
+ * release or Deploy that undoes or finishes it, so a user's release takes them over with the run it ends or the
+ * commitment it inherits, and a Deploy that follows a commitment starts B under them; the Servers still check every
+ * step against them.
+ */
+export const carriedApproval = (row: Pick<VolumeRunRow, "kind" | "args">) => {
+  const lane = laneInputOf(row);
+  return lane.kind === "move" || lane.kind === "release" ? moveApproved(lane.args) : undefined;
+};
+
+/**
+ * An approved commitment with no receipt: the row alone does not say the source handed off, so its release is planned
+ * from the copies, as a warm Move's is, and the source decides whether it resumes or the Move goes forward.
+ */
+const sourceDecides = (pending: Owed) => pending.receipt == null && carriedApproval(pending) !== undefined;
+
 export const contextOf = (row: VolumeRunRow): RunContext => ({
   ...laneInputOf(row),
   id: row.id,
@@ -151,6 +171,7 @@ export const contextOf = (row: VolumeRunRow): RunContext => ({
   gen: row.gen,
   phase: row.phase,
   current: row.current,
+  receipt: row.receipt,
 });
 
 export const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message: string | null) =>
@@ -651,7 +672,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const deployments = input.kind === "resize" ? Option.getOrUndefined(yield* answered(deploymentsSeen(organizationId, input.environment))) : undefined;
   const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input.kind === "resize" ? { ...input, recordedBytes: volume.recordedBytes } : input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
-  if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
+  if (pending !== null && input.kind === "release" && !sourceDecides(pending)) return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
     ? { ...input, args: withSlotMachine(input.args, members.value.map((member) => member.machine)) }
     : input;
@@ -812,7 +833,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       refquotaBytes: volume.refquotaBytes,
       recordedBytes: volume.recordedBytes,
       kind: input.kind,
-      args: input.args,
+      args: input.kind === "release" && taken !== undefined ? { ...carriedApproval(taken), ...input.args } : input.args,
       state: inngestRunId === null ? "requested" : "running",
       inngestRunId,
       requestedByUserId: caller.userId,
@@ -859,11 +880,15 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
     if (!refusedWhileOwed(input, pending)) return inserted;
     return yield* new LaneRefused({ refusal: yield* owedRefusal(pending, yield* laneTarget(pending)), busy: volumeRunView(pending), owed: pending });
   }
-  if (plan !== undefined && (plan.forward?.after !== pending.id || plan.forward.to !== pending.current)) {
+  const previewed = sourceDecides(pending)
+    ? plan?.forward === undefined
+    : plan?.forward?.after === pending.id && plan.forward.to === pending.current;
+  if (plan !== undefined && !previewed) {
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(pending) });
   }
   const { drizzle } = yield* Database;
-  const [inherited] = yield* drizzle.update(volumeRun).set({ phase: "committed", current: pending.current, epoch: pending.epoch })
+  const args = { ...carriedApproval(pending), ...input.args };
+  const [inherited] = yield* drizzle.update(volumeRun).set({ phase: "committed", current: pending.current, epoch: pending.epoch, receipt: pending.receipt, args })
     .where(eq(volumeRun.id, inserted.id)).returning();
   return inherited ?? inserted;
 });
@@ -1201,6 +1226,8 @@ export function switchFailureMessage(
       return `${machine.name} has no room for ${name}'s mirror`;
     case "restore_point_gone":
       return `the restore point is gone from ${name} on ${machine.name}`;
+    case "handed_off":
+      return `${machine.name} handed ${name} to its move's new Server`;
     case "stale":
       return `a newer run took ${fenced} on ${machine.name}`;
     case "busy":
@@ -1252,8 +1279,14 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
 
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
 export type CopyAnswer =
-  | { readonly ok: true; readonly copy: VolumeCopy | null }
-  | { readonly ok: false; readonly reason: CopyRefusal | "enforced" | "unapproved"; readonly copy: VolumeCopy | null; readonly message: string };
+  | { readonly ok: true; readonly copy: VolumeCopy | null; readonly receipt?: MachineSigned }
+  | {
+    readonly ok: false;
+    readonly reason: CopyRefusal | "enforced" | "unapproved";
+    readonly copy: VolumeCopy | null;
+    readonly message: string;
+    readonly receipt?: MachineSigned;
+  };
 
 /**
  * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
@@ -1265,17 +1298,26 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
  * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
  * so a run's step retries. Spent Cluster time fails it before it opens a session, and out of time is `inFlight` only
  * when the SetVolumeCopy itself was cut. Any other failure but a `SwitchAttemptError` is a session that didn't open, so
- * the SetVolumeCopy was never sent. `approval` is the Mirror approval a snapshot or a pull carries.
+ * the SetVolumeCopy was never sent. `approval` is the Mirror approval a snapshot or a pull carries. `receipt` is the
+ * handoff receipt a Move's target becomes the writer under, which a source answers a handoff with, and with which it
+ * refuses to become the writer again once it handed the Volume off.
  */
-export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, approval?: Signed) {
+export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
+  asker: CopyAsker,
+  machine: MachineRef,
+  expect: ExpectedCopy,
+  want: WantedCopy,
+  approval?: Signed,
+  receipt?: MachineSigned,
+) {
   yield* requireClusterTime;
   const session = yield* openSession(asker.organizationId).pipe(
     Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ClusterOutOfTime({ inFlight: false }))),
   );
-  const payload = { name: asker.dockerVolume, expect, want, gen: asker.gen, ...(approval && { approval }) };
+  const payload = { name: asker.dockerVolume, expect, want, gen: asker.gen, ...(approval && { approval }), ...(receipt && { receipt }) };
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload }).pipe(
     clusterRead,
-    Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
+    Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy, ...(reply.receipt && { receipt: reply.receipt }) })),
     Effect.catch((error): Effect.Effect<CopyAnswer, ClusterOutOfTime | SwitchAttemptError> => {
       if (error instanceof ClusterOutOfTime) return Effect.fail(error);
       // Refused before the Server read its copy, so the copy is as the caller last saw it.
@@ -1293,7 +1335,7 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
       }
       const { reason, copy } = refused;
       const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
-      return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
+      return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message, ...(refused.receipt && { receipt: refused.receipt }) });
     }),
   );
 }, Effect.scoped);
@@ -1305,9 +1347,10 @@ export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
   expect: ExpectedCopy,
   want: WantedCopy,
   approval?: Signed,
+  receipt?: MachineSigned,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* askCopy(ctx, machine, expect, want, approval);
+  return yield* askCopy(ctx, machine, expect, want, approval, receipt);
 });
 
 /**
@@ -1411,12 +1454,19 @@ export const creationKey = (ctx: Pick<RunContext, "volumeId">, at: SnapshotGuid)
 
 /**
  * The commit: this run makes `to` the writer. It wins once, and again for the run that already won it or a release that
- * inherited it; a row taken over or committed elsewhere loses.
+ * inherited it; a row taken over or committed elsewhere loses. It records the `receipt` the source handed the Volume
+ * over with, so a release or a Deploy that inherits the commitment starts `to` under it. The row decides nothing: `to`
+ * becomes the writer only on a receipt it checks, and a release with none asks the source first.
  */
-export const commitMove = Effect.fn("VolumeRun.commit")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, to: MachineId) {
+export const commitMove = Effect.fn("VolumeRun.commit")(function* (
+  ctx: Pick<RunContext, "id">,
+  inngestRunId: string,
+  to: MachineId,
+  receipt?: MachineSigned,
+) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.update(volumeRun)
-    .set({ phase: "committed", current: to, updatedAt: new Date() })
+    .set({ phase: "committed", current: to, ...(receipt && { receipt, epoch: handedTo(receipt)?.epoch }), updatedAt: new Date() })
     .where(and(
       eq(volumeRun.id, ctx.id),
       eq(volumeRun.inngestRunId, inngestRunId),
@@ -1439,6 +1489,25 @@ type WriterStart = {
   readonly at: SnapshotGuid;
   readonly epoch: number;
   readonly approved?: MoveApproved;
+  /** The source's handoff receipt, which an enforcing `to` needs to become the writer under a Move. */
+  readonly receipt?: MachineSigned | null;
+};
+
+const HandoffBody = Schema.fromJsonString(Schema.Struct({ from: Schema.String, to: Schema.String, at: Schema.String, epoch: Schema.Number }));
+const decodeHandoffBody = Schema.decodeUnknownOption(HandoffBody);
+
+/**
+ * Where a handoff receipt sends the Move: the Server it names and the snapshot and epoch it becomes the writer at. Cloud
+ * reads the body only to route the start; that Server checks the receipt's signature and every field itself. Null for a
+ * body Cloud can't read, which no Server would take either.
+ */
+export const handedTo = (
+  receipt: MachineSigned,
+): { readonly from: MachineId; readonly to: MachineId; readonly at: SnapshotGuid; readonly epoch: number } | null => {
+  const body = decodeHandoffBody(receipt.body);
+  // SAFETY: the Server that reads it checks `to` against its own ID, so a value that is not one is refused there, and
+  // `from` only names the Server a Restore line suggests.
+  return Option.isSome(body) ? { ...body.value, from: body.value.from as MachineId, to: body.value.to as MachineId } : null;
 };
 
 /** A Move's approval and the spec it names for the Service's start on its target. */
@@ -1459,7 +1528,7 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
   start: WriterStart,
 ) {
   const { to } = start;
-  if (!(yield* commitMove(ctx, inngestRunId, to.id))) {
+  if (!(yield* commitMove(ctx, inngestRunId, to.id, start.receipt ?? undefined))) {
     const lost: CopyAnswer = { ok: false, reason: "stale", copy: null, message: `a newer run took ${ctx.volumeName} before ${to.name} started it` };
     return lost;
   }
@@ -1488,7 +1557,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   const [holder] = from === null ? stopped : newestFirst(stopped);
   if (holder === undefined && from === null && containers.some((container) => container.machine_id === to.id)) {
     if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
-    return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: null });
+    return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: null }, undefined, start.receipt ?? undefined);
   }
   if (holder === undefined) {
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has no stopped Service container${from === null ? "" : ` on ${from.name}`} to start on ${to.name}`));
@@ -1516,7 +1585,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
       gen: container.gen ?? 1,
       rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
     },
-  }, approved?.approval);
+  }, approved?.approval, start.receipt ?? undefined);
 }, Effect.scoped);
 
 /**
@@ -1644,6 +1713,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           floorless,
           ...sized,
           enforces: machine.runtime.device_enforcement === true,
+          handoff: serverSupports(capabilities, requirements.volumeHandoff) === true,
         })),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
@@ -1766,6 +1836,7 @@ const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL
         args: approved ?? {},
         phase: row.phase,
         current: row.current,
+        receipt: row.receipt,
         epoch: row.phase === "committed" ? row.epoch : null,
       }).onConflictDoNothing().returning();
       if (release !== undefined) yield* enqueueRun(release);

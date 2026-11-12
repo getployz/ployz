@@ -484,3 +484,103 @@ impl fmt::Display for Approver {
         }
     }
 }
+
+/// A body a Machine signs about its own transition, with no person behind it. It travels
+/// in a [`MachineSigned`] envelope, never a [`Signed`] one, so no Device signature passes
+/// as a Machine's and no Machine's passes as a Device's.
+pub trait MachineStatement: Serialize + DeserializeOwned {
+    /// What the statement is, signed with it, such as `volume-handoff`.
+    const KIND: &'static str;
+}
+
+/// Which key signed a Machine's statement. Every Machine of a Cluster derives one key from
+/// the Sealing Key and signs with it, so any of them could have signed. A key per Machine
+/// would be another variant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineKey {
+    Cluster { key: SigningPublicKey },
+}
+
+impl fmt::Display for MachineKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cluster { key } => write!(formatter, "cluster:{key}"),
+        }
+    }
+}
+
+/// A statement a Machine signed: its canonical body exactly as signed, the key that
+/// signed it, and the signature. The signing input names the key, so a body signed under
+/// one key never verifies as signed under another.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(concrete(T = super::volume::HandoffReceipt))]
+pub struct MachineSigned<T> {
+    pub body: String,
+    pub key: MachineKey,
+    #[serde(serialize_with = "signature_hex", deserialize_with = "signature_bytes")]
+    #[ts(type = "string")]
+    pub signature: [u8; 64],
+    #[serde(skip)]
+    #[ts(skip)]
+    statement: PhantomData<T>,
+}
+
+/// The bytes a Machine signs: `ployz-machine/v1`, the statement's kind, its key, and the
+/// canonical body, each ended by a newline except the body. Distinct from every
+/// [`signing_input`].
+#[must_use]
+pub fn machine_signing_input(kind: &str, key: MachineKey, body: &str) -> Vec<u8> {
+    format!("ployz-machine/v1\n{kind}\n{key}\n{body}").into_bytes()
+}
+
+impl<T: MachineStatement> MachineSigned<T> {
+    /// Encode `statement` and sign it with the Cluster key `signer`.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the statement has no canonical form.
+    pub fn sign(statement: &T, signer: &Signer) -> Result<Self, CanonicalError> {
+        let body = canonical::to_canonical(statement)?;
+        let key = MachineKey::Cluster {
+            key: signer.public(),
+        };
+        let signature = signer
+            .0
+            .sign(&machine_signing_input(T::KIND, key, &body))
+            .to_bytes();
+        Ok(Self {
+            body,
+            key,
+            signature,
+            statement: PhantomData,
+        })
+    }
+
+    /// The statement, when `cluster` is its key and its signature verifies. A Machine passes
+    /// the Cluster key it derives itself.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::ForeignMachineKey`] for another key,
+    /// [`AuthorityRefusal::BadMachineSignature`] for a signature that does not verify, and
+    /// [`AuthorityRefusal::MalformedMachineStatement`] for a body that is not this
+    /// statement in canonical form.
+    pub fn verify(&self, cluster: SigningPublicKey) -> Result<T, AuthorityRefusal> {
+        let MachineKey::Cluster { key } = self.key;
+        if key != cluster {
+            return Err(AuthorityRefusal::ForeignMachineKey { kind: T::KIND });
+        }
+        if !key.verifies(
+            &machine_signing_input(T::KIND, self.key, &self.body),
+            &self.signature,
+        ) {
+            return Err(AuthorityRefusal::BadMachineSignature { kind: T::KIND });
+        }
+        canonical::from_canonical(&self.body).map_err(|error| {
+            AuthorityRefusal::MalformedMachineStatement {
+                kind: T::KIND,
+                problem: error.to_string(),
+            }
+        })
+    }
+}

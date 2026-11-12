@@ -146,6 +146,19 @@ The move must start within 15 minutes of the approval. If it hasn't, both server
 `web` keeps running on `web-1`, and you run the move again. A move that started finishes, however
 long it takes.
 
+Once `web` stopped on `web-1` and `web-2` holds the last copy, `web-1` decides where the move
+ends, once. It hands the volume to `web-2` and signs a receipt, and then never writes the volume
+again under that move. `web-2` becomes the writer only with that receipt. A release asks `web-1`
+first: if it handed the volume off, the release finishes the move on `web-2`, and if not, `web`
+starts on `web-1` again. What Ployz Cloud recorded of the move doesn't decide it.
+
+- If `web-1` goes down after the handoff, the move still finishes on `web-2`.
+- If `web-2` goes down after the handoff, the volume has no writer until `web-2` comes back.
+  `web-1` refuses to take it back, and the release names the restore that does:
+  `web-2 did not answer for 15m; data still finishes on web-2; ployz volume release data tries again. Restore from web-1's copy: ployz volume restore data --from web-1`
+- Both servers need a Ployz that signs handoffs. If `web-2` has it and `web-1` doesn't, `web-2`
+  refuses to start `web`, and the move goes back to `web-1`. Upgrade `web-1`, then move again.
+
 `web` must run an image pinned by digest. If it doesn't, the CLI refuses before anything stops:
 
 ```

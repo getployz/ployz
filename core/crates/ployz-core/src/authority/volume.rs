@@ -14,7 +14,9 @@ use ts_rs::TS;
 use super::{
     canonical::{self, Timestamp},
     deploy::{ApprovedChange, ApprovedService},
-    keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
+    keys::{
+        Approver, MachineSigned, MachineStatement, Purpose, Signed, SigningPublicKey, Statement,
+    },
     proposal::StepDigest,
     refusal::{AuthorityRefusal, field, first_mismatch},
     restart::SignerKey,
@@ -23,7 +25,8 @@ use super::{
 };
 use crate::{
     CopyTransition, DockerVolumeName, MachineId, Namespace, OperationId,
-    ProvisionedVolumeMaximumBytes, SealingPublicKey, SlotRole, SnapshotGuid,
+    ProvisionedVolumeMaximumBytes, SealingPublicKey, SlotRole, SnapshotGuid, SnapshotName,
+    WriterEpoch,
 };
 
 /// A person approves one workflow on one Volume in one Cluster, under one operation whose
@@ -108,6 +111,8 @@ pub enum VolumeStep {
     Copy(CopyTransition),
     /// Starting a Container on the Volume, after a Writer want's transition.
     Start,
+    /// A Move's source giving the Volume up to its target, after its cut.
+    Handoff,
     Seed {
         source: DockerVolumeName,
         at: SnapshotGuid,
@@ -147,6 +152,7 @@ impl VolumeWorkflow {
                     || (mirrors.contains(machine) && *transition == MirrorToMirror)
             }
             (Self::Move { from, to, .. }, VolumeStep::Start) => machine == from || machine == to,
+            (Self::Move { from, .. }, VolumeStep::Handoff) => machine == from,
             (
                 Self::Mirror {
                     writer,
@@ -474,6 +480,9 @@ pub struct VolumeFacts<'a> {
     pub volume: &'a DockerVolumeName,
     pub step: &'a VolumeStep,
     pub now: Timestamp,
+    /// A handoff receipt this Machine already checked, which proves the Move started on its
+    /// source inside the window, so a first step here after the window is still admitted.
+    pub handed: Option<&'a HandoffReceipt>,
 }
 
 /// A Volume approval a Machine checked: its body, the Device that signed it, and the
@@ -525,12 +534,97 @@ pub fn verify(
             body.workflow.permits(facts.machine, facts.step),
         ),
     ])?;
-    super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
-    Ok(VolumeApproved {
-        body,
-        by,
-        digest: StepDigest::of(&approval.body),
-    })
+    let digest = StepDigest::of(&approval.body);
+    match super::validity::verify(body.issued_at, body.expires_at, facts.now) {
+        Err(AuthorityRefusal::Expired)
+            if facts.handed.is_some_and(|receipt| {
+                receipt.operation == body.operation
+                    && receipt.approval == digest
+                    && receipt.to == *facts.machine
+            }) => {}
+        checked => checked?,
+    }
+    Ok(VolumeApproved { body, by, digest })
+}
+
+/// What a Move's source signs when it gives the Volume up: its one decision for the
+/// operation, made after its cut. It names everything its target checks before it becomes
+/// the Writer, and no time, since the Move it ends may finish at any later moment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffReceipt {
+    /// The Cluster's Sealing public key, which the signing key is derived beside.
+    pub cluster: SealingPublicKey,
+    pub operation: OperationId,
+    /// The digest of the Move approval's body as signed.
+    pub approval: StepDigest,
+    pub volume: DockerVolumeName,
+    pub from: MachineId,
+    pub to: MachineId,
+    /// The cut's snapshot, which the target becomes the Writer at.
+    pub at: SnapshotGuid,
+    pub snapshot: SnapshotName,
+    /// The source's Writer epoch when it cut.
+    pub from_epoch: WriterEpoch,
+    /// The epoch the target takes.
+    pub epoch: WriterEpoch,
+}
+
+impl MachineStatement for HandoffReceipt {
+    const KIND: &'static str = "volume-handoff";
+}
+
+/// What a Move's target knows when it checks a handoff receipt against one step.
+#[derive(Clone, Copy, Debug)]
+pub struct HandoffFacts<'a> {
+    /// The receipt key this Machine derives from the Sealing Key it holds.
+    pub key: SigningPublicKey,
+    pub cluster: SealingPublicKey,
+    pub machine: &'a MachineId,
+    pub operation: OperationId,
+    pub approval: StepDigest,
+    pub volume: &'a DockerVolumeName,
+    /// The snapshot the step lands on: a promotion's guid, a pull's name.
+    pub at: Handed<'a>,
+}
+
+/// The snapshot a step under a receipt lands on.
+#[derive(Clone, Copy, Debug)]
+pub enum Handed<'a> {
+    /// A promotion to the Writer at a snapshot and epoch.
+    Writer {
+        at: &'a SnapshotGuid,
+        epoch: WriterEpoch,
+    },
+    /// A pull of a snapshot by name.
+    Pull { snapshot: &'a SnapshotName },
+}
+
+/// Check `receipt` is the Cluster's statement that this Move's source handed this Volume
+/// to this Machine at the step's snapshot.
+///
+/// # Errors
+/// Returns the signature's refusal from [`MachineSigned::verify`], and
+/// [`AuthorityRefusal::Mismatch`] naming the first field the step does not match.
+pub fn verify_receipt(
+    receipt: &MachineSigned<HandoffReceipt>,
+    facts: &HandoffFacts<'_>,
+) -> Result<HandoffReceipt, AuthorityRefusal> {
+    let body = receipt.verify(facts.key)?;
+    let (snapshot, epoch) = match facts.at {
+        Handed::Writer { at, epoch } => (body.at == *at, body.epoch == epoch),
+        Handed::Pull { snapshot } => (body.snapshot == *snapshot, true),
+    };
+    first_mismatch([
+        (field::CLUSTER, body.cluster == facts.cluster),
+        ("an operation", body.operation == facts.operation),
+        ("an approval", body.approval == facts.approval),
+        ("a Volume", body.volume == *facts.volume),
+        ("this Server", body.to == *facts.machine),
+        ("a snapshot", snapshot),
+        ("an epoch", epoch && body.epoch > body.from_epoch),
+    ])?;
+    Ok(body)
 }
 
 #[cfg(test)]
