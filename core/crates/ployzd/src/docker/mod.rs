@@ -949,12 +949,12 @@ impl ContainerRuntime {
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::MissingField("container labels"))?;
         let ServiceLabels { identity, kind } = ServiceLabels::parse(labels)?;
-        let resolved_spec = self
+        let (resolved_spec, rotation) = self
             .specs
-            .get(container_id)
+            .spec_and_rotation(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
-        let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
+        let rotation = rotation.unwrap_or_default();
         let r#gen = labels::generation(labels);
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
