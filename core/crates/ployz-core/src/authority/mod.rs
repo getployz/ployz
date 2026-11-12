@@ -25,6 +25,7 @@ pub mod shown;
 pub mod starting_set;
 pub mod teardown;
 pub mod trusted_key;
+pub mod upgrade;
 pub mod validity;
 pub mod volume;
 pub mod volume_draft;
@@ -70,6 +71,7 @@ pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
     TrustedPasskey,
 };
+pub use upgrade::UpgradeChannel;
 pub use volume::{
     ApprovedVolumeChange, Handed, HandoffFacts, HandoffReceipt, VolumeApproval, VolumeApproved,
     VolumeFacts, VolumeStep, VolumeWorkflow,

@@ -67,6 +67,49 @@ impl From<MachineVersion> for String {
     }
 }
 
+/// A Release Channel a person can choose for their Cluster.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseChannel {
+    Stable,
+    Beta,
+}
+
+impl ReleaseChannel {
+    /// The channel `release` names, or `None` for an exact version.
+    #[must_use]
+    pub const fn of(release: &MachineRelease) -> Option<Self> {
+        match release {
+            MachineRelease::Stable => Some(Self::Stable),
+            MachineRelease::Beta => Some(Self::Beta),
+            MachineRelease::Exact(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+        }
+    }
+}
+
+impl From<ReleaseChannel> for MachineRelease {
+    fn from(channel: ReleaseChannel) -> Self {
+        match channel {
+            ReleaseChannel::Stable => Self::Stable,
+            ReleaseChannel::Beta => Self::Beta,
+        }
+    }
+}
+
+impl fmt::Display for ReleaseChannel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// A trusted release selector: a Release Channel resolved at install time, or one version.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]

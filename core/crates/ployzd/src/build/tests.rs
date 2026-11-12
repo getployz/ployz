@@ -413,6 +413,7 @@ async fn active_build_refuses_upgrade_but_not_machine_mutations() {
             ployz_core::RequestMachineUpgradeRequest {
                 attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
                 release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+                channel: None,
             },
             false,
             ployz_core::ManagementScope::Full,
@@ -585,6 +586,7 @@ async fn retained_build_images_do_not_block_same_machine_mutation() {
             ployz_core::RequestMachineUpgradeRequest {
                 attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
                 release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+                channel: None,
             },
             false,
             ployz_core::ManagementScope::Full,

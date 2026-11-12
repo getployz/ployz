@@ -178,6 +178,15 @@ fn built(rule: &AutoDeployRule, commit: &str) -> BuildClaim {
 const COMMIT_A: &str = "54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c";
 const COMMIT_B: &str = "64dfcf4a46870fa09f5d5d6c965dd705c1a24e5c";
 
+fn channel(channel: ployz_core::ReleaseChannel, generation: u64) -> UpgradeChannel {
+    UpgradeChannel {
+        cluster: SealingPublicKey::from_bytes([1; 32]),
+        channel,
+        generation,
+        signer: SignerKey::Device(device()),
+    }
+}
+
 fn volume() -> ployz_core::DockerVolumeName {
     ployz_core::DockerVolumeName::parse("app_data").unwrap()
 }
@@ -510,6 +519,23 @@ fn restart_approvals_json_keeps_its_bytes_through_every_verb() {
     log.read_volumes(|records| assert_eq!(records.withdrawals().len(), 2))
         .unwrap();
 
+    // A Release Channel's mark is written only when it rises, and a resend of the same
+    // approval passes untouched.
+    use ployz_core::ReleaseChannel::{Beta, Stable};
+    log.mark_upgrade_channel(&channel(Beta, 2)).unwrap();
+    walk.wrote("upgrade-channel", golden!("upgrade-channel"));
+    log.mark_upgrade_channel(&channel(Beta, 2)).unwrap();
+    walk.kept("upgrade-channel-resent");
+    for stale in [channel(Stable, 1), channel(Stable, 2)] {
+        assert!(matches!(
+            log.mark_upgrade_channel(&stale),
+            Err(Error::UpgradeChannelRefused(
+                AuthorityRefusal::Mismatch { .. }
+            ))
+        ));
+    }
+    walk.kept("upgrade-channel-lower");
+
     // Every step above survives a reopening of the file.
     let reopened = ConsumptionLog::new(walk.dir.path());
     assert!(matches!(
@@ -522,4 +548,8 @@ fn restart_approvals_json_keeps_its_bytes_through_every_verb() {
         AuthorityRefusal::Replayed { .. }
     ));
     assert!(reopened.join_result(machine('f')).unwrap().is_some());
+    assert!(matches!(
+        reopened.mark_upgrade_channel(&channel(ployz_core::ReleaseChannel::Stable, 1)),
+        Err(Error::UpgradeChannelRefused(_))
+    ));
 }

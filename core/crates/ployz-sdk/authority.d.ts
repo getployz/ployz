@@ -35,6 +35,7 @@ export type {
   SignerKey,
   StepDigest,
   StepKind,
+  UpgradeChannel,
   VolumeApproval,
   VolumeDraft,
   VolumeTerms,

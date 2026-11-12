@@ -259,6 +259,7 @@ async fn an_upgrade_resent_with_its_attempt_id_creates_one_attempt() {
     let request = || RequestMachineUpgradeRequest {
         attempt_id,
         release: MachineRelease::Exact(target.clone()),
+        channel: None,
     };
 
     let first = session

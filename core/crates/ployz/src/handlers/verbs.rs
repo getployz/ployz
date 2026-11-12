@@ -690,6 +690,13 @@ pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
 )
 .docs("servers/manage-servers.md")
 .tool(ToolId::ServerUpgrade);
+pub(crate) const SERVER_UPGRADE_POLICY_SET: Verb = Verb::cloud(
+    "server upgrade-policy set",
+    Never,
+    server::upgrade_policy::set_command,
+    server::upgrade_policy::set,
+)
+.docs("servers/manage-servers.md");
 pub(crate) const SERVER_TOKEN_CREATE: Verb = Verb::cloud(
     "server token create",
     Always,
@@ -1006,6 +1013,7 @@ pub(crate) const VERBS: &[Verb] = &[
     SERVER_TOKEN_LS,
     SERVER_TOKEN_REVOKE,
     SERVER_UPGRADE,
+    SERVER_UPGRADE_POLICY_SET,
     SERVICE_ADD,
     SERVICE_INSPECT,
     SERVICE_LS,
@@ -1098,6 +1106,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "server",
         command: server::group,
+    },
+    Group {
+        path: "server upgrade-policy",
+        command: server::upgrade_policy::group,
     },
     Group {
         path: "server token",

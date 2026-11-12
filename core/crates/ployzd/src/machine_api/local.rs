@@ -1490,6 +1490,14 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "delete it again with your passkey in the dashboard, or from an approved device",
             }),
         )),
+        LocalMachineError::UpgradeChannelRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
+                "next": "ployz server upgrade-policy set --channel stable or beta from an approved device",
+            }),
+        )),
         LocalMachineError::DepartureRefused { capability, .. } => {
             Err(ployz_core::rpc::hinted_status(
                 tonic::Code::PermissionDenied,
@@ -1758,6 +1766,22 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, St
                 serde_json::json!({
                     "capability": ployz_core::UPGRADE_EXACT_CAPABILITY,
                     "next": "ployz device request",
+                }),
+            ));
+        }
+        Error::OffApprovedChannel { requested, .. } => {
+            return Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
+                    "next": match ployz_core::ReleaseChannel::of(requested) {
+                        Some(channel) => format!(
+                            "ployz server upgrade-policy set --channel {channel} from an approved device"
+                        ),
+                        None => "ployz server upgrade-policy set --channel stable or beta from an approved device"
+                            .to_owned(),
+                    },
                 }),
             ));
         }

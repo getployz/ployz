@@ -105,6 +105,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::TeardownTerms>();
     declarations.add::<ployz_core::authority::TeardownScope>();
     declarations.add::<ployz_core::authority::AutoDeployRule>();
+    declarations.add::<ployz_core::authority::UpgradeChannel>();
     declarations.add::<ployz_core::authority::RuleTerms>();
     declarations.add::<ployz_core::authority::RuleDraft>();
     declarations.add::<ployz_core::authority::ReviewTerms>();

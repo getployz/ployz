@@ -234,6 +234,14 @@ pub enum Error {
     /// names `capability` in its details.
     #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
     BuildRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's upgrade for want of a valid Release Channel
+    /// approval. The refusal names [`ployz_core::UPGRADE_CHANNEL_CAPABILITY`] in its
+    /// details.
+    #[error(
+        "{capability}: no valid Release Channel approval for this Cluster: {0}",
+        capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
+    )]
+    UpgradeChannelRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `Leave` or `Forget` that no teardown names,
     /// before any Container stopped. The refusal names `capability` in its details.
     #[error("{}: {refusal}", departure_text(.capability))]

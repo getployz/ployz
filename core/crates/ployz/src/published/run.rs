@@ -479,16 +479,15 @@ mod tests {
         }
     }
 
-    /// The fixture manifest, with `server upgrade-policy set` and `org approval deny`
-    /// behind approval so a gated entry takes named flags too.
+    /// The fixture manifest, with `org member invite` and `org approval deny` behind
+    /// approval so a gated entry takes named flags too.
     fn gated() -> crate::published::Published {
         let mut published = crate::published::Published::parse(include_bytes!(
             "../../tests/fixtures/published-manifest.json"
         ))
         .unwrap();
         for command in &mut published.commands {
-            if ["server upgrade-policy set", "org approval deny"].contains(&command.path().as_str())
-            {
+            if ["org member invite", "org approval deny"].contains(&command.path().as_str()) {
                 command.effect = crate::published::Effect::Write {
                     ask: true,
                     removes: false,
@@ -513,18 +512,17 @@ mod tests {
                 vec!["ployz", "org", "member", "role", "Linus Torvalds", "admin"],
             ),
             (
-                "server upgrade-policy set",
+                "org member invite",
                 vec![
                     "ployz",
                     "--ployz-config",
                     "/tmp/ployz config.toml",
-                    "server",
-                    "upgrade-policy",
-                    "set",
-                    "--channel",
-                    "beta",
-                    "--automatic",
-                    "false",
+                    "org",
+                    "member",
+                    "invite",
+                    "linus@example.com",
+                    "--role",
+                    "admin",
                 ],
             ),
             (

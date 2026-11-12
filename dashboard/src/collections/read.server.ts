@@ -80,7 +80,9 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       }
       case "organization_server_upgrades": {
         const settings = tables.organizationServerUpgrades;
-        const rows: ServerUpgradeSettingsRow[] = yield* database.drizzle.select({ id: settings.organizationId, automatic: settings.automatic, channel: settings.channel })
+        const rows: ServerUpgradeSettingsRow[] = yield* database.drizzle.select({
+          id: settings.organizationId, automatic: settings.automatic, channel: settings.channel, approval: settings.channelApproval,
+        })
           .from(settings).where(scoped(settings));
         return rows;
       }

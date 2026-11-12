@@ -144,6 +144,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection.tsx": "setting up creates a tunnel in Cloudflare with a token used once, and says what Cloudflare kept if it stops; a switch moves every address and runs on the Servers, so the dialog waits for Cloud to admit it",
   "routes/_protected/cloud/$organizationSlug/_org/-components/integrations.tsx": "Connect and Turn off run on every Server, and the card lists each Server that refused the key, so it waits for their answers",
   "components/agent-sidebar/approvals.queries.ts": "an approved restart on enforcing Servers runs only with approvals the owner's passkey signs, so the card waits for them",
+  "modules/server-upgrade/server-upgrade.hooks.ts": "on enforcing Servers a new Release Channel or an upgrade waits for the person's passkey to sign the channel approval, which Cloud keeps; the setting rolls back if they dismiss it",
   "modules/volume-placement/volume-placement.hooks.ts": "a Deploy's Volume workflows run only with answers the owner's passkey gives, so the Deploy waits for them to be kept before it starts",
   "components/agent-sidebar/proposals.queries.ts": "an approved proposal runs only with the bundle the owner's passkey signs, so the card waits for it",
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",

@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 use crate::ValueError;
 
 /// Public half of a Cluster's Sealing Key.
-#[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(type = "string")]
 pub struct SealingPublicKey([u8; 32]);

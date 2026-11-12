@@ -12,11 +12,11 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerId, Namespace, OperationId, ServiceName,
+    ContainerId, Namespace, OperationId, SealingPublicKey, ServiceName,
     authority::{
         AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule, DeployApproval,
         PreviewKey, RestartApproval, RestartStep, RuleId, RuleIdentity, Signed, StartingSet,
-        Timestamp, restart,
+        Timestamp, UpgradeChannel, restart, upgrade,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,10 @@ struct Consumption {
     /// The hook each rule's Service last ran here, one per push.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rule_hooks: BTreeMap<String, RuleHook>,
+    /// The newest Release Channel approval this Machine has accepted, per Cluster Sealing
+    /// key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    upgrade_channels: BTreeMap<SealingPublicKey, upgrade::Accepted>,
     /// Volume operations, grants and withdrawals, none ever pruned.
     #[serde(default, skip_serializing_if = "VolumeRecords::is_empty")]
     volumes: VolumeRecords,
@@ -586,6 +590,31 @@ impl ConsumptionLog {
                 return Ok(Edit::Keep(()));
             }
             log.raise_mark(rule);
+            Ok(Edit::Write(()))
+        })
+    }
+
+    /// Record that a verified Release Channel approval of `channel.generation` exists for
+    /// its Cluster, synced before the upgrade it admits writes its receipt. Writes only
+    /// when the mark rises, so a resend after a crash between this write and the receipt
+    /// is admitted again.
+    ///
+    /// # Errors
+    /// Returns [`Error::UpgradeChannelRefused`] for a generation below the mark, or equal to
+    /// it for another channel, and
+    /// [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn mark_upgrade_channel(&self, channel: &UpgradeChannel) -> Result<(), Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            let newest = log.upgrade_channels.get(&channel.cluster).copied();
+            upgrade::admit_generation(channel, newest).map_err(Error::UpgradeChannelRefused)?;
+            let accepted = upgrade::Accepted {
+                generation: channel.generation,
+                channel: channel.channel,
+            };
+            if newest == Some(accepted) {
+                return Ok(Edit::Keep(()));
+            }
+            log.upgrade_channels.insert(channel.cluster, accepted);
             Ok(Edit::Write(()))
         })
     }

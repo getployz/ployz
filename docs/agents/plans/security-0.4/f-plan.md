@@ -74,7 +74,7 @@ Cloud stores the signed statement with the Organization's upgrade settings and a
 
 The Machine resolves the channel itself, as it does today (`installer/release.rs:126`), so the pointer read and the minisign check stay where they are. The downgrade refusal (`installer/upgrade.rs:130`) is unchanged. A Full caller keeps `AnyRelease`.
 
-This only promises something if Ployz Cloud's operator cannot produce a signed release. F2 merges only after the release-signing protections in the operator's checklist are applied.
+This only promises something if Ployz Cloud's operator cannot produce a signed release. The protections that make that true are under "Before cutting 0.4" in the program checklist. They gate the 0.4 release, not F2's merge.
 
 ### Teardowns
 
@@ -234,13 +234,21 @@ Named once in each PR body, then left alone.
 
 The program runs the way `c-plan.md` "Program checklist" says, from arming and the audit tick to owners, PR mechanics, verdict and merge. These differences apply.
 
-- [ ] Dependency graph. F1 branches from `main` now. F2 after F1 and Appendix A gaps 1 and 2. F2 merges only after the release-signing protections in the operator's checklist are applied. F3 after F1 and gap 2. F4 after F1 and D6 merged (a built-image rollback is D6's statement). F5 after F1, gaps 3 to 5, and E6 merged (gap 5). F6 after F2 to F5, D4, E8 and gaps 7 and 8. It is the C4 integration slice. F7 after F6, thread R's findings at C4 resolved or accepted, and gap 6.
+- [ ] Dependency graph. F1 branches from `main` now. F2 after F1 and Appendix A gaps 1 and 2. F3 after F1 and gap 2. F4 after F1 and D6 merged (a built-image rollback is D6's statement). F5 after F1, gaps 3 to 5, and E6 merged (gap 5). F6 after F2 to F5, D4, E8 and gaps 7 and 8. It is the C4 integration slice. F7 after F6, thread R's findings at C4 resolved or accepted, and gap 6.
 - [ ] Hotspots. `rpc_catalog.rs` gains one row in F2, F3, F5 and F6 each. `machine_api/local.rs`, `restart_approval.rs` and `dashboard/src/server/schema.ts` are shared with C, D and E. Each F PR adds one row or one `admit_*` call and rebases promptly.
 - [ ] File boundaries. F1 touches `core/crates/ployz-core/src/authority/{coverage,mod}.rs` (new module), `core/crates/ployz-core/tests/capabilities.rs`, `core/crates/ployzd/src/machine_api/{local,authorization_tests}.rs`, `core/crates/ployzd/src/machine/local_machine/restart_approval.rs` (`admit_operator_departure`), `core/crates/ployz/src/handlers/server/` (refusal copy) and `docs/user/servers/manage-servers.md`. F2 adds `core/crates/ployz-core/src/authority/upgrade.rs` and touches `core/crates/ployz-core/src/rpc/upgrade.rs` (one field), `rpc_catalog.rs`, `core/crates/ployzd/src/machine/local_machine/upgrade.rs`, `core/crates/ployzd/src/installer/upgrade.rs` (`ReleaseChoice`), `restart_approval.rs` (one record kind), the `ployz server upgrade-policy` handler, `dashboard/src/modules/server-upgrade/**` and the docs. F3 touches `machine_api/local.rs` (`set_ingress_doors`, `set_private_access`), `core/crates/ployz-core/src/authority/` (`PrivateAccessApproval`), `dashboard/src/modules/{ingress,private-access}/**` and the docs. F4 touches `dashboard/src/modules/{config-store,approval-session,service-act}/**`, `docs/user/deploy/**`, `core/crates/ployz-store/src/deployment/{admit,query,lifecycle}.rs` and their tests (`Retry.approval`, a plan of a past Deployment), the generated SDK types, and the route files that hold the five buttons: `StoreDeploymentPage.tsx`, `new-branch/StoreNewBranchPanel.tsx` and `sync/SyncButton.tsx` under `$environmentSlug/-components/`. The operator widened it from the dashboard-only list when F4 found the buttons live in route files and the Store's Retry had no approval field. F5 adds `core/crates/ployz-core/src/authority/teardown.rs` and touches `deploy_approval.rs`, `machine_api/local.rs` (`leave`, `forget`, `remove_volume` hand-off to E6's check), `core/crates/ployz/src/deploy/pipeline.rs` (`destroy_namespace`), `dashboard/src/modules/machines/{namespace-cleanup,machine-removal}*`, and the docs. F6 touches `core/crates/ployz/src/handlers/device.rs` (pins and the known-Machines file), `core/crates/ployzd/src/machine/` (the trusted snapshot), `machine_api/mod.rs` (mesh scope), `local_machine/sealing.rs` (rotation), `daemon.rs` and `machine/store.rs` (the boot commit), `restart_approval.rs` (`set_device_enforcement`), `rpc_catalog.rs`, `dashboard/src/modules/server-upgrade/**`, `dashboard/src/modules/machines/server-policy*` and the docs. F7 touches every file in f-inventory.md "Where the switch lives", `core/DESIGN.md`, `core/crates/ployzd/src/machine/store.rs` (`member`, `founder`) and `docs/user/servers/{add-a-server,manage-servers}.md`.
 - [ ] Bets every F PR names. The stable promise, with the argument above, and from F7 the exception. Bet 8, evidence over claims, because the dashboard calls a Cluster protected only from each Machine's own answer, and refusals name the capability. Bet 6, Machine-local authority, because each Machine checks the channel, the teardown and its own activation, and reads no other Machine's record. Bet 7, Cloud drives and never owns, because Cloud stores statements it cannot make. Bet 3, bounded imperative commands, because a channel statement and a teardown are evidence for one command, not desired state.
 - [ ] Residuals each F PR names once. See "What remains".
 - [ ] Live lanes run per `c-plan.md` "Boot recipe", with `--machines 3` where a lane says so. The attacker harness is C1's `.audit/c-attacker/`. From F1 it takes its route cases from `coverage_cases` at the head under test. It is also extended with `Leave`, `Forget`, `RequestMachineUpgrade`, `SetIngressDoors`, `SetPrivateAccess`, a stripped enroll response and a forged one.
+- [ ] Verification per checkpoint, not per PR. A slice whose behavior stays dark until `ployz device enforce` activates gets the light set at its code-ready head: the gates lane, the attacker audit lane, one more audit lane, and its unit tests and model checks. It runs no live lanes and no perf lane. The full swarm (gates, the ten live lanes, perf, the audit lanes and the attacker) runs once per checkpoint against the integrated head, and each lane covers every slice merged since the last checkpoint. F6's swarm (C4) covers F2 to F5, E8 and D4 together. F7 (C5) removes the switch and is not dark, so it gets its own full swarm. A break a checkpoint swarm finds gets a fix PR before the checkpoint slice merges. Every finding is judged by the Cloud security bar. Review rounds are unchanged (`docs/agents/landing.md`).
 - [ ] Model checks. `verify-upgrade-attempt` runs in F2, since `ReleaseChoice::admit` sits inside `request_locked`. `verify-volume-runs` runs in F5 if `RemoveVolume`'s hand-off touches a run guard.
+
+### Before cutting 0.4
+
+The operator applies these after F6 and F7 merge and before cutting the 0.4 release. The channel check in F2 holds only once both are in place.
+
+- [ ] Remove Administration from the getployz, getployz-dev and getployz-staging Apps.
+- [ ] Apply the release-signing protections: the signing key stays with the operator, the release workflow runs only after the operator's approval, and rulesets protect release tags and channel pointers.
 
 ## Classify every route, and refuse Cloud's Leave and Forget (F1)
 
@@ -296,8 +304,6 @@ Outcome. A person sets their Cluster's Release Channel once with `ployz server u
 What users lose. On an enforcing Cluster with no signed channel, upgrades through Cloud are refused until someone signs one. Cloud offers the prompt before the first upgrade.
 
 **Depends on.** F1. Appendix A gaps 1 and 2.
-
-**Gate.** F2 merges only after the release-signing protections in the operator's checklist are applied.
 
 **Files.**
 
@@ -743,4 +749,4 @@ Unproven until the slice that proves it:
 - **Thread E.** Gap 5. F7 removes the unsigned Volume paths, per e-plan's handoff.
 - **Thread X.** `PublishCertificateMaterial` and the tunnel token in `SetIngressDoors` are classed `Bound` with X's report as the reason.
 - **Thread R.** F6 lanes 4, 5, 5b and 5c and F7 lanes 2 to 4 are the starting set. They cover every case in the live matrix, a starting set with a substituted Server, one padded through the dashboard, a Member and key planted before the first F6 start, a stripped capsule, a forged capsule on an install-line join, and a forged capsule on a pinned join.
-- **Operator, outside code.** F2 merges only after the release-signing protections in the operator's checklist are applied.
+- **Operator, outside code.** The "Before cutting 0.4" list in the program checklist.

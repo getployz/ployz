@@ -8,7 +8,8 @@ use std::{
 
 use ployz_core::{
     MachineLayout, MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId,
-    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
+    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ReleaseChannel,
+    RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -61,6 +62,16 @@ pub enum Error {
         capability = ployz_core::UPGRADE_EXACT_CAPABILITY
     )]
     OffChannel { target: MachineVersion },
+    /// An Operator asked a Machine that enforces Device approval for a release off the
+    /// Release Channel a person approved for its Cluster.
+    #[error(
+        "{capability}: {requested} isn't on the approved {approved} Release Channel. Approve its channel under Server upgrades, or with `ployz server upgrade-policy set --channel` from an approved device",
+        capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
+    )]
+    OffApprovedChannel {
+        approved: ReleaseChannel,
+        requested: MachineRelease,
+    },
     /// The requested release could not be parsed or resolved.
     #[error("could not resolve the Machine release")]
     Resolve(#[source] InstallError),
@@ -150,10 +161,17 @@ impl Downgrade {
     }
 }
 
+/// Which releases a request may name, by who asks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReleaseChoice {
+    /// A Full caller: any published release.
     AnyRelease,
+    /// An Operator on a Machine not enforcing Device approval: a channel, or an exact
+    /// version either channel resolves to now.
     ChannelResolved,
+    /// An Operator on a Machine enforcing Device approval: the channel a person approved,
+    /// or the exact version it resolves to now.
+    Signed(ReleaseChannel),
 }
 
 impl ReleaseChoice {
@@ -164,21 +182,47 @@ impl ReleaseChoice {
         source: &ReleaseSource,
         installed: Option<&MachineVersion>,
     ) -> Result<(), Error> {
-        if self == Self::AnyRelease || !matches!(requested, MachineRelease::Exact(_)) {
-            return Ok(());
-        }
-        for channel in [MachineRelease::Stable, MachineRelease::Beta] {
-            if super::release::resolve_release(&channel, source, installed)
-                .await
-                .is_ok_and(|resolved| resolved == *target)
-            {
-                return Ok(());
+        let named = ReleaseChannel::of(requested);
+        match self {
+            Self::AnyRelease => Ok(()),
+            Self::ChannelResolved if named.is_some() => Ok(()),
+            Self::ChannelResolved => {
+                for channel in [ReleaseChannel::Stable, ReleaseChannel::Beta] {
+                    if resolves_to(channel, target, source, installed).await {
+                        return Ok(());
+                    }
+                }
+                Err(Error::OffChannel {
+                    target: target.clone(),
+                })
+            }
+            Self::Signed(approved) => {
+                let on_channel = match named {
+                    Some(channel) => channel == approved,
+                    None => resolves_to(approved, target, source, installed).await,
+                };
+                if on_channel {
+                    Ok(())
+                } else {
+                    Err(Error::OffApprovedChannel {
+                        approved,
+                        requested: requested.clone(),
+                    })
+                }
             }
         }
-        Err(Error::OffChannel {
-            target: target.clone(),
-        })
     }
+}
+
+async fn resolves_to(
+    channel: ReleaseChannel,
+    target: &MachineVersion,
+    source: &ReleaseSource,
+    installed: Option<&MachineVersion>,
+) -> bool {
+    super::release::resolve_release(&channel.into(), source, installed)
+        .await
+        .is_ok_and(|resolved| resolved == *target)
 }
 
 /// Own acceptance and worker launch independently of the requesting client's lifetime.

@@ -130,6 +130,8 @@ macro_rules! rpc_catalog {
                 MANAGEMENT_SCOPE_CAPABILITY: ("ployz.management.scope.v1", Always),
                 /// `RequestMachineUpgrade` takes an exact version no Release Channel resolves to only from a Full caller.
                 UPGRADE_EXACT_CAPABILITY: ("ployz.machine.upgrade.exact.v1", Always),
+                /// `RequestMachineUpgrade` takes the Release Channel a person signed and, under Device enforcement, admits an Operator's upgrade only along it.
+                UPGRADE_CHANNEL_CAPABILITY: ("ployz.machine.upgrade.channel.v1", Always),
                 /// The daemon opens Sealed values and keeps them out of its own logs.
                 ENV_SEALED_CAPABILITY: ("ployz.env.sealed.v1", Always),
                 /// The daemon opens a Build's Sealed values as secret files and keeps them out of its output.
