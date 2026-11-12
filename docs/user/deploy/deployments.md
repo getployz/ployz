@@ -179,6 +179,12 @@ the same lines and signs without asking. `--json` never asks either, so it needs
 Use `--yes` only where you trust the plan Ployz Cloud sends. Without device enforcement,
 `ployz deploy` signs nothing and never asks.
 
+A deploy that deletes volume data, such as `ployz deploy --accept-volume-loss data`, also prints
+each volume whose data goes and asks `Delete the data of data for good?` before it signs a
+[teardown](../servers/manage-servers.md#take-things-off-servers-that-enforce) of exactly those
+volumes. In the dashboard, your passkey approves the same after you type to confirm the loss. A
+server deletes no volume data without it.
+
 Each server checks every container it creates against what you signed: the image, command,
 variables and sealed values, mounts, config files, ports, privileges and hook. Ployz Cloud
 carries the approval but can't change what it covers. A server logs each one, such as
