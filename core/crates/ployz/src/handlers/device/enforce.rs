@@ -179,7 +179,10 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
             let name = reach.name(&server.machine_id);
             match deliver(&client, server.machine_id, request.clone()).await {
                 Ok(()) => match settled(&client, server.machine_id, set.operation).await {
-                    Ok(()) => {
+                    Ok(report) => {
+                        if let Some(router) = &report.private_access {
+                            ui::note(kept_router(&name, router));
+                        }
                         activated.push(*server);
                         outcomes.push(Outcome {
                             machine_id: server.machine_id,
@@ -306,6 +309,17 @@ fn pin_each<'a>(
         pinning.included.push(server);
     }
     Ok(pinning)
+}
+
+/// The line naming a Private Access router a Server keeps from before activation.
+fn kept_router(name: &str, router: &ployz_core::PrivateAccessKept) -> String {
+    let tailnet = router.tailnet.as_deref().map_or_else(
+        || "a tailnet it couldn't name".to_owned(),
+        |tailnet| format!("tailnet {tailnet}"),
+    );
+    format!(
+        "{name} keeps the Private Access router it had before activation, on {tailnet}. If you don't recognize it, run `ployz private-access off`, then turn it on again from this device."
+    )
 }
 
 fn left_out(server: &Found, name: &str, why: String) -> Outcome {
@@ -488,7 +502,7 @@ async fn settled(
     client: &Client,
     machine_id: MachineId,
     operation: OperationId,
-) -> Result<(), String> {
+) -> Result<ActivationReport, String> {
     let target = MachineTarget::from(&machine_id);
     let mut client = client.clone();
     for _ in 0..60 {
@@ -502,13 +516,9 @@ async fn settled(
                 "it didn't come back from its restart. Check it with `ployz status`.".to_owned()
             })?;
         match details.activation {
-            Some(ActivationReport {
-                state: ActivationState::Activated,
-                operation: committed,
-                ..
-            }) => {
-                return if committed == Some(operation) {
-                    Ok(())
+            Some(report) if report.state == ActivationState::Activated => {
+                return if report.operation == Some(operation) {
+                    Ok(report)
                 } else {
                     Err("it was activated under another set".to_owned())
                 };

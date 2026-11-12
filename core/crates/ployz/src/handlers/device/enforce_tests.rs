@@ -168,6 +168,7 @@ fn enforce_lists_and_retires_legacy_keys() {
         operation: None,
         legacy_members: Vec::new(),
         legacy_keys: keys,
+        private_access: None,
     };
     first.report = Some(report(vec![legacy(1), legacy(2), legacy(3)]));
     second.report = Some(report(vec![legacy(2)]));
@@ -237,4 +238,21 @@ fn enforce_has_no_off() {
             .try_get_matches_from_mut(["enforce", "--off"])
             .is_err()
     );
+}
+
+#[test]
+fn activation_names_a_kept_private_access_router_and_its_tailnet() {
+    let named = kept_router(
+        "web-1",
+        &ployz_core::PrivateAccessKept {
+            tailnet: Some("example.com".to_owned()),
+        },
+    );
+    assert!(
+        named.starts_with("web-1 keeps the Private Access router"),
+        "{named}"
+    );
+    assert!(named.contains("tailnet example.com"), "{named}");
+    let unnamed = kept_router("web-1", &ployz_core::PrivateAccessKept { tailnet: None });
+    assert!(unnamed.contains("a tailnet it couldn't name"), "{unnamed}");
 }

@@ -268,6 +268,13 @@ impl LocalMachine {
             operation: record.activation(),
             legacy_members,
             legacy_keys: legacy_keys(&record),
+            private_access: self
+                .containers
+                .as_ref()
+                .filter(|containers| containers.private_access_state_kept())
+                .map(|containers| ployz_core::PrivateAccessKept {
+                    tailnet: containers.private_access_tailnet(),
+                }),
         }
     }
 }

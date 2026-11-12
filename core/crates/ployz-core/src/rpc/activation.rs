@@ -63,6 +63,21 @@ pub struct ActivationReport {
     /// Trusted keys this Machine holds no evidence for.
     #[serde(default)]
     pub legacy_keys: Vec<LegacyKey>,
+    /// The Private Access router this Machine keeps from before activation, if any.
+    /// Activation restores it as it was, on the tailnet it had joined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub private_access: Option<PrivateAccessKept>,
+}
+
+/// A Private Access router placed before activation, which activation keeps exactly.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PrivateAccessKept {
+    /// The tailnet the router's node joined, as its own state names it. Absent when the
+    /// node hasn't joined one or its state can't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub tailnet: Option<String>,
 }
 
 impl ActivationReport {
