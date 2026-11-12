@@ -83,8 +83,17 @@ describe("stagedAsks", () => {
     return each.answered ? { ...each, enforces: true, passkey: true } : each;
   };
 
-  it("drafts what a Move's Deploy runs after it from the copies it leaves: the old copy cleared, then the mirror fed by the new writer", () => {
-    const before = [enforcing("web-1", "writer"), enforcing("web-2", "empty"), enforcing("web-3", "empty")];
+  // A writer with no snapshot yet still leaves one: the Move hands off at a final snapshot, so its old copy holds data.
+  const unsnapshotted = (): Member => {
+    const writer = enforcing("web-1", "writer");
+    return writer.answered && writer.view.copy?.kind === "root" ? { ...writer, view: { copy: { ...writer.view.copy, newest: null } } } : writer;
+  };
+
+  it.each([
+    ["a writer with a snapshot", () => enforcing("web-1", "writer")],
+    ["a writer with none yet", unsnapshotted],
+  ])("drafts what a Move's Deploy runs after it from the copies it leaves, off %s: the old copy cleared, then the mirror fed by the new writer", (_, writer) => {
+    const before = [writer(), enforcing("web-2", "empty"), enforcing("web-3", "empty")];
     const staged = row({ primary: id("web-2"), mirrors: [id("web-3")], deletes: [] });
     const asks = stagedAsks(volume, before, staged, terms);
     expect(asks.map(({ run, change }) => ({ run, workflow: change.workflow }))).toEqual([

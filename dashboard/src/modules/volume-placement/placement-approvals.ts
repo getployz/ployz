@@ -136,21 +136,24 @@ export function stagedAsks(volume: PlacementVolume, members: readonly Member[], 
 
 /**
  * The copies once `move` and the removals before it ran: its target writes, the Server it leaves keeps an old copy, and
- * every copy deleted on the way holds nothing.
+ * every copy deleted on the way holds nothing. A Move hands off at a final snapshot, so both ends hold one even when the
+ * writer had none before; its name and guid are the Servers' to choose, and nothing drafted from them reads either.
  */
 function afterMove(members: readonly Member[], changes: readonly PlacementChange[], move: Extract<PlacementChange, { kind: "move" }>): Member[] {
   const deleted = changes.flatMap((change) =>
     change.kind === "delete_copy" || change.kind === "remove_mirror" ? [change.server.id] : change.kind === "move" ? change.clears.map((server) => server.id) : []);
   const epoch = Math.max(0, ...members.map((member) => (member.answered && member.view.copy?.kind === "root" ? member.view.copy.epoch : 0))) + 1;
+  const source = move.from === null ? null : answered(members, move.from.id)?.view.copy;
+  const final = source?.newest ?? { name: "final", guid: "", created_unix_seconds: 0 };
   return members.map((member): Member => {
     if (!member.answered) return member;
     const copy = member.view.copy;
     const id = member.machine.id;
-    if (id === move.to.id) return { ...member, view: { ...member.view, copy: { kind: "root", readonly: false, newest: copy?.newest ?? null, epoch, seed: false } } };
+    if (id === move.to.id) return { ...member, view: { ...member.view, copy: { kind: "root", readonly: false, newest: final, epoch, seed: false } } };
     if (deleted.includes(id)) return { ...member, view: { ...member.view, copy: null } };
     if (id !== move.from?.id || copy === null) return member;
     // The slot's name is the Server's to choose; nothing drafted from it reads it.
-    const old: VolumeCopy = { kind: "slot", slot: "old", readonly: true, newest: copy.newest, resume_token: null, pull: null, role: "old_copy" };
+    const old: VolumeCopy = { kind: "slot", slot: "old", readonly: true, newest: final, resume_token: null, pull: null, role: "old_copy" };
     return { ...member, view: { ...member.view, copy: old } };
   });
 }
