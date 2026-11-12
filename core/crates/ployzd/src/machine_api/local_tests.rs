@@ -4158,13 +4158,9 @@ mod set_volume_copy {
                 spec: &ResolvedServiceSpec,
             ) -> Signed<VolumeApproval> {
                 let namespace = Namespace::parse("app").unwrap();
-                let issued_at = Timestamp::now();
-                let body = VolumeApproval {
-                    cluster: self.cluster,
-                    operation: OperationId::parse("1".repeat(32)).unwrap(),
-                    namespace: namespace.clone(),
-                    volume: DockerVolumeName::parse(volume).unwrap(),
-                    workflow: VolumeWorkflow::Move {
+                self.signed(
+                    volume,
+                    VolumeWorkflow::Move {
                         from,
                         to,
                         service: ApprovedService {
@@ -4174,6 +4170,29 @@ mod set_volume_copy {
                         },
                         mirrors: Vec::new(),
                     },
+                )
+            }
+
+            /// A Restore of `volume` on this Machine at snapshot `at`, signed now.
+            fn restoring(&self, volume: &str, at: u64) -> Signed<VolumeApproval> {
+                self.signed(
+                    volume,
+                    VolumeWorkflow::Restore {
+                        machine: self.this,
+                        at: ployz_core::SnapshotGuid::new(at),
+                        loses_after: Some(Timestamp::from_millis(900_000).unwrap()),
+                    },
+                )
+            }
+
+            fn signed(&self, volume: &str, workflow: VolumeWorkflow) -> Signed<VolumeApproval> {
+                let issued_at = Timestamp::now();
+                let body = VolumeApproval {
+                    cluster: self.cluster,
+                    operation: OperationId::parse("1".repeat(32)).unwrap(),
+                    namespace: Namespace::parse("app").unwrap(),
+                    volume: DockerVolumeName::parse(volume).unwrap(),
+                    workflow,
                     issued_at,
                     expires_at: issued_at.plus(MAX_LIFETIME_MILLIS),
                     signer: SignerKey::Device(DeviceKey::from(self.signer.public())),
@@ -4630,16 +4649,27 @@ mod set_volume_copy {
         /// A Restore promotes with no start, which enforcement leaves to the Operator.
         #[tokio::test]
         #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-        async fn an_operator_writer_with_no_start_is_admitted_under_enforcement() {
+        async fn an_operator_writer_with_no_start_needs_a_restore_under_enforcement() {
             let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-restore").await;
             let plugin = promoting_plugin();
             let (socket, server) = plugin.serve(&data_dir);
             let service = service.with_volume_plugin(socket);
-            enforce(&store).await;
+            let device = enforce_approving(&store, &data_dir, &service).await;
 
             let restore = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
             "want":{"kind":"writer", "at":"900", "epoch":1, "start":null}});
-            let promoted = reply(&operator_set_copy(&service, restore).await.unwrap());
+            let status = operator_set_copy(&service, restore.clone())
+                .await
+                .unwrap_err();
+            refused_step(&status, unsigned());
+            assert!(
+                !plugin.routes_called().contains(&WRITER_ROUTE.to_owned()),
+                "{:?}",
+                plugin.routes_called()
+            );
+
+            let approved = approved(restore, &device.restoring(VOLUME, 900));
+            let promoted = reply(&operator_set_copy(&service, approved).await.unwrap());
             assert_eq!(
                 serde_json::to_value(&promoted).unwrap(),
                 json!({"copy": writer_root(1, Some(snapshot("f-1", 900)))["Ok"]})
