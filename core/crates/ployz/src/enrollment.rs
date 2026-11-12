@@ -4,7 +4,7 @@ pub mod local;
 use crate::cluster::{Call, Deadline};
 use crate::connect::{Client, ConnectError};
 use ployz_core::{
-    EnrollmentAssignment, EnrollmentSnapshot, RegisterRequest, Registered, RpcError, op,
+    EnrollmentAssignment, EnrollmentSnapshot, MachineId, RegisterRequest, Registered, RpcError, op,
 };
 
 /// Observe the Entry Machine's enrollment facts before taking an operator lock.
@@ -52,6 +52,7 @@ pub async fn publish_enrollment(
 ) -> Result<Registered, RpcError> {
     let snapshot = observe_enrollment(entry).await?;
     let request = checked_registration(assignment, &snapshot)?;
+    let entry_machine = entry.entry_machine();
     entry
         .call_shared::<op::Register>(
             request,
@@ -64,7 +65,7 @@ pub async fn publish_enrollment(
             if let ConnectError::Remote(error) = error {
                 error
             } else {
-                let mut error = RpcError::from(error);
+                let mut error = lost_reply(entry_machine, error);
                 error.message = format!(
                     "Register response lost; outcome may be uncertain: {}",
                     error.message
@@ -72,6 +73,19 @@ pub async fn publish_enrollment(
                 error
             }
         })
+}
+
+/// `error` from a call sent once to the entry Machine, marked when it went out and no
+/// answer came back, so the entry may have done the work. A call that never went out, or
+/// that the entry answered, is not.
+pub(crate) fn lost_reply(entry: Option<MachineId>, error: ConnectError) -> RpcError {
+    let lost = error.unreplied();
+    let error = RpcError::from(error);
+    if lost {
+        error.mark(&ployz_core::ReplyLost { machine_id: entry })
+    } else {
+        error
+    }
 }
 
 #[cfg(test)]
@@ -150,5 +164,40 @@ mod tests {
         let registered = super::checked_registration(&saved, &snapshot).unwrap();
         assert_eq!(registered.capabilities, [SET_CLUSTER_DOORS_CAPABILITY]);
         assert_eq!(registered.assigned_subnet, Some(saved.machine.subnet));
+    }
+
+    fn dropped() -> crate::connect::ConnectError {
+        tonic::Status::from_error(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "connection lost",
+        )))
+        .into()
+    }
+
+    #[test]
+    fn a_reply_that_never_came_back_is_marked_with_the_entry_that_may_have_acted() {
+        let entry = MachineId::parse("a".repeat(32)).unwrap();
+        let named = super::lost_reply(Some(entry), dropped());
+        assert!(named.reply_lost(), "{named:?}");
+        assert_eq!(
+            named.details,
+            serde_json::json!({"machine_id": entry.to_string(), "reply_lost": true})
+        );
+        let unnamed = super::lost_reply(None, dropped());
+        assert!(unnamed.reply_lost(), "{unnamed:?}");
+        assert_eq!(unnamed.details, serde_json::json!({"reply_lost": true}));
+    }
+
+    #[test]
+    fn an_answer_or_a_call_that_never_went_out_is_not_marked_lost() {
+        let entry = MachineId::parse("a".repeat(32)).unwrap();
+        let refusal = ployz_core::RpcError::unavailable("Cluster is not available");
+        let answered = super::lost_reply(
+            Some(entry),
+            crate::connect::ConnectError::Remote(refusal.clone()),
+        );
+        assert_eq!(answered, refusal);
+        let unsent = super::lost_reply(Some(entry), crate::connect::ConnectError::ClientRefused);
+        assert!(!unsent.reply_lost(), "{unsent:?}");
     }
 }

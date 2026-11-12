@@ -517,7 +517,7 @@ impl Session {
                 )
                 .await
                 .map(|_| ())
-                .map_err(RpcError::from)
+                .map_err(|error| crate::enrollment::lost_reply(client.entry_machine(), error))
         })
         .await
     }
@@ -579,11 +579,27 @@ impl Session {
         &self,
         label: ployz_core::ManagementClientLabel,
     ) -> Result<ployz_core::ManagementCapability, CallError> {
+        let mut client = self.client()?;
+        let entry = client.entry_machine();
         let response = self
-            .unary_answered::<op::SetManagementClient>(
-                ployz_core::SetManagementClientRequest::Set { label },
-                Call::keyed(),
-            )
+            .until_closed_answered(async {
+                client
+                    .call::<op::SetManagementClient>(
+                        ployz_core::SetManagementClientRequest::Set { label },
+                        Call::keyed(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        let lost = error.unreplied();
+                        let mut failure = CallError::from(error);
+                        if lost {
+                            failure.error = failure
+                                .error
+                                .mark(&ployz_core::ReplyLost { machine_id: entry });
+                        }
+                        failure
+                    })
+            })
             .await?;
         response.capability.ok_or_else(|| {
             RpcError::internal("Machine set a Management Client without a Management Capability")
@@ -660,7 +676,7 @@ impl Session {
                     )),
                 )
                 .await
-                .map_err(RpcError::from)
+                .map_err(|error| crate::enrollment::lost_reply(client.entry_machine(), error))
         })
         .await
     }

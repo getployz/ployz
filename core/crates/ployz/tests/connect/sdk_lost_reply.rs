@@ -1,4 +1,5 @@
-//! A mutation the session sends once, and whose reply never comes back, says so.
+//! A mutation the session sends once, and whose reply never comes back, says so: the
+//! error is marked `reply_lost` and names the entry Machine that may have done the work.
 
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -92,7 +93,7 @@ async fn register_whose_reply_is_lost_keeps_its_uncertain_outcome_message() {
     .await;
     assert_eq!(
         wire(&error),
-        r#"{"code":"internal","details":null,"message":"Register response lost; outcome may be uncertain: transport error"}"#
+        r#"{"code":"internal","details":{"machine_id":"0123456789abcdef0123456789abcdef","reply_lost":true},"message":"Register response lost; outcome may be uncertain: transport error"}"#
     );
 }
 
@@ -103,7 +104,7 @@ async fn clear_management_client_whose_reply_is_lost_answers_with_the_transport_
         lost(|session| Box::pin(async move { session.clear_management_client(label).await })).await;
     assert_eq!(
         wire(&error),
-        r#"{"code":"internal","details":null,"message":"transport error"}"#
+        r#"{"code":"internal","details":{"machine_id":"0123456789abcdef0123456789abcdef","reply_lost":true},"message":"transport error"}"#
     );
 }
 
@@ -114,7 +115,7 @@ async fn set_management_client_whose_reply_is_lost_answers_with_the_transport_er
         lost(|session| Box::pin(async move { session.set_management_client(label).await })).await;
     assert_eq!(
         wire(&failure.error),
-        r#"{"code":"internal","details":null,"message":"transport error"}"#
+        r#"{"code":"internal","details":{"machine_id":"0123456789abcdef0123456789abcdef","reply_lost":true},"message":"transport error"}"#
     );
     assert!(failure.unanswered, "{failure:?}");
 }
@@ -137,6 +138,6 @@ async fn mint_build_grant_whose_reply_is_lost_answers_with_the_transport_error()
     .await;
     assert_eq!(
         wire(&error),
-        r#"{"code":"internal","details":null,"message":"transport error"}"#
+        r#"{"code":"internal","details":{"machine_id":"0123456789abcdef0123456789abcdef","reply_lost":true},"message":"transport error"}"#
     );
 }
