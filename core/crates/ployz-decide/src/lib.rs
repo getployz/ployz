@@ -9,5 +9,6 @@
 //! The pure cores `ployz-core` already holds (`issuance_gate`, `plan`, `shrink_floor`,
 //! `RestartPolicy`) stay there.
 
+pub mod caddy_load;
 pub mod issuance;
 pub mod volume_records;
