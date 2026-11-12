@@ -56,6 +56,7 @@ use crate::review::history::NotSetVariable;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 use crate::{Actor, Trusted, review};
 
 /// Why a pull request's head didn't deploy.
@@ -1524,6 +1525,7 @@ fn make(
     let latest = review::latest_saved(tx, &id)?;
     review::publish(
         tx,
+        Evidence::Caller(trusted),
         who,
         &id,
         environment.working.clone(),
@@ -1665,6 +1667,7 @@ fn retrack(
         let tracked = track(latest.intent.clone(), event);
         review::publish(
             tx,
+            Evidence::Caller(trusted),
             who,
             id,
             tracked,

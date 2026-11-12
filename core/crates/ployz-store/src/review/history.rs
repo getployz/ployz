@@ -11,6 +11,7 @@ use crate::review::{self, NodeChange};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
 
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 use crate::{Actor, Trusted, error};
 
 /// Saved revisions of one Environment, newest first.
@@ -305,7 +306,7 @@ pub(crate) fn stage(
         ));
     }
     let not_set = prepared.not_set().to_vec();
-    let (environment, changed) = prepared.persist(tx)?;
+    let (environment, changed) = prepared.persist(tx, Evidence::Caller(trusted))?;
     Ok(HistoryStaged {
         environment,
         saved: reviewed.view.saved,

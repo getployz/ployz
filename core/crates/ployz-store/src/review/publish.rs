@@ -15,6 +15,7 @@ use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::SettingPath;
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 use crate::{Actor, Trusted, deployment};
 
 /// Put Working State in Saved State without deploying it.
@@ -186,6 +187,7 @@ pub(crate) fn publish(
         if consumed {
             scope::write_working(
                 tx,
+                Evidence::Caller(trusted),
                 &mut environment,
                 scope::WorkingWrite::Trusted(scope::Reason::Publish),
             )?;
@@ -222,7 +224,13 @@ pub(crate) fn publish(
         }
         error
     })?;
-    review::guard_saving(tx, &environment.summary.id, review.saved.as_ref(), &target)?;
+    review::guard_saving(
+        tx,
+        Evidence::Caller(trusted),
+        &environment.summary.id,
+        review.saved.as_ref(),
+        &target,
+    )?;
     let gate = review::Gate::new(tx, &environment.summary.id, trusted)?;
     review::approve(
         who,
@@ -235,6 +243,7 @@ pub(crate) fn publish(
     let lost = losses;
     let (saved, created) = review::publish(
         tx,
+        Evidence::Caller(trusted),
         who,
         &environment.summary.id,
         environment.working,
@@ -253,6 +262,7 @@ pub(crate) fn publish(
         let mut whole = scope::load_by_id(tx, &summary.id)?;
         scope::write_working(
             tx,
+            Evidence::Caller(trusted),
             &mut whole,
             scope::WorkingWrite::Trusted(scope::Reason::Publish),
         )?;
@@ -282,13 +292,14 @@ pub(crate) fn discard(
         discard.path.as_ref(),
         trusted,
     )?;
-    let (mut environment, changed) = prepared.persist(tx)?;
+    let (mut environment, changed) = prepared.persist(tx, Evidence::Caller(trusted))?;
     // Discarding the whole draft ends its proposals; a path keeps them.
     if discard.path.is_none() && crate::branch::end_included(tx, &environment.id, None)? && !changed
     {
         let mut whole = scope::load_by_id(tx, &environment.id)?;
         scope::write_working(
             tx,
+            Evidence::Caller(trusted),
             &mut whole,
             scope::WorkingWrite::Trusted(scope::Reason::Publish),
         )?;

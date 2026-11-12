@@ -250,7 +250,7 @@ impl ConfigStore {
         work: impl FnOnce(&mut Call<'_>) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
         let trusted = trusted.held_by(who);
-        self.acting(&trusted, |tx| {
+        self.storage.write(|tx| {
             let trusted = trusted.naming(tx, who)?;
             work(&mut Call {
                 tx,
@@ -259,17 +259,6 @@ impl ConfigStore {
                 trusted: &trusted,
             })
         })
-    }
-
-    /// Run `work` in one write transaction acting for the caller `trusted` describes,
-    /// so a write it reaches deep inside still meets [`storage::admit_protect`].
-    fn acting<T>(
-        &self,
-        trusted: &Trusted,
-        work: impl FnOnce(&mut dyn storage::Tx) -> Result<T, RpcError>,
-    ) -> Result<T, RpcError> {
-        self.storage
-            .write(|tx| work(&mut storage::Acting { tx, trusted }))
     }
 
     /// [`write_trusted`](Self::write_trusted) a [`Command`], answering with the pull

@@ -11,6 +11,7 @@ use super::*;
 use crate::Trusted;
 use crate::digest::short_digest;
 use crate::settings::ServiceSetting;
+use crate::trusted::Evidence;
 
 /// What a write checks the receiver against before anything lands. Only the Store
 /// builds one: a client always sends the version it reviewed.
@@ -1873,6 +1874,7 @@ fn seal_inherited(
     }
     scope::write_working(
         tx,
+        Evidence::Store,
         branch,
         scope::WorkingWrite::Trusted(scope::Reason::Inherit),
     )?;

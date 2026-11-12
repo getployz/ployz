@@ -46,6 +46,7 @@ use crate::id::{EnvironmentId, Hostname, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
 use crate::settings::{ServiceSetting, SettingPath};
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 use authored::public_setting;
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
@@ -913,6 +914,7 @@ pub(crate) fn check(review: &Review, version: Option<&str>) -> Result<(), RpcErr
 /// this created it.
 pub(crate) fn publish(
     tx: &mut dyn Tx,
+    evidence: Evidence<'_>,
     who: &Actor,
     environment: &EnvironmentId,
     intent: SavedEnvironmentIntent,
@@ -932,7 +934,7 @@ pub(crate) fn publish(
     {
         return Ok((latest.revision, false));
     }
-    guard_saving(tx, environment, latest, &intent)?;
+    guard_saving(tx, evidence, environment, latest, &intent)?;
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
     let changed = latest.map_or_else(Vec::new, |latest| value_changes(&latest.intent, &intent));
     saved::insert(
@@ -991,12 +993,13 @@ fn value_changes(
 /// before an approval, so no approval is asked of a write the caller may not make.
 pub(crate) fn guard_saving(
     tx: &mut dyn Tx,
+    evidence: Evidence<'_>,
     environment: &EnvironmentId,
     latest: Option<&Saved>,
     intent: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
     let before = latest.map_or(&[][..], |latest| latest.intent.services.as_slice());
-    guard_source(tx, environment, before, &intent.services)
+    guard_source(tx, evidence, environment, before, &intent.services)
 }
 
 /// Refuse a caller who may not protect when `after` changes what a GitHub merge ships
@@ -1005,11 +1008,14 @@ pub(crate) fn guard_saving(
 /// approve. Staging and publishing both ask, so no command brings a source in.
 pub(crate) fn guard_source(
     tx: &mut dyn Tx,
+    evidence: Evidence<'_>,
     environment: &EnvironmentId,
     before: &[SavedServiceIntent],
     after: &[SavedServiceIntent],
 ) -> Result<(), RpcError> {
-    crate::storage::admit_protect(tx, |tx| touches_source(tx, environment, before, after))
+    crate::storage::admit_protect(tx, evidence, |tx| {
+        touches_source(tx, environment, before, after)
+    })
 }
 
 /// The Services whose source `after` changes in `environment`, when it is Protected.
