@@ -27,7 +27,10 @@ use crate::{
 };
 
 use super::{
-    ContainerRuntime, Error, IngressRecovery, create, create::CreationNetwork, docker_error, doors,
+    ContainerRuntime, Error, IngressRecovery, create,
+    create::CreationNetwork,
+    doors,
+    error::{Status, classify, docker_error},
     spec_store::ConfigOperation,
 };
 
@@ -241,10 +244,7 @@ impl ContainerRuntime {
                         .build();
                     match self.docker.create_container(Some(options), body).await {
                         Ok(created) => (created, display_name),
-                        Err(Error::Docker(DockerError::DockerResponseServerError {
-                            status_code: 409,
-                            ..
-                        })) => {
+                        Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
                             if let Some(key) = creation_key {
                                 return self
                                     .matching_creation(
@@ -482,9 +482,7 @@ impl ContainerRuntime {
     ) -> Result<Option<ContainerObservation>, Error> {
         let inspected = match self.docker.client.inspect_container(name, None).await {
             Ok(inspected) => inspected,
-            Err(DockerError::DockerResponseServerError {
-                status_code: 404, ..
-            }) => return Ok(None),
+            Err(error) if classify(&error) == Status::Absent => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         if inspected
@@ -789,19 +787,7 @@ impl ContainerRuntime {
                 .is_ok_and(|managed| managed.identity == QualifiedService::system_ingress_holder())
         });
         for (container_id, _) in managed {
-            match self
-                .docker
-                .client
-                .stop_container(container_id.as_str(), None)
-                .await
-            {
-                Ok(())
-                | Err(DockerError::DockerResponseServerError {
-                    status_code: 304 | 404,
-                    ..
-                }) => {}
-                Err(error) => return Err(error.into()),
-            }
+            self.stop_if_running(&container_id).await?;
             self.force_remove_container(&container_id).await?;
             config_operation.remove(&container_id).await?;
             self.forget(&container_id).await;
@@ -833,6 +819,28 @@ impl ContainerRuntime {
     }
 
     async fn force_remove_container(&self, container_id: &ContainerId) -> Result<(), Error> {
+        self.remove_if_present(container_id).await
+    }
+
+    /// Stops `container_id`. A Container already stopped or gone is success.
+    async fn stop_if_running(&self, container_id: &ContainerId) -> Result<(), Error> {
+        match self
+            .docker
+            .client
+            .stop_container(container_id.as_str(), None)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => match classify(&error) {
+                Status::Unchanged | Status::Absent => Ok(()),
+                Status::Conflict | Status::Other => Err(error.into()),
+            },
+        }
+    }
+
+    /// Removes `container_id` with its anonymous volumes, killing it if it runs. A
+    /// Container already gone is success.
+    async fn remove_if_present(&self, container_id: &ContainerId) -> Result<(), Error> {
         let options = RemoveContainerOptionsBuilder::default()
             .v(true)
             .force(true)
@@ -842,10 +850,12 @@ impl ContainerRuntime {
             .client
             .remove_container(container_id.as_str(), Some(options))
             .await
-            .map_err(|error| docker_error(container_id, error))
         {
-            Ok(()) | Err(Error::ContainerNotFound(_)) => Ok(()),
-            Err(error) => Err(error),
+            Ok(()) => Ok(()),
+            Err(error) => match classify(&error) {
+                Status::Absent => Ok(()),
+                Status::Conflict | Status::Unchanged | Status::Other => Err(error.into()),
+            },
         }
     }
 }
@@ -941,23 +951,14 @@ fn idempotent_lifecycle_result(
     result: Result<(), bollard::errors::Error>,
 ) -> Result<(), Error> {
     match result {
-        Ok(())
-        | Err(bollard::errors::Error::DockerResponseServerError {
-            status_code: 304, ..
-        }) => Ok(()),
+        Ok(()) => Ok(()),
+        Err(error) if classify(&error) == Status::Unchanged => Ok(()),
         Err(error) => Err(docker_error(container_id, error)),
     }
 }
 
 fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
-    attempt < CONTAINER_NAME_ATTEMPTS
-        && matches!(
-            error,
-            bollard::errors::Error::DockerResponseServerError {
-                status_code: 409,
-                ..
-            }
-        )
+    attempt < CONTAINER_NAME_ATTEMPTS && classify(error) == Status::Conflict
 }
 
 pub(crate) fn same_creation(

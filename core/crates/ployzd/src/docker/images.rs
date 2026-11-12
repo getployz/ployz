@@ -16,7 +16,7 @@ use ployz_core::{
     ImagesRemoved, PullPolicy, RegistryAuth,
 };
 
-use super::{ContainerRuntime, Error};
+use super::{ContainerRuntime, Error, Status, classify};
 
 const RETENTION_TAG: &str = ":ployz-sha256-";
 /// Unused images kept for rollback.
@@ -104,9 +104,7 @@ impl ContainerRuntime {
                 .map(|time| time.timestamp())
                 .filter(|seconds| *seconds > 0)),
             // Removed between list and inspect.
-            Err(DockerError::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(None),
+            Err(error) if classify(&error) == Status::Absent => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
@@ -313,15 +311,12 @@ fn under_pressure(space: Option<DiskSpace>) -> bool {
 }
 
 fn refusal(error: DockerError) -> ImageRemovalOutcome {
-    if let DockerError::DockerResponseServerError { status_code, .. } = &error {
-        match status_code {
-            404 => return ImageRemovalOutcome::NotFound,
-            409 => return ImageRemovalOutcome::InUse,
-            _ => {}
-        }
-    }
-    ImageRemovalOutcome::Failed {
-        message: ployz_core::error_chain::inline(&error),
+    match classify(&error) {
+        Status::Absent => ImageRemovalOutcome::NotFound,
+        Status::Conflict => ImageRemovalOutcome::InUse,
+        Status::Unchanged | Status::Other => ImageRemovalOutcome::Failed {
+            message: ployz_core::error_chain::inline(&error),
+        },
     }
 }
 
