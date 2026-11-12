@@ -799,8 +799,8 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
                 driver: "local".into(),
                 options: BTreeMap::new(),
                 labels: BTreeMap::from([
-                    (ployz_core::MANAGED_LABEL.into(), String::new()),
-                    (ployz_core::NAMESPACE_LABEL.into(), "app".into()),
+                    (ployz_core::labels::MANAGED.into(), String::new()),
+                    (ployz_core::labels::NAMESPACE.into(), "app".into()),
                 ]),
             },
         )

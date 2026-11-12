@@ -12,13 +12,11 @@ use super::{
     rotation::{CopyRotation, Gen},
     spec::{HealthcheckSpec, ResolvedServiceSpec},
 };
+use crate::labels::{self, LabelMap};
 use crate::{
     ContainerAddress, ContainerId, DeploymentLogId, MachineId, Namespace, QualifiedService,
     ServiceId, ServiceName,
 };
-
-/// Docker label carrying the deployment that created a Container.
-pub const DEPLOYMENT_ID_LABEL: &str = "ployz.deployment.id";
 
 /// Value that replaces each environment value in a redacted observation.
 pub const REDACTED_ENVIRONMENT_VALUE: &str = "<redacted>";
@@ -292,9 +290,9 @@ impl TryFrom<ContainerObservationParts> for ContainerObservation {
 
     fn try_from(parts: ContainerObservationParts) -> Result<Self, Self::Error> {
         for (label, expected) in [
-            ("ployz.service.id", parts.resolved_spec.service_id.as_str()),
-            ("ployz.service.name", parts.resolved_spec.name.as_str()),
-            ("ployz.namespace", parts.namespace.as_str()),
+            (labels::SERVICE_ID, parts.resolved_spec.service_id.as_str()),
+            (labels::SERVICE_NAME, parts.resolved_spec.name.as_str()),
+            (labels::NAMESPACE, parts.namespace.as_str()),
         ] {
             if parts
                 .labels
@@ -304,13 +302,11 @@ impl TryFrom<ContainerObservationParts> for ContainerObservation {
                 return Err(ContainerObservationError { label });
             }
         }
-        if (parts.labels.contains_key("ployz.managed")
-            || parts.labels.contains_key("ployz.service.hook"))
-            && parts.labels.contains_key("ployz.service.hook")
-                != (parts.kind == ContainerKind::PreDeployHook)
+        if (parts.labels.has_label(labels::MANAGED) || parts.labels.has_label(labels::HOOK))
+            && parts.labels.has_label(labels::HOOK) != (parts.kind == ContainerKind::PreDeployHook)
         {
             return Err(ContainerObservationError {
-                label: "ployz.service.hook",
+                label: labels::HOOK,
             });
         }
         Ok(Self { parts })
@@ -343,12 +339,23 @@ impl ContainerObservationParts {
         self.r#gen.unwrap_or(Gen::FIRST)
     }
 
-    /// The Deploy this Container was created under, from its `DEPLOYMENT_ID_LABEL`.
+    /// The Deploy this Container was created under, from its `ployz.deployment.id` label.
     #[must_use]
     pub fn deploy_label(&self) -> Option<DeploymentLogId> {
-        self.labels
-            .get(DEPLOYMENT_ID_LABEL)
+        self.deployment_label()
             .and_then(|label| DeploymentLogId::parse(label).ok())
+    }
+
+    /// The `ployz.deployment.id` label as written, whether or not it parses.
+    #[must_use]
+    pub fn deployment_label(&self) -> Option<&str> {
+        self.labels.label(labels::DEPLOYMENT_ID)
+    }
+
+    /// The creation key this Container was made under, from its `ployz.creation.key` label.
+    #[must_use]
+    pub fn creation_key(&self) -> Option<&str> {
+        self.labels.label(labels::CREATION_KEY)
     }
 }
 

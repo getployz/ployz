@@ -135,7 +135,7 @@ impl ContainerRuntime {
                 Err(error) if volume_not_found(&error) => continue,
                 Err(error) => return Err(error),
             };
-            if observed.labels.contains_key(ployz_core::MANAGED_LABEL) {
+            if observed.labels.contains_key(ployz_core::labels::MANAGED) {
                 return Err(Error::VolumeShapeMismatch {
                     name: name.clone(),
                     reason: "an External mount names a Volume Ployz manages".into(),

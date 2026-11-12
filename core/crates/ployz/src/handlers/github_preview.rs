@@ -650,7 +650,7 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
                 .environment
                 .retain(|key, _| !approved.generated.contains_key(key));
             let mut labels = shown.container.labels.as_map().clone();
-            labels.remove(ployz_core::config::SERVICE_ID_LABEL);
+            labels.remove(ployz_core::labels::CLOUD_SERVICE_ID);
             if let Ok(labels) = ployz_core::ContainerLabels::parse(labels) {
                 shown.container.labels = labels;
             }

@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use ployz_core::{
     ContainerAddress, ContainerKind, ContainerObservation, ContainerObservationParts, ContainerRun,
-    DEPLOYMENT_ID_LABEL, DeploymentLogId, HealthObservation, Machine, MachineFailure,
-    MachineSuccess, MembershipEvidence, PartialResult, RpcErrorCode, ServiceMode, ServiceName,
+    DeploymentLogId, HealthObservation, Machine, MachineFailure, MachineSuccess,
+    MembershipEvidence, PartialResult, RpcErrorCode, ServiceMode, ServiceName, labels,
     service_containers,
 };
 use serde_json::json;
@@ -1017,7 +1017,7 @@ fn a_copy_held_under_its_own_deploy_does_not_hide_a_restarting_copy() {
             |parts| {
                 parts
                     .labels
-                    .insert(DEPLOYMENT_ID_LABEL.to_owned(), "run".to_owned());
+                    .insert(labels::DEPLOYMENT_ID.to_owned(), "run".to_owned());
             },
         ),
     ]);

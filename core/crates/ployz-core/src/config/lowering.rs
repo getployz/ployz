@@ -104,10 +104,6 @@ pub struct SealedFor {
     pub environment: uuid::Uuid,
 }
 
-/// The label naming the authored Service a Container runs, for bookkeeping only: no
-/// Machine or Cloud reads it back.
-pub const SERVICE_ID_LABEL: &str = "cloud.ployz.service.id";
-
 /// One Service's captured settings and the runtime inputs resolved for it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -471,7 +467,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 labels: crate::ContainerLabels::parse(
                     snapshot
                         .service_id
-                        .map(|id| (SERVICE_ID_LABEL.into(), id))
+                        .map(|id| (crate::labels::CLOUD_SERVICE_ID.into(), id))
                         .into_iter()
                         .collect(),
                 )

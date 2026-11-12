@@ -29,16 +29,16 @@ use ployz_core::{
     DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnrollmentSnapshot, EnsuredContainer,
     HealthObservation, HistoryContainer, HistoryContainerKind, HistoryRow, HistoryStream,
     IngressDoors, IngressDoorsSet, LiveLogTarget, LocalMachinePhase, LogBody, LogDirection,
-    LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails,
-    MachineId, MachineList, MachineName, MachineObservation, MachinePath, MachineRelease,
-    MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome,
-    MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload,
-    PROTOCOL_MAJOR, PrivateAccessSet, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
-    RoutedAddresses, RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
+    LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, Machine, MachineDetails, MachineId,
+    MachineList, MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc,
+    MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
+    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, PrivateAccessSet,
+    ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge, RoutedAddresses,
+    RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
     RuntimeWatchFrame, ServiceId, ServiceName, SetPrivateAccessRequest, SlotId, SlotRole,
     StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
-    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
+    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame, labels,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1313,7 +1313,7 @@ impl MachineState {
         let mut labels = BTreeMap::from([
             ("ployz.service.id".to_owned(), service_id.to_string()),
             ("ployz.service.name".to_owned(), spec.service.to_string()),
-            (NAMESPACE_LABEL.to_owned(), spec.namespace.to_string()),
+            (labels::NAMESPACE.to_owned(), spec.namespace.to_string()),
         ]);
         if let Some(deployment) = spec.deployment {
             labels.insert(DEPLOYMENT_LABEL.to_owned(), deployment.to_string());
@@ -1355,8 +1355,8 @@ impl MachineState {
                     CopyRole::Writer | CopyRole::Switching => (
                         format!("/var/lib/ployz/{}", copy.name),
                         BTreeMap::from([
-                            (MANAGED_LABEL.to_owned(), String::new()),
-                            (NAMESPACE_LABEL.to_owned(), copy.namespace.to_string()),
+                            (labels::MANAGED.to_owned(), String::new()),
+                            (labels::NAMESPACE.to_owned(), copy.namespace.to_string()),
                         ]),
                     ),
                 };

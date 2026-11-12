@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ContainerObservation, DockerVolumeId, NAMESPACE_LABEL, Namespace, QualifiedService};
+use crate::{ContainerObservation, DockerVolumeId, Namespace, QualifiedService, labels};
 
 /// One observer-derived Namespace. It exists while this observer sees an owned
 /// Service or a managed volume.
@@ -21,7 +21,7 @@ pub struct NamespaceObservation {
 /// not a Namespace; the volume name is never consulted.
 #[must_use]
 pub fn owned_volume_namespace(labels: &BTreeMap<String, String>) -> Option<Namespace> {
-    Namespace::parse(labels.get(NAMESPACE_LABEL)?).ok()
+    Namespace::parse(labels.get(labels::NAMESPACE)?).ok()
 }
 
 /// Derive Namespaces from owned Services and managed volumes.
@@ -67,7 +67,7 @@ mod tests {
     use super::*;
     use crate::{
         ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-        DockerVolumeName, MANAGED_LABEL, MachineId, ResolvedServiceSpec, ServiceId, ServiceName,
+        DockerVolumeName, MachineId, ResolvedServiceSpec, ServiceId, ServiceName,
     };
 
     #[test]
@@ -131,8 +131,8 @@ mod tests {
                 name: DockerVolumeName::parse("broken").unwrap(),
             },
             BTreeMap::from([
-                (NAMESPACE_LABEL.to_owned(), "Not_DNS".to_owned()),
-                (MANAGED_LABEL.to_owned(), String::new()),
+                (labels::NAMESPACE.to_owned(), "Not_DNS".to_owned()),
+                (labels::MANAGED.to_owned(), String::new()),
             ]),
         );
         let managed_only = (
@@ -140,7 +140,7 @@ mod tests {
                 machine_id: machine_id(),
                 name: DockerVolumeName::parse("managed").unwrap(),
             },
-            BTreeMap::from([(MANAGED_LABEL.to_owned(), String::new())]),
+            BTreeMap::from([(labels::MANAGED.to_owned(), String::new())]),
         );
         let namespaces = derive_namespaces(
             [] as [&ContainerObservation; 0],
@@ -211,8 +211,8 @@ mod tests {
         let labels = namespace
             .map(|namespace| {
                 BTreeMap::from([
-                    (NAMESPACE_LABEL.to_owned(), namespace.to_owned()),
-                    (MANAGED_LABEL.to_owned(), String::new()),
+                    (labels::NAMESPACE.to_owned(), namespace.to_owned()),
+                    (labels::MANAGED.to_owned(), String::new()),
                 ])
             })
             .unwrap_or_default();
