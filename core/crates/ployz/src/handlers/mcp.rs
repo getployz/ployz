@@ -13,7 +13,7 @@ use ployz_store::tools::{
     self, Act, Action, Ask, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt,
     ToolResult, Write,
 };
-use ployz_store::{Actor, ConfigStore, OrganizationId};
+use ployz_store::{Actor, ConfigStore, OperationVerb, OrganizationId};
 use reqwest::Method;
 use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
@@ -978,10 +978,12 @@ struct Call<'a> {
 
 fn verb(tool: &str, input: &Value, asked: &Asked) -> Verb {
     let skips = input.get("skip_deploy").and_then(Value::as_bool) == Some(true);
-    match (&asked.subject, tool) {
-        (Subject::Operation(operation), _) => operation.verb,
+    match (&asked.required.subject, tool) {
+        (Subject::Operation(operation), _) => Verb::Operation(operation.verb),
         (Subject::Diff(_), "deploy") if skips => Verb::Publish,
-        (Subject::Diff(_), "environment_remove" | "project_remove") => Verb::Remove,
+        (Subject::Diff(_), "environment_remove" | "project_remove") => {
+            Verb::Operation(OperationVerb::Remove)
+        }
         (Subject::Diff(_), "deployment_retry") => Verb::Retry,
         (Subject::Diff(_), _) => Verb::Deploy,
     }
@@ -1107,7 +1109,7 @@ impl Server {
         }
         let reason = if accepted { reason(&content) } else { None };
         let decision = match (approved, &reason) {
-            (true, _) => json!({ "approve": { "digest": asked.digest } }),
+            (true, _) => json!({ "approve": { "digest": asked.required.digest } }),
             (false, Some(reason)) => json!({ "reject": { "reason": reason } }),
             (false, None) => json!({ "reject": {} }),
         };

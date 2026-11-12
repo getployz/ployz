@@ -571,7 +571,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let removal = approval::approved(
         &runtime,
         &credential,
-        approval::Verb::Remove,
+        ployz_store::OperationVerb::Remove,
         matches.get_one::<String>("approval").cloned(),
         |id| super::server::approved_rerun(matches, &again, id),
         async |approval| {

@@ -5,11 +5,12 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 
 use super::super::{Error, config_path, leaf_matches, rerun, runtime, store::Next};
-use crate::approval::{self, Verb};
+use crate::approval;
 use crate::cli::{base, positional, value};
 use crate::cloud_account::{self, Credential, ForgetCheck, ObservedServer, ServersForgotten};
 use crate::cloud_login::CredentialStore;
 use ployz_core::Hint;
+use ployz_store::OperationVerb;
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Forget a Server without resetting it, or every Server when they were deleted",
@@ -103,7 +104,7 @@ fn forget_through_cloud(
     let forgotten = approval::approved(
         runtime,
         credential,
-        Verb::Forget,
+        OperationVerb::Forget,
         matches.get_one::<String>("approval").cloned(),
         |id| super::approved_rerun(matches, confirmed, id),
         async |approval| {

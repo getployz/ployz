@@ -3,7 +3,10 @@
 use std::fmt::Display;
 
 use ployz_core::{Hint, RpcError, RpcErrorCode};
+use serde::Serialize;
 use serde_json::Value;
+
+use crate::review::ApprovalRequired;
 
 fn error(code: RpcErrorCode, message: impl Into<String>, details: Value) -> RpcError {
     RpcError::new(code, message).with_details(details)
@@ -111,11 +114,14 @@ pub(crate) fn confirmation_required(message: impl Into<String>, details: Value) 
     error(RpcErrorCode::ConfirmationRequired, message, details)
 }
 
-pub(crate) fn approval_required(message: impl Into<String>, details: Value) -> RpcError {
+pub(crate) fn approval_required(
+    message: impl Into<String>,
+    required: &ApprovalRequired<impl Serialize>,
+) -> RpcError {
     error(
         RpcErrorCode::from(ployz_core::APPROVAL_REQUIRED_CODE),
         message,
-        details,
+        serde_json::to_value(required).expect("an approval's details are JSON"),
     )
 }
 

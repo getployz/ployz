@@ -35,7 +35,7 @@ use crate::id::{
     ApprovalDigest, DeploymentId, EnvironmentId, EnvironmentName, ProjectId, ProjectName,
     RemovalId, VolumeName,
 };
-use crate::review::{DestructiveEffect, approval};
+use crate::review::{ApprovalRequired, ApprovalSubject, DestructiveEffect, approval};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::teardown::{EnvironmentRemoval, RemovedBecause};
@@ -749,7 +749,17 @@ pub(crate) fn gate(
         .join(", ");
     Err(error::approval_required(
         format!("A human must approve this first: {asked}"),
-        json!({ "effects": effects, "approval": digest, "diff": diff() }),
+        &ApprovalRequired {
+            id: None,
+            digest: digest.to_string(),
+            effects: effects.into_iter().collect(),
+            subject: ApprovalSubject::Diff(diff()),
+            organization: None,
+            protected: None,
+            prunes: false,
+            dropped: Vec::new(),
+            redeploy: None,
+        },
     ))
 }
 
