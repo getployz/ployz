@@ -86,7 +86,11 @@ const refused = (refusal: StoreRefusal): StoreResult<OrganizationRemoval> => ({ 
 const stillHasProjects = (names: string[], first: string): StoreRefusal => ({
   code: "conflict",
   message: `This Organization still has Projects (${names.join(", ")}). Remove them first`,
-  details: { projects: names, next: { tool: "remove", input: { project: first } } },
+  details: {
+    projects: names,
+    next: { tool: "remove", input: { project: first } },
+    follow_up: { kind: "remove", project: first, environment: null },
+  },
 });
 
 /** The dashboard's Delete organization: the same removal, by an owner of the Organization named by `organizationSlug`. */
