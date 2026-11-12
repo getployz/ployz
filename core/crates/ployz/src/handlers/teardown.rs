@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
     DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
-    EnvironmentSummary, EnvironmentsQuery, Left, NamespaceQuery, ProjectName, ProjectsQuery, Removal,
-    RemovalsQuery, Remove, RemovedQuery, ServicesQuery, VolumeName, VolumesQuery, Waiting,
+    EnvironmentSummary, EnvironmentsQuery, Left, NamespaceQuery, ProjectName, ProjectsQuery,
+    Removal, RemovalsQuery, Remove, RemovedQuery, ServicesQuery, VolumeName, VolumesQuery, Waiting,
 };
 use serde_json::json;
 

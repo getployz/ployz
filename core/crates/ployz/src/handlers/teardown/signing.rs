@@ -11,7 +11,7 @@ use ployz_core::authority::{
 use ployz_core::{DeviceKey, DockerVolumeName, Hint, MachineId, RpcErrorCode};
 
 use super::super::Error;
-use super::super::deploy::approve::{Probe, probe};
+use super::super::deploy::approve::{Enforcing, Probe, probe};
 
 /// A teardown drafted before the person says yes, so its lines show beside the question. It
 /// is stamped when signed, so its window starts at the yes.
@@ -35,6 +35,16 @@ pub(in crate::handlers) fn draft(
     scope: impl FnOnce(&[MachineId]) -> TeardownScope,
     label: impl Fn(&DockerVolumeName) -> String,
 ) -> Result<Option<Drafted>, Error> {
+    Ok(ready(matches, what)?.map(|ready| ready.draft(scope, label)))
+}
+
+/// This Device's key and the enforcing Cluster it signs for, before anything is drafted, so a
+/// caller fetches what the scope names only when there is a teardown to sign. None when there
+/// is nothing to sign: no Device key, or no Server enforcing.
+///
+/// # Errors
+/// As [`draft`].
+pub(in crate::handlers) fn ready(matches: &ArgMatches, what: &str) -> Result<Option<Ready>, Error> {
     let key = super::super::device::key::path(&super::super::config_path(matches)?);
     let Ok(Some(secret)) = super::super::device::key::load(&key) else {
         return Ok(None);
@@ -60,36 +70,57 @@ pub(in crate::handlers) fn draft(
         }
         Probe::Enforcing(enforcing) => enforcing,
     };
-    let signer = Signer::from_seed(&secret);
-    let terms = TeardownTerms {
-        cluster: enforcing.cluster,
-        scope: scope(&enforcing.machines),
-        issued_at: Timestamp::now(),
-        signer: SignerKey::Device(signer.public().into()),
-    };
-    let name = |id: &MachineId| {
-        enforcing
-            .names
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| id.to_string())
-    };
-    let mut lines = Teardown::drafted(terms.clone()).lines(name, label);
-    // The rest of what it signs. The window starts at the yes, when `sign` stamps it.
-    lines.extend([
-        Shown::words("  cluster ")
-            .and_text(&terms.cluster.to_string())
-            .into(),
-        Shown::words("  signer device ")
-            .and_text(&DeviceKey::from(signer.public()).code().to_string())
-            .into(),
-        "  valid for 15 minutes from your yes".to_owned(),
-    ]);
-    Ok(Some(Drafted {
-        terms,
-        signer,
-        lines,
+    Ok(Some(Ready {
+        signer: Signer::from_seed(&secret),
+        enforcing,
     }))
+}
+
+/// A Device key and the enforcing Cluster it signs a teardown for.
+pub(in crate::handlers) struct Ready {
+    signer: Signer,
+    enforcing: Enforcing,
+}
+
+impl Ready {
+    /// Draft the teardown of `scope`, given every Server of the Cluster; `label` names each
+    /// Docker Volume as the person knows it.
+    pub(in crate::handlers) fn draft(
+        self,
+        scope: impl FnOnce(&[MachineId]) -> TeardownScope,
+        label: impl Fn(&DockerVolumeName) -> String,
+    ) -> Drafted {
+        let Self { signer, enforcing } = self;
+        let terms = TeardownTerms {
+            cluster: enforcing.cluster,
+            scope: scope(&enforcing.machines),
+            issued_at: Timestamp::now(),
+            signer: SignerKey::Device(signer.public().into()),
+        };
+        let name = |id: &MachineId| {
+            enforcing
+                .names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string())
+        };
+        let mut lines = Teardown::drafted(terms.clone()).lines(name, label);
+        // The rest of what it signs. The window starts at the yes, when `sign` stamps it.
+        lines.extend([
+            Shown::words("  cluster ")
+                .and_text(&terms.cluster.to_string())
+                .into(),
+            Shown::words("  signer device ")
+                .and_text(&DeviceKey::from(signer.public()).code().to_string())
+                .into(),
+            "  valid for 15 minutes from your yes".to_owned(),
+        ]);
+        Drafted {
+            terms,
+            signer,
+            lines,
+        }
+    }
 }
 
 impl Drafted {

@@ -26,7 +26,6 @@ import type { RemoveHint } from "#/modules/machines/server-drain-view";
 import { useClusterReleased } from "#/providers/runtime-provider";
 import { reviewApproval } from "#/modules/approval-session/approval-prompt";
 import { approveTeardown, departure } from "#/modules/approval-session/teardown-approval";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 
 /**
  * The person's approval of taking `machine` out of the Cluster, when a Server enforces Device approval: it leaves, the
@@ -93,8 +92,10 @@ const volumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) =
  * the runtime, and once the Server is gone the page returns to Servers. An `offline` Server can't be reset, so it is
  * forgotten instead: by another Server, or with Forget Servers when it is the last.
  */
-export function RemoveServerSection({ machine, organizationSlug, last, offline, hint, gate }: {
+export function RemoveServerSection({ machine, machines, organizationSlug, last, offline, hint, gate }: {
   machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
+  /** Every Server, as the page last saw them: an enforcing one makes the removal ask for a passkey. */
+  machines: readonly RuntimeMachineRecord[];
   /** Whether your role may remove Servers. */
   gate: RoleGate;
   /** What still runs here, and the Drain button that would move it. */
@@ -104,7 +105,6 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
   const [open, setOpen] = useState(false);
   const markHere = useStillHere();
   const clusterReleased = useClusterReleased();
-  const { machines } = useRuntimeLens(organizationSlug);
   const abortRef = useRef<AbortController | null>(null);
   const namesRef = useRef<readonly LostVolumeName[]>([]);
 
@@ -118,7 +118,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
     <SettingsSection id="remove-server" title="Danger">
       {offline ? last
         ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} />
-        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} /> : <SettingsDanger
+        : <ForgetServerRow machine={machine} machines={machines} organizationSlug={organizationSlug} gate={gate} /> : <SettingsDanger
         label={`Remove ${machine.name}`}
         hint={last
           ? "Resets it. It's your only server, so everything running here stops until you add another."
@@ -207,10 +207,11 @@ function ForgetLastServerRow({ machine, organizationSlug, gate }: { machine: Run
  * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says which come
  * back from a mirror and which are lost.
  */
-function ForgetServerRow({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
+function ForgetServerRow({ machine, machines, organizationSlug, gate }: {
+  machine: RuntimeMachineRecord; machines: readonly RuntimeMachineRecord[]; organizationSlug: string; gate: RoleGate;
+}) {
   const navigate = useNavigate();
   const markHere = useStillHere();
-  const { machines } = useRuntimeLens(organizationSlug);
   const [open, setOpen] = useState(false);
 
   // What the dialog showed lost, which the teardown names: often nothing, since a Server that doesn't answer lists none.

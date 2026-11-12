@@ -160,6 +160,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} gate={operate} />
       <RemoveServerSection
         machine={machine}
+        machines={servers.map((each) => each.machine)}
         organizationSlug={organizationSlug}
         last={servers.length === 1}
         offline={server.status === "offline"}

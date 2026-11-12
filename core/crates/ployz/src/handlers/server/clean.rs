@@ -192,7 +192,8 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
             label: None,
         })
         .collect();
-    let signing = drafted(matches, &namespace, &doomed)?;
+    let signing =
+        signing::ready(matches, "this clean")?.map(|ready| drafted(ready, &namespace, &doomed));
     confirm(
         matches,
         (namespace.as_str(), signing.as_ref()),
@@ -271,19 +272,35 @@ fn confirm_in_cloud(
         volumes: Vec<Doomed>,
     }
     let next = retry(matches, namespace);
-    let Preview { volumes } = runtime.block_on(cloud_account::refusable_operation(
-        credential,
-        Method::GET,
-        &format!("namespaces/{namespace}/clean"),
-        None,
-    ))?;
-    let signing = drafted(matches, namespace, &volumes)?;
+    let preview = || {
+        runtime
+            .block_on(cloud_account::refusable_operation::<Preview>(
+                credential,
+                Method::GET,
+                &format!("namespaces/{namespace}/clean"),
+                None,
+            ))
+            .map(|preview| preview.volumes)
+    };
+    // Cloud's preview is fetched only when something reads it: the teardown this Device
+    // signs, or the refusal that names the loss.
+    let (signing, previewed) = match signing::ready(matches, "this clean")? {
+        Some(ready) => {
+            let volumes = preview()?;
+            (Some(drafted(ready, namespace, &volumes)), Some(volumes))
+        }
+        None => (None, None),
+    };
     confirm(
         matches,
         (namespace.as_str(), signing.as_ref()),
         "Namespace",
         next.clone(),
         || {
+            let volumes = match previewed {
+                Some(volumes) => volumes,
+                None => preview()?,
+            };
             let (message, loss) = deletes(namespace, &volumes);
             let refusal = Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
@@ -298,14 +315,8 @@ fn confirm_in_cloud(
 }
 
 /// The teardown of stray Namespace `namespace` and each of `volumes` on every Server.
-fn drafted(
-    matches: &ArgMatches,
-    namespace: &Namespace,
-    volumes: &[Doomed],
-) -> Result<Option<Drafted>, Error> {
-    signing::draft(
-        matches,
-        "this clean",
+fn drafted(ready: signing::Ready, namespace: &Namespace, volumes: &[Doomed]) -> Drafted {
+    ready.draft(
         |machines| TeardownScope::Namespace {
             namespaces: vec![namespace.clone()],
             machines: machines.to_vec(),

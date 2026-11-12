@@ -413,6 +413,7 @@ const DIRECT: &[&str] = &[
     "RemoveTrustedKey",
     "Leave",
     "Forget",
+    "RemoveVolume",
     "Exec",
     "Build",
 ];
