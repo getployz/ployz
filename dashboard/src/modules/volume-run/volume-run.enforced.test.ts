@@ -5,6 +5,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSession, RpcError } from "#/modules/runtime/ployz.server";
 import { askCopy, refusedByEnforcement, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
+import { Database } from "#/server/database.server";
 
 const asker = { organizationId: "00000000-0000-4000-8000-000000000e01", dockerVolume: "shop-production_vol-vol1", volumeName: "db", gen: 3 };
 const server = { id: "web-2".padEnd(32, "0") as MachineId, name: "web-2" };
@@ -21,6 +22,8 @@ const asking = (rejection: InstanceType<typeof RpcError>) =>
   askCopy(asker, server, { kind: "mirror", newest: "12", slot: "1" }, {
     kind: "writer", at: "12", epoch: 2, start: { kind: "kept", container_id: "c".repeat(64) as ContainerId },
   }).pipe(
+    // No approval rides on these asks, so nothing is recorded.
+    Effect.provideService(Database, asTestDouble<typeof Database.Service>()({})),
     Effect.provideService(OrganizationRuntime, {
       cancel: () => Effect.void,
       open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
@@ -40,7 +43,7 @@ describe("a Server that enforces device approval", () => {
         ok: false,
         reason: "enforced",
         copy: null,
-        message: "web-2 enforces device approval, so Ployz Cloud can't move db until a later release. To move it now, turn enforcement off from an approved device.",
+        message: "web-2 enforces device approval, so moving db needs your passkey. Deploy the move again from the dashboard, or run ployz volume move from an approved device.",
       },
     });
   });

@@ -41,10 +41,8 @@ new volume, and starts your service on it. The original keeps its data and its m
 not mounted. Delete it from its **Settings** tab when you no longer need it.
 
 On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, Ployz Cloud can't restore a point into a new volume until a later release. The deploy fails
-before it changes anything and drops the restore, naming the server that enforces. To restore a
-point now, turn enforcement off from an approved device.
-[Restoring a volume in place](#restore-a-volume-in-place) still works.
+on, the deploy asks for your passkey for the restore first. See
+[Approve from Ployz Cloud](move-a-volume.md#approve-from-ployz-cloud).
 
 ## Restore a volume in place
 
@@ -90,8 +88,9 @@ answer. Until the move notices the new server is gone, the restore says `data is
 <new server>; it finishes there`. Run it again once the move's run has failed. The old server refuses to
 write the volume again for the move, but takes a restore you approve. Its copy holds every write
 it took before the move, so the line names no lost writes: `… its writer, at snapshot <number>.
-It keeps every write it holds.` **Use mirror** in Ployz Cloud can't restore on these servers on its own and says to run
-the command from an approved device.
+It keeps every write it holds.` **Use mirror** in Ployz Cloud asks for your passkey when you
+deploy, and its lines name the same lost writes. See
+[Approve from Ployz Cloud](move-a-volume.md#approve-from-ployz-cloud).
 
 Without Ployz Cloud, the CLI runs the restore itself, with the same checks. It refuses while any
 server doesn't answer, and while another server holds a copy. Without Cloud, `ployz server rm` is

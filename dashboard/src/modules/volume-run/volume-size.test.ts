@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MachineId } from "@ployz/sdk";
+import type { MachineId, Signed } from "@ployz/sdk";
 import type { PoolShortfall } from "#/modules/volume-run/resize";
 import { recordRefusalOf, sizeRefusalOf } from "#/modules/volume-run/volume-size.server";
 
@@ -34,6 +34,19 @@ describe("sizeRefusalOf in a grow", () => {
     const outcome = sizeRefusalOf("data", db1, 20 * GB, "grow", cause);
     if (expected === null) expect(outcome).toBeNull();
     else expect(outcome).toEqual(expected);
+  });
+});
+
+describe("sizeRefusalOf for the Volume approval a grow carried", () => {
+  const approvalRefused = { code: "permission_denied", message: "refused", details: { capability: "ployz.volume.approval.v1", next: "approve again" } };
+  const until = (expiresAt: number): Signed => ({ body: JSON.stringify({ expires_at: expiresAt }), signatures: [] });
+
+  it.each<[string, Signed | undefined, string]>([
+    ["an expired approval says nothing new can start", until(Date.now() - 1), "Approval expired. Nothing new can start. db-1 didn't take the next step for data"],
+    ["a live approval may be for another change", until(Date.now() + 60_000), "db-1 didn't accept the approval for data. It may have expired, or be for another change"],
+  ])("%s, and is final", (_, approval, message) => {
+    expect(sizeRefusalOf("data", db1, 20 * GB, "grow", approvalRefused, approval))
+      .toEqual({ kind: "refused", reason: "unapproved", message, boundBytes: null, capacity: null, floorBytes: null });
   });
 });
 

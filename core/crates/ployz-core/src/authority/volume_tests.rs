@@ -1,3 +1,4 @@
+use sha2::Digest as _;
 use std::num::NonZeroU64;
 
 use super::*;
@@ -212,7 +213,7 @@ fn a_device_approval_admits_each_step_its_graph_names_on_each_machine() {
         (c(), VolumeStep::Copy(MirrorToMirror)),
     ] {
         let approved = check(&moved, &machine, &step, 200_000).unwrap();
-        assert_eq!(approved.by, signer().public());
+        assert_eq!(approved.by, Approver::Device(signer().public()));
         assert_eq!(approved.digest, StepDigest::of(&moved.body));
     }
     for (machine, step) in [
@@ -829,5 +830,135 @@ fn a_receipt_names_the_snapshot_and_epoch_the_step_lands_on() {
         Err(AuthorityRefusal::Mismatch {
             field: "a snapshot"
         })
+    );
+}
+
+fn passkey_approval(workflow: VolumeWorkflow) -> VolumeApproval {
+    VolumeApproval {
+        signer: SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey),
+        ..approval(workflow)
+    }
+}
+
+/// `body` answered by `passkey`'s own prompt over its signing input.
+fn answered(body: &VolumeApproval, passkey: &Authenticator) -> Signed<VolumeApproval> {
+    let unsigned = Signed::unsigned(body).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &unsigned.challenge(),
+        ..HONEST
+    });
+    unsigned.answered(assertion)
+}
+
+fn check_trusting(
+    signed: &Signed<VolumeApproval>,
+    trusted: &TrustedKeys,
+    machine: &MachineId,
+    step: &VolumeStep,
+) -> Result<VolumeApproved, AuthorityRefusal> {
+    verify(
+        signed,
+        &VolumeFacts {
+            cluster: Some(cluster()),
+            machine,
+            trusted,
+            volume: &volume(),
+            step,
+            now: at(200_000),
+            handed: None,
+        },
+    )
+}
+
+#[test]
+fn a_passkeys_own_prompt_approves_a_volume_workflow() {
+    let passkey = Authenticator::es256(4);
+    let signed = answered(&passkey_approval(moving()), &passkey);
+    let approved = check_trusting(&signed, &trusting(&passkey), &a(), &cut()).unwrap();
+    assert_eq!(approved.by, Approver::Passkey(passkey.passkey().code()));
+    assert_eq!(approved.body, passkey_approval(moving()));
+    let input = super::super::keys::signing_input(Purpose::Volume, &signed.body);
+    assert_eq!(
+        signed.challenge(),
+        <[u8; 32]>::from(sha2::Sha256::digest(input)),
+        "the challenge is the digest of the Volume approval's own signing input"
+    );
+}
+
+#[test]
+fn a_passkeys_answer_counts_only_for_its_own_body_signer_and_trusted_passkey() {
+    let passkey = Authenticator::es256(4);
+    let trusted = trusting(&passkey);
+    let mut moved = answered(&passkey_approval(moving()), &passkey);
+    let other = VolumeApproval {
+        volume: DockerVolumeName::parse("app_other").unwrap(),
+        ..passkey_approval(moving())
+    };
+    moved.body = Signed::unsigned(&other).unwrap().body;
+    assert_eq!(
+        check_trusting(&moved, &trusted, &a(), &cut()),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a challenge"
+        }),
+        "an answer moved onto another body"
+    );
+    assert_eq!(
+        check_trusting(
+            &answered(&passkey_approval(moving()), &Authenticator::es256(5)),
+            &trusted,
+            &a(),
+            &cut()
+        ),
+        Err(AuthorityRefusal::UnknownPasskey)
+    );
+    assert_eq!(
+        check_trusting(
+            &answered(&approval(moving()), &passkey),
+            &trusted,
+            &a(),
+            &cut()
+        ),
+        mismatch("the signer"),
+        "a body naming a Device is not a passkey's"
+    );
+}
+
+#[test]
+fn a_passkeys_answer_to_a_workflow_challenge_does_not_approve_a_volume_workflow() {
+    let passkey = Authenticator::es256(4);
+    let unsigned = Signed::unsigned(&passkey_approval(moving())).unwrap();
+    let workflow = sha2::Sha256::digest(super::super::keys::signing_input(
+        Purpose::Workflow,
+        &unsigned.body,
+    ));
+    let signed = unsigned.answered(passkey.answer(&Answer {
+        challenge: &workflow,
+        ..HONEST
+    }));
+    assert_eq!(
+        check_trusting(&signed, &trusting(&passkey), &a(), &cut()),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a challenge"
+        })
+    );
+}
+
+#[test]
+fn a_passkeys_answer_still_meets_every_other_check() {
+    let passkey = Authenticator::es256(4);
+    let trusted = trusting(&passkey);
+    let signed = answered(&passkey_approval(moving()), &passkey);
+    assert_eq!(
+        check_trusting(&signed, &trusted, &id('e'), &cut()),
+        mismatch("this Server")
+    );
+    assert_eq!(
+        check_trusting(
+            &signed,
+            &trusted,
+            &a(),
+            &VolumeStep::Copy(CopyTransition::NoneToMirror)
+        ),
+        mismatch("a Volume step")
     );
 }

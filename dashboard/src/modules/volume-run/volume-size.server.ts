@@ -6,7 +6,7 @@ import type { StoreRefusal, StoreRefused } from "#/modules/config-store/store.co
 import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
 import { sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { type Bytes, deployingMessage, gb, gbAtLeast, type SizeDirection, type SizeOutcome, type Unheld } from "#/modules/volume-run/resize";
-import { type MachineRef, openSession, requireOwner, type RunContext, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
+import { ApprovalRefusal, type MachineRef, openSession, recordAnswer, refusedReasonUnder, requireOwner, type RunContext, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 
 /**
  * The refusal a `SetVolumeSizeRefused` carries in `RpcError.details`. `reason` is read as a plain string so a reason
@@ -27,9 +27,16 @@ const decodeSizeRefused = Schema.decodeUnknownOption(SizeRefusedDetails);
  * What a SetVolumeSize rejection means for a run that wants `machine`'s copy to hold `bytes`, or null when the error
  * carries no refusal, so the ask itself failed. In a grow, `shrink` with a bound at or above `bytes` holds: the copy
  * is already bigger, which is all a grow needs. In a shrink or a settle, `shrink` means the daemon ignored `allow_shrink`.
- * `switching` retries, as a copy step waits on `busy`. Every other reason is final and names the Server.
+ * `switching` retries, as a copy step waits on `busy`. Every other reason is final and names the Server. A refusal of
+ * the Volume approval the step carried, `approval`, is final too: it says whether that approval expired, so the person
+ * approves the grow again rather than waiting on a Server that already answered.
  */
-export function sizeRefusalOf(volumeName: string, machine: MachineRef, bytes: Bytes, direction: SizeDirection, cause: unknown): SizeOutcome | null {
+export function sizeRefusalOf(
+  volumeName: string, machine: MachineRef, bytes: Bytes, direction: SizeDirection, cause: unknown, approval?: Signed,
+): SizeOutcome | null {
+  if (Schema.is(ApprovalRefusal)(cause)) {
+    return { kind: "refused", reason: "unapproved", message: refusedReasonUnder(approval, volumeName, machine.name), boundBytes: null, capacity: null, floorBytes: null };
+  }
   const decoded = decodeSizeRefused(cause);
   if (Option.isNone(decoded)) return null;
   const { reason, bound_bytes: boundBytes, capacity, floor_bytes: floorBytes } = decoded.value.details;
@@ -78,7 +85,7 @@ export const setVolumeSize = Effect.fn("VolumeRun.setVolumeSize")(function* (
       if (error._tag === "ServerLacks") {
         return Effect.succeed<SizeOutcome>({ kind: "refused", reason: "lacks", message: `Volume resize needs a newer Ployz on ${machine.name}`, boundBytes: null, capacity: null, floorBytes: null });
       }
-      const outcome = sizeRefusalOf(ctx.volumeName, machine, bytes, direction, "cause" in error ? error.cause : undefined);
+      const outcome = sizeRefusalOf(ctx.volumeName, machine, bytes, direction, "cause" in error ? error.cause : undefined, approval);
       if (outcome === null) return Effect.fail(new SwitchAttemptError(null, `set_volume_size on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
       return Effect.succeed(outcome);
     }),
@@ -95,7 +102,11 @@ export const resizeCopy = Effect.fn("VolumeRun.resizeCopy")(function* (
   approval?: Signed,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* setVolumeSize(ctx, machine, bytes, direction, approval);
+  const outcome = yield* setVolumeSize(ctx, machine, bytes, direction, approval);
+  // A size asked under an approval shows which Servers took it, and which refused the approval.
+  if (approval !== undefined && outcome.kind === "holds") yield* recordAnswer(ctx.id, machine, "size", true);
+  if (approval !== undefined && outcome.kind === "refused" && outcome.reason === "unapproved") yield* recordAnswer(ctx.id, machine, "size", false);
+  return outcome;
 });
 
 /**

@@ -197,7 +197,7 @@ export function planUnheld(
  * `read_only` for one that kept the copy switching past the run's patience. A reason this Cloud doesn't know is kept
  * as the Machine sent it, so a newer daemon's refusal is final rather than retried.
  */
-export type SizeRefusalReason = "switching" | "no_capacity" | "not_found" | "not_provisioned" | "shrink" | "below_floor" | "lacks" | "read_only" | (string & {});
+export type SizeRefusalReason = "switching" | "no_capacity" | "not_found" | "not_provisioned" | "shrink" | "below_floor" | "lacks" | "read_only" | "unapproved" | (string & {});
 
 /**
  * What one Machine's answer means for the run. `holds` lets the walk go on; `retry` asks again with the same request;

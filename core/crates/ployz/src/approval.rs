@@ -93,6 +93,8 @@ impl Verb {
                 OperationVerb::Remove => "removal",
                 OperationVerb::Forget => "forgetting",
                 OperationVerb::Release => "release",
+                OperationVerb::Mirror => "mirror",
+                OperationVerb::Sync => "full sync",
                 OperationVerb::RemoveMirror => "mirror removal",
                 OperationVerb::Stop => "stop",
                 OperationVerb::Restart => "restart",
@@ -119,6 +121,8 @@ impl Verb {
                 OperationVerb::Remove => "removed",
                 OperationVerb::Forget => "forgotten",
                 OperationVerb::Release => "released",
+                OperationVerb::Mirror => "mirrored",
+                OperationVerb::Sync => "synced",
                 OperationVerb::RemoveMirror => "removed",
                 OperationVerb::Stop => "stopped",
                 OperationVerb::Restart => "restarted",
@@ -150,6 +154,8 @@ impl Verb {
                 | OperationVerb::Remove
                 | OperationVerb::Forget
                 | OperationVerb::Release
+                | OperationVerb::Mirror
+                | OperationVerb::Sync
                 | OperationVerb::RemoveMirror
                 | OperationVerb::Stop
                 | OperationVerb::Restart
@@ -360,6 +366,7 @@ pub(crate) fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::RestartsService => format!("restarts Service {name}"),
         DestructiveKind::UnprotectsEnvironment => format!("unprotects Environment {name}"),
         DestructiveKind::RemovesOrganization => format!("removes Organization {name}"),
+        DestructiveKind::RestoresVolume => format!("restores Volume {name} to a snapshot"),
     }
 }
 
@@ -1002,6 +1009,8 @@ mod tests {
             ("remove", "removal", "removed", "of"),
             ("forget", "forgetting", "forgotten", "of"),
             ("release", "release", "released", "of"),
+            ("mirror", "mirror", "mirrored", "of"),
+            ("sync", "full sync", "synced", "of"),
             ("remove_mirror", "mirror removal", "removed", "of"),
             ("stop", "stop", "stopped", "of"),
             ("restart", "restart", "restarted", "of"),

@@ -68,7 +68,7 @@ pub(crate) fn approve_command(command: Command) -> Command {
                 .long("passkey")
                 .action(ArgAction::SetTrue)
                 .conflicts_with("join")
-                .help("Approve a passkey added in Ployz Cloud, which may approve workflows and automatic deploy rules, and nothing else"),
+                .help("Approve a passkey added in Ployz Cloud, which may approve workflows, automatic deploy rules and volume changes, and nothing else"),
         )
         .arg(yes("Approve without asking"))
 }
@@ -217,7 +217,7 @@ async fn approve_passkey(
     let credential = cloud_account::from_env(store).await?;
     let passkey = pending_passkey(&credential, code).await?;
     ui::note(format!(
-        "Passkey {code} for {}. It can approve workflows and automatic deploy rules on these servers, and nothing else.",
+        "Passkey {code} for {}. It can approve workflows, automatic deploy rules and volume changes on these servers, and nothing else.",
         passkey.account
     ));
     if !leaf.get_flag("yes") {

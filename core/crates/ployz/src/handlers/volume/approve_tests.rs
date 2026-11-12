@@ -227,9 +227,14 @@ fn a_move_of_a_service_whose_image_is_not_pinned_by_digest_is_refused() {
     let docker = DockerVolumeName::parse("app_data").unwrap();
     let error = starting(spec("postgres:17", &["data"]), &docker, None)
         .expect_err("a tag no Server starts under approval");
+    assert_eq!(error.to_string(), "Can't approve this move");
     assert!(
-        error.to_string().contains("isn't pinned by digest"),
-        "{error}"
+        error
+            .causes()
+            .iter()
+            .any(|cause| cause.contains("isn't pinned by digest")),
+        "{:?}",
+        error.causes()
     );
 }
 

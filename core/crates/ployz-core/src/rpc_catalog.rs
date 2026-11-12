@@ -161,6 +161,8 @@ macro_rules! rpc_catalog {
                 DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
                 /// An automatic deploy rule may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature.
                 RULE_PASSKEY_CAPABILITY: ("ployz.rule.passkey.v1", Always),
+                /// A Volume approval may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature. A browser key under a session grant still signs none.
+                VOLUME_PASSKEY_CAPABILITY: ("ployz.volume.passkey.v1", Always),
                 /// `EnsureContainer` takes a preview rule with its image token and, under Device enforcement, creates an Operator's Container under it only in the Namespace it derives, with the settings and inherited Sealed values the rule or a review approves. Sealed values carry the Environment they were sealed for.
                 DEPLOY_PREVIEW_CAPABILITY: ("ployz.container.deploy-preview.v1", Always),
                 /// A preview build's grant and its Containers may run on a person's review of one commit, a passkey's own prompt over it or a signature, which the daemon checks before anything opens.

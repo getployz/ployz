@@ -16,7 +16,7 @@ import {
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import type { ServiceSpec } from "#/modules/volume-run/volume-run";
+import type { ServiceSpec, StepAnswer } from "#/modules/volume-run/volume-run";
 import {
   type AnyVolumeRunArgs,
   VOLUME_RUN_KINDS,
@@ -61,6 +61,8 @@ export const volumeRun = pgTable(
      * becomes the writer. Cloud carries it and cannot make one.
      */
     receipt: jsonb("receipt").$type<MachineSigned>(),
+    /** What each Server answered to the steps the run asked under its approval, oldest first. */
+    answers: jsonb("answers").$type<StepAnswer[]>(),
     /** The Service spec seen when the run started; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),

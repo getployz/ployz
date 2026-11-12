@@ -24,8 +24,8 @@ use ployz_core::{
     SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
     SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
     UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_HANDOFF_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY, op,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_HANDOFF_CAPABILITY, VOLUME_PASSKEY_CAPABILITY,
+    VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -76,6 +76,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (BUILD_GRANT_RULE_CAPABILITY, "ployz.build.grant.rule.v1"),
         (DEPLOY_RULE_CAPABILITY, "ployz.container.deploy-rule.v1"),
         (RULE_PASSKEY_CAPABILITY, "ployz.rule.passkey.v1"),
+        (VOLUME_PASSKEY_CAPABILITY, "ployz.volume.passkey.v1"),
         (
             BUILD_GRANT_PREVIEW_CAPABILITY,
             "ployz.build.grant.preview.v1",
@@ -227,6 +228,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.deploy-proposal.v1",
             "ployz.container.deploy-rule.v1",
             "ployz.rule.passkey.v1",
+            "ployz.volume.passkey.v1",
             "ployz.container.deploy-preview.v1",
             "ployz.preview.review.v1",
             "ployz.rule.commit-approval.v1",
@@ -452,6 +454,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.rule.passkey.v1",
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
+    ),
+    (
+        "ployz.volume.passkey.v1",
+        "gated: the dashboard asks a passkey to approve a Volume workflow only when every enforcing Machine it reaches advertises it. An older daemon refuses the approval's `assertions` and its `\"passkey\"` signer, so a passkey-approved Volume step there fails closed",
     ),
     (
         "ployz.container.deploy-preview.v1",

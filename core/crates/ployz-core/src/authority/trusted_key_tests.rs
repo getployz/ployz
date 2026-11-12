@@ -135,10 +135,10 @@ fn an_es256_and_an_eddsa_passkey_each_approve_a_workflow() {
 }
 
 #[test]
-fn a_passkey_approves_nothing_but_workflows_and_rules() {
+fn a_passkey_approves_nothing_but_workflows_rules_and_volume_workflows() {
     let authenticator = Authenticator::es256(7);
     let trusted = trusting(&authenticator);
-    for purpose in [Purpose::Workflow, Purpose::Rule] {
+    for purpose in [Purpose::Workflow, Purpose::Rule, Purpose::Volume] {
         assert!(
             trusted
                 .passkey_approval(purpose, &authenticator.answer(&HONEST), CHALLENGE)

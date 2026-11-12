@@ -46,7 +46,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, approvalRefusedMessage, approvesMirror, approvesMove, approvesRemoval, approvesRestore, enforcedMessage, otherMoveApprovalMessage, otherRemovalApprovalMessage, otherRestoreApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
+  alreadyOn, approvalExpiredMessage, approvalExpiredReason, approvalRefusedMessage, approvalRefusedReason, approvesMirror, approvesMove, approvesRemoval, approvesRestore, enforcedMessage, otherMoveApprovalMessage, otherRemovalApprovalMessage, otherRestoreApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
   type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -66,6 +66,7 @@ import {
   parseDockerVolumeName,
   RUN_FEATURES,
   type ServiceSpec,
+  type StepAnswer,
   VOLUME_RUN_MESSAGE_LIMIT,
   VOLUME_RUN_RUNNING_CHECK_MS,
   VOLUME_RUN_UNCLAIMED_LIMIT_MS,
@@ -78,7 +79,7 @@ import {
   type VolumeRunView,
 } from "#/modules/volume-run/volume-run";
 import { Database } from "#/server/database.server";
-import { NotFound } from "#/server/public-error";
+import { Conflict, NotFound } from "#/server/public-error";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 type VolumeRunRow = typeof volumeRun.$inferSelect;
@@ -132,8 +133,35 @@ export function volumeRunView(row: VolumeRunRow): VolumeRunView {
     created_at: row.createdAt.toISOString(),
     updated_at: row.updatedAt.toISOString(),
     finished_at: row.finishedAt === null ? null : row.finishedAt.toISOString(),
+    answers: row.answers ?? [],
   };
 }
+
+/**
+ * Records `machine`'s answer to `step`, asked under the run's approval, on run `runId`. A record that fails is logged and
+ * dropped: it only shows progress, and the Server's own answer stands.
+ */
+export const recordAnswer = (runId: string, machine: MachineRef, step: string, accepted: boolean) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const answer: StepAnswer = { machine: machine.id, name: machine.name, step, accepted, at: new Date().toISOString() };
+  yield* drizzle.update(volumeRun)
+    .set({ answers: sql`coalesce(${volumeRun.answers}, '[]'::jsonb) || ${JSON.stringify([answer])}::jsonb` })
+    .where(eq(volumeRun.id, runId));
+}).pipe(Effect.catchCause((cause) => Effect.logWarning("Could not record a Server's answer.", { runId, cause })));
+
+/** Whether the approval `approval` carries had expired by now, so a Server that refuses it refuses for that. */
+const expired = (approval: Signed) => {
+  const body = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ expires_at: Schema.Number })))(approval.body);
+  return Option.isSome(body) && body.value.expires_at <= Date.now();
+};
+
+/** Why `server` refused a step under `approval`: it expired, so nothing new starts, or it is for another change. */
+export const refusedUnder = (approval: Signed | undefined, name: string, server: string) =>
+  approval !== undefined && expired(approval) ? approvalExpiredMessage(name, server) : approvalRefusedMessage(name, server);
+
+/** `refusedUnder` without what to do next, for a message that ends with its own advice. */
+export const refusedReasonUnder = (approval: Signed | undefined, name: string, server: string) =>
+  approval !== undefined && expired(approval) ? approvalExpiredReason(name, server) : approvalRefusedReason(name, server);
 
 export function laneInputOf(lane: Pick<VolumeRunRow, "kind" | "args">): VolumeLaneInput {
   // SAFETY: the row's kind and args were written together from one VolumeLaneInput.
@@ -449,11 +477,20 @@ const refusalCode = {
   enforced: "unsupported",
 } satisfies Record<RefusalCode, string>;
 
-/** A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry. */
+/**
+ * A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry.
+ * A Server's enforcement keeps its reason, which a person's approval answers.
+ */
 export const storeRefusal = ({ code, message, next }: Refusal): StoreRefusal => {
   if (code === "already_on") return { code: refusalCode[code], message, details: { settled: true } };
+  if (code === "enforced") return { code: refusalCode[code], message, details: { reason: "enforced", ...(next !== undefined && { next }) } };
   return { code: refusalCode[code], message, details: next === undefined ? null : { next } };
 };
+
+/** Whether `refusal` is a Server's enforcement of device approval, as `storeRefusal` words it. */
+export const refusedEnforced = (refusal: StoreRefusal) => isEnforced(refusal.details);
+
+const isEnforced = Schema.is(Schema.Struct({ reason: Schema.Literal("enforced") }));
 
 const deletesCopy = (volume: ResolvedVolume, member: AnsweredMember): DestructiveEffect => ({
   kind: "deletes_volume",
@@ -572,6 +609,52 @@ function requestName(volume: ResolvedVolume, input: VolumeRunInput): string {
 }
 
 type PlanRequest = { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput;
+
+/** The verb a run asks under when a Server that enforces device approval refuses it without one. */
+const ENFORCED_VERBS = {
+  mirror: "mirror",
+  sync: "sync",
+  move: "move",
+  restore: "restore",
+  delete_mirror: "remove_mirror",
+  resize: "resize",
+  release: "release",
+  seed: null,
+  deploy: null,
+} satisfies Record<VolumeRunKind, OperationVerb | null>;
+
+/**
+ * The ask an agent's or the CLI's run makes when a Server that enforces device approval refuses it without one: a person
+ * approves it in Ployz Cloud, where their browser drafts the run's workflow and their passkey answers it, and the run
+ * asked again under that approval carries the answer. Its preview names the run as asked, so the approval covers no
+ * other. Null for a run no person asks for.
+ */
+export const enforcedAsk = Effect.fn("VolumeRun.enforcedAsk")(function* (organizationId: string, input: PlanRequest) {
+  const verb = ENFORCED_VERBS[input.kind];
+  if (verb === null) return null;
+  const volume = yield* resolveVolume(organizationId, input.environment, input.volumeId);
+  const asked: OperationAsked = {
+    subject: `volume:${input.volumeId}`,
+    verb,
+    name: requestName(volume, input),
+    preview: { volume: input.volumeId, environment: { project: input.environment.project, environment: input.environment.environment }, run: { kind: input.kind, args: unapproved(input).args } },
+    // A restore loses the writes after its restore point; the approver's browser names that point from what it signs.
+    effects: input.kind === "restore"
+      ? [{ kind: "restores_volume", name: volume.volumeName, node: input.volumeId, path: `volumes/${input.volumeId}` }]
+      : [],
+    alwaysAsks: true,
+  };
+  return asked;
+});
+
+/** `input` without the approval or spec it carries, as an enforced ask names it. */
+const unapproved = (input: VolumeRunInput): VolumeRunInput => {
+  if (!("approval" in input.args) && !("service" in input.args)) return input;
+  // SAFETY: every kind's args take the approval and the spec as optional, so this names only what the args may hold.
+  const { approval: _approval, service: _service, ...args } = input.args as { approval?: Signed; service?: ResolvedServiceSpec };
+  // SAFETY: only the approval and the spec left the args, which every kind takes as optional.
+  return { kind: input.kind, args } as VolumeRunInput;
+};
 
 /**
  * `input` is the request to insert: a Release carries the plan its approval showed. `guard` is the ask a Protected
@@ -1087,6 +1170,48 @@ export const inspectVolumeCopies = Effect.fn("VolumeRun.inspectCopies")(function
   return yield* observeVolumeMembers(organizationId, volume.dockerVolume, run);
 });
 
+/**
+ * What the browser drafts a Volume approval from, as Cloud relays it: the Volume's names, its members with whether each
+ * enforces device approval, and for a Move off `from` the spec of the one Service Container running there, unredacted, as
+ * the Move would start it. The browser shows what it signs, and every Server checks it against its own records.
+ */
+export const volumeApprovalTerms = Effect.fn("VolumeRun.approvalTerms")(function* (
+  organizationId: string, environment: EnvironmentRef, volumeId: string, from: MachineId | null,
+) {
+  const volume = yield* resolveVolume(organizationId, environment, volumeId);
+  // The Servers' answers and the spec a Move starts are read side by side.
+  const [members, holders] = yield* Effect.all([
+    observeVolumeMembers(organizationId, volume.dockerVolume),
+    from === null ? Effect.succeed(null) : runningOn(organizationId, volume.dockerVolume, from),
+  ], { concurrency: "unbounded" });
+  const namespace = parseDockerVolumeName(volume.dockerVolume)?.namespace ?? "";
+  const terms = {
+    namespace, dockerVolume: volume.dockerVolume, name: volume.volumeName, members,
+    place: `${volume.environment.project}/${volume.environment.name}`,
+    recorded: volume.recordedBytes > 0 ? volume.recordedBytes : null,
+  };
+  if (from === null || holders === null) return { ...terms, running: null };
+  if (!holders.ok) {
+    const where = members.find((member) => member.machine.id === from)?.machine.name ?? from;
+    const found = holders.count === 0 ? "no running Service" : `${holders.count} running Services`;
+    return yield* new Conflict({ message: `${volume.volumeName} has ${found} on ${where}; a move starts exactly one.`, userFacing: true });
+  }
+  return { ...terms, running: holders.running };
+});
+
+/** The spec of the one Service running Docker Volume `dockerVolume` on `from`, or how many run it there instead. */
+const runningOn = Effect.fn("VolumeRun.runningOn")(function* (organizationId: string, dockerVolume: string, from: MachineId) {
+  const on = (yield* serviceContainers(organizationId, dockerVolume))
+    .filter((container) => container.machine_id === from && container.runtime.state === "running");
+  const [holder] = on;
+  if (holder === undefined || on.length > 1) return { ok: false, count: on.length } as const;
+  const running = yield* Effect.scoped(Effect.gen(function* () {
+    const session = yield* openSession(organizationId);
+    return (yield* session.inspectContainer(holder.machine_id, holder.container_id)).container.resolved_spec;
+  }));
+  return { ok: true, running } as const;
+});
+
 /** Whether the Volume's committed Move is still owed its finish, so the Copies tab offers no move or mirror. */
 export const isVolumeOwed = Effect.fn("VolumeRun.isOwed")(function* (organizationId: string, volumeId: string) {
   const { owed } = yield* commitment(volumeId, organizationId);
@@ -1205,7 +1330,7 @@ const EnforcementRefusal = Schema.Struct({ details: Schema.Struct({ capability: 
 /** Whether the Server enforces device approval and refused a Container start or a seed from Ployz Cloud. */
 export const refusedByEnforcement = (error: PloyzSdkError) => Schema.is(EnforcementRefusal)("cause" in error ? error.cause : undefined);
 
-const ApprovalRefusal = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.volume.approval.v1") }) });
+export const ApprovalRefusal = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.volume.approval.v1") }) });
 
 /** Whether the Server refused a step for the Volume approval it carried, or lacked. */
 const refusedApproval = (error: PloyzSdkError) => Schema.is(ApprovalRefusal)("cause" in error ? error.cause : undefined);
@@ -1282,9 +1407,16 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
   return Effect.gen(function* () {
     yield* requireOwner(ctx.id, inngestRunId);
     const session = yield* openSession(ctx.organizationId);
+    const approval = "approval" in request.payload ? request.payload.approval : undefined;
     return yield* session.volumeSwitch(machine.id, request).pipe(
+      // A seed asked under an approval shows its Server took it once the copy lands.
+      Effect.tap((reply) => approval !== undefined && "copy" in reply && reply.copy?.kind === "root" ? recordAnswer(ctx.id, machine, "seed", true) : Effect.void),
       Effect.catch((error): Effect.Effect<never, Error, Database> => {
         if (refusedByEnforcement(error)) return failRun(ctx, inngestRunId, enforcedMessage(true, ctx.volumeName, machine.name));
+        if (refusedApproval(error)) {
+          const failed = failRun(ctx, inngestRunId, refusedUnder(approval, ctx.volumeName, machine.name));
+          return approval === undefined ? failed : Effect.andThen(recordAnswer(ctx.id, machine, "seed", false), failed);
+        }
         const reason = switchErrorOf(error);
         const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine, fenced);
         if (message !== undefined) return failRun(ctx, inngestRunId, message);
@@ -1309,7 +1441,8 @@ export type CopyAnswer =
  * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
  * mirror sync at the Volume's newest gen.
  */
-export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName" | "gen">;
+/** Who asks for a copy; a run names itself by `id`, so the step its approval covers shows which Servers took it. */
+export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName" | "gen"> & Partial<Pick<RunContext, "id">>;
 
 /**
  * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
@@ -1332,7 +1465,7 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
     Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ClusterOutOfTime({ inFlight: false }))),
   );
   const payload = { name: asker.dockerVolume, expect, want, gen: asker.gen, ...(approval && { approval }), ...(receipt && { receipt }) };
-  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload }).pipe(
+  const answer = yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload }).pipe(
     clusterRead,
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy, ...(reply.receipt && { receipt: reply.receipt }) })),
     Effect.catch((error): Effect.Effect<CopyAnswer, ClusterOutOfTime | SwitchAttemptError> => {
@@ -1343,7 +1476,7 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
       }
       // Refused before the step changed anything, so the copy is as the caller last saw it too.
       if (refusedApproval(error)) {
-        return Effect.succeed<CopyAnswer>({ ok: false, reason: "unapproved", copy: null, message: approvalRefusedMessage(asker.volumeName, machine.name) });
+        return Effect.succeed<CopyAnswer>({ ok: false, reason: "unapproved", copy: null, message: refusedUnder(approval, asker.volumeName, machine.name) });
       }
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
@@ -1355,6 +1488,11 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
       return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message, ...(refused.receipt && { receipt: refused.receipt }) });
     }),
   );
+  // A step asked under an approval shows which Servers took it.
+  if (approval !== undefined && asker.id !== undefined && (answer.ok || answer.reason === "unapproved")) {
+    yield* recordAnswer(asker.id, machine, want.kind, answer.ok);
+  }
+  return answer;
 }, Effect.scoped);
 
 export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
@@ -1731,6 +1869,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           ...sized,
           enforces: machine.runtime.device_enforcement === true,
           handoff: serverSupports(capabilities, requirements.volumeHandoff) === true,
+          passkey: serverSupports(capabilities, requirements.volumePasskey) === true,
         })),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),

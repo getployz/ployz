@@ -14,8 +14,9 @@ const ADDRESSING = {
   // `approval` is the Device's signed VolumeApproval the Machines check, like the dialog's `approvalId`, and
   // `service` the start spec a Move's approval signs.
   cli: new Set(["kind", "server_name", "approval", "service"]),
-  // `stops` is what a Drain's confirm showed as stopping: the dialog's approval, like `approvalId`.
-  ui: new Set(["organizationSlug", "requestId", "approvalId", "stops"]),
+  // `stops` is what a Drain's confirm showed as stopping: the dialog's approval, like `approvalId`. `approval` is the
+  // passkey's answer to a resize the Machines check, as the CLI's is.
+  ui: new Set(["organizationSlug", "requestId", "approvalId", "stops", "approval"]),
 } as const;
 
 const AgentTools = Schema.fromJsonString(Schema.Struct({

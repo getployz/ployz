@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { withApproval } from "#/modules/volume-placement/placement-approvals";
 import { isDeepStrictEqual } from "node:util";
 import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
@@ -273,7 +274,8 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
-    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, {
+    // The step carries the person's passkey answer kept for it, if any; a Server that enforces refuses it without one.
+    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...withApproval(step.run, row.staged?.approvals, members) }, {
       end: "yielded", fences: replanning?.waited.step.run.kind,
     });
     if (requested.ok) {

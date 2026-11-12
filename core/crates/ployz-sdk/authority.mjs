@@ -1,4 +1,4 @@
-import { auto_deploy_rule_body, auto_deploy_rule_end_body, deploy_approval_body, preview_review_body, private_access_approval_body, teardown_body } from './generated/config-wasm.mjs';
+import { auto_deploy_rule_body, auto_deploy_rule_end_body, deploy_approval_body, preview_review_body, private_access_approval_body, teardown_body, volume_approval_body } from './generated/config-wasm.mjs';
 
 export function deployApprovalBody(plan, terms) {
   if (plan.target === undefined) throw new Error('Read the plan with target set to sign a deploy.');
@@ -24,4 +24,8 @@ export function teardownBody(terms, names = {}) {
 export function previewReviewBody(view, terms) {
   const all = { ...terms, key: view.key, commit: view.commit, environment: view.environment.id };
   return JSON.parse(preview_review_body(JSON.stringify({ rule: view.rule, namespace: view.namespace, target: view.target, terms: all })));
+}
+
+export function volumeApprovalBody(terms) {
+  return JSON.parse(volume_approval_body(JSON.stringify(terms)));
 }

@@ -269,9 +269,9 @@ server and needs no pin.
 
 ### Add a passkey
 
-A passkey lets you approve changes from your browser. Each server trusts it to approve workflows
-and [automatic deploy rules](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval),
-and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
+A passkey lets you approve changes from your browser. Each server trusts it to approve workflows,
+[automatic deploy rules](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval)
+and [volume changes](../services/move-a-volume.md#approve-from-ployz-cloud), and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
 device to add one.
 
 1. In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser

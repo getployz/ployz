@@ -13,13 +13,12 @@ use std::collections::BTreeMap;
 use clap::ArgMatches;
 use ployz_core::authority::{
     ApprovedChange, ApprovedVolumeChange, Signed, Signer, SignerKey, Timestamp, VolumeApproval,
-    VolumeWorkflow, deploy::content_addressed, validity::MAX_LIFETIME_MILLIS,
+    VolumeWorkflow, move_start, validity::MAX_LIFETIME_MILLIS,
 };
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName, Hint,
     InspectContainerRequest, MachineName, MachineTarget, Namespace, OperationId,
-    ProvisionedVolumeMaximumBytes, PullPolicy, ResolvedServiceSpec, RpcErrorCode, SlotRole,
-    VolumeCopy, op,
+    ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode, SlotRole, VolumeCopy, op,
 };
 use ployz_store::{EnvironmentSummary, VolumeId, VolumeName};
 use serde_json::json;
@@ -356,32 +355,8 @@ fn starting(
     docker: &DockerVolumeName,
     recorded: Option<ProvisionedVolumeMaximumBytes>,
 ) -> Result<ResolvedServiceSpec, Error> {
-    if !content_addressed(&running.container.image) {
-        return Err(Error::coded(
-            RpcErrorCode::Conflict,
-            format!(
-                "{} runs {}, which isn't pinned by digest, so this device can't approve \
-                 starting it on another Server. Deploy it again, then move the Volume.",
-                running.name, running.container.image
-            ),
-        ));
-    }
-    let mut spec = serde_json::to_value(&running).map_err(Error::command)?;
-    if let Some(recorded) = recorded
-        && let Some(volumes) = spec
-            .get_mut("volumes")
-            .and_then(|volumes| volumes.as_array_mut())
-    {
-        for mounted in volumes {
-            let source = &mut mounted["source"];
-            if source["kind"] == "provisioned" && source["name"] == docker.as_str() {
-                source["maximum_bytes"] = serde_json::json!(recorded);
-            }
-        }
-    }
-    let mut spec: ResolvedServiceSpec = serde_json::from_value(spec).map_err(Error::command)?;
-    spec.container.pull_policy = PullPolicy::Never;
-    Ok(spec)
+    move_start(running, docker, recorded)
+        .map_err(|error| Error::caused(RpcErrorCode::Conflict, "Can't approve this move", error))
 }
 
 /// The Server that writes `volume` and the one that keeps its Mirror, from what each Server

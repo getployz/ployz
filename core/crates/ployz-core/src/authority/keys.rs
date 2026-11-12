@@ -30,7 +30,8 @@ pub enum Purpose {
     /// covers workflows only.
     Rule,
     /// One Volume workflow, which can stop a Service, start one elsewhere and send a Volume's
-    /// data to another Machine. Only a Device signs one: a session grant covers none.
+    /// data to another Machine. A Device signs one, or a passkey answers its own prompt for
+    /// it: a session grant covers none.
     Volume,
 }
 
@@ -237,8 +238,9 @@ pub struct Signed<T> {
     #[ts(optional)]
     pub proposal: Option<Box<Signed<ProposalApproval>>>,
     /// Passkeys' own answers to [`Signed::challenge`], each a prompt of its own rather
-    /// than a session. Only a rule takes one. A daemon from before passkey-signed rules
-    /// refuses an envelope that carries one.
+    /// than a session. Only a rule and a Volume workflow take one. A daemon from before
+    /// passkey-signed rules refuses an envelope that carries one, and one from before
+    /// passkey-signed Volume workflows refuses it on a Volume approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PasskeyAssertion>>")]
     pub assertions: Vec<PasskeyAssertion>,
@@ -377,8 +379,8 @@ impl<T: Statement> Signed<T> {
     }
 
     /// Who signed this statement, each checked against `trusted` at `now`: a Device it
-    /// trusts, a browser key a grant in this envelope vouches for, or, on a rule only, a
-    /// trusted passkey's own answer to [`Self::challenge`]. A grant only says what its key
+    /// trusts, a browser key a grant in this envelope vouches for, or, on a rule or a Volume
+    /// workflow only, a trusted passkey's own answer to [`Self::challenge`]. A grant only says what its key
     /// may do; the statement's own check decides whether its scope covers this statement.
     ///
     /// # Errors
@@ -430,9 +432,9 @@ impl<T: Statement> Signed<T> {
             return Ok(approvers);
         }
         // A workflow rests on a passkey only through a session grant, whose limits the
-        // workflow's own check reads. A passkey's own answer has none, so only a rule,
-        // which no session may sign, takes one.
-        if T::PURPOSE != Purpose::Rule {
+        // workflow's own check reads. A passkey's own answer has none, so only a statement
+        // no session may sign takes one: a rule, or a Volume workflow.
+        if !matches!(T::PURPOSE, Purpose::Rule | Purpose::Volume) {
             return Err(AuthorityRefusal::Mismatch { field: "a passkey" });
         }
         let challenge = self.challenge();

@@ -169,9 +169,30 @@ With enforcement on, Ployz Cloud can't remove `web`'s stopped container on `web-
 there, stopped, and the move's last line names it, like
 `web was stopped 26s; <container id> stays on web-1, which enforces device approval.`
 
-A move nobody approved is refused before your service stops. That includes a **Make primary**
-deploy, Drain's moves, a move from a computer without an approved device key, and the move Ployz
-asks for again after a deploy took it over:
+### Approve from Ployz Cloud
+
+With a [passkey your servers approved](../servers/manage-servers.md#add-a-passkey), Ployz Cloud
+runs volume changes on these servers too: **Make primary**, **Use mirror**, adding or removing a
+mirror, deleting an old copy, restoring a point into a new volume, and **Grow**. When you deploy
+or grow, your browser lists what each change approves, line by line as `ployz` prints it, and
+asks for your passkey once per change. A restore's lines name the time after which writes are
+lost. Cancel and nothing changes.
+
+Every server the change names must run a Ployz that takes passkey approvals, and must answer.
+If one doesn't, Ployz Cloud names it and the command to run on an approved device instead.
+
+The volume's **Copies** tab shows which servers took each step, like `web-2 took write`. An
+approval lasts 15 minutes. Once it runs out, the run says `Approval expired. Nothing new can
+start.`, or `Finishing what started.` when a server already took a step. Approve the change again
+to start it.
+
+When an agent, or `ployz` on a computer without an approved device key, asks for a move, mirror,
+restore, removal or resize, Ployz Cloud shows it as an [Approval card](../account/agent-sidebar.md).
+Approving it lists the same lines and asks for your passkey once. The agent's next try runs under
+that approval, once.
+
+A move nobody approved is refused before your service stops. That includes Drain's moves and the
+move Ployz asks for again after a deploy took it over:
 
 ```
 web-1 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.

@@ -398,6 +398,7 @@ pub(crate) fn mirror_command(command: Command) -> Command {
             .required(true)
             .help("The Server that gets the Mirror; it shows as VOLUME-SERVER"),
     )
+    .arg(approval_arg())
     .arg(wait_flag())
 }
 
@@ -429,6 +430,7 @@ pub(crate) fn sync_command(command: Command) -> Command {
     )
     .arg(positional("volume", true).help("Volume name"))
     .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
+    .arg(approval_arg().requires("full"))
     .arg(wait_flag().requires("full"))
 }
 
@@ -951,10 +953,12 @@ fn approved(
                 OperationVerb::Resize,
                 words("set", &["--size", size_word(*maximum_bytes).as_str()]),
             ),
-            RunAsk::Mirror { .. }
-            | RunAsk::Sync { .. }
-            | RunAsk::DeleteMirror { .. }
-            | RunAsk::DeleteOldCopy { .. } => {
+            RunAsk::Mirror { to, .. } => (
+                OperationVerb::Mirror,
+                words("mirror", &["--to", to.as_str()]),
+            ),
+            RunAsk::Sync { .. } => (OperationVerb::Sync, words("sync", &["--full"])),
+            RunAsk::DeleteMirror { .. } | RunAsk::DeleteOldCopy { .. } => {
                 return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
             }
         }

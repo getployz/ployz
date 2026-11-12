@@ -77,6 +77,7 @@ impl Tool for Review {
                     DestructiveKind::RestartsService => "restarts service",
                     DestructiveKind::UnprotectsEnvironment => "unprotects environment",
                     DestructiveKind::RemovesOrganization => "removes organization",
+                    DestructiveKind::RestoresVolume => "restores volume",
                 };
                 format!("{kind} {}", effect.name)
             })

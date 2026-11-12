@@ -42,10 +42,17 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
  * On Servers that enforce Device approval, a Deploy asks for a passkey session first, unless one covers it, and carries
  * this browser's approval of the plan it ships, which it then lists; Saved State changes reach a Server only through it.
  * One that deletes Volume data also carries the person's passkey teardown of exactly the Volumes they typed for.
+ * Each staged Volume workflow such a Server takes part in then asks the passkey once, after the loss dialog, so the loss
+ * the person confirmed is the loss each approval names.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
-  version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS) {
+  version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS,
+  /**
+   * Reads each staged Volume workflow on a Server that enforces, then answers with its prompts, which ask the passkey for
+   * each; false when the person cancels one.
+   */
+  preparePlacements: () => Promise<() => Promise<boolean>> = () => Promise.resolve(() => Promise.resolve(true))) {
   const writer = useStoreWriter(organizationSlug);
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
@@ -83,6 +90,9 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     // Each press is judged once: a later one with no pointer or key before it (assistive tech) starts from here.
     gesture.current = { mark: writeMark(queryClient), saving: false };
     if (saving || reviewMoving(queryClient, organizationSlug, environment, mark)) return { status: "staging" };
+    // The Volume workflows' reads go while the Deploy asks for its own approval; their prompts wait for it.
+    const placements = action === "deploy" ? preparePlacements() : null;
+    placements?.catch(() => undefined);
     let scope;
     let teardown;
     try {
@@ -93,6 +103,14 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
       return { status: "failed" };
     }
     if (scope === null) return { status: "failed" };
+    if (placements !== null) {
+      try {
+        if (!(await (await placements)())) return { status: "failed" };
+      } catch (error) {
+        toast.error(toErrorMessage(error, "Couldn't approve the volume changes"));
+        return { status: "failed" };
+      }
+    }
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
     const command: ConfigCommand = action === "deploy"

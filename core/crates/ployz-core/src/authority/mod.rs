@@ -27,6 +27,7 @@ pub mod teardown;
 pub mod trusted_key;
 pub mod validity;
 pub mod volume;
+pub mod volume_draft;
 
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{
@@ -73,3 +74,4 @@ pub use volume::{
     ApprovedVolumeChange, Handed, HandoffFacts, HandoffReceipt, VolumeApproval, VolumeApproved,
     VolumeFacts, VolumeStep, VolumeWorkflow,
 };
+pub use volume_draft::{DraftWorkflow, VolumeDraft, VolumeDraftError, VolumeTerms, move_start};

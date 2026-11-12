@@ -2872,7 +2872,7 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)"]);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "fsn-2 didn't accept the approval from your device for data. Approve the change again from an approved device." }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "fsn-2 didn't accept the approval for data. It may have expired, or be for another change. Approve the change again." }]);
     });
 
     it("a run that fails before the mirror accepts its pull keeps its approval and the one kept before", async () => {
@@ -4147,6 +4147,29 @@ describe("volume runs", () => {
       }]);
     });
 
+    it("a primary that refuses the grow's expired approval ends the run, saying so, and shows each Server's answer", async () => {
+      const workflow = { kind: "resize", machines: ["fsn-1", "fsn-2", "fsn-3"].map(idOf), maximum_bytes: 20 * GB, shrink: false };
+      const expired: Signed = { body: JSON.stringify({ volume: "data", workflow, expires_at: Date.now() - 1 }), signatures: APPROVAL.signatures };
+      failNext.set("size@fsn-1", approvalRefused("the approval expired"));
+      const run = await requested({ kind: "resize", args: { maximum_bytes: 20 * GB, approval: expired } });
+
+      await execute(run.id);
+
+      expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([]);
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "Approval expired. Nothing new can start. fsn-1 didn't take the next step for data. data stays 10 GB. fsn-2, fsn-3 already hold 20 GB. Approve the change again.",
+      }]);
+      const { rows: [row] } = await harness.pool.query<{ answers: Array<{ name: string; step: string; accepted: boolean }> }>(
+        "select answers from volume_run where id = $1", [run.id]);
+      expect(row?.answers.map(({ name, step, accepted }) => ({ name, step, accepted }))).toEqual([
+        { name: "fsn-2", step: "size", accepted: true },
+        { name: "fsn-3", step: "size", accepted: true },
+        { name: "fsn-1", step: "size", accepted: false },
+      ]);
+    });
+
     it("a mirror gone from its Server ends the run before the rest are asked", async () => {
       failNext.set("size@fsn-2", refusal({ reason: "not_found" }));
       const run = await requested(grow(20));
@@ -4508,6 +4531,65 @@ describe("volume runs", () => {
       expect(await request({ kind: "release", args: {} })).toMatchObject({ ok: true, run: { kind: "release", state: "requested" } });
 
       expect(await rows()).toMatchObject([{ id: run.id, state: "cancelled", message: "volume release took this run over" }, { kind: "release", state: "requested" }]);
+    });
+  });
+
+  describe("an agent's run on a Server that enforces device approval", () => {
+    const mirror: VolumeRunInput = { kind: "mirror", args: { to: "fsn-2" } };
+    const as = (approvalId: string | null) => runEffect(runVolume(caller, { volumeId, environment, ...mirror }, { key: null, approvalId }));
+    const human: Caller = { ...caller, via: "dashboard" };
+    const answer: Signed = {
+      body: JSON.stringify({ volume: dockerVolume, workflow: { kind: "mirror", writer: idOf("fsn-1"), mirror: idOf("fsn-2"), replace: false } }),
+      signatures: [],
+    };
+
+    beforeEach(() => {
+      machines[1] = { name: "fsn-2", pool: true, copy: null, enforces: true };
+    });
+
+    it("asks a person, runs under the passkey answer they approve with, and spends the approval once", async () => {
+      const admitted = await as(null);
+      if (admitted.ok || admitted.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(admitted)}`);
+      // SAFETY: an approval_required refusal carries the digest and id of the approval it recorded.
+      const { approval, approval_id } = admitted.refusal.details as { approval: string; approval_id: string };
+      const { rows: [asked] } = await harness.pool.query<{ command: string; subject: string; review: unknown }>(
+        "select command, subject, review from operation_approvals where id = $1", [approval_id]);
+
+      expect(asked).toMatchObject({ command: "mirror", subject: `volume:${volumeId}`, review: { operation: { preview: { volume: volumeId, run: { kind: "mirror", args: { to: "fsn-2" } } } } } });
+      expect(await rows()).toEqual([]);
+
+      await runEffect(decideApproval(human, approval_id, { approve: { digest: approval } }, undefined, { approval: answer }));
+
+      expect(await as(approval_id)).toMatchObject({ ok: true });
+      expect((await harness.pool.query("select kind, args from volume_run")).rows).toMatchObject([{ kind: "mirror", args: { to: "fsn-2", approval: answer } }]);
+      expect(await as(approval_id)).toMatchObject({ ok: false });
+    });
+
+    it("approved without a passkey answer, asks again and writes no run", async () => {
+      const admitted = await as(null);
+      if (admitted.ok) throw new Error("expected an ask");
+      // SAFETY: an approval_required refusal carries the digest and id of the approval it recorded.
+      const { approval, approval_id } = admitted.refusal.details as { approval: string; approval_id: string };
+      await runEffect(decideApproval(human, approval_id, { approve: { digest: approval } }));
+
+      expect(await as(approval_id)).toMatchObject({ ok: false });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("a restore asks with what it loses, so the card leads with it", async () => {
+      // The writer is gone, so its mirror on fsn-2 is the only copy left to restore.
+      machines = machines.map((fake) => ({ ...fake, copy: null }));
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), enforces: true };
+      const admitted = await runEffect(runVolume(caller, { volumeId, environment, kind: "restore", args: { from: "fsn-2" } }, { key: null, approvalId: null }));
+      if (admitted.ok || admitted.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(admitted)}`);
+      // SAFETY: an approval_required refusal carries the id of the approval it recorded.
+      const { approval_id } = admitted.refusal.details as { approval_id: string };
+      const { rows: [asked] } = await harness.pool.query<{ review: unknown }>("select review from operation_approvals where id = $1", [approval_id]);
+
+      expect(asked?.review).toMatchObject({
+        effects: [{ kind: "restores_volume", name: "data", node: volumeId, path: `volumes/${volumeId}` }],
+        operation: { verb: "restore", preview: { run: { kind: "restore", args: { from: "fsn-2" } } } },
+      });
     });
   });
 

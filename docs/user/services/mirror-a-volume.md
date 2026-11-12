@@ -112,9 +112,10 @@ a new approval the same way. Removing the mirror ends its approval for good. To 
 server again, run `ployz volume mirror` again. A mirror takes up to 128 approvals. After that,
 remove it and mirror again.
 
-Ployz Cloud can't add a mirror on these servers yet. Adding one under **Copies** fails before it
-changes anything. A mirror added before you turned enforcement on has no approval, so its
-refreshes fail. Run `ployz volume sync data --full` on an approved device to approve it.
+Adding or removing a mirror under **Copies** asks for your passkey when you deploy. See
+[Approve from Ployz Cloud](move-a-volume.md#approve-from-ployz-cloud). A mirror added before you
+turned enforcement on has no approval, so its refreshes fail. Run `ployz volume sync data --full`
+on an approved device to approve it.
 
 To delete a mirror, run `ployz volume mirror rm data-web-2` on an approved device. It signs the
 removal, prints it and asks first:
