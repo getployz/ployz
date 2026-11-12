@@ -1,8 +1,8 @@
 use crate::cluster::{Call, Wait};
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollAs, EnrollRequest, EnrollmentSnapshot, InspectRequest, LocalMachinePhase, MachineId,
-    MachineName, RegisterRequest, WireGuardPublicKey, op,
+    EnrollAs, EnrollRequest, EnrollmentSnapshot, Hint, InspectRequest, LocalMachinePhase,
+    MachineId, MachineName, RegisterRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_context, runtime};
@@ -10,7 +10,6 @@ use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
 use crate::handlers::{Error, leaf_matches};
-use crate::ui::Hint;
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -260,7 +259,7 @@ mod tests {
         let failure = crate::global_catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
                 crate::failure::Failure::usage("deploy timed out".to_owned())
-                    .hint(crate::ui::Hint::Next("ployz deploy".into())),
+                    .hint(Hint::Next("ployz deploy".into())),
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
             &assigned,
@@ -273,12 +272,12 @@ mod tests {
         let command = hints
             .iter()
             .find_map(|hint| match hint {
-                crate::ui::Hint::Retry(command) => Some(command),
-                crate::ui::Hint::Next(_)
-                | crate::ui::Hint::Inspect(_)
-                | crate::ui::Hint::Undo(_)
-                | crate::ui::Hint::Closest(_)
-                | crate::ui::Hint::Valid(_) => None,
+                Hint::Retry(command) => Some(command),
+                Hint::Next(_)
+                | Hint::Inspect(_)
+                | Hint::Undo(_)
+                | Hint::Closest(_)
+                | Hint::Valid(_) => None,
             })
             .unwrap();
         assert_eq!(
@@ -296,7 +295,7 @@ mod tests {
             failure.report().code,
             ployz_core::RpcErrorCode::InvalidArgument
         );
-        assert!(hints.contains(&crate::ui::Hint::Next("ployz deploy".into())));
+        assert!(hints.contains(&Hint::Next("ployz deploy".into())));
     }
 
     #[test]

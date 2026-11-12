@@ -4,7 +4,7 @@
 //! sealed to only when it is the one this computer pinned for the Organization, and a
 //! secret's plain text never goes to Cloud. The in-process Store seals every secret itself.
 
-use ployz_core::{RpcErrorCode, SealedIdentity, SealingPublicKey, seal_value};
+use ployz_core::{Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, seal_value};
 use ployz_store::{
     Ask as _, Edit, EnvironmentSummary, SealingService, SealingTargetsQuery, SealingTargetsView,
     SecretValue, SyncChanges, View,
@@ -16,7 +16,6 @@ use super::super::config_path;
 use super::{Backend, Error, Store};
 use crate::cloud_account::{self, StoreCallError};
 use crate::sealing_pin::{self, Pins};
-use crate::ui::Hint;
 
 /// What Cloud answers about sealing one write's secrets.
 #[derive(Deserialize)]

@@ -10,7 +10,7 @@ use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::cloud_contract::MIN_MANAGED_VOLUME_BYTES;
 use ployz_core::config::VolumeKind;
 use ployz_core::{
-    MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
+    Hint, MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
 };
 use ployz_store::{
     CreateVolume, Mount, RemoveVolume, SetVolumeSharedWrites, SetVolumeStorage, VolumeId,
@@ -20,7 +20,7 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
-use crate::ui::{Cell, Fields, Hint, Table, Tone};
+use crate::ui::{Cell, Fields, Table, Tone};
 
 mod approve;
 mod resize_approval;

@@ -12,8 +12,8 @@ use ployz_core::authority::{
     deploy::content_addressed,
 };
 use ployz_core::{
-    MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, Sealing, SealingPublicKey,
-    ServiceName,
+    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, Sealing,
+    SealingPublicKey, ServiceName,
 };
 use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
 use serde_json::json;
@@ -21,7 +21,6 @@ use serde_json::json;
 use super::super::store::Store;
 use super::super::{Error, server};
 use crate::image::{PinError, pin_public};
-use crate::ui::Hint;
 
 /// A signed approval, the plan version it approves, and what it approved.
 pub(in crate::handlers) struct DeviceApproval {

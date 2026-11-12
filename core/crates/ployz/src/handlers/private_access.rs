@@ -4,7 +4,7 @@
 use std::io::Read;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{MachineFailure, PartialResult, RpcError, RpcErrorCode, authority::Signer};
+use ployz_core::{Hint, MachineFailure, PartialResult, RpcError, RpcErrorCode, authority::Signer};
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
@@ -13,7 +13,7 @@ use crate::private_access::{
     AccessChanged, AccessMachine, MachineAccess, device_approval, key_refused, observe_access,
     seal_key, shown, turn_off, turn_on,
 };
-use crate::ui::{self, Cell, Gaps, Hint, Table};
+use crate::ui::{self, Cell, Gaps, Table};
 
 /// The most a Tailscale auth key holds on stdin. Theirs run about a hundred bytes.
 const KEY_LIMIT: usize = 4096;

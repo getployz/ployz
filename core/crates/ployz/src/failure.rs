@@ -1,7 +1,7 @@
 use std::{borrow::Cow, error::Error, fmt, io};
 
 use ployz_core::{
-    CapabilityRefusal, CodecError, ContainerSelectorError, DataLoss, MachineSelectorError,
+    CapabilityRefusal, CodecError, ContainerSelectorError, DataLoss, Hint, MachineSelectorError,
     MachineUpdateError, PartialResult, RpcError, RpcErrorCode, ServiceSelectorError,
     StreamProtocolError, UnconfirmedDataLoss, ValueError,
 };
@@ -18,7 +18,7 @@ use crate::{
     namespace::NamespaceError,
     operator::OperatorError,
     provisioning::ProvisionError,
-    ui::{self, Hint},
+    ui,
 };
 
 /// CLI command outcome. `Display` is our sentence; `ui::exit` prints it.
@@ -401,7 +401,7 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
     if let Some(MachineSelectorError::NotFound(_)) = error.downcast_ref::<MachineSelectorError>() {
         return (
             RpcErrorCode::NotFound,
-            serde_json::json!({ "inspect": ["ployz server ls"] }),
+            Hint::details(&[Hint::Inspect("ployz server ls".into())]),
         );
     }
     let container = error
@@ -411,10 +411,7 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
             _ => None,
         });
     if let Some(ContainerSelectorError::NotFound { valid, .. }) = container {
-        return (
-            RpcErrorCode::NotFound,
-            serde_json::json!({ "valid_children": valid }),
-        );
+        return (RpcErrorCode::NotFound, Hint::details(&[Hint::valid(valid)]));
     }
     if let Some(OperatorError::StartExec { source, .. }) = error.downcast_ref::<OperatorError>() {
         let RpcError { code, details, .. } = source.to_rpc_error();
@@ -434,7 +431,7 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
     {
         return (
             RpcErrorCode::NotFound,
-            serde_json::json!({ "valid_children": running_in_scope }),
+            Hint::details(&[Hint::valid(running_in_scope)]),
         );
     }
     if let Some(
@@ -445,10 +442,9 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
     {
         let mut cleanup_lines = vec![cleanup.to_string()];
         cleanup_lines.extend(ui::causes(cleanup.as_ref()));
-        return (
-            provision_code(failed),
-            serde_json::json!({ "next": remove, "cleanup": cleanup_lines }),
-        );
+        let mut details = serde_json::json!({ "cleanup": cleanup_lines });
+        Hint::into_details(&[Hint::Next(remove.to_string())], &mut details);
+        return (provision_code(failed), details);
     }
     (code(error), Value::Null)
 }
@@ -1122,10 +1118,7 @@ mod tests {
             container: "api-1".into(),
             source: TransportError::from(status).addressed_as("beta"),
         });
-        assert_eq!(
-            failure.hints(),
-            [crate::ui::Hint::Next("ployz device request".into())]
-        );
+        assert_eq!(failure.hints(), [Hint::Next("ployz device request".into())]);
     }
 
     #[test]

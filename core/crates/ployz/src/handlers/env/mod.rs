@@ -25,7 +25,8 @@ use super::store::{self, mint, project, project_arg, store};
 use super::teardown::{self, Inventory, Removed, confirm, inventory};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
-use crate::ui::{Hint, Tree};
+use crate::ui::Tree;
+use ployz_core::Hint;
 
 pub(super) fn group(command: Command) -> Command {
     command.about("Manage Environments and Branches")

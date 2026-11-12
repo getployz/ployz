@@ -3,7 +3,7 @@
 
 use clap::{ArgMatches, Command};
 use ployz_core::config::{EnvironmentNodeType, ReviewLifecycleKind};
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use ployz_store::{DiffQuery, DiffView, Discard, Discarded, SettingPath};
 use serde::Serialize;
 
@@ -183,7 +183,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         if let Some(hint) = &hint {
-            crate::ui::hint(&crate::ui::Hint::Next(hint.clone()));
+            crate::ui::hint(&Hint::Next(hint.clone()));
         }
     })
 }
@@ -306,7 +306,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
             )),
         }
         comes_back(&backs, saved, discarded.saved_ran_nothing);
-        crate::ui::hint(&crate::ui::Hint::Inspect(hint));
+        crate::ui::hint(&Hint::Inspect(hint));
     })
 }
 

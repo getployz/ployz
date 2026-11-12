@@ -4,7 +4,7 @@
 //! with at most one action.
 
 use clap::{ArgMatches, Command};
-use ployz_core::{DomainPrefix, RpcErrorCode};
+use ployz_core::{DomainPrefix, Hint, RpcErrorCode};
 use ployz_store::{
     AddDomain, DomainAction, DomainName, DomainQuery, DomainRow, DomainStaged, DomainStatus,
     DomainsQuery, Hostname, RemoveDomain, SetGeneratedDomain,
@@ -13,7 +13,7 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches, required};
 use crate::cli::{positional, value};
-use crate::ui::{self, Cell, Fields, Hint, Table, Tone};
+use crate::ui::{self, Cell, Fields, Table, Tone};
 
 pub(super) fn group(command: Command) -> Command {
     command.about("Manage public domains")

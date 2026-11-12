@@ -110,7 +110,7 @@ fn render(
             let _ = diagnostic.write(stderr);
         }
         for hint in failure.hints() {
-            let _ = hint.write(stderr);
+            let _ = error::write_hint(stderr, &hint);
         }
     }
     if failure.is_interrupted() {
@@ -144,7 +144,8 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::ui::{Hint, Table};
+    use crate::ui::Table;
+    use ployz_core::Hint;
 
     #[test]
     fn cancellation_survives_context_hints_and_committed_json() {

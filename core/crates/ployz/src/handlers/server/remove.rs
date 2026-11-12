@@ -1,8 +1,8 @@
 use crate::cluster::{Call, Deadline};
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, LiveServices, Machine, MachineId, MachineTarget, QualifiedService,
-    RpcError, RpcErrorCode, op,
+    DescribeContractRequest, Hint, LiveServices, Machine, MachineId, MachineTarget,
+    QualifiedService, RpcError, RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -24,8 +24,6 @@ use crate::handlers::{
 use ployz_core::{DataLoss, Departed, DockerVolumeName, EnvironmentValues};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
-
-use crate::ui::Hint;
 
 /// How a Server leaves the Cluster.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -892,7 +890,7 @@ mod tests {
         qualified_labels, replicated_services_on, reset_removal_refusal, running_services,
         services_on,
     };
-    use crate::ui::Hint;
+    use ployz_core::Hint;
 
     #[test]
     fn a_volume_name_two_environments_share_is_qualified_by_environment() {

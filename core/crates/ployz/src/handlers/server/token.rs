@@ -1,5 +1,5 @@
 use clap::{ArgMatches, Command};
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{Hint, RpcError, RpcErrorCode};
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use super::super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{DEFAULT_CLOUD, LoginError};
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::ui::{self, Cell, Table, Tone};
 
 const INSTALLER_URL: &str = "https://ployz.sh";
 

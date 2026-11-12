@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ployz_core::{InspectRequest, MachineName, RpcErrorCode, Sealing, SealingPublicKey, op};
+use ployz_core::{Hint, InspectRequest, MachineName, RpcErrorCode, Sealing, SealingPublicKey, op};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -20,7 +20,6 @@ use crate::{
     connect::Client,
     context::{ConnectionSource, Transport},
     failure::Failure,
-    ui::Hint,
 };
 
 /// The command that pins the key, named by every refusal here.

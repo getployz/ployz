@@ -2,160 +2,54 @@
 
 use std::io;
 
-use serde_json::{Map, Value};
+use ployz_core::Hint;
 
 use super::{Tone, escaped, pasteable, unprintable};
 
 /// Most choices a `valid:` line lists before it says how many more there are.
 pub const VALID_SHOWN: usize = 8;
 
-/// One line telling the reader what they can do about an outcome.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Hint {
-    /// The one obvious command to run now.
-    Next(String),
-    /// A read-only command that shows more.
-    Inspect(String),
-    /// The command again, with what it was missing.
-    Retry(String),
-    /// The command that reverses what just happened.
-    Undo(String),
-    /// The choice closest to what the input named.
-    Closest(String),
-    /// The choices the input could have named.
-    Valid(Vec<String>),
+const fn label(hint: &Hint) -> Option<&'static str> {
+    match hint {
+        Hint::Next(_) => Some("next:"),
+        Hint::Inspect(_) => Some("inspect:"),
+        Hint::Retry(_) => Some("retry:"),
+        Hint::Undo(_) => Some("undo:"),
+        Hint::Closest(_) => None,
+        Hint::Valid(_) => Some("valid:"),
+    }
 }
 
-impl Hint {
-    #[must_use]
-    pub fn valid<I: IntoIterator<Item = S>, S: Into<String>>(names: I) -> Self {
-        Self::Valid(names.into_iter().map(Into::into).collect())
-    }
-
-    /// Whether `other` says nothing this one doesn't: the same hint, or another
-    /// of a kind a reader gets only one of.
-    #[must_use]
-    pub fn replaces(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Inspect(_), Self::Inspect(_)) => self == other,
-            (Self::Next(_), Self::Next(_))
-            | (Self::Retry(_), Self::Retry(_))
-            | (Self::Undo(_), Self::Undo(_))
-            | (Self::Closest(_), Self::Closest(_))
-            | (Self::Valid(_), Self::Valid(_)) => true,
-            _ => false,
-        }
-    }
-
-    const fn label(&self) -> Option<&'static str> {
-        match self {
-            Self::Next(_) => Some("next:"),
-            Self::Inspect(_) => Some("inspect:"),
-            Self::Retry(_) => Some("retry:"),
-            Self::Undo(_) => Some("undo:"),
-            Self::Closest(_) => None,
-            Self::Valid(_) => Some("valid:"),
-        }
-    }
-
-    /// What the reader sees: a command they can paste, or names [`escaped`] to read as stored.
-    fn text(&self) -> String {
-        match self {
-            Self::Next(command)
-            | Self::Inspect(command)
-            | Self::Retry(command)
-            | Self::Undo(command) => pasteable(command),
-            Self::Closest(name) => format!("did you mean {}?", escaped(name)),
-            Self::Valid(names) => {
-                let names: Vec<_> = names.iter().map(|name| escaped(name)).collect();
-                match names.split_at_checked(VALID_SHOWN) {
-                    Some((shown, rest)) if !rest.is_empty() => {
-                        format!("{}, and {} more", shown.join(", "), rest.len())
-                    }
-                    _ => names.join(", "),
+/// What the reader sees: a command they can paste, or names [`escaped`] to read as stored.
+fn text(hint: &Hint) -> String {
+    match hint {
+        Hint::Next(command)
+        | Hint::Inspect(command)
+        | Hint::Retry(command)
+        | Hint::Undo(command) => pasteable(command),
+        Hint::Closest(name) => format!("did you mean {}?", escaped(name)),
+        Hint::Valid(names) => {
+            let names: Vec<_> = names.iter().map(|name| escaped(name)).collect();
+            match names.split_at_checked(VALID_SHOWN) {
+                Some((shown, rest)) if !rest.is_empty() => {
+                    format!("{}, and {} more", shown.join(", "), rest.len())
                 }
+                _ => names.join(", "),
             }
         }
     }
+}
 
-    /// Write this hint as its own line.
-    ///
-    /// # Errors
-    ///
-    /// Returns the writer's error.
-    pub fn write(&self, out: &mut dyn io::Write) -> io::Result<()> {
-        let text = self.text();
-        match self.label() {
-            Some(label) => writeln!(out, "{} {text}", Tone::Label.paint(label)),
-            None => writeln!(out, "{text}"),
-        }
-    }
-
-    /// Hints carried as `details` keys by an error that crossed the wire.
-    #[must_use]
-    pub fn from_details(details: &Value) -> Vec<Self> {
-        let text = |key: &str| details.get(key).and_then(Value::as_str).map(str::to_owned);
-        let list = |key: &str| -> Vec<String> {
-            details
-                .get(key)
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        let valid = list("valid_children");
-        text("next")
-            .map(Self::Next)
-            .into_iter()
-            .chain(list("inspect").into_iter().map(Self::Inspect))
-            .chain(text("retry").map(Self::Retry))
-            .chain(text("undo").map(Self::Undo))
-            .chain(text("did_you_mean").map(Self::Closest))
-            .chain((!valid.is_empty()).then_some(Self::Valid(valid)))
-            .collect()
-    }
-
-    /// Write `hints` into `--json` `details`: `next`, `retry` and `undo` are one
-    /// command each, `did_you_mean` one name, `inspect` and `valid_children` arrays.
-    pub fn into_details(hints: &[Self], details: &mut Value) {
-        if hints.is_empty() {
-            return;
-        }
-        if !details.is_object() {
-            *details = Value::Object(Map::new());
-        }
-        let Some(fields) = details.as_object_mut() else {
-            return;
-        };
-        let mut inspect = Vec::new();
-        for hint in hints {
-            match hint {
-                Self::Next(command) => {
-                    fields.insert("next".into(), command.as_str().into());
-                }
-                Self::Retry(command) => {
-                    fields.insert("retry".into(), command.as_str().into());
-                }
-                Self::Undo(command) => {
-                    fields.insert("undo".into(), command.as_str().into());
-                }
-                Self::Inspect(command) => inspect.push(Value::from(command.as_str())),
-                Self::Closest(name) => {
-                    fields.insert("did_you_mean".into(), name.as_str().into());
-                }
-                Self::Valid(names) => {
-                    fields.insert("valid_children".into(), names.clone().into());
-                }
-            }
-        }
-        if !inspect.is_empty() {
-            fields.insert("inspect".into(), inspect.into());
-        }
+/// Write `hint` as its own line.
+///
+/// # Errors
+///
+/// Returns the writer's error.
+pub(super) fn write_hint(out: &mut dyn io::Write, hint: &Hint) -> io::Result<()> {
+    let text = text(hint);
+    match label(hint) {
+        Some(label) => writeln!(out, "{} {text}", Tone::Label.paint(label)),
+        None => writeln!(out, "{text}"),
     }
 }
 
@@ -294,7 +188,7 @@ pub fn write(
         )?;
     }
     for hint in hints {
-        hint.write(out)?;
+        write_hint(out, hint)?;
     }
     Ok(())
 }
@@ -316,240 +210,11 @@ mod tests {
     fn valid_caps_at_eight_and_counts_the_rest() {
         let names = (1..=11).map(|n| format!("s{n}"));
         let mut out = anstream::StripStream::new(Vec::new());
-        Hint::valid(names).write(&mut out).unwrap();
+        write_hint(&mut out, &Hint::valid(names)).unwrap();
         assert_eq!(
             String::from_utf8(out.into_inner()).unwrap(),
             "valid: s1, s2, s3, s4, s5, s6, s7, s8, and 3 more\n"
         );
-    }
-
-    #[test]
-    fn hints_round_trip_through_json_details() {
-        let hints = vec![
-            Hint::Next("ployz deploy".into()),
-            Hint::Inspect("ployz logs web".into()),
-            Hint::Inspect("ployz ps".into()),
-            Hint::Retry("ployz project rm blog --confirm blog".into()),
-            Hint::Undo("ployz env sync --undo s3".into()),
-            Hint::Closest("web".into()),
-            Hint::valid(["web", "db"]),
-        ];
-        let mut details = serde_json::json!({ "deployment": "d1" });
-        Hint::into_details(&hints, &mut details);
-        assert_eq!(
-            details,
-            serde_json::json!({
-                "deployment": "d1",
-                "next": "ployz deploy",
-                "inspect": ["ployz logs web", "ployz ps"],
-                "retry": "ployz project rm blog --confirm blog",
-                "undo": "ployz env sync --undo s3",
-                "did_you_mean": "web",
-                "valid_children": ["web", "db"],
-            })
-        );
-        assert_eq!(Hint::from_details(&details), hints);
-    }
-
-    fn written(hints: &[Hint], mut details: serde_json::Value) -> serde_json::Value {
-        Hint::into_details(hints, &mut details);
-        details
-    }
-
-    #[test]
-    fn each_hint_writes_its_own_key_and_shape() {
-        use serde_json::{Value, json};
-        let null = Value::Null;
-        assert_eq!(
-            written(&[Hint::Next("ployz deploy".into())], null.clone()),
-            json!({ "next": "ployz deploy" })
-        );
-        assert_eq!(
-            written(&[Hint::Retry("ployz rm web --yes".into())], null.clone()),
-            json!({ "retry": "ployz rm web --yes" })
-        );
-        assert_eq!(
-            written(
-                &[Hint::Undo("ployz env sync --undo s3".into())],
-                null.clone()
-            ),
-            json!({ "undo": "ployz env sync --undo s3" })
-        );
-        assert_eq!(
-            written(&[Hint::Closest("web".into())], null.clone()),
-            json!({ "did_you_mean": "web" })
-        );
-        assert_eq!(
-            written(&[Hint::valid(["web", "db"])], null.clone()),
-            json!({ "valid_children": ["web", "db"] })
-        );
-        assert_eq!(
-            written(&[Hint::Inspect("ployz ps".into())], null),
-            json!({ "inspect": ["ployz ps"] })
-        );
-    }
-
-    #[test]
-    fn hints_merge_into_the_details_already_there() {
-        use serde_json::json;
-        let details = json!({
-            "deployment": "d1",
-            "next": "ployz old",
-            "inspect": ["ployz old-inspect"],
-            "valid_children": ["old"],
-            "retry": "ployz old retry",
-        });
-        assert_eq!(
-            written(
-                &[
-                    Hint::Next("ployz deploy".into()),
-                    Hint::Inspect("ployz ps".into()),
-                    Hint::valid(["web"]),
-                ],
-                details
-            ),
-            json!({
-                "deployment": "d1",
-                "next": "ployz deploy",
-                "inspect": ["ployz ps"],
-                "valid_children": ["web"],
-                "retry": "ployz old retry",
-            })
-        );
-    }
-
-    #[test]
-    fn the_last_hint_of_a_single_valued_kind_wins_and_inspects_collect_in_order() {
-        use serde_json::json;
-        assert_eq!(
-            written(
-                &[
-                    Hint::Next("ployz one".into()),
-                    Hint::Inspect("ployz b".into()),
-                    Hint::Next("ployz two".into()),
-                    Hint::Inspect("ployz a".into()),
-                    Hint::Closest("x".into()),
-                    Hint::Closest("y".into()),
-                ],
-                json!({})
-            ),
-            json!({
-                "next": "ployz two",
-                "inspect": ["ployz b", "ployz a"],
-                "did_you_mean": "y",
-            })
-        );
-    }
-
-    #[test]
-    fn details_that_are_not_an_object_become_one_when_a_hint_is_written() {
-        use serde_json::{Value, json};
-        for before in [
-            Value::Null,
-            json!("text"),
-            json!(7),
-            json!(["next"]),
-            json!(true),
-        ] {
-            assert_eq!(
-                written(&[Hint::Next("ployz deploy".into())], before),
-                json!({ "next": "ployz deploy" })
-            );
-        }
-    }
-
-    #[test]
-    fn no_hints_leave_the_details_as_they_were() {
-        use serde_json::{Value, json};
-        for before in [Value::Null, json!("text"), json!({ "a": 1 })] {
-            assert_eq!(written(&[], before.clone()), before);
-        }
-    }
-
-    #[test]
-    fn an_empty_valid_list_is_absent_and_an_empty_valid_hint_writes_an_empty_list() {
-        use serde_json::json;
-        assert_eq!(Hint::from_details(&json!({ "valid_children": [] })), []);
-        assert_eq!(
-            Hint::from_details(&json!({ "valid_children": [1, null, {}] })),
-            []
-        );
-        assert_eq!(
-            written(&[Hint::Valid(Vec::new())], json!({})),
-            json!({ "valid_children": [] })
-        );
-    }
-
-    #[test]
-    fn details_of_the_wrong_shape_read_as_no_hint() {
-        use serde_json::{Value, json};
-        assert_eq!(Hint::from_details(&Value::Null), []);
-        assert_eq!(Hint::from_details(&json!("next")), []);
-        assert_eq!(
-            Hint::from_details(&json!({
-                "next": ["ployz deploy"],
-                "retry": 3,
-                "undo": null,
-                "did_you_mean": { "name": "web" },
-                "inspect": "ployz ps",
-                "valid_children": "web",
-            })),
-            []
-        );
-    }
-
-    #[test]
-    fn a_list_key_reads_its_strings_and_skips_the_rest() {
-        use serde_json::json;
-        assert_eq!(
-            Hint::from_details(&json!({
-                "inspect": ["ployz ps", 3, null, "ployz logs web"],
-                "valid_children": ["web", 1, "db"],
-            })),
-            [
-                Hint::Inspect("ployz ps".into()),
-                Hint::Inspect("ployz logs web".into()),
-                Hint::valid(["web", "db"]),
-            ]
-        );
-    }
-
-    #[test]
-    fn hints_read_in_one_fixed_order_whatever_the_key_order() {
-        use serde_json::json;
-        let details = json!({
-            "valid_children": ["web"],
-            "did_you_mean": "web",
-            "undo": "ployz u",
-            "retry": "ployz r",
-            "inspect": ["ployz i"],
-            "next": "ployz n",
-            "unrelated": 1,
-        });
-        assert_eq!(
-            Hint::from_details(&details),
-            [
-                Hint::Next("ployz n".into()),
-                Hint::Inspect("ployz i".into()),
-                Hint::Retry("ployz r".into()),
-                Hint::Undo("ployz u".into()),
-                Hint::Closest("web".into()),
-                Hint::valid(["web"]),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_kind_a_reader_gets_one_of_replaces_another_and_inspects_replace_only_themselves() {
-        let next = Hint::Next("ployz a".into());
-        assert!(next.replaces(&Hint::Next("ployz b".into())));
-        assert!(!next.replaces(&Hint::Retry("ployz a".into())));
-        let inspect = Hint::Inspect("ployz ps".into());
-        assert!(inspect.replaces(&Hint::Inspect("ployz ps".into())));
-        assert!(!inspect.replaces(&Hint::Inspect("ployz ls".into())));
-        assert!(Hint::valid(["a"]).replaces(&Hint::valid(["b", "c"])));
-        assert!(Hint::Closest("a".into()).replaces(&Hint::Closest("b".into())));
-        assert!(!Hint::Closest("a".into()).replaces(&Hint::valid(["a"])));
     }
 
     #[test]
@@ -697,9 +362,11 @@ mod tests {
     #[test]
     fn only_the_word_with_an_invisible_character_is_requoted() {
         let mut out = anstream::StripStream::new(Vec::new());
-        Hint::Next("cd \"x y\" && ployz  rm a\u{202E}b".into())
-            .write(&mut out)
-            .unwrap();
+        write_hint(
+            &mut out,
+            &Hint::Next("cd \"x y\" && ployz  rm a\u{202E}b".into()),
+        )
+        .unwrap();
         assert_eq!(
             String::from_utf8(out.into_inner()).unwrap(),
             "next: cd \"x y\" && ployz  rm $'a\\xe2\\x80\\xaeb'\n"

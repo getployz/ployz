@@ -12,10 +12,10 @@ use crate::cli::{
     base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
 use ployz_core::{
-    AdvertisedEndpoint, BuildConcurrencyUpdate, EnvironmentValues, IngressDoors, InspectRequest,
-    ListContainersRequest, Machine, MachineId, MachineName, MachineObservation, MachineTarget,
-    MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest,
-    op,
+    AdvertisedEndpoint, BuildConcurrencyUpdate, EnvironmentValues, Hint, IngressDoors,
+    InspectRequest, ListContainersRequest, Machine, MachineId, MachineName, MachineObservation,
+    MachineTarget, MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint,
+    UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
@@ -31,7 +31,6 @@ use crate::{
 };
 
 use super::{Error, leaf_matches, string_values, with_client};
-use crate::ui::Hint;
 
 mod add;
 pub(super) mod checkin;

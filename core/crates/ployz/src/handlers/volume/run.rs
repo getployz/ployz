@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use clap::{ArgMatches, Command};
 use ployz_core::authority::{ApprovedVolumeChange, Signed, VolumeApproval};
-use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode};
+use ployz_core::{
+    Hint, MachineName, ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode,
+};
 use ployz_store::{
     EnvironmentId, EnvironmentName, EnvironmentSummary, ProjectName, VolumeId, VolumeName,
     VolumeQuery, VolumeView, VolumesQuery,
@@ -21,7 +23,7 @@ use super::approve::MirrorOn;
 use crate::approval::{self, Asked, Verb};
 use crate::cli::{approval as approval_arg, positional, switch, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::ui::{Cell, Fields, Hint, Table, Tone};
+use crate::ui::{Cell, Fields, Table, Tone};
 
 const POLL: Duration = if cfg!(test) {
     Duration::from_millis(10)

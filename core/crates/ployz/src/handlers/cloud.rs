@@ -8,7 +8,7 @@ use clap::{ArgMatches, Command};
 use crate::cli::{base, switch};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CloudEnrollToken, DescribeContractRequest, EnrollAs, EnrollRequest, InspectRequest,
+    CloudEnrollToken, DescribeContractRequest, EnrollAs, EnrollRequest, Hint, InspectRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, ManagementCapability,
     ManagementClientLabel, PinnedAddresses, RecoveryCode, SetManagementClientRequest,
     StorageChoice, op,
@@ -24,7 +24,7 @@ use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::provisioning::Installation;
 use crate::setup_report::{SetupReport, Step};
-use crate::ui::{self, Fields, Hint};
+use crate::ui::{self, Fields};
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
 pub(super) fn enroll(
@@ -926,7 +926,7 @@ fn founder_result(
         }
     }
     if let Some(next) = next {
-        ui::hint(&ui::Hint::Inspect(next.to_owned()));
+        ui::hint(&Hint::Inspect(next.to_owned()));
     }
     Ok(result)
 }
