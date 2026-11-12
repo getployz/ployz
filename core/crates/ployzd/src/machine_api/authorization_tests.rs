@@ -1354,7 +1354,9 @@ mod teardown {
         tokio::sync::OwnedRwLockWriteGuard<()>,
         Vec<tokio::task::JoinHandle<Answer>>,
     ) {
-        let turn = machine.store.admission_lock().write_owned().await;
+        let lock = machine.store.admission_lock();
+        let turn = std::sync::Arc::clone(&lock).write_owned().await;
+        let idle = std::sync::Arc::strong_count(&lock);
         let waiting: Vec<_> = requests
             .into_iter()
             .map(|(path, request)| {
@@ -1362,7 +1364,15 @@ mod teardown {
                 tokio::spawn(async move { unary_at(address, path, &request, true).await })
             })
             .collect();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // A request waiting for its turn holds the lock it waits on, and reaches it only
+        // once its own admission has passed.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while std::sync::Arc::strong_count(&lock) < idle + waiting.len() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("each request reached its turn");
         for call in &waiting {
             assert!(
                 !call.is_finished(),
