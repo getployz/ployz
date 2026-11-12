@@ -39,10 +39,10 @@ def select(paths, pull_request=False):
     return selected
 
 
-# Everything the ployz-store tests compile or read: the crate, its one path dependency, the docs its build
+# Everything the ployz-store tests compile or read: the crate, its path dependencies, the docs its build
 # script embeds, and one fixture.
 STORE_INPUTS = (
-    "core/crates/ployz-store/", "core/crates/ployz-core/", "docs/user/",
+    "core/crates/ployz-store/", "core/crates/ployz-core/", "core/crates/ployz-decide/", "docs/user/",
     "core/crates/ployz/tests/fixtures/published-manifest.json",
 )
 
