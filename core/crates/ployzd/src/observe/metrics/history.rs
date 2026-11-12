@@ -64,7 +64,13 @@ pub(crate) fn history(
         return raw(store, range, &request.scope, buckets, now);
     }
     let (rolled, mut markers) = rollup::read(store, range, &request.scope)?;
-    let raw_hours = segment::hours(store)?;
+    let folded = rollup::folded(store)?;
+    // A range the rollups cover whole never lists the raw dir.
+    let raw_hours = if uncovered(&folded, range).is_empty() {
+        BTreeSet::new()
+    } else {
+        segment::hours(store)?
+    };
     let mut reader = Raw::new(
         store,
         &request.scope,
@@ -72,7 +78,7 @@ pub(crate) fn history(
         raw_hours.first().map(|hour| hour.start_nanos()),
     );
     let mut fresh = Vec::new();
-    for stretch in unfolded(&raw_hours, &rollup::folded(store)?, range) {
+    for stretch in unfolded(&raw_hours, &folded, range) {
         let buckets = Buckets::new(stretch, Some(RETENTION.step_nanos()));
         let tail = reader.read(stretch, buckets)?;
         markers.extend(tail.markers);
@@ -114,6 +120,18 @@ fn unfolded(
     folded: &BTreeSet<SegmentName>,
     range: MetricRange,
 ) -> Vec<MetricRange> {
+    let mut stretches = uncovered(folded, range);
+    stretches.retain(|stretch| {
+        raw_hours.iter().any(|hour| {
+            hour.start_nanos() < stretch.until_nanos && hour.end_nanos() > stretch.since_nanos
+        })
+    });
+    stretches
+}
+
+/// What the rollups leave of `range`, cut at each folded hour, whether or not
+/// a raw segment lies in it.
+fn uncovered(folded: &BTreeSet<SegmentName>, range: MetricRange) -> Vec<MetricRange> {
     let mut stretches = Vec::new();
     let mut from = range.since_nanos;
     for hour in folded {
@@ -137,11 +155,6 @@ fn unfolded(
             until_nanos: range.until_nanos,
         });
     }
-    stretches.retain(|stretch| {
-        raw_hours.iter().any(|hour| {
-            hour.start_nanos() < stretch.until_nanos && hour.end_nanos() > stretch.since_nanos
-        })
-    });
     stretches
 }
 
@@ -1180,6 +1193,26 @@ pub(crate) mod tests {
         let last_before = 10 * secs(T0 + 28 * HOUR - 10 * SEC);
         let amount = 40 * secs(T0 + 29 * HOUR) - last_before + 29 * 400;
         assert!(near(first.cpu_usec, amount as f64 / 3_900.0), "{first:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_range_the_rollups_cover_whole_is_answered_without_listing_raw() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_dir, store) = store();
+        let now = T0 + 3 * DAY;
+        write(&store, T0, T0 + HOUR, |ts| vec![host(ts)]);
+        rollup::fold_hour(&store, SegmentName::containing(T0).unwrap()).unwrap();
+        let asked = request(MetricScope::Machine, T0, T0 + HOUR, Some(STEP_NANOS));
+        let listed = history(&store, &asked, now).unwrap();
+
+        let raw = store.raw_metrics();
+        fs::set_permissions(&raw, fs::Permissions::from_mode(0o000)).unwrap();
+        let unlisted = history(&store, &asked, now);
+        fs::set_permissions(&raw, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(unlisted.unwrap(), listed);
     }
 
     #[test]
