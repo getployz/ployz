@@ -6,6 +6,13 @@ description: See whether visitors can reach each service, check it after a deplo
 Ployz checks every service with a public address from outside your servers, the way a visitor
 reaches it. When the check can't get through, the service shows a red **⚠ Unreachable** and an incident opens.
 
+Uptime is part of [Production](../account/organizations.md#billing). Without Production, Ployz
+keeps checking and keeps its incidents, but you can't see them: the **Monitoring** tab shows
+**Uptime is part of Production** where the status line, history and **Response time** would be,
+the **⚠** count leaves the canvas, and the [uptime emails](../account/notifications.md) stop.
+Your service's metrics stay. Add Production and the results show again. A self-hosted Ployz Cloud
+shows uptime to everyone.
+
 ## See a service's uptime
 
 1. Click the service on the canvas.
@@ -54,7 +61,8 @@ ployz uptime check web
 
 The sidebar and `ployz mcp` offer both as `uptime_show` and `uptime_check`, so an agent can see
 that a service answers 500 and check it again after a fix. A service with no public address
-answers `not_checked`.
+answers `not_checked`. An Organization without Production answers `needs_production` and changes
+nothing.
 
 ## Good to know
 

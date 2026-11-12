@@ -185,6 +185,15 @@ export const analyticsPlan = Effect.fn("Billing.analyticsPlan")(function* () {
   return "cloud" as const;
 });
 
+/**
+ * Whether the Organization can see uptime and web analytics. On Ployz-hosted Cloud they come with Production; a
+ * Self-hosted Cloud has no billing, so every Organization there keeps them. Gates what is shown, never what is collected.
+ */
+export const includesMonitoring = Effect.fn("Billing.includesMonitoring")(function* (organizationId: string) {
+  if ((yield* Polar).mode === "self_hosted") return true;
+  return yield* hasCachedActiveSubscription(organizationId);
+});
+
 /** Checkout and the portal come back to the Organization's billing page. */
 const billingPage = (appUrl: URL, organizationSlug: string) =>
   new URL(`/cloud/${encodeURIComponent(organizationSlug)}/~/billing`, appUrl).href;

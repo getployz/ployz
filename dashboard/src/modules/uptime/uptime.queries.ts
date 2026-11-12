@@ -1,6 +1,7 @@
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
+import { isNeedsProduction, type NeedsProduction } from "#/modules/billing/billing";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { unreachableHost } from "./uptime";
 import type { UptimeRange } from "./uptime-range";
@@ -15,25 +16,29 @@ export function useUptimeEnabled(organizationSlug: string) {
   return useQuery({ ...organizationStateQueryOptions(organizationSlug), staleTime: Infinity, select: (state) => state.uptimeEnabled }).data ?? false;
 }
 
-/** Every check in the Environment, and when its open incident opened. */
+/** Every check in the Environment, and when its open incident opened, or that the Organization needs Production to see them. */
 export function environmentUptimeQueryOptions(scope: UptimeScope) {
   return queryOptions({
     queryKey: ["uptime", scope.environmentId, "checks"] as const,
     queryFn: () => readEnvironmentUptimeServerFn({ data: scope }),
     staleTime: 30_000,
     // The checker writes without a Cloud write to invalidate on.
-    refetchInterval: 60_000,
+    refetchInterval: (query) => isNeedsProduction(query.state.data) ? false : 60_000,
   });
 }
 
-/** One Service's status, uptime, response time and incidents over `range`, or null without a check. */
+/** One Service's status, uptime, response time and incidents over `range`, null without a check, or that the Organization needs Production to see it. */
 export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string, range: UptimeRange) {
   return queryOptions({
     queryKey: ["uptime", scope.environmentId, serviceId, range.from, range.to] as const,
     queryFn: () => readServiceUptimeServerFn({ data: { ...scope, serviceId, from: range.from, to: range.to } }),
     staleTime: 30_000,
     // A requested probe answers within seconds, and its round can open or close an incident just after.
-    refetchInterval: (query) => query.state.data?.probe ? 2_500 : 60_000,
+    refetchInterval: (query) => {
+      const uptime = query.state.data;
+      if (isNeedsProduction(uptime)) return false;
+      return uptime?.probe ? 2_500 : 60_000;
+    },
   });
 }
 
@@ -48,9 +53,12 @@ export function useRequestUptimeProbe(scope: UptimeScope, serviceId: string) {
     mutationFn: () => requestUptimeProbeServerFn({ data: { ...scope, serviceId } }),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: serviceKey });
-      const previous = queryClient.getQueriesData<ServiceUptime | null>({ queryKey: serviceKey });
+      const previous = queryClient.getQueriesData<ServiceUptime | null | NeedsProduction>({ queryKey: serviceKey });
       const probe = { requestedAt: new Date().toISOString(), answered: false };
-      queryClient.setQueriesData<ServiceUptime | null>({ queryKey: serviceKey }, (uptime) => uptime ? { ...uptime, probe } : uptime);
+      queryClient.setQueriesData<ServiceUptime | null | NeedsProduction>(
+        { queryKey: serviceKey },
+        (uptime) => uptime && !isNeedsProduction(uptime) ? { ...uptime, probe } : uptime,
+      );
       return { previous };
     },
     onError: (error, _variables, context) => {
@@ -66,7 +74,7 @@ export function useRequestUptimeProbe(scope: UptimeScope, serviceId: string) {
 /** The hostname a Service's open incident is about, or null. Never suspends: a failed read leaves the card as it was. */
 export function useUnreachableHost(scope: UptimeScope, serviceId: string) {
   const enabled = useUptimeEnabled(scope.organizationSlug);
-  const host = useQuery({ ...environmentUptimeQueryOptions(scope), enabled, select: (checks) => unreachableHost(checks, serviceId) }).data;
+  const host = useQuery({ ...environmentUptimeQueryOptions(scope), enabled, select: (checks) => isNeedsProduction(checks) ? null : unreachableHost(checks, serviceId) }).data;
   return enabled ? host ?? null : null;
 }
 

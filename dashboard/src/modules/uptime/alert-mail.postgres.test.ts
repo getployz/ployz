@@ -6,6 +6,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
+import type { Polar } from "#/modules/billing/polar-provider.server";
 import { cloudStore, type CloudStore } from "#/modules/config-store/store-sdk.server";
 import type { InngestClient } from "#/modules/inngest/client";
 import { member, user } from "#/modules/identity/tables";
@@ -16,6 +17,7 @@ import { sendUptimeAlerts } from "#/modules/uptime/alert-mail.server";
 import { controlPlaneStatements } from "#/modules/uptime/incident-fence";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { holdProduction, hostedPolar } from "#/test/billing";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000e401";
@@ -33,15 +35,17 @@ const evidence = {
 /**
  * Cloud with the Store open: Organization Acme whose members are Ada and Bob, Bob with uptime email off, and a check on
  * Service `web` in shop / production. `open` and `close` write incidents and their alerts with the control plane's own
- * statements. `mails` are the mail/send events queued so far.
+ * statements. `mails` are the mail/send events queued so far. A Self-hosted Cloud unless `billing` puts Acme on a hosted
+ * one, as Free or holding Production.
  */
-const setup = Effect.fn(function* () {
+const setup = Effect.fn(function* (billing?: "free" | "production") {
   const inngest = new Inngest({ id: "alert-mail-test" });
   const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-  const services = yield* storeTestCloud({ inngest, env: { APP_URL: "https://cloud.example.com" } });
-  const provide = <A, E>(effect: Effect.Effect<A, E, Database | AppConfig | InngestClient | CloudStore>) =>
+  const services = yield* storeTestCloud({ inngest, env: { APP_URL: "https://cloud.example.com" }, ...(billing && { polar: hostedPolar }) });
+  const provide = <A, E>(effect: Effect.Effect<A, E, Database | AppConfig | InngestClient | CloudStore | Polar>) =>
     effect.pipe(Effect.provide(services));
   yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
+  if (billing === "production") yield* provide(holdProduction(ORGANIZATION));
   const store = yield* provide(cloudStore);
   yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT }));
 
@@ -76,10 +80,12 @@ const setup = Effect.fn(function* () {
     query(sql`update uptime_alert set created_at = ${at}::timestamptz where incident_id = ${incident}`);
   const alerts = (incident: string) => query<{ kind: string; state: string }>(sql`
     select kind, state from uptime_alert where incident_id = ${incident} order by kind`);
+  const recorded = (incident: string) => query<{ closed: boolean }>(sql`
+    select closed_at is not null as closed from uptime_incident where id = ${incident}`);
   const mails = () => send.mock.calls.flatMap(([event]) => (Array.isArray(event) ? event : [event]))
     .map((event) => ({ id: event.id, data: event.data as MailSendRequestedEventData }));
   const run = (now: string) => provide(sendUptimeAlerts(new Date(now)));
-  return { open, close, writtenAt, alerts, mails, run, provide, send };
+  return { open, close, writtenAt, alerts, recorded, mails, run, provide, send };
 });
 
 it.live("an opened incident mails every member who wants uptime email, once, and skips a member set to None", () => Effect.gen(function* () {
@@ -126,6 +132,29 @@ it.live("an alert written more than an hour ago expires without mail, and its re
 
   expect(yield* alerts(incident)).toEqual([{ kind: "opened", state: "expired" }, { kind: "resolved", state: "expired" }]);
   expect(mails()).toEqual([]);
+}));
+
+it.live("a hosted Organization without Production is mailed nothing, while its incident is still recorded and closed", () => Effect.gen(function* () {
+  const { open, close, alerts, recorded, mails, run } = yield* setup("free");
+  const incident = yield* open("2026-10-14T03:02:00Z");
+  yield* close(incident, "2026-10-14T03:14:00Z");
+
+  yield* run("2026-10-14T03:15:00Z");
+
+  expect(yield* alerts(incident)).toEqual([{ kind: "opened", state: "expired" }, { kind: "resolved", state: "expired" }]);
+  expect(yield* recorded(incident)).toEqual([{ closed: true }]);
+  expect(mails()).toEqual([]);
+}));
+
+it.live("a hosted Organization with Production is mailed, down and back up", () => Effect.gen(function* () {
+  const { open, close, alerts, mails, run } = yield* setup("production");
+  const incident = yield* open("2026-10-14T03:02:00Z");
+  yield* close(incident, "2026-10-14T03:14:00Z");
+
+  yield* run("2026-10-14T03:15:00Z");
+
+  expect(yield* alerts(incident)).toEqual([{ kind: "opened", state: "sent" }, { kind: "resolved", state: "sent" }]);
+  expect(mails().map((mail) => mail.data.subject)).toEqual(["web is down in shop / production", "web is back up in shop / production"]);
 }));
 
 it.live("two runs at once claim each alert once", () => Effect.gen(function* () {

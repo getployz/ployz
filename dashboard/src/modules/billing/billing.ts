@@ -14,6 +14,13 @@ export const billedUnits = (servers: number) => Math.max(1, servers);
 export const monthlyPriceUsd = (servers: number) =>
   BASE_PRICE_USD + Math.max(0, servers - INCLUDED_SERVERS) * EXTRA_SERVER_USD;
 
+/** What a read of uptime or web analytics answers an Organization without Production, in place of the data. */
+export const needsProduction = { gate: "production" } as const;
+export type NeedsProduction = typeof needsProduction;
+
+export const isNeedsProduction = <A>(read: A | NeedsProduction): read is NeedsProduction =>
+  typeof read === "object" && read !== null && "gate" in read && read.gate === needsProduction.gate;
+
 export const ManagedSubscriptionSnapshot = Schema.Struct({
   activeSubscriptionId: Schema.NullOr(Schema.String),
   currentPeriodEnd: Schema.NullOr(Schema.Date),
