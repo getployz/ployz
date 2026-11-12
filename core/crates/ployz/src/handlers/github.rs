@@ -1,3 +1,4 @@
+use crate::ui::Next;
 use std::time::{Duration, Instant};
 
 use clap::{ArgMatches, Command};
@@ -12,7 +13,6 @@ use serde_json::json;
 
 use super::account::in_cloud;
 use super::login::open_browser;
-use super::store::Next;
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::cloud_account::{self, Credential};
@@ -170,10 +170,9 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let Some(repository) = leaf_matches(root).get_one::<String>("repository") else {
         let listed = in_cloud(root, async |_, credential| connection(credential).await)?;
         let next = (!listed.ready).then(|| "ployz github connect".to_owned());
-        repositories(&Next::new(&listed, next.clone()), &listed)?;
-        if let Some(next) = next {
-            crate::ui::hint(&Hint::Next(next));
-        }
+        let followed = Next::new(&listed, next);
+        repositories(&followed, &listed)?;
+        followed.say();
         return Ok(());
     };
     let repository = repository_name(repository)?;

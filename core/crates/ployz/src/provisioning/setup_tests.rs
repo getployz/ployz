@@ -1,5 +1,6 @@
 //! Setup scenarios that run the shared installer path with a locally built bootstrap.
 
+use ployz_core::error_chain;
 use std::{
     env, fs,
     os::unix::fs::PermissionsExt,
@@ -296,7 +297,7 @@ esac
     let error = run_remote(&remote, &release).await.unwrap_err();
 
     assert!(
-        crate::ui::chain_text(&error).contains("timed out after 1 seconds"),
+        error_chain::row(&error).contains("timed out after 1 seconds"),
         "{error}"
     );
     let log = fs::read_to_string(log).unwrap();

@@ -367,6 +367,7 @@ fn ingest_error(error: RpcError) -> PushError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::error_chain;
     use ployz_core::{
         MachineId, MachineName, MachineObservation, MembershipObservation, RpcErrorCode,
         WireGuardPublicKey,
@@ -514,6 +515,6 @@ mod tests {
             error.to_string(),
             "Could not ingest the image on the Machine."
         );
-        assert_eq!(crate::ui::causes(&error), ["transport error"]);
+        assert_eq!(error_chain::causes(&error), ["transport error"]);
     }
 }

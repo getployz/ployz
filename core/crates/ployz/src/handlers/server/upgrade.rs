@@ -830,6 +830,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use ployz_core::error_chain;
 
     struct FakeRequests {
         request: Option<Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>>,
@@ -1592,7 +1593,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        let error = crate::ui::chain_text(&error);
+        let error = error_chain::row(&error);
         daemon.shutdown_background();
         assert!(error.contains("upgrade record is unreadable"), "{error}");
         // The accepted attempt survives the failed poll as committed evidence.

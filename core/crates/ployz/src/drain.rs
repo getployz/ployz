@@ -12,6 +12,7 @@
 //! Callers: `ployz server drain` (streams a line per step through `progress`) and
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
+use ployz_core::error_chain;
 use std::collections::VecDeque;
 use std::pin::pin;
 
@@ -436,11 +437,11 @@ impl DrainClient for Client {
         let machines = self
             .machines()
             .await
-            .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
+            .map_err(|error| Lost::Entry(error_chain::row(&error)))?;
         let live = self
             .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
-            .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
+            .map_err(|error| Lost::Entry(error_chain::row(&error)))?;
         observed(&live, id).map_err(Lost::Server)?;
         Ok(services_on(id, &live))
     }
@@ -851,7 +852,7 @@ fn observed(live: &LiveServices<RpcError>, id: &MachineId) -> Result<(), String>
         .iter()
         .find(|failure| failure.machine_id == *id)
     {
-        return Err(crate::ui::row(&failure.error));
+        return Err(error_chain::row(&failure.error));
     }
     if live.containers.omissions.contains(id) {
         return Err("no terminal response".into());

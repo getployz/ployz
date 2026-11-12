@@ -7,6 +7,8 @@
 //! own Project. Links live beside the Ployz config, never in the directory, so
 //! nothing needs ignoring or uploading.
 
+use crate::ui::Next;
+use ployz_core::error_chain;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io;
@@ -27,7 +29,7 @@ use serde_json::json;
 use super::status::model::{Attention, Subject};
 use super::status_servers::UNCHECKED;
 use super::store::{
-    Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
+    Backend, LOCAL_ORGANIZATION, Store, backend_at, next, reachable, scoped, store,
 };
 use super::{Error, config_path, leaf_matches};
 use crate::checkin::{LocalCheckin, Paths, Seen};
@@ -446,17 +448,15 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
     };
     let view = store.read(&query)?;
     let linked = record(&config, view.environment)?;
-    let hint = Some("ployz status".to_owned());
+    let followed = Next::new(&linked, Some("ployz status".to_owned()));
     crate::ui::done(
-        &Next::new(&linked, hint.clone()),
+        &followed,
         format_args!(
             "Linked {} to {}/{}.",
             linked.directory, linked.project, linked.environment
         ),
     )?;
-    if let Some(hint) = hint {
-        crate::ui::hint(&Hint::Next(hint));
-    }
+    followed.say();
     Ok(())
 }
 
@@ -657,7 +657,8 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     None => "ployz link --project PROJECT".to_owned(),
                 };
                 attention.push(
-                    Attention::new(None, error.code.to_string(), crate::ui::row(&error)).next(next),
+                    Attention::new(None, error.code.to_string(), error_chain::row(&error))
+                        .next(next),
                 );
                 None
             }
@@ -768,10 +769,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         deploying,
         attention,
     };
-    crate::ui::fields(&Next::new(&status, hint.clone()), &status_record(&status))?;
-    if let Some(hint) = hint {
-        crate::ui::hint(&Hint::Next(hint));
-    }
+    let followed = Next::new(&status, hint);
+    crate::ui::fields(&followed, &status_record(&status))?;
+    followed.say();
     if partial {
         return Err(Error::partial());
     }
@@ -1062,10 +1062,9 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         .field("project", project)
         .field("environment", environment)
         .field("servers", context.servers.label());
-    crate::ui::fields(&Next::new(&context, hint.clone()), &record)?;
-    if let Some(hint) = hint {
-        crate::ui::hint(&Hint::Next(hint));
-    }
+    let followed = Next::new(&context, hint);
+    crate::ui::fields(&followed, &record)?;
+    followed.say();
     Ok(())
 }
 

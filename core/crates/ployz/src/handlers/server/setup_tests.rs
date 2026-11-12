@@ -1,6 +1,7 @@
 //! Real setup RPC deadlines and Enroll resends under virtual time.
 
 use crate::cluster::{Call, Deadline, Wait};
+use ployz_core::error_chain;
 use std::{
     sync::{
         Arc,
@@ -187,7 +188,7 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
         .await
         .unwrap_err();
     assert_eq!(Instant::now() - started, Duration::from_secs(60));
-    assert!(crate::ui::chain_text(&error).contains("Machine setup mutation reply timed out"));
+    assert!(error_chain::row(&error).contains("Machine setup mutation reply timed out"));
     assert_eq!(enrolls.load(Ordering::SeqCst), 1);
     let started = Instant::now();
     let error = client
@@ -198,7 +199,7 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
         .await
         .unwrap_err();
     assert_eq!(Instant::now() - started, Duration::from_secs(60));
-    assert!(crate::ui::chain_text(&error).contains("Machine setup read timed out"));
+    assert!(error_chain::row(&error).contains("Machine setup read timed out"));
     server.abort();
 }
 
@@ -495,7 +496,7 @@ async fn a_direct_readiness_wait_ends_at_a_startup_refusal() {
     .expect("a refusal ends the wait")
     .err()
     .expect("a refusing daemon is not ready");
-    let text = crate::ui::chain_text(&refused);
+    let text = error_chain::row(&refused);
     assert!(
         text.contains(
             "ployzd refused to start: refusing to change the retained WireGuard interface"

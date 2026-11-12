@@ -1,3 +1,4 @@
+use ployz_core::error_chain;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -126,7 +127,7 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
             Ok(saved) => saved,
             Err(error) => {
                 if let Err(revoking) = cloud_account::remove_token(credential, &made.id).await {
-                    ui::warn(ui::then_sentence(
+                    ui::warn(error_chain::then_sentence(
                         &format!(
                             "Could not revoke the token {} just made: {revoking}",
                             made.id

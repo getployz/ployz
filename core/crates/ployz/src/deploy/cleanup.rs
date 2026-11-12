@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::MachineOperations;
 use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
-use crate::ui::{then_sentence, with_reason};
+use ployz_core::error_chain::{then_sentence, with_reason};
 
 pub(crate) const ACK_POLL: Duration = Duration::from_millis(200);
 pub(crate) const ACK_WAIT: Duration = Duration::from_secs(300);

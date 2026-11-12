@@ -5,6 +5,7 @@
 //! print, read stdin, or exit the process.
 
 use crate::cluster::Call;
+use ployz_core::error_chain;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
@@ -354,7 +355,7 @@ pub(crate) async fn push_namespace_images(
                 }
                 failures.extend(service_failures);
             }
-            Err(error) => failures.push(format!("{}: {}", service.image, crate::ui::row(&error))),
+            Err(error) => failures.push(format!("{}: {}", service.image, error_chain::row(&error))),
         }
     }
     Ok(failures)
@@ -489,7 +490,7 @@ async fn push_image(
                 "{} on {}: {}",
                 service.image,
                 failure.machine_id,
-                crate::ui::row(&failure.error)
+                error_chain::row(&failure.error)
             )
         })
         .chain(

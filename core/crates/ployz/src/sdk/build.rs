@@ -1,4 +1,5 @@
 //! One Image Build: the per-Service call Cloud fans out, over `prepare`'s build path.
+use ployz_core::error_chain;
 use std::time::Duration;
 
 use ployz_core::RpcError;
@@ -79,7 +80,7 @@ pub(super) fn build_error(error: PreparationError, cancellation_requested: bool)
     let PreparationError::Build(build) = &error else {
         return super::preparation_error(error, cancellation_requested);
     };
-    let diagnosis = crate::ui::row(build);
+    let diagnosis = error_chain::row(build);
     let mut error = super::preparation_error(error, cancellation_requested);
     error.message = diagnosis;
     error

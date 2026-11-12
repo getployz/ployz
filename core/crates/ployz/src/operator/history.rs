@@ -3,6 +3,7 @@
 //! A Server that fails stops contributing and is returned as a failure; the
 //! others keep printing.
 
+use ployz_core::error_chain;
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
@@ -293,7 +294,7 @@ async fn read_page(
             .map_err(|status| RpcError::from(ConnectError::from(status)))?
             .ok_or_else(|| RpcError::unavailable("the Server's Log Store ended a page early"))?;
         let row = HistoryRow::decode(&message)
-            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))?;
+            .map_err(|error| error_chain::rpc_error(RpcErrorCode::Internal, &error))?;
         let (container_id, event) = match row {
             HistoryRow::Container(container) => {
                 source

@@ -1,4 +1,5 @@
 use crate::cluster::{Call, Deadline, Wait};
+use ployz_core::error_chain;
 use std::{net::IpAddr, sync::Arc};
 
 use clap::ArgMatches;
@@ -415,8 +416,8 @@ fn unconfirmed_removal(departing: &MachineDetails, reason: &str) -> String {
         Some(machine) => format!("Server {} ({id})", machine.name),
         None => format!("Server {id}"),
     };
-    crate::ui::then_sentence(
-        &crate::ui::with_reason(
+    error_chain::then_sentence(
+        &error_chain::with_reason(
             format_args!("{server} reset, but couldn't confirm that its old Cluster removed it"),
             reason,
         ),
@@ -569,7 +570,7 @@ mod tests {
             ployz_core::STARTUP_REFUSED
         )));
         let error = joining.failed(crate::setup_retry::Error::Permanent(refused), "not ready");
-        let text = crate::ui::chain_text(&error);
+        let text = error_chain::row(&error);
         assert!(!text.contains("stayed joining"), "{text}");
         assert!(text.contains("ployzd refused to start"), "{text}");
     }

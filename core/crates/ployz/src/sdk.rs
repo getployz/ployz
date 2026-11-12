@@ -1,4 +1,5 @@
 use crate::cluster::{Call, Deadline, Repeat};
+use ployz_core::error_chain;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1657,7 +1658,7 @@ impl Watch {
                 }
                 Err(error) => {
                     *guard = None;
-                    Err(crate::ui::rpc_error(RpcErrorCode::Internal, &error))
+                    Err(error_chain::rpc_error(RpcErrorCode::Internal, &error))
                 }
             },
             Some(Err(_)) if self.cancel.is_cancelled() => {
@@ -1719,7 +1720,7 @@ pub(crate) fn preparation_error(
 ) -> RpcError {
     use crate::sdk::prepare::PreparationError;
     use preparation_failure::{Preparation, PreparationFailure, Stage};
-    let message = crate::ui::rpc_error(RpcErrorCode::Internal, &error).message;
+    let message = error_chain::rpc_error(RpcErrorCode::Internal, &error).message;
     let same_again = error.same_again();
     match error {
         PreparationError::Selection(error) => {

@@ -5,6 +5,7 @@ mod management;
 pub use build_grant::{GrantRegistry, open_grant_registry};
 pub use management::{ManagementRelay, management_proof};
 use management::{connect_management, dial_tunnel};
+use ployz_core::error_chain;
 
 use std::{
     borrow::Cow,
@@ -788,7 +789,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::ClientRefused
         | ConnectError::TunnelNeedsFull) => RpcError::unauthenticated(error.to_string()),
         error @ ConnectError::Codec(CodecError::DecodeJson(_)) => {
-            crate::ui::rpc_error(RpcErrorCode::Internal, &error)
+            error_chain::rpc_error(RpcErrorCode::Internal, &error)
                 .with_details(json!({ "answer": UNREADABLE_ANSWER }))
         }
         error @ (ConnectError::Attempt(_)
@@ -810,7 +811,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::AllFailed { .. }
         | ConnectError::Codec(_)
         | ConnectError::Framing(_)
-        | ConnectError::Value(_)) => crate::ui::rpc_error(RpcErrorCode::Internal, &error),
+        | ConnectError::Value(_)) => error_chain::rpc_error(RpcErrorCode::Internal, &error),
     }
 }
 
@@ -1809,7 +1810,7 @@ impl From<tonic::Status> for TransportError {
         let cause = match source {
             Some(source) => {
                 let mut lines: Vec<String> = std::iter::once(source.to_string())
-                    .chain(crate::ui::causes(source))
+                    .chain(error_chain::causes(source))
                     .skip_while(|line| line == status.message())
                     .collect();
                 lines.dedup();

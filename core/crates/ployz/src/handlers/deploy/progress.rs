@@ -6,6 +6,7 @@ use crate::ui::progress::{
     Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work,
 };
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
+use ployz_core::error_chain;
 use ployz_core::{
     DeployOperation, DeployWarning, Hint, PullPolicy, QualifiedService, RpcError, RpcErrorCode,
     ServiceName, config::MEM_LIMIT_MAX,
@@ -403,8 +404,8 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
 
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
     let unchecked = ingress_unchecked(view).map(|cause| {
-        crate::ui::then_sentence(
-            &crate::ui::with_reason("Couldn't check ingress", cause),
+        error_chain::then_sentence(
+            &error_chain::with_reason("Couldn't check ingress", cause),
             "Deploy again to retry.",
         )
     });
@@ -419,8 +420,8 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
                      See what holds it with `sudo ss -ltnp '( sport = :80 or sport = :443 )'`. \
                      Ployz starts ingress on its own once the port is free."
                 ),
-                IngressFailure::Failed { cause } => crate::ui::then_sentence(
-                    &crate::ui::with_reason(
+                IngressFailure::Failed { cause } => error_chain::then_sentence(
+                    &error_chain::with_reason(
                         format_args!("Ingress isn't running on {server}"),
                         cause,
                     ),
@@ -774,7 +775,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
             } else {
                 RpcErrorCode::Internal
             },
-            crate::ui::sentence(reason),
+            error_chain::sentence(reason),
         )
         .with_causes(cause),
     )

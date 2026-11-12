@@ -3,6 +3,7 @@
 //! follows one until it ends. A plain Sync is no run: Cloud hands the Mirror its pull and answers.
 //! Without Cloud there are none: Volumes stay put, and only a Restore runs, from the CLI.
 
+use crate::ui::Next;
 use std::time::Duration;
 
 use clap::{ArgMatches, Command};
@@ -17,7 +18,7 @@ use ployz_store::{
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
-use super::super::store::{self, Backend, Next};
+use super::super::store::{self, Backend};
 use super::super::{Error, leaf_matches};
 use super::approve::MirrorOn;
 use crate::approval::{self, Asked};
@@ -886,19 +887,15 @@ fn request_located(
         &["volume", "runs", volume.as_str(), run.id.as_str()],
     );
     if !matches.get_flag("wait") {
-        return crate::ui::finish(
-            &Next::new(
-                &Started {
-                    run: &run,
-                    approved: change,
-                },
-                Some(follow.clone()),
-            ),
-            || {
-                crate::ui::stream(format_args!("Started the {started}: run {}.", run.id));
-                crate::ui::hint(&Hint::Next(follow.clone()));
-            },
-        );
+        let started_run = Started {
+            run: &run,
+            approved: change,
+        };
+        let followed = Next::new(&started_run, Some(follow));
+        return crate::ui::finish(&followed, || {
+            crate::ui::stream(format_args!("Started the {started}: run {}.", run.id));
+            followed.say();
+        });
     }
     crate::ui::note(format_args!(
         "Started the {started}: run {}. Waiting for it to end.",

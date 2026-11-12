@@ -8,6 +8,7 @@
 //! A run that never checked in, or that GitHub failed for its own reasons, is
 //! skipped: the next Builder of the build's walk takes it. A failed build step fails it.
 
+use ployz_core::error_chain;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -167,7 +168,7 @@ pub async fn github_start(
         Err(error) => GithubEnd::Skipped {
             message: format!(
                 "Cloud couldn't read your Servers: {}",
-                crate::ui::row(&error)
+                error_chain::row(&error)
             ),
         },
     };

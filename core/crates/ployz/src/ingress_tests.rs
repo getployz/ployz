@@ -1,3 +1,4 @@
+use ployz_core::error_chain;
 use ployz_core::{
     ContainerRuntimeObservation, Machine, MembershipObservation, Placement, RpcErrorCode,
 };
@@ -74,7 +75,7 @@ fn an_unchecked_ingress_names_the_server_and_why() {
         unchecked(&silent, Some("box-node-09c8".into()), None),
         "Server box-node-09c8 isn't answering (no reply)"
     );
-    assert_eq!(unchecked(&silent, None, None), crate::ui::row(&silent));
+    assert_eq!(unchecked(&silent, None, None), error_chain::row(&silent));
 
     let answered = Failure::from(ConnectError::Remote(error(
         RpcErrorCode::Internal,
@@ -88,7 +89,7 @@ fn an_unchecked_ingress_names_the_server_and_why() {
     let local = Failure::usage("no Cluster selected");
     assert_eq!(
         unchecked(&local, Some("box-node-09c8".into()), None),
-        crate::ui::row(&local)
+        error_chain::row(&local)
     );
 
     let refused = Failure::from(ConnectError::AllFailed {

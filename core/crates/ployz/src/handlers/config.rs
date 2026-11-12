@@ -8,6 +8,7 @@
 //! the `values` object that `set SERVICE --patch` takes back.
 
 use crate::ui;
+use crate::ui::Next;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 use std::io::{IsTerminal as _, Read};
@@ -20,7 +21,7 @@ use ployz_store::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
+use super::store::{environment, next, scoped, store, with_refresh_hint};
 use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded};
 use crate::cli::{positional, switch, value};
 
@@ -598,7 +599,8 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let edit = store.seal_edit(edit, fail)?;
     let edited = store.try_write(&edit).map_err(fail)?;
     let hint = (!edited.staged.is_empty()).then(|| next(matches, &["deploy"]));
-    ui::finish(&Next::new(&edited, hint.clone()), || {
+    let followed = Next::new(&edited, hint);
+    ui::finish(&followed, || {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
         if !edited.staged.is_empty() {
             crate::ui::stream(format_args!(
@@ -622,9 +624,7 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         for note in noted(edited.notes.iter().map(|noted| &noted.note)) {
             ui::note(note);
         }
-        if let Some(hint) = hint {
-            ui::hint(&Hint::Next(hint));
-        }
+        followed.say();
     })
 }
 

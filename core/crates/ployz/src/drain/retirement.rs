@@ -1,6 +1,7 @@
 //! Retire a Drain's chosen Globals on the drained Server, one Global slot at a time, and
 //! let go of the copies a move left Out there.
 
+use ployz_core::error_chain;
 use ployz_core::{
     AnonymousVolumes, EnvironmentValues, LiveServices, Machine, MachineId, MachineName,
     ObservedGlobalSlotSpec, QualifiedService, RpcError, ServicePlacementEligibility,
@@ -175,7 +176,7 @@ pub(crate) async fn let_go<C: MachineOperations>(
         Ok(Ok(())) => return OldCopyEnd::Stopped,
         Ok(Err(failure)) => Unconfirmed::of(failure, name),
         Err(error) => Unconfirmed::Failed {
-            detail: crate::ui::row(&error),
+            detail: error_chain::row(&error),
         },
     };
     OldCopyEnd::Running { unconfirmed }
@@ -223,7 +224,7 @@ pub(crate) async fn retire_globals<C: RetireClient>(
     };
     let (live, names) = match client.live_services().await {
         Ok(observed) => observed,
-        Err(error) => return everyone(crate::ui::row(&error)),
+        Err(error) => return everyone(error_chain::row(&error)),
     };
     if !live.containers.all_targets_succeeded() {
         return everyone(format!(
@@ -248,7 +249,7 @@ pub(crate) async fn retire_globals<C: RetireClient>(
                         .await
                     {
                         Ok(()) => Retirement::Retired,
-                        Err(error) => Retirement::NotRetired(crate::ui::row(&error)),
+                        Err(error) => Retirement::NotRetired(error_chain::row(&error)),
                     },
                 },
             }
