@@ -124,8 +124,13 @@ downtime.
 
 ## Pricing
 
-Ployz is free on your own servers, custom domains included. Paid [Ployz Cloud](https://ployz.dev)
-plans are coming soon. Your hosting provider bills you for the servers.
+Ployz is free on your own servers, custom domains included. Your hosting provider bills you for
+the servers.
+
+Mark your cluster as production on [Ployz Cloud](https://ployz.dev) when you depend on it. That is
+$10 a month with two servers included, then $5 for each extra server. Nothing is locked today.
+Production pays for what doesn't run on your own servers, starting with longer log and metrics
+history.
 
 ## Self-hosting the dashboard
 
