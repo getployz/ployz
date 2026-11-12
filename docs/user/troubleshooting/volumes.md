@@ -37,16 +37,24 @@ web-1 enforces device approval, so Ployz Cloud can't move data on its own. Run p
 ```
 
 With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, a move runs only with an approved device's approval. The move was refused before your service
-stopped, and nothing changed. Run the command it prints on an approved device. See
+on, a move runs only with your approval. The move was refused before your service stopped, and
+nothing changed. Deploy **Make primary** again from Ployz Cloud and approve it with your passkey,
+or run the command it prints on an approved device. See
 [Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval).
 
 ```
-web-1 didn't accept the approval from your device for data. Approve the change again from an approved device.
+web-1 didn't accept the approval for data. It may have expired, or be for another change. Approve the change again.
 ```
 
 A server refused the approval itself: the move didn't start within 15 minutes of it, or the
-volume's copies or `web`'s spec changed since you approved it. Run `ployz volume move` again.
+volume's copies or `web`'s spec changed since you approved it. Approve the move again.
+
+```
+Approval expired. Nothing new can start. web-2 didn't take the next step for data. Approve the change again.
+```
+
+The approval ran out before every step started. Steps a server already took finish, and nothing
+else changes. Approve the change again.
 
 If you turned enforcement on while a move was running, or a move's own release failed, the servers
 refuse to start your service on either side, so it stays stopped. No data is lost. Run
@@ -56,12 +64,12 @@ move, whichever it reached. Then turn enforcement back on.
 ## A restore says the server enforces device approval
 
 ```
-web-2 enforces device approval, so Ployz Cloud can't restore data into a new volume until a later release. To restore it now, turn enforcement off from an approved device.
+web-2 enforces device approval, so restoring data into a new volume needs your passkey. Restore it again from the volume's Copies tab.
 ```
 
-Ployz Cloud can't restore a point into a new volume on servers that enforce yet. It is refused
-before anything changes. Run `ployz device enforce --off` on an approved device, restore again,
-then run `ployz device enforce`.
+The restore ran without an approval, and nothing changed. Restore the point again from **Copies**
+and approve it with your passkey when you deploy. See
+[Approve from Ployz Cloud](../services/move-a-volume.md#approve-from-ployz-cloud).
 
 ## A restore or a mirror removal says the server enforces device approval
 

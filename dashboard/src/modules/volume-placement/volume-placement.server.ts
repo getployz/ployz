@@ -141,8 +141,8 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
   return { ok: true, placement: view(row) } satisfies PlacementWrite;
 });
 
-const UNSTAGED: StoreRefusal = { code: "conflict", message: "These volume changes changed since you reviewed them. Review them and deploy again.", details: null };
-const FOR_ANOTHER_CHANGE: StoreRefusal = { code: "invalid", message: "An approval is for another change than the one staged. Deploy again to approve it anew.", details: null };
+const UNSTAGED: StoreRefusal = { code: "conflict", message: "These volume changes changed since you approved them. Deploy again.", details: null };
+const FOR_ANOTHER_CHANGE: StoreRefusal = { code: "invalid", message: "An approval doesn't match the staged change. Deploy again to approve it.", details: null };
 
 /**
  * Keep the person's passkey answers for the Volume workflows the next Deploy runs on each staged row, beside what each

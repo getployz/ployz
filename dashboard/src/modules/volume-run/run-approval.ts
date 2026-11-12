@@ -33,14 +33,14 @@ export function runChange(name: string, run: VolumeRunInput, members: readonly M
     return found.machine;
   };
   const needsWriter = () => {
-    if (writer === null) throw new UndraftedRun(`No server answers with ${name}'s primary copy, so this can't be approved now.`);
+    if (writer === null) throw new UndraftedRun(`No server reports ${name}'s primary copy. Try again once one does.`);
     return writer;
   };
   switch (run.kind) {
     case "move": {
       const from = needsWriter();
       const to = server(run.args.to, run.args.machine);
-      if (terms.running === null) throw new UndraftedRun(`No Service runs ${name} on ${from.name}, so there is nothing to move.`);
+      if (terms.running === null) throw new UndraftedRun(`No service on ${from.name} uses ${name}, so there's nothing to move.`);
       const mirrors = observed.copies.filter((copy) => copy.kind === "slot" && copy.role === "mirror" && copy.server.id !== to.id).map((copy) => copy.server.id);
       return {
         title: `Move ${name} to ${to.name}`,

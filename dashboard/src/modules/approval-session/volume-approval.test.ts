@@ -140,6 +140,6 @@ describe("approveVolume", () => {
     vi.spyOn(prompt, "reviewApproval").mockResolvedValue(true);
     vi.spyOn(passkey, "signWithPasskey").mockRejectedValue(Object.assign(new Error("denied"), { name: "NotAllowedError" }));
     await expect(approveVolume(scope([holding(a, "web-1", true, true), holding(b, "web-2", true, true)]), resize))
-      .rejects.toThrow("add one under Account");
+      .rejects.toThrow("add a passkey under Account");
   });
 });

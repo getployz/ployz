@@ -118,8 +118,8 @@ it" instead. Add `--yes` to sign without asking, as a script does. Without a ter
 `--yes`, it signs nothing and changes nothing. Each server it names sets that size and no other,
 once: to resize again, run the command again.
 
-Ployz Cloud can't resize a volume on these servers on its own. **Grow** fails before it changes
-anything and names the command to run on an approved device. If `ployz volume set` can't reach your
+**Grow** in Ployz Cloud asks for your passkey instead of a confirm. See
+[Approve from Ployz Cloud](move-a-volume.md#approve-from-ployz-cloud). If `ployz volume set` can't reach your
 servers to ask whether they enforce, it warns and runs without signing, and servers that enforce
 refuse it. A server from before Ployz 0.4 ignores the approval and resizes as before.
 

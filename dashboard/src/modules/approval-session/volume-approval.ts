@@ -82,7 +82,7 @@ export async function approveVolume(scope: VolumeScope, change: VolumeChange, no
   const approved = await reviewApproval({
     title: change.title,
     lines: draft.lines,
-    note: "Your servers run this only with your passkey. Read what it approves first.",
+    note: "Your passkey approves exactly these lines.",
     action: change.action,
   });
   if (!approved) return null;
@@ -92,7 +92,7 @@ export async function approveVolume(scope: VolumeScope, change: VolumeChange, no
   } catch (error) {
     if (error instanceof PasskeyRefused) throw new VolumeNotApproved(error.message);
     if (error instanceof Error && error.name === "NotAllowedError") {
-      throw new VolumeNotApproved("No passkey answered. If this browser has none, add one under Account, then approve it on your servers. Nothing changed.");
+      throw new VolumeNotApproved("No passkey answered. Nothing changed. To use this browser, add a passkey under Account and approve it on each server.");
     }
     throw new VolumeNotApproved("Your browser couldn't use a passkey here. Nothing changed.");
   }
