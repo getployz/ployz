@@ -36,10 +36,7 @@ fn compare(
         };
         let settings: Vec<_> = match (next, comparison) {
             (Some(current), Some(baseline)) => {
-                compare_resource_settings(node.node_type, current.clone(), Some(baseline.clone()))?
-                    .into_iter()
-                    .filter(|(row, _)| row.path != "node")
-                    .collect()
+                compare_resource_settings(node.node_type, current.clone(), baseline.clone())?
             }
             _ => Vec::new(),
         };
