@@ -235,10 +235,21 @@ impl ConfigStore {
         command: &C,
         trusted: &Trusted,
     ) -> Result<C::Written, RpcError> {
+        self.with_call(who, trusted, |call| command.apply(call))
+    }
+
+    /// Run `work` in one write transaction, with the [`Call`] of caller `who` and the
+    /// evidence `trusted`: what the caller holds, and the servers it names.
+    fn with_call<T>(
+        &self,
+        who: &Actor,
+        trusted: &Trusted,
+        work: impl FnOnce(&mut Call<'_>) -> Result<T, RpcError>,
+    ) -> Result<T, RpcError> {
         let trusted = trusted.held_by(who);
         self.acting(&trusted, |tx| {
             let trusted = trusted.naming(tx, who)?;
-            command.apply(&mut Call {
+            work(&mut Call {
                 tx,
                 who,
                 sealing: &self.sealing,
@@ -269,17 +280,10 @@ impl ConfigStore {
         command: &Command,
         trusted: &Trusted,
     ) -> Result<Committed, RpcError> {
-        let trusted = trusted.held_by(who);
-        self.acting(&trusted, |tx| {
-            let trusted = trusted.naming(tx, who)?;
-            let written = command.apply(&mut Call {
-                tx,
-                who,
-                sealing: &self.sealing,
-                trusted: &trusted,
-            })?;
+        self.with_call(who, trusted, |call| {
+            let written = command.apply(call)?;
             let checks = match written.environment() {
-                Some(environment) => pull_request::project_checks(tx, environment)?,
+                Some(environment) => pull_request::project_checks(call.tx, environment)?,
                 None => Vec::new(),
             };
             Ok(Committed { written, checks })
