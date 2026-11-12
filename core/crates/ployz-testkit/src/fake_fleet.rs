@@ -772,6 +772,8 @@ impl Fleet {
                 let record = machine.record();
                 unary(
                     MachineDetails {
+                        activation: None,
+                        sealing_recipient: None,
                         id: machine.id,
                         phase: LocalMachinePhase::Participating,
                         public_key: record.public_key,

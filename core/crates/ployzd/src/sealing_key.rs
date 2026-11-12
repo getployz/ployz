@@ -18,6 +18,11 @@ use crate::corrosion::ClusterSealing;
 use crate::network::WireGuardPrivateKey;
 
 const FILE_NAME: &str = "sealing.key";
+/// The recipient key a person named at activation. See [`ClusterKeys`].
+const RECIPIENT_FILE_NAME: &str = "recipient.key";
+/// A recipient key this Machine generated for one activation, held unused until a person
+/// names it: the 32-byte key, then the activation's operation ID.
+const GENERATED_FILE_NAME: &str = "recipient-generated.key";
 const INFO: &[u8] = b"ployz-sealing-key-v1";
 const SHARE_INFO: &[u8] = b"ployz-sealing-key-share-v1";
 /// Distinct from every other label this key is expanded or sealed under, such as the join
@@ -194,6 +199,67 @@ impl SealingKey {
                 _ => Ok(()),
             },
         }
+    }
+
+    /// The recipient key `<data_dir>/recipient.key` holds, or `None` with no file.
+    ///
+    /// # Errors
+    /// Returns [`io::ErrorKind::InvalidData`] for a file that is not 32 bytes, and the read
+    /// error for a file that cannot be read.
+    pub(crate) fn load_recipient(data_dir: &Path) -> io::Result<Option<Self>> {
+        match fs::read(data_dir.join(RECIPIENT_FILE_NAME)).map(Zeroizing::new) {
+            Ok(bytes) => <[u8; 32]>::try_from(bytes.as_slice())
+                .map(|bytes| Some(Self(bytes)))
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "recipient key is not 32 bytes")
+                }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn set_recipient(data_dir: &Path, key: &Self) -> io::Result<()> {
+        crate::filesystem::atomic_write(&data_dir.join(RECIPIENT_FILE_NAME), &key.0, 0o600)
+    }
+
+    /// The key this Machine generated for `operation`, generating and keeping it on the
+    /// first call, so a resend under the same operation returns the same key. A key kept
+    /// for another operation is replaced: only one activation is ever pending here.
+    pub(crate) fn generated_for(
+        data_dir: &Path,
+        operation: ployz_core::OperationId,
+    ) -> io::Result<Self> {
+        if let Some((kept, key)) = Self::load_generated(data_dir)?
+            && kept == operation
+        {
+            return Ok(key);
+        }
+        let key = Self::generate();
+        let mut bytes = Zeroizing::new(key.0.to_vec());
+        bytes.extend(operation.to_string().as_bytes());
+        crate::filesystem::atomic_write(&data_dir.join(GENERATED_FILE_NAME), &bytes, 0o600)?;
+        Ok(key)
+    }
+
+    /// The key [`Self::generated_for`] kept, and its operation.
+    pub(crate) fn load_generated(
+        data_dir: &Path,
+    ) -> io::Result<Option<(ployz_core::OperationId, Self)>> {
+        let bytes = match fs::read(data_dir.join(GENERATED_FILE_NAME)).map(Zeroizing::new) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let malformed = || io::Error::new(io::ErrorKind::InvalidData, "generated key is malformed");
+        let (key, operation) = bytes.split_at_checked(32).ok_or_else(malformed)?;
+        let operation = std::str::from_utf8(operation)
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .ok_or_else(malformed)?;
+        Ok(Some((
+            operation,
+            Self(key.try_into().map_err(|_| malformed())?),
+        )))
     }
 
     pub(crate) fn seal_to(
@@ -400,6 +466,7 @@ impl SealingKey {
     /// Opens a value the platform sealed to this Cluster for `purpose`, or `None`
     /// when it does not open: sealed for another Cluster, another purpose, or as
     /// an env value.
+    #[cfg(test)]
     pub(crate) fn open_platform(
         &self,
         purpose: PlatformPurpose,
@@ -407,6 +474,39 @@ impl SealingKey {
     ) -> Option<Zeroizing<Vec<u8>>> {
         let aad = purpose.associated_data(&self.public_key());
         self.open_under(PLATFORM_SEALED_INFO, &aad, sealed)
+    }
+
+    /// Opens a value sealed for `purpose` to the Cluster whose identity is `cluster`, under
+    /// this key, which may be the Cluster's recipient key rather than its identity.
+    fn open_platform_of(
+        &self,
+        cluster: &SealingPublicKey,
+        purpose: PlatformPurpose,
+        sealed: &Ciphertext,
+    ) -> Option<Zeroizing<Vec<u8>>> {
+        self.open_under(
+            PLATFORM_SEALED_INFO,
+            &purpose.associated_data(cluster),
+            sealed,
+        )
+    }
+
+    /// Seal `plaintext` under `info` and `aad` to this key's public half.
+    pub(crate) fn seal_under(&self, info: &[u8], aad: &[u8], plaintext: &[u8]) -> Ciphertext {
+        let recipient = Kem::sk_to_pk(&self.private());
+        let (encapped, ciphertext) =
+            hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
+                &OpModeS::Base,
+                &recipient,
+                info,
+                plaintext,
+                aad,
+                &mut OsRng.unwrap_err(),
+            )
+            .expect("sealing to a held key succeeds");
+        let mut sealed = encapped.to_bytes().to_vec();
+        sealed.extend(ciphertext);
+        Ciphertext::from_bytes(sealed)
     }
 
     fn open_under(
@@ -927,5 +1027,68 @@ mod tests {
                 .open_platform(PlatformPurpose::PrivateAccess, &sealed)
                 .is_none()
         );
+    }
+}
+
+/// The Cluster's keys as this Machine holds them. The identity is the Cluster's first
+/// Sealing Key: statements, pins and every sealed value's binding name its public half.
+/// After activation a recipient key sits beside it. New values seal to the recipient, so a
+/// past holder of the identity's private half opens none of them. The identity still opens
+/// what was sealed before activation, and the build attest key derives from the recipient.
+pub(crate) struct ClusterKeys {
+    identity: SealingKey,
+    recipient: Option<SealingKey>,
+}
+
+impl ClusterKeys {
+    /// The keys `data_dir` holds, or `None` with no identity key.
+    ///
+    /// # Errors
+    /// Returns the read errors of [`SealingKey::load`] and [`SealingKey::load_recipient`].
+    pub(crate) fn load(data_dir: &Path) -> io::Result<Option<Self>> {
+        let Some(identity) = SealingKey::load(data_dir)? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            identity,
+            recipient: SealingKey::load_recipient(data_dir)?,
+        }))
+    }
+
+    pub(crate) fn identity(&self) -> &SealingKey {
+        &self.identity
+    }
+
+    pub(crate) fn recipient(&self) -> Option<&SealingKey> {
+        self.recipient.as_ref()
+    }
+
+    /// The key new values seal to: the recipient once installed, the identity before.
+    pub(crate) fn sealing_to(&self) -> &SealingKey {
+        self.recipient.as_ref().unwrap_or(&self.identity)
+    }
+
+    pub(crate) fn open_value(&self, aad: &[u8], sealed: &Ciphertext) -> Option<Zeroizing<Vec<u8>>> {
+        self.recipient
+            .as_ref()
+            .and_then(|key| key.open_value(aad, sealed))
+            .or_else(|| self.identity.open_value(aad, sealed))
+    }
+
+    pub(crate) fn open_platform(
+        &self,
+        purpose: PlatformPurpose,
+        sealed: &Ciphertext,
+    ) -> Option<Zeroizing<Vec<u8>>> {
+        let cluster = self.identity.public_key();
+        self.recipient
+            .as_ref()
+            .and_then(|key| key.open_platform_of(&cluster, purpose, sealed))
+            .or_else(|| self.identity.open_platform_of(&cluster, purpose, sealed))
+    }
+
+    /// The build attest key: derived from the recipient once installed.
+    pub(crate) fn attest(&self) -> ployz_core::X25519Secret {
+        self.sealing_to().attest()
     }
 }

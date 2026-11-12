@@ -528,6 +528,38 @@ impl MachineRpc for MachineService {
         finish(self.local.set_device_enforcement(request).await)
     }
 
+    async fn activate_enforcement(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        let request = expect::<op::ActivateEnforcement>(request)?;
+        finish(
+            local
+                .activate(
+                    request.starting_set,
+                    ployz_core::ACTIVATE_ENFORCEMENT_CAPABILITY,
+                )
+                .await,
+        )
+    }
+
+    async fn set_recipient_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetRecipientKey>(request)?;
+        finish(self.local.set_recipient_key(request).await)
+    }
+
+    async fn reseal_values(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::ResealValues>(request)?;
+        finish(self.local.reseal_values(request).await)
+    }
+
     async fn select_endpoint(
         &self,
         request: Request<OpaquePayload>,
@@ -1574,6 +1606,46 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         }
         LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::JoinRecord(_) => Err(internal_response(error)),
+        LocalMachineError::ActivationRecord(_) => Err(internal_response(error)),
+        LocalMachineError::RecipientKey(_) => Err(internal_response(error)),
+        LocalMachineError::RecipientRefused { capability, .. } => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({ "capability": capability }),
+            ))
+        }
+        LocalMachineError::Activating => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::Unavailable,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::ENFORCED_CAPABILITY,
+                "reason": "activating",
+            }),
+        )),
+        LocalMachineError::ActivationRefused {
+            capability,
+            ref reason,
+        } => {
+            let mut details = serde_json::json!({
+                "capability": capability,
+                "next": "ployz device enforce from an approved device, over SSH to each Server",
+            });
+            match reason {
+                crate::machine::local_machine::activation::Refusal::LegacyMember(id) => {
+                    details["legacy_member"] = serde_json::json!(id);
+                }
+                crate::machine::local_machine::activation::Refusal::LegacyKey(code) => {
+                    details["legacy_key"] = serde_json::json!(code);
+                }
+                _ => {}
+            }
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                details,
+            ))
+        }
         LocalMachineError::ApprovalRecord(_) => Err(internal_response(error)),
         LocalMachineError::NotParticipating => {
             Ok(RpcError::unavailable("Machine is not participating"))

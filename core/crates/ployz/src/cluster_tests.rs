@@ -230,6 +230,8 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                     RpcRequestBody::Inspect(inspect) => {
                         assert_eq!(inspect.telemetry, InspectTelemetry::BridgeCapacity);
                         RpcResponse::from(MachineDetails {
+                            activation: None,
+                            sealing_recipient: None,
                             id: answering.id,
                             phase: LocalMachinePhase::Participating,
                             public_key: answering.public_key,
@@ -788,6 +790,8 @@ impl Resealing {
                     calls.lock().unwrap().push("Inspect");
                     let answering = machine('a').machine;
                     ployz_core::RpcResponse::from(ployz_core::MachineDetails {
+                        activation: None,
+                        sealing_recipient: None,
                         id: answering.id,
                         phase: ployz_core::LocalMachinePhase::Joining,
                         public_key: answering.public_key,

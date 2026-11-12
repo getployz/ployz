@@ -555,7 +555,8 @@ async fn sign_starting_set(
             members,
             issued_at,
             expires_at: issued_at.plus(validity::MAX_LIFETIME_MILLIS),
-            signer: signer.public().into(),
+            signer: ployz_core::authority::SignerKey::Device(DeviceKey::from(signer.public())),
+            kept_keys: Vec::new(),
         },
         &signer,
     )

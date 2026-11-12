@@ -30,7 +30,10 @@ use record_wire::LocalMachineRecordWire;
 mod ingress;
 pub(crate) mod local_machine;
 mod record_owner;
+mod snapshot;
 pub(crate) mod store;
+
+pub(crate) use snapshot::{Evidence, TrustedSnapshot};
 
 pub use record_owner::{RecordOwner, RecordOwnerStopped};
 #[cfg(test)]
@@ -210,6 +213,15 @@ pub struct LocalMachineRecord {
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
     enrollment: Option<ployz_core::EnrollRequest>,
+    /// The Members and keys this Machine holds evidence for. Written empty on the first
+    /// start of a daemon that advertises `ployz.machine.enforced.v1`, never from the
+    /// replicated store. See [`TrustedSnapshot`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trusted_snapshot: Option<TrustedSnapshot>,
+    /// The activation this record committed. Set once, by the boot commit, and never
+    /// cleared: an activated record enforces, and reads only snapshot keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    activation: Option<ployz_core::OperationId>,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -306,20 +318,81 @@ impl LocalMachineRecord {
     }
 
     /// Every key this Machine trusts, from its own record: its Devices and its passkeys.
+    /// Once activated, only those in the trusted snapshot.
     #[must_use]
     pub fn trusted_keys(&self) -> ployz_core::authority::TrustedKeys {
         ployz_core::authority::TrustedKeys {
             devices: self.devices().collect(),
+            passkeys: self
+                .passkeys
+                .iter()
+                .filter(|held| self.trusts_key(held.passkey.code()))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Every key the record holds, evidence or not: what a person at this Server's local
+    /// socket may approve an activation with.
+    #[must_use]
+    pub fn held_keys(&self) -> ployz_core::authority::TrustedKeys {
+        ployz_core::authority::TrustedKeys {
+            devices: self.held_devices().collect(),
             passkeys: self.passkeys.clone(),
         }
     }
 
     /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
+    /// Once activated, a slot whose key is outside the trusted snapshot is answered as if
+    /// absent.
     pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
+        self.held_devices()
+            .filter(|key| self.trusts_key(key.code()))
+    }
+
+    fn held_devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
         self.management_clients.iter().filter_map(|(label, slot)| {
             let key = DeviceKey::from_bytes(*slot.accepted()?.as_bytes());
             (DeviceCode::named_by(label) == Some(key.code())).then_some(key)
         })
+    }
+
+    /// Whether `code` is a key this record lets approve: any held key before activation,
+    /// and only a snapshot key after.
+    fn trusts_key(&self, code: DeviceCode) -> bool {
+        self.activation.is_none()
+            || self
+                .trusted_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.holds_key(code))
+    }
+
+    #[must_use]
+    pub fn trusted_snapshot(&self) -> Option<&TrustedSnapshot> {
+        self.trusted_snapshot.as_ref()
+    }
+
+    /// The activation this record committed, if any.
+    #[must_use]
+    pub fn activation(&self) -> Option<ployz_core::OperationId> {
+        self.activation
+    }
+
+    /// The evidence a Full caller gives a key it installs here: the local socket's, or the
+    /// installing Device's when that Device is in the snapshot. `None` for any other caller.
+    #[must_use]
+    pub fn evidence_from(&self, by: &ployz_core::authority::PasskeyApprover) -> Option<Evidence> {
+        use ployz_core::authority::PasskeyApprover;
+        self.trusted_snapshot.as_ref()?;
+        match by {
+            PasskeyApprover::Server => Some(Evidence::LocalSocket),
+            PasskeyApprover::Device { code } => self
+                .trusted_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.holds_key(*code))
+                .then_some(Evidence::Key { code: *code }),
+            _ => None,
+        }
     }
 
     /// Whether this Machine accepts the row as a Cluster member using its own authority.
@@ -341,6 +414,42 @@ impl LocalMachineRecord {
             && body.sealing_recipient == machine.public_key
             && signers.contains(&body.signer.into())
             && self.membership_cluster == Some(body.cluster)
+    }
+
+    /// Whether this Machine holds evidence for `machine` as a Member: itself, a Member an
+    /// activation named, or a row whose `JoinApproval` verifies against a snapshot Device
+    /// key and binds `cluster`, this Cluster's identity.
+    pub(crate) fn evidences_member(
+        &self,
+        machine: &Machine,
+        cluster: Option<ployz_core::SealingPublicKey>,
+    ) -> bool {
+        let member = ployz_core::authority::Member::from(machine);
+        if self.machine().is_some_and(|own| member.matches(own)) {
+            return true;
+        }
+        let Some(snapshot) = &self.trusted_snapshot else {
+            return false;
+        };
+        if snapshot.holds_member(&member) {
+            return true;
+        }
+        let Some(approval) = &machine.join_approval else {
+            return false;
+        };
+        let evidenced = self
+            .held_devices()
+            .filter(|key| snapshot.holds_key(key.code()));
+        let Ok(signers) = approval.verified_signers(evidenced.map(Into::into)) else {
+            return false;
+        };
+        let Ok(body) = approval.open() else {
+            return false;
+        };
+        ployz_core::authority::Member::from(&body.machine).matches(machine)
+            && body.sealing_recipient == machine.public_key
+            && signers.contains(&body.signer.into())
+            && cluster == Some(body.cluster)
     }
 
     /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
@@ -448,6 +557,10 @@ impl LocalMachineRecord {
                 slot.accepted().as_ref() == Some(remote) || slot.pending().as_ref() == Some(remote)
             })
             .map(|(label, _)| ployz_core::ManagementScope::of(label, remote))
+            .filter(|scope| {
+                *scope != ployz_core::ManagementScope::Full
+                    || self.trusts_key(DeviceKey::from_bytes(*remote.as_bytes()).code())
+            })
             .max()
     }
 
@@ -624,6 +737,8 @@ impl LocalMachineRecord {
             passkeys: Vec::new(),
             membership_cluster: None,
             enrollment: None,
+            trusted_snapshot: Some(TrustedSnapshot::default()),
+            activation: None,
         }
     }
 

@@ -3,12 +3,12 @@
 //! creation, or a step carrying only a deploy approval, goes to `deploy_approval`.
 
 use ployz_core::{
-    ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey,
+    ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet,
     LocalMachinePhase, ManagementScope, RunTarget, Sealing, SetDeviceEnforcementRequest,
     SetPrivateAccessRequest,
     authority::{
         AuthorityRefusal, DeployApproval, PrivateAccessFacts, Purpose, RestartApproval,
-        RestartFacts, RestartStep, Signed, Timestamp, private_access, restart, starting_set,
+        RestartFacts, RestartStep, Signed, Timestamp, private_access, restart,
     },
 };
 
@@ -19,22 +19,37 @@ mod consumption;
 pub(crate) use consumption::{ConsumptionLog, JoinReply, JoinResult};
 
 impl LocalMachine {
-    /// Turn Device enforcement on or off under mutation admission, at Full scope only.
-    /// Turning it on trusts only the Members of a Device-signed starting set that names
-    /// this Machine, used once.
+    /// Turn Device enforcement on by activation, or off before activation, at Full scope
+    /// only. Turning it on admits a person's starting set and restarts to commit it (see
+    /// [`LocalMachine::activate`]). Once activated, off is refused.
     ///
     /// # Errors
     /// Returns [`Error::NeedsFullScope`] for an Operator caller, [`Error::NotParticipating`]
-    /// when this Machine is not participating, [`Error::EnforcementRefused`] for a missing,
-    /// untrusted, expired or reused starting set, admission failures,
-    /// [`Error::RecordOwner`] when the record owner has stopped, and [`Error::Store`] when
-    /// the record cannot be written.
+    /// when this Machine is not participating, [`Error::EnforcementRefused`] for a missing
+    /// starting set, [`Error::ActivationRefused`] for off once activated and for a set
+    /// activation refuses, admission failures, [`Error::RecordOwner`] when the record owner
+    /// has stopped, and [`Error::Store`] when the record cannot be written.
     pub async fn set_device_enforcement(
         &self,
         request: SetDeviceEnforcementRequest,
     ) -> Result<DeviceEnforcementSet, Error> {
         let client = self.management_client;
-        let approvals = self.approvals.clone();
+        let record = self.record();
+        if client
+            .is_some_and(|remote| record.management_scope(&remote) != Some(ManagementScope::Full))
+        {
+            return Err(Error::NeedsFullScope);
+        }
+        let capability = ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY;
+        match (request.enforced, request.starting_set) {
+            (true, Some(signed)) => return self.activate(signed, capability).await,
+            (true, None) => {
+                return Err(Error::EnforcementRefused(AuthorityRefusal::Unsigned {
+                    purpose: Purpose::Enforce,
+                }));
+            }
+            (false, _) => {}
+        }
         let owner = self.owner.clone();
         self.finish_mutation(async move {
             owner
@@ -43,32 +58,19 @@ impl LocalMachine {
                     if record.phase() != LocalMachinePhase::Participating {
                         return Err(Error::NotParticipating);
                     }
+                    if record.activation().is_some() {
+                        return Err(Error::ActivationRefused {
+                            capability,
+                            reason: super::activation::Refusal::NoOff,
+                        });
+                    }
                     if client.is_some_and(|remote| {
                         record.management_scope(&remote) != Some(ManagementScope::Full)
                     }) {
                         return Err(Error::NeedsFullScope);
                     }
-                    let starting = match (request.enforced, &request.starting_set) {
-                        (false, _) => Vec::new(),
-                        (true, None) => {
-                            return Err(Error::EnforcementRefused(AuthorityRefusal::Unsigned {
-                                purpose: Purpose::Enforce,
-                            }));
-                        }
-                        (true, Some(signed)) => {
-                            let own = record.machine().ok_or(Error::NotParticipating)?.into();
-                            let devices: Vec<DeviceKey> = record.devices().collect();
-                            let now = Timestamp::now();
-                            let body = starting_set::verify(signed, &devices, &own, now)
-                                .map_err(Error::EnforcementRefused)?;
-                            approvals.consume_starting_set(&body, now)?;
-                            body.members
-                        }
-                    };
-                    store.set_device_enforcement(request.enforced, starting)?;
-                    Ok(DeviceEnforcementSet {
-                        enforced: request.enforced,
-                    })
+                    store.set_device_enforcement(false, Vec::new())?;
+                    Ok(DeviceEnforcementSet { enforced: false })
                 })
                 .await?
         })

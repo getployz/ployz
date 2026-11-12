@@ -95,6 +95,8 @@ async fn cluster(
                 let target = target.unwrap();
                 let listed = machine(target.to_string().chars().next().unwrap(), "fixture");
                 RpcResponse::from(ployz_core::MachineDetails {
+                    activation: None,
+                    sealing_recipient: None,
                     id: target,
                     public_key: listed.public_key,
                     machine: Some(listed),
@@ -793,6 +795,8 @@ async fn raced(
                 RpcRequestBody::Inspect(_) => {
                     let listed_machine = machine('1', "fixture");
                     RpcResponse::from(ployz_core::MachineDetails {
+                        activation: None,
+                        sealing_recipient: None,
                         id: id('1'),
                         public_key: listed_machine.public_key,
                         machine: Some(listed_machine),

@@ -18,6 +18,7 @@ pub mod private_access;
 pub mod proposal;
 pub mod refusal;
 pub mod restart;
+pub mod rotation;
 pub mod rule;
 pub mod rule_draft;
 pub mod session;
@@ -54,6 +55,7 @@ pub use refusal::AuthorityRefusal;
 pub use restart::{
     Approved, OwnPrompt, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind,
 };
+pub use rotation::SealingRotation;
 pub use rule::{
     ApprovalDigest, ApprovalFacts, AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage,
     CheckedCommitApproval, ClaimRule, CommitApproval, CommitAuthority, CommitNow, CommitSha,

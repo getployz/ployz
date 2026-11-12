@@ -179,6 +179,8 @@ fn resetting_keeps_every_field_but_the_body() {
         passkeys,
         membership_cluster,
         enrollment,
+        trusted_snapshot,
+        activation,
     } = before.clone();
 
     let LocalMachineRecord {
@@ -196,6 +198,8 @@ fn resetting_keeps_every_field_but_the_body() {
         passkeys: kept_passkeys,
         membership_cluster: kept_cluster,
         enrollment: kept_enrollment,
+        trusted_snapshot: kept_snapshot,
+        activation: kept_activation,
     } = before.into_resetting();
 
     assert_eq!(
@@ -217,6 +221,8 @@ fn resetting_keeps_every_field_but_the_body() {
     assert_eq!(kept_passkeys, passkeys);
     assert_eq!(kept_cluster, membership_cluster);
     assert_eq!(kept_enrollment, enrollment);
+    assert_eq!(kept_snapshot, trusted_snapshot);
+    assert_eq!(kept_activation, activation);
 }
 
 #[test]

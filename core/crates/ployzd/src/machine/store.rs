@@ -245,12 +245,31 @@ impl LocalMachineStore {
             return Ok(Opened::Resetting(InterruptedReset(store)));
         }
         store.refresh_runtime()?;
+        store.ensure_snapshot()?;
         Ok(Opened::Ready(store))
+    }
+
+    /// Write the trusted snapshot, empty, on this daemon's first start: nothing a record
+    /// learned before a daemon that never gives the mesh Full scope has evidence.
+    fn ensure_snapshot(&mut self) -> Result<(), StoreError> {
+        if self.record.trusted_snapshot.is_some() {
+            return Ok(());
+        }
+        let mut updated = self.record.clone();
+        updated.trusted_snapshot = Some(super::TrustedSnapshot::default());
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
     }
 
     #[must_use]
     pub fn record(&self) -> &LocalMachineRecord {
         &self.record
+    }
+
+    #[must_use]
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     fn refresh_runtime(&mut self) -> Result<(), StoreError> {
@@ -776,18 +795,33 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn approve_device(&mut self, key: DeviceKey) -> Result<bool, StoreError> {
+    pub fn approve_device(
+        &mut self,
+        key: DeviceKey,
+        evidence: Option<super::Evidence>,
+    ) -> Result<bool, StoreError> {
         let label = key.label();
         let slot = ManagementClientSlot::Live(LiveSlot::Active {
             accepted: ClientKey::from(key),
         });
-        if self.record.management_clients.get(&label) == Some(&slot) {
+        let held = self.record.management_clients.get(&label) == Some(&slot);
+        let evidenced = evidence.is_none()
+            || self
+                .record
+                .trusted_snapshot
+                .as_ref()
+                .is_none_or(|snapshot| snapshot.holds_key(key.code()));
+        if held && evidenced {
             return Ok(false);
         }
-        self.persist_management_clients(|clients| {
-            clients.insert(label, slot);
-        })?;
-        Ok(true)
+        let mut updated = self.record.clone();
+        updated.management_clients.insert(label, slot);
+        if let (Some(evidence), Some(snapshot)) = (evidence, updated.trusted_snapshot.as_mut()) {
+            snapshot.add_key(key.code(), evidence);
+        }
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(!held)
     }
 
     /// Clear the Device slot `code` names. Returns `false` when it holds no live key.
@@ -802,6 +836,7 @@ impl LocalMachineStore {
             .get(&label)
             .is_some_and(|slot| slot.live().is_some());
         self.clear_management_client(&label)?;
+        self.forget_evidence(code)?;
         Ok(live)
     }
 
@@ -814,6 +849,9 @@ impl LocalMachineStore {
         updated.passkeys.retain(|held| held.passkey.code() != code);
         if updated.passkeys.len() == self.record.passkeys.len() {
             return Ok(false);
+        }
+        if let Some(snapshot) = updated.trusted_snapshot.as_mut() {
+            snapshot.remove_key(code);
         }
         save(&self.data_dir, &updated)?;
         self.record = updated;
@@ -828,6 +866,7 @@ impl LocalMachineStore {
     pub fn approve_passkey(
         &mut self,
         trusted: ployz_core::authority::TrustedPasskey,
+        evidence: Option<super::Evidence>,
     ) -> Result<bool, StoreError> {
         let code = trusted.passkey.code();
         if self
@@ -840,6 +879,9 @@ impl LocalMachineStore {
         }
         let mut updated = self.record.clone();
         updated.passkeys.push(trusted);
+        if let (Some(evidence), Some(snapshot)) = (evidence, updated.trusted_snapshot.as_mut()) {
+            snapshot.add_key(code, evidence);
+        }
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(true)
@@ -912,6 +954,80 @@ impl LocalMachineStore {
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())
+    }
+
+    /// Drop `code`'s evidence, as a person removing the key asked.
+    fn forget_evidence(&mut self, code: DeviceCode) -> Result<(), StoreError> {
+        if !self
+            .record
+            .trusted_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.holds_key(code))
+        {
+            return Ok(());
+        }
+        let mut updated = self.record.clone();
+        if let Some(snapshot) = updated.trusted_snapshot.as_mut() {
+            snapshot.remove_key(code);
+        }
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
+    }
+
+    /// Commit an activation in one write: enforce, trust exactly the set's Members, put
+    /// them and the kept keys in the snapshot, and retire every Device slot and passkey
+    /// outside it with a Cleared tombstone for each retired Device. Only the boot commit
+    /// calls this, in a process that has served nothing yet.
+    ///
+    /// # Errors
+    /// Returns a storage error if the record cannot be saved atomically.
+    pub(crate) fn commit_activation(
+        &mut self,
+        pending: &super::local_machine::PendingActivation,
+    ) -> Result<super::local_machine::Retired, StoreError> {
+        let mut updated = self.record.clone();
+        let snapshot = updated
+            .trusted_snapshot
+            .get_or_insert_with(super::TrustedSnapshot::default);
+        for member in &pending.members {
+            snapshot.add_member(member.clone());
+        }
+        for (code, evidence) in pending.kept() {
+            snapshot.add_key(code, evidence);
+        }
+        let keeps = |code: DeviceCode| snapshot.holds_key(code);
+        let mut retired = super::local_machine::Retired::default();
+        for (label, slot) in &mut updated.management_clients {
+            let Some(code) = DeviceCode::named_by(label) else {
+                continue;
+            };
+            let Some(live) = slot.live() else {
+                continue;
+            };
+            if !keeps(code) {
+                *slot = ManagementClientSlot::Cleared { was: live };
+                retired.devices.push(code);
+            }
+        }
+        updated.passkeys.retain(|held| {
+            let code = held.passkey.code();
+            let kept = keeps(code);
+            if !kept {
+                retired.passkeys.push(code);
+            }
+            kept
+        });
+        updated.device_enforcement = true;
+        updated.trusted_machines = pending.members.clone();
+        if updated.membership_cluster.is_none() {
+            updated.membership_cluster =
+                SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
+        }
+        updated.activation = Some(pending.operation);
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(retired)
     }
 
     fn persist_management_clients(
@@ -1472,7 +1588,7 @@ mod device_slot_tests {
                 pinned: Default::default(),
             })
             .unwrap();
-        store.approve_device(key()).unwrap();
+        store.approve_device(key(), None).unwrap();
         (dir, store)
     }
 
@@ -1523,7 +1639,7 @@ mod device_slot_tests {
     fn vetting_runs_once_so_a_later_approval_survives_reopening() {
         let (dir, store) = founded();
         let mut store = reopened_unvetted(&dir, store);
-        assert!(store.approve_device(key()).unwrap());
+        assert!(store.approve_device(key(), None).unwrap());
 
         let store = reopened(&dir, store);
 

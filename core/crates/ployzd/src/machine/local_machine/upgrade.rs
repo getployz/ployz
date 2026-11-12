@@ -169,7 +169,7 @@ mod tests {
         owner
             .mutate(move |store| {
                 store
-                    .approve_device(DeviceKey::from(device().public()))
+                    .approve_device(DeviceKey::from(device().public()), None)
                     .unwrap();
                 store.set_device_enforcement(enforced, Vec::new()).unwrap();
             })

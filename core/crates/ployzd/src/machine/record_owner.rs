@@ -14,7 +14,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -69,6 +69,9 @@ struct Shared {
     thread: Mutex<Option<thread::JoinHandle<()>>>,
     /// Live handles. Counted explicitly so exactly one drop observes being last.
     handles: AtomicUsize,
+    /// Set once an activation is admitted. This process then takes no new management work
+    /// before it exits, and the next one commits the activation.
+    activating: AtomicBool,
 }
 
 impl RecordOwner {
@@ -131,6 +134,7 @@ impl RecordOwner {
                 mutation_gate,
                 thread: Mutex::new(Some(thread)),
                 handles: AtomicUsize::new(1),
+                activating: AtomicBool::new(false),
             }),
         })
     }
@@ -234,6 +238,17 @@ impl RecordOwner {
             })))
             .map_err(|_| RecordOwnerStopped)?;
         Ok(receiver)
+    }
+
+    /// Stop taking new management work: an activation is pending its commit.
+    pub(crate) fn begin_activating(&self) {
+        self.shared.activating.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether an activation was admitted in this process.
+    #[must_use]
+    pub(crate) fn activating(&self) -> bool {
+        self.shared.activating.load(Ordering::SeqCst)
     }
 
     /// Ask the daemon to restart so the persisted phase takes effect.

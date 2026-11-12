@@ -2057,6 +2057,8 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         upgrade: None,
         token: None,
         sealing: None,
+        activation: None,
+        sealing_recipient: None,
         founding: Default::default(),
     };
     let encoded = serde_json::to_value(&details).unwrap();

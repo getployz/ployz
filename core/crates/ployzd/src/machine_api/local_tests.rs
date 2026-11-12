@@ -4136,7 +4136,7 @@ mod set_volume_copy {
             let device = DeviceKey::from(signer.public());
             store
                 .mutate(move |store| {
-                    store.approve_device(device).unwrap();
+                    store.approve_device(device, None).unwrap();
                     store.set_device_enforcement(true, Vec::new()).unwrap();
                 })
                 .await
@@ -5530,7 +5530,7 @@ mod ensure_container {
             let device = DeviceKey::from(signer.public());
             store
                 .mutate(move |store| {
-                    store.approve_device(device).unwrap();
+                    store.approve_device(device, None).unwrap();
                     store.set_device_enforcement(true, Vec::new()).unwrap();
                 })
                 .await
@@ -6402,7 +6402,7 @@ mod ensure_container {
             fixture
                 .store
                 .mutate(move |store| {
-                    store.approve_passkey(trusted).unwrap();
+                    store.approve_passkey(trusted, None).unwrap();
                 })
                 .await
                 .unwrap();
@@ -6615,7 +6615,7 @@ mod ensure_container {
             let signer = Signer::from_seed(&[7; 32]);
             let device = DeviceKey::from(signer.public());
             store
-                .mutate(move |store| store.approve_device(device).unwrap())
+                .mutate(move |store| store.approve_device(device, None).unwrap())
                 .await
                 .unwrap();
             let issued_at = Timestamp::now();
@@ -6624,7 +6624,8 @@ mod ensure_container {
                 members: vec![service.local.record().machine().unwrap().into()],
                 issued_at,
                 expires_at: issued_at.plus(60_000),
-                signer: device,
+                signer: ployz_core::authority::SignerKey::Device(device),
+                kept_keys: Vec::new(),
             };
             let starting_set = Signed::sign(&set, &signer).unwrap();
             for enforced in [true, false] {
@@ -7702,7 +7703,7 @@ mod resize_and_seed_under_approval {
         let device = DeviceKey::from(signer.public());
         store
             .mutate(move |store| {
-                store.approve_device(device).unwrap();
+                store.approve_device(device, None).unwrap();
                 store.set_device_enforcement(enforcing, Vec::new()).unwrap();
             })
             .await

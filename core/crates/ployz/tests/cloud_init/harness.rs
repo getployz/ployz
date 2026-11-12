@@ -641,6 +641,8 @@ impl FakeMachine for JoinDaemon {
         let joined = targeted || self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
+            activation: None,
+            sealing_recipient: None,
             id: self
                 .inner
                 .own_id

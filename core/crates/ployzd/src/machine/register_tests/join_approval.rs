@@ -35,7 +35,8 @@ fn enforce_request(signer: &Signer, members: Vec<Member>) -> SetDeviceEnforcemen
         members,
         issued_at,
         expires_at: issued_at.plus(60_000),
-        signer: signer.public().into(),
+        signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
+        kept_keys: Vec::new(),
     };
     SetDeviceEnforcementRequest {
         enforced: true,
@@ -203,7 +204,7 @@ async fn unsigned_enroll_and_share_are_refused_under_enforcement() {
     let registration = entry.register(request.clone()).await.unwrap();
     let signer = Signer::from_seed(&[1; 32]);
     enforce(&entry, &signer).await;
-    joiner.approve_device(signer.public().into()).unwrap();
+    joiner.approve_device(signer.public().into(), None).unwrap();
     joiner.set_device_enforcement(true, Vec::new()).unwrap();
     assert!(matches!(
         joiner.enroll(EnrollRequest {

@@ -95,6 +95,8 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
+    Activation(#[from] crate::activation::CommitError),
+    #[error(transparent)]
     Network(#[from] NetworkError),
     #[error(transparent)]
     SpecStore(#[from] SpecStoreError),
@@ -245,6 +247,8 @@ impl Daemon {
                 .await?
             }
         };
+        let mut store = store;
+        crate::activation::commit_pending(&mut store, crate::activation::plugin_unit())?;
         let local = RecordOwner::spawn(store)?;
         let cleanup = tokio::task::spawn_blocking({
             let policy = build_policy.clone();

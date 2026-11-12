@@ -237,6 +237,14 @@ pub(crate) struct JoinResult {
     pub reply: JoinReply,
 }
 
+/// What activation's boot rules took out of the log.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AtActivation {
+    pub(crate) joins: Vec<ployz_core::MachineId>,
+    pub(crate) accepted: usize,
+    pub(crate) grants: usize,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", content = "result", rename_all = "snake_case")]
 pub(crate) enum JoinReply {
@@ -485,6 +493,37 @@ impl ConsumptionLog {
             } else {
                 Edit::Keep(())
             })
+        })
+    }
+
+    /// Apply activation's boot rules to this log, in the process that commits it. A cached
+    /// join reply whose stored approval no key in `trusted` signed goes, with its reply and
+    /// Sealing material. Every accepted build goes, since none records who signed its rule.
+    /// Every Volume grant goes, since a grant serves the send stream with no signer kept;
+    /// its operation stays, and a step that grants again re-verifies its own approval.
+    /// Everything else here only refuses a replay or a lower mark.
+    pub(crate) fn at_activation(
+        &self,
+        trusted: &[ployz_core::DeviceKey],
+    ) -> Result<AtActivation, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            let mut dropped = AtActivation::default();
+            log.joins.retain(|id, result| {
+                let signed = result
+                    .approval
+                    .verified_signers(trusted.iter().copied().map(Into::into))
+                    .ok()
+                    .zip(result.approval.open().ok())
+                    .is_some_and(|(signers, body)| signers.contains(&body.signer.into()));
+                if !signed {
+                    dropped.joins.push(*id);
+                }
+                signed
+            });
+            dropped.accepted = log.accepted.len();
+            log.accepted.clear();
+            dropped.grants = log.volumes.drop_grants();
+            Ok(Edit::Write(dropped))
         })
     }
 

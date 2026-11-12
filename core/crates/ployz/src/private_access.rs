@@ -151,7 +151,13 @@ pub struct AccessChanged {
 ///
 /// Fails when the key can't be sealed.
 pub(crate) fn seal_key(cluster: &SealingPublicKey, key: &str) -> Result<Ciphertext, Failure> {
-    seal_platform(cluster, PlatformPurpose::PrivateAccess, key.as_bytes()).map_err(|error| {
+    seal_platform(
+        cluster,
+        cluster,
+        PlatformPurpose::PrivateAccess,
+        key.as_bytes(),
+    )
+    .map_err(|error| {
         Failure::caused(
             RpcErrorCode::Internal,
             "Could not seal the auth key for this Cluster",

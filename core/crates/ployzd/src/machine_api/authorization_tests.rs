@@ -117,7 +117,7 @@ impl Enforcing {
         let starting = vec![ployz_core::authority::Member::from(&peer)];
         store
             .mutate(move |store| {
-                store.approve_device(device).unwrap();
+                store.approve_device(device, None).unwrap();
                 store.set_device_enforcement(enforced, starting).unwrap();
             })
             .await
@@ -950,7 +950,7 @@ mod departure {
         let dir = tempfile::tempdir().unwrap();
         let mut store = founder(dir.path(), "local");
         store
-            .approve_device(DeviceKey::from(Signer::from_seed(&[7; 32]).public()))
+            .approve_device(DeviceKey::from(Signer::from_seed(&[7; 32]).public()), None)
             .unwrap();
         store.set_device_enforcement(true, Vec::new()).unwrap();
         drop(store);
@@ -988,7 +988,13 @@ mod private_access {
             .unwrap()
             .unwrap()
             .public_key();
-        seal_platform(&cluster, PlatformPurpose::PrivateAccess, key.as_bytes()).unwrap()
+        seal_platform(
+            &cluster,
+            &cluster,
+            PlatformPurpose::PrivateAccess,
+            key.as_bytes(),
+        )
+        .unwrap()
     }
 
     fn approval(machine: &Enforcing, signer: &Signer, sealed: &Ciphertext) -> KeyApproval {

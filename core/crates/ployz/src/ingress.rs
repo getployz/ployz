@@ -222,15 +222,19 @@ pub(crate) fn cluster_doors_for(
                      be sealed.",
                 ));
             };
-            seal_platform(sealing, PlatformPurpose::IngressTunnel, token.as_bytes()).map_err(
-                |error| {
-                    Failure::caused(
-                        RpcErrorCode::Internal,
-                        "Could not seal the tunnel token for this Cluster",
-                        error,
-                    )
-                },
-            )?
+            seal_platform(
+                sealing,
+                sealing,
+                PlatformPurpose::IngressTunnel,
+                token.as_bytes(),
+            )
+            .map_err(|error| {
+                Failure::caused(
+                    RpcErrorCode::Internal,
+                    "Could not seal the tunnel token for this Cluster",
+                    error,
+                )
+            })?
         }
         None => observed.cluster.sealed_token.clone().ok_or_else(|| {
             Failure::usage(
