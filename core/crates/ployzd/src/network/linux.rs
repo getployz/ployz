@@ -27,6 +27,7 @@ use ployz_core::{
     DOCKER_NETWORK_CONFLICT_RECOVERY, LargePackets, LocalMachinePhase, Machine, MachineId,
     MachineSubnet, SelectedEndpoint, WireGuardPublicKey, labels,
 };
+use ployz_decide::bridge::{self, Settle};
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -1198,46 +1199,29 @@ fn report_stop(id: &str, error: &(dyn std::error::Error + 'static)) {
     );
 }
 
-/// Docker still counts a container between restarts as running, but it holds no
-/// sandbox, so Docker refuses to detach it from the bridge or attach it.
+/// Whether Docker refused `error` because the container is between restarts.
 fn between_restarts(error: &bollard::errors::Error) -> bool {
     let bollard::errors::Error::DockerResponseServerError { message, .. } = error else {
         return false;
     };
-    let not_connected = format!("is not connected to network {DOCKER_NETWORK_NAME}");
-    message.ends_with(&not_connected)
-        || (message.starts_with("network sandbox for container ")
-            && message.ends_with(" not found"))
+    bridge::between_restarts(message, DOCKER_NETWORK_NAME)
 }
 
-/// What to do with a member Docker refused as being between restarts.
-#[derive(Debug, PartialEq, Eq)]
-enum Settle {
-    /// Docker would run it again, so Ployz starts it again once it has moved.
-    StopAndNote,
-    /// It is exiting for good, so it stays stopped, as Docker would leave it.
-    Stop,
-    /// Whether Docker runs it again can't be told yet, or it has exited already:
-    /// the refused operation is only retried.
-    Leave,
-}
-
-/// Docker restarts a container it is restarting, and one exiting under `always`
-/// or `unless-stopped`. One exiting under `on-failure` restarts only on a failing
-/// exit code, which Docker records once it has exited, so Ployz doesn't stop it.
 fn settle(running: bool, restarting: bool, policy: Option<RestartPolicyNameEnum>) -> Settle {
-    if restarting {
-        return Settle::StopAndNote;
-    }
-    if !running {
-        return Settle::Leave;
-    }
-    match policy {
-        Some(RestartPolicyNameEnum::ALWAYS | RestartPolicyNameEnum::UNLESS_STOPPED) => {
-            Settle::StopAndNote
-        }
-        Some(RestartPolicyNameEnum::ON_FAILURE) => Settle::Leave,
-        None | Some(RestartPolicyNameEnum::NO | RestartPolicyNameEnum::EMPTY) => Settle::Stop,
+    bridge::settle(running, restarting, restart_policy(policy))
+}
+
+/// The policy Docker holds for a container, or `None` when it reports none. An empty name is
+/// no policy, as Docker treats it. Only the name tells whether Docker runs the container again.
+fn restart_policy(name: Option<RestartPolicyNameEnum>) -> Option<ployz_core::RestartPolicy> {
+    match name? {
+        RestartPolicyNameEnum::EMPTY => None,
+        RestartPolicyNameEnum::NO => Some(ployz_core::RestartPolicy::No),
+        RestartPolicyNameEnum::ALWAYS => Some(ployz_core::RestartPolicy::Always),
+        RestartPolicyNameEnum::UNLESS_STOPPED => Some(ployz_core::RestartPolicy::UnlessStopped),
+        RestartPolicyNameEnum::ON_FAILURE => Some(ployz_core::RestartPolicy::OnFailure {
+            maximum_retry_count: None,
+        }),
     }
 }
 
@@ -1254,7 +1238,7 @@ struct BridgeMember {
 impl BridgeMember {
     /// Detached, or still on a dynamic address.
     fn needs_pin(&self) -> bool {
-        !self.attached || !self.pinned
+        bridge::needs_pin(self.attached, self.pinned)
     }
 }
 
