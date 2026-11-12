@@ -17,7 +17,6 @@ use super::assess::{
     ZFS_SMOKE_BYTES, read_root_filesystem, read_secure_boot_variable, read_virtualization,
     root_reserve_blocker, secure_boot_blocker, virtualization_blocker, zfs_os_route,
 };
-use super::os_release;
 use super::zfs_route::ZfsRoute;
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
@@ -346,7 +345,7 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
 
 pub(super) fn zfs_preflight(paths: &InstallPaths) -> Result<(OsRelease, ZfsRoute), Error> {
     let refusal = |reason: Blocker| refuse(STAGE, reason.message);
-    let os = os_release::read(&paths.os_release)?;
+    let os = super::os_release::read(&paths.os_release)?;
     let route = zfs_os_route(&os).map_err(refusal)?;
     if route.builds_module() {
         let secure_boot = read_secure_boot_variable(&paths.secure_boot)?;
