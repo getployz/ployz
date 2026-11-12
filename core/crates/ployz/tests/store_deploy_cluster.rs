@@ -466,6 +466,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
+                        teardown: None,
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
@@ -658,6 +659,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                 .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
+                        teardown: None,
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),

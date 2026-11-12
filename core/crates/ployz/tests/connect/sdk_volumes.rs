@@ -406,6 +406,7 @@ fn advertised_description() -> ployz_core::ContractDescription {
 
 fn remove<const N: usize>(volumes: [DockerVolumeId; N], force: bool) -> RemoveVolumesRequest {
     RemoveVolumesRequest {
+        teardown: None,
         volumes: volumes.into(),
         force,
     }

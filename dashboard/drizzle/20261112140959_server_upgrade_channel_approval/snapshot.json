@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "e5fa577d-3fe7-4c08-921d-1bb87216d45b",
+  "id": "43de76f0-f2d5-4c21-849c-36f80950057b",
   "prevIds": [
-    "7bcdbc86-1dc4-47a4-b4b4-5cad2123c7fb"
+    "5da68eb8-b173-467c-8917-888465a2b40b"
   ],
   "ddl": [
     {
@@ -3766,6 +3766,19 @@
       "table": "machine_remove_attempt"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "teardown",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": true,
@@ -3982,6 +3995,19 @@
       "generated": null,
       "identity": null,
       "name": "confirm_data_loss",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "namespace_cleanup"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "teardown",
       "entityType": "columns",
       "schema": "public",
       "table": "namespace_cleanup"
@@ -6355,6 +6381,19 @@
     {
       "type": "timestamp with time zone",
       "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cluster_removed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_cloudflare_ingress"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
       "default": "now()",
@@ -7393,6 +7432,19 @@
       "table": "volume_mirror_status"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "approvals",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_mirror_status"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -7618,6 +7670,32 @@
       "generated": null,
       "identity": null,
       "name": "current",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "receipt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "answers",
       "entityType": "columns",
       "schema": "public",
       "table": "volume_run"
@@ -8060,6 +8138,19 @@
       "generated": null,
       "identity": null,
       "name": "used_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "operation_approvals"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "volume_approval",
       "entityType": "columns",
       "schema": "public",
       "table": "operation_approvals"

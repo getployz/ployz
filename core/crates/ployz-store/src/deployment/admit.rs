@@ -3,7 +3,7 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
-use ployz_core::authority::{CommitApproval, DeployApproval, Signed};
+use ployz_core::authority::{CommitApproval, DeployApproval, Signed, TeardownApproval};
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{Namespace, RpcError, ServiceName};
@@ -103,6 +103,12 @@ pub struct Deploy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, as = "Option<Signed<DeployApproval>>")]
     pub approval: Option<Box<Signed<DeployApproval>>>,
+    /// The teardown a person signed for the Docker Volumes this Deploy deletes. Its
+    /// runner hands it to each Server, and one that enforces Device approval deletes
+    /// none without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<TeardownApproval>")]
+    pub teardown: Option<Box<TeardownApproval>>,
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
@@ -142,6 +148,18 @@ pub struct Retry {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub awaits_approval: bool,
+    /// As [`Deploy::approval`], for the specs this redeploy ships: its source's
+    /// frozen revision as a plan of it with `deployment` lowers it. Servers that
+    /// enforce Device approval run none of an image's Services without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<Signed<DeployApproval>>")]
+    pub approval: Option<Box<Signed<DeployApproval>>>,
+    /// The teardown a person signed for the Docker Volumes this Deploy deletes. Its
+    /// runner hands it to each Server, and one that enforces Device approval deletes
+    /// none without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<TeardownApproval>")]
+    pub teardown: Option<Box<TeardownApproval>>,
 }
 
 /// Approve again the commits of a queued Deployment that waited for its builds, so the
@@ -162,6 +180,11 @@ pub struct AdmitRemoval {
     pub id: DeploymentId,
     #[serde(default)]
     pub environment: EnvironmentRef,
+    /// As [`crate::Remove::teardown`]: without one, a Server that enforces Device
+    /// approval takes nothing off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<TeardownApproval>")]
+    pub teardown: Option<Box<TeardownApproval>>,
 }
 
 /// Take an Environment off the Servers and keep it in the Store: ship it empty,
@@ -232,6 +255,12 @@ pub(crate) fn admit(
             let pruning = retry_pruning(tx, &retried, trusted)?;
             pruning.admit(trusted, Some(rollback.number))?;
             deployment::admitted_by_user(tx, &retried.id, trusted)?;
+            if let Some(approval) = &retry.approval {
+                deployment::approved_by_device(tx, &retried.id, approval)?;
+            }
+            if let Some(teardown) = &retry.teardown {
+                deployment::torn_down_under(tx, &retried.id, teardown)?;
+            }
             let forget = match retried.remove {
                 true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
                 false => None,
@@ -536,6 +565,9 @@ fn deploy(
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
     if let Some(approval) = &admit.approval {
         deployment::approved_by_device(tx, &summary.id, approval)?;
+    }
+    if let Some(teardown) = &admit.teardown {
+        deployment::torn_down_under(tx, &summary.id, teardown)?;
     }
     // What merges landed and this Deploy ships no longer waits for a push.
     let shipped = match admit.services.is_empty() {

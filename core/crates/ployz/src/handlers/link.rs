@@ -15,16 +15,17 @@ use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
-use ployz_core::{LocalMachinePhase, RpcErrorCode};
+use ployz_core::{Hint, LocalMachinePhase, RpcErrorCode};
 use ployz_store::{
-    DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
-    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery,
-    ProjectName, ProjectsQuery,
+    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, EnvironmentName,
+    EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery, ProjectName,
+    ProjectsQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::status_servers::{Subject, UNCHECKED};
+use super::status::model::{Attention, Subject};
+use super::status_servers::UNCHECKED;
 use super::store::{
     Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
 };
@@ -34,7 +35,7 @@ use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
 use crate::context::{Config, ConfigError, ContextError, select_connections};
-use crate::ui::{Cell, Fields, Hint, Tone};
+use crate::ui::{Cell, Fields, Tone};
 
 pub(super) fn link_command(command: Command) -> Command {
     scoped(command.about("Link this directory to a Project and Environment"))
@@ -580,19 +581,6 @@ struct Staged {
     version: String,
 }
 
-/// Something that needs someone to act, with the command that acts.
-#[derive(Serialize)]
-pub(super) struct Attention {
-    pub(super) reason: String,
-    pub(super) message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) deployment: Option<DeploymentId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) next: Option<String>,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    pub(super) subject: Option<Subject>,
-}
-
 /// This host's check-in record, and whether its Machine left the Cluster since it joined.
 #[derive(Serialize)]
 struct ThisServer {
@@ -668,14 +656,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     Some(next) => next.to_owned(),
                     None => "ployz link --project PROJECT".to_owned(),
                 };
-                let next = Some(next);
-                attention.push(Attention {
-                    reason: error.code.to_string(),
-                    message: crate::ui::row(&error),
-                    deployment: None,
-                    next,
-                    subject: None,
-                });
+                attention.push(
+                    Attention::new(None, error.code.to_string(), crate::ui::row(&error)).next(next),
+                );
                 None
             }
             Err(error) => return Err(store.fail(error)),
@@ -712,25 +695,24 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                 | DeploymentStatus::Cancelled => None,
             };
             if let Some(reason) = reason {
-                attention.push(Attention {
-                    reason: reason.to_owned(),
-                    message: format!("Deployment {} did not complete", ended.label()),
-                    deployment: Some(ended.id.clone()),
-                    next: Some(super::deploy::hint_for(matches, ended)),
-                    subject: None,
-                });
+                attention.push(
+                    Attention::new(
+                        None,
+                        reason,
+                        format!("Deployment {} did not complete", ended.label()),
+                    )
+                    .deployment(ended.id.clone())
+                    .next(super::deploy::hint_for(matches, ended)),
+                );
             }
         }
         deploying = page.in_flight;
     }
     for reference in diff.iter().flat_map(|diff| &diff.broken) {
-        attention.push(Attention {
-            reason: "broken_reference".to_owned(),
-            message: reference.to_string(),
-            deployment: None,
-            next: Some(super::store::fix_broken(matches, reference)),
-            subject: None,
-        });
+        attention.push(
+            Attention::new(None, "broken_reference", reference.to_string())
+                .next(super::store::fix_broken(matches, reference)),
+        );
     }
     let mut partial = false;
     if let (Some(store), Some(_)) = (&store, &diff) {
@@ -761,7 +743,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     });
     let hint = attention
         .first()
-        .and_then(|attention| attention.next.clone())
+        .and_then(|attention| attention.command().map(str::to_owned))
         .or_else(|| {
             staged
                 .as_ref()
@@ -800,7 +782,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
 const LOCAL_INSPECT: Duration = Duration::from_secs(3);
 
 fn this_server() -> Option<ThisServer> {
-    let path = Path::new(Paths::CHECKIN_DIR).join("status.json");
+    let path = Paths::production().status();
     let checkin = LocalCheckin::read(&path)
         .inspect_err(|error| {
             crate::ui::warn(format!("Could not read {}: {error}", path.display()));
@@ -818,7 +800,7 @@ fn this_server() -> Option<ThisServer> {
                     )
                 })
         });
-    let stopped = crate::checkin::loop_stopped(Path::new(Paths::CHECKIN_DIR));
+    let stopped = crate::checkin::loop_stopped(&Paths::production().checkin_dir);
     Some(ThisServer::read(checkin, left, stopped))
 }
 
@@ -960,7 +942,7 @@ fn status_record(status: &Status) -> Fields {
         );
     }
     for attention in &status.attention {
-        let label = match &attention.subject {
+        let label = match attention.subject() {
             Some(
                 Subject::NotPickedUp { service, .. }
                 | Subject::StaleAddress { service, .. }
@@ -975,7 +957,7 @@ fn status_record(status: &Status) -> Fields {
         };
         record.push(
             label,
-            Cell::status(crate::ui::escaped(&attention.message), Tone::Bad),
+            Cell::status(crate::ui::escaped(attention.message()), Tone::Bad),
         );
     }
     record
@@ -1218,7 +1200,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     if token || CredentialStore::beside(config).organization()?.is_some() {
         return Ok(via("cloud", None));
     }
-    let local = Path::new(crate::connect::DEFAULT_LOCAL_SOCKET);
+    let local = ployz_core::MachineLayout::production().socket();
     let config = match Config::load(config) {
         Ok(config) => config,
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
@@ -1232,7 +1214,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     // A config file sends commands to its current context, never the local socket, so
     // without one they reach no Server: say what they say.
     Ok(
-        match select_connections(None, Some(&config), None, false, local) {
+        match select_connections(None, Some(&config), None, false, &local) {
             Err(ContextError::NoCurrentContext(_)) => none(
                 "no current context",
                 Some(super::context::retry_use(matches)),

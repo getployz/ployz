@@ -7,12 +7,14 @@ import { MetricChart, atFormat, useMetricCursor, type ChartLimit, type ChartMark
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent } from "#/components/ui/card";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Popover, PopoverContent, PopoverTitle } from "#/components/ui/popover";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "#/components/ui/tooltip";
 import { cn } from "#/lib/utils";
+import { isNeedsProduction } from "#/modules/billing/billing";
 import { admission } from "#/modules/config-store/store-deployments";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { volumeStorageText } from "#/modules/config-store/store-volumes";
@@ -154,11 +156,32 @@ function Monitoring(props: MonitoringProps & { scope: UptimeScope; toggle: React
 
 function UptimeMonitoring(props: ViewProps) {
   const { data } = useServiceUptime(props.scope, props.service.id, props.shown);
+  if (isNeedsProduction(data)) {
+    return <MonitoringView {...props} read={null} upsell={<UptimeNeedsProduction organizationSlug={props.organizationSlug} />} />;
+  }
   return <MonitoringView {...props} read={{ uptime: data, at: data?.at ?? null }} />;
 }
 
-function MonitoringView({ organizationSlug, service, range: chosen, shown: range, healthcheck, vcpuLimit, volume, placedOn, scope, toggle, read }: ViewProps & {
+function UptimeNeedsProduction({ organizationSlug }: { organizationSlug: string }) {
+  return (
+    <Item variant="outline" size="sm">
+      <ItemContent>
+        <ItemTitle>Uptime is part of Production</ItemTitle>
+        <ItemDescription>Ployz keeps checking this service. Add Production to see the results.</ItemDescription>
+      </ItemContent>
+      <ItemActions>
+        <Button variant="outline" size="sm" nativeButton={false}
+          render={<Link to="/cloud/$organizationSlug/~/billing" params={{ organizationSlug }} />}>
+          See Production
+        </Button>
+      </ItemActions>
+    </Item>
+  );
+}
+
+function MonitoringView({ organizationSlug, service, range: chosen, shown: range, healthcheck, vcpuLimit, volume, placedOn, scope, toggle, read, upsell }: ViewProps & {
   read: { uptime: ServiceUptime | null; at: number | null } | null;
+  upsell?: ReactNode;
 }) {
   const uptime = read?.uptime ?? null;
   const [mountedAt] = useState(Date.now);
@@ -214,6 +237,7 @@ function MonitoringView({ organizationSlug, service, range: chosen, shown: range
           ) : toggle}
         </div>
       </div>
+      {upsell}
       {wrongPath && uptime ? (
         <Card size="sm">
           <CardContent>
@@ -478,7 +502,8 @@ function ResponseTime({ scope, serviceId, range, window, pending, frame }: {
   frame: (incidents: readonly UptimeIncidentEntry[]) => ChartFrame;
 }) {
   const shown = useDeferredValue(range);
-  const { data } = useServiceUptime(scope, serviceId, shown);
+  const { data: read } = useServiceUptime(scope, serviceId, shown);
+  const data = isNeedsProduction(read) ? null : read;
   const checked = checkSteps(data?.points ?? [], window);
   const check = checked.map((step) => step.medianMs);
   const checkMs = average(check);

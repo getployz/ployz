@@ -817,6 +817,7 @@ fn gone(container: ContainerId) -> ContainerWant {
 
 async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
     let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+        teardown: None,
         preview: None,
         want,
         approval: None,
@@ -2434,6 +2435,7 @@ fn creation_on_wire(
             rotation: RunRotation::Pending,
         };
         let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+            teardown: None,
             preview: None,
             want,
             approval: None,
@@ -2461,7 +2463,11 @@ async fn leave_held_at_listing(
     let listing = Arc::new(tokio::sync::Barrier::new(2));
     *node.fake.listed_hold.lock().unwrap() = Some(Arc::clone(&listing));
     let local = node.service.local.clone();
-    let leaving = tokio::spawn(async move { local.leave(ployz_core::LeaveRequest {}).await });
+    let leaving = tokio::spawn(async move {
+        local
+            .leave(ployz_core::LeaveRequest { teardown: None })
+            .await
+    });
     listing.wait().await;
     (leaving, listing)
 }
@@ -2469,7 +2475,11 @@ async fn leave_held_at_listing(
 /// A Leave on `node`. This fleet has no volume plugin, so a Leave that stopped and
 /// removed every copy fails at storage departure, and the Machine stays.
 async fn failed_leave(node: &Node) {
-    let left = node.service.local.leave(ployz_core::LeaveRequest {}).await;
+    let left = node
+        .service
+        .local
+        .leave(ployz_core::LeaveRequest { teardown: None })
+        .await;
     assert!(left.is_err(), "{left:?}");
 }
 

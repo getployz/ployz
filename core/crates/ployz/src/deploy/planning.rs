@@ -3,18 +3,18 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ployz_core::{
     BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
     HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
-    ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
-    RowStanding, RpcError, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason, UpdateOrder,
-    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
-    same_service_mode_kind,
+    ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal, QualifiedService,
+    RequestedServiceSpec, RowStanding, RpcError, ServiceContainer, ServiceId, ServiceMode,
+    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
+    machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
     EliminatingConstraint, HeldIngress, HostnameRefusal, PlanError, PlanOptions,
     ReplacementOperation,
-    schedule::{ServiceGroup, Step, TaskKind, starts_container},
+    schedule::{ServiceGroup, Stage, TaskKind, starts_container},
 };
 
 pub(super) mod capacity;
@@ -316,12 +316,12 @@ fn service_group(
             .spec()
             .is_some_and(|spec| spec.update.order == UpdateOrder::Rolling)
     });
-    let mut steps: Vec<Step> = Vec::new();
+    let mut steps: Vec<Stage> = Vec::new();
     let mut starts: Vec<usize> = Vec::new();
-    let flush = |steps: &mut Vec<Step>, starts: &mut Vec<usize>| {
+    let flush = |steps: &mut Vec<Stage>, starts: &mut Vec<usize>| {
         if !rolling {
             if !starts.is_empty() {
-                steps.push(Step::Parallel(std::mem::take(starts)));
+                steps.push(Stage::Parallel(std::mem::take(starts)));
             }
             return;
         }
@@ -339,18 +339,18 @@ fn service_group(
         steps.extend(
             machines
                 .into_iter()
-                .map(|(_, indices)| Step::Parallel(indices)),
+                .map(|(_, indices)| Stage::Parallel(indices)),
         );
     };
     let mut removals = Vec::new();
     for (index, operation) in indexed() {
         if publish && rollout_removal(operation) {
-            removals.push(Step::Serial(index));
+            removals.push(Stage::Serial(index));
         } else if starts_container(operation) {
             starts.push(index);
         } else {
             flush(&mut steps, &mut starts);
-            steps.push(Step::Serial(index));
+            steps.push(Stage::Serial(index));
         }
     }
     flush(&mut steps, &mut starts);
@@ -417,7 +417,7 @@ pub(super) fn prepare_namespace_removal(
         let range = first..planned.operations.len();
         match planned.groups.last_mut() {
             Some(tail) if tail.service.is_none() && !range.is_empty() => {
-                tail.steps.extend(range.map(Step::Serial));
+                tail.steps.extend(range.map(Stage::Serial));
             }
             _ if !range.is_empty() => {
                 let every_service = planned
@@ -743,14 +743,14 @@ fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<P
         ServiceGroup {
             service: None,
             dependencies: Vec::new(),
-            steps: vec![Step::Parallel((first..planned.operations.len()).collect())],
+            steps: vec![Stage::Parallel((first..planned.operations.len()).collect())],
             publish: false,
         },
     );
     Ok(planned)
 }
 
-/// The copies that runs in `intent.options.ended_runs` left Pending of a Service this
+/// The copies that runs in a runner's `ended_runs` left Pending of a Service this
 /// Deploy places. They were never routed and no run can bring them In, so the Deploy
 /// removes them before it starts anything, and a failing Deploy repeated leaves only
 /// its own. Only a copy in a slot its own run keyed counts: a Replica Move's copy
@@ -760,7 +760,10 @@ fn left_pending(
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
 ) -> BTreeSet<ContainerId> {
-    if intent.options.ended_runs.is_empty() || intent.namespace.is_system() {
+    let PlanMode::Runner { ended_runs, .. } = intent.options.mode() else {
+        return BTreeSet::new();
+    };
+    if ended_runs.is_empty() || intent.namespace.is_system() {
         return BTreeSet::new();
     }
     snapshot
@@ -773,14 +776,9 @@ fn left_pending(
                 && requested
                     .iter()
                     .any(|spec| spec.name == *container.service_name())
-                && container.deploy_label().is_some_and(|run| {
-                    intent.options.ended_runs.contains(&run)
-                        && container
-                            .labels
-                            .get(ployz_core::labels::CREATION_KEY)
-                            .and_then(|key| key.strip_prefix(run.as_str()))
-                            .is_some_and(|slot| slot.starts_with(':'))
-                })
+                && container
+                    .deploy_label()
+                    .is_some_and(|run| ended_runs.contains(&run) && container.made_under(&run))
         })
         .map(|container| container.container_id)
         .collect()
@@ -1086,9 +1084,10 @@ fn assemble_plan(
         &intent.deployed_volumes,
         &target,
         &requested,
-        intent.options.operator,
+        intent.options.mode().operator(),
     )?;
     let name_errors_with_service = requested.len() > 1;
+    let blocks_unmountable = intent.options.mode().blocks_unmountable();
     let mut reservations = PlacementReservations::new(snapshot);
     let mut blocked =
         volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
@@ -1135,7 +1134,7 @@ fn assemble_plan(
         let first = service_operations.len();
         // Placement spends capacity and host ports as it goes, so a Service blocked once
         // it is placed puts back the budget it found.
-        let before = intent.options.block_unmountable.then(|| budget.clone());
+        let before = blocks_unmountable.then(|| budget.clone());
         let operations = match plan_one_service(
             spec,
             &intent.namespace,
@@ -1152,7 +1151,7 @@ fn assemble_plan(
                 | PlanError::CopiesUnknown { .. }
                 | PlanError::VolumeHolderUnknown { .. }
                 | PlanError::VolumeServerTakesNoServices { .. }),
-            ) if intent.options.block_unmountable => {
+            ) if blocks_unmountable => {
                 blocked.push(BlockedService {
                     service: spec.name.clone(),
                     error: error.into_rpc_error(),
@@ -1160,10 +1159,7 @@ fn assemble_plan(
                 budget.release(&spec.name);
                 continue;
             }
-            Err(error)
-                if intent.options.block_unmountable
-                    && volume_server_away(&error, snapshot, spec) =>
-            {
+            Err(error) if blocks_unmountable && volume_server_away(&error, snapshot, spec) => {
                 blocked.push(BlockedService {
                     service: spec.name.clone(),
                     error: error.into_rpc_error(),
@@ -1181,9 +1177,7 @@ fn assemble_plan(
         };
         // A Volume on a Server that didn't return its storage can't be budgeted there, so
         // only the Service mounting it waits; the rest of the Deploy goes ahead (bet 4).
-        if intent.options.block_unmountable
-            && let Some(error) = silent_volume_server(&operations, snapshot)
-        {
+        if blocks_unmountable && let Some(error) = silent_volume_server(&operations, snapshot) {
             blocked.push(BlockedService {
                 service: spec.name.clone(),
                 error: error.into_rpc_error(),
@@ -1428,7 +1422,7 @@ fn removal_operations(
     services: &[ServiceObservation],
     obsolete: &[QualifiedService],
     first: usize,
-) -> (Vec<DeployOperation>, Vec<Step>) {
+) -> (Vec<DeployOperation>, Vec<Stage>) {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
     let (pending, rest): (Vec<_>, Vec<_>) = services
         .iter()
@@ -1437,9 +1431,9 @@ fn removal_operations(
         .partition(|container| *container.as_observation().rotation() == CopyRotation::Pending);
     let serial = first..first + pending.len();
     let at_once = serial.end..serial.end + rest.len();
-    let mut steps: Vec<Step> = serial.map(Step::Serial).collect();
+    let mut steps: Vec<Stage> = serial.map(Stage::Serial).collect();
     if !at_once.is_empty() {
-        steps.push(Step::Parallel(at_once.collect()));
+        steps.push(Stage::Parallel(at_once.collect()));
     }
     let operations = pending
         .into_iter()

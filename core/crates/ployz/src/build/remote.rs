@@ -7,7 +7,7 @@ use ployz_build::{
     Progress, Stage,
     remote::{self, Definition, Event, Input, Outcome},
 };
-use ployz_core::{MachineId, MachineTarget};
+use ployz_core::{MachineId, MachineTarget, op};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -181,7 +181,7 @@ async fn open_and_admit(
     let target = MachineTarget::from(&machine_id);
     let mut responses = match tokio::time::timeout(
         Duration::from_secs(10),
-        client.build_stream(&target, ReceiverStream::new(receiver)),
+        client.open_stream::<op::Build>(Some(&target), ReceiverStream::new(receiver)),
     )
     .await
     {

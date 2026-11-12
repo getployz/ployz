@@ -16,9 +16,10 @@ use super::{
     keep_answered_token, loop_ployzd, loop_start, replaces_token, stdin_token, waiting_lines,
 };
 use crate::checkin::{
-    self, CheckinClient, CheckinKey, FleetToken, Hold, Host, LocalCheckin, Next, Paths, Probe,
-    Seen, StopReason, System, unit,
+    self, CheckinClient, CheckinKey, FleetToken, Hold, Host, LocalCheckin, Next, Paths, Seen,
+    StopReason, System, unit,
 };
+use ployz_core::probe_document::ProbeDocument;
 
 const PROBE: &str = r#"{"facts":{"os":{"id":"ubuntu","version_id":"24.04"},"kernel":"6.8.0","arch":"x86_64","virt":"BareMetal","cgroup":"V2","cpu_count":4,"memory_total_bytes":8589934592,"disks":[],"docker":"Absent"},"assessment":{"blockers":[],"warnings":[],"zfs":{"Ineligible":{"reason":{"code":"zfs_off","message":"Off."}}}}}"#;
 
@@ -63,6 +64,7 @@ fn temp_paths(dir: &tempfile::TempDir) -> Paths {
     Paths {
         checkin_dir: dir.path().join("checkin"),
         prepare_state: dir.path().join("prepare/state.json"),
+        prepare_lock: dir.path().join("prepare/lock"),
         token_file: dir.path().join("fleet-token"),
     }
 }
@@ -214,7 +216,7 @@ async fn answering_once(
 struct Chosen(System);
 
 impl Host for Chosen {
-    async fn probe(&self) -> Result<Probe, String> {
+    async fn probe(&self) -> Result<ProbeDocument, String> {
         self.0.probe().await
     }
 
@@ -297,7 +299,7 @@ struct Stopper {
 }
 
 impl Host for Stopper {
-    async fn probe(&self) -> Result<Probe, String> {
+    async fn probe(&self) -> Result<ProbeDocument, String> {
         unreachable!("the loop never starts")
     }
 

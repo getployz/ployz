@@ -9,7 +9,9 @@ use std::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{DockerVolumeName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode};
+use crate::{
+    CodedRefusal, DockerVolumeName, Evidence, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode,
+};
 
 /// Set the bound of this Machine's copy of Volume `name` to `maximum_bytes`, whether
 /// it is the writer's root or a Mirror's slot. A copy already at `maximum_bytes` answers
@@ -24,6 +26,12 @@ pub struct SetVolumeSizeRequest {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub allow_shrink: bool,
+    /// The Device-signed Resize approval naming this Machine, this size and whether it may
+    /// shrink. An enforcing Machine needs one from an Operator. A Machine that predates it
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approval: Option<crate::authority::Signed<crate::authority::VolumeApproval>>,
 }
 
 /// The smallest bound a shrink accepts for a Volume that references `referenced_bytes`:
@@ -78,16 +86,20 @@ pub struct SetVolumeSizeRefused {
 }
 
 impl SetVolumeSizeRefused {
-    /// The refusal carried by an RPC error, if it is one.
-    #[must_use]
-    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
-        Self::deserialize(details).ok()
-    }
-
     /// An RPC error that carries this refusal in `details`.
     #[must_use]
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
-        let code = match self.reason {
+        RpcError::refused(&self, message)
+    }
+}
+
+impl Evidence for SetVolumeSizeRefused {
+    const KEY: Option<&'static str> = None;
+}
+
+impl CodedRefusal for SetVolumeSizeRefused {
+    fn code(&self) -> RpcErrorCode {
+        match self.reason {
             SizeRefusal::NotFound => RpcErrorCode::NotFound,
             SizeRefusal::NoCapacity
                 if !matches!(
@@ -102,9 +114,7 @@ impl SetVolumeSizeRefused {
             | SizeRefusal::Switching
             | SizeRefusal::Shrink
             | SizeRefusal::BelowFloor => RpcErrorCode::Conflict,
-        };
-        RpcError::new(code, message)
-            .with_details(serde_json::to_value(self).expect("a size refusal is JSON serializable"))
+        }
     }
 }
 
@@ -126,12 +136,9 @@ mod tests {
         let error = refused.clone().rpc_error("too small");
 
         assert_eq!(error.code, RpcErrorCode::Conflict);
+        assert_eq!(error.evidence(), Some(refused));
         assert_eq!(
-            SetVolumeSizeRefused::from_details(&error.details),
-            Some(refused)
-        );
-        assert_eq!(
-            SetVolumeSizeRefused::from_details(&serde_json::Value::Null),
+            RpcError::conflict("m").evidence::<SetVolumeSizeRefused>(),
             None
         );
     }
@@ -175,6 +182,7 @@ mod tests {
             allow_shrink: true,
             ..request
         };
+        assert_eq!(request.approval, None);
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
             serde_json::json!({"name": "data", "maximum_bytes": 5, "allow_shrink": true})

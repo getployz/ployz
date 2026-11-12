@@ -296,7 +296,7 @@ fn several(asked: &RowRef, found: &BTreeSet<RowId>, rows: &[NamedRow]) -> RpcErr
     };
     error::ambiguous(
         format!("{asked} names more than one row: name one"),
-        json!({ "valid_children": choices }),
+        error::valid(choices),
     )
 }
 

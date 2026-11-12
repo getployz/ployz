@@ -2816,6 +2816,7 @@ fn hiding_a_sealed_value_changes_no_plan_version_or_effect() {
                 environment: at("qa"),
                 services: Vec::new(),
                 target: false,
+                deployment: None,
             },
         )
         .unwrap();
@@ -3390,6 +3391,7 @@ fn roll_back(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployment
         .write_trusted(
             who,
             &ployz_store::Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: id(n),
                 deployment: id(1),
                 rolls_back: None,
@@ -3397,6 +3399,7 @@ fn roll_back(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployment
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -3720,6 +3723,7 @@ fn every_read(store: &ConfigStore, who: &Actor, environment: &str, parent: &str)
                         environment: at(environment),
                         services: Vec::new(),
                         target: false,
+                        deployment: None,
                     },
                 )
                 .unwrap(),

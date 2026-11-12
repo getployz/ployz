@@ -18,13 +18,12 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerList, ContractDescription, CreateVolumeRequest,
     DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, ForgetRequest, Forgotten, Left, LeftPhase, LocalMachinePhase,
-    MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachinePath, MachineRpcServer, MachineStorageObservation,
-    MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RoutesRead, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
-    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
-    encode_runtime_watch_frame, op,
+    Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
+    MachineRpcServer, MachineStorageObservation, MembershipObservation, ObservedDataLoss,
+    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    RoutesRead, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
+    WireGuardPublicKey, encode_runtime_watch_frame, labels, op,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
 use serde_json::Value;
@@ -210,6 +209,8 @@ pub(super) struct DiscoveryService {
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
+    /// SetManagementClient and MintBuildGrant announce themselves here, then never answer.
+    pub(super) mutation_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) register_blocked: Option<Arc<tokio::sync::Notify>>,
     /// The one Upgrade attempt this daemon holds.
     upgrade_attempt: Arc<Mutex<Option<ployz_core::MachineUpgradeAttempt>>>,
@@ -315,6 +316,7 @@ impl DiscoveryService {
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
+            mutation_blocked: None,
             register_blocked: None,
             upgrade_attempt: Arc::default(),
             upgrade_outcome: None,
@@ -800,6 +802,34 @@ impl FakeMachine for DiscoveryService {
         ))
     }
 
+    async fn set_management_client(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(received) = &self.mutation_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let _ = request;
+        Err(Status::unimplemented(
+            "set_management_client is not used by this fixture",
+        ))
+    }
+
+    async fn mint_build_grant(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(received) = &self.mutation_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let _ = request;
+        Err(Status::unimplemented(
+            "mint_build_grant is not used by this fixture",
+        ))
+    }
+
     async fn list_machines(
         &self,
         _request: Request<OpaquePayload>,
@@ -827,6 +857,7 @@ impl FakeMachine for DiscoveryService {
                             .map(|observation| observation.machine.clone())
                             .collect(),
                         target_versions: BTreeMap::new(),
+                        doors: None,
                     }),
                 machines,
             })
@@ -1532,7 +1563,7 @@ impl FakeMachine for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::Forget(ForgetRequest { machine_id }) = request.body else {
+        let RpcRequestBody::Forget(ForgetRequest { machine_id, .. }) = request.body else {
             return Err(Status::invalid_argument("expected forget"));
         };
         if self
@@ -1681,8 +1712,8 @@ pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
 pub(super) fn owned_volume(machine_id: MachineId, name: &str, namespace: &str) -> DockerVolume {
     DockerVolume {
         labels: BTreeMap::from([
-            (MANAGED_LABEL.to_owned(), String::new()),
-            (NAMESPACE_LABEL.to_owned(), namespace.to_owned()),
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::NAMESPACE.to_owned(), namespace.to_owned()),
         ]),
         ..docker_volume(machine_id, name)
     }

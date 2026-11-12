@@ -8,7 +8,7 @@ use clap::{ArgMatches, Command};
 use crate::cli::{base, switch};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CloudEnrollToken, DescribeContractRequest, EnrollAs, EnrollRequest, InspectRequest,
+    CloudEnrollToken, DescribeContractRequest, EnrollAs, EnrollRequest, Hint, InspectRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, ManagementCapability,
     ManagementClientLabel, PinnedAddresses, RecoveryCode, SetManagementClientRequest,
     StorageChoice, op,
@@ -24,7 +24,7 @@ use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::provisioning::Installation;
 use crate::setup_report::{SetupReport, Step};
-use crate::ui::{self, Fields, Hint};
+use crate::ui::{self, Fields};
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
 pub(super) fn enroll(
@@ -401,6 +401,7 @@ async fn enroll_current_identity(
                     public_ip: machine_token.public_ip,
                     advertised_endpoints: machine_token.advertised_endpoints.clone(),
                     runtime: Default::default(),
+                    capabilities: Vec::new(),
                 };
                 if super::device::sign_waiting_join(&mut entry, &config, &expected).await? {
                     cloud_enroll::enroll(command, url, token, &identity, progress).await?
@@ -764,6 +765,14 @@ where
         None => None,
     };
     let mut partial = None;
+    if matches.get_flag("ingress-closed")
+        && let Err(error) = crate::ingress::declare_founding_closed(&mut ready).await
+    {
+        return Err(ingress_incomplete(
+            command,
+            super::ingress_hints(error, |args| super::rerun(matches, args)),
+        ));
+    }
     if machine.accepts_ingress
         && let Err(error) = if matches.get_flag("ingress-closed") {
             crate::ingress::found_closed(&mut ready).await
@@ -917,7 +926,7 @@ fn founder_result(
         }
     }
     if let Some(next) = next {
-        ui::hint(&ui::Hint::Inspect(next.to_owned()));
+        ui::hint(&Hint::Inspect(next.to_owned()));
     }
     Ok(result)
 }
@@ -1062,7 +1071,7 @@ fn local_selection(matches: &ArgMatches) -> Result<SelectedConnections, ConnectE
         &config,
         matches.get_one::<String>("connect").map(String::as_str),
         None,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     )
 }
 
@@ -1114,6 +1123,7 @@ fn retry_local_connect(error: &ConnectError) -> bool {
 async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         "Waiting for local daemon",
         crate::setup_retry::WAIT,
         retry_local_connect,
@@ -1184,6 +1194,7 @@ async fn wait_phase(
     let mut joining = crate::handlers::server::Joining::default();
     crate::setup_retry::run_expecting(
         &mut joining,
+        &crate::ui::WaitNotices,
         &format!("Waiting for the {} phase", phase.as_str()),
         expected,
         wait,

@@ -5,14 +5,14 @@ use std::io::Read;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{ArgMatches, Command};
-use ployz_core::{IngressDoors, PartialResult, RpcErrorCode};
+use ployz_core::{Hint, IngressDoors, PartialResult, RpcErrorCode};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
 use crate::cli::{base, positional, switch};
 use crate::ingress::{Doors, MachineDoors, cluster_doors_for, use_doors};
-use crate::ui::{self, Cell, Gaps, Hint, Table};
+use crate::ui::{self, Cell, Gaps, Table};
 
 /// The most a Cloudflare tunnel token holds on stdin. Cloudflare's run a few hundred bytes.
 const TOKEN_LIMIT: usize = 8192;

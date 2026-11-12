@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigFileName, ConfigName, Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -10,6 +10,7 @@ use ts_rs::TS;
 use super::ServiceSetting;
 use crate::error;
 use crate::id::{ConfigRef, VolumeName};
+use crate::policy::PolicySetting;
 use crate::variables::VariableKey;
 
 /// A node of an Environment: `SERVICE` for a Service, `volumes.VOLUME` for a
@@ -284,7 +285,7 @@ impl SettingPath {
                     Some(_) => {
                         return Err(error::invalid(
                             "Unknown variable field",
-                            json!({ "valid_children": ["exported", "description"] }),
+                            error::valid(["exported", "description"]),
                         ));
                     }
                 },
@@ -351,6 +352,17 @@ impl SettingPath {
             Addressed::Service(service, Some(Target::Domains)) => Some(service),
             Addressed::Service(..) | Addressed::Volume(..) | Addressed::Config(..) => None,
         }
+    }
+
+    /// Whether it is a Service's Preferred Builder, `SERVICE.preferredBuilder`.
+    #[must_use]
+    pub const fn is_preferred_builder(&self) -> bool {
+        matches!(
+            self.target(),
+            Some(Target::Setting(ServiceSetting::Policy(
+                PolicySetting::PreferredBuilder
+            )))
+        )
     }
 
     /// The Service whose Settings it addresses, or why a Volume or Config has none.
@@ -461,9 +473,51 @@ pub(crate) fn domains_are_read_only(path: &SettingPath, service: &ServiceName) -
 pub(crate) fn name_a_setting(node: impl std::fmt::Display) -> RpcError {
     error::invalid(
         "Name a Setting: SERVICE.SETTING",
-        json!({
-            "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
-            "example": format!("{node}.replicas"),
-        }),
+        json!({ "example": format!("{node}.replicas") }),
     )
+    .with_hint(Hint::valid(ServiceSetting::ALL.map(ServiceSetting::name)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_naming_no_setting_lists_every_setting_and_an_example() {
+        let refused = name_a_setting("web");
+        assert_eq!(
+            refused.details,
+            json!({
+                "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
+                "example": "web.replicas",
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_variable_field_lists_the_two_there_are() {
+        let refused = SettingPath::parse("web.env.KEY.nope").unwrap_err();
+        assert_eq!(
+            refused.details,
+            json!({ "valid_children": ["exported", "description"] })
+        );
+    }
+
+    #[test]
+    fn only_a_services_preferred_builder_is_one() {
+        let is = |path: &str| SettingPath::parse(path).unwrap().is_preferred_builder();
+        assert!(is("web.preferredBuilder"));
+        assert!(is("WEB.preferredBuilder"));
+        for path in [
+            "web",
+            "web.replicas",
+            "web.autoDeploy",
+            "web.env.preferredBuilder",
+            "setup.preferredBuilder",
+            "volumes.data",
+            "configs.sentry",
+        ] {
+            assert!(!is(path), "{path}");
+        }
+    }
 }

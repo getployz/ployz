@@ -22,7 +22,7 @@ use std::{
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FramingError, MachineId, MachineTarget, ResolvedServiceSpec, Retry,
+    CodecError, FramingError, MachineId, MachineLayout, MachineTarget, ResolvedServiceSpec, Retry,
     RoutingMetadataError, RpcError, RpcErrorCode, SETTLE_INSPECT_GRACE, apply_one_target,
     settle_deadline,
 };
@@ -46,8 +46,6 @@ pub use crate::cluster::{
     Budgeted, Call, Client, Deadline, MachineImagesObservation, Once, Pacing, Remover, Repeat,
     Replay, Wait, Waiting,
 };
-
-pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 
 pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(500),
@@ -1020,7 +1018,7 @@ async fn connect_selected(
                 Some((index, connection, outcome)) = dialing.next() => {
                     let error = match outcome {
                         Ok(mut client) => {
-                            if let Some(ExpectedCluster { check, .. }) = client.cluster.as_deref_mut() {
+                            if let Some(check) = client.cluster_check_mut() {
                                 check.foreign = failures
                                     .values()
                                     .filter_map(|(_, error)| {
@@ -1110,10 +1108,10 @@ pub(crate) async fn connect_one(
     let sealing = confirmed.map_err(|error| naming_local_refusal(connection, error))?;
     if let Some(expect) = expect {
         let check = client.check_cluster(expect, sealing).await?;
-        client.cluster = Some(Box::new(ExpectedCluster {
+        client.expect_cluster(ExpectedCluster {
             expect: *expect,
             check,
-        }));
+        });
     }
     Ok(client)
 }
@@ -1215,7 +1213,7 @@ pub(crate) async fn connect_with_ssh_timeout(
         config_path,
         direct,
         context_override,
-        Path::new(DEFAULT_LOCAL_SOCKET),
+        &MachineLayout::production().socket(),
     )?;
     connect_selected_with(
         selected,

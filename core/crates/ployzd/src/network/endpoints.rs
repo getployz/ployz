@@ -43,8 +43,11 @@ pub async fn discover_network(
     })
 }
 
+// `ip -json` prints an interface that changes mid-dump, such as a Container's veth, as `{}`.
+// It reads as an interface with no flags and no addresses.
 #[derive(Deserialize)]
 struct Interface {
+    #[serde(default)]
     ifname: String,
     #[serde(default)]
     flags: Vec<String>,
@@ -205,6 +208,18 @@ mod tests {
         assert_eq!(
             routable_addresses(interfaces),
             ["192.0.2.8".parse::<IpAddr>().unwrap()]
+        );
+    }
+
+    #[test]
+    fn an_interface_that_changed_mid_dump_is_skipped_and_the_rest_still_read() {
+        let interfaces = serde_json::from_str(
+            r#"[{},{"ifname":"eth0","flags":["UP","LOWER_UP"],"addr_info":[{"local":"192.0.2.9","scope":"global"}]},{}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            routable_addresses(interfaces),
+            ["192.0.2.9".parse::<IpAddr>().unwrap()]
         );
     }
 

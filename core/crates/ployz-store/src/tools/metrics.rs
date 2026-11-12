@@ -9,9 +9,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use super::ToolId;
 use super::act::{resolve, roster, servers};
 use super::cloud::{MetricEvent, MetricsAnswer};
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, at, place_of, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
     Ask, CloudQuery, MetricsQuery, MetricsSince, MetricsSubject, ServerName, Timestamp,
@@ -19,8 +21,7 @@ use super::step::{
 use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
 use crate::{
-    DeploymentId, DeploymentsQuery, EnvironmentName, NamespaceQuery, NamespacesQuery,
-    NumberedDeploymentQuery, ProjectName,
+    DeploymentId, DeploymentsQuery, NamespaceQuery, NamespacesQuery, NumberedDeploymentQuery,
 };
 
 const DEFAULT_MINUTES: u32 = 60;
@@ -73,31 +74,26 @@ fn shown(answer: MetricsAnswer, events: Vec<Map<String, Value>>) -> Map<String, 
     shown
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceMetrics {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    service: ServiceName,
-    /// Deployment number: from its start, its events only.
-    #[serde(default)]
-    #[schemars(range(min = 1))]
-    deployment: Option<u64>,
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 10080))]
-    since_minutes: Option<u32>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceMetrics {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        service: ServiceName,
+        /// Deployment number: from its start, its events only.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        deployment: Option<u64>,
+        #[serde(default)]
+        #[schemars(range(min = 1, max = 10080))]
+        since_minutes: Option<u32>,
+        @place,
+    }
 }
 
 impl Tool for ServiceMetrics {
     const NAME: &'static str = "service_metrics";
     const DESCRIPTION: &'static str = "A Service's CPU, memory, network and disk (now, avg, peak) and its OOM kills, exits and restarts. Default: the last hour.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("deployment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::DeploymentShow);
 
     fn example() -> Value {
         json!({ "service": "web", "deployment": 12 })
@@ -105,7 +101,7 @@ impl Tool for ServiceMetrics {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let mut asks = vec![
             store(&NamespaceQuery {
                 environment: scope.clone(),
@@ -155,12 +151,9 @@ impl Tool for ServiceMetrics {
                         Refusal::not_found("No deployed Service by that name here")
                             .with_did_you_mean(did_you_mean(self.service.as_str(), names()))
                             .with_valid(names())
-                            .with_next(Call::new(
-                                "environment_show",
-                                json!({
-                                    "project": namespace.environment.project,
-                                    "environment": namespace.environment.name,
-                                }),
+                            .with_next(Call::to(
+                                ToolId::EnvironmentShow,
+                                place_of(&namespace.environment),
                             )),
                     )
                 })?,

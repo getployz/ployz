@@ -11,14 +11,14 @@ mod follow_tests;
 mod progress;
 
 use crate::ui::progress::{Disposition, Progress};
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::ui::{self, Cell, Table, Tone};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
     DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, NodeStatus, PlanQuery,
@@ -65,7 +65,10 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .conflicts_with_all(["service", "plan", "skip-deploy"])
                 .hide(true),
         )
-        .arg(crate::cli::yes("Does nothing; kept for older scripts").hide(true))
+        .arg(crate::cli::yes(
+            "Sign without asking when your servers enforce device approval; still prints \
+             what it signs",
+        ))
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(
@@ -215,7 +218,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         services,
         version: matches.get_one::<String>("expect-version").cloned(),
         source,
-        accept: super::teardown::accepted(matches)?,
+        accept: super::shared::accepted::accepted(matches)?,
         message: matches.get_one::<String>("message").cloned(),
         no_prune,
     };
@@ -229,7 +232,7 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
         environment: environment(matches)?,
         version: matches.get_one::<String>("expect-version").cloned(),
         message: matches.get_one::<String>("message").cloned(),
-        accept_volume_loss: super::teardown::accepted(matches)?,
+        accept_volume_loss: super::shared::accepted::accepted(matches)?,
     };
     let saved = store
         .publish(&saving)
@@ -303,12 +306,14 @@ pub(super) fn upload_and_ship(
         Some(_) => None,
         None => approve::sign(matches, store, &id, (&environment, &services))?,
     };
+    let teardown = super::teardown::volume_loss(matches, store, (&environment, None), &accept)?;
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
         store.upload(&id, dir, listing)?;
     }
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
+            teardown: teardown.map(Box::new),
             id,
             environment,
             services,
@@ -614,7 +619,7 @@ fn run_here(
         &super::config_path(matches)?,
         direct,
         context,
-        Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     ) {
         Ok(selected) => selected.connections,
         // Nothing named and no Cluster to reach: the runner records that nothing ran.
@@ -1048,6 +1053,7 @@ fn plan(
         environment: environment(matches)?,
         services,
         target: false,
+        deployment: None,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
     let (ingress, ingress_unchecked) = match ingress_check(matches) {
@@ -1403,18 +1409,28 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
     let events = open_events(matches)?;
     // On Servers that enforce Device approval, this Device approves each commit.
     let mut device = built::prepare(matches, &store, &source)?;
+    let accept = super::shared::accepted::accepted(matches)?;
+    // A redeploy's loss is read from its source, wherever it ran.
+    let teardown = super::teardown::volume_loss(
+        matches,
+        &store,
+        (&EnvironmentRef::default(), Some(&source)),
+        &accept,
+    )?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
+            teardown: teardown.map(Box::new),
             id: DeploymentId::parse(mint())?,
             deployment: source.clone(),
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
-            accept_volume_loss: super::teardown::accepted(matches)?,
+            accept_volume_loss: accept,
             approvals: device
                 .as_mut()
                 .map(|device| std::mem::take(&mut device.approvals))
                 .unwrap_or_default(),
             awaits_approval: device.is_some(),
+            approval: None,
         }))
         .map_err(|error| {
             let asks = matches!(&error, StoreCallError::Refused(refusal)
@@ -1581,7 +1597,7 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("{line}"));
         }
     }
-    if super::teardown::left_on_old_servers(&view.deployment) {
+    if super::shared::accepted::left_on_old_servers(&view.deployment) {
         crate::ui::stream(format_args!(
             "  Left on old servers: no Server was left to take it off, so whatever ran there still runs"
         ));

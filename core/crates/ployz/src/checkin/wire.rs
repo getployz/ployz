@@ -1,14 +1,18 @@
 //! The `/api/checkin` wire format, and the host facts it is built from.
 //!
 //! The request side matches `dashboard/src/modules/machines/waiting/checkin-wire.ts`.
-//! The probe side reads `ployzd install --probe --json` and its preparation
-//! `state.json`, which serialize with serde defaults.
+//! The probe side reads `ployzd install --probe --json`, whose document core owns, and its
+//! preparation `state.json`, which serialize with serde defaults.
 
 use std::{collections::BTreeMap, time::Duration};
 
 use chrono::{DateTime, SubsecRound, Utc};
 use ployz_core::CloudEnrollToken;
-use ployz_core::host_preparation::{DockerOutcome, PrepStep, ZfsOutcome};
+use ployz_core::host_preparation::{DockerOutcome, PrepStep, PrepSteps, ZfsOutcome};
+use ployz_core::probe_document::{
+    Assessment, Blocker, BlockerCode, CgroupVersion, DiskRole, DockerFacts, ProbeDocument,
+    Virtualization, ZfsEligibility, ZfsTarget,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::cloud_enroll::EnrollStage;
@@ -311,99 +315,28 @@ fn wait_for(seconds: f64) -> Duration {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct Probe {
-    facts: Facts,
-    assessment: Assessment,
-}
+/// What check-in judges from ployzd's record of host preparation.
+pub(super) trait PrepRecord {
+    /// Whether a step has yet to finish. A step this release can't read counts too: only a run of
+    /// ployzd rewrites it.
+    fn unfinished(&self) -> bool;
 
-#[derive(Debug, Deserialize)]
-struct Facts {
-    os: ProbeOs,
-    kernel: String,
-    arch: String,
-    virt: Virt,
-    cgroup: Option<Cgroup>,
-    cpu_count: Option<u32>,
-    memory_total_bytes: Option<u64>,
-    disks: Option<Vec<ProbeDisk>>,
-    docker: ProbeDocker,
-}
+    /// Whether a step finished failed.
+    fn failed(&self) -> bool;
 
-#[derive(Debug, Deserialize)]
-struct ProbeOs {
-    id: String,
-    version_id: Option<String>,
-}
+    /// When the latest failed step failed, when its time reads.
+    fn failed_at(&self) -> Option<DateTime<Utc>>;
 
-#[derive(Debug, Deserialize)]
-enum Virt {
-    BareMetal,
-    Vm { kind: String },
-    OpenVz,
-    Lxc { privileged: Option<bool> },
-    Container { kind: String },
-    Unknown,
-}
+    /// The latest time either step records.
+    fn last_dated(&self) -> Option<DateTime<Utc>>;
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum Cgroup {
-    V1,
-    V2,
-    Hybrid,
-}
+    /// Each step as check-in reports it. Once it has given up, a step left unfinished counts as
+    /// failed.
+    fn prep(&self, gave_up: bool) -> Prep;
 
-#[derive(Debug, Deserialize)]
-struct ProbeDisk {
-    path: String,
-    by_id: Option<String>,
-    size_bytes: u64,
-    role: ProbeRole,
-}
-
-#[derive(Debug, Deserialize)]
-enum ProbeRole {
-    Root { available: u64 },
-    Empty,
-}
-
-#[derive(Debug, Deserialize)]
-enum ProbeDocker {
-    Absent,
-    Stopped,
-    SocketActivated,
-    Present { version: String, api: String },
-}
-
-#[derive(Debug, Deserialize)]
-struct Assessment {
-    blockers: Vec<Issue>,
-    warnings: Vec<Issue>,
-    zfs: ProbeZfs,
-}
-
-#[derive(Debug, Deserialize)]
-enum ProbeZfs {
-    Eligible {
-        targets: Vec<ProbeTarget>,
-        prepare_minutes: u32,
-    },
-    Ineligible {
-        reason: Issue,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-enum ProbeTarget {
-    MainDisk,
-    Disk { by_id: String },
-}
-
-/// ployzd's record of host preparation. A host with no record reads as both steps not started.
-#[derive(Debug, Default, Deserialize)]
-pub(super) struct PrepState {
-    pub(super) docker: PrepStep<DockerOutcome>,
-    pub(super) zfs: PrepStep<ZfsOutcome>,
+    /// Whether Docker's install failed before `started`, so the preparation started then tries it
+    /// again and the failure no longer stands.
+    fn docker_retried(&self, started: Option<DateTime<Utc>>) -> bool;
 }
 
 /// Whether a step has yet to finish. A step this release can't read counts too: only a run of
@@ -427,31 +360,26 @@ enum Reported<'s, O> {
     GaveUp,
 }
 
-impl PrepState {
-    pub(super) fn unfinished(&self) -> bool {
+impl PrepRecord for PrepSteps {
+    fn unfinished(&self) -> bool {
         step_unfinished(&self.docker) || step_unfinished(&self.zfs)
     }
 
-    /// Whether a step finished failed.
-    pub(super) fn failed(&self) -> bool {
+    fn failed(&self) -> bool {
         self.docker.failed_at().is_some() || self.zfs.failed_at().is_some()
     }
 
-    /// When the latest failed step failed, when its time reads.
-    pub(super) fn failed_at(&self) -> Option<DateTime<Utc>> {
+    fn failed_at(&self) -> Option<DateTime<Utc>> {
         let docker = self.docker.failed_at().and_then(time);
         docker.max(self.zfs.failed_at().and_then(time))
     }
 
-    /// The latest time either step records.
-    pub(super) fn last_dated(&self) -> Option<DateTime<Utc>> {
+    fn last_dated(&self) -> Option<DateTime<Utc>> {
         let docker = self.docker.last_dated().and_then(time);
         docker.max(self.zfs.last_dated().and_then(time))
     }
 
-    /// Each step as check-in reports it. Once it has given up, a step left unfinished counts as
-    /// failed.
-    pub(super) fn prep(&self, gave_up: bool) -> Prep {
+    fn prep(&self, gave_up: bool) -> Prep {
         Prep {
             docker: match reported(&self.docker, gave_up) {
                 Reported::Unfinished => DockerPrep::Installing,
@@ -470,9 +398,7 @@ impl PrepState {
         }
     }
 
-    /// Whether Docker's install failed before `started`, so the preparation started then tries it
-    /// again and the failure no longer stands.
-    pub(super) fn docker_retried(&self, started: Option<DateTime<Utc>>) -> bool {
+    fn docker_retried(&self, started: Option<DateTime<Utc>>) -> bool {
         let failed = self.docker.failed_at().and_then(time);
         // ployzd dates the failure to the second, so one in the start's own second is this run's.
         failed
@@ -489,154 +415,169 @@ fn reported<O>(step: &PrepStep<O>, gave_up: bool) -> Reported<'_, O> {
     }
 }
 
-impl Probe {
-    /// `preparing` is whether preparation was seen running now, by its unit or its lock's mark,
-    /// not merely assumed to be. `gave_up` is whether check-in gave up on what preparation left unfinished.
-    /// `prepare_started` is when the last preparation was started.
-    pub(super) fn report(
-        self,
-        hostname: String,
-        prep: &PrepState,
-        preparing: bool,
-        gave_up: bool,
-        prepare_started: Option<DateTime<Utc>>,
-    ) -> HostReport {
-        let Self { facts, assessment } = self;
-        let Assessment {
-            mut blockers,
-            mut warnings,
-            zfs,
-        } = assessment;
-        // Part-way through Ployz's own install, dpkg has registered Docker before its unit starts.
-        // Before ployzd records that step, a stopped Docker is the user's own.
-        if preparing && matches!(prep.docker, PrepStep::Running { .. }) {
-            blockers.retain(|issue| issue.code != "docker_stopped");
-        }
-        let compatible = !blockers
-            .iter()
-            .any(|issue| issue.code.starts_with("docker_") || issue.code.starts_with("buildx_"));
-        let mut zfs = match zfs {
-            ProbeZfs::Eligible {
-                targets,
-                prepare_minutes,
-            } => ReportZfs::Eligible {
-                targets: targets
-                    .into_iter()
-                    .map(|target| match target {
-                        ProbeTarget::MainDisk => ReportTarget::MainDisk,
-                        ProbeTarget::Disk { by_id } => ReportTarget::Disk { by_id },
-                    })
-                    .collect(),
-                build_minutes: prepare_minutes,
-            },
-            ProbeZfs::Ineligible { reason } => ReportZfs::Ineligible {
-                code: reason.code,
-                message: reason.message,
-            },
-        };
-        // Once preparation is no longer seen running, by its unit or its lock's mark, the state
-        // file is final: an older failure the run never rewrote still stands.
-        let docker_failure = match reported(&prep.docker, gave_up) {
-            Reported::Finished(DockerOutcome::Failed { message })
-                if !(preparing && prep.docker_retried(prepare_started)) =>
-            {
-                Some(message.as_str())
-            }
-            Reported::GaveUp => Some(GAVE_UP),
-            Reported::Unfinished
-            | Reported::Finished(DockerOutcome::Ready | DockerOutcome::Failed { .. }) => None,
-        };
-        if let Some(message) = docker_failure {
-            blockers.push(Issue {
-                code: DOCKER_INSTALL_FAILED.to_owned(),
-                message: message.to_owned(),
-            });
-        }
-        let zfs_issue = match reported(&prep.zfs, gave_up) {
-            Reported::Finished(ZfsOutcome::Failed { message }) => {
-                Some(("zfs_build_failed", message.as_str()))
-            }
-            Reported::Finished(ZfsOutcome::Skipped { reason }) => {
-                Some(("zfs_build_skipped", reason.as_str()))
-            }
-            Reported::GaveUp => Some(("zfs_build_failed", GAVE_UP)),
-            Reported::Unfinished | Reported::Finished(ZfsOutcome::Ready | ZfsOutcome::Off) => None,
-        };
-        if let Some((code, message)) = zfs_issue {
-            let issue = Issue {
-                code: code.to_owned(),
-                message: message.to_owned(),
-            };
-            zfs = ReportZfs::Ineligible {
-                code: issue.code.clone(),
-                message: issue.message.clone(),
-            };
-            warnings.push(issue);
-        }
-        HostReport {
-            hostname,
-            os: Os {
-                id: facts.os.id,
-                version: facts.os.version_id.unwrap_or_default(),
-            },
-            kernel: facts.kernel,
-            arch: facts.arch,
-            virt: virt(facts.virt),
-            cpu_count: facts.cpu_count.unwrap_or(0),
-            memory_total_bytes: facts.memory_total_bytes.unwrap_or(0),
-            disks: facts
-                .disks
-                .unwrap_or_default()
-                .into_iter()
-                .map(|disk| {
-                    let (role, available_bytes) = match disk.role {
-                        ProbeRole::Root { available } => ("root", Some(available)),
-                        ProbeRole::Empty => ("empty", None),
-                    };
-                    ReportDisk {
-                        path: disk.path,
-                        by_id: disk.by_id,
-                        size_bytes: disk.size_bytes,
-                        role,
-                        available_bytes,
-                    }
-                })
-                .collect(),
-            docker: match facts.docker {
-                ProbeDocker::Present { version, api } => ReportDocker::Present {
-                    version,
-                    api,
-                    compatible,
-                },
-                ProbeDocker::Absent | ProbeDocker::Stopped | ProbeDocker::SocketActivated => {
-                    ReportDocker::Absent
-                }
-            },
-            cgroup: match facts.cgroup {
-                Some(Cgroup::V2) => "v2",
-                Some(Cgroup::Hybrid) => "hybrid",
-                Some(Cgroup::V1) | None => "v1",
-            },
-            zfs,
-            blockers,
-            warnings,
+impl From<Blocker> for Issue {
+    fn from(blocker: Blocker) -> Self {
+        Self {
+            code: blocker.code.as_str().to_owned(),
+            message: blocker.message,
         }
     }
 }
 
-fn virt(virt: Virt) -> String {
-    match virt {
-        Virt::BareMetal => "bare_metal".to_owned(),
-        Virt::Vm { kind } => format!("vm:{kind}"),
-        Virt::OpenVz => "openvz".to_owned(),
-        Virt::Lxc {
-            privileged: Some(true),
-        } => "lxc:privileged".to_owned(),
-        Virt::Lxc {
-            privileged: Some(false),
-        } => "lxc:unprivileged".to_owned(),
-        Virt::Lxc { privileged: None } => "lxc".to_owned(),
-        Virt::Container { kind } => format!("container:{kind}"),
-        Virt::Unknown => "unknown".to_owned(),
+/// What this host reports to Cloud, from ployzd's probe and its record of preparation.
+/// `preparing` is whether preparation was seen running now, by its unit or its lock's mark,
+/// not merely assumed to be. `gave_up` is whether check-in gave up on what preparation left unfinished.
+/// `prepare_started` is when the last preparation was started.
+pub(super) fn host_report(
+    probe: ProbeDocument,
+    hostname: String,
+    prep: &PrepSteps,
+    preparing: bool,
+    gave_up: bool,
+    prepare_started: Option<DateTime<Utc>>,
+) -> HostReport {
+    let ProbeDocument { facts, assessment } = probe;
+    let Assessment {
+        mut blockers,
+        warnings,
+        zfs,
+    } = assessment;
+    // Part-way through Ployz's own install, dpkg has registered Docker before its unit starts.
+    // Before ployzd records that step, a stopped Docker is the user's own.
+    if preparing && matches!(prep.docker, PrepStep::Running { .. }) {
+        blockers.retain(|blocker| blocker.code != BlockerCode::DockerStopped);
+    }
+    let compatible = !blockers.iter().any(|blocker| {
+        let code = blocker.code.as_str();
+        code.starts_with("docker_") || code.starts_with("buildx_")
+    });
+    let mut blockers: Vec<Issue> = blockers.into_iter().map(Issue::from).collect();
+    let mut warnings: Vec<Issue> = warnings.into_iter().map(Issue::from).collect();
+    let mut zfs = match zfs {
+        ZfsEligibility::Eligible {
+            targets,
+            prepare_minutes,
+        } => ReportZfs::Eligible {
+            targets: targets
+                .into_iter()
+                .map(|target| match target {
+                    ZfsTarget::MainDisk => ReportTarget::MainDisk,
+                    ZfsTarget::Disk { by_id } => ReportTarget::Disk { by_id },
+                })
+                .collect(),
+            build_minutes: prepare_minutes,
+        },
+        ZfsEligibility::Ineligible { reason } => ReportZfs::Ineligible {
+            code: reason.code.as_str().to_owned(),
+            message: reason.message,
+        },
+    };
+    // Once preparation is no longer seen running, by its unit or its lock's mark, the state
+    // file is final: an older failure the run never rewrote still stands.
+    let docker_failure = match reported(&prep.docker, gave_up) {
+        Reported::Finished(DockerOutcome::Failed { message })
+            if !(preparing && prep.docker_retried(prepare_started)) =>
+        {
+            Some(message.as_str())
+        }
+        Reported::GaveUp => Some(GAVE_UP),
+        Reported::Unfinished
+        | Reported::Finished(DockerOutcome::Ready | DockerOutcome::Failed { .. }) => None,
+    };
+    if let Some(message) = docker_failure {
+        blockers.push(Issue {
+            code: DOCKER_INSTALL_FAILED.to_owned(),
+            message: message.to_owned(),
+        });
+    }
+    let zfs_issue = match reported(&prep.zfs, gave_up) {
+        Reported::Finished(ZfsOutcome::Failed { message }) => {
+            Some(("zfs_build_failed", message.as_str()))
+        }
+        Reported::Finished(ZfsOutcome::Skipped { reason }) => {
+            Some(("zfs_build_skipped", reason.as_str()))
+        }
+        Reported::GaveUp => Some(("zfs_build_failed", GAVE_UP)),
+        Reported::Unfinished | Reported::Finished(ZfsOutcome::Ready | ZfsOutcome::Off) => None,
+    };
+    if let Some((code, message)) = zfs_issue {
+        let issue = Issue {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        };
+        zfs = ReportZfs::Ineligible {
+            code: issue.code.clone(),
+            message: issue.message.clone(),
+        };
+        warnings.push(issue);
+    }
+    HostReport {
+        hostname,
+        os: Os {
+            id: facts.os.id,
+            version: facts.os.version_id.unwrap_or_default(),
+        },
+        kernel: facts.kernel,
+        arch: facts.arch,
+        virt: virt(facts.virt),
+        cpu_count: facts.cpu_count.unwrap_or(0),
+        memory_total_bytes: facts.memory_total_bytes.unwrap_or(0),
+        disks: facts
+            .disks
+            .unwrap_or_default()
+            .into_iter()
+            .map(|disk| {
+                let (role, available_bytes) = match disk.role {
+                    DiskRole::Root { available } => ("root", Some(available)),
+                    DiskRole::Empty => ("empty", None),
+                };
+                ReportDisk {
+                    path: disk.path,
+                    by_id: disk.by_id,
+                    size_bytes: disk.size_bytes,
+                    role,
+                    available_bytes,
+                }
+            })
+            .collect(),
+        docker: match facts.docker {
+            DockerFacts::Present { version, api, .. } => ReportDocker::Present {
+                version,
+                api,
+                compatible,
+            },
+            DockerFacts::Absent | DockerFacts::Stopped | DockerFacts::SocketActivated => {
+                ReportDocker::Absent
+            }
+        },
+        cgroup: match facts.cgroup {
+            Some(CgroupVersion::V2) => "v2",
+            Some(CgroupVersion::Hybrid) => "hybrid",
+            Some(CgroupVersion::V1) | None => "v1",
+        },
+        zfs,
+        blockers,
+        warnings,
     }
 }
+
+fn virt(virt: Virtualization) -> String {
+    match virt {
+        Virtualization::BareMetal => "bare_metal".to_owned(),
+        Virtualization::Vm { kind } => format!("vm:{kind}"),
+        Virtualization::OpenVz => "openvz".to_owned(),
+        Virtualization::Lxc {
+            privileged: Some(true),
+        } => "lxc:privileged".to_owned(),
+        Virtualization::Lxc {
+            privileged: Some(false),
+        } => "lxc:unprivileged".to_owned(),
+        Virtualization::Lxc { privileged: None } => "lxc".to_owned(),
+        Virtualization::Container { kind } => format!("container:{kind}"),
+        Virtualization::Unknown => "unknown".to_owned(),
+    }
+}
+
+#[cfg(test)]
+#[path = "wire_tests.rs"]
+mod tests;

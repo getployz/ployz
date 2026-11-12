@@ -154,6 +154,7 @@ fn admit_named(
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -1079,6 +1080,7 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(2),
                 rolls_back: None,
@@ -1086,6 +1088,7 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -1244,6 +1247,7 @@ fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(4),
                 deployment: id(2),
                 rolls_back: Some(vec![3]),
@@ -1254,6 +1258,7 @@ fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(
                     .collect(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),
@@ -1507,6 +1512,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(2),
                 environment: EnvironmentRef::default(),
                 services: vec![ServiceName::parse("api").unwrap()],

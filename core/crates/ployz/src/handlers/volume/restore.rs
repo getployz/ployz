@@ -11,10 +11,10 @@ use chrono::DateTime;
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    CopyRefusal, DockerVolumeName, ExpectedCopy, InspectVolumeCopyRequest, MachineId, MachineName,
-    MachineStorageObservation, MachineTarget, Namespace, RpcErrorCode, SetVolumeCopyRefused,
-    SetVolumeCopyRequest, Snapshot, VOLUME_FLOOR_CAPABILITY, VolumeCopy, VolumeGen, WantedCopy,
-    WriterEpoch, op,
+    CopyRefusal, DockerVolumeName, ExpectedCopy, Hint, InspectVolumeCopyRequest, MachineId,
+    MachineName, MachineStorageObservation, MachineTarget, Namespace, RpcErrorCode,
+    SetVolumeCopyRefused, SetVolumeCopyRequest, Snapshot, VOLUME_FLOOR_CAPABILITY, VolumeCopy,
+    VolumeGen, WantedCopy, WriterEpoch, op,
 };
 use ployz_store::{EnvironmentSummary, NamespacesQuery, VolumeId, VolumeName};
 use serde::Serialize;
@@ -22,7 +22,6 @@ use serde::Serialize;
 use super::super::store::{self, Next};
 use super::super::{Error, leaf_matches};
 use crate::connect::TARGET_RPC_TIMEOUT;
-use crate::ui::Hint;
 
 /// How long a Restore waits out a Machine that answers `busy`, as Cloud's does.
 const BUSY_PATIENCE: Duration = Duration::from_secs(60);
@@ -180,6 +179,7 @@ pub(super) fn plan(
             },
             r#gen: VolumeGen::default(),
             approval: None,
+            receipt: None,
         },
         lost_after,
     })
@@ -405,7 +405,7 @@ async fn set(
             Err(error) => error,
         };
         let code = error.code.clone();
-        match SetVolumeCopyRefused::from_details(&error.details) {
+        match error.evidence::<SetVolumeCopyRefused>() {
             Some(SetVolumeCopyRefused {
                 reason: CopyRefusal::Busy,
                 ..

@@ -5,7 +5,10 @@ import type { DiffView } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import * as functions from "#/modules/approvals/approvals.functions";
+import { runChange } from "#/modules/volume-run/run-approval";
+import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { ApprovalCard } from "./approval-card";
+import * as queries from "./approvals.queries";
 import type { ApprovalView } from "./approvals.queries";
 
 const decide = vi.spyOn(functions, "decideApprovalServerFn");
@@ -327,4 +330,36 @@ it("says which servers a pruning Deploy couldn't check because large packets to 
   const pruning = { ...approval, review: { ...approval.review, effects: [], prunes: true as const, dropped: ["machine-3"] } };
   const card = show(pruning).card();
   expect(within(card).getByText("Couldn't check every server: large packets to machine-3 are dropped on the mesh path")).toBeTruthy();
+});
+
+it("asks for where a Volume lives before the passkey answers an agent's restore that loses writes", async () => {
+  const members = [member("fsn-1", "writer"), member("fsn-2", "mirror")];
+  const read = { cluster: "k", namespace: "production", dockerVolume: "production_vol-v1", name: "pg-data", members, recorded: null, place: "shop/production", running: null };
+  const run = { kind: "restore" as const, args: { from: "fsn-2" } };
+  const draft = vi.spyOn(queries, "draftAskedVolume").mockResolvedValue({ read, change: runChange("pg-data", run, members, read) });
+  const sign = vi.spyOn(queries, "signAskedVolume").mockResolvedValue({ approval: { body: "{}", signatures: [] } });
+  decide.mockResolvedValue(answered("approved"));
+  show(asTestDouble<ApprovalView>()({
+    ...approval,
+    command: "restore",
+    review: {
+      effects: [{ kind: "restores_volume", name: "pg-data", node: "v1", path: "volumes/v1" }],
+      operation: { subject: "volume:v1", verb: "restore", name: "pg-data from fsn-2", preview: { volume: "v1", environment: { project: "shop", environment: "production" }, run } },
+    },
+  }));
+  const card = within(screen.getByLabelText("Restore pg-data from fsn-2 needs approval"));
+  expect(card.getByRole("list", { name: "Destroys" }).textContent).toBe("Restores volume pg-data");
+
+  fireEvent.click(card.getByRole("button", { name: "Approve" }));
+  const dialog = within(await screen.findByRole("alertdialog"));
+  expect(dialog.getByText("Data loss")).toBeTruthy();
+  expect(dialog.getByText(/from fsn-2 · changes after/)).toBeTruthy();
+  expect(sign).not.toHaveBeenCalled();
+
+  fireEvent.change(dialog.getByRole("textbox"), { target: { value: "shop/production" } });
+  fireEvent.click(dialog.getByRole("button", { name: "Approve" }));
+  await waitFor(() => expect(decide).toHaveBeenCalled());
+  expect(sign).toHaveBeenCalledWith({ read, change: expect.objectContaining({ workflow: expect.objectContaining({ kind: "restore", loses_after: 1_790_000_000_000 }) }) });
+  draft.mockRestore();
+  sign.mockRestore();
 });

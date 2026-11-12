@@ -368,6 +368,8 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
         return frame.machines.some(({ machine }) => machine.id === key) ? stored : null;
       }
       case "release":
+      case "mirror":
+      case "sync":
       case "remove_mirror":
       case "move":
       case "restore":

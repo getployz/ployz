@@ -10,10 +10,10 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
-    InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
-    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
-    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
+    ClientKey, ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest,
+    Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine,
+    MachineDetails, MachineId, MachineIdentity, MachineList, MachineName, MachineObservation,
+    MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
     PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
     RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
     SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
@@ -28,11 +28,15 @@ use super::{
 
 use crate::{
     corrosion::{
-        AdminClient, ClusterSealing, MembershipState, ReplicatedStore, membership_states_by_address,
+        AdminClient, ClusterSealing, DeclaredDoors, MembershipState, ReplicatedStore,
+        membership_states_by_address,
     },
     docker::{ContainerRuntime, LocalDocker},
     host_capacity,
-    network::{Leftover, NetworkError, NetworkPlane, discover_network},
+    network::{
+        DOCKER_NETWORK_NAME, Leftover, NetworkError, NetworkPlane, WIREGUARD_INTERFACE_NAME,
+        discover_network,
+    },
     sealing_key::{KeyFile, SealingKey},
 };
 
@@ -43,7 +47,10 @@ const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 pub struct LocalMachine {
     owner: RecordOwner,
-    management_client: Option<[u8; 32]>,
+    management_client: Option<ClientKey>,
+    /// The Operator's teardown this call was admitted under, which each admitted turn
+    /// checks again before its effect.
+    teardown: Option<teardown::HeldTeardown>,
     /// Whether this call came over this Server's local socket, rather than the mesh.
     local_socket: bool,
     cluster: Option<ClusterContext>,
@@ -84,16 +91,20 @@ mod management_client;
 pub(crate) mod preview_deploy;
 pub(crate) mod preview_grant;
 mod push_target;
+mod resize_seed_approval;
 pub(super) mod restart_approval;
 pub(crate) mod rule_deploy;
 pub(crate) mod rule_grant;
+pub(crate) use resize_seed_approval::Landing;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
+mod teardown;
 pub(crate) use sealing_recovery::Error as RecoveryError;
+pub(crate) use teardown::{HeldStep, HeldTeardown};
 mod upgrade;
 mod volume_approval;
-pub(crate) use volume_approval::CopyStep;
+pub(crate) use volume_approval::{Admitted, CopyStep};
 
 #[derive(Clone)]
 struct ClusterContext {
@@ -231,17 +242,24 @@ pub enum Error {
         capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
     )]
     UpgradeChannelRefused(ployz_core::authority::AuthorityRefusal),
-    /// Device enforcement refused an Operator's `Leave` or `Forget`, before any Container
-    /// stopped. The refusal names `capability` in its details.
-    #[error("{}", departure_text(.capability))]
-    DepartureRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's `Leave` or `Forget` that no teardown names,
+    /// before any Container stopped. The refusal names `capability` in its details.
+    #[error("{}: {refusal}", departure_text(.capability))]
+    DepartureRefused {
+        capability: &'static str,
+        refusal: ployz_core::authority::AuthorityRefusal,
+    },
+    /// Device enforcement refused an Operator's Container step or Volume removal that no
+    /// teardown names.
+    #[error("This server takes this off only under your approval: {0}")]
+    TeardownRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `SetPrivateAccess` turning Private Access on
     /// without an approval of its auth key.
     #[error("This Server joins a tailnet only with your approval: {0}")]
     PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
-    /// Device enforcement refused an Operator's `SetVolumeCopy` that creates a Container,
-    /// or its `SeedVolume`. The refusal names `capability` in its details.
-    #[error("{}", volume_approval::refusal_text(.capability))]
+    /// Device enforcement refused an Operator's `SeedVolume`, which no Volume approval
+    /// admits yet. The refusal names `capability` in its details.
+    #[error("{}", ployz_core::SEED_REFUSED_BY_ENFORCEMENT)]
     VolumeRefused { capability: &'static str },
     /// A Volume step that no Volume approval admits on this Machine.
     #[error("This Server refused the Volume step: {0}")]
@@ -308,6 +326,15 @@ pub enum Error {
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
     MissingAssignment,
+    /// The Cluster declares Doors the client running this joiner's catch-up can't
+    /// follow, or a declaration this Machine can't read.
+    #[error(
+        "Server {joiner} needs a newer Ployz. It cannot serve {capability}.",
+        capability = ployz_core::SET_CLUSTER_DOORS_CAPABILITY
+    )]
+    JoinerCannotFollowDoors { joiner: MachineName },
+    #[error("could not read the Cluster's declared Doors")]
+    DeclaredDoorsUnread(#[source] crate::corrosion::Error),
     #[error(transparent)]
     Admission(#[from] crate::mutation::Error),
     #[error(transparent)]
@@ -328,6 +355,7 @@ impl LocalMachine {
             approvals: owner.restart_approvals(),
             owner,
             management_client: None,
+            teardown: None,
             local_socket: false,
             cluster: None,
             containers: None,
@@ -384,8 +412,16 @@ impl LocalMachine {
 
     /// Bind subsequent mutation admission to this authenticated management client.
     #[must_use]
-    pub(crate) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+    pub(crate) fn with_management_client(mut self, remote: ClientKey) -> Self {
         self.management_client = Some(remote);
+        self
+    }
+
+    /// Hold `teardown` for this call: each admitted turn checks it again under the turn,
+    /// so a key removed or enforcement turned on while the call waited stops it.
+    #[must_use]
+    pub(crate) fn with_teardown(mut self, teardown: teardown::HeldTeardown) -> Self {
+        self.teardown = Some(teardown);
         self
     }
 
@@ -443,7 +479,7 @@ impl LocalMachine {
     /// Refuse a slot change from any management client other than Cloud's.
     /// Local-socket callers carry no client key and keep full authority.
     pub(crate) fn require_slot_authority(
-        client: Option<[u8; 32]>,
+        client: Option<ClientKey>,
         record: &LocalMachineRecord,
     ) -> Result<(), Error> {
         let Some(remote) = client else {
@@ -487,11 +523,25 @@ impl LocalMachine {
         G: Send + 'static,
     {
         let installation = self.admit_installation()?;
+        // Under the turn: a trusted key removed or enforcement turned on while this waited
+        // has taken its own turn before this one.
+        self.recheck_teardown()?;
         tokio::spawn(async move {
             let _admission = (turn, installation);
             work.await
         })
         .await?
+    }
+
+    /// The exclusive admission turn, for work that takes it itself, with this call's held
+    /// teardown checked again under it.
+    ///
+    /// # Errors
+    /// As [`Self::recheck_teardown`].
+    async fn exclusive_turn(&self) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, Error> {
+        let turn = self.owner.admission_lock().write_owned().await;
+        self.recheck_teardown()?;
+        Ok(turn)
     }
 
     /// Run `work` holding the installation guard and no turn. `work` takes the turns it
@@ -566,6 +616,23 @@ impl LocalMachine {
             .as_ref()
             .map(|cluster| &cluster.replicated)
             .ok_or(Error::ClusterStoreUnavailable)
+    }
+
+    /// The Doors the Cluster declares on this Machine's own replica. `None` when it
+    /// declares none, the value is unreadable, or the replica can't be asked: the
+    /// Doors this Machine held then stay as they were.
+    pub(crate) async fn declared_doors(&self) -> Option<ployz_core::IngressDoors> {
+        let replicated = self.replicated().ok()?;
+        match replicated.cluster_doors().await {
+            Ok(declared) => declared.followed(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "could not read the Cluster's declared Doors"
+                );
+                None
+            }
+        }
     }
 
     /// Entry-local membership and Corrosion's RTT from the admin socket, with the mesh
@@ -931,11 +998,17 @@ impl LocalMachine {
 
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let replicated = self.replicated()?;
+        let declared = replicated
+            .cluster_doors()
+            .await
+            .map_err(Error::DeclaredDoorsUnread)?;
+        admit_joiner(&declared, &request)?;
         let publication = replicated.machine_publication().await;
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: published_network(&self.record(), replicated).await?,
             machines: replicated.machines().await?.observations,
             target_versions: replicated.version().await?,
+            doors: declared.followed(),
         };
         let mut assignment = ployz_core::allocate_enrollment(
             &request,
@@ -1053,11 +1126,23 @@ impl LocalMachine {
         let machines = replicated.machines().await?.observations;
         let states = self.membership_states().await?;
         let entry_id = local.id();
+        // A listing never fails for the declaration: without it, readers infer the Doors.
+        let doors = match replicated.cluster_doors().await {
+            Ok(declared) => declared.followed(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "could not read the Cluster's declared Doors; listing without them"
+                );
+                None
+            }
+        };
         Ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
                 network,
                 machines: machines.clone(),
                 target_versions: replicated.version().await?,
+                doors,
             }),
             machines: RuntimeWatchTelemetry {
                 states,
@@ -1390,6 +1475,29 @@ async fn published_network(
     Err(Error::ClusterNetworkUnpublished)
 }
 
+/// Refuse a joiner whose client can't follow the Cluster's declared Doors, judged on
+/// this Machine's own replica. Such a client would open the Public Door, so only an
+/// undeclared Cluster or one declared Public admits it.
+fn admit_joiner(declared: &DeclaredDoors, request: &RegisterRequest) -> Result<(), Error> {
+    let follows = request
+        .capabilities
+        .iter()
+        .any(|claimed| claimed == ployz_core::SET_CLUSTER_DOORS_CAPABILITY);
+    let admitted = follows
+        || match declared {
+            DeclaredDoors::Undeclared => true,
+            DeclaredDoors::Declared(doors) => doors.is_public_only(),
+            DeclaredDoors::Unreadable => false,
+        };
+    if admitted {
+        Ok(())
+    } else {
+        Err(Error::JoinerCannotFollowDoors {
+            joiner: request.name.clone(),
+        })
+    }
+}
+
 fn registered(
     assigned_machine: Machine,
     machines: Vec<Machine>,
@@ -1487,23 +1595,26 @@ fn leftovers_refusal(leftovers: &[Leftover]) -> String {
     for leftover in leftovers {
         match leftover {
             Leftover::WireGuardDevice(reason) => {
-                found.push(format!("WireGuard interface ployz-wg remains: {reason}"));
-                steps.push("run `ip link delete ployz-wg`".to_owned());
+                found.push(format!(
+                    "WireGuard interface {WIREGUARD_INTERFACE_NAME} remains: {reason}"
+                ));
+                steps.push(format!("run `ip link delete {WIREGUARD_INTERFACE_NAME}`"));
             }
             Leftover::AttachedNetwork(names) => {
                 found.push(format!(
-                    "Docker network ployz remains with containers {} attached; they belong to this Server's earlier enrollment, and removing them stops them while Volume data stays",
+                    "Docker network {DOCKER_NETWORK_NAME} remains with containers {} attached; they belong to this Server's earlier enrollment, and removing them stops them while Volume data stays",
                     names.join(", "),
                 ));
                 steps.push(format!("run `docker rm -f {}`", names.join(" ")));
-                steps.push("run `docker network rm ployz`".to_owned());
+                steps.push(format!("run `docker network rm {DOCKER_NETWORK_NAME}`"));
             }
             Leftover::UnownedNetwork => {
-                found.push(
-                    "Docker network ployz exists without the `ployzd.managed` label, so Ployz can't prove it made it"
-                        .to_owned(),
-                );
-                steps.push("once nothing else needs it, run `docker network rm ployz`".to_owned());
+                found.push(format!(
+                    "Docker network {DOCKER_NETWORK_NAME} exists without the `ployzd.managed` label, so Ployz can't prove it made it"
+                ));
+                steps.push(format!(
+                    "once nothing else needs it, run `docker network rm {DOCKER_NETWORK_NAME}`"
+                ));
             }
         }
     }

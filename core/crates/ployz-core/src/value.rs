@@ -729,11 +729,6 @@ validated_string_newtype!(
     |value| is_dns_label(value)
 );
 
-/// Docker label written on resources Ployz manages.
-pub const MANAGED_LABEL: &str = "ployz.managed";
-/// Docker label recording the owning Namespace.
-pub const NAMESPACE_LABEL: &str = "ployz.namespace";
-
 impl Namespace {
     /// The reserved Namespace for Ployz infrastructure.
     pub const SYSTEM: &'static str = "ployz-system";

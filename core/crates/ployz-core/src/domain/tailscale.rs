@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use ipnet::Ipv4Net;
 
 use crate::{
-    Ciphertext, ContainerLabels, ContainerPath, MachinePath, PrivateAccessStateId,
+    Ciphertext, ConfiguredHealthcheck, ContainerLabels, ContainerPath, ContainerRuntimeObservation,
+    HealthObservation, HealthcheckCommand, HealthcheckSpec, MachinePath, PrivateAccessStateId,
     QualifiedService, RawVolumeSource, RequestedServiceSpec, ServiceMode, ServiceMount,
     ServiceMountGraph, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig,
     caddy_container,
@@ -35,6 +36,11 @@ pub const PRIVATE_ACCESS_STATE_MACHINE_DIR: &str = "/var/lib/ployz/tailscale";
 const PRIVATE_ACCESS_STATE_MOUNT: &str = "/var/lib/tailscale";
 /// The name a router shows in the tailnet. Tailscale numbers the ones that follow.
 pub const PRIVATE_ACCESS_HOSTNAME: &str = "ployz-router";
+/// Passes once the node joined the tailnet. A router Tailscale refused the key for keeps
+/// restarting and its container shows as running between restarts, so only this tells a
+/// router that serves from one that doesn't.
+const JOINED_TAILNET_CHECK: &str =
+    "tailscale status --peers=false --json | grep -q '\"BackendState\": \"Running\"'";
 
 /// Build the reserved Private Access router that advertises `network` to the tailnet
 /// `sealed_key` joins, mounting the node state `state` names.
@@ -50,6 +56,16 @@ pub fn private_access_service_spec(
 ) -> RequestedServiceSpec {
     let mut container = caddy_container(image.to_owned());
     container.command = Vec::new();
+    container.healthcheck = Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+        test: HealthcheckCommand::parse(["CMD-SHELL", JOINED_TAILNET_CHECK])
+            .expect("the router healthcheck is a command"),
+        interval_millis: Some(5_000),
+        timeout_millis: Some(5_000),
+        start_period_millis: None,
+        start_interval_millis: None,
+        retries: Some(3),
+        deadline_millis: None,
+    }));
     container.environment = [
         ("TS_USERSPACE", "true".to_owned()),
         ("TS_ROUTES", network.to_string()),
@@ -85,6 +101,19 @@ pub fn private_access_service_spec(
         pre_deploy: None,
         update: UpdateConfig::default(),
     }
+}
+
+/// Whether a router in this state has joined the tailnet. A running container isn't
+/// enough: one Tailscale refused the key for runs between restarts. A router with no
+/// probe is from a daemon that predates it, so its container running is all there is.
+#[must_use]
+pub fn private_access_router_joined(runtime: &ContainerRuntimeObservation) -> bool {
+    matches!(
+        runtime,
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy | HealthObservation::NotConfigured
+        }
+    )
 }
 
 /// The sealed auth key a router spec carries, when it is one.

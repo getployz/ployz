@@ -1,33 +1,26 @@
 //! Tools about one Environment as a whole: what is in it, pull request
 //! Environments built from it, and what it needs before it can deploy.
 
-use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::ToolId;
+use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::step::{Ask, CloudQuery, DashboardPage, Gate};
-use crate::catalog::NODE_NAME;
 use crate::{
-    ConfigsQuery, DeploymentsQuery, DiffQuery, DomainName, DomainRow, DomainsQuery,
-    EnvironmentName, PrPlansQuery, ProjectName, ProjectsQuery, RepositoryName, ServicesQuery,
-    SetEnvironmentProtected, SetPrPlan, SourceKind, VolumesQuery,
+    ConfigsQuery, DeploymentsQuery, DiffQuery, DomainName, DomainRow, DomainsQuery, PrPlansQuery,
+    ProjectsQuery, RepositoryName, ServicesQuery, SetEnvironmentProtected, SetPrPlan, SourceKind,
+    VolumesQuery,
 };
 
 pub(crate) const REPOSITORY: &str = "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$";
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvironmentShow {
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct EnvironmentShow {
+        @place(named),
+    }
 }
 
 impl Tool for EnvironmentShow {
@@ -40,7 +33,7 @@ impl Tool for EnvironmentShow {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let environment = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let environment = cx.scope(&self);
         let asks = vec![
             store(&ProjectsQuery {})?,
             store(&ServicesQuery {
@@ -78,7 +71,7 @@ impl Tool for EnvironmentShow {
                 "configs": [],
                 "staged": 0,
                 "latest_deployment": null,
-                "next": Call::new("project_create", json!({})),
+                "next": Call::to(ToolId::ProjectCreate, json!({})),
             }));
         }
         let services = cx.view::<ServicesQuery>(answers.next())?;
@@ -147,26 +140,17 @@ pub(crate) const fn source(kind: SourceKind) -> &'static str {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvironmentPr {
-    /// true to build an Environment for each pull request, false to stop.
-    enabled: bool,
-    /// GitHub repository owner/name whose pull requests get Environments. Omit when the Project has one.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REPOSITORY))]
-    repository: Option<RepositoryName>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct EnvironmentPr {
+        /// true to build an Environment for each pull request, false to stop.
+        enabled: bool,
+        /// GitHub repository owner/name whose pull requests get Environments. Omit when the Project has one.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(REPOSITORY))]
+        repository: Option<RepositoryName>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for EnvironmentPr {
@@ -180,7 +164,7 @@ impl Tool for EnvironmentPr {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let mut answers = cx
             .read(vec![
                 store(&PrPlansQuery {
@@ -193,12 +177,7 @@ impl Tool for EnvironmentPr {
             .into_iter();
         let plans = cx.view::<PrPlansQuery>(answers.next())?;
         let services = cx.view::<ServicesQuery>(answers.next())?;
-        if self
-            .expect_revision
-            .is_some_and(|expect| services.environment.revision.0 != expect)
-        {
-            return Err(super::machine::stale(cx.call()));
-        }
+        cx.fresh(&services.environment, self.expect_revision)?;
         let repository = match (self.repository, plans.plans.as_slice()) {
             (Some(repository), _) => repository,
             (None, [only]) => only.repository.clone(),
@@ -213,7 +192,7 @@ impl Tool for EnvironmentPr {
                     "No repository is connected to this Project yet",
                     "repository",
                 )
-                .with_next(Call::new("github_connect", json!({})))
+                .with_next(Call::to(ToolId::GithubConnect, json!({})))
                 .into());
             }
             (None, plans) => {
@@ -248,19 +227,12 @@ impl Tool for EnvironmentPr {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvironmentProtect {
-    /// true to refuse removing this Environment until it is unprotected, false to allow it.
-    protected: bool,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. production.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct EnvironmentProtect {
+        /// true to refuse removing this Environment until it is unprotected, false to allow it.
+        protected: bool,
+        @place["Project name." "Environment name, e.g. production."],
+    }
 }
 
 impl Tool for EnvironmentProtect {
@@ -275,7 +247,7 @@ impl Tool for EnvironmentProtect {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let written = cx.write(&SetEnvironmentProtected {
             environment: scope.clone(),
             protected: self.protected,
@@ -293,17 +265,10 @@ impl Tool for EnvironmentProtect {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvironmentSetup {
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct EnvironmentSetup {
+        @place(named),
+    }
 }
 
 /// Cloud's answer about Servers. Provisional: the Cloud adapter fixes it.
@@ -330,14 +295,14 @@ impl Tool for EnvironmentSetup {
     const NAME: &'static str = "environment_setup";
     const DESCRIPTION: &'static str = "What this Environment still needs before it can deploy: servers, a GitHub connection, a cluster domain.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "environment": "staging" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let environment = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let environment = cx.scope(&self);
         let mut answers = cx
             .read(vec![
                 Ask::Cloud(CloudQuery::Servers { only: None }),

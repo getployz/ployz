@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 
-use ployz_store::tools::{INSTRUCTIONS, catalog};
+use ployz_store::OrganizationId;
+use ployz_store::tools::{INSTRUCTIONS, Place, Step, StoreAt, ToolResult, catalog, start};
 use serde_json::{Value, json};
 
 const CAP_BYTES: usize = 58_300;
@@ -118,4 +119,46 @@ fn descriptions_say_what_a_tool_does_and_never_route_to_another() {
         }
     }
     assert!(offences.is_empty(), "{}", offences.join("\n"));
+}
+
+// Every input struct is `deny_unknown_fields`, written by hand or by `tool_input!`.
+#[test]
+fn every_tool_refuses_an_unknown_field_and_names_the_fields_it_has() {
+    let place = Place {
+        project: None,
+        environment: None,
+        store: StoreAt::Cloud {
+            organization: OrganizationId::parse("org").unwrap(),
+        },
+    };
+    for tool in catalog() {
+        let (step, _) = start(
+            tool.name,
+            json!({ "unknown_probe": 1 }),
+            &place,
+            "probe-0001",
+        );
+        let Step::Done {
+            result: ToolResult::Refused(refusal),
+        } = step
+        else {
+            panic!("{} took an unknown field", tool.name);
+        };
+        let mut named: Vec<&str> = refusal.message.split('`').skip(1).step_by(2).collect();
+        named.sort_unstable();
+        let mut declared: Vec<&str> = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .map(|properties| properties.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        declared.sort_unstable();
+        assert!(
+            refusal.message.contains("unknown field"),
+            "{}: {}",
+            tool.name,
+            refusal.message
+        );
+        assert_eq!(named, declared, "{}: {}", tool.name, refusal.message);
+    }
 }

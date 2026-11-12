@@ -619,6 +619,9 @@ pub struct Claimed {
     /// with its image token in place of the branch head.
     pub approvals:
         BTreeMap<ServiceName, ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
+    /// The teardown the runner hands each Server for what this Deployment takes off it:
+    /// the one a person signed, or for a preview's removal the rule that made it.
+    pub teardown: Option<ployz_core::authority::TeardownApproval>,
 }
 
 /// One node a Deployment targets, as frozen at admission.

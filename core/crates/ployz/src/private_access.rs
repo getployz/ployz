@@ -4,16 +4,15 @@
 
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    Ciphertext, ContainerRuntimeObservation, EnvironmentValues, Machine, MachineFailure, MachineId,
-    MachineName, MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem,
-    PrivateAccessSet, QualifiedService, RowStanding, RpcError, RpcErrorCode,
-    SET_PRIVATE_ACCESS_CAPABILITY, Sealing, SealingPublicKey, ServiceObservation,
-    SetPrivateAccessRequest,
+    Ciphertext, EnvironmentValues, Machine, MachineFailure, MachineId, MachineName,
+    MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem, PrivateAccessSet,
+    QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_PRIVATE_ACCESS_CAPABILITY, Sealing,
+    SealingPublicKey, ServiceObservation, SetPrivateAccessRequest,
     authority::{
         KeyApproval, PrivateAccessApproval, PrivateAccessTerms, Signed, Signer, SignerKey,
         Timestamp,
     },
-    private_access_sealed_key, seal_platform,
+    private_access_router_joined, private_access_sealed_key, seal_platform,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -78,21 +77,22 @@ pub(crate) fn access_machines(observed: &[MachineObservation]) -> Vec<AccessMach
 /// The sealed auth key the newest observed router carries, so a joiner runs the same
 /// router as the rest.
 pub(crate) fn cluster_sealed_key(services: &[ServiceObservation]) -> Option<Ciphertext> {
-    services
-        .iter()
-        .filter(|service| service.identity == QualifiedService::system_tailscale())
-        .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation()))
-        .max_by_key(|copy| (copy.created_at_unix_nanos, copy.container_id))
-        .and_then(|router| private_access_sealed_key(&router.resolved_spec.container.labels))
+    ployz_core::newest(
+        services
+            .iter()
+            .filter(|service| service.identity == QualifiedService::system_tailscale())
+            .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation())),
+    )
+    .and_then(|router| private_access_sealed_key(&router.resolved_spec.container.labels))
 }
 
-/// The Machines whose router runs now.
+/// The Machines whose router has joined the tailnet.
 fn running(services: &[ServiceObservation]) -> std::collections::BTreeSet<MachineId> {
     services
         .iter()
         .filter(|service| service.identity == QualifiedService::system_tailscale())
         .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation()))
-        .filter(|copy| matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }))
+        .filter(|copy| private_access_router_joined(&copy.runtime))
         .map(|copy| copy.machine_id)
         .collect()
 }
@@ -103,7 +103,8 @@ pub(crate) struct Access {
     pub(crate) running: std::collections::BTreeSet<MachineId>,
     /// The listing the rest derives from, with the Machines that didn't answer it.
     pub(crate) listed: PartialResult<Vec<ployz_core::ContainerObservation>, RpcError>,
-    /// The Cluster's Sealing Key, from the first Machine that holds it.
+    /// The Cluster's Sealing Key, as the first Machine row holding one claims. A seal
+    /// trusts it only through [`crate::sealing_pin::SealTo::key`].
     pub(crate) sealing: Option<SealingPublicKey>,
 }
 
@@ -143,19 +144,14 @@ pub struct AccessChanged {
     pub failures: Vec<MachineFailure<RpcError>>,
 }
 
-/// Seal `key` to the Cluster.
+/// Seal `key` to the Cluster whose Sealing Key is `cluster`, one [`crate::sealing_pin`]
+/// checked.
 ///
 /// # Errors
 ///
-/// Fails when no Machine holds the Sealing Key to seal it for.
-pub(crate) fn seal_key(observed: &Access, key: &str) -> Result<Ciphertext, Failure> {
-    let Some(sealing) = &observed.sealing else {
-        return Err(Failure::coded(
-            RpcErrorCode::Unavailable,
-            "No online Server holds the Cluster's Sealing Key, so the auth key can't be sealed.",
-        ));
-    };
-    seal_platform(sealing, PlatformPurpose::PrivateAccess, key.as_bytes()).map_err(|error| {
+/// Fails when the key can't be sealed.
+pub(crate) fn seal_key(cluster: &SealingPublicKey, key: &str) -> Result<Ciphertext, Failure> {
+    seal_platform(cluster, PlatformPurpose::PrivateAccess, key.as_bytes()).map_err(|error| {
         Failure::caused(
             RpcErrorCode::Internal,
             "Could not seal the auth key for this Cluster",

@@ -335,13 +335,21 @@ impl Gate {
 pub struct RequestKey(String);
 
 impl RequestKey {
+    /// The fewest characters a key has.
+    pub const MIN: usize = 8;
+    /// The most characters a key has.
+    pub const MAX: usize = 64;
+    /// What a tool's schema says a key looks like: [`Self::MIN`] to
+    /// [`Self::MAX`] letters, digits, `_` or `-`. A test holds it to those.
+    pub const PATTERN: &'static str = "^[A-Za-z0-9_-]{8,64}$";
+
     /// A key of 8 to 64 letters, digits, `_` or `-`.
     ///
     /// # Errors
     /// Why anything else is not a key.
     pub fn parse(key: impl Into<String>) -> Result<Self, &'static str> {
         let key = key.into();
-        let fits = (8..=64).contains(&key.len())
+        let fits = (Self::MIN..=Self::MAX).contains(&key.len())
             && key
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
@@ -402,11 +410,6 @@ impl AttemptId {
             .unwrap_or_default();
         // Version 8 with the RFC 4122 variant: the bits `uuidFrom` sets.
         Self(uuid::Builder::from_custom_bytes(bytes).into_uuid())
-    }
-
-    #[must_use]
-    pub const fn as_uuid(&self) -> &Uuid {
-        &self.0
     }
 }
 

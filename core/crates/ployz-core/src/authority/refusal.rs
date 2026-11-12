@@ -17,10 +17,16 @@ pub enum AuthorityRefusal {
     BadSignature { key: SigningPublicKey },
     #[error("the passkey is not approved on this Machine")]
     UnknownPasskey,
-    #[error("passkey {code} may approve workflows and rules only, not a {purpose} statement")]
+    #[error(
+        "passkey {code} may approve workflows, rules and Volume workflows only, not a {purpose} statement"
+    )]
     ApproveOnly { code: DeviceCode, purpose: Purpose },
     #[error("the approval names {field} this request does not match")]
     Mismatch { field: &'static str },
+    #[error(
+        "the move's source has not handed this Volume here; this Machine becomes its writer only with the source's handoff receipt"
+    )]
+    Unreceipted,
     #[error("the approval expired")]
     Expired,
     #[error("this Machine holds no Sealing Key, so it cannot tell which Cluster was approved")]
@@ -29,6 +35,12 @@ pub enum AuthorityRefusal {
     Replayed { operation: OperationId },
     #[error("this GitHub token already minted a Build Grant; a build asks for a new one")]
     ProofReplayed,
+    #[error("the {kind} statement is signed by a key this Cluster does not hold")]
+    ForeignMachineKey { kind: &'static str },
+    #[error("the {kind} statement's signature does not verify")]
+    BadMachineSignature { kind: &'static str },
+    #[error("the {kind} statement is malformed: {problem}")]
+    MalformedMachineStatement { kind: &'static str, problem: String },
 }
 
 /// The first of `checks` that does not hold, as a [`AuthorityRefusal::Mismatch`] naming its field.

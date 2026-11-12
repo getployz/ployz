@@ -11,10 +11,10 @@ use iroh::{
     tls::CaTlsConfig,
 };
 use ployz_core::{
-    CLIENT_CLEARED_CLOSE, CLIENT_REFUSED_CLOSE, DEFAULT_RELAY_URL, DescribeContractRequest,
-    MANAGEMENT_ALPN, MANAGEMENT_PROOF_LABEL, MachineRpcClient, ManagementCapability,
-    ManagementProof, SEGMENTATION_OFFLOAD, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_NEEDS_FULL,
-    TUNNEL_OPEN, op,
+    CLIENT_CLEARED_CLOSE, CLIENT_REFUSED_CLOSE, ClientKey, DEFAULT_RELAY_URL,
+    DescribeContractRequest, MANAGEMENT_ALPN, MANAGEMENT_PROOF_LABEL, MachineRpcClient,
+    ManagementCapability, ManagementProof, SEGMENTATION_OFFLOAD, TUNNEL_ALPN, TUNNEL_FAILED,
+    TUNNEL_NEEDS_FULL, TUNNEL_OPEN, op,
 };
 use std::{
     io,
@@ -180,7 +180,7 @@ pub fn management_proof(
         .map_err(|error| io::Error::other(format!("management proof: {error:?}")))?;
     let key = SecretKey::from_bytes(capability.client_secret());
     Ok(ManagementProof {
-        client: *key.public().as_bytes(),
+        client: ClientKey::from_bytes(*key.public().as_bytes()),
         signature: key.sign(&ManagementProof::message(&exporter)).to_bytes(),
     })
 }

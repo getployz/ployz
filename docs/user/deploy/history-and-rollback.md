@@ -85,7 +85,9 @@ An accepted deployment and its redeploys keep their original snapshot while you 
 ## Roll back on servers that enforce device approval
 
 With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, redeploy or roll back from an approved device:
+on, redeploy or roll back from the dashboard with your passkey, as in
+[Other deploys the dashboard starts](deployments.md#other-deploys-the-dashboard-starts), or from an
+approved device:
 
 ```bash
 ployz deployment redeploy 4
@@ -121,14 +123,17 @@ deploys.
 - **The rule's workflow runs the rebuild.** It needs the `workflow_dispatch` trigger with a
   `commit` input, shown in [the workflow](github.md#deploy-on-push-to-servers-that-enforce-device-approval).
   A rule approved before Ployz 0.4 runs only on push: approve the rule again, then redeploy.
-- **Keep the CLI running.** The redeploy waits for your device's second approval. If you stop
-  the CLI while it waits, it cancels the redeploy. If the CLI can't cancel it, Ployz Cloud fails
-  it after an hour, and nothing deploys.
+- **Keep the CLI running, or the tab open.** The redeploy waits for your device's second
+  approval. If you stop the CLI or close the tab while it waits, nothing deploys. The CLI
+  cancels the redeploy; otherwise Ployz Cloud fails it after an hour.
 - **Each approval lasts 15 minutes.** A rebuild that starts later, such as one queued behind
   another deployment, fails, and the redeploy is cancelled. A server that reaches a service more
   than 15 minutes after your second approval refuses it, and the redeploy fails. Redeploy again.
-- **A redeploy from the dashboard or by the agent isn't approved.** Servers that enforce refuse
-  it. Run `ployz deployment redeploy` on an approved device.
+- **A redeploy by the agent isn't approved.** Servers that enforce refuse it. Redeploy from the
+  dashboard, or run `ployz deployment redeploy` on an approved device.
+- **A deployment that built some services and ran others from an image** approves only the
+  commits, so your servers refuse the services that run from an image. Deploy those with
+  **Deploy** or `ployz deploy`.
 - **A rollback keeps your rule's settings.** Your servers run each service only with the
   settings your rule approves now: its command, environment, ports, mounts, health check and
   pre-deploy command. A redeploy of a deployment saved with other settings is refused. To roll

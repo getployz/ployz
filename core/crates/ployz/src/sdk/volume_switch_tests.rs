@@ -69,6 +69,7 @@ fn a_set_volume_copy_reply_and_its_refusal_pass_through_as_the_machine_sent_them
         .unwrap_or_else(|error| panic!("the copy parses: {error}"));
     let reply = RpcResponseBody::SetVolumeCopyReply(ployz_core::SetVolumeCopyReply {
         copy: Some(current.clone()),
+        receipt: None,
     });
     assert_eq!(
         volume_switch_payload("set_volume_copy", reply).unwrap_or_else(|error| panic!("{error:?}")),
@@ -79,6 +80,7 @@ fn a_set_volume_copy_reply_and_its_refusal_pass_through_as_the_machine_sent_them
         reason: ployz_core::CopyRefusal::Behind,
         copy: Some(current),
         floor: None,
+        receipt: None,
     }
     .rpc_error("Volume data is not at the wanted snapshot".to_owned());
     let error = volume_switch_payload("set_volume_copy", RpcResponseBody::Error(refused.clone()))

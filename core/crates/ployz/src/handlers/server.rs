@@ -1,4 +1,4 @@
-use crate::cluster::{Call, Deadline};
+use crate::cluster::{Call, Deadline, FullRoutes};
 use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
@@ -12,10 +12,10 @@ use crate::cli::{
     base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
 use ployz_core::{
-    AdvertisedEndpoint, BuildConcurrencyUpdate, EnvironmentValues, IngressDoors, InspectRequest,
-    ListContainersRequest, Machine, MachineId, MachineName, MachineObservation, MachineTarget,
-    MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest,
-    op,
+    AdvertisedEndpoint, BuildConcurrencyUpdate, EnvironmentValues, Hint, IngressDoors,
+    InspectRequest, ListContainersRequest, Machine, MachineId, MachineName, MachineObservation,
+    MachineTarget, MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint,
+    UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
@@ -31,7 +31,6 @@ use crate::{
 };
 
 use super::{Error, leaf_matches, string_values, with_client};
-use crate::ui::Hint;
 
 mod add;
 pub(super) mod checkin;
@@ -118,7 +117,7 @@ pub(super) async fn connect_full(
         &config,
         direct,
         context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     ) {
         Ok(mut selected) => {
             selected.connections = as_device(selected.connections, &key)?;
@@ -128,9 +127,7 @@ pub(super) async fn connect_full(
             crate::connect::connect_selected_with(selected, Arc::new(connector))
                 .await
                 .map(|client| {
-                    client
-                        .with_full_connections(connections)
-                        .with_full_single(direct.is_some())
+                    client.with_full_routes(FullRoutes::new(connections, direct.is_some()))
                 })
         }
         Err(error) => Err(error),
@@ -146,11 +143,7 @@ pub(super) async fn connect_full(
     let connections = access.connections.clone();
     dial(matches, access)
         .await?
-        .map(|client| {
-            client
-                .with_full_connections(connections)
-                .with_full_single(direct.is_some())
-        })
+        .map(|client| client.with_full_routes(FullRoutes::new(connections, direct.is_some())))
         .ok_or_else(no_servers)
 }
 
@@ -297,7 +290,7 @@ pub(super) async fn connect_full_avoiding(
     let Some(leaving) = leaving.filter(|leaving| leaving.id == entry) else {
         return Ok((client, entry, false));
     };
-    let every = client.full_connections().to_vec();
+    let every = client.full_routes().connections().to_vec();
     let others: Vec<Connection> = every
         .iter()
         .filter(|connection| connection.machine_id().is_some_and(|id| *id != leaving.id))
@@ -313,7 +306,7 @@ pub(super) async fn connect_full_avoiding(
         };
         let mut client = crate::connect::connect_selected_with(selected, Arc::new(connector))
             .await?
-            .with_full_connections(every);
+            .with_full_routes(FullRoutes::new(every, false));
         let entry = client
             .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
             .await?
@@ -496,7 +489,7 @@ pub(super) async fn reach_or_silent(
         &config,
         direct,
         context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     )
     .is_ok_and(|selected| by_socket(&selected.connections));
     match connect_or_none(matches, context).await {
@@ -604,7 +597,7 @@ async fn entries(
         &super::config_path(matches)?,
         direct,
         context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     )
     .map_err(|error| signed_out_unless_configured(error, signed_out))
 }

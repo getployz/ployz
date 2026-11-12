@@ -1,3 +1,4 @@
+use ployz_core::Hint;
 use std::{future::Future, path::Path, pin::Pin};
 
 use crate::cancellation::on_ctrl_c as cancellation_on_ctrl_c;
@@ -40,6 +41,8 @@ pub(crate) mod recovery;
 pub(crate) mod review;
 pub(crate) mod server;
 pub(crate) mod service;
+mod shared;
+mod status;
 mod status_servers;
 pub(crate) mod store;
 mod teardown;
@@ -511,6 +514,7 @@ async fn reconnect_client(
     let connect = matches.get_one::<String>("connect").map(String::as_str);
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         "Reconnecting to the Cluster",
         crate::setup_retry::WAIT,
         crate::connect::ConnectError::is_setup_retryable,
@@ -608,7 +612,7 @@ pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -
         .diagnostic()
         .and_then(|diagnostic| diagnostic.failed_machine)
         .map(|machine| {
-            crate::ui::Hint::Retry(command(&[
+            Hint::Retry(command(&[
                 "server",
                 "set",
                 &machine.to_string(),
@@ -632,7 +636,7 @@ pub(crate) fn ingress_log_hints(
         .logs
         .iter()
         .map(|tail| {
-            crate::ui::Hint::Inspect(command(&[
+            Hint::Inspect(command(&[
                 "logs",
                 &tail.service.to_string(),
                 "--machine",
@@ -1130,7 +1134,7 @@ mod tests {
 
     #[test]
     fn local_machine_init_requires_root_to_install() {
-        if crate::provisioning::process_is_root() {
+        if crate::checkin::process_is_root() {
             return;
         }
         let mut command = command();
@@ -1157,7 +1161,7 @@ mod tests {
 
     #[test]
     fn local_machine_init_without_install_dials_the_unix_socket() {
-        if std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists() {
+        if ployz_core::MachineLayout::production().socket().exists() {
             return;
         }
         let mut command = command();
@@ -1311,7 +1315,7 @@ mod tests {
 
     #[test]
     fn server_add_with_a_token_and_no_daemon_requires_sudo() {
-        if crate::provisioning::process_is_root() {
+        if crate::checkin::process_is_root() {
             return;
         }
         let token = tempfile::NamedTempFile::new().unwrap();

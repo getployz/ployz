@@ -103,6 +103,26 @@ volume's limit, Ployz refuses and tells you to run `ployz volume set` with the s
 holds, then again with the size you want, to grow it. If Ployz has no fresh reading of a server's copy,
 it refuses and asks you to try again in a moment.
 
+With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a server changes a volume's limit only to a size an approved device chose. Run
+`ployz volume set data --size 20` on an approved device. It prints what it approves and asks
+before it signs:
+
+```
+Approved: set data to 20GB on web-1, web-2. No copy shrinks.
+Approve resizing data? [y/N]
+```
+
+A smaller size, or the size the volume already has, ends the line with "lowering any copy above
+it" instead. Add `--yes` to sign without asking, as a script does. Without a terminal and without
+`--yes`, it signs nothing and changes nothing. Each server it names sets that size and no other,
+once: to resize again, run the command again.
+
+**Grow** in Ployz Cloud asks for your passkey instead of a confirm. See
+[Approve from Ployz Cloud](move-a-volume.md#approve-from-ployz-cloud). If `ployz volume set` can't reach your
+servers to ask whether they enforce, it warns and runs without signing, and servers that enforce
+refuse it. A server from before Ployz 0.4 ignores the approval and resizes as before.
+
 The dashboard doesn't show how full a volume is yet:
 
 ```sh

@@ -11,12 +11,10 @@ use iroh::SecretKey;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use super::super::wire::{self, EnrollPolicy};
 use super::super::{FleetToken, Headline, pass, run};
-use super::super::{
-    Probe,
-    wire::{self, EnrollPolicy},
-};
 use super::*;
+use ployz_core::probe_document::ProbeDocument;
 
 const TOKEN: &str = "pmet_never_written_down";
 const FLEET: &str = "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -216,7 +214,7 @@ impl Scripted {
 }
 
 impl Host for Scripted {
-    async fn probe(&self) -> Result<Probe, String> {
+    async fn probe(&self) -> Result<ProbeDocument, String> {
         Ok(serde_json::from_str(PROBE).unwrap())
     }
 
@@ -335,6 +333,7 @@ impl Fixture {
         let paths = Paths {
             checkin_dir: dir.path().join("checkin"),
             prepare_state: dir.path().join("prepare/state.json"),
+            prepare_lock: dir.path().join("prepare/lock"),
             token_file: dir.path().join("fleet-token"),
         };
         fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
@@ -1363,7 +1362,7 @@ fn the_host_adapter_overrides_remote_context_and_connection_environment() {
         Path::new(matches.get_one::<String>("ployz-config").unwrap()),
         matches.get_one::<String>("connect").map(String::as_str),
         None,
-        Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     )
     .unwrap();
     assert_eq!(selected.connections.len(), 1);

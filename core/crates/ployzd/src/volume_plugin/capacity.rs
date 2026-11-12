@@ -84,7 +84,7 @@ impl VolumeStorage {
                             CopyRole::Slot,
                             bound,
                             0,
-                            Some(self.slot_role(&dataset.name).await?),
+                            Some(self.marks(&dataset.name).role().await?),
                         )
                     }
                     super::Place::Outside => continue,

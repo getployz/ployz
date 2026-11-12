@@ -1,13 +1,12 @@
 use crate::cluster::{Call, Wait};
 use std::io::Read;
-use std::path::Path;
 use std::sync::Arc;
 
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    DescribeContractRequest, RECOVER_SEALING_KEY_CAPABILITY, RecoverSealingKeyRequest,
-    RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup, SealingPublicKey,
-    WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest, op,
+    DescribeContractRequest, Hint, MachineLayout, RECOVER_SEALING_KEY_CAPABILITY,
+    RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup,
+    SealingPublicKey, WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest, op,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -17,9 +16,9 @@ use crate::cli::{base, switch};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_enroll::RecoveryBackup;
 use crate::cloud_login::LoginError;
-use crate::connect::{Client, ConnectError, DEFAULT_LOCAL_SOCKET, SystemConnector};
+use crate::connect::{Client, ConnectError, SystemConnector};
 use crate::context::Transport;
-use crate::ui::{self, Fields, Hint};
+use crate::ui::{self, Fields};
 
 pub(crate) const RECOVERY_CODE_NOT_SAVED: &str =
     "Recovery code not saved. Run ployz recovery rotate now to make one.";
@@ -205,12 +204,12 @@ fn print_code(public_key: SealingPublicKey, code: &RecoveryCode) -> Result<(), E
     Ok(())
 }
 
-async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
+pub(super) async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
     let selected = crate::connect::resolve_connections(
         &config_path(matches)?,
         matches.get_one::<String>("connect").map(String::as_str),
         matches.get_one::<String>("context").map(String::as_str),
-        Path::new(DEFAULT_LOCAL_SOCKET),
+        &MachineLayout::production().socket(),
     )?;
     if selected
         .connections
@@ -310,7 +309,7 @@ fn refusal(error: &ConnectError) -> Option<RecoveryRefusal> {
     let ConnectError::Remote(answered) = error else {
         return None;
     };
-    answered.recovery_refusal()
+    answered.evidence::<RecoveryRefusal>()
 }
 
 fn recover_failure(error: ConnectError) -> Error {
@@ -362,8 +361,8 @@ async fn cloud_backup(credential: Option<&Credential>) -> Result<Option<SealingK
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RecoveryRow {
-    public_key: SealingPublicKey,
+pub(super) struct RecoveryRow {
+    pub(super) public_key: SealingPublicKey,
     backup: Option<SealingKeyBackup>,
     digest: Option<String>,
 }
@@ -373,7 +372,7 @@ struct Rotated {
     digest: String,
 }
 
-async fn recovery_row(
+pub(super) async fn recovery_row(
     credential: &Credential,
     organization_id: &str,
 ) -> Result<Option<RecoveryRow>, Error> {
@@ -422,12 +421,12 @@ fn rotate_failure(error: LoginError) -> Error {
 mod tests {
     use std::io::Cursor;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use ployz_core::{
-        CapabilityName, ContractDescription, MachineId, RpcRequestBody, RpcResponse,
+        CapabilityName, ContractDescription, Evidence, MachineId, RpcRequestBody, RpcResponse,
         SealingKeyRecovered, SealingKeyWrapped,
     };
     use serde_json::Value;
@@ -600,7 +599,7 @@ mod tests {
     /// Refused the way ployzd's `recovery_error` answers: an error payload, not a gRPC status.
     fn refused(refusal: RecoveryRefusal) -> RpcResponse {
         RpcResponse::from(ployz_core::RpcError {
-            details: refusal.details(),
+            details: refusal.to_details(),
             ..ployz_core::RpcError::caused(
                 RpcErrorCode::InvalidArgument,
                 &std::io::Error::other("refused"),

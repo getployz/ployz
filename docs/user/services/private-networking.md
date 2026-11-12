@@ -160,8 +160,10 @@ your services at their private addresses, on any port and protocol.
 
    The key is sealed to your cluster before it leaves your browser or device, and it's never
    printed. Sealing in the browser trusts the dashboard: a compromised Ployz Cloud could change
-   the page or the key it seals to, and read your auth key. A coming `ployz` release checks your
-   cluster's key itself, so `ployz private-access on` won't depend on Ployz Cloud.
+   the page or the key it seals to, and read your auth key. `ployz private-access on` doesn't
+   trust Ployz Cloud for the key. It seals only to your cluster's key as
+   [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
+   `ployz device pin` once first.
 3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
    and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
    A server keeps its router's identity across restarts and reboots, so the route stays
@@ -176,7 +178,10 @@ the agent never sees it. The card seals it in the browser, as **Connect** does. 
 approves it before the key goes out, so it can't be denied afterwards. If Tailscale refuses the key, the approval stays approved: try another key, or turn
 Private Access off, in **Integrations**.
 
-`ployz private-access` shows which servers run a router. A server added later runs one too,
+`ployz private-access` shows which servers run a router, meaning one whose node joined your
+tailnet. A router Tailscale refused the key for isn't one, though its container keeps
+restarting. A router placed before this check existed counts while its container runs, until
+you run `on` again. A server added later runs one too,
 and joins with the key, so keep the key reusable. If Tailscale refuses the key,
 `ployz private-access on` names the server. Run it again with a new key. **Integrations**
 marks that server **Key refused** and offers **Try another key**. A router that stopped

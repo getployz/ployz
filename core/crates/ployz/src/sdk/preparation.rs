@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::preparation_failure::{Preparation, PreparationFailure};
 use super::prepare::BuildPreference;
 use crate::build::{BuildSpec, BuiltService, CapturedBuild, Recipe};
 use ployz_core::{
@@ -277,7 +278,10 @@ fn capture_frozen(
         let mut reads = BuildVariables::All;
         let recipe = match settings.build_method {
             BuildMethod::Dockerfile => {
-                let dockerfile = settings.dockerfile_path.as_deref().unwrap_or("Dockerfile");
+                let dockerfile = settings
+                    .dockerfile_path
+                    .as_deref()
+                    .unwrap_or(ployz_core::config::DEFAULT_DOCKERFILE_PATH);
                 let dockerfile = contained(&repository, &context, dockerfile)?;
                 if !dockerfile.is_file() {
                     return Err(invalid("Dockerfile must be a file"));
@@ -387,13 +391,6 @@ fn capture_frozen(
     })
 }
 
-/// Why preparation needs something only the user can give, as its error details say.
-#[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Needed {
-    UploadNeeded { services: Vec<ServiceName> },
-}
-
 /// No source and no usable image for these uploaded Services: only a new upload builds them.
 pub(crate) fn upload_needed(services: &[ServiceName]) -> RpcError {
     let names = services
@@ -405,14 +402,14 @@ pub(crate) fn upload_needed(services: &[ServiceName]) -> RpcError {
         "No upload or usable image for {names}: its image is gone, or its build inputs \
              changed. Upload its source again"
     ))
-    .with_details(json!({"preparation": Needed::UploadNeeded { services: services.to_vec() }}))
+    .with_evidence(&PreparationFailure::of(Preparation::UploadNeeded {
+        services: services.to_vec(),
+    }))
 }
 
 /// The uploaded Services `error` says need a new upload, if that's what it says.
 pub(crate) fn needs_upload(error: &RpcError) -> Option<Vec<ServiceName>> {
-    match Needed::deserialize(error.details.get("preparation")?).ok()? {
-        Needed::UploadNeeded { services } => Some(services),
-    }
+    error.evidence::<PreparationFailure>()?.needs_upload()
 }
 
 /// A frozen deployment lowered with each built Service's source replaced by a pending

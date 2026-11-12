@@ -453,7 +453,11 @@ pub(crate) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::Unsigned { .. }
         | AuthorityRefusal::NoClusterIdentity
-        | AuthorityRefusal::ProofReplayed => {
+        | AuthorityRefusal::ProofReplayed
+        | AuthorityRefusal::Unreceipted
+        | AuthorityRefusal::ForeignMachineKey { .. }
+        | AuthorityRefusal::BadMachineSignature { .. }
+        | AuthorityRefusal::MalformedMachineStatement { .. } => {
             return format!("This server refused the preview: {refusal}.");
         }
     };

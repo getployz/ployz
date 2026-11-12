@@ -88,7 +88,7 @@ const fn stops_or_removes(phase: RowPhase) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Step {
+enum Phase {
     Start,
     Clear,
     Switch,
@@ -158,18 +158,18 @@ pub(crate) fn service_row<'a>(
     let work = |replica: &Replica<'_>| match replica.state {
         RowState::Running { phase, serving } => Some((
             if *phase == RowPhase::UpdatingContainer {
-                Step::Start
+                Phase::Start
             } else if *serving || (served && !replica.starts) {
-                Step::Retire
+                Phase::Retire
             } else if stops_or_removes(*phase) {
-                Step::Clear
+                Phase::Clear
             } else if *phase == RowPhase::WaitingForSwitch {
                 if !switching {
                     return None;
                 }
-                Step::Switch
+                Phase::Switch
             } else {
-                Step::Start
+                Phase::Start
             },
             *phase,
         )),
@@ -284,7 +284,8 @@ pub(crate) fn service_row<'a>(
             draining,
             work: if removal {
                 Work::Remove
-            } else if old_wait_for_routes || running.is_some_and(|(step, _)| step == Step::Retire) {
+            } else if old_wait_for_routes || running.is_some_and(|(step, _)| step == Phase::Retire)
+            {
                 Work::Retire
             } else {
                 Work::Start

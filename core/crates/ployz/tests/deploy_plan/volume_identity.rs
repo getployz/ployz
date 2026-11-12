@@ -100,7 +100,7 @@ fn scale_import_preserves_foreign_observed_volume_identity() {
                 volume.source.kind(),
                 ployz_core::RawVolumeSource::Ordinary { name, .. }
                     if name.as_str() == "blog_data"
-                        && volume.source.creation_labels().get(NAMESPACE_LABEL).map(String::as_str) == Some("blog")
+                        && volume.source.creation_labels().get(labels::NAMESPACE).map(String::as_str) == Some("blog")
             )
     ));
     assert_eq!(previewed.name.as_str(), "blog_data");

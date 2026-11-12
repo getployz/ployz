@@ -124,48 +124,60 @@ It prints what you approve, then signs it with your device key:
 Approving automatic deploys for production:
   repository  acme/web on main
   workflow    .github/workflows/ployz-build.yml, on push and on rebuilds you approve
-  builder     getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
+  builder     getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
   servers     2 in the cluster
   web
     builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
     variables DATABASE_URL (sealed), LOG_LEVEL=info
-    mode {"mode":"replicated","replicas":2}
     command ["node server.js"]
-    restart {"name":"unless-stopped"}
 Approved. Every push to main now deploys web, worker with these settings.
 ```
 
-It lists every setting the rule pins, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
+It lists every setting the rule pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
 
 To pin your own fork of the builder, add `--builder <owner>/build/.github/workflows/build.yml@<sha>`
 and `--builder-sha <sha>`.
 
 From then on every push to that branch deploys with no prompt, force pushes included. GitHub
 Actions builds it with Ployz's pinned builder, and each server checks that the image is the one
-built for the branch's current head, under these settings. The repository needs
-`.github/workflows/ployz-build.yml` on that branch, run on push, and on a dispatch with a
-`commit` for a [rollback that builds again](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval):
+built for the branch's current head, under these settings. The repository needs Ployz's rule
+workflow as `.github/workflows/ployz-build.yml` on the rule's branch. **Organization → Builds**
+offers it for each repository a rule builds from: **Add workflow** and **Update workflow** show
+the file and open GitHub to commit it. It builds on every push to a branch, and on a dispatch with
+a `commit` for a
+[rollback that builds again](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
+Commit it exactly as Ployz gives it:
 
 ```yaml
 name: Ployz build
 on:
   push:
-    branches: [main]
+    branches: ['**']
   workflow_dispatch:
     inputs:
-      commit:
-        required: false
-        type: string
+      cloud: { required: false, type: string }
+      commit: { required: false, type: string }
 permissions:
   contents: read
   id-token: write
 jobs:
   build:
-    uses: getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
+    if: github.event_name != 'push' || vars.PLOYZ_BRANCH == '' || github.ref_name == vars.PLOYZ_BRANCH
+    uses: getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
     with:
-      cloud: https://ployz.dev
+      cloud: ${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}
       commit: ${{ inputs.commit }}
 ```
+
+Nothing in it names your branch or your Ployz Cloud, so commit it unchanged: hosted Ployz Cloud
+dispatches a rebuild only with this exact file, and **Builds** reads any other as **Uses an older
+workflow**. Each server checks that a push was to the rule's branch. To skip pushes to other
+branches, set the repository variable `PLOYZ_BRANCH` to the rule's branch, such as `main`, as the
+dialog names it, in the repository's **Settings → Secrets and variables → Actions → Variables**.
+Leave it unset if the repository also has a [preview rule](../environments/preview-environments.md).
+A self-hosted Ployz Cloud sets `PLOYZ_CLOUD` there to its own address, such as
+`https://ployz.example.com`. A repository with this file builds on GitHub only under its rules: a
+deploy of another environment from it builds on your servers.
 
 - **A saved change waits for you.** After you save a change to a service the rule covers, its
   settings or how it builds, or add a service that builds from the rule's branch, pushes don't

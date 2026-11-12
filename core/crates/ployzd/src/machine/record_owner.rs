@@ -205,6 +205,7 @@ impl RecordOwner {
     /// # Errors
     ///
     /// Returns [`RecordOwnerStopped`] when the owner thread has stopped.
+    #[cfg(test)]
     pub fn mutate_blocking<R>(
         &self,
         mutation: impl FnOnce(&mut LocalMachineStore) -> R + Send + 'static,

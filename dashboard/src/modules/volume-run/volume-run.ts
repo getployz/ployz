@@ -23,10 +23,19 @@ export const RUN_FEATURES = {
 type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 
 /**
- * The Device-signed Mirror approval the CLI sends. The run sends it with every snapshot and pull, and the Mirror keeps
- * it for the syncs after. An enforcing Server refuses a pull without one; others ignore it.
+ * The Device-signed approval the CLI sends. A Mirror run sends it with every snapshot and pull, and the Mirror keeps it
+ * for the syncs after. A Move sends it with every step, and its release with the resume or the start that ends it. A
+ * resize sends it with each Server's new size. A Restore sends it with the promotion, a Mirror removal with the slot's
+ * Forget, and a seed with the copy. A Device signs it, or in the dashboard a passkey answers its own prompt for it. An
+ * enforcing Server refuses those steps without one; others ignore it.
  */
 type Approved = { readonly approval?: Signed };
+
+/**
+ * The spec the Move's approval names for the Service's start on its target, which the CLI read off the Service's
+ * Container on the source. B starts exactly this, and refuses any other.
+ */
+type Starting = { readonly service?: ResolvedServiceSpec };
 
 /**
  * What a requested Release's plan showed: the slots it may resume from and the slots it may forget. The run refuses to
@@ -48,26 +57,36 @@ export type VolumeRunArgs = {
    * so the Machine refuses a slot that holds the other role by then. `any` is `volume mirror rm`, which deletes either. A
    * row without one was admitted before runs recorded it, and is refused rather than guessed.
    */
-  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" };
-  move: Destination;
-  /** `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. */
-  release: { readonly plan?: ReleasePlan; readonly follows?: MachineId };
-  restore: { readonly from: MachineName; readonly machine?: MachineId };
+  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" } & Approved;
+  move: Destination & Approved & Starting;
+  /**
+   * `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. The
+   * release of a Move carries the Move's approval and spec.
+   */
+  release: { readonly plan?: ReleasePlan; readonly follows?: MachineId } & Approved & Starting;
+  restore: { readonly from: MachineName; readonly machine?: MachineId } & Approved;
   seed: {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
     readonly guid: string;
     readonly name: string;
-  };
+  } & Approved;
   /**
    * The size every copy is asked to hold, in whole bytes, as `SetVolumeSizeRequest` names it. The size it moves from
    * is the row's `recordedBytes`, read from the Store when the run was requested.
    */
-  resize: { readonly maximum_bytes: number };
+  resize: { readonly maximum_bytes: number } & Approved;
   /**
-   * A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. `hold`
-   * marks a lane on a Volume no run held: it took nothing, so it is never fenced and leaves no row when the Deploy ends.
+   * A Deploy's own lane while its Services run; `resume` is the move it took over, with its approval and spec, requested
+   * again once it ends. `taken` is the approval and spec a release it took over carried from its Move, which cover the
+   * resume or the start that ends that Move but request nothing again. `hold` marks a lane on a Volume no run held: it
+   * took nothing, so it is never fenced and leaves no row when the Deploy ends.
    */
-  deploy: { readonly deployment: string; readonly resume: Destination | null; readonly hold?: true };
+  deploy: {
+    readonly deployment: string;
+    readonly resume: (Destination & Approved & Starting) | null;
+    readonly taken?: Approved & Starting;
+    readonly hold?: true;
+  };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 
@@ -76,9 +95,48 @@ export type VolumeRunInput = {
 }[VolumeRunRequestKind];
 export type VolumeLaneInput = VolumeRunInput | { readonly kind: "deploy"; readonly args: VolumeRunArgs["deploy"] };
 
+/**
+ * `input` carrying `approval`, and for a Move or its release `service`, the spec its target starts. A deploy's lane
+ * carries none of its own.
+ */
+export function carrying(input: VolumeRunInput, approval: Signed, service?: ResolvedServiceSpec): VolumeRunInput {
+  switch (input.kind) {
+    case "move":
+      return { kind: "move", args: { ...input.args, approval, ...(service !== undefined && { service }) } };
+    case "release":
+      return { kind: "release", args: { ...input.args, approval, ...(service !== undefined && { service }) } };
+    case "mirror":
+      return { kind: "mirror", args: { ...input.args, approval } };
+    case "sync":
+      return { kind: "sync", args: { ...input.args, approval } };
+    case "delete_mirror":
+      return { kind: "delete_mirror", args: { ...input.args, approval } };
+    case "restore":
+      return { kind: "restore", args: { ...input.args, approval } };
+    case "seed":
+      return { kind: "seed", args: { ...input.args, approval } };
+    case "resize":
+      return { kind: "resize", args: { ...input.args, approval } };
+  }
+}
+
 export const VOLUME_RUN_UNCLAIMED_LIMIT_MS = 10 * 60_000;
 export const VOLUME_RUN_RUNNING_CHECK_MS = 15 * 60_000;
 export const VOLUME_RUN_MESSAGE_LIMIT = 1024;
+
+/**
+ * One Server's answer to a step a run asked under an approval: whether it took the step, as it said. Cloud records what
+ * each Server answered; it neither makes nor checks one.
+ */
+export type StepAnswer = {
+  readonly machine: MachineId;
+  readonly name: string;
+  /** The step as the run asked it: `writer`, `mirror`, `none`, `size` or `seed`. */
+  readonly step: string;
+  readonly accepted: boolean;
+  /** ISO time Cloud heard it. */
+  readonly at: string;
+};
 
 export type VolumeRunView = {
   readonly id: string;
@@ -93,6 +151,8 @@ export type VolumeRunView = {
   readonly created_at: string;
   readonly updated_at: string;
   readonly finished_at: string | null;
+  /** What each Server answered to the steps the run asked under its approval, oldest first. */
+  readonly answers: StepAnswer[];
 };
 
 export type Member =
@@ -107,6 +167,10 @@ export type Member =
       readonly boundBytes?: number | null;
       /** The Server reports device enforcement on, so it refuses a Container start or a seed Ployz Cloud sends. */
       readonly enforces?: boolean;
+      /** The Server signs a handoff receipt as a Move's source, and as its target needs one to become the writer. */
+      readonly handoff?: boolean;
+      /** The Server takes a passkey's own answer to a Volume workflow, so the dashboard can approve one it enforces. */
+      readonly passkey?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

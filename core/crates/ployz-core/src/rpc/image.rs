@@ -1,10 +1,10 @@
 //! Image DTOs: listing, ingest, pull, prune and disk space.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use ts_rs::TS;
 
 use super::error::{RpcError, RpcErrorCode};
+use super::evidence::{CodedRefusal, Evidence};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ListImagesRequest {
@@ -32,26 +32,19 @@ pub enum ImageIngestReason {
 }
 
 impl ImageIngestReason {
-    /// The `reason` field of an ingest RPC error, if it is one of the frozen names.
-    #[must_use]
-    pub fn from_details(details: &Value) -> Option<Self> {
-        details
-            .get("reason")
-            .and_then(|reason| Self::deserialize(reason).ok())
-    }
-
     /// An RPC error that carries this reason in `details`.
     #[must_use]
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
-        RpcError {
-            code: self.rpc_code(),
-            message: message.into(),
-            details: serde_json::json!({ "reason": self }),
-            cause: Vec::new(),
-        }
+        RpcError::refused(&self, message)
     }
+}
 
-    const fn rpc_code(self) -> RpcErrorCode {
+impl Evidence for ImageIngestReason {
+    const KEY: Option<&'static str> = Some("reason");
+}
+
+impl CodedRefusal for ImageIngestReason {
+    fn code(&self) -> RpcErrorCode {
         match self {
             Self::UnsupportedContainerdStore => RpcErrorCode::Unsupported,
             Self::StartFailed => RpcErrorCode::Internal,

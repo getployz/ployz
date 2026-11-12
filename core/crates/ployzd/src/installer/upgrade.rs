@@ -7,8 +7,9 @@ use std::{
 };
 
 use ployz_core::{
-    MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, MachineVersion, ReleaseChannel, RequestMachineUpgradeRequest,
+    MachineLayout, MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId,
+    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ReleaseChannel,
+    RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -376,7 +377,7 @@ pub async fn run_worker(
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<(), Error> {
-    super::require_standard_machine_paths(data_dir, &run_dir.join("ployz.sock"))
+    super::require_standard_machine_paths(data_dir, &MachineLayout::socket_in(run_dir))
         .map_err(Error::NonstandardPaths)?;
     work(
         &ReleaseSource::Published,
@@ -391,8 +392,8 @@ async fn work(
     paths: &InstallPaths,
     attempt_id: MachineUpgradeAttemptId,
 ) -> Result<(), Error> {
-    let data_dir = &paths.data_dir;
-    let admission = mutation::MutationGate::new(&paths.run_dir, data_dir);
+    let data_dir = paths.layout.data_dir();
+    let admission = mutation::MutationGate::new(paths.layout.run_dir(), data_dir);
     let guard = admission.lock_installation()?;
     let mut stored = read(data_dir)?;
     if stored.attempt.attempt_id != attempt_id || stored.attempt.is_terminal() {

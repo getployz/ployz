@@ -20,13 +20,10 @@ use ployzd::{
 use super::{
     Dataset, DockerVolumeName, VolumeError, VolumeStorage,
     inspect::{answering, internal},
+    marks::{Mark, Marks},
     mirror,
     pool::UnlabeledBacking,
-    seed::SEED_PROPERTY,
-    storage::{
-        CUT_PROPERTY, DATASET_ROOT, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY,
-        PULLED_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
-    },
+    storage::{DATASET_ROOT, slot_fs, slot_parent},
     transfer::{Busy, ReceiveFailure, Stop, pulling},
 };
 
@@ -126,6 +123,7 @@ fn refuse(reason: CopyRefusal, copy: Copy, message: String) -> RpcError {
         reason,
         copy,
         floor: None,
+        receipt: None,
     }
     .rpc_error(message)
 }
@@ -298,8 +296,7 @@ impl VolumeStorage {
         }
         // Docker on this Machine keeps its record for the Volume; plugin Get answers
         // from the slot while the root is away.
-        self.z(&["set", &format!("{CUT_PROPERTY}=on"), &root_name])
-            .await?;
+        self.marks(&root_name).set_cut().await.map_err(internal)?;
         if !taken {
             self.z(&["snapshot", &format!("{root_name}@{}", request.target)])
                 .await?;
@@ -324,7 +321,8 @@ impl VolumeStorage {
         if scope.slot().is_none() {
             self.create_bounded_slot(&parent, refquota).await?;
         }
-        self.mark_slot_role(&parent, SlotRole::OldCopy)
+        self.marks(&parent)
+            .set_role(SlotRole::OldCopy)
             .await
             .map_err(internal)?;
         self.z(&["rename", &root_name, &slot_fs(&scope.pool, name)])
@@ -446,7 +444,7 @@ impl VolumeStorage {
         let root_name = super::storage::root_dataset(&scope.pool, name);
         if let Some(root) = scope.root()? {
             let (readonly, mountpoint) = (root.readonly, root.mountpoint.clone());
-            let epoch = self.epoch(&root_name).await.map_err(internal)?;
+            let epoch = self.marks(&root_name).epoch().await.map_err(internal)?;
             if epoch > request.epoch {
                 return Err(self
                     .refuse_found(
@@ -461,12 +459,10 @@ impl VolumeStorage {
             }
             self.require_at(&scope, &root_name, request).await?;
             if epoch < request.epoch {
-                self.z(&[
-                    "set",
-                    &format!("{EPOCH_PROPERTY}={}", request.epoch),
-                    &root_name,
-                ])
-                .await?;
+                self.marks(&root_name)
+                    .set_epoch(request.epoch)
+                    .await
+                    .map_err(internal)?;
             }
             if scope.slot().is_some() && scope.fs().is_none() {
                 self.z(&["destroy", &slot_parent(&scope.pool, name)])
@@ -496,38 +492,11 @@ impl VolumeStorage {
                 )
                 .await);
         }
-        if self
-            .property(&fs_name, RESUME_TOKEN_PROPERTY)
-            .await
-            .map_err(internal)?
-            .is_some()
-        {
+        let marks = self.marks(&fs_name);
+        if marks.is_set(Mark::ResumeToken).await.map_err(internal)? {
             self.z(&["receive", "-A", &fs_name]).await?;
         }
-        self.z(&["inherit", PULLED_PROPERTY, &fs_name]).await?;
-        if self
-            .property(&fs_name, SEED_PROPERTY)
-            .await
-            .map_err(internal)?
-            .is_some()
-        {
-            self.z(&["inherit", SEED_PROPERTY, &fs_name]).await?;
-        }
-        self.z(&[
-            "set",
-            &format!("{EPOCH_PROPERTY}={}", request.epoch),
-            &fs_name,
-        ])
-        .await?;
-        let cut = self
-            .property(&fs_name, CUT_PROPERTY)
-            .await
-            .map_err(internal)?
-            .is_some();
-        if !cut {
-            self.z(&["set", &format!("{PROMOTE_PROPERTY}=on"), &fs_name])
-                .await?;
-        }
+        marks.promote_slot(request.epoch).await.map_err(internal)?;
         // A Machine that only ever mirrored has no managed parent for the root yet.
         let parent = format!("{}/{DATASET_ROOT}", scope.pool.name());
         if !scope.datasets.iter().any(|dataset| dataset.name == parent) {
@@ -580,14 +549,7 @@ impl VolumeStorage {
         if readonly {
             self.z(&["set", "readonly=off", root]).await?;
         }
-        if self
-            .property(root, CUT_PROPERTY)
-            .await
-            .map_err(internal)?
-            .is_some()
-        {
-            self.z(&["inherit", CUT_PROPERTY, root]).await?;
-        }
+        self.marks(root).clear_cut().await.map_err(internal)?;
         Ok(())
     }
 
@@ -618,7 +580,8 @@ impl VolumeStorage {
         let target = request.target.to_string();
         let pulling = match scope.slot() {
             Some(_) => self
-                .property(&parent, PULL_PROPERTY)
+                .marks(&parent)
+                .get(Mark::Pull)
                 .await
                 .map_err(internal)?,
             None => None,
@@ -691,8 +654,9 @@ impl VolumeStorage {
         let newest_name = newest.as_ref().map(|newest| newest.name.as_str());
         if newest_name == Some(target.as_str()) {
             // An old copy already holding the target receives nothing, and is the mirror now.
-            if self.slot_role(&parent).await.map_err(internal)? != SlotRole::Mirror {
-                self.mark_slot_role(&parent, SlotRole::Mirror)
+            if self.marks(&parent).role().await.map_err(internal)? != SlotRole::Mirror {
+                self.marks(&parent)
+                    .set_role(SlotRole::Mirror)
                     .await
                     .map_err(internal)?;
             }
@@ -703,14 +667,15 @@ impl VolumeStorage {
             self.destroy_snapshots(&fs, snapshots.get(1..).unwrap_or_default())
                 .await?;
             if pulling.is_some() {
-                self.z(&["inherit", PULL_PROPERTY, &parent]).await?;
+                self.marks(&parent).clear_pull().await.map_err(internal)?;
             }
             self.receives.forget(name);
             return self.copy_now(&scope).await;
         }
         let retarget = pulling.as_deref() != Some(target.as_str());
         if retarget {
-            self.mark_slot_role(&parent, SlotRole::Mirror)
+            self.marks(&parent)
+                .set_role(SlotRole::Mirror)
                 .await
                 .map_err(internal)?;
         }
@@ -722,7 +687,8 @@ impl VolumeStorage {
         };
         let token = match scope.fs() {
             Some(_) => self
-                .property(&fs, RESUME_TOKEN_PROPERTY)
+                .marks(&fs)
+                .get(Mark::ResumeToken)
                 .await
                 .map_err(internal)?,
             None => None,
@@ -747,8 +713,10 @@ impl VolumeStorage {
         // Set last before the spawn, so a step above that fails leaves `ployz:pull` naming
         // the target it named before.
         if retarget {
-            self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
-                .await?;
+            self.marks(&parent)
+                .set_pull(&target)
+                .await
+                .map_err(internal)?;
         }
         let storage = self.clone();
         let (from, r#gen) = (request.from, request.r#gen);
@@ -842,20 +810,10 @@ impl VolumeStorage {
         else {
             return Ok(());
         };
-        for mark in [
-            CUT_PROPERTY,
-            EPOCH_PROPERTY,
-            PROMOTE_PROPERTY,
-            SEED_PROPERTY,
-        ] {
-            self.zfs(&["inherit", mark, fs])
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        self.zfs(&["set", &format!("{PULLED_PROPERTY}={newest}"), fs])
+        self.marks(fs)
+            .apply(&Marks::received(newest))
             .await
-            .map_err(|error| error.to_string())?;
-        Ok(())
+            .map_err(|error| error.to_string())
     }
 
     /// The slot's bound raised to the writer's, when the writer's Volume grew since the
@@ -937,7 +895,12 @@ impl VolumeStorage {
         };
         let name = &scope.name;
         if let Some(root) = scope.root()? {
-            if self.unadopted_seed(&root.name).await.map_err(internal)? {
+            if self
+                .marks(&root.name)
+                .unadopted_seed()
+                .await
+                .map_err(internal)?
+            {
                 ployzd::faults::kill_inside(
                     "SetVolumeCopy.SeedToForget",
                     Some(forgetting(wire, request.r#gen)),

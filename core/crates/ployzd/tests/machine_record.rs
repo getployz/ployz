@@ -3,10 +3,10 @@ mod test_dir;
 use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsExt};
 
 use ployz_core::{
-    AdvertisedEndpoint, DeviceKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest, LeaveRequest,
-    Left, LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName, MachineRuntime,
-    MachineUpdate, ManagementClientLabel, ManagementScope, PublicIpUpdate, Registered,
-    SelectedEndpoint, SetManagementClientRequest,
+    AdvertisedEndpoint, ClientKey, DeviceKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest,
+    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName,
+    MachineRuntime, MachineUpdate, ManagementClientLabel, ManagementScope, PublicIpUpdate,
+    Registered, SelectedEndpoint, SetManagementClientRequest,
 };
 use ployzd::machine::{
     EnrollPlan, LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior,
@@ -272,9 +272,11 @@ async fn clear_persists_a_tombstone_of_public_keys_only() {
                 .unwrap()
                 .capability
                 .unwrap();
-            let public = *iroh::SecretKey::from_bytes(capability.client_secret())
-                .public()
-                .as_bytes();
+            let public = ClientKey::from_bytes(
+                *iroh::SecretKey::from_bytes(capability.client_secret())
+                    .public()
+                    .as_bytes(),
+            );
             (capability, public)
         }
     };
@@ -574,7 +576,7 @@ async fn leave_resent_to_a_resetting_machine_answers_left() {
 #[test]
 fn directory_holding_only_host_preparation_is_claimed() {
     let dir = TestDir::new("ployzd-state");
-    let prepare = dir.0.join(ployzd::machine::PREPARE_DIR_NAME);
+    let prepare = dir.0.join(ployz_core::PREPARE_DIR_NAME);
     fs::create_dir_all(&prepare).unwrap();
     fs::write(prepare.join("state.json"), b"{}").unwrap();
 
@@ -586,7 +588,7 @@ fn directory_holding_only_host_preparation_is_claimed() {
 fn reset_keeps_host_preparation() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    let prepare = dir.0.join(ployzd::machine::PREPARE_DIR_NAME);
+    let prepare = dir.0.join(ployz_core::PREPARE_DIR_NAME);
     fs::create_dir_all(&prepare).unwrap();
     fs::write(prepare.join("state.json"), b"{}").unwrap();
 
@@ -599,7 +601,7 @@ fn reset_keeps_host_preparation() {
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect::<Vec<_>>(),
-        vec![std::ffi::OsString::from(ployzd::machine::PREPARE_DIR_NAME)]
+        vec![std::ffi::OsString::from(ployz_core::PREPARE_DIR_NAME)]
     );
 }
 
@@ -1115,7 +1117,7 @@ fn a_fresh_joiner_admits_the_issuers_devices_and_a_replay_keeps_its_own() {
     );
     assert_eq!(store.record().devices().collect::<Vec<_>>(), [approved]);
     assert_eq!(
-        store.record().management_scope(approved.as_bytes()),
+        store.record().management_scope(&approved.into()),
         Some(ManagementScope::Full)
     );
 

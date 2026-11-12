@@ -434,6 +434,7 @@ fn admit(
     store.write_trusted(
         who,
         &Command::Admit(Admit::Deploy(Deploy {
+            teardown: None,
             id: deployment(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
@@ -818,6 +819,7 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
         .write_trusted(
             &who,
             &Command::Admit(Admit::Retry(Retry {
+                teardown: None,
                 id: deployment(2),
                 deployment: deployment(1),
                 rolls_back: None,
@@ -825,6 +827,7 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             })),
             &Trusted::default(),
         )
@@ -1365,6 +1368,7 @@ fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
         .unwrap();
     // Staging deployed once, so its Namespace is reserved.
     let staging = Command::Admit(Admit::Deploy(Deploy {
+        teardown: None,
         id: deployment(1),
         environment: at(Some("staging")),
         services: Vec::new(),
@@ -1803,6 +1807,7 @@ fn a_reapply_refuses_a_revision_that_ships_a_referenced_service_otherwise_than_i
         .write_trusted(
             &who,
             &Command::Admit(Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployment(2),
                 environment: EnvironmentRef::default(),
                 services: vec![ServiceName::parse("worker").unwrap()],
@@ -1891,6 +1896,7 @@ fn deploy_only(store: &ConfigStore, who: &Actor, n: u8, service: &str) {
         .write_trusted(
             who,
             &Command::Admit(Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployment(n),
                 environment: EnvironmentRef::default(),
                 services: vec![ServiceName::parse(service).unwrap()],

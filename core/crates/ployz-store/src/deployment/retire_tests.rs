@@ -151,6 +151,7 @@ fn admit(
     choose: impl FnOnce(&mut Deploy),
 ) -> Result<DeploymentSummary, ployz_core::RpcError> {
     let mut deploy = Deploy {
+        teardown: None,
         id: deployment(n),
         environment: EnvironmentRef::default(),
         services: services.iter().map(|service| name(service)).collect(),
@@ -261,6 +262,7 @@ fn redeploy(store: &ConfigStore, who: &Actor, n: u8, source: &DeploymentId) {
         .write(
             who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: deployment(n),
                 deployment: source.clone(),
                 rolls_back: None,
@@ -268,6 +270,7 @@ fn redeploy(store: &ConfigStore, who: &Actor, n: u8, source: &DeploymentId) {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
         )
         .unwrap();

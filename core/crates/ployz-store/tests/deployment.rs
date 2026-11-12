@@ -83,6 +83,7 @@ fn admit(
     store.write_trusted(
         who,
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id(n),
             environment: EnvironmentRef::default(),
             services: services
@@ -3129,6 +3130,7 @@ fn retry(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: None,
@@ -3136,6 +3138,7 @@ fn retry(
             accept_volume_loss: Vec::new(),
             approvals: Vec::new(),
             awaits_approval: false,
+            approval: None,
         }),
         &ployz_store::Trusted::default(),
     )
@@ -3337,6 +3340,7 @@ fn rollback(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: Some(confirmed.to_vec()),
@@ -3344,6 +3348,7 @@ fn rollback(
             accept_volume_loss: Vec::new(),
             approvals: Vec::new(),
             awaits_approval: false,
+            approval: None,
         }),
         &ployz_store::Trusted::default(),
     )
@@ -4318,6 +4323,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
         store.write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -4425,6 +4431,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4543,6 +4550,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                 .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
+                        teardown: None,
                         id: id(n),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
@@ -4631,6 +4639,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         store.write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4761,6 +4770,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(5),
                 environment: staging,
                 services: Vec::new(),
@@ -4804,6 +4814,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     };
     let admit = |n: u8, who: &Actor| {
         let command = Command::Admit(Admit::Deploy(Deploy {
+            teardown: None,
             id: id(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
@@ -4889,6 +4900,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
         store.write(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4913,6 +4925,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
         .write(
             &who,
             &Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: id(2),
                 deployment: id(1),
                 rolls_back: None,
@@ -4920,6 +4933,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -5409,6 +5423,7 @@ fn deploy_choosing(
     choose: impl FnOnce(&mut Deploy),
 ) -> Result<DeploymentSummary, RpcError> {
     let mut deploy = Deploy {
+        teardown: None,
         id: id(n),
         environment: EnvironmentRef::default(),
         services: Vec::new(),
@@ -5713,6 +5728,7 @@ fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(n),
                 deployment: id(1),
                 rolls_back: None,
@@ -5720,6 +5736,7 @@ fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &Trusted {
                 running,
@@ -5757,6 +5774,7 @@ fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() 
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(1),
                 rolls_back: None,
@@ -5764,6 +5782,7 @@ fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() 
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &agent(approval, running),
         )
@@ -5856,6 +5875,7 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(4),
                 deployment: id(2),
                 rolls_back: None,
@@ -5863,6 +5883,7 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &Trusted {
                 approval: Approval::Required,
@@ -5926,6 +5947,7 @@ fn agent_deploys_only(
     store.write_trusted(
         who,
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id(n),
             environment: EnvironmentRef::default(),
             services: vec![ServiceName::parse(service).unwrap()],
@@ -5968,6 +5990,7 @@ fn agent_deploys_upload(
     store.write_trusted(
         who,
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
@@ -6015,6 +6038,7 @@ fn agent_retries(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: None,
@@ -6022,6 +6046,7 @@ fn agent_retries(
             accept_volume_loss: Vec::new(),
             approvals: Vec::new(),
             awaits_approval: false,
+            approval: None,
         }),
         &Trusted {
             approval,
@@ -6050,6 +6075,7 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(2),
                 rolls_back: None,
@@ -6057,6 +6083,7 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &staging,
         )
@@ -6208,6 +6235,7 @@ fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
         .write(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(2),
                 rolls_back: None,
@@ -6215,6 +6243,7 @@ fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -6507,6 +6536,7 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(2),
                 rolls_back: None,
@@ -6514,6 +6544,7 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &unprotecting(approval),
         )
@@ -6591,6 +6622,7 @@ fn retry_as(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: None,
@@ -6598,6 +6630,7 @@ fn retry_as(
             accept_volume_loss: Vec::new(),
             approvals: Vec::new(),
             awaits_approval: false,
+            approval: None,
         }),
         trusted,
     )
@@ -7317,6 +7350,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id(n),
                     environment: EnvironmentRef::default(),
                     services: vec![ServiceName::parse("web").unwrap()],
@@ -7391,6 +7425,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(4),
                 environment: EnvironmentRef::default(),
                 services: vec![ServiceName::parse("web").unwrap()],
@@ -7434,6 +7469,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id(n),
                     environment: EnvironmentRef::default(),
                     services: vec![ServiceName::parse("web").unwrap()],
@@ -7571,6 +7607,7 @@ fn a_rollback_that_takes_a_service_off_asks_and_names_it() {
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(1),
                 rolls_back: None,
@@ -7578,6 +7615,7 @@ fn a_rollback_that_takes_a_service_off_asks_and_names_it() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             trusted,
         )
@@ -7619,6 +7657,7 @@ fn a_retry_that_takes_nothing_off_still_asks_nothing() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(2),
                 deployment: id(1),
                 rolls_back: None,
@@ -7626,6 +7665,7 @@ fn a_retry_that_takes_nothing_off_still_asks_nothing() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &protector(Approval::Required, Asks::Destroys),
         )
@@ -7796,6 +7836,7 @@ fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_star
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(1),
                 rolls_back: None,
@@ -7803,6 +7844,7 @@ fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_star
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &protector(Approval::Required, Asks::Destroys),
         )
@@ -7895,6 +7937,7 @@ fn rollback_to(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(to),
             rolls_back: None,
@@ -7902,6 +7945,7 @@ fn rollback_to(
             accept_volume_loss: Vec::new(),
             approvals: Vec::new(),
             awaits_approval: false,
+            approval: None,
         }),
         &protector(Approval::Required, Asks::Destroys),
     )
@@ -8220,6 +8264,7 @@ fn a_device_approval_of_the_plan_reaches_the_runner_with_the_specs_it_names() {
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 target: true,
+                deployment: None,
             },
         )
         .unwrap();
@@ -8228,6 +8273,7 @@ fn a_device_approval_of_the_plan_reaches_the_runner_with_the_specs_it_names() {
         store.write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -8254,6 +8300,212 @@ fn a_device_approval_of_the_plan_reaches_the_runner_with_the_specs_it_names() {
     assert_eq!(plan.target, Some(claimed.intent.target));
 }
 
+fn retry_approved(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, source): (u8, u8),
+    approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Retry(Retry {
+            teardown: None,
+            id: id(n),
+            deployment: id(source),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
+            approvals: Vec::new(),
+            awaits_approval: false,
+            approval: approval.map(Box::new),
+        }),
+        &Trusted::default(),
+    )
+}
+
+fn redeploy_plan(store: &ConfigStore, who: &Actor, source: u8) -> ployz_store::PlanView {
+    store
+        .read(
+            who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: true,
+                deployment: Some(id(source)),
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_redeploys_approval_names_what_its_runner_lowers_whatever_was_saved_since() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    // Saved since: a Deploy now would ship three replicas of web, a redeploy of #1 one.
+    set_replicas(&store, &who, "web", 3);
+    let now = store
+        .read(
+            &who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: true,
+                deployment: None,
+            },
+        )
+        .unwrap();
+    let plan = redeploy_plan(&store, &who, 1);
+    assert_ne!(plan.target, now.target);
+    assert!(plan.changes.is_empty());
+    let approval = device_approval(&id(2), &plan);
+    // An approval of another Deployment would be refused by every Server.
+    assert_eq!(
+        code(retry_approved(&store, &who, (3, 1), Some(approval.clone()))),
+        RpcErrorCode::InvalidArgument
+    );
+    retry_approved(&store, &who, (2, 1), Some(approval.clone())).unwrap();
+    let claimed = store.claim(&id(2), &a).unwrap();
+    assert_eq!(claimed.approval, Some(approval));
+    // The plan lowered exactly what the redeploy's runner is handed to run.
+    assert_eq!(plan.target, Some(claimed.intent.target));
+}
+
+#[test]
+fn a_rollbacks_approval_names_what_its_runner_lowers() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    let ran = |n: u8| {
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    };
+    admit(&store, &who, 1, &[], None).unwrap();
+    ran(1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    ran(2);
+    let plan = redeploy_plan(&store, &who, 1);
+    let approval = device_approval(&id(3), &plan);
+    store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                teardown: None,
+                id: id(3),
+                deployment: id(1),
+                rolls_back: Some(vec![2]),
+                version: None,
+                accept_volume_loss: Vec::new(),
+                approvals: Vec::new(),
+                awaits_approval: false,
+                approval: Some(Box::new(approval.clone())),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let claimed = store.claim(&id(3), &a).unwrap();
+    assert_eq!(claimed.approval, Some(approval));
+    assert_eq!(plan.target, Some(claimed.intent.target));
+}
+
+#[test]
+fn a_redeploy_without_an_approval_runs_as_before_and_its_source_lends_none() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    let plan = store
+        .read(
+            &who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: true,
+                deployment: None,
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                teardown: None,
+                id: id(1),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: Some(plan.version.clone()),
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: Some(Box::new(device_approval(&id(1), &plan))),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    // As an older dashboard or CLI sends it: no approval field at all.
+    let older: Admit = serde_json::from_value(json!({
+        "admit": "retry", "id": id(2), "deployment": id(1),
+    }))
+    .unwrap();
+    let Admit::Retry(retry) = &older else {
+        panic!("a retry");
+    };
+    assert_eq!(retry.approval, None);
+    assert!(
+        !serde_json::to_value(&older)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("approval")
+    );
+    store
+        .write_trusted(&who, &older, &Trusted::default())
+        .unwrap();
+    // A Server that enforces gets nothing to admit it by, and refuses it.
+    assert_eq!(store.claim(&id(2), &a).unwrap().approval, None);
+}
+
+#[test]
+fn a_redeploy_plan_names_no_services_and_only_a_deployment_of_its_environment() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let plan = |services: Vec<ServiceName>, source: u8| {
+        store.read(
+            &who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services,
+                target: true,
+                deployment: Some(id(source)),
+            },
+        )
+    };
+    assert_eq!(
+        code(plan(vec![ServiceName::parse("web").unwrap()], 1)),
+        RpcErrorCode::InvalidArgument
+    );
+    assert_eq!(code(plan(Vec::new(), 9)), RpcErrorCode::NotFound);
+}
+
 #[test]
 fn a_plan_lowers_its_target_only_when_asked() {
     let (store, who) = shop();
@@ -8264,6 +8516,7 @@ fn a_plan_lowers_its_target_only_when_asked() {
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 target: false,
+                deployment: None,
             },
         )
         .unwrap();
@@ -8288,6 +8541,7 @@ fn a_narrowed_plan_lowers_only_the_services_it_ships() {
                     environment: EnvironmentRef::default(),
                     services,
                     target: true,
+                    deployment: None,
                 },
             )
             .unwrap();

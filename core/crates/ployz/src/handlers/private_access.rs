@@ -4,7 +4,7 @@
 use std::io::Read;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{MachineFailure, PartialResult, RpcError, RpcErrorCode, authority::Signer};
+use ployz_core::{Hint, MachineFailure, PartialResult, RpcError, RpcErrorCode, authority::Signer};
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
@@ -13,7 +13,7 @@ use crate::private_access::{
     AccessChanged, AccessMachine, MachineAccess, device_approval, key_refused, observe_access,
     seal_key, shown, turn_off, turn_on,
 };
-use crate::ui::{self, Cell, Gaps, Hint, Table};
+use crate::ui::{self, Cell, Gaps, Table};
 
 /// The most a Tailscale auth key holds on stdin. Theirs run about a hundred bytes.
 const KEY_LIMIT: usize = 4096;
@@ -98,13 +98,16 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
     } else {
         ask_key()?
     };
-    let device_key = super::device::key::path(&super::config_path(root)?);
+    let config = super::config_path(root)?;
+    let device_key = super::device::key::path(&config);
     with_client(root, |client| {
         Box::pin(async move {
+            let seal_to = super::device::seal_to(&config, client).await?;
             let observed = observe_access(client).await?;
-            let sealed = seal_key(&observed, &key)?;
-            let approval = match (super::device::key::load(&device_key), observed.sealing) {
-                (Ok(Some(secret)), Some(cluster)) => Some(device_approval(
+            let cluster = seal_to.key(client, observed.sealing).await?;
+            let sealed = seal_key(&cluster, &key)?;
+            let approval = match super::device::key::load(&device_key) {
+                Ok(Some(secret)) => Some(device_approval(
                     &Signer::from_seed(&secret),
                     cluster,
                     &sealed,

@@ -7,12 +7,12 @@
 //! (`--all` adds the rest), `get SERVICE` shows every Setting and its domains plus
 //! the `values` object that `set SERVICE --patch` takes back.
 
-use crate::ui::{self, Hint};
+use crate::ui;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 use std::io::{IsTerminal as _, Read};
 
-use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcErrorCode};
+use ployz_core::{Hint, MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
     NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
@@ -308,22 +308,26 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         .into_iter()
         .flatten()
         .map(|assignment| {
-            assignment
+            let (text, value) = assignment
                 .split_once('=')
-                .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))
+                .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))?;
+            Ok(Assignment {
+                text,
+                path: SettingPath::parse(text),
+                value,
+            })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    if let Some((path, _)) = assignments
-        .iter()
-        .find(|(path, value)| seals_as_text(path, value))
-    {
+    if let Some(Assignment { text: path, .. }) = assignments.iter().find(|assignment| {
+        assignment.path.is_ok() && seals_as_text(assignment.text, assignment.value)
+    }) {
         return Err(Error::usage(format!(
             "A new secret never goes on the command line: pipe it in with printf %s \"$VALUE\" | ployz set {path} --secret"
         )));
     }
-    let naming = assignments
-        .iter()
-        .any(|(path, value)| names_a_server(path, value));
+    let naming = assignments.iter().any(|assignment| {
+        (assignment.path.as_ref()).is_ok_and(|path| names_a_server(path, assignment.value))
+    });
     // Without Server access the values go as typed: Cloud resolves a name from the
     // Servers it keeps, for every role.
     let servers = naming
@@ -331,11 +335,10 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         .flatten();
     let changes = assignments
         .into_iter()
-        .map(|(path, value)| {
-            Ok(Change::Set {
-                path: SettingPath::parse(path)?,
-                value: Value::String(resolved(path, value, servers.as_deref())?),
-            })
+        .map(|assignment| {
+            let path = assignment.path?;
+            let value = Value::String(resolved(&path, assignment.value, servers.as_deref())?);
+            Ok(Change::Set { path, value })
         })
         .collect::<Result<Vec<_>, Error>>()?;
     edit(root, changes)
@@ -347,7 +350,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
 /// ID no Server lists, or any value without `servers`, goes as given: a preference needs
 /// no live Server.
 fn resolved(
-    path: &str,
+    path: &SettingPath,
     value: &str,
     servers: Option<&[MachineObservation]>,
 ) -> Result<String, Error> {
@@ -377,6 +380,10 @@ fn seals(variable: &Value) -> bool {
 /// Whether `set PATH=VALUE` would send a new secret as text. A variable's value is any
 /// text, so only the shape the Store seals counts: `{"secret": "…"}`, nonempty, alone.
 /// A registry credential takes no text but `{"secret": true}`, so any new secret counts.
+///
+/// It reads the path as typed, case and all, not what it parses to: `setup.registryCredential`
+/// and `volumes.env.name` parse to a Setup Command and a Volume field, and the refusal still
+/// covers them. The caller asks only of a path that parses.
 fn seals_as_text(path: &str, value: &str) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(value) else {
         return false;
@@ -395,9 +402,15 @@ fn seals_as_text(path: &str, value: &str) -> bool {
 }
 
 /// Whether `value` names a Server, by ID or name, as `path`'s Preferred Builder.
-fn names_a_server(path: &str, value: &str) -> bool {
-    matches!(path.split_once('.'), Some((service, "preferredBuilder")) if !service.contains('.'))
-        && value != "github"
+fn names_a_server(path: &SettingPath, value: &str) -> bool {
+    path.is_preferred_builder() && value != "github"
+}
+
+/// One `PATH=VALUE` of `set`: the path as typed, which a refusal names, and what it parses to.
+struct Assignment<'a> {
+    text: &'a str,
+    path: Result<SettingPath, RpcError>,
+    value: &'a str,
 }
 
 /// The one positional a flag applies to.
@@ -664,6 +677,10 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
 mod tests {
     use super::*;
 
+    fn path(text: &str) -> SettingPath {
+        SettingPath::parse(text).unwrap()
+    }
+
     fn server(seed: u8, name: &str) -> MachineObservation {
         MachineObservation::new(
             ployz_core::Machine {
@@ -719,22 +736,23 @@ mod tests {
         let servers = [server(1, "machine-1"), server(2, "machine-2")];
         let id = format!("{:032x}", 2);
         assert_eq!(
-            resolved("web.preferredBuilder", "machine-2", Some(&servers)).unwrap(),
+            resolved(&path("web.preferredBuilder"), "machine-2", Some(&servers)).unwrap(),
             id
         );
-        for (path, value) in [
+        for (text, value) in [
             ("web.preferredBuilder", "github"),
             ("web.preferredBuilder", id.as_str()),
             ("web.env.preferredBuilder", "machine-2"),
             ("web.image", "machine-2"),
         ] {
             assert_eq!(
-                resolved(path, value, None).unwrap(),
+                resolved(&path(text), value, None).unwrap(),
                 value,
-                "{path}={value}"
+                "{text}={value}"
             );
         }
-        let missing = resolved("web.preferredBuilder", "machine-9", Some(&servers)).unwrap_err();
+        let missing =
+            resolved(&path("web.preferredBuilder"), "machine-9", Some(&servers)).unwrap_err();
         assert!(missing.to_string().contains("machine-9"), "{missing}");
     }
 
@@ -747,7 +765,7 @@ mod tests {
             (" machine-1 ".to_owned(), format!("{:032x}", 1)),
         ] {
             assert_eq!(
-                resolved("web.preferredBuilder", &value, Some(&servers)).unwrap(),
+                resolved(&path("web.preferredBuilder"), &value, Some(&servers)).unwrap(),
                 id,
                 "{value:?}"
             );
@@ -781,11 +799,29 @@ mod tests {
     }
 
     #[test]
+    fn the_refusal_reads_a_path_as_typed_so_it_covers_every_spelling_that_parses() {
+        let fake = r#"{"secret":"FAKE-3588"}"#;
+        for text in [
+            "setup.registryCredential",
+            "volumes.env.name",
+            "volumes.env.storage",
+            "volumes.env.sharedWrites",
+            "configs.env.name",
+        ] {
+            assert!(SettingPath::parse(text).is_ok(), "{text} parses");
+            assert!(seals_as_text(text, fake), "{text}");
+        }
+        for text in ["setup.registrycredential", "web.registrycredential"] {
+            assert!(!seals_as_text(text, fake), "{text}");
+        }
+    }
+
+    #[test]
     fn an_id_the_servers_dont_list_is_sent_as_typed() {
         let servers = [server(1, "machine-1")];
         let unlisted = format!("{:032x}", 7);
         assert_eq!(
-            resolved("web.preferredBuilder", &unlisted, Some(&servers)).unwrap(),
+            resolved(&path("web.preferredBuilder"), &unlisted, Some(&servers)).unwrap(),
             unlisted,
             "a preference needs no live Server; build selection falls back without it"
         );
@@ -797,7 +833,7 @@ mod tests {
         let servers = [server(1, &named_like_an_id), server(0xaa, "machine-aa")];
         assert_eq!(
             resolved(
-                "web.preferredBuilder",
+                &path("web.preferredBuilder"),
                 &format!("{:032x}", 0xaa),
                 Some(&servers)
             )
@@ -807,7 +843,7 @@ mod tests {
         );
         assert_eq!(
             resolved(
-                "web.preferredBuilder",
+                &path("web.preferredBuilder"),
                 &named_like_an_id,
                 Some(&servers[..1])
             )
@@ -817,7 +853,12 @@ mod tests {
         );
         let both = [server(1, &format!("{:032x}", 2)), server(2, "machine-2")];
         assert_eq!(
-            resolved("web.preferredBuilder", &format!("{:032x}", 2), Some(&both)).unwrap(),
+            resolved(
+                &path("web.preferredBuilder"),
+                &format!("{:032x}", 2),
+                Some(&both)
+            )
+            .unwrap(),
             format!("{:032x}", 2),
             "one Server's ID beats another's name"
         );

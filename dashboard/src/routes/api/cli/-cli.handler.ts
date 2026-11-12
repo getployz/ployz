@@ -47,7 +47,7 @@ import { freshApproval, freshOperationDigest, planClean } from "#/modules/machin
 import { ChannelApproval } from "#/modules/server-upgrade/server-upgrade";
 import { approveUpgradeChannel, readCliServerUpgrade, readUpgradeChannel, upgradeChannelView } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, volumeRunInput } from "#/modules/operations/cli-wire";
+import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, volumeRunInput } from "#/modules/operations/cli-wire";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
@@ -394,9 +394,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { namespace, volumes: plan.doomed.map(({ identity, label }) => ({ ...identity.id, label })) };
     }
     case "POST namespaces/:id/clean": {
+      const input = request.body === null ? {} : yield* decodeBody(CleanNamespace, request, "A clean takes at most the teardown a Device signed.");
       const call = yield* operationCall(request);
       if (!call.ok) return refusal(call.refused.refusal);
-      return admitted(yield* cleanNamespace(caller, decodeURIComponent(id ?? ""), call), accepted);
+      return admitted(yield* cleanNamespace(caller, decodeURIComponent(id ?? ""), call, input.teardown ?? null), accepted);
     }
     case "GET namespace-cleanups/:id": {
       const cleanup = Schema.is(Uuid)(id) ? yield* readCliNamespaceCleanup(caller.organization.id, id) : null;

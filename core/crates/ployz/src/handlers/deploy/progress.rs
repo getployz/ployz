@@ -2,13 +2,12 @@
 
 use crate::deploy::{Replica, service_row, starts, updates};
 use crate::failure::Failure;
-use crate::ui::{
-    Hint,
-    progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work},
+use crate::ui::progress::{
+    Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work,
 };
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
 use ployz_core::{
-    DeployOperation, DeployWarning, PullPolicy, QualifiedService, RpcError, RpcErrorCode,
+    DeployOperation, DeployWarning, Hint, PullPolicy, QualifiedService, RpcError, RpcErrorCode,
     ServiceName, config::MEM_LIMIT_MAX,
 };
 use ployz_store::{

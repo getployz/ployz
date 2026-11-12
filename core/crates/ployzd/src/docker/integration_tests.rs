@@ -1,3 +1,5 @@
+use ployz_core::labels;
+use ployz_core::{ServiceId, ServiceName};
 use std::{
     collections::BTreeMap,
     fs,
@@ -113,7 +115,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     assert_eq!(inspected.namespace.as_str(), "app");
     assert_eq!(inspected.resolved_spec.name.as_str(), "default-api");
     assert_eq!(
-        inspected.labels.get(LABEL_NAMESPACE).map(String::as_str),
+        inspected.labels.get(labels::NAMESPACE).map(String::as_str),
         Some("app")
     );
     assert_eq!(
@@ -799,8 +801,8 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
                 driver: "local".into(),
                 options: BTreeMap::new(),
                 labels: BTreeMap::from([
-                    (ployz_core::MANAGED_LABEL.into(), String::new()),
-                    (ployz_core::NAMESPACE_LABEL.into(), "app".into()),
+                    (ployz_core::labels::MANAGED.into(), String::new()),
+                    (ployz_core::labels::NAMESPACE.into(), "app".into()),
                 ]),
             },
         )
@@ -1248,13 +1250,13 @@ async fn create_managed_container(
     kind: ContainerKind,
 ) -> ContainerId {
     let mut labels = HashMap::from([
-        (LABEL_MANAGED.to_owned(), String::new()),
-        (LABEL_NAMESPACE.to_owned(), "app".to_owned()),
-        (LABEL_SERVICE_ID.to_owned(), service_id.to_string()),
-        (LABEL_SERVICE_NAME.to_owned(), service_name.to_string()),
+        (labels::MANAGED.to_owned(), String::new()),
+        (labels::NAMESPACE.to_owned(), "app".to_owned()),
+        (labels::SERVICE_ID.to_owned(), service_id.to_string()),
+        (labels::SERVICE_NAME.to_owned(), service_name.to_string()),
     ]);
     if kind == ContainerKind::PreDeployHook {
-        labels.insert(LABEL_HOOK.to_owned(), LABEL_HOOK_PRE_DEPLOY.to_owned());
+        labels.insert(labels::HOOK.to_owned(), labels::HOOK_PRE_DEPLOY.to_owned());
     }
     let name = format!("ployz-observer-test-{}", MachineId::random());
     let response = docker

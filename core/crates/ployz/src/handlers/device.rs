@@ -30,7 +30,12 @@ use crate::cli::{base, positional, yes};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::connect::Client;
-use crate::ui::{self, Cell, Gaps, Hint, Table, Tone};
+use crate::ui::{self, Cell, Gaps, Table, Tone};
+use ployz_core::Hint;
+
+mod pin;
+pub(super) use pin::seal_to;
+pub(crate) use pin::{pin, pin_command};
 
 pub(crate) fn group(command: Command) -> Command {
     command.about("Approve the devices that can exec and port-forward")
@@ -63,7 +68,7 @@ pub(crate) fn approve_command(command: Command) -> Command {
                 .long("passkey")
                 .action(ArgAction::SetTrue)
                 .conflicts_with("join")
-                .help("Approve a passkey added in Ployz Cloud, which may approve workflows, automatic deploy rules and Release Channels, and nothing else"),
+                .help("Approve a passkey added in Ployz Cloud, which may approve workflows, automatic deploy rules, volume changes and Release Channels, and nothing else"),
         )
         .arg(yes("Approve without asking"))
 }
@@ -212,7 +217,7 @@ async fn approve_passkey(
     let credential = cloud_account::from_env(store).await?;
     let passkey = pending_passkey(&credential, code).await?;
     ui::note(format!(
-        "Passkey {code} for {}. It can approve workflows, automatic deploy rules and Release Channels on these servers, and nothing else.",
+        "Passkey {code} for {}. It can approve workflows, automatic deploy rules, volume changes and Release Channels on these servers, and nothing else.",
         passkey.account
     ));
     if !leaf.get_flag("yes") {
@@ -767,9 +772,9 @@ pub(super) fn request_hint() -> Hint {
 /// Daemons from before Devices, or before Device enforcement. Delete once every supported
 /// daemon has both.
 mod compat {
-    use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, op};
+    use ployz_core::{MachineTarget, RpcError};
 
-    use crate::{cluster::Call, connect::Client};
+    use crate::connect::Client;
 
     /// Whether the Machine at `target` promises `capability`; one that doesn't is an
     /// omission, not a failure.
@@ -778,14 +783,10 @@ mod compat {
         target: &MachineTarget,
         capability: &str,
     ) -> Result<bool, RpcError> {
-        Ok(client
-            .call_shared::<op::DescribeContract>(
-                DescribeContractRequest {},
-                Call::once().to(target),
-            )
+        client
+            .supports(Some(target), capability)
             .await
-            .map_err(crate::connect::rpc_error)?
-            .supports(capability))
+            .map_err(crate::connect::rpc_error)
     }
 }
 
@@ -800,7 +801,7 @@ impl Reach {
     async fn full(client: &mut Client) -> Result<Self, Error> {
         let mut reach = Self::of(client).await?;
         let direct = client.full_machines();
-        if client.full_single() {
+        if client.full_routes().single() {
             reach.asked.retain(|machine| Some(*machine) == reach.entry);
             reach.silent.retain(|machine| Some(*machine) == reach.entry);
         } else if !direct.is_empty() {

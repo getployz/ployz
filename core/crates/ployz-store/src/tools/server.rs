@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::LineCap;
+use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, server_show, servers};
 use super::cloud::{LogsAnswer, Operation, OperationsAnswer, RunState, ServersAnswer, UnknownEnd};
+use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
@@ -23,7 +25,6 @@ use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
 use crate::{NamespacesQuery, NamespacesView, OwnedNamespace};
 
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 const BUILDS: &str = "^(auto|[0-9]+)$";
 const SETTABLE: [&str; 4] = [
     "accepts_builds",
@@ -286,17 +287,13 @@ impl Tool for ServerLogs {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServerDrain {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    server: ServerName,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
+tool_input! {
+    pub(crate) struct ServerDrain {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        server: ServerName,
+        @wait,
+        @key,
+    }
 }
 
 impl Tool for ServerDrain {
@@ -315,24 +312,22 @@ impl Tool for ServerDrain {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServerSet {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    server: ServerName,
-    #[serde(default)]
-    accepts_builds: Option<bool>,
-    /// false: nothing new starts there; what runs stays until a drain or the next deploy moves it.
-    #[serde(default)]
-    accepts_services: Option<bool>,
-    #[serde(default)]
-    accepts_ingress: Option<bool>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(BUILDS))]
-    build_concurrency: Option<String>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
+tool_input! {
+    pub(crate) struct ServerSet {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        server: ServerName,
+        #[serde(default)]
+        accepts_builds: Option<bool>,
+        /// false: nothing new starts there; what runs stays until a drain or the next deploy moves it.
+        #[serde(default)]
+        accepts_services: Option<bool>,
+        #[serde(default)]
+        accepts_ingress: Option<bool>,
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(BUILDS))]
+        build_concurrency: Option<String>,
+        @key,
+    }
 }
 
 impl Tool for ServerSet {
@@ -387,17 +382,13 @@ impl Tool for ServerSet {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServerUpgrade {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    server: ServerName,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
+tool_input! {
+    pub(crate) struct ServerUpgrade {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        server: ServerName,
+        @wait,
+        @key,
+    }
 }
 
 impl Tool for ServerUpgrade {
@@ -422,19 +413,14 @@ impl Tool for ServerUpgrade {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServerClean {
-    /// Its namespace, as the server listing shows it.
-    #[schemars(with = "String")]
-    leftover: Namespace,
-    #[serde(default)]
-    accept_volume_loss: Vec<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
+tool_input! {
+    pub(crate) struct ServerClean {
+        /// Its namespace, as the server listing shows it.
+        #[schemars(with = "String")]
+        leftover: Namespace,
+        @loss,
+        @key,
+    }
 }
 
 impl Tool for ServerClean {
@@ -460,8 +446,8 @@ impl Tool for ServerClean {
             return Err(Refusal::conflict(
                 "That is no leftover: an Environment owns it; it is not cleaned here",
             )
-            .with_next(Call::new(
-                "environment_show",
+            .with_next(Call::to(
+                ToolId::EnvironmentShow,
                 json!({ "project": owner.project, "environment": owner.environment }),
             ))
             .into());
@@ -503,18 +489,13 @@ impl Tool for ServerClean {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServerRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    server: ServerName,
-    #[serde(default)]
-    accept_volume_loss: Vec<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
+tool_input! {
+    pub(crate) struct ServerRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        server: ServerName,
+        @loss,
+        @key,
+    }
 }
 
 impl Tool for ServerRemove {
@@ -549,14 +530,12 @@ impl Tool for ServerRemove {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServerForget {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    server: ServerName,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
+tool_input! {
+    pub(crate) struct ServerForget {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        server: ServerName,
+        @key,
+    }
 }
 
 impl Tool for ServerForget {

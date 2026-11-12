@@ -18,13 +18,14 @@ use ployz_core::{
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
     RESTART_SESSION_GRANT_CAPABILITY, RETAINED_ENV_CAPABILITY, RULE_PASSKEY_CAPABILITY,
     RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
-    SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
-    SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_CHANNEL_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY,
+    SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY,
+    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
+    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, UPGRADE_CHANNEL_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
+    VOLUME_APPROVAL_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_HANDOFF_CAPABILITY,
+    VOLUME_PASSKEY_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -79,6 +80,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (BUILD_GRANT_RULE_CAPABILITY, "ployz.build.grant.rule.v1"),
         (DEPLOY_RULE_CAPABILITY, "ployz.container.deploy-rule.v1"),
         (RULE_PASSKEY_CAPABILITY, "ployz.rule.passkey.v1"),
+        (VOLUME_PASSKEY_CAPABILITY, "ployz.volume.passkey.v1"),
         (
             BUILD_GRANT_PREVIEW_CAPABILITY,
             "ployz.build.grant.preview.v1",
@@ -149,6 +151,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (SET_INGRESS_TUNNEL_CAPABILITY, "ployz.ingress.tunnel.v1"),
         (READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1"),
         (SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1"),
+        (SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1"),
         (SET_PRIVATE_ACCESS_CAPABILITY, "ployz.private-access.v1"),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
         (GENERATE_SEALING_KEY_CAPABILITY, "ployz.sealing.generate.v1"),
@@ -169,6 +172,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
         (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
         (VOLUME_APPROVAL_CAPABILITY, "ployz.volume.approval.v1"),
+        (VOLUME_HANDOFF_CAPABILITY, "ployz.volume.copy.handoff.v1"),
         (
             RESTART_SESSION_GRANT_CAPABILITY,
             "ployz.restart.session-grant.v2",
@@ -224,10 +228,12 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.restart.session-grant.v2",
             "ployz.restart.start-approval.v1",
             "ployz.restart.proposal.v1",
+            "ployz.teardown.v1",
             "ployz.container.deploy-approval.v1",
             "ployz.container.deploy-proposal.v1",
             "ployz.container.deploy-rule.v1",
             "ployz.rule.passkey.v1",
+            "ployz.volume.passkey.v1",
             "ployz.container.deploy-preview.v1",
             "ployz.preview.review.v1",
             "ployz.rule.commit-approval.v1",
@@ -264,6 +270,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.volume.copy.floor.v1",
             "ployz.volume.size.shrink.v1",
             "ployz.volume.approval.v1",
+            "ployz.volume.copy.handoff.v1",
         ]
     );
     assert_eq!(
@@ -276,6 +283,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.private-access.v1",
             "ployz.cluster.name.read.v1",
             "ployz.cluster.name.v1",
+            "ployz.cluster.doors.v1",
             "ployz.runtime.watch.v1",
             "ployz.ingress.tunnel.v1",
             "ployz.private-access.approval.v1",
@@ -429,6 +437,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: Cloud sends a proposal step only to a Machine that advertises it, and names an older one as needing a newer Ployz before the person signs; an older enforcing Machine refuses the step's envelope as unknown bytes",
     ),
     (
+        "ployz.teardown.v1",
+        "refused legibly: an older daemon ignores the teardown and, enforcing, refuses Leave and Forget as before and the takedown as unapproved, naming the Server; one not enforcing takes it off as before",
+    ),
+    (
         "ployz.restart.start-approval.v1",
         "gated: Cloud attaches a start approval only for a Machine that advertises it, and names an older one as needing a newer Ployz; the CLI signs one regardless, which an older enforcing Machine refuses as it refused an unapproved start",
     ),
@@ -447,6 +459,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.rule.passkey.v1",
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
+    ),
+    (
+        "ployz.volume.passkey.v1",
+        "gated: the dashboard asks a passkey to approve a Volume workflow only when every enforcing Machine it reaches advertises it. An older daemon refuses the approval's `assertions` and its `\"passkey\"` signer, so a passkey-approved Volume step there fails closed",
     ),
     (
         "ployz.container.deploy-preview.v1",
@@ -481,6 +497,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: a caller checks the contract first and refuses the resize, naming the Server whose daemon lacks it",
     ),
     (
+        "ployz.volume.copy.handoff.v1",
+        "gated: Cloud asks a Move's source for its handoff only when it advertises the capability, and otherwise commits as before; an enforcing target that has it refuses that promotion, so the Move releases back to its source. An older target ignores the receipt and promotes as before",
+    ),
+    (
         "ployz.volume.approval.v1",
         "falls back: an older daemon ignores the approval and the Forget recipient. It checks no approval and grants nothing, so it pulls and serves the send stream as before, and its Forget writes no withdrawal",
     ),
@@ -511,6 +531,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.cluster.name.v1",
         "gated: `ployz cluster name <name>` and the SDK check the contract first and refuse, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.cluster.doors.v1",
+        "falls back: `ployz ingress use`, `server init --ingress-closed` and Cloud founding declare through an online Server that serves it when the entry can't, and warn and set each Server's Doors as before when none can; claims nothing: the snapshot carries no declaration and readers infer the Doors from what runs, and an older Register ignores the joiner's claim",
     ),
     (
         "ployz.private-access.v1",
@@ -703,9 +727,6 @@ mod coverage {
             [
                 ("ployz.machine.enroll.v1", "F7"),
                 ("ployz.machine.enroll-for-recovery.v1", "F7"),
-                ("ployz.volume.remove.v1", "E6"),
-                ("ployz.volume.copy.set.v1", "E3 to E6"),
-                ("ployz.volume.size.set.v1", "E7"),
             ]
         );
     }
@@ -757,7 +778,11 @@ mod coverage {
             &[
                 "a Writer want with a start",
                 "a pull",
-                "cut, promote, forget",
+                "a cut",
+                "a handoff",
+                "a promote with no receipt",
+                "a forget of a copy",
+                "a forget of nothing",
                 "floor, snapshot",
             ],
         ),

@@ -190,6 +190,7 @@ async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
     let response = service
         .forget(Request::new(
             op::Forget::into_request(ForgetRequest {
+                teardown: None,
                 machine_id: MachineId::random(),
             })
             .encode()
@@ -1323,6 +1324,87 @@ mod ingress_doors {
         assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
         assert!(running(&runtime).await);
 
+        runtime.remove_tunnel_token().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reboot_places_a_held_door_only_while_the_cluster_declares_it() {
+        use crate::corrosion::{
+            AdminClient,
+            store_tests::{corrosion_db, identity_store},
+        };
+        let (data_dir, store, _without_cluster, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-declared").await;
+        let (replicated, task) = identity_store(corrosion_db()).await;
+        let mut service = MachineService::with_cluster(
+            store,
+            Some((
+                replicated.clone(),
+                AdminClient::new(data_dir.join("admin.sock")),
+            )),
+        )
+        .with_optional_containers(Some(runtime.clone()));
+        service.local = service.local.with_zpool("true");
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let tunnel =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let placed = set_doors(&service, tunnel, false).await.unwrap().unwrap();
+        assert_eq!(placed.failure, None, "{placed:?}");
+        let connector = placed.tunnel.unwrap().now.container_id;
+        let token = data_dir.join("root/run/ployz/tunnel/token");
+        let reboot = || async {
+            runtime.stop(&connector, None, None).await.unwrap();
+            runtime.remove_tunnel_token().unwrap();
+        };
+
+        // A declaration without the Tunnel Door leaves the connector at rest and writes no token.
+        replicated
+            .publish_cluster_doors(&ployz_core::IngressDoors::public())
+            .await
+            .unwrap();
+        reboot().await;
+        assert!(service.local.restore_doors().await.unwrap().is_none());
+        assert!(!token.exists(), "the connector's token is not written back");
+        let machine_id = service.local.record().id();
+        let connector_running = || async {
+            runtime
+                .door_inventory(&machine_id)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
+                .any(|entry| entry.facts.running())
+        };
+        assert!(!connector_running().await);
+
+        // Declaring it places the connector as a Machine with no declaration does.
+        replicated
+            .publish_cluster_doors(&ployz_core::IngressDoors::tunnel())
+            .await
+            .unwrap();
+        let restored = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        assert_eq!(restored.tunnel.unwrap().change, DoorChange::Started);
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        assert!(connector_running().await);
+
+        // Part way through a switch to tunnel the Machine still holds both Doors. Docker
+        // brings the holder back, so the declared connector must come back too.
+        let both = json!({"doors": ["public", "tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let switching = set_doors(&service, both, false).await.unwrap().unwrap();
+        assert_eq!(switching.failure, None, "{switching:?}");
+        let connector = switching.tunnel.unwrap().now.container_id;
+        runtime.stop(&connector, None, None).await.unwrap();
+        runtime.remove_tunnel_token().unwrap();
+        assert!(!connector_running().await);
+        let restored = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        assert_eq!(restored.tunnel.unwrap().change, DoorChange::Started);
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        assert!(connector_running().await);
+
+        task.abort();
         runtime.remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -4013,13 +4095,19 @@ mod set_volume_copy {
     }
 
     mod enforcement {
-        //! Device enforcement on the Volume verbs. An Operator's Writer start, Create or Kept,
-        //! and its Seed are refused before the copy is read. A Full caller, the Operator's
-        //! other wants and a Machine not enforcing are not.
+        //! Device enforcement on the Volume verbs. An Operator's Writer start needs a Move
+        //! approval: a Create must be the approved Service, and a Kept start a Container the
+        //! Move's own cut stopped. An Operator's cut needs one too. A Seed is refused. A Full
+        //! caller, the Operator's other wants and a Machine not enforcing are not.
 
         use ployz_core::{
-            OPERATOR_SCOPE_HEADER, SEED_REFUSED_BY_ENFORCEMENT, SEED_VOLUME_CAPABILITY,
-            SET_VOLUME_COPY_CAPABILITY, VOLUME_START_REFUSED_BY_ENFORCEMENT,
+            DeviceKey, DockerVolumeName, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
+            ResolvedServiceSpec, SealingPublicKey, VOLUME_APPROVAL_CAPABILITY,
+            authority::{
+                ApprovedService, AuthorityRefusal, HandoffReceipt, MachineSigned, PayloadDigest,
+                Purpose, Signed, Signer, SignerKey, StepDigest, Timestamp, VolumeApproval,
+                VolumeWorkflow, validity::MAX_LIFETIME_MILLIS,
+            },
         };
         use tonic::Status;
 
@@ -4030,6 +4118,138 @@ mod set_volume_copy {
                 .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
                 .await
                 .unwrap();
+        }
+
+        /// This Machine enforcing with one approved Device, which signs Volume approvals.
+        struct Approving {
+            signer: Signer,
+            cluster: SealingPublicKey,
+            this: MachineId,
+        }
+
+        async fn enforce_approving(
+            store: &RecordOwner,
+            data_dir: &std::path::Path,
+            service: &MachineService,
+        ) -> Approving {
+            let signer = Signer::from_seed(&[7; 32]);
+            let device = DeviceKey::from(signer.public());
+            store
+                .mutate(move |store| {
+                    store.approve_device(device).unwrap();
+                    store.set_device_enforcement(true, Vec::new()).unwrap();
+                })
+                .await
+                .unwrap();
+            let cluster = crate::sealing_key::SealingKey::load(data_dir)
+                .unwrap()
+                .unwrap()
+                .public_key();
+            Approving {
+                signer,
+                cluster,
+                this: service.local.record().id(),
+            }
+        }
+
+        impl Approving {
+            /// A Move of `volume` from `from` to `to` that starts `spec`, signed now.
+            fn moving(
+                &self,
+                volume: &str,
+                (from, to): (MachineId, MachineId),
+                spec: &ResolvedServiceSpec,
+            ) -> Signed<VolumeApproval> {
+                let namespace = Namespace::parse("app").unwrap();
+                self.signed(
+                    volume,
+                    VolumeWorkflow::Move {
+                        from,
+                        to,
+                        service: ApprovedService {
+                            name: spec.name.clone(),
+                            digest: PayloadDigest::of(&spec.to_requested(), &namespace).unwrap(),
+                            image: None,
+                        },
+                        mirrors: Vec::new(),
+                    },
+                )
+            }
+
+            /// A Restore of `volume` on this Machine at snapshot `at`, signed now.
+            fn restoring(&self, volume: &str, at: u64) -> Signed<VolumeApproval> {
+                self.signed(
+                    volume,
+                    VolumeWorkflow::Restore {
+                        machine: self.this,
+                        at: ployz_core::SnapshotGuid::new(at),
+                        loses_after: Some(Timestamp::from_millis(900_000).unwrap()),
+                    },
+                )
+            }
+
+            fn signed(&self, volume: &str, workflow: VolumeWorkflow) -> Signed<VolumeApproval> {
+                let issued_at = Timestamp::now();
+                let body = VolumeApproval {
+                    cluster: self.cluster,
+                    operation: OperationId::parse("1".repeat(32)).unwrap(),
+                    namespace: Namespace::parse("app").unwrap(),
+                    volume: DockerVolumeName::parse(volume).unwrap(),
+                    workflow,
+                    issued_at,
+                    expires_at: issued_at.plus(MAX_LIFETIME_MILLIS),
+                    signer: SignerKey::Device(DeviceKey::from(self.signer.public())),
+                };
+                Signed::sign(&body, &self.signer).unwrap()
+            }
+        }
+
+        /// `request` with the receipt `from` signs with this Cluster's receipt key, handing
+        /// `approval`'s Volume to this Machine at the snapshot `create_of` names.
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn receipted(
+            mut request: Value,
+            approval: &Signed<VolumeApproval>,
+            data_dir: &std::path::Path,
+            (from, to): (MachineId, MachineId),
+        ) -> Value {
+            let key = crate::sealing_key::SealingKey::load(data_dir)
+                .unwrap()
+                .unwrap();
+            let body = approval.open().unwrap();
+            let receipt = HandoffReceipt {
+                cluster: key.public_key(),
+                operation: body.operation,
+                approval: StepDigest::of(&approval.body),
+                volume: body.volume,
+                from,
+                to,
+                at: ployz_core::SnapshotGuid::new(900),
+                snapshot: "f-1".parse().unwrap(),
+                from_epoch: ployz_core::WriterEpoch::new(0),
+                epoch: ployz_core::WriterEpoch::new(1),
+            };
+            request["receipt"] =
+                serde_json::to_value(MachineSigned::sign(&receipt, &key.receipt_signer()).unwrap())
+                    .unwrap();
+            request
+        }
+
+        fn elsewhere() -> MachineId {
+            MachineId::parse("e".repeat(32)).unwrap()
+        }
+
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn approved(mut request: Value, approval: &Signed<VolumeApproval>) -> Value {
+            request["approval"] = serde_json::to_value(approval).unwrap();
+            request
+        }
+
+        /// The spec a Move starts, with its image pinned by digest as a Device approves it.
+        fn pinned_spec() -> ResolvedServiceSpec {
+            let mut spec: ResolvedServiceSpec = serde_json::from_value(spec()).unwrap();
+            spec.container.image = format!("example.test/api@sha256:{}", "a".repeat(64));
+            spec
         }
 
         fn as_operator<T>(mut request: Request<T>) -> Request<T> {
@@ -4078,6 +4298,21 @@ mod set_volume_copy {
             assert_eq!(details["capability"], json!(capability));
         }
 
+        /// The refusal of a Volume step for `refusal`, naming the Volume approval.
+        fn refused_step(status: &Status, refusal: AuthorityRefusal) {
+            refused(
+                status,
+                VOLUME_APPROVAL_CAPABILITY,
+                &crate::machine::LocalMachineError::VolumeStepRefused(refusal).to_string(),
+            );
+        }
+
+        fn unsigned() -> AuthorityRefusal {
+            AuthorityRefusal::Unsigned {
+                purpose: Purpose::Volume,
+            }
+        }
+
         fn docker_writes(fake: &FakeDocker) -> Vec<String> {
             fake.requests
                 .lock()
@@ -4106,11 +4341,15 @@ mod set_volume_copy {
             plugin
         }
 
-        fn create_start() -> Value {
+        fn create_of(spec: &ResolvedServiceSpec) -> Value {
             json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
             "want":{"kind":"writer", "at":"900", "epoch":1, "start":{
-                "kind":"create", "namespace":"app", "resolved_spec":spec(),
+                "kind":"create", "namespace":"app", "resolved_spec":spec,
                 "creation_key":"move-1", "gen":1, "rotation":"pending"}}})
+        }
+
+        fn create_start() -> Value {
+            create_of(&serde_json::from_value(spec()).unwrap())
         }
 
         fn kept_start(container: &ContainerId) -> Value {
@@ -4120,7 +4359,8 @@ mod set_volume_copy {
         }
 
         #[tokio::test]
-        async fn an_operator_create_under_enforcement_is_refused_before_the_copy_or_docker() {
+        async fn an_unapproved_operator_create_under_enforcement_is_refused_before_the_copy_or_docker()
+         {
             let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-create").await;
             let plugin = promoting_plugin();
             let (socket, server) = plugin.serve(&data_dir);
@@ -4130,11 +4370,7 @@ mod set_volume_copy {
             let status = operator_set_copy(&service, create_start())
                 .await
                 .expect_err("an Operator's Create must be refused");
-            refused(
-                &status,
-                SET_VOLUME_COPY_CAPABILITY,
-                VOLUME_START_REFUSED_BY_ENFORCEMENT,
-            );
+            refused_step(&status, unsigned());
             assert!(
                 plugin.routes_called().is_empty(),
                 "{:?}",
@@ -4155,8 +4391,147 @@ mod set_volume_copy {
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
+        /// A target that never admitted the Move starts the Service after the window on its
+        /// source's receipt, as it promotes on it: the receipt proves the Move began in time.
         #[tokio::test]
-        async fn an_operator_kept_start_of_an_unrelated_container_is_refused_under_enforcement() {
+        async fn a_receipt_admits_the_targets_start_after_the_window() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-late").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let device = enforce_approving(&store, &data_dir, &service).await;
+            let spec = pinned_spec();
+            let mut body = device
+                .moving(VOLUME, (elsewhere(), device.this), &spec)
+                .open()
+                .unwrap();
+            body.issued_at = Timestamp::from_millis(
+                Timestamp::now().as_millis() - MAX_LIFETIME_MILLIS - 600_000,
+            )
+            .unwrap();
+            body.expires_at = body.issued_at.plus(MAX_LIFETIME_MILLIS);
+            let approval = Signed::sign(&body, &device.signer).unwrap();
+
+            let status = operator_set_copy(&service, approved(create_of(&spec), &approval))
+                .await
+                .expect_err("an expired approval with no receipt");
+            refused_step(&status, AuthorityRefusal::Expired);
+            reply(
+                &operator_set_copy(
+                    &service,
+                    receipted(
+                        approved(create_of(&spec), &approval),
+                        &approval,
+                        &data_dir,
+                        (elsewhere(), device.this),
+                    ),
+                )
+                .await
+                .unwrap(),
+            );
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        /// Lane 4's attack, and the start it guards: a spec with one environment value changed
+        /// is refused under the Move's approval, and the approved spec then starts.
+        #[tokio::test]
+        async fn a_move_starts_only_the_service_its_approval_names() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-move").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let device = enforce_approving(&store, &data_dir, &service).await;
+            let spec = pinned_spec();
+            let approval = device.moving(VOLUME, (elsewhere(), device.this), &spec);
+            let payload = AuthorityRefusal::Mismatch { field: "a payload" };
+
+            let mut changed = spec.clone();
+            changed
+                .container
+                .environment
+                .insert("MODE".parse().unwrap(), "evil".into());
+            let mut image = spec.clone();
+            image.container.image = format!("example.test/api@sha256:{}", "b".repeat(64));
+            let mut command = spec.clone();
+            command.container.command = vec!["sh".into(), "-c".into(), "cat /data/0/*".into()];
+            let mut mounts: ResolvedServiceSpec = serde_json::from_value(
+                serde_json::to_value(spec_with_sources(vec![
+                    provisioned_source("data", 1_073_741_824),
+                    provisioned_source("other", 1_073_741_824),
+                ]))
+                .unwrap(),
+            )
+            .unwrap();
+            mounts.container.image.clone_from(&spec.container.image);
+            for other in [changed, image, command, mounts] {
+                let status = operator_set_copy(&service, approved(create_of(&other), &approval))
+                    .await
+                    .expect_err("a spec the approval does not name");
+                refused_step(&status, payload.clone());
+            }
+            let elsewhere_approval = device.moving(
+                VOLUME,
+                (elsewhere(), MachineId::parse("f".repeat(32)).unwrap()),
+                &spec,
+            );
+            let status =
+                operator_set_copy(&service, approved(create_of(&spec), &elsewhere_approval))
+                    .await
+                    .expect_err("a Move that does not name this Server");
+            refused_step(
+                &status,
+                AuthorityRefusal::Mismatch {
+                    field: "this Server",
+                },
+            );
+            assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE; 5]);
+            assert!(
+                docker_writes(&fake).is_empty(),
+                "{:?}",
+                docker_writes(&fake)
+            );
+
+            let status = operator_set_copy(&service, approved(create_of(&spec), &approval))
+                .await
+                .expect_err("a start under the Move with no receipt");
+            refused_step(&status, AuthorityRefusal::Unreceipted);
+            assert_eq!(
+                ployz_core::rpc::status_details(status.details())
+                    .unwrap()
+                    .get("next"),
+                Some(&json!(
+                    "ployz volume release asks the move's source where the move ends"
+                ))
+            );
+            assert!(docker_writes(&fake).is_empty());
+            let handed = |request| {
+                receipted(
+                    approved(request, &approval),
+                    &approval,
+                    &data_dir,
+                    (elsewhere(), device.this),
+                )
+            };
+            reply(
+                &operator_set_copy(&service, handed(create_of(&spec)))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            reply(
+                &operator_set_copy(&service, handed(create_of(&spec)))
+                    .await
+                    .expect("a resent start under the same approval"),
+            );
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_unapproved_operator_kept_start_is_refused_under_enforcement() {
             let (data_dir, store, service, fake) =
                 fake_docker_service("ployzd-gate-unrelated").await;
             let plugin = promoting_plugin();
@@ -4170,11 +4545,7 @@ mod set_volume_copy {
             let status = operator_set_copy(&service, kept_start(&unrelated))
                 .await
                 .expect_err("an Operator's Kept start must be refused");
-            refused(
-                &status,
-                SET_VOLUME_COPY_CAPABILITY,
-                VOLUME_START_REFUSED_BY_ENFORCEMENT,
-            );
+            refused_step(&status, unsigned());
             assert!(
                 plugin.routes_called().is_empty(),
                 "{:?}",
@@ -4186,12 +4557,7 @@ mod set_volume_copy {
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
-        /// Cloud's attack on an enforcing Machine: cut the Volume, which stops its holder, then
-        /// promote the copy with a Kept start naming a Container made before enforcement.
-        #[tokio::test]
-        async fn an_operator_kept_start_of_a_container_from_before_enforcement_is_refused_after_a_cut()
-         {
-            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-kept").await;
+        fn cutting_plugin() -> FakePlugin {
             let plugin = FakePlugin::default();
             plugin.reply(INSPECT_ROUTE, writer_root(0, None));
             plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 900))));
@@ -4203,30 +4569,82 @@ mod set_volume_copy {
                     .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 900))));
             });
             plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+            let replies = plugin.replies.clone();
+            plugin.on(WRITER_ROUTE, move || {
+                replies.lock().unwrap().insert(
+                    INSPECT_ROUTE.into(),
+                    writer_root(1, Some(snapshot("f-1", 900))),
+                );
+            });
+            plugin
+        }
+
+        /// Cloud's attack on an enforcing Machine: cut the Volume, which stops its holder, then
+        /// resume with a Kept start naming a Container made before enforcement. Only the
+        /// holder the approved cut stopped starts again.
+        #[tokio::test]
+        async fn a_resume_starts_only_a_container_the_approved_cut_stopped() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-kept").await;
+            let plugin = cutting_plugin();
             let (socket, server) = plugin.serve(&data_dir);
             let service = service.with_volume_plugin(socket);
             let holder = running_holder(&service, &fake).await;
-            enforce(&store).await;
+            // Made and stopped before enforcement, and mounting the Volume.
+            let planted = kept_holder(&service, &fake).await;
+            let device = enforce_approving(&store, &data_dir, &service).await;
+            let approval = device.moving(VOLUME, (device.this, elsewhere()), &pinned_spec());
+            let other = device.moving("app_other", (device.this, elsewhere()), &pinned_spec());
+            let cut_writer = || cut(json!({"kind":"writer", "epoch":0}));
 
-            let cut = operator_set_copy(&service, cut(json!({"kind":"writer", "epoch":0})))
+            let status = operator_set_copy(&service, cut_writer())
                 .await
-                .expect("a cut starts nothing, so enforcement leaves it to the Operator");
-            reply(&cut);
-            assert_eq!(holder_status(&fake), vec![json!("exited")]);
-            let cut_routes = plugin.routes_called();
+                .expect_err("a cut no approval names");
+            refused_step(&status, unsigned());
+            let status = operator_set_copy(&service, approved(cut_writer(), &other))
+                .await
+                .expect_err("a cut under another Volume's approval");
+            refused_step(&status, AuthorityRefusal::Mismatch { field: "a Volume" });
+            assert_eq!(running(&fake), 1, "the refused cuts stopped nothing");
+
+            reply(
+                &operator_set_copy(&service, approved(cut_writer(), &approval))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(running(&fake), 0);
+            let stray = stopped_container(&service).await;
             let before = docker_writes(&fake);
 
-            let status = operator_set_copy(&service, kept_start(&holder))
-                .await
-                .expect_err("an Operator's Kept start must be refused");
-            refused(
-                &status,
-                SET_VOLUME_COPY_CAPABILITY,
-                VOLUME_START_REFUSED_BY_ENFORCEMENT,
-            );
-            assert_eq!(plugin.routes_called(), cut_routes);
+            for stray in [planted, stray] {
+                let status = operator_set_copy(&service, approved(kept_start(&stray), &approval))
+                    .await
+                    .expect_err("a Container the cut did not stop");
+                refused_step(
+                    &status,
+                    AuthorityRefusal::Mismatch {
+                        field: "a Container",
+                    },
+                );
+            }
             assert_eq!(docker_writes(&fake), before);
-            assert_eq!(holder_status(&fake), vec![json!("exited")]);
+            assert_eq!(running(&fake), 0);
+
+            reply(
+                &operator_set_copy(&service, approved(kept_start(&holder), &approval))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(running(&fake), 1, "the holder the cut stopped runs again");
+            let recut = cut(json!({"kind":"writer", "epoch":1}));
+            let status = operator_set_copy(&service, approved(recut, &approval))
+                .await
+                .expect_err("the Move ended here when it resumed");
+            refused_step(
+                &status,
+                AuthorityRefusal::Replayed {
+                    operation: OperationId::parse("1".repeat(32)).unwrap(),
+                },
+            );
             server.abort();
             std::fs::remove_dir_all(data_dir).unwrap();
         }
@@ -4234,16 +4652,27 @@ mod set_volume_copy {
         /// A Restore promotes with no start, which enforcement leaves to the Operator.
         #[tokio::test]
         #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-        async fn an_operator_writer_with_no_start_is_admitted_under_enforcement() {
+        async fn an_operator_writer_with_no_start_needs_a_restore_under_enforcement() {
             let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-restore").await;
             let plugin = promoting_plugin();
             let (socket, server) = plugin.serve(&data_dir);
             let service = service.with_volume_plugin(socket);
-            enforce(&store).await;
+            let device = enforce_approving(&store, &data_dir, &service).await;
 
             let restore = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
             "want":{"kind":"writer", "at":"900", "epoch":1, "start":null}});
-            let promoted = reply(&operator_set_copy(&service, restore).await.unwrap());
+            let status = operator_set_copy(&service, restore.clone())
+                .await
+                .unwrap_err();
+            refused_step(&status, unsigned());
+            assert!(
+                !plugin.routes_called().contains(&WRITER_ROUTE.to_owned()),
+                "{:?}",
+                plugin.routes_called()
+            );
+
+            let approved = approved(restore, &device.restoring(VOLUME, 900));
+            let promoted = reply(&operator_set_copy(&service, approved).await.unwrap());
             assert_eq!(
                 serde_json::to_value(&promoted).unwrap(),
                 json!({"copy": writer_root(1, Some(snapshot("f-1", 900)))["Ok"]})
@@ -4286,7 +4715,11 @@ mod set_volume_copy {
             let status = operator_seed(&service, seed_request())
                 .await
                 .expect_err("an Operator's Seed must be refused");
-            refused(&status, SEED_VOLUME_CAPABILITY, SEED_REFUSED_BY_ENFORCEMENT);
+            refused(
+                &status,
+                ployz_core::VOLUME_APPROVAL_CAPABILITY,
+                "This Server refused the Volume step: the volume approval carries no signature",
+            );
             assert!(
                 plugin.routes_called().is_empty(),
                 "{:?}",
@@ -6132,10 +6565,12 @@ mod ensure_container {
                     store
                         .stage_management_client(
                             ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
-                            [19; 32],
+                            ployz_core::ClientKey::from_bytes([19; 32]),
                         )
                         .unwrap();
-                    store.activate_management_client([19; 32]).unwrap();
+                    store
+                        .activate_management_client(ployz_core::ClientKey::from_bytes([19; 32]))
+                        .unwrap();
                 })
                 .await
                 .unwrap();
@@ -6143,7 +6578,7 @@ mod ensure_container {
                 .service
                 .local
                 .clone()
-                .with_management_client([19; 32]);
+                .with_management_client(ployz_core::ClientKey::from_bytes([19; 32]));
             assert!(matches!(
                 operator
                     .set_device_enforcement(SetDeviceEnforcementRequest {
@@ -7155,5 +7590,473 @@ mod cluster_name {
         };
         assert_eq!(error.code, RpcErrorCode::Unavailable);
         std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+mod cluster_doors {
+    use ployz_core::{
+        ClusterDoorsDeclared, IngressDoors, RpcResponse, RpcResponseBody, SetClusterDoorsRequest,
+    };
+
+    use super::*;
+
+    async fn declare(service: &MachineService, doors: IngressDoors) -> RpcResponse {
+        let request = op::SetClusterDoors::into_request(SetClusterDoorsRequest { doors });
+        service
+            .set_cluster_doors(Request::new(request.encode().unwrap()))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_known_set_is_declared_and_answered_back() {
+        let dir = std::env::temp_dir().join(format!("ployzd-doors-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = super::read_routes::serve(&dir, &[]).await;
+
+        for doors in [IngressDoors::tunnel(), IngressDoors::closed()] {
+            let response = declare(&service, doors.clone()).await;
+            let shown = format!("{response:?}");
+            let declared = response
+                .decode::<op::SetClusterDoors>()
+                .unwrap_or_else(|error| panic!("{error:?}: {shown}"));
+            assert_eq!(
+                service.local.declared_doors().await,
+                Some(doors.clone()),
+                "the key holds what was declared"
+            );
+            assert_eq!(declared, ClusterDoorsDeclared { doors });
+        }
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_door_this_release_does_not_know_is_refused_and_nothing_is_declared() {
+        let dir = std::env::temp_dir().join(format!("ployzd-doors-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = super::read_routes::serve(&dir, &[]).await;
+        let unknown: IngressDoors = serde_json::from_str(r#"["tunnel","warp"]"#).unwrap();
+
+        let response = declare(&service, unknown).await;
+
+        let RpcResponseBody::Error(error) = response.body else {
+            panic!("expected a refusal, got {response:?}");
+        };
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            error.details.get("capability"),
+            Some(&serde_json::json!(ployz_core::SET_CLUSTER_DOORS_CAPABILITY))
+        );
+        assert_eq!(service.local.declared_doors().await, None);
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+mod resize_and_seed_under_approval {
+    //! An enforcing Machine runs an Operator's resize or seed only under a Device's approval
+    //! naming exactly what it asks, runs a resend while the step has not landed, and answers
+    //! a resend after it landed without running it again.
+
+    use ployz_core::{
+        DeviceKey, DockerVolumeName, MachineId, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
+        ProvisionedVolumeMaximumBytes, RpcResponse, SealingPublicKey, SnapshotGuid,
+        VOLUME_APPROVAL_CAPABILITY,
+        authority::{Signed, Signer, SignerKey, Timestamp, VolumeApproval, VolumeWorkflow},
+        rpc::status_details,
+    };
+    use serde_json::{Value, json};
+    use tonic::Status;
+
+    use super::*;
+    use crate::storage::test_support::FakePlugin;
+
+    const SIZE_ROUTE: &str = "Volume.Size.Set";
+    const SEED_ROUTE: &str = "Volume.Seed";
+    const INSPECT_ROUTE: &str = "Volume.Inspect";
+    const GB: u64 = 1_000_000_000;
+
+    struct Enforced {
+        data_dir: std::path::PathBuf,
+        service: MachineService,
+        plugin: FakePlugin,
+        server: tokio::task::JoinHandle<()>,
+        signer: Signer,
+        cluster: SealingPublicKey,
+    }
+
+    impl Drop for Enforced {
+        fn drop(&mut self) {
+            self.server.abort();
+            let _ = std::fs::remove_dir_all(&self.data_dir);
+        }
+    }
+
+    async fn enforced(prefix: &str, enforcing: bool) -> Enforced {
+        let (data_dir, store, service, _fake) = fake_docker_service(prefix).await;
+        let signer = Signer::from_seed(&[7; 32]);
+        let device = DeviceKey::from(signer.public());
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.set_device_enforcement(enforcing, Vec::new()).unwrap();
+            })
+            .await
+            .unwrap();
+        let cluster = crate::sealing_key::SealingKey::load(&data_dir)
+            .unwrap()
+            .unwrap()
+            .public_key();
+        let plugin = FakePlugin::default();
+        let (socket, server) = plugin.serve(&data_dir);
+        Enforced {
+            service: service.with_volume_plugin(socket),
+            data_dir,
+            plugin,
+            server,
+            signer,
+            cluster,
+        }
+    }
+
+    fn bytes(gb: u64) -> ProvisionedVolumeMaximumBytes {
+        ProvisionedVolumeMaximumBytes::new(std::num::NonZeroU64::new(gb * GB).unwrap())
+    }
+
+    fn name(name: &str) -> DockerVolumeName {
+        DockerVolumeName::parse(name).unwrap()
+    }
+
+    impl Enforced {
+        fn this(&self) -> MachineId {
+            self.service.local.record().id()
+        }
+
+        fn sign(&self, volume: &str, workflow: VolumeWorkflow) -> Value {
+            let body = VolumeApproval {
+                cluster: self.cluster,
+                operation: OperationId::random(),
+                namespace: Namespace::parse("app").unwrap(),
+                volume: name(volume),
+                workflow,
+                issued_at: Timestamp::now(),
+                expires_at: Timestamp::now().plus(60_000),
+                signer: SignerKey::Device(DeviceKey::from(self.signer.public())),
+            };
+            serde_json::to_value(Signed::sign(&body, &self.signer).unwrap()).unwrap()
+        }
+
+        fn resize(&self, machines: Vec<MachineId>, gb: u64, shrink: bool) -> Value {
+            self.sign(
+                "app_data",
+                VolumeWorkflow::Resize {
+                    machines,
+                    maximum_bytes: bytes(gb),
+                    shrink,
+                },
+            )
+        }
+
+        fn seed(&self, into: &str, guid: u64) -> Value {
+            self.sign(
+                into,
+                VolumeWorkflow::Seed {
+                    machine: self.this(),
+                    source: name("app_source"),
+                    at: SnapshotGuid::new(guid),
+                },
+            )
+        }
+
+        async fn set_size(&self, request: Value) -> Result<RpcResponse, Status> {
+            let request = op::SetVolumeSize::into_request(serde_json::from_value(request).unwrap())
+                .encode()
+                .unwrap();
+            self.service
+                .set_volume_size(as_operator(Request::new(request)))
+                .await
+                .map(|response| response.into_inner().decode_response().unwrap())
+        }
+
+        async fn seed_volume(&self, request: Value) -> Result<RpcResponse, Status> {
+            let request = op::SeedVolume::into_request(serde_json::from_value(request).unwrap())
+                .encode()
+                .unwrap();
+            self.service
+                .seed_volume(as_operator(Request::new(request)))
+                .await
+                .map(|response| response.into_inner().decode_response().unwrap())
+        }
+
+        fn calls(&self, route: &str) -> usize {
+            self.plugin
+                .routes_called()
+                .iter()
+                .filter(|called| *called == route)
+                .count()
+        }
+    }
+
+    fn as_operator<T>(mut request: Request<T>) -> Request<T> {
+        request
+            .metadata_mut()
+            .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+        request
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    fn refused(outcome: Result<RpcResponse, Status>, why: &str) {
+        let status = outcome.expect_err("the step must be refused");
+        assert_eq!(
+            status.code(),
+            Code::PermissionDenied,
+            "{}",
+            status.message()
+        );
+        assert!(status.message().contains(why), "{}", status.message());
+        let details = status_details(status.details()).unwrap();
+        assert_eq!(details["capability"], json!(VOLUME_APPROVAL_CAPABILITY));
+    }
+
+    fn size_request(gb: u64, allow_shrink: bool, approval: Option<Value>) -> Value {
+        json!({
+            "name": "app_data",
+            "maximum_bytes": gb * GB,
+            "allow_shrink": allow_shrink,
+            "approval": approval,
+        })
+    }
+
+    fn bound(gb: u64) -> Value {
+        json!({"Ok": {"bound_bytes": gb * GB}})
+    }
+
+    #[tokio::test]
+    async fn a_resize_runs_only_at_the_size_direction_and_servers_its_approval_names() {
+        let machine = enforced("ployzd-resize-gate", true).await;
+        machine.plugin.reply(SIZE_ROUTE, bound(20));
+        let other = MachineId::random();
+
+        refused(
+            machine.set_size(size_request(20, false, None)).await,
+            "carries no signature",
+        );
+        let grow = machine.resize(vec![machine.this()], 20, false);
+        for (request, why) in [
+            (size_request(30, false, Some(grow.clone())), "a Volume step"),
+            (size_request(20, true, Some(grow.clone())), "a Volume step"),
+            (
+                size_request(20, false, Some(machine.resize(vec![other], 20, false))),
+                "this Server",
+            ),
+            (
+                size_request(
+                    20,
+                    false,
+                    Some(machine.resize(vec![machine.this()], 20, true)),
+                ),
+                "a Volume step",
+            ),
+        ] {
+            refused(machine.set_size(request).await, why);
+        }
+        assert_eq!(machine.calls(SIZE_ROUTE), 0, "a refused resize reached ZFS");
+
+        let held = machine
+            .set_size(size_request(20, false, Some(grow)))
+            .await
+            .unwrap()
+            .decode::<op::SetVolumeSize>()
+            .unwrap();
+        assert_eq!(held.bound_bytes, bytes(20));
+        assert_eq!(machine.calls(SIZE_ROUTE), 1);
+    }
+
+    #[tokio::test]
+    async fn a_resend_runs_until_the_bound_lands_then_answers_it_without_a_write() {
+        let machine = enforced("ployzd-resize-resend", true).await;
+        let shrink = machine.resize(vec![machine.this()], 10, true);
+        machine.plugin.reply(
+            SIZE_ROUTE,
+            json!({"Err": {"code":"conflict", "message":"switching",
+                "details": {"reason":"switching", "bound_bytes": 20 * GB}}}),
+        );
+        let switching = machine
+            .set_size(size_request(10, true, Some(shrink.clone())))
+            .await
+            .unwrap();
+        assert!(switching.decode::<op::SetVolumeSize>().is_err());
+
+        machine.plugin.reply(SIZE_ROUTE, bound(10));
+        for _ in 0..2 {
+            let held = machine
+                .set_size(size_request(10, true, Some(shrink.clone())))
+                .await
+                .unwrap()
+                .decode::<op::SetVolumeSize>()
+                .unwrap();
+            assert_eq!(held.bound_bytes, bytes(10));
+        }
+        assert_eq!(
+            machine.calls(SIZE_ROUTE),
+            2,
+            "a resend after the bound landed wrote again"
+        );
+
+        refused(
+            machine.set_size(size_request(12, true, Some(shrink))).await,
+            "already",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resize_from_an_operator_needs_no_approval_on_a_machine_that_does_not_enforce() {
+        let machine = enforced("ployzd-resize-off", false).await;
+        machine.plugin.reply(SIZE_ROUTE, bound(20));
+        machine
+            .set_size(size_request(20, false, None))
+            .await
+            .unwrap()
+            .decode::<op::SetVolumeSize>()
+            .unwrap();
+        assert_eq!(machine.calls(SIZE_ROUTE), 1);
+    }
+
+    fn seed_request(into: &str, guid: u64, approval: Option<Value>) -> Value {
+        json!({"name": "app_source", "into": into, "guid": guid.to_string(), "approval": approval})
+    }
+
+    fn copying() -> Value {
+        json!({"Ok": {"copy": {"kind":"slot", "slot":"1", "readonly":true, "newest":null,
+            "resume_token":null, "pull":null, "role":"mirror"}}})
+    }
+
+    fn landed() -> Value {
+        json!({"Ok": {"copy": {"kind":"root", "readonly":true, "newest":null, "epoch":0,
+            "seed":true}}})
+    }
+
+    #[tokio::test]
+    async fn a_seed_runs_only_into_the_volume_from_the_snapshot_its_approval_names() {
+        let machine = enforced("ployzd-seed-gate", true).await;
+        machine.plugin.reply(SEED_ROUTE, copying());
+        let approval = machine.seed("app_restored", 77);
+
+        refused(
+            machine
+                .seed_volume(seed_request("app_restored", 77, None))
+                .await,
+            "carries no signature",
+        );
+        refused(
+            machine
+                .seed_volume(seed_request("app_other", 77, Some(approval.clone())))
+                .await,
+            "a Volume",
+        );
+        refused(
+            machine
+                .seed_volume(seed_request("app_restored", 78, Some(approval.clone())))
+                .await,
+            "a Volume step",
+        );
+        assert_eq!(machine.calls(SEED_ROUTE), 0, "a refused seed reached ZFS");
+
+        machine
+            .seed_volume(seed_request("app_restored", 77, Some(approval)))
+            .await
+            .unwrap()
+            .decode::<op::SeedVolume>()
+            .unwrap();
+        assert_eq!(machine.calls(SEED_ROUTE), 1);
+    }
+
+    #[tokio::test]
+    async fn a_seed_is_resent_while_it_copies_and_once_landed_is_only_read() {
+        let machine = enforced("ployzd-seed-resend", true).await;
+        let approval = machine.seed("app_restored", 77);
+        let request = seed_request("app_restored", 77, Some(approval));
+        machine.plugin.reply(SEED_ROUTE, copying());
+        for _ in 0..2 {
+            machine.seed_volume(request.clone()).await.unwrap();
+        }
+        machine.plugin.reply(SEED_ROUTE, landed());
+        machine.seed_volume(request.clone()).await.unwrap();
+        assert_eq!(machine.calls(SEED_ROUTE), 3);
+
+        machine.plugin.reply(INSPECT_ROUTE, landed());
+        let view = machine
+            .seed_volume(request)
+            .await
+            .unwrap()
+            .decode::<op::SeedVolume>()
+            .unwrap();
+        assert!(
+            matches!(view.copy, Some(ployz_core::VolumeCopy::Root { .. })),
+            "{view:?}"
+        );
+        assert_eq!(
+            machine.calls(SEED_ROUTE),
+            3,
+            "a resend after the seed landed copied again"
+        );
+        assert_eq!(machine.calls(INSPECT_ROUTE), 1);
+    }
+
+    #[tokio::test]
+    async fn a_resend_queued_behind_the_resize_that_lands_writes_nothing() {
+        use std::future::Future;
+        let machine = enforced("ployzd-resize-queued", true).await;
+        let (calls, replies) = (machine.plugin.calls.clone(), machine.plugin.replies.clone());
+        let applied = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = applied.clone();
+        // Answer each SetVolumeSize with the bound it asked for, and keep the order.
+        machine.plugin.on(SIZE_ROUTE, move || {
+            let wanted = calls
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .get("maximum_bytes")
+                .unwrap()
+                .as_u64()
+                .unwrap();
+            seen.lock().unwrap().push(wanted / GB);
+            replies.lock().unwrap().insert(
+                SIZE_ROUTE.to_owned(),
+                json!({"Ok": {"bound_bytes": wanted}}),
+            );
+        });
+        let shrink = machine.resize(vec![machine.this()], 10, true);
+        let grow = machine.resize(vec![machine.this()], 20, false);
+
+        // Queue the shrink, a later grow, and a resend of the shrink behind one switch.
+        let held = machine.service.switch_mutation.lock().await;
+        let first = machine.set_size(size_request(10, true, Some(shrink.clone())));
+        let later = machine.set_size(size_request(20, false, Some(grow)));
+        let resend = machine.set_size(size_request(10, true, Some(shrink)));
+        tokio::pin!(first, later, resend);
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            assert!(later.as_mut().poll(cx).is_pending());
+            assert!(resend.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(held);
+        let (first, later, resend) = tokio::join!(first, later, resend);
+        for reply in [first, later, resend] {
+            reply.unwrap().decode::<op::SetVolumeSize>().unwrap();
+        }
+        assert_eq!(
+            *applied.lock().unwrap(),
+            vec![10, 20],
+            "the queued resend shrank again after its operation ended"
+        );
     }
 }

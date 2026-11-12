@@ -29,7 +29,9 @@ use super::{
         GithubClaims, ImageDigest, PolicyDigest, ReviewDigest, RuleId, RuleIdentity, RuleSource,
         RuleStatement, SealedDigest,
     },
+    rule_draft::{Signs, settings_edited},
     session::{ActionFamily, GrantScope},
+    shown::Shown,
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
 use crate::{
@@ -537,7 +539,7 @@ pub const SEALED_VALUE: &str = "a Sealed value";
 
 /// The digest a preview rule or review approves for `spec`, a preview's spec in its
 /// derived `namespace`: its [`PayloadDigest`] with the image, pull policy, Sealed
-/// identity and [`crate::config::SERVICE_ID_LABEL`] left out, each Generated Value `service` names checked and replaced by its
+/// identity and [`crate::labels::CLOUD_SERVICE_ID`] left out, each Generated Value `service` names checked and replaced by its
 /// generator, and every occurrence of `namespace` replaced by [`NAMESPACE_PLACEHOLDER`].
 ///
 /// # Errors
@@ -548,6 +550,34 @@ pub fn template(
     namespace: &Namespace,
     service: &PreviewService,
 ) -> Result<PayloadDigest, AuthorityRefusal> {
+    let spec = templated(spec, namespace, service)?;
+    PayloadDigest::of_scoped(&spec, |value| placeholder(value, namespace.as_str()))
+        .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })
+}
+
+/// The settings a person reads of the spec [`template`] signs, with
+/// [`NAMESPACE_PLACEHOLDER`] for `namespace`.
+///
+/// # Errors
+/// As [`template`].
+pub fn template_settings(
+    spec: &RequestedServiceSpec,
+    namespace: &Namespace,
+    service: &PreviewService,
+) -> Result<Vec<Shown>, AuthorityRefusal> {
+    Ok(settings_edited(
+        &templated(spec, namespace, service)?,
+        Signs::Template,
+        |value| placeholder(value, namespace.as_str()),
+    ))
+}
+
+/// `spec` as [`template`] hashes it, before each `namespace` becomes the placeholder.
+fn templated(
+    spec: &RequestedServiceSpec,
+    namespace: &Namespace,
+    service: &PreviewService,
+) -> Result<RequestedServiceSpec, AuthorityRefusal> {
     let mut spec = spec.clone();
     spec.container.image = String::new();
     spec.container.pull_policy = crate::PullPolicy::Never;
@@ -555,7 +585,7 @@ pub fn template(
     // Each preview's Services are its own copies with their own IDs, which only this
     // bookkeeping label names.
     let mut labels = spec.container.labels.as_map().clone();
-    labels.remove(crate::config::SERVICE_ID_LABEL);
+    labels.remove(crate::labels::CLOUD_SERVICE_ID);
     spec.container.labels = crate::ContainerLabels::parse(labels)
         .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
     for (key, generator) in &service.generated {
@@ -584,8 +614,7 @@ pub fn template(
         .mount_graph
         .scope_to_namespace(namespace)
         .map_err(|_| payload())?;
-    PayloadDigest::of_scoped(&spec, |value| placeholder(value, namespace.as_str()))
-        .map_err(|_| payload())
+    Ok(spec)
 }
 
 fn placeholder(value: &mut Value, namespace: &str) {
@@ -724,7 +753,8 @@ pub struct ReviewTerms {
 }
 
 /// A review a person's client drafted: the canonical body to sign as it is, whether a
-/// reviewed Service opens a secret, and one line per Service.
+/// reviewed Service opens a secret, and one line per Service, each followed by the
+/// settings its template signs, indented.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct ReviewDraft {
     pub body: String,
@@ -798,10 +828,16 @@ impl PreviewReview {
             let covered = rule
                 .service(&spec.name)
                 .ok_or_else(|| ReviewDraftError::Uncovered(spec.name.clone()))?;
-            let digest = template(spec, namespace, covered)
-                .map_err(|refusal| ReviewDraftError::Template(spec.name.clone(), refusal))?;
+            let refused = |refusal| ReviewDraftError::Template(spec.name.clone(), refusal);
+            let digest = template(spec, namespace, covered).map_err(refused)?;
             secrets |= covered.holds_secrets();
-            lines.push(review_line(spec, covered, terms.commit, digest));
+            lines.push(review_line(spec, covered, terms.commit, digest).into());
+            lines.extend(
+                template_settings(spec, namespace, covered)
+                    .map_err(refused)?
+                    .into_iter()
+                    .map(|setting| format!("  {setting}")),
+            );
             services.push(ReviewedService {
                 name: spec.name.clone(),
                 digest,
@@ -833,13 +869,17 @@ fn review_line(
     service: &PreviewService,
     commit: CommitSha,
     digest: PayloadDigest,
-) -> String {
+) -> Shown {
     let mut commit = commit.to_string();
     commit.truncate(12);
-    let mut notes: Vec<String> = Vec::new();
+    let mut notes: Vec<Shown> = Vec::new();
     if !service.inherit.is_empty() {
-        let keys: Vec<&str> = service.inherit.iter().map(String::as_str).collect();
-        notes.push(format!("reads {} from the parent", keys.join(", ")));
+        let keys = Shown::list(service.inherit.iter().map(|key| Shown::text(key)));
+        notes.push(
+            Shown::words("reads ")
+                .and(keys)
+                .and_words(" from the parent"),
+        );
     }
     let hook = spec
         .pre_deploy
@@ -855,23 +895,26 @@ fn review_line(
         .map(|value| value.key.as_str())
         .collect();
     if !own.is_empty() {
-        let keys: Vec<&str> = own.into_iter().collect();
-        notes.push(format!("opens its own {}", keys.join(", ")));
+        let keys = Shown::list(own.into_iter().map(Shown::text));
+        notes.push(Shown::words("opens its own ").and(keys));
     }
     if Some(digest) == service.setup {
-        notes.push("runs setup commands".to_owned());
+        notes.push(Shown::words("runs setup commands"));
     } else if digest != service.template {
-        notes.push("settings differ from the preview rule".to_owned());
+        notes.push(Shown::words("settings differ from the preview rule"));
     }
     if service.secrets.is_some() {
-        notes.push("builds with secrets".to_owned());
+        notes.push(Shown::words("builds with secrets"));
     }
     notes.extend(super::deploy::host_sensitive(spec));
-    let mut line = format!("Review {} at {commit}", spec.name);
-    if !notes.is_empty() {
-        line.push_str(&format!(" ({})", notes.join(", ")));
+    let line = Shown::words("Review ")
+        .and_text(spec.name.as_str())
+        .and_words(" at ")
+        .and_text(&commit);
+    match notes.is_empty() {
+        true => line,
+        false => line.and_words(" (").and(Shown::list(notes)).and_words(")"),
     }
-    line
 }
 
 /// [`verify_review`] for a build this Machine already admitted under `review`: every

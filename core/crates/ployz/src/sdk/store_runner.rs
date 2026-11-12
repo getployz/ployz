@@ -34,7 +34,7 @@ use super::{
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::MachineOperations;
-use crate::deploy::cleanup::{self, Copy, Step};
+use crate::deploy::cleanup::{self, Copy, Rotated, RotationFailure};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -630,18 +630,18 @@ async fn retire_copy<C: MachineOperations>(
     let step = cleanup::retire(
         client,
         &Copy::observed(&observed),
-        matches!(copy.purpose, RemoveContainerPurpose::Retire),
+        copy.purpose.into(),
         copy.purpose.into(),
         &CancellationToken::new(),
     )
     .await;
-    match step {
-        Ok(Step::Done) => None,
-        Ok(Step::Refused(refusal)) => Some(refusal.message),
-        Ok(Step::NotConfirmed(unconfirmed)) if unconfirmed.machines.is_empty() => {
+    match step.map(Rotated::failure) {
+        Ok(Ok(())) => None,
+        Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
+        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) if unconfirmed.machines.is_empty() => {
             Some("the route set did not name every live Machine".into())
         }
-        Ok(Step::NotConfirmed(unconfirmed)) => {
+        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) => {
             let proxies: Vec<String> = unconfirmed
                 .machines
                 .iter()
@@ -649,7 +649,7 @@ async fn retire_copy<C: MachineOperations>(
                 .collect();
             Some(format!("proxy on {} did not confirm", proxies.join(", ")))
         }
-        Ok(Step::Cancelled) => Some("interrupted".into()),
+        Ok(Err(RotationFailure::Cancelled)) => Some("interrupted".into()),
         Err(error) => Some(machine_failure_reason(&copy.machine, error)),
     }
 }
@@ -776,15 +776,15 @@ impl Run {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
         let mut claimed =
             super::store_call(&self.store, move |store| store.claim(&deployment, &runner)).await?;
-        // The Store lowers the Intent without knowing who will run it.
-        claimed.intent.options.operator = operator;
-        claimed.intent.options.block_unmountable = true;
-        // Each labels its copies with its Deployment's id, as this run does.
-        claimed.intent.options.ended_runs = claimed
+        // The Store lowers the Intent without knowing who will run it, so the runner
+        // sets who does. Each ended run labels its copies with its Deployment's id,
+        // as this run does.
+        let ended_runs = claimed
             .ended_runs
             .iter()
             .filter_map(|ended| ended.as_str().parse().ok())
             .collect();
+        claimed.intent.options = claimed.intent.options.as_runner(operator, ended_runs);
         Ok(claimed)
     }
 
@@ -797,6 +797,7 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let approval = claimed.approval.clone();
+        let teardown = claimed.teardown.clone();
         pin_approved(&mut claimed.intent.target, approval.as_ref());
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
@@ -833,7 +834,13 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, approval, rules) {
+        let running = match prepared.confirm_approved(
+            log_id,
+            ImageCleanup::Auto,
+            approval,
+            rules,
+            teardown.clone(),
+        ) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
@@ -858,7 +865,8 @@ impl Run {
                 self.record_warnings(&mut warnings).await;
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
-                    self.renewing(remove_volumes(session, deletes), || ()).await
+                    self.renewing(remove_volumes(session, deletes, teardown), || ())
+                        .await
                 } else {
                     Vec::new()
                 };
@@ -1891,12 +1899,14 @@ fn refused_before_deletes(
 async fn remove_volumes(
     session: &Session,
     volumes: Vec<ployz_core::DockerVolumeId>,
+    teardown: Option<ployz_core::authority::TeardownApproval>,
 ) -> Vec<ployz_core::VolumeRemoval> {
     if volumes.is_empty() {
         return Vec::new();
     }
     session
         .remove_volumes(ployz_core::RemoveVolumesRequest {
+            teardown: teardown.map(Box::new),
             volumes,
             force: false,
         })

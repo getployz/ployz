@@ -9,10 +9,15 @@ export type {
   BuildPolicy,
   DeployApproval,
   DeployTerms,
+  DraftWorkflow,
   GrantBody,
   PayloadDigest,
   PrivateAccessApproval,
   PrivateAccessTerms,
+  Teardown,
+  TeardownApproval,
+  TeardownScope,
+  TeardownTerms,
   ProposalApproval,
   ProposalRef,
   ProposalStep,
@@ -32,16 +37,18 @@ export type {
   StepKind,
   UpgradeChannel,
   VolumeApproval,
+  VolumeDraft,
+  VolumeTerms,
   VolumeWorkflow,
 } from "./generated/payloads";
 
-import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView } from "./generated/payloads";
+import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView, TeardownTerms, VolumeDraft, VolumeTerms } from "./generated/payloads";
 
 /**
  * The deploy approval a browser key signs for `plan`, a Store plan read with `target`, under `terms`: the canonical body
- * to sign as it is, what each Service shows the approver, and one line per Service. Each spec's digest is taken here, by
- * the ployz-core code the CLI and the Servers run. Throws an Error for a plan read without `target`, a Service built from
- * source, an image named by a tag, or malformed terms.
+ * to sign as it is, what each Service shows the approver, and one line per Service followed by each setting it signs,
+ * indented. Each spec's digest is taken here, by the ployz-core code the CLI and the Servers run. Throws an Error for a
+ * plan read without `target`, a Service built from source, an image named by a tag, or malformed terms.
  */
 export function deployApprovalBody(plan: Pick<PlanView, "namespace" | "target">, terms: DeployTerms): { body: string; changes: ApprovedChange[]; lines: string[] };
 
@@ -64,9 +71,26 @@ export function autoDeployRuleEndBody(view: RuleView, terms: Pick<RuleTerms, "is
 export function privateAccessApprovalBody(terms: PrivateAccessTerms): string;
 
 /**
+ * The teardown a passkey answers for `terms`, in canonical form, and the lines a person reads before answering, rendered
+ * from that body as the Servers read it. `names.servers` gives each Server the name Cloud knows it by, and `names.volumes`
+ * each Docker Volume its Volume's name, shown beside it. Throws an Error for malformed terms.
+ */
+export function teardownBody(
+  terms: TeardownTerms,
+  names?: { servers?: Record<string, string>; volumes?: Record<string, string> },
+): { body: string; lines: string[] };
+
+/**
  * The review a person signs of `view`, the Store's view of a PR Environment's preview, for its head under `terms`: the
  * canonical body to sign as it is, whether any Service opens a secret (then only a passkey may sign it), and one line per
- * Service. Each spec's digest is taken here, by the ployz-core code the Servers run. Throws an Error naming what keeps
+ * Service followed by each setting its template signs, indented. Each spec's digest is taken here, by the ployz-core code the Servers run. Throws an Error naming what keeps
  * the preview from a review.
  */
 export function previewReviewBody(view: PreviewReviewView, terms: Pick<ReviewTerms, "cluster" | "issued_at" | "expires_at">): ReviewDraft;
+
+/**
+ * The Volume approval a passkey answers for `terms`: the canonical body to answer as it is, every line the person reads,
+ * rendered from that body by the ployz-core code the CLI and the Servers run, and for a Move the spec the target starts.
+ * Throws an Error for malformed terms, or a Move whose Service runs an image not pinned by digest.
+ */
+export function volumeApprovalBody(terms: VolumeTerms): VolumeDraft;

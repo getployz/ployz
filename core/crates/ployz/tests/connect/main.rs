@@ -19,8 +19,7 @@ use ployz_core::{
     CORROSION_GOSSIP_PORT, CapabilityName, ContainerKind, ContainerRuntimeObservation,
     ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
     HealthObservation, LogsOptions, MACHINE_API_PORT, MachineId, MachineRpcServer,
-    MembershipObservation, NAMESPACE_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
-    UNREGISTRY_PORT, op,
+    MembershipObservation, PROTOCOL_MAJOR, RpcError, RpcErrorCode, UNREGISTRY_PORT, labels, op,
 };
 use ployz_testkit::fake_machine::Fake;
 use serde_json::{Value, json};
@@ -40,6 +39,7 @@ mod sdk_data_loss;
 mod sdk_destroy_cluster;
 mod sdk_destroy_namespace;
 mod sdk_drain;
+mod sdk_lost_reply;
 mod sdk_metrics;
 mod sdk_prepare;
 mod sdk_register;
@@ -671,7 +671,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
                 name: DockerVolumeName::parse("data").unwrap(),
             },
             options: BTreeMap::from([("type".into(), "none".into())]),
-            labels: BTreeMap::from([(NAMESPACE_LABEL.into(), "app".into())]),
+            labels: BTreeMap::from([(labels::NAMESPACE.into(), "app".into())]),
             storage: ployz_core::DockerVolumeStorageObservation::Plain {
                 driver: "local".into(),
             },

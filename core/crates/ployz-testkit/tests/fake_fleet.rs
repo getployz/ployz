@@ -17,7 +17,7 @@ use std::{
 use ployz::{
     connect::{Client, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
-    sdk::{self, ContainerLogInput},
+    sdk::{self, ContainerLogInput, LogLine, SealedNames},
 };
 use ployz_core::{
     ContainerLocator, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
@@ -72,6 +72,7 @@ async fn client(fleet: &FakeFleet, machine: &str) -> Client {
 
 fn stop(container: &str) -> EnsureContainerRequest {
     EnsureContainerRequest {
+        teardown: None,
         preview: None,
         approval: None,
         deploy: None,
@@ -219,19 +220,31 @@ async fn logs_stream_the_fixture_lines_and_honor_tail() {
         (-1, expected.as_slice()),
         (3, &expected[expected.len() - 3..]),
     ] {
+        let names = SealedNames::new();
+        let feed = names.clone();
+        tokio::spawn(async move {
+            feed.wanted().await;
+            feed.begin().done(Some(BTreeSet::new()));
+        });
         let stream = session
-            .container_logs(ContainerLogInput {
-                machine_id: web_1.id,
-                container_id: container_id("app-staging-web-1"),
-                tail,
-                follow: false,
-                since_unix_seconds: None,
-            })
+            .scrubbed_logs(
+                ContainerLogInput {
+                    machine_id: web_1.id,
+                    container_id: container_id("app-staging-web-1"),
+                    tail,
+                    follow: false,
+                    since_unix_seconds: None,
+                },
+                &names,
+            )
             .await
             .unwrap();
         let mut lines = Vec::new();
         while let Some(record) = stream.next().await.unwrap() {
-            lines.push(record.message);
+            let LogLine::Shown { message, .. } = record.line else {
+                panic!("a fixture line was hidden");
+            };
+            lines.push(message);
         }
         assert_eq!(lines, wanted);
     }
@@ -272,6 +285,7 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
     let error = client
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
+                teardown: None,
                 preview: None,
                 approval: None,
                 deploy: None,
@@ -334,6 +348,7 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
         client
             .call::<op::EnsureContainer>(
                 EnsureContainerRequest {
+                    teardown: None,
                     preview: None,
                     want,
                     approval: None,

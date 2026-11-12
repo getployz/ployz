@@ -7,11 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ValueError;
 
-/// Docker label namespace reserved for Ployz management metadata.
-pub const MANAGEMENT_LABEL_PREFIX: &str = "ployz.";
-
 fn validate_container_label_key(key: &str) -> Result<(), ValueError> {
-    if key.starts_with(MANAGEMENT_LABEL_PREFIX) {
+    if key.starts_with(crate::labels::MANAGEMENT_PREFIX) {
         return Err(ValueError::new(
             "container label key",
             key,

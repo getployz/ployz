@@ -697,7 +697,7 @@ fn source_of(
                 .build
                 .dockerfile_path
                 .clone()
-                .unwrap_or_else(|| "Dockerfile".into())
+                .unwrap_or_else(|| ployz_core::config::DEFAULT_DOCKERFILE_PATH.into())
         }),
         commit: row.and_then(|row| row.commit.clone()),
         builders: Vec::new(),

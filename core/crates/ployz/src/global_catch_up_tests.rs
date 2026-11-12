@@ -4,11 +4,11 @@ use std::num::NonZeroU64;
 
 use ployz_core::{
     Ciphertext, ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRefusal,
-    ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL, DeploymentLogId, DockerVolumeName, Gen,
+    ContainerRefusalReason, ContainerRuntimeObservation, DeploymentLogId, DockerVolumeName, Gen,
     HealthObservation, MachineId, MachineStorageObservation, Namespace, Placement,
     PrivateAccessSet, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig,
     ServiceMode, ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference,
+    ServiceVolumeReference, labels,
 };
 
 use super::*;
@@ -429,6 +429,48 @@ async fn a_pending_copy_older_than_an_in_gen_is_not_the_source() {
     );
 }
 
+// Catches the newest-copy tie-break drifting: of two copies created in the same
+// nanosecond, the larger Container ID says whether the Service is a Global.
+#[test]
+fn a_creation_tie_goes_to_the_larger_container_id_when_naming_a_global() {
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let global = |hex| {
+        global_service(
+            identity.clone(),
+            'a',
+            Placement::default(),
+            running_on(&founder, hex),
+        )
+        .containers
+        .remove(0)
+        .into_observation()
+    };
+    let replicated = |hex| {
+        let mut copy = global(hex);
+        copy.try_update(|parts| {
+            parts.resolved_spec.mode = ServiceMode::Replicated {
+                replicas: std::num::NonZeroU32::MIN,
+            };
+        })
+        .unwrap();
+        copy
+    };
+
+    for (smaller, larger, named) in [
+        (global('a'), replicated('b'), 0),
+        (replicated('a'), global('b'), 1),
+    ] {
+        for copies in [
+            [smaller.clone(), larger.clone()],
+            [larger.clone(), smaller.clone()],
+        ] {
+            let services = ployz_core::derive_services(copies);
+            assert_eq!(sources(&services, false, None).len(), named);
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_copy_keeps_its_sources_label_and_gen() {
     let joiner = machine('1', "joiner");
@@ -439,7 +481,7 @@ async fn a_copy_keeps_its_sources_label_and_gen() {
         .try_update(|parts| {
             parts
                 .labels
-                .insert(DEPLOYMENT_ID_LABEL.to_owned(), deploy.to_string());
+                .insert(labels::DEPLOYMENT_ID.to_owned(), deploy.to_string());
         })
         .unwrap();
     let service = global_service(qualified("app", "api"), 'a', Placement::default(), source);
@@ -543,6 +585,131 @@ async fn own_superseded_copies_retire_after_in() {
     assert_eq!(retired.machine_id, joiner.id);
     assert_eq!(retired.service, identity);
     assert!(client.removed.is_empty());
+}
+
+fn unconfirmed(ids: &[MachineId]) -> cleanup::Unconfirmed {
+    cleanup::Unconfirmed {
+        machines: ids.to_vec(),
+        unanswered: Vec::new(),
+    }
+}
+
+fn refusal(reason: ContainerRefusalReason) -> ContainerRefusal {
+    ContainerRefusal {
+        reason,
+        message: format!("owner refused: {reason:?}"),
+        capability: None,
+    }
+}
+
+#[test]
+fn a_step_reads_as_the_error_each_outcome_names() {
+    let (one, two) = (machine('1', "one").id, machine('2', "two").id);
+    step_error(Rotated::Done).unwrap();
+    let refused = refusal(ContainerRefusalReason::LastIn);
+    assert_eq!(
+        step_error(Rotated::Refused(refused.clone())).unwrap_err(),
+        refused.into_error()
+    );
+    let unconfirmed = step_error(Rotated::NotConfirmed(unconfirmed(&[one, two]))).unwrap_err();
+    assert_eq!(unconfirmed.code, ployz_core::RpcErrorCode::Unavailable);
+    assert_eq!(
+        unconfirmed.message,
+        format!("{one}, {two} did not confirm the copy left its routes")
+    );
+    let cancelled = step_error(Rotated::Cancelled).unwrap_err();
+    assert_eq!(cancelled.code, ployz_core::RpcErrorCode::Internal);
+    assert_eq!(cancelled.message, "Cancelled.");
+}
+
+/// A superseded copy that does not retire stays, and the Service is named with the reason
+/// its outcome gave. Cancellation ends the retirement without a reason of its own.
+#[tokio::test(start_paused = true)]
+async fn a_superseded_copy_that_does_not_retire_names_why_it_stays() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let stuck = machine('2', "stuck").id;
+    type Outcome = (fn() -> Rotated, Option<String>);
+    let outcomes: [Outcome; 4] = [
+        (
+            || Rotated::Refused(refusal(ContainerRefusalReason::LastIn)),
+            Some("superseded copy {old} stays: owner refused: LastIn".into()),
+        ),
+        (
+            || Rotated::NotConfirmed(unconfirmed(&[machine('2', "stuck").id])),
+            Some(format!(
+                "superseded copy {{old}} stays: {stuck} did not confirm it left the routes"
+            )),
+        ),
+        (|| Rotated::Cancelled, None),
+        (|| Rotated::Done, None),
+    ];
+    for (retire, stays) in outcomes {
+        let service = global_service(
+            identity.clone(),
+            'a',
+            Placement::default(),
+            rotated(running_on(&founder, 'b'), CopyRotation::In),
+        );
+        let mut client = fake(&joiner, vec![service]);
+        client.target_services = Some(vec![
+            global_service(
+                identity.clone(),
+                'a',
+                Placement::default(),
+                running_on(&joiner, 'c'),
+            ),
+            global_service(
+                identity.clone(),
+                'a',
+                Placement::default(),
+                running_on(&joiner, 'a'),
+            ),
+        ]);
+        client.run_result = Ok(Some(container_id('c')));
+        client.retire_step = retire;
+        let old = container_id('a');
+        let result = catch_up(&mut client, &joiner).await;
+        match stays {
+            None => result.unwrap(),
+            Some(stays) => {
+                let error = result.unwrap_err();
+                let text = message(error, &joiner);
+                let stays = stays.replace("{old}", old.as_str());
+                assert!(text.contains(&format!("app/api: {stays}")), "{text}");
+            }
+        }
+    }
+}
+
+/// A started copy the owner refuses In is removed; when that removal does not finish, the
+/// reason says the copy stays and how its removal ended.
+#[tokio::test(start_paused = true)]
+async fn a_refused_started_copy_whose_removal_does_not_finish_says_it_stays() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let service = global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&founder, 'a'),
+    );
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(vec![global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&joiner, 'b'),
+    )]);
+    client.run_result = Ok(Some(container_id('b')));
+    client.bring_in = FakeBringIn::Refused(ContainerRefusalReason::OlderThanIn);
+    client.remove_step = || Removal::Refused(refusal(ContainerRefusalReason::InRotation));
+    let text = message(catch_up(&mut client, &joiner).await.unwrap_err(), &joiner);
+    let stays = format!(
+        "{OUTDATED}; the started copy stays: Refused(ContainerRefusal {{ reason: InRotation, message: \"owner refused: InRotation\", capability: None }})"
+    );
+    assert!(text.contains(&stays), "{text}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -697,6 +864,52 @@ async fn a_joiner_on_a_cluster_founded_closed_opens_no_door() {
     assert_eq!(asked.doors, ployz_core::IngressDoors::closed());
 }
 
+// Catches catch-up following the newest holder when the Cluster declares its Doors: a closed
+// Cluster stays closed whatever its Servers last ran, and one declared Public opens.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_follows_the_declared_doors_over_the_newest_holder() {
+    let founder = machine('f', "founder");
+    let joiner = machine('1', "joiner");
+    let holder = |ports| {
+        ployz_core::holder_service_spec("pause:1", ports)
+            .to_resolved(service_id('d'), ResolvedUpdateConfig::default())
+            .expect("volume graph is scoped")
+    };
+    let cluster = |ports| {
+        vec![
+            global_service(
+                QualifiedService::system_ingress(),
+                'a',
+                Placement::default(),
+                running_on(&founder, 'a'),
+            ),
+            grouped(
+                QualifiedService::system_ingress_holder(),
+                holder(ports),
+                running_on(&founder, 'e'),
+            ),
+        ]
+    };
+    for (running, declared) in [
+        (
+            ployz_core::IngressPorts::Public,
+            ployz_core::IngressDoors::closed(),
+        ),
+        (
+            ployz_core::IngressPorts::Closed,
+            ployz_core::IngressDoors::public(),
+        ),
+    ] {
+        let mut client = fake(&joiner, cluster(running));
+        client.declared = Some(declared.clone());
+        catch_up(&mut client, &joiner).await.unwrap();
+        let [(_, asked)] = client.door_calls.as_slice() else {
+            panic!("one call sets the doors: {:?}", client.door_calls);
+        };
+        assert_eq!(asked.doors, declared);
+    }
+}
+
 // Catches catch-up calling a Caddy that crashes after the daemon set it caught up.
 #[tokio::test(start_paused = true)]
 async fn a_caddy_that_is_not_running_after_its_doors_fails_catch_up() {
@@ -812,7 +1025,7 @@ async fn a_router_tailscale_refused_fails_catch_up_and_names_the_way_to_retry() 
     assert!(!said.contains("redeploy"), "{said}");
     assert_eq!(
         failure.hints(),
-        [crate::ui::Hint::Retry(
+        [Hint::Retry(
             "ployz private-access on --auth-key-stdin".to_owned()
         )]
     );
@@ -901,10 +1114,13 @@ struct FakeCatchUpClient {
     brought_in: Vec<Copy>,
     retired: Vec<Copy>,
     removed: Vec<Copy>,
+    retire_step: fn() -> Rotated,
+    remove_step: fn() -> Removal,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
     names: crate::drain::retirement::Names,
     unarrived: crate::drain::retirement::Names,
+    declared: Option<ployz_core::IngressDoors>,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
     /// What the joiner's Containers show, call by call, before `target_services`.
@@ -926,10 +1142,13 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         brought_in: Vec::new(),
         retired: Vec::new(),
         removed: Vec::new(),
+        retire_step: || Rotated::Done,
+        remove_step: || Removal::Removed,
         failures: Vec::new(),
         omissions: Vec::new(),
         names: Vec::new(),
         unarrived: Vec::new(),
+        declared: None,
         relisted: None,
         listings: 0,
         starting: std::collections::VecDeque::new(),
@@ -1012,6 +1231,7 @@ impl CatchUpClient for FakeCatchUpClient {
             live,
             names: self.names.clone(),
             unarrived: self.unarrived.clone(),
+            declared: self.declared.clone(),
         })
     }
 
@@ -1092,14 +1312,14 @@ impl CatchUpClient for FakeCatchUpClient {
         &mut self,
         copy: &Copy,
         _cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Step, RpcError> {
+    ) -> Result<Rotated, RpcError> {
         self.retired.push(copy.clone());
-        Ok(Step::Done)
+        Ok((self.retire_step)())
     }
 
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError> {
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
         self.removed.push(copy.clone());
-        Ok(Step::Done)
+        Ok((self.remove_step)())
     }
 
     async fn target_containers(

@@ -89,17 +89,15 @@ It prints what every preview will run, then signs it with your device key:
 ```text
 Approving previews of production:
   repository  acme/web, parent branch main
-  builder     getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
+  builder     getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
   urls        <service>-pv-<id>.acme-x7q2.ployz.app
   trusted     alice (1109914), bob (2207431)
   servers     2 in the cluster
   web
     builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
     reads     DATABASE_URL from production
-    variables DATABASE_URL (sealed), LOG_LEVEL=info
-    mode {"mode":"replicated","replicas":1}
-    ports [{"mode":"ingress","hostname":"web-pv-<id>.acme-x7q2.ployz.app","load_balancer_port":443,"container_port":80,"http_protocol":"https"}]
-    restart {"name":"unless-stopped"}
+    variables DATABASE_URL=(sealed "DATABASE_URL" from environment 0f8fad5b-d9cb-469f-a165-70867728950e), LOG_LEVEL=info
+    ports [{"container_port":80,"hostname":"web-pv-<id>.acme-x7q2.ployz.app","http_protocol":"https","load_balancer_port":443,"mode":"ingress"}]
     setup     runs once, on each preview's first deploy, with
       pre-deploy ["/bin/sh","-c","pnpm db:seed"]
     generated SESSION_SECRET=${{ secret(32, "a-zA-Z0-9") }}, new in each preview
@@ -130,28 +128,42 @@ production secret the rule doesn't name.
   preview read and write it.
 - **A saved change waits for you.** After you change the settings of a service the rule covers,
   previews stop deploying it until you approve again. So does adding a server.
+- **Closing the pull request removes its preview** with no prompt. Each server checks the rule
+  that opened it and takes off only that preview's namespace and volumes.
 - **Stop it** with `ployz github preview end --env production`. The servers refuse every preview
   build and deploy under the rule from then on.
 
 GitHub builds each preview on the run its push started, and Ployz runs it again if it ended before
-the pull request opened. So your build workflow must run on pushes to every branch, not only `main`,
-and on a dispatch with a `commit` for [reviewed previews](#review-a-preview-from-a-fork):
+the pull request opened. So your repository needs Ployz's rule workflow as
+`.github/workflows/ployz-build.yml`, which builds on pushes to every branch, and on a dispatch
+with a `commit` for [reviewed previews](#review-a-preview-from-a-fork). It's the same file as for
+[automatic deploys](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval).
+**Organization → Builds** offers it, under **Update workflow**, once the repository's workflow
+calls Ployz's rule builder. Before that, copy it from here exactly as it is:
 
 ```yaml
+name: Ployz build
 on:
   push:
+    branches: ['**']
   workflow_dispatch:
     inputs:
-      commit:
-        required: false
-        type: string
+      cloud: { required: false, type: string }
+      commit: { required: false, type: string }
+permissions:
+  contents: read
+  id-token: write
 jobs:
   build:
-    uses: getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
+    if: github.event_name != 'push' || vars.PLOYZ_BRANCH == '' || github.ref_name == vars.PLOYZ_BRANCH
+    uses: getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
     with:
-      cloud: https://ployz.dev
+      cloud: ${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}
       commit: ${{ inputs.commit }}
 ```
+
+Leave the repository variable `PLOYZ_BRANCH` unset, or pushes to other branches won't build their
+previews.
 
 ### Review a preview from a fork
 
@@ -161,11 +173,19 @@ commit. A member's pull request that the rule doesn't trust shows no badge, but 
 refuse its pushes, so its row offers the same review. That includes every pull request when you
 approved the rule without `--trust`. Read the pull request's changes on GitHub,
 then click **Review and approve**. The dialog
-lists each service the review covers and what it asks for, like:
+lists each service the review covers and what it asks for, then every setting the review signs,
+like:
 
 ```text
 Review web at a1b2c3d4e5f6 (reads DATABASE_URL from the parent, builds with secrets)
+  variables DATABASE_URL=(sealed "DATABASE_URL" from environment 0f8fad5b-d9cb-469f-a165-70867728950e), SESSION_KEY="${{ secret(32, \"a-zA-Z0-9\") }}"
+  command ["npm","start"]
+  ports [{"container_port":3000,"hostname":"web.{preview-namespace}.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]
 ```
+
+A generated value shows as the `secret(…)` call that makes it, a secret the preview reads from its
+parent as sealed from that environment, and the preview's own namespace as `{preview-namespace}`,
+since each preview gets its own.
 
 A line also says when the service **opens its own** secrets you set in the preview, when its
 **settings differ from the preview rule** because someone changed them in the preview, and when it

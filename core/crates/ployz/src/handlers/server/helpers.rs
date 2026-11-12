@@ -3,13 +3,12 @@ use std::{net::IpAddr, sync::Arc};
 
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollForRecoveryRequest, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
+    EnrollForRecoveryRequest, EnrollRequest, Enrolled, Hint, InspectRequest, LeaveRequest, Left,
     LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken,
     PinnedAddresses, PublicIpDiscovery, RecoverySeed, Rpc, RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
-use crate::ui::Hint;
 use crate::{
     connect::{Client, ConnectError, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections, Transport},
@@ -186,6 +185,7 @@ pub(super) async fn reconnect_direct(
 ) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         &format!("Reconnecting to {connection}"),
         crate::setup_retry::WAIT,
         ConnectError::is_setup_retryable,
@@ -208,6 +208,7 @@ pub(super) async fn wait_direct_participating(
     let mut joining = Joining::default();
     crate::setup_retry::run_expecting(
         &mut joining,
+        &crate::ui::WaitNotices,
         &format!("Waiting for {connection} to participate"),
         Some(STARTING),
         MACHINE_START_WAIT,
@@ -391,7 +392,7 @@ pub(in crate::handlers) async fn leave(
 ) -> Result<(), Error> {
     let left = client
         .call::<op::Leave>(
-            LeaveRequest {},
+            LeaveRequest { teardown: None },
             Call::keyed().waiting(Wait::of(MACHINE_START_WAIT)),
         )
         .await?;

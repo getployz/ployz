@@ -833,6 +833,7 @@ impl FakeMachine for JoinDaemon {
                 network: "10.210.0.0/16".parse().unwrap(),
                 machines: self.inner.registration.visible_peers.clone(),
                 target_versions: self.inner.registration.target_versions.clone(),
+                doors: None,
             },
             &[],
         )
@@ -866,6 +867,7 @@ impl FakeMachine for JoinDaemon {
                 network: "10.210.0.0/16".parse().unwrap(),
                 machines: self.inner.registration.visible_peers.clone(),
                 target_versions: self.inner.registration.target_versions.clone(),
+                doors: None,
             }),
             machines,
         })

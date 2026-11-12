@@ -17,8 +17,8 @@
 use crate::cluster::Call;
 use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerObservation,
-    ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
-    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoorsSet, InspectRequest,
+    ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, EnvironmentValues,
+    HealthFailure, HealthVerdict, Hint, IngressDoors, IngressDoorsSet, InspectRequest,
     ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
     PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
     RunTarget, ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
@@ -26,7 +26,9 @@ use ployz_core::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::deploy::cleanup::{self, BroughtIn, Copy, Step};
+use crate::deploy::cleanup::{
+    self, BroughtIn, Copy, EmptyPolicy, NotIn, Removal, Rotated, RotationFailure,
+};
 use crate::drain::retirement::{Names, server_name};
 use crate::failure::partial_failure_details;
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
@@ -64,6 +66,8 @@ pub(crate) struct Observed {
     names: Names,
     /// Omitted Servers that are Unarrived Machines, which hold no copy to wait on.
     unarrived: Names,
+    /// The Doors the Cluster declares, as the entry Machine's replica holds them.
+    declared: Option<IngressDoors>,
 }
 
 pub(crate) trait CatchUpClient {
@@ -108,8 +112,8 @@ pub(crate) trait CatchUpClient {
         &mut self,
         copy: &Copy,
         cancel: &CancellationToken,
-    ) -> Result<Step, RpcError>;
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError>;
+    ) -> Result<Rotated, RpcError>;
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError>;
     async fn target_containers(
         &mut self,
         machine_id: &MachineId,
@@ -118,7 +122,9 @@ pub(crate) trait CatchUpClient {
 
 impl CatchUpClient for Client {
     async fn live_services(&mut self) -> Result<Observed, Failure> {
-        let machines = self.machines().await.map_err(Failure::from)?;
+        let list = self.machine_list().await.map_err(Failure::from)?;
+        let declared = list.enrollment.and_then(|snapshot| snapshot.doors);
+        let machines = list.machines;
         let live = self
             .live_services_from(&machines, EnvironmentValues::Included)
             .await
@@ -134,6 +140,7 @@ impl CatchUpClient for Client {
                 .filter(|machine| machine.unarrived())
                 .map(named)
                 .collect(),
+            declared,
         })
     }
 
@@ -190,8 +197,14 @@ impl CatchUpClient for Client {
                 for observed in own {
                     let copy = Copy::observed(observed);
                     step_error(
-                        cleanup::retire(&*self, &copy, false, AnonymousVolumes::Remove, cancel)
-                            .await?,
+                        cleanup::retire(
+                            &*self,
+                            &copy,
+                            EmptyPolicy::RequireOtherIn,
+                            AnonymousVolumes::Remove,
+                            cancel,
+                        )
+                        .await?,
                     )?;
                 }
                 Ok(true)
@@ -316,11 +329,18 @@ impl CatchUpClient for Client {
         &mut self,
         copy: &Copy,
         cancel: &CancellationToken,
-    ) -> Result<Step, RpcError> {
-        cleanup::retire(&*self, copy, false, AnonymousVolumes::Remove, cancel).await
+    ) -> Result<Rotated, RpcError> {
+        cleanup::retire(
+            &*self,
+            copy,
+            EmptyPolicy::RequireOtherIn,
+            AnonymousVolumes::Remove,
+            cancel,
+        )
+        .await
     }
 
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError> {
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
         cleanup::remove(&*self, copy, AnonymousVolumes::Remove).await
     }
 
@@ -364,11 +384,10 @@ async fn takes_ingress(client: &mut Client, machine_id: &MachineId) -> Result<bo
         .ok_or_else(|| RpcError::conflict("the Server does not observe itself participating"))
 }
 
-fn step_error(step: Step) -> Result<(), RpcError> {
-    match step {
-        Step::Done => Ok(()),
-        Step::Refused(refusal) => Err(refusal.into_error()),
-        Step::NotConfirmed(machines) => Err(RpcError::unavailable(format!(
+fn step_error(rotated: Rotated) -> Result<(), RpcError> {
+    rotated.failure().map_err(|failure| match failure {
+        RotationFailure::Refused(refusal) => refusal.into_error(),
+        RotationFailure::NotConfirmed(machines) => RpcError::unavailable(format!(
             "{} did not confirm the copy left its routes",
             machines
                 .machines
@@ -376,12 +395,11 @@ fn step_error(step: Step) -> Result<(), RpcError> {
                 .map(MachineId::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
-        ))),
-        Step::Cancelled => Err(crate::ui::rpc_error(
-            ployz_core::RpcErrorCode::Internal,
-            &Failure::cancelled(),
         )),
-    }
+        RotationFailure::Cancelled => {
+            crate::ui::rpc_error(ployz_core::RpcErrorCode::Internal, &Failure::cancelled())
+        }
+    })
 }
 
 async fn ensure_retried(
@@ -397,6 +415,7 @@ async fn ensure_retried(
     client
         .call::<op::EnsureContainer>(
             ployz_core::EnsureContainerRequest {
+                teardown: None,
                 preview: None,
                 want,
                 approval: None,
@@ -431,16 +450,16 @@ pub(crate) fn joined_catch_up_error(
     let mut failure = error.cause.context(message);
     for identity in error.unresolved {
         let hint = if identity == QualifiedService::system_ingress() {
-            crate::ui::Hint::Retry(command(&[
+            Hint::Retry(command(&[
                 "server",
                 "set",
                 &server.id.to_string(),
                 "--accepts-ingress=true",
             ]))
         } else if identity.is_private_access_router() {
-            crate::ui::Hint::Retry(command(&["private-access", "on", "--auth-key-stdin"]))
+            Hint::Retry(command(&["private-access", "on", "--auth-key-stdin"]))
         } else {
-            crate::ui::Hint::Inspect(command(&[
+            Hint::Inspect(command(&[
                 "logs",
                 &identity.to_string(),
                 "--machine",
@@ -561,7 +580,7 @@ pub(crate) async fn follow_globals(
         unarrived.push(serde_json::json!({ "id": id, "name": name, "next": next }));
     }
     if !unarrived.is_empty() {
-        crate::ui::hint(&crate::ui::Hint::Inspect(list));
+        crate::ui::hint(&Hint::Inspect(list));
     }
     (unarrived, result)
 }
@@ -648,7 +667,11 @@ fn may_still_run(target: &[ContainerObservation], started: &Started) -> bool {
 /// One source per observed Global, the Ingress Proxy's door identities as one and the
 /// Private Access router as its sealed auth key. A joiner with the ingress role gets the
 /// Ingress Proxy even when none runs anywhere.
-fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> {
+fn sources(
+    services: &[ServiceObservation],
+    takes_ingress: bool,
+    declared: Option<IngressDoors>,
+) -> Vec<Source> {
     let mut sources: Vec<Source> = services
         .iter()
         .filter(|service| {
@@ -656,10 +679,7 @@ fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> 
         })
         .filter_map(|service| {
             let copies = || service.containers.iter().map(|c| c.as_observation());
-            let newest = copies().max_by(|a, b| {
-                (a.created_at_unix_nanos, a.container_id.as_str())
-                    .cmp(&(b.created_at_unix_nanos, b.container_id.as_str()))
-            })?;
+            let newest = service.newest_container()?.as_observation();
             if newest.resolved_spec.mode != ServiceMode::Global {
                 return None;
             }
@@ -670,18 +690,7 @@ fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> 
                         CopyRotation::In | CopyRotation::Pending
                     )
                 })
-                .max_by(|a, b| {
-                    (
-                        a.copy_gen(),
-                        a.created_at_unix_nanos,
-                        a.container_id.as_str(),
-                    )
-                        .cmp(&(
-                            b.copy_gen(),
-                            b.created_at_unix_nanos,
-                            b.container_id.as_str(),
-                        ))
-                });
+                .max_by_key(|observed| (observed.copy_gen(), observed.recency_key()));
             Some(Source {
                 identity: service.identity.clone(),
                 work: CatchUpWork::Service(copy.cloned().map(Box::new)),
@@ -696,7 +705,7 @@ fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> 
             identity: QualifiedService::system_ingress(),
             work: CatchUpWork::Ingress(
                 crate::ingress::proxy_service(services),
-                crate::ingress::cluster_doors(services),
+                crate::ingress::cluster_doors(declared, services),
             ),
         });
     }
@@ -726,6 +735,16 @@ fn new_copy(source: &ContainerObservation) -> NewContainer {
         registry_auth: None,
         image_prepared: false,
         answer: ployz_core::AnswerWhen::Started,
+    }
+}
+
+/// A copy that did not come In is removed; `message` is why, and what the removal did
+/// follows it when it did not finish.
+async fn remove_started<C: CatchUpClient>(client: &mut C, copy: &Copy, message: String) -> String {
+    match client.remove_copy(copy).await {
+        Ok(Removal::Removed) => message,
+        Ok(removal) => format!("{message}; the started copy stays: {removal:?}"),
+        Err(error) => format!("{message}; {}", crate::ui::row(&error)),
     }
 }
 
@@ -773,13 +792,14 @@ async fn observe_complete<C: CatchUpClient>(
     this_machine: &MachineId,
     cancel: &CancellationToken,
     observe: &mut impl FnMut(CatchUpFact),
-) -> Result<LiveServices<RpcError>, CatchUpError> {
+) -> Result<(LiveServices<RpcError>, Option<IngressDoors>), CatchUpError> {
     let cancelled = || CatchUpError::new(Failure::cancelled(), Vec::new());
     for attempt in 1..=OBSERVATION_ATTEMPTS {
         let Observed {
             mut live,
             names,
             mut unarrived,
+            declared,
         } = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancelled()),
@@ -794,7 +814,7 @@ async fn observe_complete<C: CatchUpClient>(
             .retain(|id| !unarrived.iter().any(|(unarrived, _)| unarrived == id));
         if live.containers.all_targets_succeeded() {
             observe(CatchUpFact::NotArrived(unarrived));
-            return Ok(live);
+            return Ok((live, declared));
         }
         if attempt == OBSERVATION_ATTEMPTS {
             observe(CatchUpFact::NotArrived(unarrived));
@@ -823,9 +843,9 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     cancel: &CancellationToken,
     mut observe: impl FnMut(CatchUpFact),
 ) -> Result<(), CatchUpError> {
-    let live = observe_complete(client, &this_machine.id, cancel, &mut observe).await?;
+    let (live, declared) = observe_complete(client, &this_machine.id, cancel, &mut observe).await?;
     let services = live.services();
-    let sources = sources(&services, this_machine.accepts_ingress);
+    let sources = sources(&services, this_machine.accepts_ingress, declared);
     let mut unresolved: Vec<QualifiedService> = sources
         .iter()
         .map(|source| source.identity.clone())
@@ -928,20 +948,14 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             }
         };
         if copy.rotation != CopyRotation::In {
-            let outcome = match client.bring_in(&copy, &spec).await {
-                Ok(BroughtIn::In) => None,
-                Ok(BroughtIn::NotIn { health }) => Some(not_in_message(health)),
-                Ok(BroughtIn::Refused(refusal)) => {
-                    let message = if refusal.reason == ContainerRefusalReason::OlderThanIn {
-                        OUTDATED.to_owned()
-                    } else {
-                        refusal.message
-                    };
-                    Some(match client.remove_copy(&copy).await {
-                        Ok(Step::Done) => message,
-                        Ok(step) => format!("{message}; the started copy stays: {step:?}"),
-                        Err(error) => format!("{message}; {}", crate::ui::row(&error)),
-                    })
+            let outcome = match client.bring_in(&copy, &spec).await.map(BroughtIn::not_in) {
+                Ok(Ok(())) => None,
+                Ok(Err(NotIn::Health(health))) => Some(not_in_message(health)),
+                Ok(Err(NotIn::OlderThanIn(_))) => {
+                    Some(remove_started(client, &copy, OUTDATED.to_owned()).await)
+                }
+                Ok(Err(NotIn::Refused(refusal))) => {
+                    Some(remove_started(client, &copy, refusal.message).await)
                 }
                 Err(error) => Some(crate::ui::row(&error)),
             };
@@ -1015,11 +1029,15 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             if cancel.is_cancelled() {
                 break;
             }
-            let left = match client.retire_copy(&Copy::observed(old), cancel).await {
-                Ok(Step::Done) => None,
-                Ok(Step::Cancelled) => break,
-                Ok(Step::Refused(refusal)) => Some(refusal.message),
-                Ok(Step::NotConfirmed(machines)) => Some(format!(
+            let left = match client
+                .retire_copy(&Copy::observed(old), cancel)
+                .await
+                .map(Rotated::failure)
+            {
+                Ok(Ok(())) => None,
+                Ok(Err(RotationFailure::Cancelled)) => break,
+                Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
+                Ok(Err(RotationFailure::NotConfirmed(machines))) => Some(format!(
                     "{} did not confirm it left the routes",
                     machines
                         .machines

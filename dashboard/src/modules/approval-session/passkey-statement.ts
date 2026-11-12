@@ -4,14 +4,15 @@
  * and nothing else. No browser key is lent and nothing outlives the prompt.
  *
  * Servers take such an answer only where a session grant may not sign: an automatic deploy rule, which stands for every
- * future push, a review of a preview that may open a secret, and a Private Access approval, which names the one sealed
- * key a router may join a tailnet with. Any other workflow answered this way is refused. Every passkey prompt in the
+ * future push, a review of a preview that may open a secret, a Private Access approval, which names the one sealed
+ * key a router may join a tailnet with, and a Volume workflow, which can stop a Service, start one elsewhere or send a
+ * Volume's data to another Server. Any other workflow answered this way is refused. Every passkey prompt in the
  * dashboard, a session's included, goes through `passkeyAnswer`.
  */
 import type { PasskeyAssertion, Signed } from "@ployz/sdk";
 
 /** What a signature is for, as `keys::Purpose` names it. Each purpose signs under its own prefix. */
-export type Purpose = "workflow" | "rule";
+export type Purpose = "workflow" | "rule" | "volume";
 
 const encoder = new TextEncoder();
 

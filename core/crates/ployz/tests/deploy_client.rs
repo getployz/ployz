@@ -960,6 +960,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -1015,6 +1016,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     let (held, held_server) = listening(holding.clone()).await;
     let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
     let mut admit = Deploy {
+        teardown: None,
         id: second.clone(),
         environment: EnvironmentRef::default(),
         services: Vec::new(),
@@ -1297,6 +1299,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -1429,6 +1432,7 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id.clone(),
                     environment: EnvironmentRef::default(),
                     services: Vec::new(),
@@ -1589,6 +1593,7 @@ async fn restarting_deploy_names_its_exit_and_last_line(
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -1722,6 +1727,7 @@ async fn cloud_runner_applies_an_environment_removal() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployed.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -1740,6 +1746,7 @@ async fn cloud_runner_applies_an_environment_removal() {
     assert_eq!(ran.status, DeploymentStatus::Applied);
 
     let remove = Remove {
+        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: None,
         version: None,
@@ -1847,6 +1854,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id.clone(),
                     environment: EnvironmentRef::default(),
                     services: Vec::new(),
@@ -2020,6 +2028,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id.clone(),
                     environment: EnvironmentRef::default(),
                     services: Vec::new(),
@@ -2131,6 +2140,7 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
                 .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
+                        teardown: None,
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),

@@ -2,17 +2,15 @@
 //! or port, remove it.
 
 use ployz_core::{DomainPrefix, RpcErrorCode, ServiceName};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Effect, Stop, Tool, at, stale};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, at};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
     AddDomain, Domain, DomainAction, DomainName, DomainQuery, DomainRow, DomainStatus,
-    DomainsQuery, DomainsView, EnvironmentName, Hostname, ProjectName, RemoveDomain,
-    SetGeneratedDomain,
+    DomainsQuery, DomainsView, Hostname, RemoveDomain, SetGeneratedDomain,
 };
 
 const HOSTNAME: &str = "^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$";
@@ -83,40 +81,29 @@ fn domains(
         environment,
         service: None,
     })?;
-    match expect.is_some_and(|expect| view.environment.revision.0 != expect) {
-        true => Err(stale(cx.call())),
-        false => Ok(view),
-    }
+    cx.fresh(&view.environment, expect)?;
+    Ok(view)
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DomainAdd {
-    #[schemars(with = "String", pattern(NODE_NAME), example = &"web")]
-    service: ServiceName,
-    /// Prefix for a generated domain, PREFIX.cluster-domain; needs Ployz Cloud. Omit both prefix and hostname for a free one.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    prefix: Option<DomainPrefix>,
-    /// A hostname the member owns, e.g. app.example.com. Not with prefix.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(HOSTNAME), length(max = 253))]
-    hostname: Option<Hostname>,
-    /// Container port it reaches. Default: the container's PORT.
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 65535))]
-    port: Option<u16>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DomainAdd {
+        #[schemars(with = "String", pattern(NODE_NAME), example = &"web")]
+        service: ServiceName,
+        /// Prefix for a generated domain, PREFIX.cluster-domain; needs Ployz Cloud. Omit both prefix and hostname for a free one.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        prefix: Option<DomainPrefix>,
+        /// A hostname the member owns, e.g. app.example.com. Not with prefix.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(HOSTNAME), length(max = 253))]
+        hostname: Option<Hostname>,
+        /// Container port it reaches. Default: the container's PORT.
+        #[serde(default)]
+        #[schemars(range(min = 1, max = 65535))]
+        port: Option<u16>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for DomainAdd {
@@ -132,7 +119,7 @@ impl Tool for DomainAdd {
         if self.prefix.is_some() && self.hostname.is_some() {
             return Err(Refusal::invalid("Give prefix or hostname, not both", "prefix").into());
         }
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         cx.expect(&scope, self.expect_revision)?;
         // Only Cloud reserves the Cluster Domain a generated domain lives under, so on a
         // local Store one could never deploy. A missing Service is refused as missing first.
@@ -183,18 +170,13 @@ impl Tool for DomainAdd {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DomainCheck {
-    /// The domain, by hostname or a generated domain's prefix.
-    #[schemars(length(min = 1), example = &"app.example.com")]
-    domain: String,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DomainCheck {
+        /// The domain, by hostname or a generated domain's prefix.
+        #[schemars(length(min = 1), example = &"app.example.com")]
+        domain: String,
+        @place,
+    }
 }
 
 impl Tool for DomainCheck {
@@ -208,7 +190,7 @@ impl Tool for DomainCheck {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let environment = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let environment = cx.scope(&self);
         let view = cx.one(&DomainQuery {
             environment,
             domain: self.domain,
@@ -221,31 +203,22 @@ impl Tool for DomainCheck {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DomainUpdate {
-    /// The domain, by hostname or a generated domain's prefix.
-    #[schemars(length(min = 1), example = &"app.example.com")]
-    domain: String,
-    /// New prefix for a generated domain.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    prefix: Option<DomainPrefix>,
-    /// Container port it reaches.
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 65535))]
-    port: Option<u16>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DomainUpdate {
+        /// The domain, by hostname or a generated domain's prefix.
+        #[schemars(length(min = 1), example = &"app.example.com")]
+        domain: String,
+        /// New prefix for a generated domain.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        prefix: Option<DomainPrefix>,
+        /// Container port it reaches.
+        #[serde(default)]
+        #[schemars(range(min = 1, max = 65535))]
+        port: Option<u16>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for DomainUpdate {
@@ -259,7 +232,7 @@ impl Tool for DomainUpdate {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let view = domains(cx, scope.clone(), self.expect_revision)?;
         let found = find(&view, &self.domain)?.domain.clone();
         let staged = match (self.prefix, self.port, &found.name) {
@@ -309,23 +282,14 @@ impl Tool for DomainUpdate {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DomainRemove {
-    /// The domain, by hostname or a generated domain's prefix.
-    #[schemars(length(min = 1), example = &"app.example.com")]
-    domain: String,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DomainRemove {
+        /// The domain, by hostname or a generated domain's prefix.
+        #[schemars(length(min = 1), example = &"app.example.com")]
+        domain: String,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for DomainRemove {
@@ -338,7 +302,7 @@ impl Tool for DomainRemove {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let view = domains(cx, scope.clone(), self.expect_revision)?;
         let found = find(&view, &self.domain)?;
         // Only a domain waiting for its first Deploy goes without approval.

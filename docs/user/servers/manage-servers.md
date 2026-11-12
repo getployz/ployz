@@ -246,11 +246,33 @@ ployz device rm mmg42klgyq
 that answers. A server that doesn't answer is listed under failures, and one with no direct
 connection under omissions. Either way the command exits 3.
 
+### Pin your cluster's key
+
+`ployz private-access on` and sealed variables seal the secret on your computer, to your
+cluster's key. Before the CLI seals through Ployz Cloud, it checks the key Ployz Cloud sends
+against one it read from a server itself. Read it once per organization, over SSH or on a server:
+
+```sh
+ployz device pin --connect ssh://root@203.0.113.10
+```
+
+`pin` reads the key from that server, never through Ployz Cloud, and keeps it on this computer
+for the organization you're signed in to. It reads only over SSH or the server's local socket,
+and refuses a plain TCP connection or one Ployz Cloud chose. It also refuses a server whose key
+isn't the one Ployz Cloud has for that organization.
+
+Until you pin the key, the CLI refuses to seal through Ployz Cloud and names `ployz device pin`.
+If Ployz Cloud later sends a different key, the CLI refuses too, and the secret never leaves your
+computer. If your cluster's key really changed, for example because you started a new cluster,
+run `pin` again. Over `--connect ssh://`, `ployz private-access on` reads the key from that
+server and needs no pin.
+
 ### Add a passkey
 
 A passkey lets you approve changes from your browser. Each server trusts it to approve workflows,
-[automatic deploy rules](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval)
-and [Release Channels](#upgrades-on-servers-that-enforce-device-approval), and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
+[automatic deploy rules](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval),
+[volume changes](../services/move-a-volume.md#approve-from-ployz-cloud) and
+[Release Channels](#upgrades-on-servers-that-enforce-device-approval), and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
 device to add one.
 
 1. In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser
@@ -300,8 +322,8 @@ approved before it stops or starts anything. Ployz Cloud carries the signed appr
 make one. Each approval names one container, so a captured approval cannot stop a second copy.
 The CLI signs a fresh approval just before each copy of a rolling restart. Restart approvals
 permit only holding, stopping and starting that container. Stop approvals permit only holding
-and stopping it. Start approvals permit only starting it. None permits removing it. Removing a
-volume doesn't need an approval yet. A server refuses an approval that is forged, names another service, server or container, lasts over 15 minutes, or
+and stopping it. Start approvals permit only starting it. None permits removing it: a container or
+a volume comes off only under a [teardown](#take-things-off-servers-that-enforce) you approve. A server refuses an approval that is forged, names another service, server or container, lasts over 15 minutes, or
 was already used, including after the server restarts. It allows two minutes of clock difference
 when checking the issue time and expiry.
 
@@ -342,11 +364,17 @@ A rule names the servers it was approved for, so after you add a server, approve
 `ployz github rule approve`. Turn enforcement off to build through Ployz Cloud again. See
 [Builds on servers that enforce device approval](../builds/where-builds-run.md#builds-on-servers-that-enforce-device-approval).
 
-Enforcement also stops volume moves until a later release. Ployz Cloud can't move a volume or
-restore a point into a new volume on servers that enforce, and refuses before your service stops.
-Mirrors, syncs, restoring a volume in place, resizes and deploys keep working. To move a volume,
-turn enforcement off first. See
-[Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval).
+Enforcement also covers volume moves, resizes, restores and mirror removals. A server moves a
+volume only under an approved device's approval, which `ployz volume move` signs, and resizes one
+only under the approval `ployz volume set --size` signs. It makes a copy the writer only under the
+approval `ployz volume restore` signs, and deletes a copy that holds data only under the one
+`ployz volume mirror rm` signs. Ployz Cloud refuses a move nobody approved before your service
+stops, and a restore or a removal nobody approved before anything changes. Syncs and deploys keep
+working. See
+[Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval),
+[Restore a volume](../services/restore-a-volume.md#on-servers-that-enforce-device-approval) and
+[Mirror a volume](../services/mirror-a-volume.md#mirror-on-servers-that-enforce-device-approval).
+Restoring a point into a new volume waits for a later release; turn enforcement off first.
 
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
 allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
@@ -411,13 +439,53 @@ A server before this release ignores the approval and upgrades as before.
 
 With enforcement on, `ployz server rm` and `ployz server forget <server>` work only from an
 approved device or over SSH on a server. Elsewhere they stop before changing anything and name the
-server that needs an approved device. The dashboard's **Remove server** and **Forget server** are
-refused, and the message names the command to run from an approved device. Ployz Cloud drops a server you removed from the CLI once the Cluster no longer lists it,
+server that needs an approved device. The dashboard's **Remove server** and **Forget server** ask
+for your passkey after you type the server's name; see
+[Take things off servers that enforce](#take-things-off-servers-that-enforce). Ployz Cloud drops a server you removed from the CLI once the Cluster no longer lists it,
 within minutes. To remove the last server of a Cluster Ployz Cloud manages, turn enforcement off
 first. Ingress doors still change from the dashboard, and a server runs only Ployz's own
 images for them. Private Access turns on from the dashboard once your passkey approves the key,
 or with `ployz private-access on` from an approved device. Over `--connect ssh://` to that
 server, both change as before.
+
+### Take things off servers that enforce
+
+With enforcement on, a server takes containers, volumes or itself off only under a teardown a person
+approved. A teardown names the namespaces, the servers and each volume whose data goes, and lasts
+15 minutes. It covers:
+
+- deleting an environment or a project,
+- **Remove server** and **Forget server**,
+- removing a namespace no project owns, and
+- a deploy that deletes volume data you accepted losing.
+
+In the dashboard, type the name as usual. Ployz then shows every line your passkey approves, and
+asks your passkey once:
+
+```text
+Approved: stop and remove every service of my-app-staging on web-1, web-2.
+Approved: delete volume data (my-app-staging_vol-0f8fad5b) there. Its data is gone for good.
+  cluster "NdiV1QY9P3ZyoC82YA/FaBs0zlWTG/CXU1tLfcS0CDg="
+  signer your passkey
+  valid 2026-11-12T03:19:09Z to 2026-11-12T03:34:09Z
+```
+
+`ployz env rm`, `ployz project rm`, `ployz server clean --namespace` and
+`ployz deploy --accept-volume-loss` on an approved device print the same lines and sign them with
+the device key once you answer yes. Without a terminal, `--confirm <name>` signs them for the
+first three, and `--yes` for `ployz deploy`. Each server
+checks the teardown itself and logs `teardown approved`, so Ployz Cloud can't take anything else
+off. Closing a pull request removes its preview with no prompt, under the
+[preview rule](../environments/preview-environments.md#previews-on-servers-that-enforce-device-approval)
+that opened it.
+
+A server that answers more than 15 minutes later refuses the old teardown, and its part stays.
+Delete again to approve a new one. A server checks the teardown again when the deletion's turn comes, so
+if you remove the device or passkey that approved it, or turn enforcement on, while the deletion
+waits, that server refuses it then and takes nothing off. A branch's **Shut down** and the automatic close of an idle branch
+carry no teardown yet, so servers that enforce refuse them.
+Delete the environment instead. A server that enforces and runs a Ployz from before 0.4 can't take
+a teardown: the dashboard names it and deletes nothing, so upgrade it first.
 
 ## Change what a server does
 
@@ -1152,7 +1220,8 @@ If removing an environment stopped partway, its services and volumes can stay on
 Open the server: under **Running here**, **Namespaces no Project owns** lists what's left of
 deleted environments, each marked **Not in any Project**. Click **Remove** on one,
 type its name and confirm. That deletes its containers and its volumes, data included, from every
-server.
+server. On servers that enforce device approval, your passkey approves what goes first; see
+[Take things off servers that enforce](#take-things-off-servers-that-enforce).
 
 From the CLI, `ployz server clean` lists the same, and
 `ployz server clean --namespace my-app-staging --confirm my-app-staging` removes one. It asks for

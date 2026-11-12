@@ -12,25 +12,25 @@
 //! Four processes take part. The daemon runs `request_locked` in a task (:156-158) and hosts
 //! every RPC: Inspect, a resend, Leave, a new upgrade request and the mutations that admit
 //! through `admit_installation` (local_machine.rs:331-334). A kill ends all of them at once.
-//! systemd restarts it (`Restart=always`, installer/host.rs:284), and daemon start
-//! reconciles before it serves (daemon.rs:186-188). The worker is its own unit (:397-459),
+//! systemd restarts it (`Restart=always`, installer/host.rs:296), and daemon start
+//! reconciles before it serves (daemon.rs:184-186). The worker is its own unit (:397-459),
 //! `ployzd install` its own process, and the volume plugin its own unit
-//! (installer/host.rs:343-365), which admits through `admit_mutation`
-//! (volume_plugin/storage.rs:178-187).
+//! (installer/host.rs:359-382), which admits through `admit_mutation`
+//! (volume_plugin/storage.rs:156-165).
 //!
 //! Daemon start clears the marker only if its `settle` wins `try_installation` (:258-260).
 //! Otherwise `settle` returns Ok (:263), `reconcile` drops it (:349-351) and the daemon
-//! serves (daemon.rs:189). `ployzd install` runs beside the daemon's reader, and a worker
+//! serves (daemon.rs:187). `ployzd install` runs beside the daemon's reader, and a worker
 //! that finds its receipt terminal holds the lock until it returns `NotActive` (:306-309),
 //! so either can hold the lock while daemon start settles.
 //!
 //! Settling readers repair a receipt and marker that a stopped writer left. `settle`
 //! (installer/upgrade.rs:251-276) runs for Inspect (local_machine.rs:512, through `latest`,
 //! :109-117), for a resend of the same attempt (local_machine/upgrade.rs:27-31, through
-//! `replay`, :90-105), for Leave (local_machine.rs:945) and at daemon start (daemon.rs:186,
+//! `replay`, :90-105), for Leave (local_machine.rs:945) and at daemon start (daemon.rs:184,
 //! through `reconcile`, :349-351). `reconcile_locked` (:372-395) runs under the lock for a
 //! new upgrade request (:185, after local_machine/upgrade.rs:38) and for `ployzd install`
-//! (`reconcile_for_install`, :353-370, from installer/mod.rs:257-258).
+//! (`reconcile_for_install`, :353-370, from installer/mod.rs:254-255).
 //!
 //! The finding: every terminal write comes before its `clear_active`. A process killed
 //! between the two, or a `clear_active` that returns Io before it removes the marker
@@ -121,9 +121,9 @@ enum Daemon {
     /// Serves RPCs.
     Serving,
     /// Killed or exited; systemd starts it again (`Restart=always`, `RestartSec=2`,
-    /// installer/host.rs:284-286).
+    /// installer/host.rs:296-298).
     Down,
-    /// Daemon start's `reconcile` runs (daemon.rs:186-188); nothing is served yet.
+    /// Daemon start's `reconcile` runs (daemon.rs:184-186); nothing is served yet.
     Starting,
 }
 
@@ -186,13 +186,13 @@ enum Caller {
     Replay,
     /// Leave's `depart` (local_machine.rs:938-961), through `latest`, then `finish_mutation`.
     Leave,
-    /// Daemon start (daemon.rs:186), through `reconcile` and `latest`, before it serves.
+    /// Daemon start (daemon.rs:184), through `reconcile` and `latest`, before it serves.
     DaemonStart,
     /// A request for another attempt: `replay` returns None for its id (:98-99), then
     /// `try_installation` (local_machine/upgrade.rs:38) and `request_locked`'s
     /// `reconcile_locked` (:185).
     NewRequest,
-    /// `ployzd install`'s `install_at` (installer/mod.rs:250-262), its own process.
+    /// `ployzd install`'s `install_at` (installer/mod.rs:247-259), its own process.
     Install,
 }
 
@@ -235,7 +235,7 @@ impl Caller {
 enum At {
     /// `settle` read a receipt that is not terminal; `worker_state` (:265) is next.
     QueryWorker { seen: Outcome },
-    /// `settle` read a terminal receipt; `try_installation` (:258) is next.
+    /// `settle` read a terminal receipt; `try_installation` (:261) is next.
     TryTerminal { seen: Outcome },
     /// `settle` found the unit stopped; `try_installation` (:268) is next.
     TryNonTerminal { seen: Outcome },
@@ -280,7 +280,7 @@ enum Asker {
     /// A daemon RPC, through `admit_installation` (local_machine.rs:331-334) or the Update
     /// fast path (:851). It runs only while the daemon serves.
     Daemon,
-    /// The volume plugin's `admit_mutation` (volume_plugin/storage.rs:184), its own unit.
+    /// The volume plugin's `admit_mutation` (volume_plugin/storage.rs:162), its own unit.
     Plugin,
     /// The fix: a release before it, which gates on the marker as the code as it is does.
     Older,
@@ -349,16 +349,16 @@ enum Branch {
     /// stopped writer left.
     DepartsAfterItsClear,
     /// The caller's `try_installation` answered Busy (local_machine/upgrade.rs:38,
-    /// installer/mod.rs:257).
+    /// installer/mod.rs:254).
     CallerBusy,
     /// A new request refused after reconciling (:186-187 or :191-192).
     NewRequestBusy,
     /// A new request passed :191 and goes on to resolve its release, out of the model.
     NewRequestGoesOn,
     /// `reconcile_for_install` refused (:358-359 or :368), and `install_at` returned Busy
-    /// (installer/mod.rs:352-355).
+    /// (`map_upgrade_reconciliation` in installer/mod.rs).
     InstallBusy,
-    /// `install_at` goes on to `install_locked` (installer/mod.rs:261).
+    /// `install_at` goes on to `install_locked` (installer/mod.rs:258).
     InstallGoesOn,
 }
 
@@ -520,7 +520,7 @@ struct Broken {
     /// `reconcile_locked` writes Interrupted without its `worker_state` check (:381).
     reconcile_skips_worker_state: bool,
     /// The daemon serves again after a kill without daemon start's `reconcile`
-    /// (daemon.rs:186-188).
+    /// (daemon.rs:184-186).
     serves_before_reconcile: bool,
     /// The fix's admission reads the marker alone, as the code as it is does.
     fix_ignores_receipt: bool,
@@ -951,7 +951,7 @@ impl UpgradeAttempt {
                     Some(Holder::Worker) => state.worker = Worker::Stopped,
                     Some(Holder::Reader) => {
                         // Daemon start returns the error, and the daemon exits
-                        // (daemon.rs:186-188).
+                        // (daemon.rs:184-186).
                         if state
                             .reader
                             .is_some_and(|reader| reader.caller == Caller::DaemonStart)
@@ -1422,12 +1422,12 @@ fn enters(caller: Caller) -> &'static str {
         Caller::Replay => "a resend of the same attempt (local_machine/upgrade.rs:28) calls replay",
         Caller::Leave => "Leave's depart (local_machine.rs:945) calls latest",
         Caller::DaemonStart => {
-            "daemon start (daemon.rs:186) calls reconcile, then latest, before it serves"
+            "daemon start (daemon.rs:184) calls reconcile, then latest, before it serves"
         }
         Caller::NewRequest => {
             "a request for another attempt: replay returns None for its id (:98-99), and try_installation (local_machine/upgrade.rs:38)"
         }
-        Caller::Install => "ployzd install's install_at: try_installation (installer/mod.rs:257)",
+        Caller::Install => "ployzd install's install_at: try_installation (installer/mod.rs:254)",
     }
 }
 
@@ -1509,10 +1509,10 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                     "it serves again without daemon start's reconcile (under Broken)"
                 }
                 (_, true) => {
-                    "its locks are released, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:284-286)"
+                    "its locks are released, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:296-298)"
                 }
                 (_, false) => {
-                    "it held no lock, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:284-286)"
+                    "it held no lock, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:296-298)"
                 }
             }
         ),
@@ -1587,7 +1587,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                 "returns Io before removing .upgrade-active, which stays (mutation.rs:116, :119)"
             },
             if before.daemon == Daemon::Starting && before.holder == Some(Holder::Reader) {
-                "; daemon start fails and the daemon exits (daemon.rs:186-188)"
+                "; daemon start fails and the daemon exits (daemon.rs:184-186)"
             } else {
                 ""
             }
@@ -1616,7 +1616,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
             answer_reads_as(model, before, after)
         ),
         Action::Mutate(Asker::Plugin) => format!(
-            "Volume plugin: admit_mutation's try_mutation {} (volume_plugin/storage.rs:184, mutation.rs:55-69)",
+            "Volume plugin: admit_mutation's try_mutation {} (volume_plugin/storage.rs:162, mutation.rs:55-69)",
             answer_reads_as(model, before, after)
         ),
         Action::Mutate(Asker::Older) => format!(
@@ -1695,7 +1695,7 @@ fn started(after: &State, caller: Caller) -> String {
             returns_to(caller, after)
         ),
         Some(Branch::CallerBusy) if caller == Caller::Install => {
-            "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer/mod.rs:257, :342-344, :93)".to_owned()
+            "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer/mod.rs:254, :336-338, `Error::Busy`)".to_owned()
         }
         Some(Branch::CallerBusy) => {
             "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1069-1074)".to_owned()
@@ -1811,10 +1811,10 @@ fn reader_step_reads_as(
                 "Reader: request_locked passes :186 and :191 and goes on to resolve its release, which the model leaves out; the lock drops".to_owned()
             }
             Some(Branch::InstallBusy) => {
-                "Reader: reconcile_for_install returns Busy, and ployzd install prints \"another Ployz installation is active\" (installer/upgrade.rs:357-369, installer/mod.rs:258-260, :352-355, :93)".to_owned()
+                "Reader: reconcile_for_install returns Busy, and ployzd install prints \"another Ployz installation is active\" (installer/upgrade.rs:357-369, installer/mod.rs:255-257, :346-349, `Error::Busy`)".to_owned()
             }
             _ => {
-                "Reader: reconcile_for_install returns Ok; install_locked runs under the lock and returns, and the lock drops (installer/mod.rs:258-261)".to_owned()
+                "Reader: reconcile_for_install returns Ok; install_locked runs under the lock and returns, and the lock drops (installer/mod.rs:255-258)".to_owned()
             }
         },
         At::Depart { live: true, .. } => {
@@ -2295,9 +2295,9 @@ mod tests {
     }
 
     /// Daemon start's `settle` clears the marker only if it wins `try_installation`
-    /// (:258-260). When `ployzd install` holds the lock (installer/mod.rs:257), `settle`
+    /// (:258-260). When `ployzd install` holds the lock (installer/mod.rs:254), `settle`
     /// returns the terminal receipt as Ok (:260, :263), `reconcile` drops it (:349-351) and
-    /// the daemon serves (daemon.rs:189). Install then stops before its `clear_active`, and a
+    /// the daemon serves (daemon.rs:187). Install then stops before its `clear_active`, and a
     /// daemon RPC answers Busy on the marker the killed daemon left.
     #[test]
     fn daemon_start_loses_the_lock_to_ployzd_install() {
@@ -2375,7 +2375,7 @@ mod tests {
     }
 
     /// If the daemon served again after a kill without daemon start's `reconcile`
-    /// (daemon.rs:186-188), a daemon RPC would answer Busy on the marker the killed
+    /// (daemon.rs:184-186), a daemon RPC would answer Busy on the marker the killed
     /// request left, with no start that lost the lock.
     #[test]
     fn daemon_start_settles_before_serving() {

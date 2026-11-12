@@ -41,10 +41,8 @@ new volume, and starts your service on it. The original keeps its data and its m
 not mounted. Delete it from its **Settings** tab when you no longer need it.
 
 On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, Ployz Cloud can't restore a point into a new volume until a later release. The deploy fails
-before it changes anything and drops the restore, naming the server that enforces. To restore a
-point now, turn enforcement off from an approved device.
-[Restoring a volume in place](#restore-a-volume-in-place) still works.
+on, the deploy asks for your passkey for the restore first. See
+[Approve from Ployz Cloud](move-a-volume.md#approve-from-ployz-cloud).
 
 ## Restore a volume in place
 
@@ -66,6 +64,33 @@ can run the same restore. In a
 [Protected environment](../environments/environments.md#protect-an-environment), a restore from a
 member, or from a token or an agent without `environments:protect`, waits for an owner or admin to
 approve it.
+
+### On servers that enforce device approval
+
+With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a server makes its copy the writer only for a restore an approved device signed. Run
+`ployz volume restore data --from web-2` on an approved device. It prints what it approves, with
+the copy's newest snapshot by its number and that snapshot's time in your computer's time zone, and
+asks first:
+
+```
+Approved: make the copy of data on web-2 its writer, at snapshot 8930444429013805166. Writes to data after 2026-10-08T10:27:00+02:00 are lost. Nothing starts until you deploy.
+Approve restoring data from web-2?
+```
+
+Add `--yes` to sign without asking. With no terminal to ask in and no `--yes`, it signs nothing
+and changes nothing. The server checks it is the server and the snapshot you approved. Once its
+copy is the writer, it refuses that approval again.
+
+This is also how a volume comes back after a move's old server handed it to the new one and the
+new one is gone for good. Forget the new server first, since a restore needs every server to
+answer. Until the move notices the new server is gone, the restore says `data is starting on
+<new server>; it finishes there`. Run it again once the move's run has failed. The old server refuses to
+write the volume again for the move, but takes a restore you approve. Its copy holds every write
+it took before the move, so the line names no lost writes: `… its writer, at snapshot <number>.
+It keeps every write it holds.` **Use mirror** in Ployz Cloud asks for your passkey when you
+deploy, and its lines name the same lost writes. See
+[Approve from Ployz Cloud](move-a-volume.md#approve-from-ployz-cloud).
 
 Without Ployz Cloud, the CLI runs the restore itself, with the same checks. It refuses while any
 server doesn't answer, and while another server holds a copy. Without Cloud, `ployz server rm` is

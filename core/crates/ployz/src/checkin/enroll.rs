@@ -10,7 +10,7 @@ use super::{Attempt, EnrollInstruction, Prep};
 use super::{
     CheckinClient, CheckinEnd, CheckinKey, CheckinRequest, Host, LocalCheckin, Next, Paths, Seen,
     System, ZfsPrep, client, read_prep_state, record, unit,
-    wire::{Answer, AttemptFailure, EnrollStorage, HostReport, StopReason},
+    wire::{Answer, AttemptFailure, EnrollStorage, HostReport, PrepRecord, StopReason},
 };
 use crate::cloud_enroll::EnrollStage;
 
@@ -306,7 +306,10 @@ pub(super) fn add_arguments(
         "add",
         "--yes",
         "--connect",
-        &format!("unix://{}", crate::connect::DEFAULT_LOCAL_SOCKET),
+        &format!(
+            "unix://{}",
+            ployz_core::MachineLayout::production().socket().display()
+        ),
         "--storage",
         &storage,
         "--cloud-url",

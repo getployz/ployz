@@ -1,9 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb, Signed, TeardownApproval } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
+import { askAgain, carriedInto, gateOperation, keptVolumeApproval, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
 import { callerEnvironments, type Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -21,8 +21,8 @@ import { activeServiceAct, busyRefusal, requestServiceAct, serviceActExists } fr
 import { environmentProtected } from "#/modules/config-store/store-lookup.server";
 import { protectorOnly } from "#/modules/config-store/protected.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
-import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
-import { admitRun, planVolumeRun, type VolumeRunPlan } from "#/modules/volume-run/volume-run.server";
+import { carrying, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { admitRun, enforcedAsk, planVolumeRun, refusedEnforced, type VolumeRunPlan } from "#/modules/volume-run/volume-run.server";
 import { Conflict, Forbidden, NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
 
@@ -131,7 +131,7 @@ export const setServer = (caller: Caller, machineId: MachineId, change: ServerPo
     return yield* planKeyedServerPolicyChange(caller, machineId, change);
   })));
 
-export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall) =>
+export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall, teardown: TeardownApproval | null = null) =>
   holding(caller, call, OPERATIONS["namespace.clean"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {
     const plan = yield* planClean(caller.organization.id, namespace);
     const gated = yield* gate(caller, call, plan);
@@ -141,6 +141,7 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
       namespace,
       confirmDataLoss: plan.doomed.map(({ identity }) => identity),
       approvalId: gated.approvalId,
+      teardown,
     }).pipe(Effect.map((id) => ({ ok: true, id }) as const));
   })));
 
@@ -150,15 +151,15 @@ export const removeServer = (
 ) => removal(caller, machineId, confirmed, call, serverName);
 
 /** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
-export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName) =>
-  removal(caller, machineId, null, call, serverName);
+export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName, teardown: TeardownApproval | null = null) =>
+  removal(caller, machineId, null, call, serverName, teardown);
 
 /** The dashboard's Forget of Server `machineId`: only a Caller who may remove Servers; answers the removal's id. */
-export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string) =>
+export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string, teardown: TeardownApproval | null = null) =>
   Effect.gen(function* () {
     const refusal = unheld(caller, OPERATIONS["server.forget"].requires);
     if (refusal !== null) return yield* new Forbidden({ message: refusal.refusal.message, userFacing: true });
-    const admission = yield* forgetServer(caller, machineId, { key, approvalId: null });
+    const admission = yield* forgetServer(caller, machineId, { key, approvalId: null }, undefined, teardown);
     if (admission === null) return yield* new NotFound({ message: "The server was not found." });
     if (admission.ok) return { id: admission.id };
     return yield* new Conflict({ userFacing: true, message: admission.refusal.message });
@@ -167,6 +168,7 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
 /** Its run keeps `serverName`, the name the caller showed, else the Server's name in the frame it planned from. */
 const removal = (
   caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall, serverName: MachineName | undefined,
+  teardown: TeardownApproval | null = null,
 ) =>
   holding(caller, call, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
@@ -191,6 +193,7 @@ const removal = (
         machineId,
         serverName: serverName || plan.name,
         approvalId: gated.approvalId,
+        teardown,
         ...(noReset ? { confirmDataLoss: [], noReset: true } : { confirmDataLoss: [...confirmed] }),
       }).pipe(Effect.map((started) => ({ ok: true, id: started.id }) as const));
     }));
@@ -212,6 +215,34 @@ const guardedVolume = Effect.fn("Operations.guardedVolume")(function* (
   return { ...protectedAsk, apply: { volumeId: input.volumeId, environment: input.environment, maximum_bytes: input.args.maximum_bytes } } satisfies OperationAsked;
 });
 
+/**
+ * An agent's or the CLI's run that a Server enforcing device approval refuses without one asks a person: they approve it
+ * in Ployz Cloud, where their browser drafts its workflow and their passkey answers it. Asked again under that approval,
+ * the run carries the answer kept with it, and plans again with it. Null for any run this doesn't ask for; the person's
+ * approval covers the run's ask alone, and spends once.
+ */
+const enforcedVolume = Effect.fn("Operations.enforcedVolume")(function* (
+  caller: Caller,
+  call: OperationCall,
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
+  planned: VolumeRunPlan,
+) {
+  if (planned.ok || !refusedEnforced(planned.refusal) || caller.via === "dashboard") return null;
+  if ("approval" in input.args && input.args.approval !== undefined) return null;
+  const asked = yield* enforcedAsk(caller.organization.id, input);
+  if (asked === null) return null;
+  const kept = yield* keptVolumeApproval(caller.organization.id, call.approvalId);
+  if (kept === null) {
+    const gated = yield* gate(caller, call, asked);
+    return { ok: false, refusal: refused(gated.ok ? planned.refusal : gated.refusal) } as const;
+  }
+  const replanned = yield* planVolumeRun(caller.organization.id, { volumeId: input.volumeId, environment: input.environment, ...carrying(input, kept.approval, kept.service) });
+  if (!replanned.ok) return { ok: false, refusal: refused(replanned.refusal) } as const;
+  const gated = yield* gate(caller, call, asked);
+  if (!gated.ok) return { ok: false, refusal: refused(gated.refusal) } as const;
+  return { ok: true, planned: replanned } as const;
+});
+
 /** A Volume Run whose id is its attempt, so a replayed request reads back the run it started. */
 export const runVolume = (
   caller: Caller,
@@ -219,8 +250,17 @@ export const runVolume = (
   call: OperationCall,
 ) =>
   holding(caller, call, VOLUME_OPERATIONS[input.kind].requires, input.environment.environment, admitOperation(caller.organization.id, { tool: VOLUME_OPERATIONS[input.kind].idempotency, key: call.key, body: input }, Effect.gen(function* () {
-    const planned = yield* planVolumeRun(caller.organization.id, input);
+    const first = yield* planVolumeRun(caller.organization.id, input);
+    const approved = yield* enforcedVolume(caller, call, input, first);
+    if (approved !== null && !approved.ok) return approved.refusal;
+    const planned = approved?.planned ?? first;
     if (!planned.ok) return refused(planned.refusal);
+    if (approved !== null) {
+      return (runId: string) => admitRun(actor(caller), planned.input, planned.volume, runId)
+        .pipe(Effect.map((inserted) => inserted.ok
+          ? { ok: true, id: inserted.run.id } as const
+          : { ok: false, refusal: inserted.refusal, busy: inserted.busy } as const));
+    }
     const asked = yield* guardedVolume(caller, planned);
     if (asked !== null) {
       const gated = yield* gate(caller, call, asked);

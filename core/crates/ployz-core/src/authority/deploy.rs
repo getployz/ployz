@@ -21,7 +21,9 @@ use super::{
     proposal::{self, ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
     restart::SignerKey,
+    rule_draft::{Signs, settings},
     session::{ActionFamily, GrantScope},
+    shown::Shown,
     trusted_key::TrustedKeys,
 };
 use crate::{
@@ -162,8 +164,9 @@ pub struct ApprovedService {
 }
 
 /// One Service as the approver's client shows it before signing: the digest the approval
-/// names, the image, and what the spec asks of the host beyond an ordinary Container.
-/// The CLI and the browser show these, computed from the specs they sign.
+/// names, the image, what the spec asks of the host beyond an ordinary Container, and
+/// every other setting it signs. The CLI and the browser show these, computed from the
+/// specs they sign.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct ApprovedChange {
     pub service: ServiceName,
@@ -179,6 +182,11 @@ pub struct ApprovedChange {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<String>>")]
     pub host: Vec<String>,
+    /// Every field the digest covers that holds a value, beside the image, from
+    /// [`settings`]. Cloud relays the spec, so a field it planted shows here.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub settings: Vec<String>,
 }
 
 impl ApprovedChange {
@@ -205,7 +213,11 @@ impl ApprovedChange {
                     digest: PayloadDigest::of(&pinned, namespace)?,
                     image: pinned.container.image,
                     tag,
-                    host: host_sensitive(spec),
+                    host: host_sensitive(spec).into_iter().map(String::from).collect(),
+                    settings: settings(spec, Signs::Deploy)
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
                 })
             })
             .collect::<Result<Vec<_>, CanonicalError>>()?;
@@ -214,24 +226,37 @@ impl ApprovedChange {
         Ok(changes)
     }
 
-    /// `Approved web: nginx@sha256:0123456789ab…`, or `nginx:1.29-alpine → @sha256:0123456789ab…`
-    /// for a pinned tag, then what the spec asks of the host.
+    /// `Approved web: nginx@sha256:<64 hex>`, or `nginx:1.29-alpine → @sha256:0123456789ab…`
+    /// for a tag this client pinned, then what the spec asks of the host. A digest the
+    /// spec names shows whole, since Cloud relays it and a short prefix is cheap to match.
+    /// A pin is this client's own registry read of the tag shown, so its prefix is enough.
     #[must_use]
     pub fn line(&self) -> String {
         let image = match (&self.tag, self.image.rsplit_once("@sha256:")) {
-            (Some(tag), Some((_, hex))) => {
-                format!("{tag} → @sha256:{}…", hex.get(..12).unwrap_or(hex))
-            }
-            (None, Some((name, hex))) => {
-                format!("{name}@sha256:{}…", hex.get(..12).unwrap_or(hex))
-            }
-            (_, None) => self.image.clone(),
+            (Some(tag), Some((_, hex))) => Shown::text(tag)
+                .and_words(" → @sha256:")
+                .and_text(hex.get(..12).unwrap_or(hex))
+                .and_words("…"),
+            _ => Shown::text(&self.image),
         };
-        let mut line = format!("Approved {}: {image}", self.service);
+        let mut line: String = Shown::words("Approved ")
+            .and_text(self.service.as_str())
+            .and_words(": ")
+            .and(image)
+            .into();
         if !self.host.is_empty() {
             let _ = write!(line, " ({})", self.host.join(", "));
         }
         line
+    }
+
+    /// [`Self::line`], then each setting on its own line, indented, as the approver reads
+    /// them before signing.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        std::iter::once(self.line())
+            .chain(self.settings.iter().map(|setting| format!("  {setting}")))
+            .collect()
     }
 
     #[must_use]
@@ -245,32 +270,43 @@ impl ApprovedChange {
 }
 
 /// What `spec` asks of the host beyond an ordinary Container.
-pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<String> {
+pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<Shown> {
     let container = &spec.container;
     let mut host = Vec::new();
     if container.privileged {
-        host.push("privileged".to_owned());
+        host.push(Shown::words("privileged"));
     }
     host.extend(container.resources.devices.iter().map(|device| {
-        format!(
-            "device {}:{}",
-            device.machine_path.as_str(),
-            device.container_path.as_str()
-        )
+        Shown::words("device ")
+            .and_text(device.machine_path.as_str())
+            .and_words(":")
+            .and_text(device.container_path.as_str())
     }));
-    host.extend(container.cap_add.iter().map(|cap| format!("adds {cap}")));
+    host.extend(
+        container
+            .cap_add
+            .iter()
+            .map(|cap| Shown::words("adds ").and_text(cap)),
+    );
     if let Some(pid_mode) = &container.pid_mode {
-        host.push(format!("pid {pid_mode}"));
+        host.push(Shown::words("pid ").and_text(&pid_mode.to_string()));
     }
-    host.extend(container.sysctls.keys().map(|key| format!("sysctl {key}")));
+    host.extend(
+        container
+            .sysctls
+            .keys()
+            .map(|key| Shown::words("sysctl ").and_text(key)),
+    );
     host.extend(spec.ports.iter().filter_map(|port| match port {
-        PortPublication::Host { published_port, .. } => Some(format!("host port {published_port}")),
+        PortPublication::Host { published_port, .. } => {
+            Some(Shown::words("host port ").and_text(&published_port.to_string()))
+        }
         PortPublication::Ingress { .. } => None,
     }));
     host.extend(spec.volume_graph().volumes().iter().filter_map(
         |volume| match volume.source.kind() {
             RawVolumeSource::Bind { machine_path, .. } => {
-                Some(format!("binds {}", machine_path.as_str()))
+                Some(Shown::words("binds ").and_text(machine_path.as_str()))
             }
             RawVolumeSource::External { .. }
             | RawVolumeSource::Ordinary { .. }
@@ -279,9 +315,16 @@ pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<String> {
         },
     ));
     if let Some(hook) = &spec.pre_deploy {
-        host.push(format!("hook {}", hook.command.as_slice().join(" ")));
+        host.push(
+            hook.command
+                .as_slice()
+                .iter()
+                .fold(Shown::words("hook"), |shown, word| {
+                    shown.and_words(" ").and_text(word)
+                }),
+        );
         if hook.privileged == Some(true) {
-            host.push("privileged hook".to_owned());
+            host.push(Shown::words("privileged hook"));
         }
     }
     host
@@ -324,7 +367,8 @@ pub struct BrowserDraft {
     /// The canonical body to sign as it is.
     pub body: String,
     pub changes: Vec<ApprovedChange>,
-    /// `Approved web: nginx@sha256:0123456789ab…`, one per Service.
+    /// `Approved web: nginx@sha256:0123456789ab…` per Service, then its settings, as
+    /// [`ApprovedChange::lines`] writes them.
     pub lines: Vec<String>,
 }
 
@@ -446,7 +490,7 @@ impl DeployApproval {
         let (body, changes) = Self::draft(terms, namespace, target, &BTreeMap::new())?;
         Ok(BrowserDraft {
             body: canonical::to_canonical(&body)?,
-            lines: changes.iter().map(ApprovedChange::line).collect(),
+            lines: changes.iter().flat_map(ApprovedChange::lines).collect(),
             changes,
         })
     }
@@ -656,11 +700,29 @@ fn creation_digest(
     body: &DeployApproval,
     creation: Creation<'_>,
 ) -> Result<PayloadDigest, AuthorityRefusal> {
-    let payload = AuthorityRefusal::Mismatch { field: "a payload" };
     let approved = body
         .service(creation.service)
-        .filter(|_| &creation.spec.name == creation.service)
         .ok_or(AuthorityRefusal::Mismatch { field: "a Service" })?;
+    approved_creation(approved, &body.namespace, creation)
+}
+
+/// Check `creation` is the Service `approved` names, in `namespace`: the same name, the
+/// pinned image when there is one, a content-addressed image, a hook for a hook creation,
+/// and a spec whose [`PayloadDigest`] is the approved one. A Deploy's approval checks each
+/// creation here, and so does a Volume Move's start.
+///
+/// # Errors
+/// Returns [`AuthorityRefusal::Mismatch`] naming the Service, the hook, the image or the
+/// payload that differs.
+pub fn approved_creation(
+    approved: &ApprovedService,
+    namespace: &Namespace,
+    creation: Creation<'_>,
+) -> Result<PayloadDigest, AuthorityRefusal> {
+    let payload = AuthorityRefusal::Mismatch { field: "a payload" };
+    if &approved.name != creation.service || &creation.spec.name != creation.service {
+        return Err(AuthorityRefusal::Mismatch { field: "a Service" });
+    }
     if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {
         return Err(AuthorityRefusal::Mismatch { field: "a hook" });
     }
@@ -671,8 +733,8 @@ fn creation_digest(
     {
         return Err(AuthorityRefusal::Mismatch { field: "an image" });
     }
-    let digest = PayloadDigest::of(&creation.spec.to_requested(), &body.namespace)
-        .map_err(|_| payload.clone())?;
+    let digest =
+        PayloadDigest::of(&creation.spec.to_requested(), namespace).map_err(|_| payload.clone())?;
     if digest != approved.digest {
         return Err(payload);
     }

@@ -23,10 +23,12 @@ pub mod rule_draft;
 pub mod session;
 pub mod shown;
 pub mod starting_set;
+pub mod teardown;
 pub mod trusted_key;
 pub mod upgrade;
 pub mod validity;
 pub mod volume;
+pub mod volume_draft;
 
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{
@@ -34,7 +36,10 @@ pub use deploy::{
     DeployApproved, DeployFacts, DeployTerms, PayloadDigest,
 };
 pub use join::JoinApproval;
-pub use keys::{Approver, KeySignature, Purpose, Signed, Signer, SigningPublicKey, Statement};
+pub use keys::{
+    Approver, KeySignature, MachineKey, MachineSigned, MachineStatement, Purpose, Signed, Signer,
+    SigningPublicKey, Statement,
+};
 pub use preview::{
     CheckedReview, PreviewCreation, PreviewFacts, PreviewKey, PreviewProof, PreviewReview,
     PreviewRule, PreviewService, Review, ReviewDraft, ReviewDraftError, ReviewSigner, ReviewTerms,
@@ -58,11 +63,17 @@ pub use rule::{
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use session::{ActionFamily, GrantBody, SessionGrant};
 pub use starting_set::{Member, StartingSet};
+pub use teardown::{
+    Teardown, TeardownApproval, TeardownApproved, TeardownFacts, TeardownScope, TeardownStep,
+    TeardownTerms,
+};
 pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
     TrustedPasskey,
 };
 pub use upgrade::UpgradeChannel;
 pub use volume::{
-    ApprovedVolumeChange, VolumeApproval, VolumeApproved, VolumeFacts, VolumeStep, VolumeWorkflow,
+    ApprovedVolumeChange, Handed, HandoffFacts, HandoffReceipt, VolumeApproval, VolumeApproved,
+    VolumeFacts, VolumeStep, VolumeWorkflow,
 };
+pub use volume_draft::{DraftWorkflow, VolumeDraft, VolumeDraftError, VolumeTerms, move_start};

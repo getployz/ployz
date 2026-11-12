@@ -32,6 +32,7 @@ import type {
   RequestMachineUpgradeRequest,
   RuntimeWatchView,
   Signed,
+  TeardownApproval,
   VolumeSwitchReply,
   VolumeSwitchRequest,
   WatchOptions,
@@ -109,9 +110,13 @@ export interface PloyzSession {
   readonly removeMachine: (
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
+    teardown?: TeardownApproval | null,
   ) => Effect.Effect<LocalMachineRemoved, PloyzSdkError>;
-  /** Take a Server out of the Cluster without resetting it: it keeps its state and keys. */
-  readonly removeMachineMembership: (machine: MachineTarget) => Effect.Effect<void, PloyzSdkError>;
+  /**
+   * Take a Server out of the Cluster without resetting it: it keeps its state and keys. `teardown`, a person's approval
+   * of the departure, goes to each Server, and one that enforces Device approval takes none without it.
+   */
+  readonly removeMachineMembership: (machine: MachineTarget, teardown?: TeardownApproval | null) => Effect.Effect<void, PloyzSdkError>;
   readonly dataLossIfMachineRemoved: (
     machine: MachineTarget,
   ) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
@@ -175,8 +180,15 @@ export interface PloyzSession {
   ) => Effect.Effect<void, PloyzSdkError>;
   /** What removing Namespace `namespace`, its Volumes included, deletes. */
   readonly dataLossIfNamespaceDestroyed: (namespace: string) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
-  /** Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`. */
-  readonly destroyNamespace: (namespace: string, confirmDataLoss: DataLossConfirmation) => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
+  /**
+   * Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`, under a
+   * person's `teardown` of it, which a Server that enforces Device approval needs.
+   */
+  readonly destroyNamespace: (
+    namespace: string,
+    confirmDataLoss: DataLossConfirmation,
+    teardown?: TeardownApproval | null,
+  ) => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
   readonly publishCertificateMaterial: (
     request: PublishCertificateMaterialRequest,
   ) => Effect.Effect<void, PloyzSdkError>;
@@ -382,20 +394,20 @@ function wrapClient(client: Client): PloyzSession {
       },
       catch: (cause) => new PloyzProviderError({ operation: "register", cause }),
     }),
-    removeMachine: (machine, confirmDataLoss) =>
+    removeMachine: (machine, confirmDataLoss, teardown = null) =>
       sdkPromise("remove machine", () =>
-        client.removeMachine(machine, confirmDataLoss),
+        client.removeMachine(machine, confirmDataLoss, teardown),
       ),
-    removeMachineMembership: (machine) =>
-      sdkPromise("remove machine membership", () => client.removeMachineMembership(machine)),
+    removeMachineMembership: (machine, teardown = null) =>
+      sdkPromise("remove machine membership", () => client.removeMachineMembership(machine, teardown)),
     dataLossIfMachineRemoved: (machine) =>
       sdkPromise("load machine data loss", () =>
         client.dataLossIfMachineRemoved(machine),
       ),
     dataLossIfNamespaceDestroyed: (namespace) =>
       sdkPromise("load namespace data loss", () => client.dataLossIfNamespaceDestroyed(namespace, true)),
-    destroyNamespace: (namespace, confirmDataLoss) =>
-      sdkPromise("remove namespace", () => client.destroyNamespace(namespace, confirmDataLoss, true)),
+    destroyNamespace: (namespace, confirmDataLoss, teardown = null) =>
+      sdkPromise("remove namespace", () => client.destroyNamespace(namespace, confirmDataLoss, true, teardown)),
     updateMachine: (machine, update) =>
       sdkPromise("update machine", () =>
         client.updateMachine(machine, update).then(() => undefined),

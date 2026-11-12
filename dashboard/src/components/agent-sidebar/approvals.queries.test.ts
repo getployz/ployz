@@ -1,6 +1,8 @@
 import type { DestructiveEffect, MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { MISMATCHED_ACT, shownTarget } from "./approvals.queries";
+import { runChange } from "#/modules/volume-run/run-approval";
+import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { askedLoss, MISMATCHED_ACT, shownTarget } from "./approvals.queries";
 
 const effect = (verb: "restart" | "stop", name: string): DestructiveEffect =>
   ({ kind: verb === "stop" ? "stops_service" : "restarts_service", name, node: `env-production/${name}`, path: `services.${name}` });
@@ -73,5 +75,23 @@ describe("shownTarget", () => {
 
   it("approves nothing for an ask that doesn't name its runtime", () => {
     expect(() => shownTarget(card("restart", { environment: "env-production", service: "web", only: null }), target())).toThrow(MISMATCHED_ACT);
+  });
+});
+
+describe("askedLoss", () => {
+  const members = [member("fsn-1", "writer"), member("fsn-2", "mirror")];
+  const read = { cluster: "k", namespace: "production", dockerVolume: "production_vol-v1", name: "data", members, recorded: null, place: "shop/production", running: null };
+  const draft = (run: Parameters<typeof runChange>[1]) => ({ read, change: runChange("data", run, members, read) });
+
+  it("names a restore from a mirror by the restore point its workflow signs, and where the Volume lives", () => {
+    const restore = draft({ kind: "restore", args: { from: "fsn-2" } });
+    const signed = restore.change.workflow.kind === "restore" ? restore.change.workflow.loses_after : undefined;
+    expect(signed).toBe(1_790_000_000_000);
+    expect(askedLoss(restore)).toEqual({ place: "shop/production", item: { kind: "volume", name: "data", detail: "from fsn-2", lostAfter: new Date(1_790_000_000_000) } });
+  });
+
+  it("asks nothing for a restore that loses no writes, or for another workflow", () => {
+    expect(askedLoss(draft({ kind: "restore", args: { from: "fsn-1" } }))).toBeNull();
+    expect(askedLoss(draft({ kind: "mirror", args: { to: "fsn-2" } }))).toBeNull();
   });
 });

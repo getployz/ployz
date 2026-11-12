@@ -296,6 +296,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 ask: RunAsk::DeleteMirror {
                     slot: MachineName::parse("web-2").unwrap(),
                     confirm: Some("data".to_owned()),
+                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
@@ -307,6 +308,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 ask: RunAsk::DeleteOldCopy {
                     slot: MachineName::parse("web-1").unwrap(),
                     confirm: None,
+                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_old_copy", "slot": "web-1" }),
@@ -317,6 +319,8 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Move {
                     to: MachineName::parse("web-2").unwrap(),
+                    approval: None,
+                    service: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "move", "to": "web-2" }),
@@ -335,6 +339,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Restore {
                     from: MachineName::parse("web-2").unwrap(),
+                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "restore", "from": "web-2" }),
@@ -345,6 +350,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Resize {
                     maximum_bytes: twenty_gb(),
+                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "resize", "maximum_bytes": 20_000_000_000_u64 }),
@@ -451,6 +457,7 @@ async fn an_old_copy_delete_fails_closed_on_a_cloud_from_before_if_old_copy() {
     let flagged = RunAsk::DeleteOldCopy {
         slot: slot.clone(),
         confirm: None,
+        approval: None,
     };
     let request = RunRequest {
         environment: named(),
@@ -479,6 +486,7 @@ async fn an_old_copy_delete_fails_closed_on_a_cloud_from_before_if_old_copy() {
         ask: RunAsk::DeleteMirror {
             slot,
             confirm: None,
+            approval: None,
         },
     };
     assert!(start(&token(&cloud), &volume(), &bare, None).await.is_ok());
@@ -785,7 +793,7 @@ async fn a_release_cloud_plans_for_20_seconds_still_starts() {
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
-async fn a_signed_mirror_goes_to_cloud_with_its_run() {
+async fn a_signed_volume_run_goes_to_cloud_with_its_approval() {
     use ployz_core::authority::{Signer, SignerKey, Timestamp, VolumeWorkflow};
     let signer = Signer::from_seed(&[7; 32]);
     let issued_at = Timestamp::from_millis(100_000).unwrap();
@@ -819,6 +827,36 @@ async fn a_signed_mirror_goes_to_cloud_with_its_run() {
                 approval: Some(signed.clone()),
             },
             "sync",
+        ),
+        (
+            RunAsk::Resize {
+                maximum_bytes: twenty_gb(),
+                approval: Some(signed.clone()),
+            },
+            "resize",
+        ),
+        (
+            RunAsk::Restore {
+                from: MachineName::parse("web-2").unwrap(),
+                approval: Some(signed.clone()),
+            },
+            "restore",
+        ),
+        (
+            RunAsk::DeleteMirror {
+                slot: MachineName::parse("web-2").unwrap(),
+                confirm: None,
+                approval: Some(signed.clone()),
+            },
+            "delete_mirror",
+        ),
+        (
+            RunAsk::DeleteOldCopy {
+                slot: MachineName::parse("web-2").unwrap(),
+                confirm: None,
+                approval: Some(signed.clone()),
+            },
+            "delete_mirror",
         ),
     ] {
         let expected = expected.clone();

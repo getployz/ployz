@@ -93,3 +93,14 @@ fn the_digests_a_human_is_asked_to_approve_keep_their_text() {
     .unwrap_err();
     assert_eq!(digest_of(refused).as_str(), "7:1:0.2:a0a17c2d0b878d7a");
 }
+
+/// Cloud and the CLI read these keys back from the refusal as sent.
+#[test]
+fn a_removal_ask_keeps_its_details() {
+    let refused = asked("remove", &Approval::Required).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(
+        refused.details.to_string(),
+        r#"{"approval":"7:1:0.2:f205f84b319fe5b1","diff":{},"effects":[{"kind":"removes_service","name":"web","node":"00000000-0000-4000-8000-000000000003","path":"web"}]}"#
+    );
+}

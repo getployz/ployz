@@ -39,5 +39,5 @@ export function member(server: string, copy: Copy, options: { epoch?: number; id
 
 export const run = (kind: VolumeRunView["kind"], args: VolumeRunView["args"], state: VolumeRunView["state"]): VolumeRunView => ({
   id: `${kind}-${state}`, volume_id: "v1", volume_name: "data", kind, args, orphan: false, state, epoch: 1, message: null,
-  created_at: "2026-10-09T00:00:00.000Z", updated_at: "2026-10-09T00:00:00.000Z", finished_at: null,
+  created_at: "2026-10-09T00:00:00.000Z", updated_at: "2026-10-09T00:00:00.000Z", finished_at: null, answers: [],
 });

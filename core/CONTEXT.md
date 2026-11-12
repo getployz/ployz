@@ -533,10 +533,6 @@ _Avoid_: replica, endpoint, upstream, Serving Pointer
 The content identity of the Resolved Service Spec fields whose change requires a new Container. Equal shapes are interchangeable Containers. It is derived from observed spec content, not Cluster intent. Service ID is not a Serving Shape.
 _Avoid_: current version, desired generation, Service ID as generation
 
-**Published Serving Shape**:
-The Serving Shape of a published observation. A row in the replicated store keeps no environment and empties Config content, so the shape hashes Config names in place of content, and Containers from an env-only or Config-only change share a shape ([#1419](https://github.com/getployz/ployz/issues/1419)). Ployz compares shapes to match observed Containers to a wanted spec, in drift checks and Global catch-up. Routing follows each Container's `rotation`, not its shape.
-_Avoid_: Serving Shape for observation rows
-
 **Public Ingress**:
 The public HTTP request path from DNS resolution through a Machine's Ingress Proxy to a Serving Container. It is a diagnostic boundary, not a single process or globally authoritative edge.
 _Avoid_: Edge
@@ -546,7 +542,7 @@ The Machine-local process that receives published HTTP traffic and routes it tow
 _Avoid_: Edge, public ingress as a process
 
 **Door**:
-A way published HTTP traffic enters a Machine's Ingress Proxy. The Public Door is host ports 80 and 443, which the holder owns. The Tunnel Door is a Tunnel Connector dialling Caddy's 8480 loopback listener, with the holder publishing no port. A Cluster's Doors are one set for every ingress Machine; `{Public, Tunnel}` holds both while a switch runs. A Machine's open Doors are read from its running door Containers, and a Machine with none is closed. Caddy's 8480 listener is not a Door on its own.
+A way published HTTP traffic enters a Machine's Ingress Proxy. The Public Door is host ports 80 and 443, which the holder owns. The Tunnel Door is a Tunnel Connector dialling Caddy's 8480 loopback listener, with the holder publishing no port. A Cluster's Doors are one set for every ingress Machine; `{Public, Tunnel}` holds both while a switch runs. The set is declared: the operator's client writes it to the replicated `cluster` key `doors` before it asks any Machine to change, and a Cluster that never declared one is read from its newest door Containers as before. A declared set is a fact commands and joiners follow, and no loop converges Machines toward it. A Machine's open Doors are read from its running door Containers, and a Machine with none is closed. Caddy's 8480 listener is not a Door on its own.
 _Avoid_: Port mapping, ingress port, mode
 
 **Tunnel Connector**:

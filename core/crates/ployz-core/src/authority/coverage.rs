@@ -26,10 +26,11 @@ use crate::{
     REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY, RETAINED_ENV_CAPABILITY,
     RUNTIME_WATCH_CAPABILITY, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
-    SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_INGRESS_DOORS_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
-    SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY,
+    SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY,
+    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
+    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, TEARDOWN_CAPABILITY,
     UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_CHANNEL_CAPABILITY,
     VOLUME_APPROVAL_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY,
 };
@@ -62,7 +63,8 @@ impl Statement {
             Self::Rule => &[DEPLOY_RULE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY],
             Self::Upgrade => &[UPGRADE_CHANNEL_CAPABILITY],
             Self::PrivateAccess => &[PRIVATE_ACCESS_APPROVAL_CAPABILITY],
-            Self::Volume | Self::Teardown => &[],
+            Self::Volume => &[VOLUME_APPROVAL_CAPABILITY],
+            Self::Teardown => &[TEARDOWN_CAPABILITY],
         }
     }
 }
@@ -87,7 +89,7 @@ pub enum Authorization {
 }
 
 use Authorization::{Bound, Full, Pending, Read, Signed};
-use Statement::{Deploy, Join, PrivateAccess, Proposal, Restart, Rule, Upgrade, Volume};
+use Statement::{Deploy, Join, PrivateAccess, Proposal, Restart, Rule, Teardown, Upgrade, Volume};
 
 const IMAGE_BOUND: &str = "content-addressed; checked at creation by C";
 
@@ -130,13 +132,13 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         INSTALL_SEALING_KEY_CAPABILITY,
         Bound("Cloud holds no Machine's key to seal from"),
     ),
-    (LEAVE_MACHINE_CAPABILITY, Signed(&[])),
-    (FORGET_MACHINE_CAPABILITY, Signed(&[])),
+    (LEAVE_MACHINE_CAPABILITY, Signed(&[Teardown])),
+    (FORGET_MACHINE_CAPABILITY, Signed(&[Teardown])),
     (LIST_CONTAINERS_CAPABILITY, Read),
     (INSPECT_CONTAINER_CAPABILITY, Read),
     (
         ENSURE_CONTAINER_CAPABILITY,
-        Signed(&[Deploy, Restart, Proposal, Rule]),
+        Signed(&[Deploy, Restart, Proposal, Rule, Teardown]),
     ),
     (
         UPDATE_CONTAINER_LIMITS_CAPABILITY,
@@ -145,11 +147,11 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (INSPECT_STORAGE_CAPABILITY, Read),
     (PREPARE_VOLUMES_CAPABILITY, Bound("checked at mount by C")),
     (LIST_VOLUMES_CAPABILITY, Read),
-    (REMOVE_VOLUME_CAPABILITY, Pending("E6")),
+    (REMOVE_VOLUME_CAPABILITY, Signed(&[Teardown])),
     (INSPECT_VOLUME_COPY_CAPABILITY, Read),
     (SEED_VOLUME_CAPABILITY, Signed(&[Volume])),
-    (SET_VOLUME_COPY_CAPABILITY, Pending("E3 to E6")),
-    (SET_VOLUME_SIZE_CAPABILITY, Pending("E7")),
+    (SET_VOLUME_COPY_CAPABILITY, Signed(&[Volume])),
+    (SET_VOLUME_SIZE_CAPABILITY, Signed(&[Volume])),
     (LIST_IMAGES_CAPABILITY, Read),
     (
         PRUNE_IMAGES_CAPABILITY,
@@ -175,6 +177,10 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (SET_PRIVATE_ACCESS_CAPABILITY, Signed(&[PrivateAccess])),
     (READ_CLUSTER_NAME_CAPABILITY, Read),
     (SET_CLUSTER_NAME_CAPABILITY, Bound("residual: mislabel")),
+    (
+        SET_CLUSTER_DOORS_CAPABILITY,
+        Bound("residual: steers later joins only to Doors SetIngressDoors already opens"),
+    ),
     (METRIC_HISTORY_CAPABILITY, Read),
     (RETAINED_ENV_CAPABILITY, Read),
     (LOG_HISTORY_CAPABILITY, Read),
@@ -193,12 +199,16 @@ pub fn authorization(capability: &str) -> Option<Authorization> {
         .map(|(_, class)| *class)
 }
 
-/// Whether an Operator caller can never be served `capability` on an enforcing Machine,
-/// so a client holding a Full path must send it there itself: a call forwarded over the
-/// mesh arrives as an Operator's.
+/// Whether an Operator caller is served `capability` on an enforcing Machine only with a
+/// person's teardown or not at all, so a client holding a Full path sends it there itself:
+/// a call forwarded over the mesh arrives as an Operator's, and a Device's own call needs
+/// no teardown.
 #[must_use]
 pub fn needs_full_caller(capability: &str) -> bool {
-    matches!(authorization(capability), Some(Full | Signed(&[])))
+    matches!(
+        authorization(capability),
+        Some(Full | Signed(&[] | [Statement::Teardown]))
+    )
 }
 
 /// What an enforcing Machine must do with a case sent by Cloud, with no statement.
@@ -456,21 +466,21 @@ pub const CASES: &[Case] = &[
     ),
     case(
         REMOVE_VOLUME_CAPABILITY,
-        "any Volume",
-        "a RemoveVolume of a Docker Volume",
-        Expected::Served,
+        "no teardown",
+        "a RemoveVolume of a Docker Volume, with no teardown",
+        Expected::Refused(&[TEARDOWN_CAPABILITY]),
     ),
     case(
         SEED_VOLUME_CAPABILITY,
         "no approval",
         "a SeedVolume from another Machine's copy",
-        Expected::Refused(&[SEED_VOLUME_CAPABILITY]),
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
         "a Writer want with a start",
-        "a SetVolumeCopy making this copy Writer and creating its Container",
-        Expected::Refused(&[SET_VOLUME_COPY_CAPABILITY]),
+        "a SetVolumeCopy making this copy Writer and creating its Container, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
@@ -480,8 +490,32 @@ pub const CASES: &[Case] = &[
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
-        "cut, promote, forget",
-        "a SetVolumeCopy forgetting a copy",
+        "a cut",
+        "a SetVolumeCopy cutting the Writer for a Move, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
+        "a handoff",
+        "a SetVolumeCopy handing a cut Volume to its Move's target, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
+        "a promote with no receipt",
+        "a SetVolumeCopy making a Mirror the Writer with no receipt and no Restore approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
+        "a forget of a copy",
+        "a SetVolumeCopy deleting a slot that holds a snapshot, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
+        "a forget of nothing",
+        "a SetVolumeCopy forgetting where this Machine holds no copy",
         Expected::Served,
     ),
     case(
@@ -493,8 +527,8 @@ pub const CASES: &[Case] = &[
     case(
         SET_VOLUME_SIZE_CAPABILITY,
         "grow, or a shrink",
-        "a SetVolumeSize growing a Volume",
-        Expected::Served,
+        "a SetVolumeSize growing a Volume, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
     ),
     case(
         PRUNE_IMAGES_CAPABILITY,
@@ -560,6 +594,12 @@ pub const CASES: &[Case] = &[
         SET_CLUSTER_NAME_CAPABILITY,
         "any name",
         "a SetClusterName renaming the Cluster",
+        Expected::Served,
+    ),
+    case(
+        SET_CLUSTER_DOORS_CAPABILITY,
+        "any doors",
+        "a SetClusterDoors declaring the Cluster's Doors",
         Expected::Served,
     ),
     case(

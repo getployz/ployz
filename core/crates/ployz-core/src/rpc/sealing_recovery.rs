@@ -6,12 +6,10 @@
 //! the code beside the backup it stores.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::{
-    EnrollRequest, RecoveryCode, RecoverySeed, RpcError, SealingKeyBackup, SealingPublicKey,
-};
+use super::evidence::Evidence;
+use crate::{EnrollRequest, RecoveryCode, RecoverySeed, SealingKeyBackup, SealingPublicKey};
 
 /// Found a Cluster whose Sealing Key is recovered from a backup instead of generated.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -52,7 +50,7 @@ pub struct SealingKeyRecovered {
 }
 
 /// Why a Machine refused to wrap or recover the Sealing Key. Carried in
-/// [`RpcError::details`] as `{"recovery": ...}`.
+/// [`RpcError::details`](crate::RpcError) as `{"recovery": ...}`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryRefusal {
@@ -74,18 +72,6 @@ pub enum RecoveryRefusal {
     HeldAnother,
 }
 
-impl RecoveryRefusal {
-    /// The [`RpcError::details`] value naming this refusal.
-    #[must_use]
-    pub fn details(self) -> Value {
-        json!({ "recovery": self })
-    }
-}
-
-impl RpcError {
-    /// The recovery refusal this error names, if it is one.
-    #[must_use]
-    pub fn recovery_refusal(&self) -> Option<RecoveryRefusal> {
-        serde_json::from_value(self.details.get("recovery")?.clone()).ok()
-    }
+impl Evidence for RecoveryRefusal {
+    const KEY: Option<&'static str> = Some("recovery");
 }

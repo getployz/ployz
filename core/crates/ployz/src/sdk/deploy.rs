@@ -104,13 +104,15 @@ impl PreparedDeploy {
             cleanup,
             None,
             crate::cluster::RuleProofs::default(),
+            None,
         )
     }
 
     /// As [`Self::confirm_with_log_id`], handing every Server the deploy approval a
     /// Device signed for this Deploy, or each Service's proof under an automatic deploy
-    /// rule or a preview rule. A Server that enforces Device approval creates nothing
-    /// without one.
+    /// rule or a preview rule, and the teardown of what it takes off. A Server that
+    /// enforces Device approval creates nothing without one, and takes off nothing
+    /// that neither approves.
     /// # Errors
     /// Returns the same admission and session errors as confirm.
     pub fn confirm_approved(
@@ -119,6 +121,7 @@ impl PreparedDeploy {
         cleanup: ImageCleanup,
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
         rules: crate::cluster::RuleProofs,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
@@ -137,8 +140,9 @@ impl PreparedDeploy {
         let mut client = session
             .client()?
             .with_deploy_approval(approval)
-            .with_rule_proofs(rules);
-        client.deployment_id = deployment_id;
+            .with_rule_proofs(rules)
+            .with_teardown(teardown);
+        client.deploy.id = deployment_id;
         let preview = self.preview.clone();
         let token = cancel.clone();
         let session_cancel = session.inner.cancel.clone();

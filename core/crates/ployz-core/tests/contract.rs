@@ -14,16 +14,16 @@ use ployz_core::{
     ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
     ImageSummary, ImagesRemoved, IngressHost, InspectBuildGrantRequest, InspectRequest,
     LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY, LeaveRequest, Left, LeftPhase,
-    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
-    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate,
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
-    MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
-    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
-    PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
+    ListImagesRequest, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
+    MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
+    ManagementAddress, NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, PruneImagesRequest,
+    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
     PullImageFromMachineRequest, RequestMachineUpgradeRequest, ResolvedServiceSpec, ResponseKind,
     RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, RunRotation, ServiceId,
     ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames,
-    op,
+    labels, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -283,7 +283,7 @@ fn namespace_volume_name_includes_the_namespace_and_differs_across_namespaces() 
 #[test]
 fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope() {
     for owner in ["shop", "blog"] {
-        for reserved in [NAMESPACE_LABEL, MANAGED_LABEL] {
+        for reserved in [labels::NAMESPACE, labels::MANAGED] {
             let raw = ployz_core::RawVolumeSource::Ordinary {
                 name: DockerVolumeName::parse("data").unwrap(),
                 driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
@@ -309,7 +309,7 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
     let request = named.to_create_volume_request().unwrap();
     assert_eq!(request.name.as_str(), "shop_data");
     assert_eq!(
-        request.labels.get(NAMESPACE_LABEL).map(String::as_str),
+        request.labels.get(labels::NAMESPACE).map(String::as_str),
         Some("shop")
     );
     assert_eq!(request.labels.get("user").map(String::as_str), Some("kept"));
@@ -873,20 +873,19 @@ fn image_ingest_contract_returns_the_management_address_destination() {
     for (reason, wire) in frozen {
         assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
         let error = reason.rpc_error("ingest unavailable");
-        assert_eq!(
-            ImageIngestReason::from_details(&error.details),
-            Some(reason)
-        );
+        assert_eq!(error.evidence::<ImageIngestReason>(), Some(reason));
         assert_eq!(error.details, json!({ "reason": wire }));
     }
+    let detailed = |details| RpcError::unavailable("m").with_details(details);
     assert_eq!(
-        ImageIngestReason::from_details(&json!({
+        detailed(json!({
             "reason": "docker_unavailable",
             "extra": 1
-        })),
+        }))
+        .evidence::<ImageIngestReason>(),
         Some(ImageIngestReason::DockerUnavailable)
     );
-    assert_eq!(ImageIngestReason::from_details(&Value::Null), None);
+    assert_eq!(detailed(Value::Null).evidence::<ImageIngestReason>(), None);
 }
 
 /// A newer client may add optional fields to Machine RPC requests within
@@ -1523,8 +1522,9 @@ fn typed_errors_preserve_future_error_codes() {
 #[test]
 fn leave_and_forget_round_trip_under_stable_capabilities() {
     let requests = [
-        op::Leave::into_request(LeaveRequest {}),
+        op::Leave::into_request(LeaveRequest { teardown: None }),
         op::Forget::into_request(ForgetRequest {
+            teardown: None,
             machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         }),
     ];
@@ -1583,6 +1583,7 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     );
     assert_eq!(
         op::RemoveVolume::into_request(RemoveVolumeRequest {
+            teardown: None,
             name: name.clone(),
             force: true,
         })
@@ -1592,6 +1593,7 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         .unwrap()
         .body,
         RpcRequestBody::RemoveVolume(RemoveVolumeRequest {
+            teardown: None,
             name: name.clone(),
             force: true,
         })
@@ -1648,6 +1650,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         "creation_key": "deploy/slot-1"
     });
     let running = EnsureContainerRequest {
+        teardown: None,
         preview: None,
         approval: None,
         deploy: None,
@@ -1999,14 +2002,12 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
     );
 
     let refusal = ployz_core::RecoveryRefusal::WrongCode;
-    let error = RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: "wrong code".into(),
-        details: refusal.details(),
-        cause: Vec::new(),
-    };
+    let error = RpcError::invalid_argument("wrong code").with_evidence(&refusal);
     assert_eq!(error.details, json!({ "recovery": "wrong_code" }));
-    assert_eq!(error.recovery_refusal(), Some(refusal));
+    assert_eq!(
+        error.evidence::<ployz_core::RecoveryRefusal>(),
+        Some(refusal)
+    );
 }
 
 #[test]

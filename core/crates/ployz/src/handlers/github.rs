@@ -17,7 +17,8 @@ use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
-use crate::ui::{Cell, Hint, Table, Tone};
+use crate::ui::{Cell, Table, Tone};
+use ployz_core::Hint;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_secs(3);

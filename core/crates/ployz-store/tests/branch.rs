@@ -188,6 +188,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: b
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: at(environment),
                 services: Vec::new(),
@@ -2227,6 +2228,7 @@ fn warnings(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: at(environment),
                 services: Vec::new(),

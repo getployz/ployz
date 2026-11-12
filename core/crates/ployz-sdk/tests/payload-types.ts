@@ -48,8 +48,6 @@ import type {
   MachineUpgradeAttemptId,
 } from "../generated/payloads";
 import {
-  applyAll,
-  applyOne,
   Client,
   connect,
   allocateEnrollment,
@@ -241,8 +239,6 @@ const identity: RegisterRequest = {
     running_builds: 0,
   },
 };
-applyAll("app" as Namespace, [web]) satisfies DeployIntent;
-applyOne("app" as Namespace, web) satisfies DeployIntent;
 client.preview(intent) satisfies Promise<PreparedDeploy>;
 client.runtime.watch() satisfies AsyncIterable<RuntimeWatchView>;
 client.removeMachine("machine", { confirmed: [] }) satisfies Promise<LocalMachineRemoved>;

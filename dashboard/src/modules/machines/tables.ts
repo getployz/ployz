@@ -1,4 +1,4 @@
-import type { DrainReport, EnrollmentAssignment, MachineName, QualifiedService } from "@ployz/sdk";
+import type { DrainReport, EnrollmentAssignment, MachineName, QualifiedService, TeardownApproval } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { user } from "#/modules/identity/tables";
@@ -45,6 +45,8 @@ export const machineRemoveAttempt = pgTable(
     confirmDataLoss: jsonb("confirm_data_loss")
       .notNull()
       .$type<DataLossIdentity[]>(),
+    /** The person's teardown of the Server's departure; a Server that enforces Device approval leaves or forgets only under it. */
+    teardown: jsonb("teardown").$type<TeardownApproval | null>(),
     state: text("state")
       .default("pending")
       .notNull()
@@ -308,6 +310,8 @@ export const namespaceCleanup = pgTable(
     approvalId: uuid("approval_id"),
     /** The Volumes the caller confirmed losing. */
     confirmDataLoss: jsonb("confirm_data_loss").notNull().$type<DataLossIdentity[]>(),
+    /** The person's teardown of the Namespace, which every Server is handed; a Server that enforces Device approval needs it. */
+    teardown: jsonb("teardown").$type<TeardownApproval | null>(),
     state: text("state").default("pending").notNull().$type<CleanupState>(),
     inngestRunId: text("inngest_run_id"),
     /** The Docker Volume names removed; only `finished` has them. */

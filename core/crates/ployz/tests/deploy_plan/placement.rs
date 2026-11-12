@@ -1960,7 +1960,7 @@ fn left_by(mut copy: ContainerObservation, run: &str, key: &str) -> ContainerObs
         parts.rotation = Some(ployz_core::CopyRotation::Pending);
         parts
             .labels
-            .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), run.into());
+            .insert(ployz_core::labels::DEPLOYMENT_ID.into(), run.into());
         parts
             .labels
             .insert(ployz_core::labels::CREATION_KEY.into(), key.into());
@@ -1978,8 +1978,8 @@ fn removed_first(plan: &ployz::deploy::DeployPlan) -> Vec<ContainerId> {
         .filter(|group| group.service.is_none() && group.dependencies.is_empty())
         .flat_map(|group| &group.steps)
         .flat_map(|step| match step {
-            ployz::deploy::Step::Serial(index) => vec![*index],
-            ployz::deploy::Step::Parallel(indices) => indices.clone(),
+            ployz::deploy::Stage::Serial(index) => vec![*index],
+            ployz::deploy::Stage::Parallel(indices) => indices.clone(),
         })
         .filter_map(|index| {
             let DeployOperation::RemoveContainer { container_id, .. } =
@@ -2030,13 +2030,13 @@ fn a_deploy_removes_first_the_copies_ended_runs_left_pending() {
         ],
         ..Default::default()
     };
-    let options = PlanOptions {
-        ended_runs: ["run-1", "run-2"]
+    let options = PlanOptions::default().as_runner(
+        ployz_core::Operator::Cloud,
+        ["run-1", "run-2"]
             .into_iter()
             .map(|run| ployz_core::DeploymentLogId::parse(run).unwrap())
             .collect(),
-        ..PlanOptions::default()
-    };
+    );
     let intent = DeployIntent::apply_all(Namespace::parse("app").unwrap(), [&requested], options);
 
     let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();

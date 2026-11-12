@@ -241,7 +241,7 @@ describe("the mirror sync", () => {
 
     const synced = await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), asking));
 
-    expect(synced.lines).toEqual(["db-web-2 refused the pull: web-2 didn't accept the approval from your device for db. Approve the change again from an approved device."]);
+    expect(synced.lines).toEqual(["db-web-2 refused the pull: web-2 didn't accept the approval for db. It may have expired, or be for another change. Approve the change again."]);
   });
 
   it("names each sync's snapshot apart from one taken the same millisecond, above any lane run's round", async () => {

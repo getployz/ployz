@@ -12,9 +12,9 @@ use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
-    EnvironmentRef, ObservationFailure, OrganizationId, ProjectName, Publish, Published, Removal,
-    RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation,
-    Written,
+    EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId, ProjectName, Publish,
+    Published, Removal, RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View,
+    VolumeObservation, Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -22,7 +22,7 @@ use crate::approval::{self, Asked};
 use crate::cli::{env, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::ui::Hint;
+use ployz_core::Hint;
 
 impl From<StoreCallError> for Error {
     fn from(error: StoreCallError) -> Self {
@@ -273,7 +273,7 @@ impl<'m> Store<'m> {
                 .and_then(serde_json::Value::as_str)
             {
                 Some("publish") => approval::Verb::Publish,
-                Some("remove") => approval::Verb::Remove,
+                Some("remove") => OperationVerb::Remove.into(),
                 _ => approval::Verb::Deploy,
             };
             let retry = self.approving(&asked.id);

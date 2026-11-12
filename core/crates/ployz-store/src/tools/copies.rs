@@ -1,41 +1,34 @@
 //! Tools on where a Volume's data is: show it, mirror and sync it, remove the
 //! mirror, move it, release a move that stopped, and restore it from a copy.
 
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{CopiesAnswer, OperationsAnswer, VolumeCopies};
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, store};
 use super::refusal::{Call, Refusal};
-use super::release::place;
 use super::step::{
     AcceptedLoss, Action, Ask, CloudQuery, Gate, RequestKey, ServerName, Subject, VolumeRun,
 };
 use crate::catalog::NODE_NAME;
-use crate::{
-    EnvironmentName, NamespaceQuery, ProjectName, VolumeName, VolumeQuery, VolumeView, VolumesQuery,
-};
-
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
+use crate::{EnvironmentRef, NamespaceQuery, VolumeName, VolumeQuery, VolumeView, VolumesQuery};
 
 /// `volume_show` for `volume` where the call is.
 fn volume_show(cx: &Cx<'_>, volume: &VolumeName) -> Call {
-    let mut input = place(cx.call());
+    let mut input = cx.place_args();
     input.insert("volume".into(), volume.as_str().into());
-    Call::new("volume_show", Value::Object(input))
+    Call::to(ToolId::VolumeShow, Value::Object(input))
 }
 
 /// The Volume the call names, read alone.
 fn volume(
     cx: &mut Cx<'_>,
+    environment: EnvironmentRef,
     volume: VolumeName,
-    project: Option<&ProjectName>,
-    environment: Option<&EnvironmentName>,
     also: Option<Ask>,
 ) -> Result<(VolumeView, Option<Result<Value, ployz_core::RpcError>>), Stop> {
-    let environment = cx.scope(project, environment);
     let mut asks = vec![store(&VolumeQuery {
         environment,
         volume,
@@ -64,26 +57,21 @@ fn on_volume(
     operate(cx, run, key, wait_seconds)
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeShow {
-    /// Omit for every Volume here.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    volume: Option<VolumeName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeShow {
+        /// Omit for every Volume here.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        volume: Option<VolumeName>,
+        @place,
+    }
 }
 
 impl Tool for VolumeShow {
     const NAME: &'static str = "volume_show";
     const DESCRIPTION: &'static str = "Where a Volume's data is: its writable copy, its mirror and last sync, and recent runs with how each ended.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata" })
@@ -91,7 +79,7 @@ impl Tool for VolumeShow {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let environment = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let environment = cx.scope(&self);
         let first = match &self.volume {
             Some(volume) => store(&VolumeQuery {
                 environment: environment.clone(),
@@ -177,28 +165,19 @@ fn copies_of<'a>(
         })
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeMirror {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    server: Option<ServerName>,
-    #[serde(default)]
-    full: bool,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeMirror {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        server: Option<ServerName>,
+        #[serde(default)]
+        full: bool,
+        @wait,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeMirror {
@@ -206,7 +185,7 @@ impl Tool for VolumeMirror {
     const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "server": "db-2", "wait_seconds": 120 })
@@ -214,7 +193,7 @@ impl Tool for VolumeMirror {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let mut asks = vec![
             store(&VolumeQuery {
                 environment: scope.clone(),
@@ -266,13 +245,13 @@ impl Tool for VolumeMirror {
             }
             (Some(_), Some(mirror)) => {
                 // One mirror: another server's would replace it, deleting it.
-                let mut input = place(cx.call());
+                let mut input = cx.place_args();
                 input.insert("volume".into(), self.volume.as_str().into());
                 return Err(Refusal::conflict(format!(
                     "It already has a mirror on {}; remove it first",
                     mirror.name.as_str()
                 ))
-                .with_next(Call::new("volume_mirror_remove", Value::Object(input)))
+                .with_next(Call::to(ToolId::VolumeMirrorRemove, Value::Object(input)))
                 .into());
             }
             (Some(to), None) => VolumeRun::Mirror { to },
@@ -281,24 +260,14 @@ impl Tool for VolumeMirror {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeMirrorRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[serde(default)]
-    accept_volume_loss: Vec<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeMirrorRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        @loss,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeMirrorRemove {
@@ -307,7 +276,7 @@ impl Tool for VolumeMirrorRemove {
         "Delete a Volume's mirror; if it is the last copy, its data goes too.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata" })
@@ -315,14 +284,9 @@ impl Tool for VolumeMirrorRemove {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
+        let scope = cx.scope(&self);
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
-        let (view, _) = volume(
-            cx,
-            self.volume,
-            self.project.as_ref(),
-            self.environment.as_ref(),
-            None,
-        )?;
+        let (view, _) = volume(cx, scope, self.volume, None)?;
         on_volume(
             cx,
             &view,
@@ -333,25 +297,16 @@ impl Tool for VolumeMirrorRemove {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeMove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    to: ServerName,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeMove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        to: ServerName,
+        @wait,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeMove {
@@ -359,21 +314,16 @@ impl Tool for VolumeMove {
     const DESCRIPTION: &'static str = "Put a Volume and the Service using it on server to. The Service is down only for the final copy; the old server keeps a mirror. If a move stopped, the same call continues it.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
-        json!({ "volume": "pgdata", "to": "db-2", "wait_seconds": 300 })
+        json!({ "volume": "pgdata", "to": "db-2", "wait_seconds": WAIT_CAP_SECONDS })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let (view, answer) = volume(
-            cx,
-            self.volume,
-            self.project.as_ref(),
-            self.environment.as_ref(),
-            Some(servers()),
-        )?;
+        let scope = cx.scope(&self);
+        let (view, answer) = volume(cx, scope, self.volume, Some(servers()))?;
         let answer = roster(cx, answer)?;
         let to = resolve(&answer, &self.to, "to", true)?.reference();
         on_volume(
@@ -386,27 +336,15 @@ impl Tool for VolumeMove {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeRelease {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[serde(default)]
-    accept_volume_loss: Vec<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeRelease {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        @loss,
+        @wait,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeRelease {
@@ -414,7 +352,7 @@ impl Tool for VolumeRelease {
     const DESCRIPTION: &'static str = "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "wait_seconds": 120 })
@@ -422,15 +360,10 @@ impl Tool for VolumeRelease {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
+        let scope = cx.scope(&self);
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
-        let (view, _) = volume(
-            cx,
-            self.volume,
-            self.project.as_ref(),
-            self.environment.as_ref(),
-            None,
-        )?;
-        let mut moving = place(cx.call());
+        let (view, _) = volume(cx, scope, self.volume, None)?;
+        let mut moving = cx.place_args();
         moving.insert("volume".into(), view.volume.volume.name.as_str().into());
         on_volume(
             cx,
@@ -443,25 +376,16 @@ impl Tool for VolumeRelease {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeRestore {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    from: ServerName,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
-    wait_seconds: u32,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeRestore {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        from: ServerName,
+        @wait,
+        @key,
+        @place,
+    }
 }
 
 impl Tool for VolumeRestore {
@@ -469,7 +393,7 @@ impl Tool for VolumeRestore {
     const DESCRIPTION: &'static str = "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down until the next deploy.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "from": "db-2", "wait_seconds": 120 })
@@ -477,13 +401,8 @@ impl Tool for VolumeRestore {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let (view, answer) = volume(
-            cx,
-            self.volume,
-            self.project.as_ref(),
-            self.environment.as_ref(),
-            Some(servers()),
-        )?;
+        let scope = cx.scope(&self);
+        let (view, answer) = volume(cx, scope, self.volume, Some(servers()))?;
         let answer = roster(cx, answer)?;
         let from = resolve(&answer, &self.from, "from", true)?.reference();
         on_volume(
@@ -507,7 +426,7 @@ fn handed_over(stop: Stop, mut moving: Map<String, Value>) -> Stop {
         .and_then(|details| details.remove("move_to"));
     if let Some(Value::String(to)) = to {
         moving.insert("to".into(), to.into());
-        refusal.retry = Call::new("volume_move", Value::Object(moving));
+        refusal.retry = Call::to(ToolId::VolumeMove, Value::Object(moving));
     }
     if refusal.details.as_object().is_some_and(Map::is_empty) {
         refusal.details = Value::Null;

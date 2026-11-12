@@ -28,7 +28,7 @@ mod upload;
 pub use execution::{
     Admission, BuildStep, Cancellation, HostPolicy, Progress, Stage, TargetEvidence, WorkEvidence,
 };
-mod railpack;
+pub mod railpack;
 pub use railpack::Railpack;
 mod scrub;
 pub use scrub::OutputScrub;
@@ -60,6 +60,18 @@ pub const BUILDKIT_IMAGE: &str = "moby/buildkit:v0.26.2";
 /// Interface prefix of the bridge each build slot's steps run on. Host
 /// firewall rules match it as `ployz-build+`.
 pub const BUILD_BRIDGE_PREFIX: &str = "ployz-build";
+
+/// Variables through which a GitHub Actions runner exposes its build cache
+/// service. A Build passes only these through, never the run's other credentials.
+pub const GITHUB_CACHE_ENV: [&str; 4] = [
+    "ACTIONS_CACHE_URL",
+    "ACTIONS_RESULTS_URL",
+    GITHUB_CACHE_TOKEN,
+    "ACTIONS_CACHE_SERVICE_V2",
+];
+/// The cache service variable whose presence in a Build's environment turns the
+/// GitHub Actions cache on.
+pub const GITHUB_CACHE_TOKEN: &str = "ACTIONS_RUNTIME_TOKEN";
 
 /// Longest one Build Attempt may run, from owning the builder through image
 /// verification. Waiting for another local build is queueing, not attempt time.
@@ -190,7 +202,7 @@ pub fn reads_plaintext(sealed_override: Option<&Path>, railpack: &[Railpack]) ->
 /// Whether the captured environment exposes a GitHub Actions runner's cache
 /// service, which only `ployz build` passes through.
 fn github_cache(request: &Request<'_>) -> bool {
-    request.environment.contains_key("ACTIONS_RUNTIME_TOKEN")
+    request.environment.contains_key(GITHUB_CACHE_TOKEN)
 }
 
 /// A completed image in the execution host's Docker image store, identified by

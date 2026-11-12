@@ -530,6 +530,44 @@ async fn the_last_cluster_name_written_is_the_one_read() {
 }
 
 #[tokio::test]
+async fn the_declared_doors_read_back_as_written_and_a_bad_value_reads_unreadable() {
+    use super::DeclaredDoors;
+    use ployz_core::IngressDoors;
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(
+        store.cluster_doors().await.unwrap(),
+        DeclaredDoors::Undeclared
+    );
+    for doors in [
+        IngressDoors::closed(),
+        IngressDoors::tunnel(),
+        IngressDoors::both(),
+        IngressDoors::public(),
+    ] {
+        store.publish_cluster_doors(&doors).await.unwrap();
+        assert_eq!(
+            store.cluster_doors().await.unwrap(),
+            DeclaredDoors::Declared(doors)
+        );
+    }
+    for stored in [r#"'["public","warp"]'"#, "'public'", "'{}'", "NULL"] {
+        store
+            .api()
+            .execute([Statement::new(
+                format!("UPDATE cluster SET value = {stored} WHERE key = 'doors'"),
+                [],
+            )])
+            .await
+            .unwrap();
+        let read = store.cluster_doors().await.unwrap();
+        assert_eq!(read, DeclaredDoors::Unreadable, "{stored}");
+        assert_eq!(read.followed(), None);
+    }
+    task.abort();
+}
+
+#[tokio::test]
 async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
     let (store, task) = identity_store(corrosion_db()).await;
     let first = ployz_core::SealingPublicKey::from_bytes([1; 32]);

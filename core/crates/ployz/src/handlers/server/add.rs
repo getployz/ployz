@@ -1,8 +1,8 @@
 use crate::cluster::{Call, Wait};
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollAs, EnrollRequest, EnrollmentSnapshot, InspectRequest, LocalMachinePhase, MachineId,
-    MachineName, RegisterRequest, WireGuardPublicKey, op,
+    EnrollAs, EnrollRequest, EnrollmentSnapshot, Hint, InspectRequest, LocalMachinePhase,
+    MachineId, MachineName, RegisterRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_context, runtime};
@@ -10,7 +10,6 @@ use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
 use crate::handlers::{Error, leaf_matches};
-use crate::ui::Hint;
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -88,9 +87,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 public_ip: token.public_ip,
                 advertised_endpoints: token.advertised_endpoints,
                 runtime: token.runtime,
+                capabilities: Vec::new(),
             },
             &snapshot,
         )?;
+        // This CLI runs the joiner's catch-up, so it claims what it honors. The saved
+        // assignment never holds a claim, so it is set on the copy Register carries.
+        let mut assignment = assignment;
+        assignment.request.capabilities = vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY.to_owned()];
         let assigned = assignment.machine.clone();
         let registration = match crate::enrollment::publish_enrollment(&mut entry, &assignment)
             .await
@@ -255,7 +259,7 @@ mod tests {
         let failure = crate::global_catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
                 crate::failure::Failure::usage("deploy timed out".to_owned())
-                    .hint(crate::ui::Hint::Next("ployz deploy".into())),
+                    .hint(Hint::Next("ployz deploy".into())),
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
             &assigned,
@@ -268,12 +272,12 @@ mod tests {
         let command = hints
             .iter()
             .find_map(|hint| match hint {
-                crate::ui::Hint::Retry(command) => Some(command),
-                crate::ui::Hint::Next(_)
-                | crate::ui::Hint::Inspect(_)
-                | crate::ui::Hint::Undo(_)
-                | crate::ui::Hint::Closest(_)
-                | crate::ui::Hint::Valid(_) => None,
+                Hint::Retry(command) => Some(command),
+                Hint::Next(_)
+                | Hint::Inspect(_)
+                | Hint::Undo(_)
+                | Hint::Closest(_)
+                | Hint::Valid(_) => None,
             })
             .unwrap();
         assert_eq!(
@@ -291,7 +295,7 @@ mod tests {
             failure.report().code,
             ployz_core::RpcErrorCode::InvalidArgument
         );
-        assert!(hints.contains(&crate::ui::Hint::Next("ployz deploy".into())));
+        assert!(hints.contains(&Hint::Next("ployz deploy".into())));
     }
 
     #[test]
@@ -302,6 +306,7 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![survivor.clone()],
             target_versions: Default::default(),
+            doors: None,
         };
         let returning = assigned_machine("machine-3", 'c');
         let saved = crate::enrollment::local::save_assignment(
@@ -320,6 +325,7 @@ mod tests {
                     "192.0.2.3:51820".parse().unwrap(),
                 )],
                 runtime: Default::default(),
+                capabilities: Vec::new(),
             },
             &joined,
         )
@@ -365,6 +371,7 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![live.clone(), joining.clone()],
             target_versions: Default::default(),
+            doors: None,
         };
         let refusal =
             require_free_name(&snapshot, joining.id, &live.name, "root@machine-3").unwrap_err();

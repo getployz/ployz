@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::client::{self, Reply};
-use super::wire::{self, Answer, PrepState, Probe};
+use super::wire::{self, Answer};
 use super::*;
 
 const PROBE: &str = r#"{
@@ -81,7 +81,7 @@ struct FakeHost {
 }
 
 impl Host for FakeHost {
-    async fn probe(&self) -> Result<Probe, String> {
+    async fn probe(&self) -> Result<ProbeDocument, String> {
         if self.probe_hangs {
             std::future::pending::<()>().await;
         }
@@ -164,6 +164,7 @@ fn paths(dir: &tempfile::TempDir) -> Paths {
     Paths {
         checkin_dir: dir.path().join("checkin"),
         prepare_state: dir.path().join("prepare/state.json"),
+        prepare_lock: dir.path().join("prepare/lock"),
         token_file: dir.path().join("fleet-token"),
     }
 }
@@ -2187,7 +2188,7 @@ fn a_docker_failure_in_the_second_its_preparation_started_belongs_to_it() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     docker_failed_at(&paths, "2026-10-16T00:00:00Z");
-    let state: PrepState =
+    let state: PrepSteps =
         serde_json::from_slice(&fs::read(&paths.prepare_state).unwrap()).unwrap();
     let started = at("2026-10-16T00:00:00.400Z");
     assert!(!state.docker_retried(Some(started)));
@@ -2419,14 +2420,14 @@ async fn a_cloud_that_does_not_answer_is_retried_in_a_minute() {
     );
 }
 
-fn state(json: &str) -> PrepState {
+fn state(json: &str) -> PrepSteps {
     serde_json::from_str(json).unwrap()
 }
 
 #[test]
 fn preparation_starts_when_missing_and_retries_when_it_ended_long_enough_ago() {
     let now = at("2026-10-16T01:00:00Z");
-    let free = |state: Option<&PrepState>, last_start, retries| {
+    let free = |state: Option<&PrepSteps>, last_start, retries| {
         preparation(state, None, Liveness::Stopped, retries, last_start, now)
     };
     assert_eq!(free(None, None, 0), Preparation::NotStarted);
@@ -2826,10 +2827,10 @@ mod mark {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(&dir);
         fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
-        if !locks_stay_local(&paths.prepare_lock()) {
+        if !locks_stay_local(&paths.prepare_lock) {
             return;
         }
-        let _run = run_marking(&paths.prepare_lock());
+        let _run = run_marking(&paths.prepare_lock);
         let unit_unreadable = FakeHost {
             unit_unreadable: true,
             ..FakeHost::default()
@@ -2855,10 +2856,10 @@ mod mark {
         let paths = paths(&dir);
         let written = at("2026-10-16T00:00:00Z");
         stopped_mid_step(&paths, written, written);
-        if !locks_stay_local(&paths.prepare_lock()) {
+        if !locks_stay_local(&paths.prepare_lock) {
             return;
         }
-        let _run = run_marking(&paths.prepare_lock());
+        let _run = run_marking(&paths.prepare_lock);
         let mut unused = client("http://127.0.0.1:9");
         let mut prepares = 0;
         for minute in (20..80).step_by(10) {
@@ -2888,10 +2889,10 @@ mod mark {
         let paths = paths(&dir);
         let written = at("2026-10-16T00:00:00Z");
         stopped_mid_step(&paths, written, written);
-        if !locks_stay_local(&paths.prepare_lock()) {
+        if !locks_stay_local(&paths.prepare_lock) {
             return;
         }
-        let _run = run_marking(&paths.prepare_lock());
+        let _run = run_marking(&paths.prepare_lock);
         let unit_stopped = FakeHost::default();
         assert!(!restart_preparation(&unit_stopped, &paths, written + TimeDelta::hours(1)).await);
         assert_eq!(unit_stopped.prepares.load(Ordering::SeqCst), 0);
@@ -3368,8 +3369,24 @@ fn ago_reads_in_the_largest_whole_unit() {
 }
 
 #[test]
+fn check_in_files_stay_where_installed_machines_keep_them() {
+    let paths = Paths::production();
+    assert_eq!(paths.checkin_dir, Path::new("/var/lib/ployz-checkin"));
+    assert_eq!(paths.token_file, Path::new("/etc/ployz/fleet-token"));
+    assert_eq!(
+        paths.prepare_state,
+        Path::new("/var/lib/ployz/prepare/state.json")
+    );
+    assert_eq!(paths.prepare_lock, Path::new("/var/lib/ployz/prepare/lock"));
+    assert_eq!(
+        MachineLayout::production().socket(),
+        Path::new("/run/ployz/ployz.sock")
+    );
+}
+
+#[test]
 fn checkin_state_stays_out_of_the_daemon_data_dir() {
-    let paths = Paths::system(PathBuf::from(Paths::TOKEN_FILE));
+    let paths = Paths::production();
     for path in [paths.key(), paths.status(), paths.checkin_dir] {
         assert!(
             !path.starts_with("/var/lib/ployz"),
@@ -3563,7 +3580,7 @@ async fn a_host_never_prepared_starts_when_its_mark_cannot_be_read() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
-    fs::write(paths.prepare_lock(), "").unwrap();
+    fs::write(&paths.prepare_lock, "").unwrap();
     let host = FakeHost {
         probe_hangs: true,
         mark_unreadable: true,
@@ -3616,4 +3633,34 @@ async fn a_preparation_whose_unit_and_lock_cannot_be_read_is_neither_restarted_n
     let host = unreadable();
     assert!(!restart_preparation(&host, &paths, written + TimeDelta::minutes(90)).await);
     assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
+}
+
+/// The check-in reads `prepare/state.json` through its two steps alone: a file ployzd itself would
+/// refuse outside them still reads, and one with a bad step doesn't. The shapes are tabled in
+/// `ployz_core::host_preparation`'s tests; this pins what the loop does with the file on disk.
+#[test]
+fn the_check_in_reads_a_state_file_by_its_steps_alone() {
+    const STEPS: &str = r#""docker": {"state": "ready", "finished_at": "2026-10-16T00:00:00Z"}, "zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    assert!(read_prep_state(&paths.prepare_state).is_none());
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    for text in [
+        format!("{{{STEPS}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": {{\"route\": \"rpm\"}}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"future\": 1}}"),
+    ] {
+        fs::write(&paths.prepare_state, &text).unwrap();
+        let (steps, written) = read_prep_state(&paths.prepare_state).expect(&text);
+        assert!(!steps.unfinished(), "{text}");
+        assert!(written.is_some(), "{text}");
+    }
+    for text in [
+        r#"{"zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}}"#,
+        "{}",
+        "",
+    ] {
+        fs::write(&paths.prepare_state, text).unwrap();
+        assert!(read_prep_state(&paths.prepare_state).is_none(), "{text}");
+    }
 }

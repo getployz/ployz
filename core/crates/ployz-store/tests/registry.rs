@@ -114,6 +114,7 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
         .write_trusted(
             &who(),
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -228,6 +229,7 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         .write_trusted(
             &who(),
             &Admit::Retry(Retry {
+                teardown: None,
                 id: retried.clone(),
                 deployment: one.clone(),
                 rolls_back: None,
@@ -235,6 +237,7 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )

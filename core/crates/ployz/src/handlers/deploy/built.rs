@@ -23,7 +23,7 @@ use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
     CommitApproval, CommitSha, RuleId, Signed, Signer, SignerKey, Timestamp, validity,
 };
-use ployz_core::{DeviceKey, RpcErrorCode, SealingPublicKey, ServiceName};
+use ployz_core::{DeviceKey, Hint, RpcErrorCode, SealingPublicKey, ServiceName};
 use ployz_store::{
     ApproveDeployment, BuildStatus, BuildView, Cancel, DeploymentId, DeploymentQuery,
     DeploymentSummary, DeploymentView, EnvironmentRef, RuleQuery,
@@ -33,7 +33,6 @@ use serde_json::json;
 use super::super::Error;
 use super::super::store::Store;
 use super::approve::{self, Probe};
-use crate::ui::Hint;
 
 /// How often the redeploy is read while GitHub builds.
 const BUILD_LOOK: Duration = Duration::from_secs(3);

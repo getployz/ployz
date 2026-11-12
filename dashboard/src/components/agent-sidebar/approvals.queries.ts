@@ -1,5 +1,12 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { Signed } from "@ployz/sdk";
+import { Option, Schema } from "effect";
+import type { DeletionItem } from "#/components/deletion-dialog";
+import { approveVolume, type VolumeChange } from "#/modules/approval-session/volume-approval";
+import type { KeptVolumeApproval } from "#/modules/approvals/approvals";
+import { movesFrom, runChange } from "#/modules/volume-run/run-approval";
+import { readVolumeScope, type VolumeTermsRead } from "#/modules/volume-run/volume-approval-scope";
+import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { actApprovals, type ActTarget } from "#/modules/approval-session/approval-prompt";
 import { type ApprovalDecision, approvalSubject, shownServiceAct } from "#/modules/approvals/approvals";
 import {
@@ -50,8 +57,9 @@ export async function decideApproval(
   id: string,
   decision: ApprovalDecision,
   approvals?: Readonly<Record<string, Signed>>,
+  volume?: KeptVolumeApproval,
 ): Promise<{ ok: true; decided: Decided } | { ok: false; message: string }> {
-  const answer = await decideApprovalServerFn({ data: { organizationSlug, id, decision, approvals } }).catch(() => null);
+  const answer = await decideApprovalServerFn({ data: { organizationSlug, id, decision, approvals, volume } }).catch(() => null);
   if (answer === null) return { ok: false, message: "Cloud didn't take that answer. Try again." };
   return answer.ok ? { ok: true, decided: answer.approval } : answer;
 }
@@ -104,6 +112,60 @@ export async function approverApprovals(organizationSlug: string, approval: Pick
   if (fetched === null) return undefined;
   const { verb, target } = shownTarget(approval, fetched);
   return actApprovals(verb, target);
+}
+
+const VolumeAsked = Schema.Struct({
+  volume: Schema.NonEmptyString,
+  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
+  run: Schema.Struct({ kind: Schema.String, args: Schema.Record(Schema.String, Schema.Unknown) }),
+});
+
+/** The Volume run an agent's or the CLI's ask names, when Servers that enforce took it only with a passkey's answer. */
+export function askedVolumeRun(approval: Pick<ApprovalView, "review">) {
+  if (!("operation" in approval.review)) return null;
+  const asked = Schema.decodeUnknownOption(VolumeAsked)(approval.review.operation.preview);
+  // SAFETY: Cloud shaped the run when it asked; the browser drafts from it only what the review then shows line by line.
+  return Option.isSome(asked) ? { ...asked.value, run: asked.value.run as VolumeRunInput } : null;
+}
+
+/** The workflow of the Volume run an approval asks for, with the terms it was drafted from. */
+export type AskedVolumeDraft = { readonly read: VolumeTermsRead; readonly change: VolumeChange };
+
+/**
+ * The Volume run `approval` asks for, drafted afresh over what its Servers answer now. Undefined for an approval that
+ * asks for no Volume run.
+ */
+export async function draftAskedVolume(
+  queryClient: QueryClient, organizationSlug: string, approval: Pick<ApprovalView, "review">,
+): Promise<AskedVolumeDraft | undefined> {
+  const asked = askedVolumeRun(approval);
+  if (asked === null) return undefined;
+  const scope = await readVolumeScope(queryClient, organizationSlug, asked.environment, asked.volume);
+  const from = movesFrom(asked.run, scope.members);
+  const read = from === null ? scope : await readVolumeScope(queryClient, organizationSlug, asked.environment, asked.volume, from);
+  return { read, change: runChange(read.name, asked.run, read.members, read) };
+}
+
+/**
+ * What a drafted restore loses, read from the workflow the passkey signs, and the `project/environment` the person types
+ * to confirm it. Null for any other workflow, and for a restore that loses no writes.
+ */
+export function askedLoss({ read, change }: AskedVolumeDraft): { place: string; item: DeletionItem } | null {
+  const { workflow } = change;
+  if (workflow.kind !== "restore" || workflow.loses_after === undefined) return null;
+  const from = read.members.find((member) => member.machine.id === workflow.machine)?.machine.name;
+  const item: DeletionItem = { kind: "volume", name: read.name, lostAfter: new Date(workflow.loses_after), ...(from !== undefined && { detail: `from ${from}` }) };
+  return { place: read.place, item };
+}
+
+/**
+ * The approver's passkey answer to a drafted Volume run, shown line by line first. Undefined when no Server it names
+ * enforces; null when the person cancels.
+ */
+export async function signAskedVolume({ read, change }: AskedVolumeDraft): Promise<KeptVolumeApproval | null | undefined> {
+  const approved = await approveVolume(read, change);
+  if (approved === null || approved === undefined) return approved;
+  return { approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) };
 }
 
 /** Show a decision at once, then reread every approval: the badge and the waiting list drop it. */

@@ -80,8 +80,16 @@ pub enum Enrolled {
     Refused { now: MachineNow, error: RpcError },
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct LeaveRequest {}
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct LeaveRequest {
+    /// A person's teardown naming this request, or the preview rule whose own preview it
+    /// closes. A Machine under Device enforcement requires it from an Operator caller; an
+    /// older daemon ignores it. Sent only to a daemon advertising
+    /// [`crate::TEARDOWN_CAPABILITY`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
+}
 
 /// A successful Leave cannot report a Machine that still participates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -109,6 +117,13 @@ pub enum Left {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ForgetRequest {
     pub machine_id: MachineId,
+    /// A person's teardown naming this request, or the preview rule whose own preview it
+    /// closes. A Machine under Device enforcement requires it from an Operator caller; an
+    /// older daemon ignores it. Sent only to a daemon advertising
+    /// [`crate::TEARDOWN_CAPABILITY`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
 }
 
 /// A missing row is success.
@@ -150,6 +165,12 @@ pub struct RegisterRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
+    /// The capabilities the client that runs this joiner's catch-up honors, such as
+    /// [`SET_CLUSTER_DOORS_CAPABILITY`] when it follows the Cluster's declared Doors.
+    /// Empty claims nothing. Not part of the retry identity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub capabilities: Vec<String>,
 }
 
 /// Read the join requests waiting for a Device's approval on this Machine.
@@ -241,6 +262,22 @@ pub struct ClusterNamed {
     /// Machine yet.
     #[serde(default)]
     pub name: Option<crate::ClusterName>,
+}
+
+/// Declare the Doors every ingress Server of the Cluster holds. The target Machine
+/// writes them to its replica, and the last write wins across the Cluster. A daemon
+/// that serves this route also carries the declaration in
+/// [`EnrollmentSnapshot::doors`](crate::EnrollmentSnapshot::doors), and refuses a
+/// Register whose client can't follow it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SetClusterDoorsRequest {
+    pub doors: super::IngressDoors,
+}
+
+/// The Doors the target Machine's replica declares after the write.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterDoorsDeclared {
+    pub doors: super::IngressDoors,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

@@ -11,6 +11,7 @@ import { mountChange } from "#/modules/config-store/store-volumes";
 import type { Access } from "#/modules/organization/access.server";
 import { ClusterOutOfTime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
+import { keptFor, type PlacementApproval } from "#/modules/volume-placement/placement-approvals";
 import {
   lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed,
 } from "#/modules/volume-placement/volume-placement";
@@ -19,7 +20,7 @@ import { volumeRun } from "#/modules/volume-run/tables";
 import {
   admitRun, ClusterNotConnected, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, storeRefusal, unreachable,
 } from "#/modules/volume-run/volume-run.server";
-import { planSeed } from "#/modules/volume-run/plan";
+import { asApproved, planSeed } from "#/modules/volume-run/plan";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -31,7 +32,8 @@ type PlacementDiscard = { readonly ok: true; readonly placement: PlacementRow | 
 export const view = (row: Row): PlacementRow => {
   const { volumeId, environmentId, mirrors, deploymentId } = row;
   if (row.staged === null) return { volumeId, environmentId, mirrors, staged: null, unreached: false, deploymentId };
-  const { unreached = false, ...staged } = row.staged;
+  // The approvals a Deploy carries stay on the server; the review reads only what is staged.
+  const { unreached = false, approvals: _kept, ...staged } = row.staged;
   return { volumeId, environmentId, mirrors, staged, unreached, deploymentId };
 };
 
@@ -139,6 +141,36 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
   return { ok: true, placement: view(row) } satisfies PlacementWrite;
 });
 
+const UNSTAGED: StoreRefusal = { code: "conflict", message: "These volume changes changed since you approved them. Deploy again.", details: null };
+const FOR_ANOTHER_CHANGE: StoreRefusal = { code: "invalid", message: "An approval doesn't match the staged change. Deploy again to approve it.", details: null };
+
+/**
+ * Keep the person's passkey answers for the Volume workflows the next Deploy runs on each staged row, beside what each
+ * row already keeps, a newer answer for the same run replacing an older one. Refused while a Deploy holds a row, or for
+ * an answer not shaped for the run it names; the Servers check every answer and term when the run asks them.
+ */
+export const keepPlacementApprovals = Effect.fn("VolumePlacement.keepApprovals")(function* (
+  organizationId: string,
+  input: { readonly environment: EnvironmentRef; readonly approvals: readonly (PlacementApproval & { readonly volumeId: string })[] },
+) {
+  const { drizzle } = yield* Database;
+  const volumeIds = [...new Set(input.approvals.map((kept) => kept.volumeId))];
+  for (const volumeId of volumeIds) {
+    const row = yield* readRow(organizationId, volumeId);
+    if (row?.staged == null || row.deploymentId !== null) return { ok: false, refusal: UNSTAGED } as const;
+    const volume = row.staged.seed?.dockerVolume ?? (yield* resolveVolume(organizationId, input.environment, volumeId)).dockerVolume;
+    const kept = input.approvals.filter((each) => each.volumeId === volumeId).map(({ volumeId: _volume, ...each }): PlacementApproval => each);
+    if (!kept.every((each) => keptFor(each, volume))) return { ok: false, refusal: FOR_ANOTHER_CHANGE } as const;
+    const approvals = [...(row.staged.approvals ?? []).filter((old) => !kept.some((each) => each.run === old.run && each.machine === old.machine)), ...kept];
+    const [updated] = yield* drizzle.update(volumePlacement)
+      .set({ staged: sql`jsonb_set(${volumePlacement.staged}, '{approvals}', ${JSON.stringify(approvals)}::jsonb)`, updatedAt: new Date() })
+      .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.volumeId, volumeId), isNotNull(volumePlacement.staged), isNull(volumePlacement.deploymentId)))
+      .returning({ volumeId: volumePlacement.volumeId });
+    if (updated === undefined) return { ok: false, refusal: UNSTAGED } as const;
+  }
+  return { ok: true } as const;
+});
+
 /**
  * Stage a new Volume restored from one restore point of `volumeId`: in one Store write, the source's mounts move to a
  * new Volume named `<source>-HHMM` (shortened to fit, suffixed when taken), and the row says the next Deploy copies the
@@ -162,7 +194,8 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   const run = { kind: "seed", args: { into: { volumeId: id, dockerVolume: dockerVolumeName(namespace, id), name }, guid: input.guid, name: input.name } } as const;
   const members = yield* inspect(organizationId, input.environment, input.volumeId, run);
   if (!serversAnswer(members)) return { ok: false, refusal: UNANSWERED } satisfies PlacementWrite;
-  const planned = planSeed({ ...run, volumeName: source.volumeName, orphan: false }, members);
+  // The Deploy's seed runs under the passkey answer the person gives when they deploy it, so staging plans it approved.
+  const planned = planSeed(asApproved({ ...run, volumeName: source.volumeName, orphan: false }, members), members);
   if (!planned.ok) return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies PlacementWrite;
   const primary = planned.source.machine;
   const commands: BatchCommand[] = [

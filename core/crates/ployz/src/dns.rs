@@ -10,8 +10,7 @@ use std::{
 use futures_util::future::join_all;
 use ployz_core::{
     HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication,
-    Refusal, RequestedServiceSpec, VerifyAnswer, generated_refusal_reason, hostname_verdict,
-    refusal_reason,
+    Refusal, VerifyAnswer, generated_refusal_reason, hostname_verdict, refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 
@@ -93,8 +92,9 @@ fn is_generated(hostname: &IngressHost, cluster_domain: &IngressHost) -> bool {
 }
 
 /// Collect Deploy warnings for Ingress Hostnames that do not reach this Cluster.
+#[cfg(test)]
 pub fn ingress_dns_warnings<'a>(
-    specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
+    specs: impl IntoIterator<Item = &'a ployz_core::RequestedServiceSpec>,
     cluster_addresses: &[IpAddr],
     cluster_domain: Option<&IngressHost>,
     mut verdict: impl FnMut(&IngressHost) -> HostnameVerdict,

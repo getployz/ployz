@@ -1,19 +1,20 @@
 use crate::cluster::Call;
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    ClusterName, ClusterNamed, DescribeContractRequest, READ_CLUSTER_NAME_CAPABILITY,
-    ReadClusterNameRequest, RpcErrorCode, SET_CLUSTER_NAME_CAPABILITY, SetClusterNameRequest, op,
+    ClusterName, ClusterNamed, Hint, READ_CLUSTER_NAME_CAPABILITY, ReadClusterNameRequest,
+    RpcErrorCode, SET_CLUSTER_NAME_CAPABILITY, SetClusterNameRequest, op,
 };
 use serde::Serialize;
 use serde_json::json;
 
 use super::{Error, leaf_matches, runtime, server};
-use crate::approval::{self, Verb};
+use crate::approval;
 use crate::cli::{base, positional};
 use crate::cloud_account::{Credential, Via};
 use crate::cluster::Client;
 use crate::published;
-use crate::ui::{self, Hint};
+use crate::ui;
+use ployz_store::OperationVerb;
 
 pub(crate) fn group(command: Command) -> Command {
     command.about("Name the Cluster")
@@ -84,7 +85,7 @@ fn through_cloud(
     let ran = approval::approved(
         runtime,
         credential,
-        Verb::SetClusterName,
+        OperationVerb::SetClusterName,
         leaf.get_one::<String>("approval").cloned(),
         |id| server::approved_rerun(leaf, &["cluster", "name", name.as_str()], id),
         async |approval| {
@@ -145,11 +146,11 @@ async fn read(client: &Client) -> Result<ClusterNamed, Error> {
 }
 
 async fn require(client: &Client, capability: &str) -> Result<(), Error> {
-    let contract = client
-        .call_shared::<op::DescribeContract>(DescribeContractRequest {}, Call::once())
+    if client
+        .supports(None, capability)
         .await
-        .map_err(crate::connect::rpc_error)?;
-    if contract.supports(capability) {
+        .map_err(crate::connect::rpc_error)?
+    {
         return Ok(());
     }
     Err(Error::detailed(

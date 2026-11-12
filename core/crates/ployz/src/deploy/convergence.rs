@@ -28,7 +28,7 @@ use ts_rs::TS;
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
 use super::DeploySnapshot;
-use super::cleanup::{self, BroughtIn, Copy, Step, Wait};
+use super::cleanup::{self, Copy, EmptyPolicy, NotIn, RotationFailure};
 use super::exec::{MachineOperations, MoveContainerError};
 
 /// A Server as a move names it.
@@ -96,6 +96,23 @@ pub enum Unconfirmed {
     Cancelled,
     /// Asking the Server failed, or it refused: `detail` says how.
     Failed { detail: String },
+}
+
+impl Unconfirmed {
+    pub(crate) fn of(
+        failure: RotationFailure,
+        name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
+    ) -> Self {
+        match failure {
+            RotationFailure::Refused(refusal) => Unconfirmed::Failed {
+                detail: refusal.message,
+            },
+            RotationFailure::NotConfirmed(unconfirmed) => Unconfirmed::Proxies {
+                servers: unconfirmed.machines.iter().map(name).collect(),
+            },
+            RotationFailure::Cancelled => Unconfirmed::Cancelled,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -562,10 +579,13 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
         container_id: new,
         rotation: CopyRotation::Pending,
     };
-    let not_in = match cleanup::bring_in(client, &new, spec, deploy).await {
-        Ok(BroughtIn::In) => None,
-        Ok(BroughtIn::Refused(refusal)) => Some(refusal.message),
-        Ok(BroughtIn::NotIn { health }) => Some(crate::ui::row(&super::exec::health_error(
+    let not_in = match cleanup::bring_in(client, &new, spec, deploy)
+        .await
+        .map(cleanup::BroughtIn::not_in)
+    {
+        Ok(Ok(())) => None,
+        Ok(Err(NotIn::OlderThanIn(refusal) | NotIn::Refused(refusal))) => Some(refusal.message),
+        Ok(Err(NotIn::Health(health))) => Some(crate::ui::row(&super::exec::health_error(
             new.container_id,
             health,
             spec,
@@ -576,7 +596,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
         let removed = cleanup::remove(client, &new, AnonymousVolumes::Remove).await;
         return Err(RelocateError::NotServing {
             detail,
-            replacement_removed: matches!(removed, Ok(Step::Done)),
+            replacement_removed: matches!(removed, Ok(cleanup::Removal::Removed)),
         });
     }
     let listed = cleanup::wait_listed(
@@ -589,11 +609,10 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     )
     .await;
     let unconfirmed = match listed {
-        Ok(Wait::Done) => None,
-        Ok(Wait::TimedOut(machines) | Wait::Gapped(machines)) => Some(Unconfirmed::Proxies {
-            servers: machines.machines.iter().map(name).collect(),
-        }),
-        Ok(Wait::Cancelled) => Some(Unconfirmed::Cancelled),
+        Ok(waited) => waited
+            .failure()
+            .err()
+            .map(|failure| Unconfirmed::of(failure, name)),
         Err(error) => Some(Unconfirmed::Failed {
             detail: crate::ui::row(&error),
         }),
@@ -615,19 +634,22 @@ pub(in crate::deploy) async fn retire_old<C: MachineOperations>(
     name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
     cancellation: &CancellationToken,
 ) -> Result<OldCopyEnd, LastIn> {
-    let retired = cleanup::retire(client, old, false, AnonymousVolumes::Remove, cancellation).await;
-    let unconfirmed = match retired {
-        Ok(Step::Done) => return Ok(OldCopyEnd::Stopped),
-        Ok(Step::Refused(refusal)) if refusal.reason == ContainerRefusalReason::LastIn => {
+    let retired = cleanup::retire(
+        client,
+        old,
+        EmptyPolicy::RequireOtherIn,
+        AnonymousVolumes::Remove,
+        cancellation,
+    )
+    .await;
+    let unconfirmed = match retired.map(cleanup::Rotated::failure) {
+        Ok(Ok(())) => return Ok(OldCopyEnd::Stopped),
+        Ok(Err(RotationFailure::Refused(refusal)))
+            if refusal.reason == ContainerRefusalReason::LastIn =>
+        {
             return Err(LastIn);
         }
-        Ok(Step::Refused(refusal)) => Unconfirmed::Failed {
-            detail: refusal.message,
-        },
-        Ok(Step::NotConfirmed(machines)) => Unconfirmed::Proxies {
-            servers: machines.machines.iter().map(name).collect(),
-        },
-        Ok(Step::Cancelled) => Unconfirmed::Cancelled,
+        Ok(Err(failure)) => Unconfirmed::of(failure, name),
         Err(error) => Unconfirmed::Failed {
             detail: crate::ui::row(&error),
         },

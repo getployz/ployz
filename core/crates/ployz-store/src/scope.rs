@@ -7,7 +7,7 @@ use ployz_core::config::{
     EnvironmentNodeType, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
     SavedVolumeIntent, parse_environment_intent,
 };
-use ployz_core::{ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigName, Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -653,17 +653,14 @@ pub(crate) fn resolve(
             .iter()
             .map(|row| row.text(0))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut details = error::suggest(name.as_str(), names.iter().copied());
-        if let Some(details) = details.as_object_mut() {
-            details.insert(
-                "next".into(),
-                format!("ployz env ls --project {}", project.name).into(),
-            );
-        }
         return Err(error::not_found(
             format!("No Environment named {name} in Project {}", project.name),
-            details,
-        ));
+            error::suggest(name.as_str(), names.iter().copied()),
+        )
+        .with_hint(Hint::Next(format!(
+            "ployz env ls --project {}",
+            project.name
+        ))));
     };
     Ok((project.name, row.parse::<EnvironmentId>(0, "identity")?))
 }
@@ -780,13 +777,52 @@ pub(crate) fn save_working_from(
     trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
     validate_and_refresh_working_from(tx, environment, from, trusted)?;
-    persist_working(tx, environment)
+    write_working(tx, environment, WorkingWrite::Validated(Checked(())))
 }
 
-pub(crate) fn persist_working(
+/// Proof that the Working State about to be written passed
+/// [`validate_and_refresh_working_from`]; only this module makes one.
+pub(crate) struct Checked(());
+
+/// Why a write of Working State skips validation: the document is one the Store
+/// already holds in another place, or one it just wrote.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Reason {
+    /// A merge landing its Working State in the Destination.
+    Landing,
+    /// A publish or discard that ends the draft's proposals.
+    Publish,
+    /// An Inherit sealing a value in a Branch.
+    Inherit,
+}
+
+/// What a write of Working State vouches for.
+pub(crate) enum WorkingWrite {
+    /// The document was validated whole just before.
+    Validated(Checked),
+    /// Skips validation, for the `Reason`. Still re-runs [`crate::variables::make_generated`]
+    /// and meets the Protected fence.
+    Trusted(Reason),
+    /// Only the removals `environment` records; Working State stays as it is.
+    Removed,
+}
+
+/// Write `environment` as `write` says.
+pub(crate) fn write_working(
     tx: &mut dyn Tx,
     environment: &mut Environment,
+    write: WorkingWrite,
 ) -> Result<(), RpcError> {
+    match write {
+        WorkingWrite::Validated(Checked(()))
+        | WorkingWrite::Trusted(Reason::Landing | Reason::Publish | Reason::Inherit) => {
+            persist_working(tx, environment)
+        }
+        WorkingWrite::Removed => persist_removed(tx, environment),
+    }
+}
+
+fn persist_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
     let rows = tx.query(
         "SELECT working, removed FROM config_environment WHERE id = ?1",
         &[environment.summary.id.as_str().into()],
@@ -851,10 +887,7 @@ pub(crate) fn persist_working(
 }
 
 /// Persist the removals `environment` records, leaving its Working State as it is.
-pub(crate) fn persist_removed(
-    tx: &mut dyn Tx,
-    environment: &mut Environment,
-) -> Result<(), RpcError> {
+fn persist_removed(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
     let mut removed = removed_of(tx, &environment.summary.id)?;
     removed.adopt(&environment.removed);
     environment.removed = removed;
@@ -880,7 +913,11 @@ impl ValidatedWorking {
         &self.environment
     }
     pub(crate) fn persist(mut self, tx: &mut dyn Tx) -> Result<EnvironmentSummary, RpcError> {
-        persist_working(tx, &mut self.environment)?;
+        write_working(
+            tx,
+            &mut self.environment,
+            WorkingWrite::Validated(Checked(())),
+        )?;
         Ok(self.environment.summary)
     }
 }
@@ -1060,3 +1097,6 @@ pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), 
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

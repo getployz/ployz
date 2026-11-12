@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "react";
+import type { Signed } from "@ployz/sdk";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, XIcon } from "lucide-react";
 import { RelativeTime } from "#/components/relative-time";
@@ -19,7 +20,11 @@ import { landAnswer } from "#/modules/private-access/private-access.queries";
 import { toast } from "sonner";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
-import { approvalOptions, approverApprovals, decideApproval, landDecision, refetchApprovals, runsServiceAct, type ApprovalView } from "./approvals.queries";
+import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
+import {
+  type AskedVolumeDraft, approvalOptions, approverApprovals, askedLoss, decideApproval, draftAskedVolume, landDecision, refetchApprovals, runsServiceAct,
+  signAskedVolume, type ApprovalView,
+} from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 
 /**
@@ -58,6 +63,8 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const [reason, setReason] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
+  // A restore that loses writes, waiting for the person to type where the Volume lives before their passkey answers.
+  const [losing, setLosing] = useState<{ draft: AskedVolumeDraft; place: string; item: DeletionItem } | null>(null);
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
   const redeploy = redeployLine(approval.command, approval.review);
@@ -85,7 +92,25 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
       return null;
     }) : undefined;
     if (approvals === null) return setSending(false);
-    const answer = await decideApproval(organizationSlug, approval.id, decision, approvals);
+    // A Volume run on Servers that enforce runs with this approver's passkey answer to its workflow, drafted here first.
+    const draft = "approve" in decision
+      ? await draftAskedVolume(queryClient, organizationSlug, approval).catch((error: Error) => {
+        setRefused(error.message || "Your servers didn't answer. Try again.");
+        return null;
+      })
+      : undefined;
+    if (draft === null) return setSending(false);
+    const loss = draft === undefined ? null : askedLoss(draft);
+    if (draft !== undefined && loss !== null) return setLosing({ draft, ...loss });
+    return send(decision, approvals, draft);
+  };
+  const send = async (decision: ApprovalDecision, approvals?: Readonly<Record<string, Signed>>, draft?: AskedVolumeDraft) => {
+    const volume = draft === undefined ? undefined : await signAskedVolume(draft).catch((error: Error) => {
+      setRefused(error.message || "Your passkey didn't answer. Try again.");
+      return null;
+    });
+    if (volume === null) return setSending(false);
+    const answer = await decideApproval(organizationSlug, approval.id, decision, approvals, volume);
     setSending(false);
     if (answer.ok) return landDecision(queryClient, organizationSlug, approval.id, answer.decided);
     setRefused(answer.message);
@@ -111,93 +136,115 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const deny = () => decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
 
   return (
-    <Card state={destroys ? "destructive" : undefined} size="sm" aria-label={`${subject.verb} ${place} needs approval`}>
-      <CardHeader className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <CardTitle>{subject.verb} {place}</CardTitle>
-          <CardDescription>
-            {approval.asker && !approval.yours && <>Asked by {approval.asker} · </>}<RelativeTime date={new Date(approval.created_at)} />
-          </CardDescription>
-        </div>
-        <Badge variant={destroys ? "destructive" : "secondary"}>{approvalBadge(approval.command, approval.review)}</Badge>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2">
-        {redeploy !== null && <p className="text-xs">{redeploy}</p>}
-        {renamed !== null && (
-          <p className="font-mono text-xs break-all">{renamed.from === null ? renamed.to : `${renamed.from} → ${renamed.to}`}</p>
-        )}
-        {switched !== null && (
-          <p className="font-mono text-xs break-all">{switched.from} → {switched.to}</p>
-        )}
-        {serviceAct !== null && (
-          <p className="text-xs text-muted-foreground">On servers <code className="font-mono">{serviceAct.namespace}/{serviceAct.runtime}</code></p>
-        )}
-        {(effects.length > 0 || prunes(approval.review)) && (
-          <ul aria-label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"} className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
-            {effects.map((effect) => {
-              const line = destroyedLine(effect, approval.command, approval.review);
-              return (
-                <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
+    <>
+      <Card state={destroys ? "destructive" : undefined} size="sm" aria-label={`${subject.verb} ${place} needs approval`}>
+        <CardHeader className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <CardTitle>{subject.verb} {place}</CardTitle>
+            <CardDescription>
+              {approval.asker && !approval.yours && <>Asked by {approval.asker} · </>}<RelativeTime date={new Date(approval.created_at)} />
+            </CardDescription>
+          </div>
+          <Badge variant={destroys ? "destructive" : "secondary"}>{approvalBadge(approval.command, approval.review)}</Badge>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {redeploy !== null && <p className="text-xs">{redeploy}</p>}
+          {renamed !== null && (
+            <p className="font-mono text-xs break-all">{renamed.from === null ? renamed.to : `${renamed.from} → ${renamed.to}`}</p>
+          )}
+          {switched !== null && (
+            <p className="font-mono text-xs break-all">{switched.from} → {switched.to}</p>
+          )}
+          {serviceAct !== null && (
+            <p className="text-xs text-muted-foreground">On servers <code className="font-mono">{serviceAct.namespace}/{serviceAct.runtime}</code></p>
+          )}
+          {(effects.length > 0 || prunes(approval.review)) && (
+            <ul aria-label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"} className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
+              {effects.map((effect) => {
+                const line = destroyedLine(effect, approval.command, approval.review);
+                return (
+                  <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
+                    <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
+                    <span>
+                      {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}
+                      {effect.lost_after !== undefined && (
+                        <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000), now)} are not in ${effect.lost_after.restored}`}</span>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
+              {prunes(approval.review) && (
+                <li className="flex gap-2">
                   <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
                   <span>
-                    {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}
-                    {effect.lost_after !== undefined && (
-                      <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000), now)} are not in ${effect.lost_after.restored}`}</span>
-                    )}
+                    Also removes any other service running in this environment
+                    {droppedLine(approval.review) !== null && <span className="block">{droppedLine(approval.review)}</span>}
                   </span>
                 </li>
-              );
-            })}
-            {prunes(approval.review) && (
-              <li className="flex gap-2">
-                <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                <span>
-                  Also removes any other service running in this environment
-                  {droppedLine(approval.review) !== null && <span className="block">{droppedLine(approval.review)}</span>}
-                </span>
-              </li>
-            )}
-          </ul>
-        )}
-        {asked.length > 0 && <ChangeLines label="Saves" changes={asked} className="text-foreground" />}
-        {others.length > 0 && (
-          <Collapsible defaultOpen={effects.length === 0 && asked.length === 0}>
-            <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-              <ChevronRightIcon aria-hidden className="size-3 transition-transform group-data-panel-open:rotate-90" />
-              {others.length} {effects.length + asked.length > 0 ? "other " : ""}{others.length === 1 ? "change" : "changes"}
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <ChangeLines changes={others} className="pt-1 pl-4 text-muted-foreground" />
-            </CollapsibleContent>
-          </Collapsible>
-        )}
-        {keyed && (
-          <Input aria-label="Auth key" type="password" placeholder="tskey-auth-…" value={authKey} spellCheck={false} autoComplete="off"
-            disabled={sending} aria-invalid={keyProblem !== null} className="font-mono" onChange={(event) => setAuthKey(event.target.value)} />
-        )}
-        {keyProblem !== null && <p className="text-xs text-destructive">{keyProblem}</p>}
-        {reason !== null && (
-          <Textarea autoFocus aria-label="Reason" placeholder="Why not? The agent reads this." value={reason}
-            onChange={(event) => setReason(event.target.value)} className="min-h-14 text-xs" />
-        )}
-        {refused && <p role="alert" className="text-xs text-destructive">{refused}</p>}
-      </CardContent>
-      {waits ? (
-        <CardFooter><p className="text-xs text-muted-foreground">Waiting on an owner or admin.</p></CardFooter>
-      ) : <CardFooter className="gap-1.5">
-        <Button size="sm" variant={destroys ? "destructive" : "default"} disabled={sending || (keyed && (authKey === "" || keyProblem !== null))} onClick={() => void approve()}>
-          {keyed ? "Connect" : "Approve"}
-        </Button>
-        <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
-          Deny
-        </Button>
-        {reason === null && (
-          <Button size="sm" variant="ghost" className="ml-auto text-muted-foreground" onClick={() => setReason("")}>
-            Deny with a reason…
+              )}
+            </ul>
+          )}
+          {asked.length > 0 && <ChangeLines label="Saves" changes={asked} className="text-foreground" />}
+          {others.length > 0 && (
+            <Collapsible defaultOpen={effects.length === 0 && asked.length === 0}>
+              <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+                <ChevronRightIcon aria-hidden className="size-3 transition-transform group-data-panel-open:rotate-90" />
+                {others.length} {effects.length + asked.length > 0 ? "other " : ""}{others.length === 1 ? "change" : "changes"}
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <ChangeLines changes={others} className="pt-1 pl-4 text-muted-foreground" />
+              </CollapsibleContent>
+            </Collapsible>
+          )}
+          {keyed && (
+            <Input aria-label="Auth key" type="password" placeholder="tskey-auth-…" value={authKey} spellCheck={false} autoComplete="off"
+              disabled={sending} aria-invalid={keyProblem !== null} className="font-mono" onChange={(event) => setAuthKey(event.target.value)} />
+          )}
+          {keyProblem !== null && <p className="text-xs text-destructive">{keyProblem}</p>}
+          {reason !== null && (
+            <Textarea autoFocus aria-label="Reason" placeholder="Why not? The agent reads this." value={reason}
+              onChange={(event) => setReason(event.target.value)} className="min-h-14 text-xs" />
+          )}
+          {refused && <p role="alert" className="text-xs text-destructive">{refused}</p>}
+        </CardContent>
+        {waits ? (
+          <CardFooter><p className="text-xs text-muted-foreground">Waiting on an owner or admin.</p></CardFooter>
+        ) : <CardFooter className="gap-1.5">
+          <Button size="sm" variant={destroys ? "destructive" : "default"} disabled={sending || (keyed && (authKey === "" || keyProblem !== null))} onClick={() => void approve()}>
+            {keyed ? "Connect" : "Approve"}
           </Button>
-        )}
-      </CardFooter>}
-    </Card>
+          <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
+            Deny
+          </Button>
+          {reason === null && (
+            <Button size="sm" variant="ghost" className="ml-auto text-muted-foreground" onClick={() => setReason("")}>
+              Deny with a reason…
+            </Button>
+          )}
+        </CardFooter>}
+      </Card>
+      {losing !== null && (
+        <DeletionDialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            setLosing(null);
+            setSending(false);
+          }}
+          title="Data loss"
+          place={losing.place}
+          confirmLabel="Approve"
+          items={[losing.item]}
+          callbacks={{
+            load: () => Promise.resolve({ items: [losing.item], evidence: losing.draft }),
+            confirm: async (draft) => {
+              await send({ approve: { digest: approval.digest } }, undefined, draft);
+            },
+          }}
+        />
+      )}
+    </>
   );
 }
 

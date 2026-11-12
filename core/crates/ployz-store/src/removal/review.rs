@@ -94,7 +94,7 @@ pub(crate) fn review(
     if let Some(unknown) = accepted.iter().find(|name| !names.contains(name)) {
         return Err(error::invalid(
             format!("This deletes no Volume named {unknown}"),
-            json!({ "valid_children": names }),
+            error::valid(&names),
         ));
     }
     let (losses, unanswered) = held(removed, observed)?;

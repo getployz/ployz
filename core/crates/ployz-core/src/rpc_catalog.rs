@@ -99,6 +99,7 @@ macro_rules! rpc_catalog {
                 SetPrivateAccess: (set_private_access, "SetPrivateAccess", SetPrivateAccessRequest, "set_private_access", PrivateAccessSet, SET_PRIVATE_ACCESS_CAPABILITY, "ployz.private-access.v1", Cluster, Operator),
                 ReadClusterName: (read_cluster_name, "ReadClusterName", ReadClusterNameRequest, "read_cluster_name", ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1", Cluster, Operator),
                 SetClusterName: (set_cluster_name, "SetClusterName", SetClusterNameRequest, "set_cluster_name", ClusterNamed, SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1", Cluster, Operator),
+                SetClusterDoors: (set_cluster_doors, "SetClusterDoors", SetClusterDoorsRequest, "set_cluster_doors", ClusterDoorsDeclared, SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1", Cluster, Operator),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container, Operator),
                 RetainedEnv: (retained_env, "RetainedEnv", RetainedEnvRequest, "retained_env", RetainedEnvReply, RETAINED_ENV_CAPABILITY, "ployz.logs.retained-env.v1", Container, Operator),
             }
@@ -119,6 +120,8 @@ macro_rules! rpc_catalog {
                 VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
                 /// `SetVolumeCopy` takes a Device-signed Volume approval and a `Forget` recipient. Under Device enforcement an Operator's pull needs an approval that names this Server and its source, a Snapshot under a Mirror approval grants that Mirror the send stream, and the send stream serves only a granted recipient. A Mirror's `Forget` withdraws it first.
                 VOLUME_APPROVAL_CAPABILITY: ("ployz.volume.approval.v1", Container),
+                /// `SetVolumeCopy` takes the `handoff` want and a request `receipt`. A Move's source records one decision after its cut and signs a receipt for it, refusing the other outcome with `handed_off`. Under Device enforcement a Move's target becomes the Writer only with that receipt.
+                VOLUME_HANDOFF_CAPABILITY: ("ployz.volume.copy.handoff.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.
@@ -150,6 +153,8 @@ macro_rules! rpc_catalog {
                 PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster),
                 /// A restart approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
                 PROPOSAL_APPROVAL_CAPABILITY: ("ployz.restart.proposal.v1", Always),
+                /// `EnsureContainer`, `RemoveVolume`, `Leave` and `Forget` take a person's teardown, signed by a Device or answered by a passkey's own prompt. Under Device enforcement an Operator's Container step that starts nothing, Volume removal, Leave or Forget runs only under one that names this Server and what the request takes off.
+                TEARDOWN_CAPABILITY: ("ployz.teardown.v1", Always),
                 /// `EnsureContainer` takes a deploy approval and, under Device enforcement, creates an Operator's Container only when its spec matches a digest it approves.
                 DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
                 /// A deploy approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
@@ -158,6 +163,8 @@ macro_rules! rpc_catalog {
                 DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
                 /// An automatic deploy rule may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature.
                 RULE_PASSKEY_CAPABILITY: ("ployz.rule.passkey.v1", Always),
+                /// A Volume approval may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature. A browser key under a session grant still signs none.
+                VOLUME_PASSKEY_CAPABILITY: ("ployz.volume.passkey.v1", Always),
                 /// `EnsureContainer` takes a preview rule with its image token and, under Device enforcement, creates an Operator's Container under it only in the Namespace it derives, with the settings and inherited Sealed values the rule or a review approves. Sealed values carry the Environment they were sealed for.
                 DEPLOY_PREVIEW_CAPABILITY: ("ployz.container.deploy-preview.v1", Always),
                 /// A preview build's grant and its Containers may run on a person's review of one commit, a passkey's own prompt over it or a signature, which the daemon checks before anything opens.

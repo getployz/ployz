@@ -12,8 +12,8 @@ use ployz_core::authority::{
     deploy::content_addressed,
 };
 use ployz_core::{
-    MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, Sealing, SealingPublicKey,
-    ServiceName,
+    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, Sealing,
+    SealingPublicKey, ServiceName,
 };
 use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
 use serde_json::json;
@@ -21,7 +21,6 @@ use serde_json::json;
 use super::super::store::Store;
 use super::super::{Error, server};
 use crate::image::{PinError, pin_public};
-use crate::ui::Hint;
 
 /// A signed approval, the plan version it approves, and what it approved.
 pub(in crate::handlers) struct DeviceApproval {
@@ -36,6 +35,8 @@ pub(in crate::handlers) struct DeviceApproval {
 pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) cluster: SealingPublicKey,
     pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
+    /// The name each Server reports, which a person reads its signed lines by.
+    pub(in crate::handlers) names: BTreeMap<ployz_core::MachineId, String>,
     /// Whether every Server listed checks a person's approval of a commit in place of
     /// its branch head. An older one refuses the approval as an unknown field.
     pub(in crate::handlers) commit_approval: bool,
@@ -50,7 +51,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// asked while the Store plans, so a Cluster that doesn't enforce waits for neither.
 ///
 /// # Errors
-/// Refuses before admission when a Service it ships builds from source, when a tag image
+/// Refuses before admission when the person declines the lines it shows, or no terminal
+/// can ask and `--yes` wasn't given, when a Service it ships builds from source, when a tag image
 /// can't be pinned (its registry wants credentials, can't be reached, or has no such tag),
 /// when a Server enforces but none reports the Cluster's key, and when the Store can't
 /// lower the plan; returns the plan's or the key's error.
@@ -70,6 +72,7 @@ pub(in crate::handlers) fn sign(
             environment: environment.clone(),
             services: services.to_vec(),
             target: true,
+            deployment: None,
         });
         (probe.join().unwrap_or(Probe::Unknown), plan)
     });
@@ -107,15 +110,55 @@ pub(in crate::handlers) fn sign(
     };
     let (body, approved) =
         DeployApproval::draft(terms, plan.namespace, &target, &pins).map_err(Error::command)?;
-    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
-    for approved in &approved {
-        crate::ui::stream(format_args!("{}", approved.line()));
+    for line in approved.iter().flat_map(ApprovedChange::lines) {
+        crate::ui::note(format_args!("{line}"));
     }
+    let yes = matches
+        .try_get_one::<bool>("yes")
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false);
+    consent(&approved, yes, |question, refusal, declined| {
+        crate::ui::confirm(question, || refusal, declined)
+    })?;
+    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
     Ok(Some(DeviceApproval {
         signed,
         version: plan.version,
         approved,
     }))
+}
+
+/// What a person says to signing `approved`, asked after its lines show: Cloud relays the
+/// plan, so a setting it planted must be refusable before this Device signs it. `--yes`
+/// answers for a run nobody watches; without it, a run that can't ask refuses before
+/// signing, and a person who says no deploys nothing.
+fn consent(
+    approved: &[ApprovedChange],
+    yes: bool,
+    confirm: impl FnOnce(&str, Error, &'static str) -> Result<(), Error>,
+) -> Result<(), Error> {
+    if yes {
+        return Ok(());
+    }
+    let services: Vec<&str> = approved
+        .iter()
+        .map(|change| change.service.as_str())
+        .collect();
+    let refusal = Error::detailed(
+        RpcErrorCode::ConfirmationRequired,
+        "Your servers enforce device approval, so signing this deploy needs your yes, and \
+         there's no terminal to ask in. Read the lines above, then add --yes to sign them. \
+         Nothing deployed.",
+        json!({ "services": services }),
+    )
+    .hint(Hint::Retry(super::super::typed_with(&["--yes"])));
+    confirm(
+        &format!("Approve {}?", services.join(", ")),
+        refusal,
+        "Cancelled. Nothing signed or deployed.",
+    )
 }
 
 /// The plan's target when a Device can sign every spec it ships, once its tags are pinned.
@@ -229,9 +272,14 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
             .capabilities
             .contains(ployz_core::COMMIT_APPROVAL_CAPABILITY)
     });
+    let names = observed
+        .iter()
+        .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
+        .collect();
     Probe::Enforcing(Enforcing {
         cluster,
         machines,
+        names,
         commit_approval,
     })
 }

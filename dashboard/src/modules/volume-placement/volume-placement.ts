@@ -3,7 +3,8 @@ import { Option, Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
-import { epochOf, planFromCopies, planSeed } from "#/modules/volume-run/plan";
+import type { PlacementApproval } from "./placement-approvals";
+import { asApproved, epochOf, planFromCopies, planSeed } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
@@ -57,8 +58,11 @@ export type Placement = {
   readonly seed?: Seed;
 };
 
-/** The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark. */
-export type StoredPlacement = Placement & { readonly unreached?: true };
+/**
+ * The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark.
+ * `approvals` are the person's passkey answers for the Deploy that runs it, which staging again drops.
+ */
+export type StoredPlacement = Placement & { readonly unreached?: true; readonly approvals?: readonly PlacementApproval[] };
 
 /**
  * The dashboard's record of a Volume's placement. Which copies are mirrors is each Server's to say. `mirrors` is only
@@ -426,7 +430,7 @@ function restoreStage(
   if (owed) return { refused: `${volume.name}'s last move hasn't finished.` };
   if (!accepting.includes(mirror.id)) return { refused: `${mirror.name} doesn't run Services.` };
   if (floorless.includes(mirror.id)) return { refused: `${RUN_FEATURES.restore} needs a newer Ployz on ${mirror.name}.` };
-  const planned = planFromCopies({ kind: "restore", args: { from: mirror.name }, volumeName: volume.name, orphan: false }, members);
+  const planned = planFromCopies(asApproved({ kind: "restore", args: { from: mirror.name }, volumeName: volume.name, orphan: false }, members), members);
   if (!planned.ok) return { refused: planned.refusal.message };
   return { placement: { primary: mirror.id, mirrors: [], deletes: [] }, mirrors: applied };
 }
@@ -450,7 +454,7 @@ export function seedOffer(
     member.answered && floorless.includes(member.machine.id) && needsFloor(run, member.machine, member.view.copy)
       ? { machine: member.machine, answered: false, lack: `${RUN_FEATURES.seed} is not available on ${member.machine.name}.` }
       : member);
-  const planned = planSeed({ ...run, volumeName: volume.name, orphan: false }, observed);
+  const planned = planSeed(asApproved({ ...run, volumeName: volume.name, orphan: false }, observed), observed);
   if (!planned.ok) return { offered: false, refused: planned.refusal.message };
   return { offered: restorable.includes(planned.source.machine.id), refused: null };
 }
@@ -475,7 +479,7 @@ export function placementTargets(
   const cleared = members.map((member): Member =>
     member.answered && detached.has(member.machine.id) ? { ...member, view: { ...member.view, copy: null } } : member);
   const accepts = (kind: "move" | "mirror", member: Member) => {
-    const planned = planFromCopies({ kind, args: { to: member.machine.name }, volumeName: volume.name, orphan: false }, cleared);
+    const planned = planFromCopies(asApproved({ kind, args: { to: member.machine.name }, volumeName: volume.name, orphan: false }, cleared), cleared);
     return planned.ok && planned.phase.kind !== "landed";
   };
   const candidates = members.filter((member) => servers.includes(member.machine.id));

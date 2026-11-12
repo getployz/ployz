@@ -24,6 +24,7 @@ use super::{ApiClient, ReplicatedStore};
 struct ClusterKv {
     network: Option<String>,
     name: Option<String>,
+    doors: Option<String>,
     /// The awaited Sealing public key as it stood when the network was written,
     /// so a test awaits the write instead of polling.
     network_written: tokio::sync::watch::Sender<Option<Option<String>>>,
@@ -71,6 +72,7 @@ impl ClusterKv {
         Self {
             network: Some("10.210.0.0/16".into()),
             name: None,
+            doors: None,
             network_written: tokio::sync::watch::Sender::new(None),
             sealing_public_key: tokio::sync::watch::Sender::new(None),
             sealing_awaits_recovery: None,
@@ -146,10 +148,12 @@ fn router(kv: Arc<Mutex<ClusterKv>>) -> Router {
 
 /// A loopback address that stays free after a test releases it. The kernel
 /// autobinds ports only from the ephemeral range, which starts at 32768 on
-/// Linux, and the random 127/8 address keeps concurrent tests apart.
+/// Linux, and the random 127/8 address keeps concurrent tests apart. Ports from
+/// 10000 up belong to the `ployz` probe tests' `free_port`, which binds every
+/// address.
 pub(crate) fn unclaimed_loopback() -> SocketAddrV4 {
     let [a, b, c, low, high, ..] = RandomState::new().hash_one(()).to_le_bytes();
-    let port = 1024 + u16::from_le_bytes([low, high]) % (32768 - 1024);
+    let port = 1024 + u16::from_le_bytes([low, high]) % (10_000 - 1024);
     SocketAddrV4::new(
         Ipv4Addr::new(127, a.clamp(1, 254), b, c.clamp(1, 254)),
         port,
@@ -493,6 +497,9 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
         "SELECT value FROM cluster WHERE key = 'name'" => {
             events(&["value"], kv.name.iter().map(|name| vec![json!(name)]))
         }
+        "SELECT value FROM cluster WHERE key = 'doors'" => {
+            events(&["value"], kv.doors.iter().map(|doors| vec![json!(doors)]))
+        }
         "SELECT value FROM cluster WHERE key = 'network'" => events(
             &["value"],
             kv.network.iter().map(|network| vec![json!(network)]),
@@ -546,6 +553,9 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             }
             query if query.starts_with("INSERT INTO cluster (key, value) VALUES ('name', ?)") => {
                 kv.name = Some(text_param(&statement.params, 0).to_owned());
+            }
+            query if query.starts_with("INSERT INTO cluster (key, value) VALUES ('doors', ?)") => {
+                kv.doors = Some(text_param(&statement.params, 0).to_owned());
             }
             query
                 if query.starts_with(

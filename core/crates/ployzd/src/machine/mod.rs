@@ -13,7 +13,7 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    DeviceCode, DeviceKey, LocalMachinePhase, Machine, MachineId, MachineRuntime,
+    ClientKey, DeviceCode, DeviceKey, LocalMachinePhase, Machine, MachineId, MachineRuntime,
     MachineStorageObservation, ManagementClientLabel, PinnedAddresses, RecoverySeed,
     SelectedEndpoint, WireGuardPublicKey,
 };
@@ -38,10 +38,12 @@ use store::PENDING_RESET_FILE_NAME;
 pub use store::{EnrollPlan, LocalMachineStore, StoreError};
 pub(crate) use store::{InterruptedReset, Opened};
 
+pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    CopyStep, CutRefusal, RecoveryError, RuntimeWatchTelemetry, SealingError,
+    Admitted, CopyStep, CutRefusal, HeldStep, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
+    SealingError,
 };
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
@@ -52,8 +54,6 @@ mod record_tests;
 #[cfg(test)]
 mod register_tests;
 
-pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
-pub const PREPARE_DIR_NAME: &str = "prepare";
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -231,33 +231,33 @@ enum ManagementClientSlot {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum LiveSlot {
     Pending {
-        pending: [u8; 32],
+        pending: ClientKey,
     },
     Active {
-        accepted: [u8; 32],
+        accepted: ClientKey,
     },
     Rotating {
-        accepted: [u8; 32],
-        pending: [u8; 32],
+        accepted: ClientKey,
+        pending: ClientKey,
     },
 }
 
 impl LiveSlot {
-    fn accepted(self) -> Option<[u8; 32]> {
+    fn accepted(self) -> Option<ClientKey> {
         match self {
             Self::Active { accepted } | Self::Rotating { accepted, .. } => Some(accepted),
             Self::Pending { .. } => None,
         }
     }
 
-    fn pending(self) -> Option<[u8; 32]> {
+    fn pending(self) -> Option<ClientKey> {
         match self {
             Self::Pending { pending } | Self::Rotating { pending, .. } => Some(pending),
             Self::Active { .. } => None,
         }
     }
 
-    fn holds(self, remote: &[u8; 32]) -> bool {
+    fn holds(self, remote: &ClientKey) -> bool {
         self.accepted().as_ref() == Some(remote) || self.pending().as_ref() == Some(remote)
     }
 }
@@ -270,16 +270,16 @@ impl ManagementClientSlot {
         }
     }
 
-    fn accepted(self) -> Option<[u8; 32]> {
+    fn accepted(self) -> Option<ClientKey> {
         self.live().and_then(LiveSlot::accepted)
     }
 
-    fn pending(self) -> Option<[u8; 32]> {
+    fn pending(self) -> Option<ClientKey> {
         self.live().and_then(LiveSlot::pending)
     }
 
     /// Whether this tombstone holds `remote`.
-    fn clears(self, remote: &[u8; 32]) -> bool {
+    fn clears(self, remote: &ClientKey) -> bool {
         matches!(self, Self::Cleared { was } if was.holds(remote))
     }
 }
@@ -317,7 +317,7 @@ impl LocalMachineRecord {
     /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
     pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
         self.management_clients.iter().filter_map(|(label, slot)| {
-            let key = DeviceKey::from_bytes(slot.accepted()?);
+            let key = DeviceKey::from_bytes(*slot.accepted()?.as_bytes());
             (DeviceCode::named_by(label) == Some(key.code())).then_some(key)
         })
     }
@@ -390,7 +390,7 @@ impl LocalMachineRecord {
 
     /// Whether `remote` is a key some Clear left in a tombstone.
     #[must_use]
-    pub fn clears_management_client(&self, remote: &[u8; 32]) -> bool {
+    pub fn clears_management_client(&self, remote: &ClientKey) -> bool {
         self.management_clients
             .values()
             .any(|slot| slot.clears(remote))
@@ -398,7 +398,7 @@ impl LocalMachineRecord {
 
     /// Public key `label` currently has accepted by the management transport.
     #[must_use]
-    pub fn accepted_client(&self, label: &ManagementClientLabel) -> Option<[u8; 32]> {
+    pub fn accepted_client(&self, label: &ManagementClientLabel) -> Option<ClientKey> {
         self.management_clients
             .get(label)
             .and_then(|slot| slot.accepted())
@@ -406,7 +406,7 @@ impl LocalMachineRecord {
 
     /// Public key `label` has awaiting an authenticated handover.
     #[must_use]
-    pub fn pending_client(&self, label: &ManagementClientLabel) -> Option<[u8; 32]> {
+    pub fn pending_client(&self, label: &ManagementClientLabel) -> Option<ClientKey> {
         self.management_clients
             .get(label)
             .and_then(|slot| slot.pending())
@@ -414,7 +414,7 @@ impl LocalMachineRecord {
 
     /// Whether `remote` is any slot's accepted key, so it may run operational RPCs.
     #[must_use]
-    pub fn accepts_management_client(&self, remote: &[u8; 32]) -> bool {
+    pub fn accepts_management_client(&self, remote: &ClientKey) -> bool {
         self.management_clients
             .values()
             .any(|slot| slot.accepted().as_ref() == Some(remote))
@@ -422,7 +422,7 @@ impl LocalMachineRecord {
 
     /// Label of the slot holding `remote` as its pending key.
     #[must_use]
-    pub fn pending_label(&self, remote: &[u8; 32]) -> Option<&ManagementClientLabel> {
+    pub fn pending_label(&self, remote: &ClientKey) -> Option<&ManagementClientLabel> {
         self.management_clients
             .iter()
             .find(|(_, slot)| slot.pending().as_ref() == Some(remote))
@@ -431,7 +431,7 @@ impl LocalMachineRecord {
 
     /// Label of the slot holding `remote` as its accepted key.
     #[must_use]
-    pub fn accepted_label(&self, remote: &[u8; 32]) -> Option<&ManagementClientLabel> {
+    pub fn accepted_label(&self, remote: &ClientKey) -> Option<&ManagementClientLabel> {
         self.management_clients
             .iter()
             .find(|(_, slot)| slot.accepted().as_ref() == Some(remote))
@@ -441,7 +441,7 @@ impl LocalMachineRecord {
     /// What `remote` may call: the widest scope of any slot holding it as its accepted
     /// or pending key, or `None` when no slot holds it.
     #[must_use]
-    pub fn management_scope(&self, remote: &[u8; 32]) -> Option<ployz_core::ManagementScope> {
+    pub fn management_scope(&self, remote: &ClientKey) -> Option<ployz_core::ManagementScope> {
         self.management_clients
             .iter()
             .filter(|(_, slot)| {
@@ -453,7 +453,7 @@ impl LocalMachineRecord {
 
     /// Whether `remote` is any slot's accepted or pending key, so it may connect.
     #[must_use]
-    pub fn admits_management_client(&self, remote: &[u8; 32]) -> bool {
+    pub fn admits_management_client(&self, remote: &ClientKey) -> bool {
         self.accepts_management_client(remote) || self.pending_label(remote).is_some()
     }
 }

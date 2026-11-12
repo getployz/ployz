@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
+import { includesMonitoring } from "#/modules/billing/billing.server";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -68,6 +69,8 @@ const openedState = Effect.fn("Uptime.openedState")(function* (incidentId: strin
 });
 
 const sendOne = Effect.fn("Uptime.sendAlert")(function* (row: Claimed, now: Date) {
+  // The incident stays recorded; an Organization without Production just isn't mailed about it.
+  if (!(yield* includesMonitoring(row.organizationId))) return yield* settle(row.id, "expired", now);
   if (row.kind === "resolved") {
     const opened = yield* openedState(row.incidentId);
     if (opened === "pending" || opened === "sending") return yield* settle(row.id, "pending", now);

@@ -1,7 +1,12 @@
 //! The Store's errors: the RPC error vocabulary. An invalid value is never echoed back.
 
-use ployz_core::{RpcError, RpcErrorCode};
+use std::fmt::Display;
+
+use ployz_core::{Hint, RpcError, RpcErrorCode};
+use serde::Serialize;
 use serde_json::Value;
+
+use crate::review::ApprovalRequired;
 
 fn error(code: RpcErrorCode, message: impl Into<String>, details: Value) -> RpcError {
     RpcError::new(code, message).with_details(details)
@@ -64,19 +69,19 @@ pub(crate) fn choices<'a>(
 
 /// Details for a mistyped name: the closest of `names`, if one is close, and every
 /// one there is.
-pub(crate) fn suggest<'a>(
-    input: &str,
-    names: impl IntoIterator<Item = &'a str> + Clone,
-) -> serde_json::Value {
-    let mut details = serde_json::Map::new();
-    if let Some(closest) = did_you_mean(input, names.clone()) {
-        details.insert("did_you_mean".into(), closest.into());
-    }
-    details.insert(
-        "valid_children".into(),
-        names.into_iter().collect::<Vec<_>>().into(),
-    );
-    details.into()
+pub(crate) fn suggest<'a>(input: &str, names: impl IntoIterator<Item = &'a str> + Clone) -> Value {
+    let closest = did_you_mean(input, names.clone()).map(|closest| Hint::Closest(closest.into()));
+    Hint::details(
+        &closest
+            .into_iter()
+            .chain([Hint::valid(names)])
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Details naming every choice there is, when no mistyped name stands for the choice.
+pub(crate) fn valid<S: Display>(names: impl IntoIterator<Item = S>) -> Value {
+    Hint::details(&[Hint::valid(names.into_iter().map(|name| name.to_string()))])
 }
 
 /// Levenshtein distance.
@@ -109,11 +114,14 @@ pub(crate) fn confirmation_required(message: impl Into<String>, details: Value) 
     error(RpcErrorCode::ConfirmationRequired, message, details)
 }
 
-pub(crate) fn approval_required(message: impl Into<String>, details: Value) -> RpcError {
+pub(crate) fn approval_required(
+    message: impl Into<String>,
+    required: &ApprovalRequired<impl Serialize>,
+) -> RpcError {
     error(
         RpcErrorCode::from(ployz_core::APPROVAL_REQUIRED_CODE),
         message,
-        details,
+        serde_json::to_value(required).expect("an approval's details are JSON"),
     )
 }
 
@@ -132,4 +140,79 @@ pub(crate) fn unobserved(message: impl Into<String>, details: Value) -> RpcError
 
 pub(crate) fn unsupported(message: impl Into<String>, details: Value) -> RpcError {
     error(RpcErrorCode::Unsupported, message, details)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_mistyped_name_gets_the_closest_and_every_name() {
+        let names = ["web", "worker", "db"];
+        assert_eq!(
+            suggest("wbe", names),
+            json!({ "did_you_mean": "web", "valid_children": ["web", "worker", "db"] })
+        );
+    }
+
+    #[test]
+    fn a_name_nothing_is_close_to_gets_only_the_list() {
+        assert_eq!(
+            suggest("zzzzzzzz", ["web", "db"]),
+            json!({ "valid_children": ["web", "db"] })
+        );
+        assert_eq!(
+            suggest("web", std::iter::empty()),
+            json!({ "valid_children": [] })
+        );
+    }
+
+    #[test]
+    fn choices_is_not_found_with_the_suggestion_as_its_details() {
+        let refused = choices("No Service wbe", "wbe", ["web", "db"]);
+        assert_eq!(refused.code, RpcErrorCode::NotFound);
+        assert_eq!(refused.message, "No Service wbe");
+        assert_eq!(
+            refused.details,
+            json!({ "did_you_mean": "web", "valid_children": ["web", "db"] })
+        );
+    }
+
+    #[test]
+    fn named_choices_list_as_the_strings_they_serialize_to() {
+        use crate::id::{EnvironmentName, VolumeName};
+        let environments = [
+            EnvironmentName::parse("staging").unwrap(),
+            EnvironmentName::parse("production").unwrap(),
+        ];
+        let volume = VolumeName::parse("data").unwrap();
+        assert_eq!(
+            valid(&environments),
+            json!({ "valid_children": serde_json::to_value(environments).unwrap() })
+        );
+        assert_eq!(
+            valid([&volume]),
+            json!({ "valid_children": [serde_json::to_value(&volume).unwrap()] })
+        );
+        assert_eq!(valid(Vec::<String>::new()), json!({ "valid_children": [] }));
+    }
+
+    #[test]
+    fn an_unknown_setting_suggests_a_setting_and_says_what_it_expects() {
+        let refused = crate::settings::ServiceSetting::parse("repicas").unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+        let details = refused.details.as_object().unwrap();
+        assert_eq!(details["did_you_mean"], "replicas");
+        assert!(details["valid_children"].as_array().unwrap().ends_with(&[
+            json!("env"),
+            json!("mounts"),
+            json!("domains")
+        ]));
+        assert_eq!(
+            details.keys().collect::<Vec<_>>(),
+            ["did_you_mean", "example", "expected", "valid_children"]
+        );
+    }
 }

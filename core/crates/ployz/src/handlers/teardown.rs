@@ -1,51 +1,29 @@
-//! Removing what ran: the typed confirmation, what goes, and the removal Deployment
+//! Removing what ran: what goes, and the removal Deployment
 //! that takes an Environment off the Servers first. `env rm` and `project rm` share it.
 
 use clap::ArgMatches;
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::authority::{TeardownApproval, TeardownScope};
+use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use std::collections::BTreeMap;
 
 use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
     DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
-    EnvironmentSummary, EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal,
-    RemovalsQuery, Remove, RemovedQuery, ServicesQuery, ShutDown, VolumeName, VolumesQuery,
-    Waiting,
+    EnvironmentSummary, EnvironmentsQuery, Left, NamespaceQuery, ProjectName, ProjectsQuery,
+    Removal, RemovalsQuery, Remove, RemovedQuery, ServicesQuery, VolumeName, VolumesQuery, Waiting,
 };
 use serde_json::json;
 
 use super::Error;
 use super::deploy;
+use super::shared::accepted::{accepted, not_applied, with_accepted};
 use super::store::{self, Store, mint};
 use crate::cloud_account::StoreCallError;
-use crate::ui::{self, Hint, Tree};
 
-/// `--confirm` typed `name`, or a person typed it at the prompt after seeing
-/// `unconfirmed`'s loss tree. Anywhere else its refusal is the error; a
-/// different `--confirm` is a usage error naming `retry`.
-pub(super) fn confirm(
-    matches: &ArgMatches,
-    name: &str,
-    what: &str,
-    retry: String,
-    unconfirmed: impl FnOnce() -> Result<(Error, Tree), Error>,
-) -> Result<(), Error> {
-    match matches.get_one::<String>("confirm") {
-        Some(typed) if typed == name => Ok(()),
-        Some(typed) => Err(Error::usage(format!(
-            "--confirm {} does not match {what} {name}. No changes made.",
-            typed.escape_debug()
-        ))
-        .hint(Hint::Retry(retry))),
-        None => {
-            let (refusal, loss) = unconfirmed()?;
-            if ui::can_prompt() {
-                ui::note_inline(&loss);
-            }
-            ui::confirm_name(name, || refusal, "Cancelled. Nothing was removed.")
-        }
-    }
-}
+pub(super) mod signing;
+
+use crate::ui::{self, Tree};
+pub(super) use signing::Drafted;
 
 pub(super) fn inventory(store: &Store, at: &EnvironmentRef) -> Result<Inventory, Error> {
     try_inventory(store, at).map_err(|error| store.fail(error))
@@ -104,17 +82,138 @@ fn listed(
     Ok(Shown::of(&inventories))
 }
 
-/// Every `--accept-volume-loss` name.
-pub(super) fn accepted(matches: &ArgMatches) -> Result<Vec<VolumeName>, Error> {
-    store::volume_names(matches, "accept-volume-loss")
+/// `environment` of `project`, or every Environment of it.
+fn members(
+    store: &Store,
+    project: &ProjectName,
+    environment: Option<&EnvironmentName>,
+) -> Result<Vec<EnvironmentName>, Error> {
+    Ok(match environment {
+        Some(name) => vec![name.clone()],
+        None => store
+            .read(&EnvironmentsQuery {
+                project: Some(project.clone()),
+            })?
+            .environments
+            .into_iter()
+            .map(|listing| listing.name)
+            .collect(),
+    })
 }
 
-/// `--accept-volume-loss` for each of `accept`, the words a retry repeats.
-pub(super) fn with_accepted(accept: &[VolumeName]) -> Vec<&str> {
-    accept
-        .iter()
-        .flat_map(|name| ["--accept-volume-loss", name.as_str()])
-        .collect()
+/// Draft the teardown that takes `environment` of `project`, or every Environment of it,
+/// off the Servers: each Namespace on every Server, and each Volume whose loss
+/// `--accept-volume-loss` accepts. None when this CLI holds no Device key or no Server
+/// enforces Device approval.
+///
+/// # Errors
+/// Returns the Store's error, or the probe's when a Server enforces and none reports the
+/// Cluster's key.
+pub(super) fn drafted(
+    matches: &ArgMatches,
+    store: &Store,
+    (project, environment): (&ProjectName, Option<&EnvironmentName>),
+) -> Result<Option<Drafted>, Error> {
+    let accept = accepted(matches)?;
+    let mut namespaces = Vec::new();
+    let mut labels = BTreeMap::new();
+    for name in members(store, project, environment)? {
+        let at = EnvironmentRef {
+            project: Some(project.clone()),
+            environment: Some(name),
+        };
+        namespaces.push(
+            store
+                .read(&NamespaceQuery {
+                    environment: at.clone(),
+                })?
+                .namespace,
+        );
+        let deletes = store.read(&RemovalsQuery {
+            environment: at,
+            remove: true,
+            deployment: None,
+        })?;
+        for volume in deletes.volumes {
+            if accept.contains(&volume.name) {
+                labels.insert(volume.docker_volume, volume.name.to_string());
+            }
+        }
+    }
+    let volumes = labels.keys().cloned().collect();
+    signing::draft(
+        matches,
+        "this removal",
+        |machines| TeardownScope::Namespace {
+            namespaces,
+            machines: machines.to_vec(),
+            volumes,
+        },
+        |volume| {
+            labels
+                .get(volume)
+                .cloned()
+                .unwrap_or_else(|| volume.to_string())
+        },
+    )
+}
+
+/// Sign the teardown of the Docker Volumes a Deploy of `environment`, or a redeploy of
+/// `deployment`, deletes under `accept`, after the person reads which and says yes, when
+/// this CLI holds a Device key and a Server enforces Device approval. None when it accepts
+/// no loss or there is nothing to sign.
+///
+/// # Errors
+/// Refuses before signing when the person declines, or no terminal can ask and `--yes`
+/// wasn't given; returns the Store's or the probe's error.
+pub(super) fn volume_loss(
+    matches: &ArgMatches,
+    store: &Store,
+    (environment, deployment): (&EnvironmentRef, Option<&DeploymentId>),
+    accept: &[VolumeName],
+) -> Result<Option<TeardownApproval>, Error> {
+    if accept.is_empty() {
+        return Ok(None);
+    }
+    let deletes = store.read(&RemovalsQuery {
+        environment: environment.clone(),
+        remove: false,
+        deployment: deployment.cloned(),
+    })?;
+    let labels: BTreeMap<_, _> = deletes
+        .volumes
+        .into_iter()
+        .filter(|volume| accept.contains(&volume.name))
+        .map(|volume| (volume.docker_volume, volume.name.to_string()))
+        .collect();
+    if labels.is_empty() {
+        return Ok(None);
+    }
+    let volumes = labels.keys().cloned().collect();
+    let Some(drafted) = signing::draft(
+        matches,
+        "deleting this data",
+        |machines| TeardownScope::Volumes {
+            machines: machines.to_vec(),
+            volumes,
+        },
+        |volume| {
+            labels
+                .get(volume)
+                .cloned()
+                .unwrap_or_else(|| volume.to_string())
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    drafted.show();
+    let names: Vec<&str> = labels.values().map(String::as_str).collect();
+    drafted.ask(
+        matches,
+        &format!("Delete the data of {} for good?", names.join(", ")),
+    )?;
+    drafted.sign().map(Some)
 }
 
 /// Remove `environment` of `project`, or the whole Project, in one write: each
@@ -125,28 +224,19 @@ pub(super) fn with_accepted(accept: &[VolumeName]) -> Vec<&str> {
 /// HTTPS, Cloud carries on after the first ones and this waits until it deleted the
 /// target, or stops at once when a Server didn't answer the review, or when a
 /// removal Deployment didn't apply (running the command again finishes it). `None`
-/// once a failure after applied removal Deployments was reported.
+/// once a failure after applied removal Deployments was reported. `teardown` is what
+/// this Device signed for it, which each removal Deployment hands every Server.
 pub(super) fn remove(
     matches: &ArgMatches,
     store: &Store,
     (project, environment): (&ProjectName, Option<&EnvironmentName>),
-    shown: Option<&Shown>,
+    (shown, teardown): (Option<&Shown>, Option<TeardownApproval>),
     mut events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Option<Removed>, Error> {
     deploy::refuse_local_detach(matches, store)?;
     let accept = accepted(matches)?;
     let again = store.again(&with_accepted(&accept));
-    let members = match environment {
-        Some(name) => vec![name.clone()],
-        None => store
-            .read(&EnvironmentsQuery {
-                project: Some(project.clone()),
-            })?
-            .environments
-            .into_iter()
-            .map(|listing| listing.name)
-            .collect(),
-    };
+    let members = members(store, project, environment)?;
     let at = |name: &EnvironmentName| EnvironmentRef {
         project: Some(project.clone()),
         environment: Some(name.clone()),
@@ -173,6 +263,7 @@ pub(super) fn remove(
         }
     }
     let mut request = Remove {
+        teardown: teardown.map(Box::new),
         project: project.clone(),
         environment: environment.cloned(),
         version: matches.get_one::<String>("expect-version").cloned(),
@@ -296,6 +387,7 @@ pub(super) fn remove(
                 admitted.push(
                     store
                         .admit(&Admit::Remove(AdmitRemoval {
+                            teardown: None,
                             id: DeploymentId::parse(mint())?,
                             environment: at(&summary.name),
                         }))
@@ -580,9 +672,9 @@ impl Listed {
     fn has(&self, effect: &DestructiveEffect) -> bool {
         match effect.kind {
             DestructiveKind::RemovesService => self.services.contains(&effect.name),
-            DestructiveKind::DeletesVolume | DestructiveKind::DetachesVolume => {
-                self.volumes.contains(&effect.name)
-            }
+            DestructiveKind::DeletesVolume
+            | DestructiveKind::DetachesVolume
+            | DestructiveKind::RestoresVolume => self.volumes.contains(&effect.name),
             DestructiveKind::RemovesDomain
             | DestructiveKind::RemovesServer
             | DestructiveKind::RemovesMember
@@ -867,61 +959,6 @@ fn stalled(project: &ProjectName, environment: Option<&EnvironmentName>, left: &
     )
 }
 
-/// Whether removal Deployment `deployment` found no Server left to take it off, so
-/// whatever ran is still on the Servers that ran it: "Left on old servers".
-pub(super) fn left_on_old_servers(deployment: &DeploymentSummary) -> bool {
-    matches!(deployment.outcome, Some(ployz_store::Outcome::Forgotten))
-}
-
-/// Take Environment `at` off the Servers: admit a removal Deployment under the
-/// destructive review, accepting the loss of `accept` as reviewed at `version`, then run or follow it as
-/// `deploy` does. A volume-loss refusal names this command again, accepting.
-pub(super) fn take_off(
-    matches: &ArgMatches,
-    store: &Store,
-    at: &EnvironmentRef,
-    (accept, version): (&[VolumeName], Option<String>),
-    events: Option<std::io::BufWriter<std::fs::File>>,
-) -> Result<(DeploymentView, Result<(), Error>), Error> {
-    deploy::refuse_local_detach(matches, store)?;
-    let admitted = store
-        .admit(&Admit::ShutDown(ShutDown {
-            id: DeploymentId::parse(mint())?,
-            environment: at.clone(),
-            version,
-            accept_volume_loss: accept.to_vec(),
-        }))
-        .map_err(|error| store.accepting(error))?;
-    let deploy::Shipped { view, ran, .. } =
-        deploy::execute(matches, store, &admitted, None, events)?;
-    Ok((view, ran))
-}
-
-/// Report a shutdown Deployment that didn't apply (yet), naming `again`, the
-/// command that finishes it: exit 3, or 0 when `--detach` asked not to wait.
-pub(super) fn unfinished(
-    matches: &ArgMatches,
-    view: &DeploymentView,
-    ran: Result<(), Error>,
-    again: &str,
-) -> Result<(), Error> {
-    crate::ui::finish(&store::Next::new(view, Some(again.to_owned())), || {
-        deploy::say_view(view);
-    })?;
-    not_applied(matches, ran, again.to_owned())
-}
-
-/// How a command ends after a removal Deployment didn't apply: how running it
-/// failed, naming `again`, the command that finishes it; else exit 3, or 0 when
-/// `--detach` asked not to wait.
-fn not_applied(matches: &ArgMatches, ran: Result<(), Error>, again: String) -> Result<(), Error> {
-    ran.map_err(|error| error.hint(Hint::Retry(again)))
-        .and_then(|()| match matches.get_flag("detach") {
-            true => Ok(()),
-            false => Err(Error::partial()),
-        })
-}
-
 /// What removing an Environment deletes: its Services and Volumes, by name.
 #[derive(serde::Serialize)]
 pub(super) struct Inventory {
@@ -1006,6 +1043,7 @@ mod tests {
 
     fn request() -> Remove {
         Remove {
+            teardown: None,
             project: ProjectName::parse("shop").unwrap(),
             environment: None,
             version: None,

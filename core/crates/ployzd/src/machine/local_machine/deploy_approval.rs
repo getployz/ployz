@@ -158,7 +158,7 @@ impl LocalMachine {
         Ok(pinned(want, observed.container_id))
     }
 
-    fn cluster_key(
+    pub(super) fn cluster_key(
         &self,
         phase: ployz_core::LocalMachinePhase,
     ) -> Option<ployz_core::SealingPublicKey> {
@@ -241,7 +241,11 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::ApproveOnly { .. }
         | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::NoClusterIdentity
-        | AuthorityRefusal::ProofReplayed => {
+        | AuthorityRefusal::ProofReplayed
+        | AuthorityRefusal::Unreceipted
+        | AuthorityRefusal::ForeignMachineKey { .. }
+        | AuthorityRefusal::BadMachineSignature { .. }
+        | AuthorityRefusal::MalformedMachineStatement { .. } => {
             return format!("This server can't check the deploy's approval: {refusal}.");
         }
     };

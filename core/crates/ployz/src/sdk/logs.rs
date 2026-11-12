@@ -3,9 +3,9 @@ use crate::cluster::{Call, Deadline};
 use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LastRun,
-    LiveLogTarget, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata,
-    LogsOptions, MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError,
-    RpcErrorCode, TailLogsRequest, log_level, op,
+    LiveLogTarget, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogsOptions,
+    MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError, RpcErrorCode,
+    TailLogsRequest, log_level, op,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -93,15 +93,6 @@ pub enum LogHistoryRecord {
     },
 }
 
-/// Decoded output preserving nanosecond precision across JavaScript.
-#[derive(Clone, Debug, Serialize, TS)]
-pub struct ContainerLogRecord {
-    pub source: LogMetadata,
-    pub timestamp_nanos: String,
-    pub channel: LogChannel,
-    pub message: String,
-}
-
 /// Output and source-local diagnostics share a stream without confusing their meaning.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -145,7 +136,7 @@ impl Session {
         let stream = self
             .until_closed(async {
                 client
-                    .tail_logs_stream(&target, request)
+                    .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
                     .await
                     .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
             })
@@ -179,7 +170,7 @@ impl Session {
         let stream = self
             .until_closed(async {
                 client
-                    .log_history_stream(&target, payload)
+                    .open_stream::<op::LogHistory>(Some(&target), tokio_stream::once(payload))
                     .await
                     .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
             })
@@ -198,15 +189,10 @@ pub struct LogHistoryStream {
 }
 
 impl LogHistoryStream {
-    /// The next row, skipping heartbeats. `None` after `end`.
+    /// The next row as the store sent it, skipping heartbeats. `None` after `end`.
     /// # Errors
     /// Returns the store's error row, malformed frames, transport failures,
     /// and a timeout when the store sends no frame for ten seconds.
-    pub async fn next(&self) -> Result<Option<LogHistoryRecord>, RpcError> {
-        Ok(self.row().await?.map(history_record))
-    }
-
-    /// The next row as the store sent it, skipping heartbeats. `None` after `end`.
     pub(super) async fn row(&self) -> Result<Option<HistoryRow>, RpcError> {
         let mut stream = self.stream.lock().await;
         loop {
@@ -309,13 +295,6 @@ pub(super) fn history_record(row: HistoryRow) -> LogHistoryRecord {
     }
 }
 impl ContainerLogStream {
-    /// Read the next output record, skipping transport heartbeats.
-    /// # Errors
-    /// Returns malformed-frame and Machine transport failures.
-    pub async fn next(&self) -> Result<Option<ContainerLogRecord>, RpcError> {
-        Ok(self.entry().await?.map(decode_record))
-    }
-
     /// The next frame as the Machine sent it, skipping heartbeats.
     pub(super) async fn entry(&self) -> Result<Option<LogEntry>, RpcError> {
         let mut stream = self.stream.lock().await;
@@ -342,28 +321,6 @@ impl ContainerLogStream {
 impl Drop for ContainerLogStream {
     fn drop(&mut self) {
         self.cancel.cancel();
-    }
-}
-
-/// `entry` as a raw record. Heartbeats never get here: [`ContainerLogStream::entry`] took them.
-fn decode_record(entry: LogEntry) -> ContainerLogRecord {
-    let (channel, message) = match entry.body {
-        LogBody::Stdout(bytes) => (
-            LogChannel::Stdout,
-            String::from_utf8_lossy(&bytes).into_owned(),
-        ),
-        LogBody::Stderr(bytes) => (
-            LogChannel::Stderr,
-            String::from_utf8_lossy(&bytes).into_owned(),
-        ),
-        LogBody::Error(message) => (LogChannel::Error, message),
-        LogBody::Heartbeat => unreachable!("the reader skips heartbeats"),
-    };
-    ContainerLogRecord {
-        source: entry.metadata,
-        timestamp_nanos: entry.timestamp_unix_nanos.to_string(),
-        channel,
-        message,
     }
 }
 
@@ -580,7 +537,7 @@ pub(crate) async fn process_tail(
     .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
     let read = async {
         let mut stream = client
-            .tail_logs_stream(&target, request)
+            .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
             .await
             .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
         let mut frames = Vec::new();
@@ -677,7 +634,7 @@ async fn newest_lines(
         .encode()
         .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let mut stream = client
-            .log_history_stream(target, request)
+            .open_stream::<op::LogHistory>(Some(target), tokio_stream::once(request))
             .await
             .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
         while let Some(payload) = stream
@@ -779,7 +736,7 @@ mod tests {
         let (session, _sender, server) = streaming_session().await;
         let reader = history_reader(&session).await;
         let started = tokio::time::Instant::now();
-        let error = tokio::time::timeout(Duration::from_secs(11), reader.next())
+        let error = tokio::time::timeout(Duration::from_secs(11), reader.row())
             .await
             .expect("silent history reader did not time out")
             .unwrap_err();
@@ -804,11 +761,11 @@ mod tests {
             }
         });
         let started = tokio::time::Instant::now();
-        let record = tokio::time::timeout(Duration::from_secs(30), reader.next())
+        let row = tokio::time::timeout(Duration::from_secs(30), reader.row())
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(record, Some(LogHistoryRecord::End { next: None })));
+        assert!(matches!(row, Some(HistoryRow::End { next: None })));
         assert_eq!(started.elapsed(), Duration::from_secs(27));
         writer.await.unwrap();
         server.abort();
@@ -818,7 +775,7 @@ mod tests {
     async fn cancelling_history_reader_stops_a_pending_read_only() {
         let (session, _sender, server) = streaming_session().await;
         let reader = history_reader(&session).await;
-        let next = reader.next();
+        let next = reader.row();
         tokio::pin!(next);
         tokio::select! {
             biased;
@@ -849,7 +806,7 @@ mod tests {
             drop(sender);
         });
         let started = tokio::time::Instant::now();
-        assert!(reader.next().await.unwrap().is_none());
+        assert!(reader.entry().await.unwrap().is_none());
         assert_eq!(started.elapsed(), Duration::from_secs(11));
         writer.await.unwrap();
         server.abort();

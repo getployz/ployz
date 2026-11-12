@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname, VolumeName};
-use crate::review::{DiffView, Head, Review, Shipping};
+use crate::review::{ApprovalRequired, ApprovalSubject, DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, Approval, Asks, Permission, RunningObservation, Trusted};
@@ -76,6 +76,8 @@ pub enum DestructiveKind {
     UnprotectsEnvironment,
     /// An Organization is deleted, with its tokens, settings and Servers' pairing.
     RemovesOrganization,
+    /// A Volume goes back to a snapshot, and the writes after it are lost.
+    RestoresVolume,
 }
 
 impl DestructiveEffect {
@@ -97,6 +99,7 @@ impl DestructiveEffect {
             DestructiveKind::RestartsService => format!("restart Service {name}"),
             DestructiveKind::UnprotectsEnvironment => format!("unprotect Environment {name}"),
             DestructiveKind::RemovesOrganization => format!("remove Organization {name}"),
+            DestructiveKind::RestoresVolume => format!("restore Volume {name}"),
         }
     }
 }
@@ -416,10 +419,20 @@ impl<'a> Gate<'a> {
     /// that too, so an approval given before protection doesn't carry over.
     fn require(
         &self,
+        bound: serde_json::Value,
+        message: String,
+        review: (&BTreeSet<DestructiveEffect>, &DiffView),
+    ) -> Result<(), RpcError> {
+        self.ask(bound, message, review).map_err(Asking::refusal)
+    }
+
+    /// [`Self::require`], before it is made a refusal.
+    fn ask<'d>(
+        &self,
         mut bound: serde_json::Value,
         message: String,
-        (effects, diff): (&BTreeSet<DestructiveEffect>, &DiffView),
-    ) -> Result<(), RpcError> {
+        (effects, diff): (&BTreeSet<DestructiveEffect>, &'d DiffView),
+    ) -> Result<(), Asking<'d>> {
         if self.protected
             && let Some(bound) = bound.as_object_mut()
         {
@@ -429,15 +442,20 @@ impl<'a> Gate<'a> {
         match &self.trusted.approval {
             Approval::NotRequired if !self.protected => Ok(()),
             Approval::Approved(approved) if *approved == digest => Ok(()),
-            Approval::NotRequired | Approval::Required | Approval::Approved(_) => {
-                let mut details = json!({"effects": effects, "approval": digest, "diff": diff});
-                if self.protected
-                    && let Some(details) = details.as_object_mut()
-                {
-                    details.insert("protected".to_owned(), json!(true));
-                }
-                Err(error::approval_required(message, details))
-            }
+            Approval::NotRequired | Approval::Required | Approval::Approved(_) => Err(Asking {
+                message,
+                required: Box::new(ApprovalRequired {
+                    id: None,
+                    digest: digest.to_string(),
+                    effects: effects.iter().cloned().collect(),
+                    subject: ApprovalSubject::Diff(diff),
+                    organization: None,
+                    protected: self.protected.then_some(json!(true)),
+                    prunes: false,
+                    dropped: Vec::new(),
+                    redeploy: None,
+                }),
+            }),
         }
     }
 
@@ -557,8 +575,20 @@ pub(crate) fn approve(
             format!("A human must approve this first: {asked}")
         }
     });
-    gate.require(bound, message, (effects, diff))
-        .map_err(|asked| pruning.unnamed(asked))
+    gate.ask(bound, message, (effects, diff))
+        .map_err(|asking| pruning.unnamed(asking).refusal())
+}
+
+/// A refusal to write until a human approves: what the card says and the details it carries.
+struct Asking<'d> {
+    message: String,
+    required: Box<ApprovalRequired<&'d DiffView>>,
+}
+
+impl Asking<'_> {
+    fn refusal(self) -> RpcError {
+        error::approval_required(self.message, &self.required)
+    }
 }
 
 /// What a full Deploy's prune removes besides what its Environment dropped: each
@@ -627,24 +657,20 @@ impl Pruning {
         matches!(self, Self::On { unseen: true, .. })
     }
 
-    /// `asked` saying, when it may remove a Service nothing names, that the Deploy
+    /// `asking` saying, when it may remove a Service nothing names, that the Deploy
     /// prunes, and which Servers didn't answer because large packets to them are
     /// dropped: the card then says so. Neither is bound into the digest.
-    pub(crate) fn unnamed(&self, mut asked: RpcError) -> RpcError {
+    fn unnamed<'d>(&self, mut asking: Asking<'d>) -> Asking<'d> {
         if let Self::On {
             unseen: true,
             dropped,
             ..
         } = self
-            && asked.code.as_str() == "approval_required"
-            && let Some(details) = asked.details.as_object_mut()
         {
-            details.insert("prunes".to_owned(), json!(true));
-            if !dropped.is_empty() {
-                details.insert("dropped".to_owned(), json!(dropped));
-            }
+            asking.required.prunes = true;
+            asking.required.dropped = dropped.iter().map(ToString::to_string).collect();
         }
-        asked
+        asking
     }
 
     /// Refuse a caller who can't destroy a prune that removes a Service, or might.
@@ -928,8 +954,8 @@ pub(crate) fn approve_retry(
         ),
         None => "A human must approve this redeploy first.".to_owned(),
     });
-    gate.require(bound, message, (&effects, &diff))
-        .map_err(|refused| pruning.unnamed(refused))
+    gate.ask(bound, message, (&effects, &diff))
+        .map_err(|asking| pruning.unnamed(asking).refusal())
         .map_err(|mut refused| {
             if let Some(details) = refused.details.as_object_mut() {
                 details.insert(
@@ -1009,3 +1035,7 @@ pub(crate) fn approve_move(
     let message = gate.message(&diff, what, String::new);
     gate.require(bound, message, (&diff.effects, &diff))
 }
+
+#[cfg(test)]
+#[path = "approval_tests.rs"]
+mod approval_tests;

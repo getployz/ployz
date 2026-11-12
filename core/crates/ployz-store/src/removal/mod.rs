@@ -35,7 +35,7 @@ use crate::id::{
     ApprovalDigest, DeploymentId, EnvironmentId, EnvironmentName, ProjectId, ProjectName,
     RemovalId, VolumeName,
 };
-use crate::review::{DestructiveEffect, approval};
+use crate::review::{ApprovalRequired, ApprovalSubject, DestructiveEffect, approval};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::teardown::{EnvironmentRemoval, RemovedBecause};
@@ -65,6 +65,13 @@ pub struct Remove {
     #[serde(default)]
     #[ts(as = "Option<BTreeMap<EnvironmentName, Vec<VolumeName>>>", optional)]
     pub every_copy: BTreeMap<EnvironmentName, Vec<VolumeName>>,
+    /// The teardown a person signed for what this takes off the Servers. Each removal
+    /// Deployment it admits hands it to every Server, and one that enforces Device
+    /// approval takes nothing off without it. A preview's removal needs none: the rule
+    /// that made it closes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<ployz_core::authority::TeardownApproval>")]
+    pub teardown: Option<Box<ployz_core::authority::TeardownApproval>>,
 }
 
 /// Stop removing an Environment or a Project: what is running is cancelled, and
@@ -331,7 +338,7 @@ pub(crate) fn remove(
     {
         return Err(error::invalid(
             format!("This removes no Environment named {unknown}"),
-            json!({ "valid_children": names }),
+            error::valid(&names),
         ));
     }
     let mut reviews = Vec::new();
@@ -427,9 +434,18 @@ pub(crate) fn remove(
             Mark::new(who, (target, target_name), members, accepted)
         }
     };
+    if let Some(teardown) = &remove.teardown {
+        mark.teardown = Some((**teardown).clone());
+    }
     mark::save(tx, who, &mark)?;
     let waiting_on = waiting_on(tx, who, &reviews, trusted, &mark.target_name)?;
-    due::go_on(tx, who, &mut mark, trusted, waiting_on)
+    due::go_on(
+        tx,
+        who,
+        &mut mark,
+        (trusted, remove.teardown.as_deref()),
+        waiting_on,
+    )
 }
 
 /// The Servers a removal waits on: each one that didn't answer whether it holds a
@@ -506,7 +522,7 @@ fn review_member(
                 "Removing {} deletes no Volume named {unknown}",
                 environment.summary.name
             ),
-            json!({ "valid_children": names }),
+            error::valid(&names),
         ));
     }
     let (losses, unanswered) = held(removed, trusted.volumes.as_ref())?;
@@ -749,7 +765,17 @@ pub(crate) fn gate(
         .join(", ");
     Err(error::approval_required(
         format!("A human must approve this first: {asked}"),
-        json!({ "effects": effects, "approval": digest, "diff": diff() }),
+        &ApprovalRequired {
+            id: None,
+            digest: digest.to_string(),
+            effects: effects.into_iter().collect(),
+            subject: ApprovalSubject::Diff(diff()),
+            organization: None,
+            protected: None,
+            prunes: false,
+            dropped: Vec::new(),
+            redeploy: None,
+        },
     ))
 }
 

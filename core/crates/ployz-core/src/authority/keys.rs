@@ -30,7 +30,8 @@ pub enum Purpose {
     /// covers workflows only.
     Rule,
     /// One Volume workflow, which can stop a Service, start one elsewhere and send a Volume's
-    /// data to another Machine. Only a Device signs one: a session grant covers none.
+    /// data to another Machine. A Device signs one, or a passkey answers its own prompt for
+    /// it: a session grant covers none.
     Volume,
 }
 
@@ -237,8 +238,9 @@ pub struct Signed<T> {
     #[ts(optional)]
     pub proposal: Option<Box<Signed<ProposalApproval>>>,
     /// Passkeys' own answers to [`Signed::challenge`], each a prompt of its own rather
-    /// than a session. Only a rule takes one. A daemon from before passkey-signed rules
-    /// refuses an envelope that carries one.
+    /// than a session. Only a rule and a Volume workflow take one. A daemon from before
+    /// passkey-signed rules refuses an envelope that carries one, and one from before
+    /// passkey-signed Volume workflows refuses it on a Volume approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PasskeyAssertion>>")]
     pub assertions: Vec<PasskeyAssertion>,
@@ -377,8 +379,8 @@ impl<T: Statement> Signed<T> {
     }
 
     /// Who signed this statement, each checked against `trusted` at `now`: a Device it
-    /// trusts, a browser key a grant in this envelope vouches for, or, on a rule only, a
-    /// trusted passkey's own answer to [`Self::challenge`]. A grant only says what its key
+    /// trusts, a browser key a grant in this envelope vouches for, or, on a rule or a Volume
+    /// workflow only, a trusted passkey's own answer to [`Self::challenge`]. A grant only says what its key
     /// may do; the statement's own check decides whether its scope covers this statement.
     ///
     /// # Errors
@@ -430,9 +432,9 @@ impl<T: Statement> Signed<T> {
             return Ok(approvers);
         }
         // A workflow rests on a passkey only through a session grant, whose limits the
-        // workflow's own check reads. A passkey's own answer has none, so only a rule,
-        // which no session may sign, takes one.
-        if T::PURPOSE != Purpose::Rule {
+        // workflow's own check reads. A passkey's own answer has none, so only a statement
+        // no session may sign takes one: a rule, or a Volume workflow.
+        if !matches!(T::PURPOSE, Purpose::Rule | Purpose::Volume) {
             return Err(AuthorityRefusal::Mismatch { field: "a passkey" });
         }
         let challenge = self.challenge();
@@ -482,5 +484,105 @@ impl fmt::Display for Approver {
             ),
             Self::Passkey(code) => write!(formatter, "passkey {code}"),
         }
+    }
+}
+
+/// A body a Machine signs about its own transition, with no person behind it. It travels
+/// in a [`MachineSigned`] envelope, never a [`Signed`] one, so no Device signature passes
+/// as a Machine's and no Machine's passes as a Device's.
+pub trait MachineStatement: Serialize + DeserializeOwned {
+    /// What the statement is, signed with it, such as `volume-handoff`.
+    const KIND: &'static str;
+}
+
+/// Which key signed a Machine's statement. Every Machine of a Cluster derives one key from
+/// the Sealing Key and signs with it, so any of them could have signed. A key per Machine
+/// would be another variant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineKey {
+    Cluster { key: SigningPublicKey },
+}
+
+impl fmt::Display for MachineKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cluster { key } => write!(formatter, "cluster:{key}"),
+        }
+    }
+}
+
+/// A statement a Machine signed: its canonical body exactly as signed, the key that
+/// signed it, and the signature. The signing input names the key, so a body signed under
+/// one key never verifies as signed under another.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(concrete(T = super::volume::HandoffReceipt))]
+pub struct MachineSigned<T> {
+    pub body: String,
+    pub key: MachineKey,
+    #[serde(serialize_with = "signature_hex", deserialize_with = "signature_bytes")]
+    #[ts(type = "string")]
+    pub signature: [u8; 64],
+    #[serde(skip)]
+    #[ts(skip)]
+    statement: PhantomData<T>,
+}
+
+/// The bytes a Machine signs: `ployz-machine/v1`, the statement's kind, its key, and the
+/// canonical body, each ended by a newline except the body. Distinct from every
+/// [`signing_input`].
+#[must_use]
+pub fn machine_signing_input(kind: &str, key: MachineKey, body: &str) -> Vec<u8> {
+    format!("ployz-machine/v1\n{kind}\n{key}\n{body}").into_bytes()
+}
+
+impl<T: MachineStatement> MachineSigned<T> {
+    /// Encode `statement` and sign it with the Cluster key `signer`.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the statement has no canonical form.
+    pub fn sign(statement: &T, signer: &Signer) -> Result<Self, CanonicalError> {
+        let body = canonical::to_canonical(statement)?;
+        let key = MachineKey::Cluster {
+            key: signer.public(),
+        };
+        let signature = signer
+            .0
+            .sign(&machine_signing_input(T::KIND, key, &body))
+            .to_bytes();
+        Ok(Self {
+            body,
+            key,
+            signature,
+            statement: PhantomData,
+        })
+    }
+
+    /// The statement, when `cluster` is its key and its signature verifies. A Machine passes
+    /// the Cluster key it derives itself.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::ForeignMachineKey`] for another key,
+    /// [`AuthorityRefusal::BadMachineSignature`] for a signature that does not verify, and
+    /// [`AuthorityRefusal::MalformedMachineStatement`] for a body that is not this
+    /// statement in canonical form.
+    pub fn verify(&self, cluster: SigningPublicKey) -> Result<T, AuthorityRefusal> {
+        let MachineKey::Cluster { key } = self.key;
+        if key != cluster {
+            return Err(AuthorityRefusal::ForeignMachineKey { kind: T::KIND });
+        }
+        if !key.verifies(
+            &machine_signing_input(T::KIND, self.key, &self.body),
+            &self.signature,
+        ) {
+            return Err(AuthorityRefusal::BadMachineSignature { kind: T::KIND });
+        }
+        canonical::from_canonical(&self.body).map_err(|error| {
+            AuthorityRefusal::MalformedMachineStatement {
+                kind: T::KIND,
+                problem: error.to_string(),
+            }
+        })
     }
 }

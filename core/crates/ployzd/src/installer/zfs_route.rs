@@ -1,4 +1,4 @@
-use super::os_release::OsRelease;
+use ployz_core::probe_document::OsRelease;
 
 #[derive(Clone, Copy)]
 pub(super) enum ZfsRoute {

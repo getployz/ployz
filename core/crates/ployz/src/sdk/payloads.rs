@@ -98,6 +98,12 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::DeployTerms>();
     declarations.add::<ployz_core::authority::GrantBody>();
     declarations.add::<ployz_core::authority::VolumeApproval>();
+    declarations.add::<ployz_core::authority::VolumeTerms>();
+    declarations.add::<ployz_core::authority::VolumeDraft>();
+    declarations.add::<ployz_core::authority::TeardownApproval>();
+    declarations.add::<ployz_core::authority::Teardown>();
+    declarations.add::<ployz_core::authority::TeardownTerms>();
+    declarations.add::<ployz_core::authority::TeardownScope>();
     declarations.add::<ployz_core::authority::AutoDeployRule>();
     declarations.add::<ployz_core::authority::UpgradeChannel>();
     declarations.add::<ployz_core::authority::RuleTerms>();
@@ -149,6 +155,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_store::Committed>();
     declarations.add::<ployz_store::Converted>();
     declarations.add::<ployz_store::Trusted>();
+    declarations.add::<ployz_store::OperationVerb>();
     declarations.add::<ployz_store::LegacyCount>();
     declarations.add::<ployz_store::Resealed>();
     declarations.add::<ployz_store::GitSource>();

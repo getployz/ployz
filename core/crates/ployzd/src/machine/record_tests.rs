@@ -91,6 +91,45 @@ fn a_record_written_today_reads_and_writes_back_unchanged() {
     );
 }
 
+/// The bytes a client key takes in `machine.json`: a JSON array of its 32 byte values.
+fn key_text(byte: u8) -> String {
+    format!("[{}]", vec![byte.to_string(); 32].join(","))
+}
+
+#[test]
+fn every_management_client_slot_state_is_written_as_arrays_of_key_bytes() {
+    let mut row = golden();
+    row.as_object_mut().unwrap().insert(
+        "management_clients".into(),
+        json!({
+        "cleared": {"state": "cleared", "was": {"state": "rotating", "accepted": bytes(4), "pending": bytes(5)}},
+        "cloud": {"state": "active", "accepted": bytes(1)},
+        "cli": {"state": "rotating", "accepted": bytes(2), "pending": bytes(3)},
+        "waiting": {"state": "pending", "pending": bytes(6)},
+    }),
+    );
+    let record: LocalMachineRecord = serde_json::from_value(row).unwrap();
+
+    let written = serde_json::to_string(&record).unwrap();
+
+    let clients = format!(
+        concat!(
+            r#""management_clients":{{"#,
+            r#""cleared":{{"state":"cleared","was":{{"state":"rotating","accepted":{a4},"pending":{p5}}}}},"#,
+            r#""cli":{{"state":"rotating","accepted":{a2},"pending":{p3}}},"#,
+            r#""cloud":{{"state":"active","accepted":{a1}}},"#,
+            r#""waiting":{{"state":"pending","pending":{p6}}}}}"#,
+        ),
+        a1 = key_text(1),
+        a2 = key_text(2),
+        p3 = key_text(3),
+        a4 = key_text(4),
+        p5 = key_text(5),
+        p6 = key_text(6),
+    );
+    assert!(written.contains(&clients), "{written}");
+}
+
 #[test]
 fn a_record_born_through_parse_holds_the_defaults_a_file_stores() {
     let id = MachineId::parse("a".repeat(32)).unwrap();

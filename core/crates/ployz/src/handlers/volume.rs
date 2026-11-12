@@ -10,7 +10,7 @@ use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::cloud_contract::MIN_MANAGED_VOLUME_BYTES;
 use ployz_core::config::VolumeKind;
 use ployz_core::{
-    MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
+    Hint, MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
 };
 use ployz_store::{
     CreateVolume, Mount, RemoveVolume, SetVolumeSharedWrites, SetVolumeStorage, VolumeId,
@@ -20,9 +20,11 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
-use crate::ui::{Cell, Fields, Hint, Table, Tone};
+use crate::ui::{Cell, Fields, Table, Tone};
 
 mod approve;
+mod loss_approval;
+mod resize_approval;
 mod restore;
 pub(super) mod run;
 
@@ -52,6 +54,10 @@ pub(super) fn set_command(command: Command) -> Command {
     .arg(shared_writes_flag())
     .arg(run::wait_flag().conflicts_with_all(["docker", "shared-writes"]))
     .arg(crate::cli::approval().conflicts_with_all(["docker", "shared-writes"]))
+    .arg(
+        crate::cli::yes("Sign a resize your device approves without asking")
+            .conflicts_with_all(["docker", "shared-writes"]),
+    )
     .group(
         clap::ArgGroup::new("volume-change")
             .args(["size", "docker", "shared-writes"])

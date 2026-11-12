@@ -30,21 +30,64 @@ If Ployz Cloud lost the run itself, the cleanup starts on its own within about a
 run in progress, a release repairs a move that stopped. If the copies changed since you started
 the release, it deletes nothing, leaves your service stopped, and asks you to release again.
 
-## A move or restore says the server enforces device approval
+## A move says the server enforces device approval
 
 ```
-web-2 enforces device approval, so Ployz Cloud can't move data until a later release. To move it now, turn enforcement off from an approved device.
+web-1 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.
 ```
 
 With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, Ployz Cloud can't move a volume or restore a point into a new volume yet. When you start one,
-it is refused before your service stops, and nothing changes. Run `ployz device enforce --off` on
-an approved device, run the move again, then run `ployz device enforce`.
+on, a move runs only with your approval. The move was refused before your service stopped, and
+nothing changed. Deploy **Make primary** again from Ployz Cloud and approve it with your passkey,
+or run the command it prints on an approved device. See
+[Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval).
 
-If you turned enforcement on while a move was running, the servers refuse to start your service
-on either side, so it stays stopped. No data is lost. Run `ployz device enforce --off`, then
-`ployz volume release data`, which finishes or undoes the move, whichever it reached. Then turn
-enforcement back on.
+```
+web-1 didn't accept the approval for data. It may have expired, or be for another change. Approve the change again.
+```
+
+A server refused the approval itself: the move didn't start within 15 minutes of it, or the
+volume's copies or `web`'s spec changed since you approved it. Approve the move again.
+
+```
+Approval expired. Nothing new can start. web-2 didn't take the next step for data. Approve the change again.
+```
+
+The approval ran out before every step started. Steps a server already took finish, and nothing
+else changes. Approve the change again.
+
+If you turned enforcement on while a move was running, or a move's own release failed, the servers
+refuse to start your service on either side, so it stays stopped. No data is lost. Run
+`ployz device enforce --off`, then `ployz volume release data`, which finishes or undoes the
+move, whichever it reached. Then turn enforcement back on.
+
+## A restore says the server enforces device approval
+
+```
+web-2 enforces device approval, so restoring data into a new volume needs your passkey. Restore it again from the volume's Copies tab.
+```
+
+The restore ran without an approval, and nothing changed. Restore the point again from **Copies**
+and approve it with your passkey when you deploy. See
+[Approve from Ployz Cloud](../services/move-a-volume.md#approve-from-ployz-cloud).
+
+## A restore or a mirror removal says the server enforces device approval
+
+```
+web-2 enforces device approval, so Ployz Cloud can't restore data on its own. Run ployz volume restore data --from web-2 from an approved device.
+web-2 enforces device approval, so Ployz Cloud can't delete data-web-2 on its own. Run ployz volume mirror rm data-web-2 from an approved device.
+```
+
+On servers that enforce, a server makes a copy the writer, or deletes a copy that holds data,
+only with an approved device's approval. Nothing changed. Run the command it prints on an approved
+device. See [Restore a volume](../services/restore-a-volume.md#on-servers-that-enforce-device-approval)
+and [Mirror on servers that enforce device approval](../services/mirror-a-volume.md#mirror-on-servers-that-enforce-device-approval).
+
+```
+The approval from your device is for another change, not deleting data-web-2.
+```
+
+The approval names another copy than the one you asked to delete or restore. Run the command again.
 
 ## A volume command says the volume is busy
 
@@ -152,6 +195,9 @@ If the server stays silent, the release fails and your service stays down:
 - "web-1 did not answer for 15m; data still finishes on web-2; ployz volume release data tries
   again" when the move belongs to `web-2`.
 - "web-3 did not answer; data's copies are unknown" when it doesn't.
+- The first line, then ". Restore from web-1's copy: ployz volume restore data --from web-1",
+  when `web-1` had already handed the volume to `web-2`. `web-1` won't take it back under the move,
+  so until `web-2` answers the volume has no writer.
 
 Bring the server back and run `ployz volume release data` again. If the server is gone for good,
 [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone) with **Forget server** on
@@ -165,6 +211,21 @@ make the copy on `web-2` the volume, then deploy your service:
 ```sh
 ployz volume restore data --from web-2
 ```
+
+## A server says it handed the volume to its move's new server
+
+```
+web-1 handed data to its move's new Server
+```
+
+On servers that enforce device approval, the old server of a move decides once, after the last
+copy, where the move ends. Once it handed the volume to the new server it never writes it again
+under that move, so it refuses to become the writer, whoever asks. A release or a deploy that
+asks it then finishes the move on the new server instead. If you see the line on its own, run
+`ployz volume release data` to finish the move there. If the new server is gone for good, forget
+it with `ployz server forget web-2 --confirm dead`, then restore the old server's copy with
+`ployz volume restore data --from web-1` from an approved device. See
+[On servers that enforce device approval](../services/restore-a-volume.md#on-servers-that-enforce-device-approval).
 
 ## A volume has no writer after you removed a server mid-move
 

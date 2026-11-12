@@ -33,6 +33,7 @@ mod logs;
 mod metrics;
 mod payloads;
 pub(crate) mod preparation;
+pub(crate) mod preparation_failure;
 pub(crate) mod prepare;
 mod running;
 mod sealed;
@@ -107,8 +108,7 @@ fn unprepared(
 }
 pub(crate) use logs::{AgentTail, container_env, process_tail, service_tail, tail_frames};
 pub use logs::{
-    ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
-    LogHistoryStream,
+    ContainerLogInput, ContainerLogStream, LogHistoryInput, LogHistoryRecord, LogHistoryStream,
 };
 pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
@@ -517,7 +517,7 @@ impl Session {
                 )
                 .await
                 .map(|_| ())
-                .map_err(RpcError::from)
+                .map_err(|error| crate::enrollment::lost_reply(client.entry_machine(), error))
         })
         .await
     }
@@ -579,11 +579,27 @@ impl Session {
         &self,
         label: ployz_core::ManagementClientLabel,
     ) -> Result<ployz_core::ManagementCapability, CallError> {
+        let mut client = self.client()?;
+        let entry = client.entry_machine();
         let response = self
-            .unary_answered::<op::SetManagementClient>(
-                ployz_core::SetManagementClientRequest::Set { label },
-                Call::keyed(),
-            )
+            .until_closed_answered(async {
+                client
+                    .call::<op::SetManagementClient>(
+                        ployz_core::SetManagementClientRequest::Set { label },
+                        Call::keyed(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        let lost = error.unreplied();
+                        let mut failure = CallError::from(error);
+                        if lost {
+                            failure.error = failure
+                                .error
+                                .mark(&ployz_core::ReplyLost { machine_id: entry });
+                        }
+                        failure
+                    })
+            })
             .await?;
         response.capability.ok_or_else(|| {
             RpcError::internal("Machine set a Management Client without a Management Capability")
@@ -660,7 +676,7 @@ impl Session {
                     )),
                 )
                 .await
-                .map_err(RpcError::from)
+                .map_err(|error| crate::enrollment::lost_reply(client.entry_machine(), error))
         })
         .await
     }
@@ -715,7 +731,7 @@ impl Session {
         let stream = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
-            stream = client.runtime_watch_stream(payload) => stream
+            stream = client.open_stream::<op::RuntimeWatch>(None, tokio_stream::once(payload)) => stream
                 .map_err(|error| ConnectError::Rpc(error.name_refusal(op::RuntimeWatch::PATH, &entry)))?,
         };
         let cancel = self.inner.cancel.child_token();
@@ -770,9 +786,7 @@ impl Session {
             let mut captured = capture(input).await?;
             captured.intent.registry_auth = registry_auth;
             if let Some((operator, ended_runs)) = runner {
-                captured.intent.options.operator = operator;
-                captured.intent.options.block_unmountable = true;
-                captured.intent.options.ended_runs = ended_runs;
+                captured.intent.options = captured.intent.options.as_runner(operator, ended_runs);
             }
             if token.is_cancelled() {
                 return Err(E::from(preparation_error(
@@ -1056,15 +1070,17 @@ impl Session {
     /// Management Client other than Cloud holds a key, the Machine did not respond so Data Loss cannot
     /// be listed, the confirmation does not cover the fresh Data Loss, or
     /// reset or shared-row removal fails. Unconfirmed names are in
-    /// `UnconfirmedDataLoss` details.
+    /// `UnconfirmedDataLoss` details. `teardown` is the person's approval of the
+    /// removal, which a Server that enforces Device approval needs to leave or forget.
     pub async fn remove_machine(
         &self,
         machine: &str,
         confirm_data_loss: &DataLossConfirmation,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<LocalMachineRemoved, RpcError> {
         let target = MachineTarget::parse(machine)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
-        let mut client = self.client()?;
+        let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.remove_machine(
             &target,
             confirm_data_loss,
@@ -1292,10 +1308,14 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, `machine` is not a
     /// Machine Target or not visible, it is the last Machine and a Management Client
     /// holds a key or its holders can't be read, or shared-row removal fails.
-    pub async fn remove_machine_membership(&self, machine: &str) -> Result<(), RpcError> {
+    pub async fn remove_machine_membership(
+        &self,
+        machine: &str,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
+    ) -> Result<(), RpcError> {
         let target = MachineTarget::parse(machine)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
-        let mut client = self.client()?;
+        let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.remove_machine_membership(&target))
             .await
     }
@@ -1485,16 +1505,18 @@ impl Session {
     /// is not a Namespace or is reserved, the Namespace is not visible, the
     /// snapshot is incomplete, or the confirmation does not cover the fresh
     /// Data Loss. Unconfirmed names are in `UnconfirmedDataLoss` details.
-    /// Execution failure is a [`DeployOutcome::Failed`].
+    /// Execution failure is a [`DeployOutcome::Failed`]. `teardown` is the person's
+    /// approval, which a Server that enforces Device approval needs to take it off.
     pub async fn destroy_namespace(
         &self,
         namespace: &str,
         confirm_data_loss: &DataLossConfirmation,
         volumes: VolumeFate,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let namespace = Namespace::parse(namespace)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
-        let mut client = self.client()?;
+        let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.destroy_namespace(
             &namespace,
             confirm_data_loss,
@@ -1696,6 +1718,7 @@ pub(crate) fn preparation_error(
     cancellation_requested: bool,
 ) -> RpcError {
     use crate::sdk::prepare::PreparationError;
+    use preparation_failure::{Preparation, PreparationFailure, Stage};
     let message = crate::ui::rpc_error(RpcErrorCode::Internal, &error).message;
     let same_again = error.same_again();
     match error {
@@ -1716,10 +1739,12 @@ pub(crate) fn preparation_error(
             let message =
                 "No eligible Build Machine was selected; no build was started.".to_owned();
             RpcError::unavailable(message.clone())
-                .with_details(
-                    serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
-                    "message":message, "rejections":rejections}}),
-                )
+                .with_evidence(&PreparationFailure::of(Preparation::Failed {
+                    stage: Some(Stage::Selection),
+                    message,
+                    rejections: Some(rejections),
+                    work: None,
+                }))
                 .with_causes(if reasons.is_empty() {
                     Vec::new()
                 } else {
@@ -1727,38 +1752,33 @@ pub(crate) fn preparation_error(
                 })
         }
         PreparationError::Connect(_) => {
-            RpcError::unavailable("Could not read Machine observations during preparation.")
-                .with_details(
-                    serde_json::json!({"preparation":{"kind":"failed", "stage":"Observation",
-                "message":"Could not read Machine observations during preparation."}}),
-                )
+            let message = "Could not read Machine observations during preparation.";
+            RpcError::unavailable(message).with_evidence(&PreparationFailure::of(
+                Preparation::Failed {
+                    stage: Some(Stage::Observation),
+                    message: message.to_owned(),
+                    rejections: None,
+                    work: None,
+                },
+            ))
         }
         PreparationError::Build(crate::build::Error::RemoteBuild { outcome }) => {
-            let cancelled = cancellation_requested
-                && matches!(*outcome, crate::build::RemoteBuildFailure::Failed { .. });
-            let mut details = serde_json::json!({"preparation": outcome});
-            // Failed confirms termination; a cancellation request alone cannot erase Unknown.
-            if cancelled {
-                *details
-                    .pointer_mut("/preparation/kind")
-                    .expect("remote Build failures serialize a kind") =
-                    serde_json::json!("cancelled");
-            }
-            RpcError::internal(message).with_details(details)
+            RpcError::internal(message).with_evidence(&PreparationFailure::of(
+                Preparation::remote_build(*outcome, cancellation_requested),
+            ))
         }
         PreparationError::UploadNeeded(services) => preparation::upload_needed(&services),
-        PreparationError::Cancelled => RpcError::unavailable(message)
-            .with_details(serde_json::json!({"preparation":{"kind":"cancelled"}})),
+        PreparationError::Cancelled => RpcError::unavailable(message).with_evidence(
+            &PreparationFailure::of(Preparation::Cancelled {
+                stage: None,
+                message: None,
+                work: None,
+            }),
+        ),
         PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
-            let mut details = serde_json::Map::new();
-            details.insert(
-                "preparation".into(),
-                serde_json::json!({"kind":"failed", "message":message}),
-            );
-            if same_again {
-                details.insert("same_again".into(), Value::Bool(true));
-            }
-            RpcError::internal(message).with_details(Value::Object(details))
+            RpcError::internal(message.clone()).with_evidence(
+                &PreparationFailure::of(Preparation::failed(message)).again(same_again),
+            )
         }
     }
 }

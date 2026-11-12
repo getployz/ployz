@@ -1,3 +1,4 @@
+use sha2::Digest as _;
 use std::num::NonZeroU64;
 
 use super::*;
@@ -74,14 +75,13 @@ fn workflows() -> [VolumeWorkflow; 6] {
         },
         VolumeWorkflow::MirrorRemoval {
             mirror: b(),
-            writer: a(),
+            writer: Some(a()),
             role: SlotRole::Mirror,
-            last_copy: true,
         },
         VolumeWorkflow::Restore {
             machine: b(),
             at: SnapshotGuid::new(18_446_744_073_709_551_615),
-            loses_after: at(500_000),
+            loses_after: Some(at(500_000)),
         },
         VolumeWorkflow::Resize {
             machines: vec![a(), b()],
@@ -131,6 +131,7 @@ fn check(
             volume: &volume(),
             step,
             now: at(now),
+            handed: None,
         },
     )
 }
@@ -153,9 +154,7 @@ fn each_workflow_signs_its_golden_canonical_body() {
             r#"{{"from":"{a}","kind":"move","mirrors":["{c}"],"service":{{"digest":"{d}","name":"db"}},"to":"{b}"}}"#
         ),
         format!(r#"{{"kind":"mirror","mirror":"{b}","replace":false,"writer":"{a}"}}"#),
-        format!(
-            r#"{{"kind":"mirror_removal","last_copy":true,"mirror":"{b}","role":"mirror","writer":"{a}"}}"#
-        ),
+        format!(r#"{{"kind":"mirror_removal","mirror":"{b}","role":"mirror","writer":"{a}"}}"#),
         format!(
             r#"{{"at":"18446744073709551615","kind":"restore","loses_after":500000,"machine":"{b}"}}"#
         ),
@@ -177,6 +176,25 @@ fn each_workflow_signs_its_golden_canonical_body() {
 }
 
 #[test]
+fn a_root_restore_signs_no_loss_and_reads_back_without_one() {
+    let workflow = VolumeWorkflow::Restore {
+        machine: b(),
+        at: SnapshotGuid::new(42),
+        loses_after: None,
+    };
+    let signed = Signed::sign(&approval(workflow.clone()), &signer()).unwrap();
+    let b = "b".repeat(32);
+    assert!(
+        signed.body.ends_with(&format!(
+            r#""workflow":{{"at":"42","kind":"restore","machine":"{b}"}}}}"#
+        )),
+        "{}",
+        signed.body
+    );
+    assert_eq!(signed.open().unwrap(), approval(workflow));
+}
+
+#[test]
 fn a_device_approval_admits_each_step_its_graph_names_on_each_machine() {
     use CopyTransition::*;
     let moved = Signed::sign(&approval(moving()), &signer()).unwrap();
@@ -184,22 +202,24 @@ fn a_device_approval_admits_each_step_its_graph_names_on_each_machine() {
         (a(), VolumeStep::Copy(WriterToSnapshot)),
         (a(), cut()),
         (a(), VolumeStep::Copy(WriterToWriter)),
+        (a(), VolumeStep::Copy(MirrorToWriter)),
         (a(), VolumeStep::Start),
         (b(), VolumeStep::Copy(NoneToMirror)),
         (b(), VolumeStep::Copy(MirrorToMirror)),
         (b(), VolumeStep::Copy(MirrorToWriter)),
+        (b(), VolumeStep::Copy(WriterToWriter)),
+        (b(), VolumeStep::Copy(MirrorToForget)),
         (b(), VolumeStep::Start),
         (c(), VolumeStep::Copy(MirrorToMirror)),
     ] {
         let approved = check(&moved, &machine, &step, 200_000).unwrap();
-        assert_eq!(approved.by, signer().public());
+        assert_eq!(approved.by, Approver::Device(signer().public()));
         assert_eq!(approved.digest, StepDigest::of(&moved.body));
     }
     for (machine, step) in [
-        (a(), VolumeStep::Copy(MirrorToWriter)),
+        (a(), VolumeStep::Copy(NoneToMirror)),
         (a(), VolumeStep::Copy(WriterToForget)),
         (b(), cut()),
-        (b(), VolumeStep::Copy(MirrorToForget)),
         (c(), VolumeStep::Copy(MirrorToWriter)),
         (c(), VolumeStep::Start),
         (
@@ -244,6 +264,7 @@ fn the_other_workflows_permit_only_their_own_steps() {
         (&restore, b(), VolumeStep::Start, false),
         (&resize, a(), shrink(false), true),
         (&resize, b(), shrink(true), false),
+        (&resize, c(), shrink(false), false),
         (&seed, a(), seeding("app_old", 42), true),
         (&seed, a(), seeding("other", 42), false),
         (&seed, a(), seeding("app_old", 43), false),
@@ -265,6 +286,16 @@ fn the_other_workflows_permit_only_their_own_steps() {
         allow_shrink: false,
     };
     assert!(!resize.permits(&a(), &resize_other));
+    let shrinking = VolumeWorkflow::Resize {
+        machines: vec![a(), b()],
+        maximum_bytes: bytes(20),
+        shrink: true,
+    };
+    assert!(shrinking.permits(&a(), &shrink(true)));
+    assert!(
+        !shrinking.permits(&a(), &shrink(false)),
+        "a shrink's approval names its direction, so a request without allow_shrink is another change"
+    );
 }
 
 #[test]
@@ -281,6 +312,7 @@ fn each_refusal_names_what_the_approval_lacks() {
                 volume: &other_volume,
                 step: &cut(),
                 now: at(200_000),
+                handed: None,
             },
         ),
         mismatch("a Volume")
@@ -295,6 +327,7 @@ fn each_refusal_names_what_the_approval_lacks() {
                 volume: &volume(),
                 step: &cut(),
                 now: at(200_000),
+                handed: None,
             },
         ),
         mismatch("a Cluster")
@@ -457,6 +490,7 @@ fn a_browser_key_under_a_grant_of_every_family_cannot_sign_a_volume_approval() {
                 volume: &volume(),
                 step: &cut(),
                 now: at(200_000),
+                handed: None,
             },
         ),
         mismatch("the signer")
@@ -544,5 +578,387 @@ fn a_mirror_approval_shows_the_volume_both_servers_and_that_syncs_continue() {
     assert_eq!(
         ApprovedVolumeChange::of(&approval(moving()), "data", name),
         None
+    );
+}
+
+#[test]
+fn a_move_approval_shows_both_servers_the_service_it_starts_and_the_mirrors_that_follow() {
+    let name = |machine: &MachineId| {
+        if *machine == a() {
+            "web-1"
+        } else if *machine == b() {
+            "web-2"
+        } else {
+            "web-3"
+        }
+        .to_owned()
+    };
+    let service = |digest: &str| ApprovedChange {
+        service: ServiceName::parse("db").unwrap(),
+        image: format!("postgres@sha256:{}", "0123456789ab".repeat(5)),
+        tag: None,
+        digest: PayloadDigest::try_from(digest.repeat(64)).unwrap(),
+        host: Vec::new(),
+        settings: vec![r#"command ["postgres"]"#.to_owned()],
+    };
+    let change =
+        ApprovedVolumeChange::moving(&approval(moving()), "data", name, service("d")).unwrap();
+    assert_eq!(
+        change.lines(),
+        [
+            "Approved: move data from web-1 to web-2. db stops on web-1 for the last copy, then starts on web-2. The Mirror on web-3 keeps syncing.".to_owned(),
+            format!("Approved db: postgres@sha256:{}", "0123456789ab".repeat(5)),
+            r#"  command ["postgres"]"#.to_owned(),
+        ]
+    );
+    assert_eq!(
+        ApprovedVolumeChange::moving(&approval(moving()), "data", name, service("e")),
+        None,
+        "a payload the approval does not name"
+    );
+    let mirror = approval(VolumeWorkflow::Mirror {
+        writer: a(),
+        mirror: b(),
+        replace: false,
+    });
+    assert_eq!(
+        ApprovedVolumeChange::moving(&mirror, "data", name, service("d")),
+        None
+    );
+}
+
+#[test]
+fn a_resize_approval_shows_the_volume_its_size_every_server_and_whether_a_copy_shrinks() {
+    let name = |machine: &MachineId| {
+        if *machine == a() {
+            "web-1".to_owned()
+        } else {
+            "web 2\u{1b}[2K".to_owned()
+        }
+    };
+    let resize = |maximum_bytes, shrink| {
+        approval(VolumeWorkflow::Resize {
+            machines: vec![a(), b()],
+            maximum_bytes,
+            shrink,
+        })
+    };
+    let grow = ApprovedVolumeChange::of(&resize(bytes(20), false), "data", name).unwrap();
+    assert_eq!(
+        grow.line(),
+        r#"Approved: set data to 20GB on web-1, "web 2\u{1b}[2K". No copy shrinks."#
+    );
+    assert_eq!(
+        serde_json::to_value(&grow).unwrap(),
+        serde_json::json!({
+            "kind": "resize",
+            "volume": "data",
+            "servers": ["web-1", "web 2\u{1b}[2K"],
+            "size": "20GB",
+            "shrink": false,
+        })
+    );
+    let half = ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_500_000_001).unwrap());
+    assert_eq!(
+        ApprovedVolumeChange::of(&resize(half, true), "data", name)
+            .unwrap()
+            .line(),
+        r#"Approved: set data to 1.500000001GB on web-1, "web 2\u{1b}[2K", lowering any copy above it."#
+    );
+}
+
+fn handed(signed: &Signed<VolumeApproval>) -> HandoffReceipt {
+    HandoffReceipt {
+        cluster: cluster(),
+        operation: OperationId::parse(OPERATION).unwrap(),
+        approval: StepDigest::of(&signed.body),
+        volume: volume(),
+        from: a(),
+        to: b(),
+        at: SnapshotGuid::new(9),
+        snapshot: "f-2".parse().unwrap(),
+        from_epoch: WriterEpoch::new(1),
+        epoch: WriterEpoch::new(2),
+    }
+}
+
+#[test]
+fn a_receipt_for_this_move_and_machine_stands_in_for_the_window() {
+    let signed = Signed::sign(&approval(moving()), &signer()).unwrap();
+    let pull = VolumeStep::Copy(CopyTransition::MirrorToMirror);
+    let late = |machine: &MachineId, receipt: Option<&HandoffReceipt>| {
+        verify(
+            &signed,
+            &VolumeFacts {
+                cluster: Some(cluster()),
+                machine,
+                trusted: &trusted(),
+                volume: &volume(),
+                step: &pull,
+                now: at(5_000_000),
+                handed: receipt,
+            },
+        )
+        .map(|approved| approved.body.operation)
+    };
+    assert_eq!(late(&b(), None), Err(AuthorityRefusal::Expired));
+    let receipt = handed(&signed);
+    assert!(late(&b(), Some(&receipt)).is_ok());
+    let other = Signed::sign(&approval(moving()).clone(), &Signer::from_seed(&[8; 32])).unwrap();
+    for receipt in [
+        HandoffReceipt {
+            operation: OperationId::parse("1f8fad5bd9cb469fa16570867728950e").unwrap(),
+            ..handed(&signed)
+        },
+        HandoffReceipt {
+            approval: StepDigest::of(&format!("{} ", other.body)),
+            ..handed(&signed)
+        },
+        HandoffReceipt {
+            to: c(),
+            ..handed(&signed)
+        },
+    ] {
+        assert_eq!(late(&b(), Some(&receipt)), Err(AuthorityRefusal::Expired));
+    }
+}
+
+#[test]
+fn a_machine_statement_verifies_only_under_its_own_key_and_never_as_a_devices() {
+    let receipt = handed(&Signed::sign(&approval(moving()), &signer()).unwrap());
+    let cluster_key = Signer::from_seed(&[3; 32]);
+    let signed = MachineSigned::sign(&receipt, &cluster_key).unwrap();
+    assert_eq!(signed.verify(cluster_key.public()), Ok(receipt.clone()));
+    assert_eq!(
+        signed.verify(Signer::from_seed(&[4; 32]).public()),
+        Err(AuthorityRefusal::ForeignMachineKey {
+            kind: "volume-handoff"
+        })
+    );
+    let mut flipped = signed.clone();
+    flipped.signature[63] ^= 1;
+    assert_eq!(
+        flipped.verify(cluster_key.public()),
+        Err(AuthorityRefusal::BadMachineSignature {
+            kind: "volume-handoff"
+        })
+    );
+    let mut rewritten = signed.clone();
+    rewritten.body = rewritten.body.replace("\"epoch\":2", "\"epoch\":3");
+    assert_ne!(rewritten.body, signed.body);
+    assert_eq!(
+        rewritten.verify(cluster_key.public()),
+        Err(AuthorityRefusal::BadMachineSignature {
+            kind: "volume-handoff"
+        })
+    );
+    let device_input = crate::authority::keys::signing_input(Purpose::Volume, &signed.body);
+    let device_signature = {
+        use ed25519_dalek::Signer as _;
+        ed25519_dalek::SigningKey::from_bytes(&[3; 32])
+            .sign(&device_input)
+            .to_bytes()
+    };
+    let mut as_device = signed.clone();
+    as_device.signature = device_signature;
+    assert_eq!(
+        as_device.verify(cluster_key.public()),
+        Err(AuthorityRefusal::BadMachineSignature {
+            kind: "volume-handoff"
+        }),
+        "a signature over a Device statement's input is no Machine's"
+    );
+    assert_eq!(
+        serde_json::to_value(&signed)
+            .unwrap()
+            .get("key")
+            .cloned()
+            .unwrap(),
+        serde_json::json!({ "kind": "cluster", "key": cluster_key.public().to_string() })
+    );
+}
+
+#[test]
+fn a_receipt_names_the_snapshot_and_epoch_the_step_lands_on() {
+    let signed = Signed::sign(&approval(moving()), &signer()).unwrap();
+    let cluster_key = Signer::from_seed(&[3; 32]);
+    let receipt = MachineSigned::sign(&handed(&signed), &cluster_key).unwrap();
+    let check = |at: Handed<'_>| {
+        verify_receipt(
+            &receipt,
+            &HandoffFacts {
+                key: cluster_key.public(),
+                cluster: cluster(),
+                machine: &b(),
+                operation: OperationId::parse(OPERATION).unwrap(),
+                approval: StepDigest::of(&signed.body),
+                volume: &volume(),
+                at,
+            },
+        )
+        .map(|_| ())
+    };
+    let guid = SnapshotGuid::new(9);
+    let named: SnapshotName = "f-2".parse().unwrap();
+    let other: SnapshotName = "f-3".parse().unwrap();
+    assert_eq!(
+        check(Handed::Writer {
+            at: &guid,
+            epoch: WriterEpoch::new(2)
+        }),
+        Ok(())
+    );
+    assert_eq!(check(Handed::Pull { snapshot: &named }), Ok(()));
+    assert_eq!(
+        check(Handed::Writer {
+            at: &SnapshotGuid::new(8),
+            epoch: WriterEpoch::new(2)
+        }),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a snapshot"
+        })
+    );
+    assert_eq!(
+        check(Handed::Writer {
+            at: &guid,
+            epoch: WriterEpoch::new(3)
+        }),
+        Err(AuthorityRefusal::Mismatch { field: "an epoch" })
+    );
+    assert_eq!(
+        check(Handed::Pull { snapshot: &other }),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a snapshot"
+        })
+    );
+}
+
+fn passkey_approval(workflow: VolumeWorkflow) -> VolumeApproval {
+    VolumeApproval {
+        signer: SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey),
+        ..approval(workflow)
+    }
+}
+
+/// `body` answered by `passkey`'s own prompt over its signing input.
+fn answered(body: &VolumeApproval, passkey: &Authenticator) -> Signed<VolumeApproval> {
+    let unsigned = Signed::unsigned(body).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &unsigned.challenge(),
+        ..HONEST
+    });
+    unsigned.answered(assertion)
+}
+
+fn check_trusting(
+    signed: &Signed<VolumeApproval>,
+    trusted: &TrustedKeys,
+    machine: &MachineId,
+    step: &VolumeStep,
+) -> Result<VolumeApproved, AuthorityRefusal> {
+    verify(
+        signed,
+        &VolumeFacts {
+            cluster: Some(cluster()),
+            machine,
+            trusted,
+            volume: &volume(),
+            step,
+            now: at(200_000),
+            handed: None,
+        },
+    )
+}
+
+#[test]
+fn a_passkeys_own_prompt_approves_a_volume_workflow() {
+    let passkey = Authenticator::es256(4);
+    let signed = answered(&passkey_approval(moving()), &passkey);
+    let approved = check_trusting(&signed, &trusting(&passkey), &a(), &cut()).unwrap();
+    assert_eq!(approved.by, Approver::Passkey(passkey.passkey().code()));
+    assert_eq!(approved.body, passkey_approval(moving()));
+    let input = super::super::keys::signing_input(Purpose::Volume, &signed.body);
+    assert_eq!(
+        signed.challenge(),
+        <[u8; 32]>::from(sha2::Sha256::digest(input)),
+        "the challenge is the digest of the Volume approval's own signing input"
+    );
+}
+
+#[test]
+fn a_passkeys_answer_counts_only_for_its_own_body_signer_and_trusted_passkey() {
+    let passkey = Authenticator::es256(4);
+    let trusted = trusting(&passkey);
+    let mut moved = answered(&passkey_approval(moving()), &passkey);
+    let other = VolumeApproval {
+        volume: DockerVolumeName::parse("app_other").unwrap(),
+        ..passkey_approval(moving())
+    };
+    moved.body = Signed::unsigned(&other).unwrap().body;
+    assert_eq!(
+        check_trusting(&moved, &trusted, &a(), &cut()),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a challenge"
+        }),
+        "an answer moved onto another body"
+    );
+    assert_eq!(
+        check_trusting(
+            &answered(&passkey_approval(moving()), &Authenticator::es256(5)),
+            &trusted,
+            &a(),
+            &cut()
+        ),
+        Err(AuthorityRefusal::UnknownPasskey)
+    );
+    assert_eq!(
+        check_trusting(
+            &answered(&approval(moving()), &passkey),
+            &trusted,
+            &a(),
+            &cut()
+        ),
+        mismatch("the signer"),
+        "a body naming a Device is not a passkey's"
+    );
+}
+
+#[test]
+fn a_passkeys_answer_to_a_workflow_challenge_does_not_approve_a_volume_workflow() {
+    let passkey = Authenticator::es256(4);
+    let unsigned = Signed::unsigned(&passkey_approval(moving())).unwrap();
+    let workflow = sha2::Sha256::digest(super::super::keys::signing_input(
+        Purpose::Workflow,
+        &unsigned.body,
+    ));
+    let signed = unsigned.answered(passkey.answer(&Answer {
+        challenge: &workflow,
+        ..HONEST
+    }));
+    assert_eq!(
+        check_trusting(&signed, &trusting(&passkey), &a(), &cut()),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a challenge"
+        })
+    );
+}
+
+#[test]
+fn a_passkeys_answer_still_meets_every_other_check() {
+    let passkey = Authenticator::es256(4);
+    let trusted = trusting(&passkey);
+    let signed = answered(&passkey_approval(moving()), &passkey);
+    assert_eq!(
+        check_trusting(&signed, &trusted, &id('e'), &cut()),
+        mismatch("this Server")
+    );
+    assert_eq!(
+        check_trusting(
+            &signed,
+            &trusted,
+            &a(),
+            &VolumeStep::Copy(CopyTransition::NoneToMirror)
+        ),
+        mismatch("a Volume step")
     );
 }

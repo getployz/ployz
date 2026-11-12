@@ -14,7 +14,7 @@ const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB
 
 /// The digest of the body [`golden`] drafts. The dashboard's `autoDeployRuleBody` test
 /// pins the same digest: a browser that drafts other bytes than the CLI fails there.
-const GOLDEN: &str = "9c041c83758d801e0350725886e31596384b655d7edb2f66189bdb542a32ae63";
+const GOLDEN: &str = "b90fce2595824dea529a4a32b03fcb9576a160e0d623fbbf6c1cdbf5ceb546a4";
 
 /// What the dashboard's test passes as the rule view: one Git Service and one image
 /// Service, as the Store's `rule` view writes them.
@@ -156,8 +156,6 @@ fn the_summary_shows_what_the_body_pins() {
         [
             "variables PLAIN=one, SECRET (sealed)",
             r#"pre-deploy ["migrate"]"#,
-            r#"mode {"mode":"replicated","replicas":1}"#,
-            r#"restart {"name":"unless-stopped"}"#
         ]
     );
 }
@@ -433,7 +431,7 @@ fn a_value_cant_pass_for_two_entries() {
     let variables = |environment: Value| {
         let mut spec = spec_json("web", "one");
         spec["container"]["environment"] = environment;
-        settings(&serde_json::from_value(spec).unwrap())[0].clone()
+        settings(&serde_json::from_value(spec).unwrap(), Signs::Template)[0].clone()
     };
     let one = variables(json!({"X": "a, Y=b"}));
     let two = variables(json!({"X": "a", "Y": "b"}));
@@ -455,7 +453,7 @@ fn a_planted_control_character_in_a_setting_shows_escaped() {
     ] {
         let mut spec = spec_json("web", "one");
         spec.pointer_mut(parent).unwrap()[field] = value;
-        let lines = settings(&serde_json::from_value(spec).unwrap());
+        let lines = settings(&serde_json::from_value(spec).unwrap(), Signs::Template);
         assert!(
             lines.iter().all(|line| printable(line.as_str())),
             "{parent}/{field}: {lines:?}"
@@ -497,7 +495,10 @@ fn a_planted_control_character_in_the_source_shows_escaped() {
 /// template signs it too.
 #[test]
 fn every_signed_setting_shows() {
-    let base = settings(&serde_json::from_value(spec_json("web", "one")).unwrap());
+    let base = settings(
+        &serde_json::from_value(spec_json("web", "one")).unwrap(),
+        Signs::Template,
+    );
     for (path, value, shown) in [
         (
             "/container/command",
@@ -545,13 +546,63 @@ fn every_signed_setting_shows() {
         let (parent, field) = path.rsplit_once('/').unwrap();
         let mut spec = spec_json("web", "one");
         spec.pointer_mut(parent).unwrap()[field] = value;
-        let lines = settings(&serde_json::from_value(spec).unwrap());
+        let lines = settings(&serde_json::from_value(spec).unwrap(), Signs::Template);
         assert!(
             lines.iter().any(|line| line.as_str() == shown),
             "{path}: {lines:?}"
         );
         assert_ne!(lines, base, "{path}");
     }
+}
+
+/// Pairs of specs that sign differently read differently: an explicit `false` or empty
+/// value that overrides inheritance, a variable value that holds `, NAME=`, and the text
+/// around a Sealed part.
+#[test]
+fn specs_that_sign_differently_read_differently() {
+    let sealed = json!({"sealed": SEALED_A, "scope": "shared", "key": "PASSWORD"});
+    let base = spec_json("web", "one");
+    let read = |spec: &Value| {
+        settings(
+            &serde_json::from_value(spec.clone()).unwrap(),
+            Signs::Template,
+        )
+    };
+    for (parent, field, value) in [
+        ("/pre_deploy", "privileged", json!(false)),
+        ("/pre_deploy", "user", json!("")),
+        ("/container", "init", json!(false)),
+        (
+            "/container/environment",
+            "PLAIN",
+            json!("one, NODE_OPTIONS=--require=/data/hook.js"),
+        ),
+    ] {
+        let mut changed = base.clone();
+        changed.pointer_mut(parent).unwrap()[field] = value;
+        assert_ne!(read(&changed), read(&base), "{parent}/{field}");
+    }
+
+    let mut two = base.clone();
+    two["container"]["environment"]["NODE_OPTIONS"] = json!("--require=/data/hook.js");
+    let mut one = base.clone();
+    one["container"]["environment"]["PLAIN"] = json!("one, NODE_OPTIONS=--require=/data/hook.js");
+    assert_ne!(read(&one), read(&two), "a variable boundary");
+
+    let url = |host: &str| {
+        let mut spec = base.clone();
+        spec["container"]["environment"]["DATABASE_URL"] =
+            json!({"template": ["postgres://app:", sealed.clone(), format!("@{host}/app")]});
+        spec
+    };
+    assert_ne!(read(&url("db.internal")), read(&url("attacker.example")));
+    assert!(
+        read(&url("db.internal"))[0].as_str().contains(
+            r#"DATABASE_URL="postgres://app:" + (sealed "PASSWORD") + "@db.internal/app""#
+        ),
+        "{:?}",
+        read(&url("db.internal"))
+    );
 }
 
 #[test]

@@ -1,0 +1,12 @@
+M4 carry-over 2 from M3: can a dispatch be pinned to the commit the minter checked?
+POST /repos/Ployz-test/lab-m4/actions/workflows/ployz-build.yml/dispatches, with return_run_details, as a lab account.
+
+## ref = the branch head's commit SHA (82dbe92677e699c9ebf2ca56b36c254d56b61eac)
+422 {"message":"No ref found for: 82dbe92677e699c9ebf2ca56b36c254d56b61eac"}
+
+## ref = refs/heads/main
+200 {"workflow_run_id":42981154544,"html_url":"https://github.com/Ployz-test/lab-m4/actions/runs/42981154544"}
+
+GitHub's docs name only a branch or tag for `ref`, and GitHub refuses a commit SHA. A dispatch cannot be pinned on
+GitHub's side. The other way, Machines refusing a run whose head_sha differs from the checked one, is Engine work
+outside M4's files.

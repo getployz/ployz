@@ -43,12 +43,12 @@ At the sync commit it prints four lines:
 
 ```
 core/crates/ployz/src/handlers/mcp.rs:58:    match login::stored(config) {
-core/crates/ployz/src/handlers/mcp.rs:662:        match login::stored(&self.account.config) {
+core/crates/ployz/src/handlers/mcp.rs:689:        match login::stored(&self.account.config) {
 core/crates/ployz/src/handlers/mcp/login.rs:92:    let previous = match stored(&config) {
 core/crates/ployz/src/handlers/mcp/login.rs:110:            save(
 ```
 
-`save` is the one writer, and `login`'s call at `:110` is its one call. `publishing_setup` (`core/crates/ployz/src/handlers/mcp.rs:54-64`) and `agent` (`core/crates/ployz/src/handlers/mcp.rs:653-667`) read it and write nothing, and `agent` reads it on each call (`core/crates/ployz/src/handlers/mcp.rs:662`). So readers are left out: they change no state a login reads. A hand edit of `mcp.json` is left out too, except as a start file.
+`save` is the one writer, and `login`'s call at `:110` is its one call. `publishing_setup` (`core/crates/ployz/src/handlers/mcp.rs:54-64`) and `agent` (`core/crates/ployz/src/handlers/mcp.rs:680-694`) read it and write nothing, and `agent` reads it on each call (`core/crates/ployz/src/handlers/mcp.rs:689`). So readers are left out: they change no state a login reads. A hand edit of `mcp.json` is left out too, except as a start file.
 
 **Every writer of a token row.** This grep lists them:
 

@@ -248,16 +248,28 @@ cuts the agent off. Keep
 Ployz is free on your own servers: unlimited servers and projects, preview environments,
 generated https addresses and custom domains. Your hosting provider bills you for the servers.
 
-**Organization → Billing** shows the plans. **Hobby**, $5 a month, and **Pro**, $49 a month per
-organization, are coming soon.
+Pay when your cluster is in production. **Production** is $10 a month with two servers included,
+then $5 for each extra server. Production pays for what Ployz Cloud runs for you:
 
-If you subscribed to the old $9 Pro plan for custom domains, you no longer need it. Click
-**Manage billing** on the same page to cancel it or get invoices.
+- [Uptime checks](../observe/uptime.md) from outside your servers, and an email when a service goes
+  down or comes back.
+- [Web analytics](../observe/analytics.md) for your domains.
+- Longer log and metrics history, coming.
+
+Without Production, Ployz keeps checking your services and counting your visits. You can't see the
+results: the Monitoring tab, **Analytics**, `ployz uptime` and the Ployz agent ask you to add
+Production instead, and the uptime emails stop. Add Production and the results show again, as far
+back as Ployz keeps them. Everything else is free: metrics, logs, deploys and the crash emails.
+
+Click **Upgrade to production** on **Organization → Billing** to start. The page shows your server
+count and what you pay a month. A server you add is charged as soon as it joins. When you remove
+one, the lower price starts at the next renewal. **Manage billing** on the same page cancels
+Production or gets invoices. A cancelled Production stays until the end of the period you paid for.
 
 In an agent's sandbox, billing waits until someone keeps it.
 
-A [self-hosted Ployz Cloud](../self-hosting.md) has no billing, and custom domains are always
-allowed.
+A [self-hosted Ployz Cloud](../self-hosting.md) has no billing. Custom domains, uptime and
+analytics are always available there.
 
 ## Delete an organization
 
@@ -267,7 +279,7 @@ is disabled.
 
 1. [Delete every project](../environments/environments.md#delete-a-project) in it. **Delete
    organization** stays disabled until you do.
-2. **Cancel any subscription first**, such as the old $9 Pro plan. Deleting the organization doesn't cancel it: go to
+2. **Cancel Production first** if you pay for it. Deleting the organization doesn't cancel it: go to
    **Organization → Billing → Manage billing**.
 3. Go to **Organization → General** and click **Delete organization**.
 4. Type the organization's slug, as the dialog shows it, and click **Delete**.

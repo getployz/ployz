@@ -25,7 +25,7 @@ use defguard_wireguard_rs::{
 use ipnet::IpNet;
 use ployz_core::{
     DOCKER_NETWORK_CONFLICT_RECOVERY, LargePackets, LocalMachinePhase, Machine, MachineId,
-    MachineSubnet, SelectedEndpoint, WireGuardPublicKey,
+    MachineSubnet, SelectedEndpoint, WireGuardPublicKey, labels,
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
@@ -51,7 +51,6 @@ const NETWORK_MTU: u32 = 1420;
 /// How long another tool's firewall change may shadow the mesh before the
 /// rules are applied again.
 const FIREWALL_INTERVAL: Duration = Duration::from_secs(60);
-const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
 
 /// A peer's routes and the MTU set on them, kept while those routes are installed:
 /// a bootstrap apply keeps routes of peers it no longer plans.
@@ -1474,10 +1473,7 @@ fn docker_network_request(
             ..Default::default()
         }),
         options: Some(options.clone()),
-        labels: Some(HashMap::from([(
-            DOCKER_NETWORK_MANAGED_LABEL.into(),
-            String::new(),
-        )])),
+        labels: Some(labels::system_labels()),
         ..Default::default()
     }
 }
@@ -1784,7 +1780,7 @@ fn docker_network_owned(network: &NetworkInspect) -> bool {
         && network
             .labels
             .as_ref()
-            .and_then(|labels| labels.get(DOCKER_NETWORK_MANAGED_LABEL))
+            .and_then(|labels| labels.get(labels::SYSTEM_MANAGED))
             .is_some_and(String::is_empty)
 }
 
@@ -1972,7 +1968,8 @@ fn docker_network_conflict(
     NetworkError::DockerNetworkConflict {
         reason: reason.into(),
         expected: format!(
-            "name={DOCKER_NETWORK_NAME}, driver=bridge, scope=local, label={DOCKER_NETWORK_MANAGED_LABEL}=\"\", subnet={subnet}, gateway={gateway}, options={}",
+            "name={DOCKER_NETWORK_NAME}, driver=bridge, scope=local, label={}=\"\", subnet={subnet}, gateway={gateway}, options={}",
+            labels::SYSTEM_MANAGED,
             options(required_options)
         ),
         observed: format!(

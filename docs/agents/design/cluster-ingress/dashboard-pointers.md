@@ -42,7 +42,7 @@ Paths are repo-relative. `D` = `dashboard/src`. `O` = `D/routes/_protected/cloud
 
 **Steps to add a new verb (for example `use_ingress`).**
 1. Append it to the `OperationVerb` union (`approvals.ts:11`).
-2. Add a `Verb` variant plus its `noun()` in `core/crates/ployz/src/approval.rs:103-130`. The test `every_operation_verb_cloud_sends_is_a_verb` (:946) fails otherwise.
+2. Add an `OperationVerb` variant in `core/crates/ployz-store/src/review/required.rs` (TS through `@ployz/sdk`), then its `Verb` variant and `noun()` in `core/crates/ployz/src/approval.rs` (`From<OperationVerb> for Verb`). The test `every_operation_verb_cloud_sends_is_a_verb` fails otherwise.
 3. Add `OPERATION_TOOLS` and `OPERATIONS["…"]` entries (`operations.ts`), plus an `operations.server.ts` function that builds `OperationAsked` and calls `gate`.
 4. If it destroys something, add a `DestructiveKind` (Rust) and `describe()` copy.
 5. Check `approvalSubject` copy (`approvals.ts:63`) and the parity tests `D/modules/operations/operations.parity.test.ts` and `agent-acts.parity.test.ts`.

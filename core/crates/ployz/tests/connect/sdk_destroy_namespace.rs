@@ -65,7 +65,7 @@ async fn destroy_namespace_refuses_unconfirmed_data_loss_and_names_what_was_miss
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .destroy_namespace("shop", &confirmation, VolumeFate::Destroy)
+        .destroy_namespace("shop", &confirmation, VolumeFate::Destroy, None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -80,7 +80,7 @@ async fn destroy_namespace_destroys_named_volumes_after_confirmation() {
     let confirmation = confirmation(volumes.shop_loss());
 
     let outcome = client
-        .destroy_namespace("shop", &confirmation, VolumeFate::Destroy)
+        .destroy_namespace("shop", &confirmation, VolumeFate::Destroy, None)
         .await
         .unwrap();
     assert!(
@@ -107,11 +107,11 @@ async fn one_confirmation_covers_several_namespaces() {
     let union = confirmation(volumes.union_loss());
 
     client
-        .destroy_namespace("shop", &union, VolumeFate::Destroy)
+        .destroy_namespace("shop", &union, VolumeFate::Destroy, None)
         .await
         .unwrap();
     client
-        .destroy_namespace("staging", &union, VolumeFate::Destroy)
+        .destroy_namespace("staging", &union, VolumeFate::Destroy, None)
         .await
         .unwrap();
     let mut removed = service.removed_volumes.lock().unwrap().clone();
@@ -127,7 +127,7 @@ async fn destroy_namespace_preserves_volumes_with_an_empty_confirmation() {
     let (client, volumes, service, _session, _machine) = namespace_session().await;
     let confirmation = confirmation(Vec::<DataLoss>::new());
     client
-        .destroy_namespace("shop", &confirmation, VolumeFate::Preserve)
+        .destroy_namespace("shop", &confirmation, VolumeFate::Preserve, None)
         .await
         .unwrap();
     assert!(service.removed_volumes.lock().unwrap().is_empty());
@@ -167,7 +167,7 @@ async fn destroy_namespace_refuses_the_reserved_namespace() {
     let (client, _volumes, _service, _session, _machine) = namespace_session().await;
     let confirmation = confirmation(Vec::<DataLoss>::new());
     let error = client
-        .destroy_namespace("ployz-system", &confirmation, VolumeFate::Preserve)
+        .destroy_namespace("ployz-system", &confirmation, VolumeFate::Preserve, None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);

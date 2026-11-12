@@ -2,17 +2,15 @@
 
 use ployz_core::config::VolumeKind;
 use ployz_core::{ProvisionedVolumeMaximumBytes, ServiceName};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Effect, Stop, Tool, at, stale, written};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
-    BatchCommand, CreateVolume, EnvironmentName, Mount, ProjectName, RemoveVolume, RenameVolume,
-    SetVolumeSharedWrites, SetVolumeStorage, VolumeName, VolumeStaged, VolumeSummary, VolumesQuery,
-    Written,
+    BatchCommand, CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeSharedWrites,
+    SetVolumeStorage, VolumeName, VolumeStaged, VolumeSummary, VolumesQuery, Written,
 };
 
 const SIZE: &str = "^[0-9]+(GB|GiB|TB|TiB)$";
@@ -66,35 +64,26 @@ fn volume(volume: &VolumeSummary) -> Value {
     json!({ "name": volume.name, "size": size, "shared_writes": volume.shared_writes })
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeAdd {
-    /// New Volume name, unique in the Environment.
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    name: VolumeName,
-    /// Storage limit. Default: 5GB.
-    #[serde(default)]
-    #[schemars(pattern(SIZE), example = &"10GiB")]
-    size: Option<String>,
-    /// Service to mount it into, with path.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    service: Option<ServiceName>,
-    /// Absolute path in the Service's containers, with service.
-    #[serde(default)]
-    #[schemars(pattern("^/"))]
-    path: Option<String>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeAdd {
+        /// New Volume name, unique in the Environment.
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        name: VolumeName,
+        /// Storage limit. Default: 5GB.
+        #[serde(default)]
+        #[schemars(pattern(SIZE), example = &"10GiB")]
+        size: Option<String>,
+        /// Service to mount it into, with path.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        service: Option<ServiceName>,
+        /// Absolute path in the Service's containers, with service.
+        #[serde(default)]
+        #[schemars(pattern("^/"))]
+        path: Option<String>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for VolumeAdd {
@@ -107,6 +96,7 @@ impl Tool for VolumeAdd {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(&self);
         let mounts = match (self.service, self.path) {
             (Some(service), Some(path)) => vec![Mount { service, path }],
             (None, None) => Vec::new(),
@@ -119,7 +109,6 @@ impl Tool for VolumeAdd {
             Some(size) => bytes(size, "size")?,
             None => VolumeKind::provisioned_default(),
         };
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let create = CreateVolume {
             id: cx.mint(None)?,
             environment: scope.clone(),
@@ -151,33 +140,24 @@ impl Tool for VolumeAdd {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeUpdate {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    /// New storage limit. Only before its first Deploy; a deployed Volume resizes through a Volume resize on Ployz Cloud.
-    #[serde(default)]
-    #[schemars(pattern(SIZE), example = &"10GiB")]
-    size: Option<String>,
-    /// New name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    to: Option<VolumeName>,
-    /// true lets more than one container write it. Applies at once.
-    #[serde(default)]
-    shared_writes: Option<bool>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeUpdate {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        /// New storage limit. Only before its first Deploy; a deployed Volume resizes through a Volume resize on Ployz Cloud.
+        #[serde(default)]
+        #[schemars(pattern(SIZE), example = &"10GiB")]
+        size: Option<String>,
+        /// New name.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        to: Option<VolumeName>,
+        /// true lets more than one container write it. Applies at once.
+        #[serde(default)]
+        shared_writes: Option<bool>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for VolumeUpdate {
@@ -190,7 +170,7 @@ impl Tool for VolumeUpdate {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let staged: VolumeStaged = match (self.size, self.to, self.shared_writes) {
             (Some(size), None, None) => {
                 let storage = bytes(&size, "size")?;
@@ -236,22 +216,13 @@ impl Tool for VolumeUpdate {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VolumeRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    volume: VolumeName,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct VolumeRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        volume: VolumeName,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for VolumeRemove {
@@ -264,16 +235,11 @@ impl Tool for VolumeRemove {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let volumes = cx.one(&VolumesQuery {
             environment: scope.clone(),
         })?;
-        if self
-            .expect_revision
-            .is_some_and(|expect| volumes.environment.revision.0 != expect)
-        {
-            return Err(stale(cx.call()));
-        }
+        cx.fresh(&volumes.environment, self.expect_revision)?;
         let asks_approval = volumes
             .volumes
             .iter()

@@ -51,8 +51,7 @@ pub enum Recipe {
 }
 
 /// Remote failure evidence cannot contain a successful build outcome.
-#[derive(Clone, Debug, Eq, Error, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RemoteBuildFailure {
     /// The Build Machine confirmed the attempt ended without an image. The
     /// caller says the Build failed; this is why.
@@ -214,12 +213,14 @@ fn capture_target(
             };
             let mut sealed = sealed::capture(service, &recipe, &inputs, opened)?;
             if let Some(command) = command {
-                args.insert("RAILPACK_BUILD_CMD".into(), command);
+                args.insert(ployz_build::railpack::BUILD_CMD.into(), command);
             }
             let config = args
-                .get("RAILPACK_CONFIG_FILE")
+                .get(ployz_build::railpack::CONFIG_FILE)
                 .map(String::as_str)
-                .or_else(|| opened.and_then(|opened| opened.get("RAILPACK_CONFIG_FILE")));
+                .or_else(|| {
+                    opened.and_then(|opened| opened.get(ployz_build::railpack::CONFIG_FILE))
+                });
             let context = inputs.railpack_context(&spec.context, config)?;
             let context = inputs.relative(&context);
             // Railpack variables stay in private upload material, not the recipe.

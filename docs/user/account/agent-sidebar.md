@@ -175,6 +175,20 @@ A proposal in a [Protected environment](../environments/environments.md#protect-
 can only be presented by an owner or admin. If a server needs a newer Ployz to take a proposal,
 the card says which one, and nothing runs until it's upgraded.
 
+## Approve a volume change
+
+On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, an agent's volume move, mirror, full sync, restore, mirror removal or resize waits on a card,
+like **Move data to web-2**.
+
+1. Click **Approve**. Your browser lists what the change approves, line by line, as `ployz`
+   prints it.
+2. Read the lines, then use your passkey. Cancel and nothing is approved.
+
+The agent's next try runs the change, once. If a server the change names needs a newer Ployz, or
+doesn't answer, the card says which one and nothing is approved. See
+[Approve from Ployz Cloud](../services/move-a-volume.md#approve-from-ployz-cloud).
+
 ## Good to know
 
 - **Needs an Anthropic API key.** On a [Self-hosted Cloud](../self-hosting.md) without

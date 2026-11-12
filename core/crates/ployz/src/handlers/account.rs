@@ -12,7 +12,8 @@ use ployz_core::RpcErrorCode;
 use crate::approval;
 use crate::cloud_account::{self, Credential, ServerClears, TokenKind, TokenPreset};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::ui::{self, Cell, Table, Tone};
+use ployz_core::Hint;
 
 pub(super) fn token_group(command: Command) -> Command {
     command.about("Manage Organization Tokens and signed-in devices")
@@ -509,7 +510,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         .expect("organization is required");
     let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
     let retry = shell_words::join(std::iter::once("ployz").chain(again));
-    super::teardown::confirm(matches, slug, "Organization", retry.clone(), || {
+    super::shared::confirm::confirm(matches, (slug, None), "Organization", retry.clone(), || {
         let refusal = Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(
@@ -570,7 +571,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let removal = approval::approved(
         &runtime,
         &credential,
-        approval::Verb::Remove,
+        ployz_store::OperationVerb::Remove,
         matches.get_one::<String>("approval").cloned(),
         |id| super::server::approved_rerun(matches, &again, id),
         async |approval| {

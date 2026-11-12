@@ -152,6 +152,26 @@ describe("versioned enrollment identity", () => {
     expect(JSON.stringify(request)).not.toMatch(/\/24/u);
   });
 
+  it("accepts a joiner's capability claim but leaves it out of the saved assignment's request", () => {
+    const identity = {
+      protocolVersion: 1,
+      machineId,
+      initialPolicy: { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true },
+      name: "node-1",
+      publicKey: display,
+      advertisedEndpoints: ["203.0.113.10:51820"],
+      requestedStorage: "none",
+    };
+    const claiming = Schema.decodeUnknownSync(enrollmentIdentitySchema)({ ...identity, capabilities: ["ployz.cluster.doors.v1"] });
+    expect(claiming.capabilities).toEqual(["ployz.cluster.doors.v1"]);
+    expect(Schema.decodeUnknownSync(enrollmentIdentitySchema)(identity).capabilities).toBeUndefined();
+    expect(registerRequestFromEnrollmentIdentity(claiming)).toEqual(
+      registerRequestFromEnrollmentIdentity(Schema.decodeUnknownSync(enrollmentIdentitySchema)(identity)),
+    );
+    expect(registerRequestFromEnrollmentIdentity(claiming)).not.toHaveProperty("capabilities");
+    expect(Option.isNone(Schema.decodeUnknownOption(enrollmentIdentitySchema)({ ...identity, capabilities: [1] }))).toBe(true);
+  });
+
   it("waits for two seconds without advertising a claim expiry", () => {
     expect(waitForFounder()).toEqual({ kind: "not_yet", retryAfter: 2, reason: "founder" });
   });

@@ -312,6 +312,9 @@ pub(crate) const DEVICE_ENFORCE: Verb = Verb::local(
 pub(crate) const DEVICE_LS: Verb =
     Verb::local("device ls", Never, device::list_command, device::list)
         .docs("servers/manage-servers.md");
+pub(crate) const DEVICE_PIN: Verb =
+    Verb::cloud("device pin", Never, device::pin_command, device::pin)
+        .docs("servers/manage-servers.md");
 pub(crate) const DEVICE_RM: Verb =
     Verb::local("device rm", Always, device::remove_command, device::remove)
         .docs("servers/manage-servers.md");
@@ -840,7 +843,7 @@ pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
 .tool(ToolId::VolumeMirrorRemove);
 pub(crate) const VOLUME_MOVE: Verb = Verb::cloud(
     "volume move",
-    Never,
+    Depends,
     volume::run::move_command,
     volume::run::move_volume,
 )
@@ -882,7 +885,7 @@ pub(crate) const VOLUME_RUNS: Verb = Verb::cloud(
 )
 .docs("services/move-a-volume.md");
 pub(crate) const VOLUME_SET: Verb =
-    Verb::cloud("volume set", Never, volume::set_command, volume::set)
+    Verb::cloud("volume set", Depends, volume::set_command, volume::set)
         .keeps_running(KeepsRunning::With("--wait"))
         .docs("services/volumes.md");
 pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
@@ -926,6 +929,7 @@ pub(crate) const VERBS: &[Verb] = &[
     DEVICE_APPROVE,
     DEVICE_ENFORCE,
     DEVICE_LS,
+    DEVICE_PIN,
     DEVICE_RM,
     DEVICE_REQUEST,
     DIFF,

@@ -12,16 +12,19 @@ pub mod error_chain;
 pub mod framing;
 pub use enrollment::*;
 mod founding;
+mod hint;
 mod host_config;
 pub mod host_preparation;
 pub mod labels;
 mod log_level;
+mod machine_layout;
 mod machine_telemetry;
 pub mod metrics;
 pub mod namespace;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod port_holder;
 mod ports;
+pub mod probe_document;
 mod release;
 #[cfg(not(target_arch = "wasm32"))]
 mod release_mirror;
@@ -46,8 +49,10 @@ pub use dockerfile::DockerfileFacts;
 pub use domain::*;
 pub use founding::*;
 pub use framing::*;
+pub use hint::*;
 pub use host_config::*;
 pub use log_level::*;
+pub use machine_layout::*;
 pub use machine_telemetry::*;
 pub use namespace::*;
 pub use ports::*;
@@ -78,23 +83,17 @@ pub const MACHINE_START_WAIT: std::time::Duration = std::time::Duration::from_se
 pub const BUILD_REFUSED_BY_ENFORCEMENT: &str =
     "This server runs only builds an approved device starts.";
 
-/// What a Machine that enforces Device approval says when an Operator's `SetVolumeCopy`
-/// would start a Container, as a Move's last step or its release back does.
-pub const VOLUME_START_REFUSED_BY_ENFORCEMENT: &str =
-    "This server starts only services you approve, so it can't finish a volume move yet.";
-
 /// What a Machine that enforces Device approval says when an Operator asks it to
 /// `SeedVolume`, as restoring a point into a new volume does.
 pub const SEED_REFUSED_BY_ENFORCEMENT: &str = "This server restores into a new volume only what you approve, so it can't run this restore yet.";
 
 /// What a Machine that enforces Device approval says when an Operator asks it to `Leave`.
 /// Clients compare against it to show the refusal as it is.
-pub const LEAVE_REFUSED_BY_ENFORCEMENT: &str =
-    "This server leaves only when you approve it. Run ployz server rm from an approved device.";
+pub const LEAVE_REFUSED_BY_ENFORCEMENT: &str = "This server leaves only when you approve it, with ployz server rm from an approved device or your passkey in the dashboard";
 
 /// What a Machine that enforces Device approval says when an Operator asks it to `Forget`
 /// another Machine.
-pub const FORGET_REFUSED_BY_ENFORCEMENT: &str = "This server forgets another server only when you approve it. Run ployz server forget from an approved device.";
+pub const FORGET_REFUSED_BY_ENFORCEMENT: &str = "This server forgets another server only when you approve it, with ployz server forget from an approved device or your passkey in the dashboard";
 
 /// Daemon exit status for an operator-actionable Docker network or WireGuard
 /// interface refusal.

@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 mod build_grant;
 mod container;
 mod error;
+mod evidence;
 mod image;
 mod ingress;
 mod inspect;
@@ -21,6 +22,7 @@ mod volume;
 pub use build_grant::*;
 pub use container::*;
 pub use error::*;
+pub use evidence::*;
 pub use image::*;
 pub use ingress::*;
 pub use inspect::*;
@@ -65,8 +67,8 @@ pub enum ManagementScope {
 
 impl ManagementScope {
     #[must_use]
-    pub fn of(label: &crate::ManagementClientLabel, key: &[u8; 32]) -> Self {
-        if *label == DeviceKey::from_bytes(*key).label() {
+    pub fn of(label: &crate::ManagementClientLabel, key: &crate::ClientKey) -> Self {
+        if *label == DeviceKey::from_bytes(*key.as_bytes()).label() {
             Self::Full
         } else {
             Self::Operator
@@ -504,6 +506,7 @@ define_responses! {
     IngressDoorsSet(IngressDoorsSet) => "ingress_doors_set";
     PrivateAccessSet(PrivateAccessSet) => "private_access_set";
     ClusterNamed(ClusterNamed) => "cluster_named";
+    ClusterDoorsDeclared(ClusterDoorsDeclared) => "cluster_doors_declared";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     SealingKeyHeld(SealingKeyHeld) => "sealing_key_held";
@@ -847,14 +850,14 @@ mod streaming_routing_tests {
 
     #[test]
     fn only_a_device_slot_holding_its_own_key_is_full() {
-        let key = [9; 32];
-        let scope = |label: &str, key: &[u8; 32]| {
+        let key = crate::ClientKey::from_bytes([9; 32]);
+        let scope = |label: &str, key: &crate::ClientKey| {
             super::ManagementScope::of(&crate::ManagementClientLabel::parse(label).unwrap(), key)
         };
-        let device = crate::DeviceKey::from_bytes(key).label();
+        let device = crate::DeviceKey::from_bytes(*key.as_bytes()).label();
         assert_eq!(scope(device.as_str(), &key), super::ManagementScope::Full);
         assert_eq!(
-            scope(device.as_str(), &[8; 32]),
+            scope(device.as_str(), &crate::ClientKey::from_bytes([8; 32])),
             super::ManagementScope::Operator
         );
         for label in ["cloud", "cli-0123456789abcdef0123456789ab", "laptop"] {

@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    ContainerId, DockerVolumeName, Gen, MachineId, ManagementAddress, Namespace,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole, SnapshotGuid,
-    SnapshotName, VolumeCopy,
+    CodedRefusal, ContainerId, DockerVolumeName, Evidence, Gen, MachineId, ManagementAddress,
+    Namespace, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole,
+    SnapshotGuid, SnapshotName, VolumeCopy,
 };
 
 /// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
@@ -182,7 +182,16 @@ pub struct SetVolumeCopyRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub approval: Option<crate::authority::Signed<crate::authority::VolumeApproval>>,
+    /// The Move source's receipt for the Volume, which a Move's target needs to become the
+    /// Writer under the Move's approval, and which admits its steps after the window. A
+    /// Machine that predates it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub receipt: Option<HandoffReceiptEnvelope>,
 }
+
+/// A Move source's signed handoff receipt, as it travels.
+pub type HandoffReceiptEnvelope = crate::authority::MachineSigned<crate::authority::HandoffReceipt>;
 
 /// What the sender believes this Machine holds. Compared by equality; a copy already at
 /// the want is accepted whatever this says.
@@ -245,6 +254,15 @@ pub enum WantedCopy {
     },
     /// Raise the floor to `gen` and answer with the copy, whatever `expect` says.
     Floor,
+    /// On a Move's source after its cut, give the Volume up to `to`, which becomes the Writer
+    /// at the cut's snapshot `at` with `epoch`. The source records this once and answers
+    /// with its signed receipt; it never becomes the Writer again under that Move. A Machine
+    /// that predates it refuses it, and does not advertise `ployz.volume.copy.handoff.v1`.
+    Handoff {
+        to: MachineId,
+        at: SnapshotGuid,
+        epoch: WriterEpoch,
+    },
 }
 
 /// The Container a Writer runs: one Docker already holds, or one to create under a key.
@@ -274,6 +292,10 @@ pub enum Start {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SetVolumeCopyReply {
     pub copy: Option<VolumeCopy>,
+    /// A Handoff's receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub receipt: Option<HandoffReceiptEnvelope>,
 }
 
 /// Why a Machine refused a `SetVolumeCopy`.
@@ -295,6 +317,9 @@ pub enum CopyRefusal {
     NoSource,
     /// The request's `gen` is below the floor: a newer lane owns the Volume.
     Stale,
+    /// This Machine handed the copy off in a Move: it never becomes the Writer again under
+    /// that Move, and the refusal carries the receipt it signed.
+    HandedOff,
 }
 
 /// `RpcError.details` of a refused `SetVolumeCopy`: the reason and the copy it left.
@@ -306,19 +331,27 @@ pub struct SetVolumeCopyRefused {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub floor: Option<VolumeGen>,
+    /// The receipt a HandedOff refusal names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub receipt: Option<HandoffReceiptEnvelope>,
 }
 
 impl SetVolumeCopyRefused {
-    /// The refusal carried by an RPC error, if it is one.
-    #[must_use]
-    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
-        Self::deserialize(details).ok()
-    }
-
     /// An RPC error that carries this refusal in `details`.
     #[must_use]
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
-        let code = match self.reason {
+        RpcError::refused(&self, message)
+    }
+}
+
+impl Evidence for SetVolumeCopyRefused {
+    const KEY: Option<&'static str> = None;
+}
+
+impl CodedRefusal for SetVolumeCopyRefused {
+    fn code(&self) -> RpcErrorCode {
+        match self.reason {
             CopyRefusal::NoCapacity => RpcErrorCode::Unavailable,
             CopyRefusal::Mismatch
             | CopyRefusal::NoTransition
@@ -326,10 +359,9 @@ impl SetVolumeCopyRefused {
             | CopyRefusal::Behind
             | CopyRefusal::Written
             | CopyRefusal::NoSource
-            | CopyRefusal::Stale => RpcErrorCode::Conflict,
-        };
-        RpcError::new(code, message)
-            .with_details(serde_json::to_value(self).expect("a copy refusal is JSON serializable"))
+            | CopyRefusal::Stale
+            | CopyRefusal::HandedOff => RpcErrorCode::Conflict,
+        }
     }
 }
 
@@ -502,6 +534,17 @@ pub fn plan(
         }
         (None, WantedCopy::Forget { .. }) => AtWant,
         (_, WantedCopy::Floor) => AtWant,
+        // A handoff changes no dataset: it is at its want on the old copy the cut left at
+        // `at`, and has nothing to give up anywhere else.
+        (Some(VolumeCopy::Slot { newest, .. }), WantedCopy::Handoff { at, .. }) => {
+            if newest.as_ref().is_some_and(|newest| newest.guid == *at) {
+                return AtWant;
+            }
+            Refuse(CopyRefusal::Behind)
+        }
+        (Some(VolumeCopy::Root { .. }) | None, WantedCopy::Handoff { .. }) => {
+            Refuse(CopyRefusal::NoTransition)
+        }
     }
 }
 
@@ -1202,6 +1245,7 @@ mod tests {
             reason: CopyRefusal::Busy,
             copy: Some(root(1, false, None)),
             floor: None,
+            receipt: None,
         };
         assert!(
             serde_json::to_value(&refused)
@@ -1211,14 +1255,12 @@ mod tests {
         );
         let error = refused.clone().rpc_error("the Container still runs");
         assert_eq!(error.code, RpcErrorCode::Conflict);
-        assert_eq!(
-            SetVolumeCopyRefused::from_details(&error.details),
-            Some(refused)
-        );
+        assert_eq!(error.evidence(), Some(refused));
         let capacity = SetVolumeCopyRefused {
             reason: CopyRefusal::NoCapacity,
             copy: None,
             floor: None,
+            receipt: None,
         }
         .rpc_error("no room");
         assert_eq!(capacity.code, RpcErrorCode::Unavailable);
@@ -1230,6 +1272,7 @@ mod tests {
             reason: CopyRefusal::Stale,
             copy: None,
             floor: Some(VolumeGen::new(7)),
+            receipt: None,
         };
         assert_eq!(
             serde_json::to_value(&stale).unwrap(),
@@ -1237,10 +1280,7 @@ mod tests {
         );
         let error = stale.clone().rpc_error("a newer lane owns the Volume");
         assert_eq!(error.code, RpcErrorCode::Conflict);
-        assert_eq!(
-            SetVolumeCopyRefused::from_details(&error.details),
-            Some(stale)
-        );
+        assert_eq!(error.evidence(), Some(stale));
     }
 
     #[test]

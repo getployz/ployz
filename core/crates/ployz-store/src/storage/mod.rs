@@ -324,6 +324,12 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0045_commit_approvals",
         Step::Sql(include_str!("migrations/0045_commit_approvals.sql")),
     ),
+    (
+        // The teardown a person signed for what a Deployment or a removal takes off the
+        // Servers.
+        "0046_deployment_teardown",
+        Step::Sql(include_str!("migrations/0046_deployment_teardown.sql")),
+    ),
 ];
 
 enum Step {

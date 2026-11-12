@@ -40,7 +40,7 @@ pub use ployz_core::{
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
     ReplacementCompensation, ReplacementOperation, RestoreAttempt, ServiceAttempt, StopAttempt,
 };
-pub use schedule::{ServiceGroup, Step};
+pub use schedule::{ServiceGroup, Stage};
 
 pub(crate) use progress::pending_rows;
 pub(crate) use report::{Replica, service_row, starts, updates};
@@ -296,15 +296,6 @@ impl VolumeSnapshot {
     }
 }
 
-fn newest(containers: Vec<&ContainerObservation>) -> Option<&ContainerObservation> {
-    containers.into_iter().max_by_key(|container| {
-        (
-            container.created_at_unix_nanos,
-            container.container_id.as_str(),
-        )
-    })
-}
-
 /// An ingress Server with no running Ingress Proxy.
 #[derive(Clone, Copy, Debug)]
 pub struct EmptyIngress<'snapshot> {
@@ -415,7 +406,7 @@ impl DeploySnapshot {
                 if !held.iter().all(|container| is_at_rest(&container.runtime)) {
                     return None;
                 }
-                if let Some(restarting) = newest(restarting) {
+                if let Some(restarting) = ployz_core::newest(restarting) {
                     return Some(EmptyIngress {
                         machine,
                         held: HeldIngress::Restarting(restarting),
@@ -424,7 +415,7 @@ impl DeploySnapshot {
                 let (dead, startable): (Vec<_>, Vec<_>) = held
                     .into_iter()
                     .partition(|container| container.runtime == ContainerRuntimeObservation::Dead);
-                let held = match (newest(startable), newest(dead)) {
+                let held = match (ployz_core::newest(startable), ployz_core::newest(dead)) {
                     (Some(stopped), _) => HeldIngress::Stopped(stopped),
                     (None, Some(dead)) => HeldIngress::Dead(dead),
                     (None, None) => HeldIngress::None,
@@ -1015,11 +1006,14 @@ impl PlanError {
             | Self::RemovalInTarget { .. }
             | Self::RemovalNotSelected { .. }
             | Self::RemovalInReservedNamespace { .. }) => {
-                RpcError::invalid_argument(error.to_string()).with_details(if error.same_again() {
-                    serde_json::json!({"same_again": true})
+                let refusal = RpcError::invalid_argument(error.to_string());
+                if error.same_again() {
+                    refusal.with_evidence(
+                        &crate::sdk::preparation_failure::PreparationFailure::same_again(),
+                    )
                 } else {
-                    serde_json::Value::Null
-                })
+                    refusal
+                }
             }
         }
     }

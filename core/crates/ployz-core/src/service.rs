@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Container, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    DeploymentLogId, HookContainer, Machine, PartialResult, QualifiedService, ResolvedServiceSpec,
-    ServiceContainer, ServiceId, ServiceMode, ServiceSelector,
+    Container, ContainerId, ContainerObservation, ContainerRef, DeploymentLogId, HookContainer,
+    PartialResult, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceId, ServiceMode,
+    ServiceSelector,
 };
 
 mod eligibility;
@@ -80,14 +80,12 @@ impl ServiceObservation {
         })
     }
 
-    fn newest_container(&self) -> Option<&ServiceContainer> {
-        self.containers.iter().max_by_key(|container| {
-            let observation = container.as_observation();
-            (
-                observation.created_at_unix_nanos,
-                observation.container_id.as_str(),
-            )
-        })
+    /// The newest Service Container, the one whose spec stands for the Service.
+    #[must_use]
+    pub fn newest_container(&self) -> Option<&ServiceContainer> {
+        self.containers
+            .iter()
+            .max_by_key(|container| container.as_observation().recency_key())
     }
 
     /// Service Containers for Start and Restart; both roles for Stop and Remove.
@@ -138,21 +136,6 @@ impl ObservedGlobalSlotSpec {
     #[must_use]
     pub fn into_parts(self) -> (QualifiedService, ResolvedServiceSpec) {
         (self.identity, self.resolved_spec)
-    }
-
-    /// True when this Machine already reports a running Container for this slot.
-    #[must_use]
-    pub fn is_running_on(&self, containers: &[ServiceContainer], machine: &Machine) -> bool {
-        containers.iter().any(|container| {
-            let observation = container.as_observation();
-            observation.identity() == self.identity
-                && observation.machine_id == machine.id
-                && observation.resolved_spec.serving_shape() == self.resolved_spec.serving_shape()
-                && matches!(
-                    observation.runtime,
-                    ContainerRuntimeObservation::Running { .. }
-                )
-        })
     }
 }
 
@@ -223,14 +206,8 @@ pub fn derive_services(
         }
     }
     for service in services.values_mut() {
-        if let Some(newest) = service.members().max_by_key(|container| {
-            let observation = container.as_observation();
-            (
-                observation.created_at_unix_nanos,
-                observation.container_id.as_str(),
-            )
-        }) {
-            service.service_id = newest.as_observation().service_id();
+        if let Some(newest) = crate::newest(service.members().map(ContainerRef::as_observation)) {
+            service.service_id = newest.service_id();
         }
     }
     services.into_values().collect()
@@ -424,6 +401,44 @@ mod tests {
             .unwrap();
         assert!(hook_only.containers.is_empty());
         assert_eq!(hook_only.hook_containers.len(), 1);
+    }
+
+    #[test]
+    fn the_newest_container_breaks_a_creation_tie_by_container_id() {
+        let created = |id: char, created_at: i64, service_id: char, image: &str| {
+            let mut observed = observation(
+                id,
+                &ServiceId::parse(service_id.to_string().repeat(32)).unwrap(),
+                "api",
+                ContainerKind::ServiceContainer,
+                image,
+            );
+            observed
+                .try_update(|parts| {
+                    parts.created_at_unix_nanos = created_at;
+                    parts.resolved_spec.mode = crate::ServiceMode::Global;
+                })
+                .unwrap();
+            observed
+        };
+
+        for order in [['5', '7', '9'], ['9', '7', '5'], ['7', '9', '5']] {
+            let containers = order.map(|id| match id {
+                '5' => created('5', 8, 'a', "old-id"),
+                '7' => created('7', 8, 'b', "tie"),
+                _ => created('9', 3, 'c', "older"),
+            });
+            let services = super::derive_services(containers);
+            let service = services.first().unwrap();
+
+            assert_eq!(
+                service.service_id,
+                ServiceId::parse("b".repeat(32)).unwrap()
+            );
+            let slot = service.observed_global_slot().unwrap();
+            assert_eq!(slot.source, ContainerId::parse("7".repeat(64)).unwrap());
+            assert_eq!(slot.resolved_spec().container.image, "tie");
+        }
     }
 
     #[test]

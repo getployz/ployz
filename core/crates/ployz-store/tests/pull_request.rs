@@ -225,6 +225,7 @@ fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
         .write_trusted(
             who,
             &Admit::Remove(AdmitRemoval {
+                teardown: None,
                 id: id.clone(),
                 environment: at(environment),
             }),
@@ -789,6 +790,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: redeploy.clone(),
                 environment: at("pr-5"),
                 services: Vec::new(),
@@ -965,6 +967,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id.clone(),
                     environment: at(name),
                     services: Vec::new(),
@@ -1099,6 +1102,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, services: &[&str]
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: at(environment),
                 services: services
@@ -1962,6 +1966,7 @@ fn two_first_reports_of_a_pull_request_take_turns() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: at("pr-5"),
                 services: Vec::new(),
