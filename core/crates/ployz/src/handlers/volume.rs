@@ -23,6 +23,7 @@ use crate::cli::{base, positional, switch, value};
 use crate::ui::{Cell, Fields, Hint, Table, Tone};
 
 mod approve;
+mod loss_approval;
 mod resize_approval;
 mod restore;
 pub(super) mod run;

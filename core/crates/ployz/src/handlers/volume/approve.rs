@@ -205,7 +205,10 @@ fn consent(
 
 /// This CLI's Device signer and what the Servers report of enforcement, when it holds a key
 /// and a Server enforces. `what` names the run in the refusal and the warning.
-fn device(matches: &ArgMatches, what: &str) -> Result<Option<(Signer, Enforcing)>, Error> {
+pub(super) fn device(
+    matches: &ArgMatches,
+    what: &str,
+) -> Result<Option<(Signer, Enforcing)>, Error> {
     let key = super::super::device::key::path(&super::super::config_path(matches)?);
     let Ok(Some(secret)) = super::super::device::key::load(&key) else {
         return Ok(None);
@@ -230,7 +233,7 @@ fn device(matches: &ArgMatches, what: &str) -> Result<Option<(Signer, Enforcing)
     }
 }
 
-fn context(matches: &ArgMatches) -> Option<&str> {
+pub(super) fn context(matches: &ArgMatches) -> Option<&str> {
     matches
         .try_get_one::<String>("context")
         .ok()
@@ -238,7 +241,7 @@ fn context(matches: &ArgMatches) -> Option<&str> {
         .map(String::as_str)
 }
 
-fn approval(
+pub(super) fn approval(
     signer: &Signer,
     enforcing: &Enforcing,
     namespace: Namespace,
@@ -259,7 +262,7 @@ fn approval(
 }
 
 /// Each Server's name as it reported it, or its ID when it reported none.
-fn named(seen: &[Seen]) -> impl Fn(&ployz_core::MachineId) -> String + '_ {
+pub(super) fn named(seen: &[Seen]) -> impl Fn(&ployz_core::MachineId) -> String + '_ {
     |id| {
         seen.iter()
             .find(|seen| seen.id == *id)
