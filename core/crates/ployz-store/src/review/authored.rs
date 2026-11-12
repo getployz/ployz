@@ -294,15 +294,19 @@ struct Plan {
 /// The saved versions a plan goes from and to.
 type Sides<'a> = (&'a SavedEnvironmentIntent, &'a SavedEnvironmentIntent);
 
-macro_rules! field {
-    ($effects:expr, $id:expr, $before:expr, $after:expr, $variant:ident) => {
-        if let Some(delta) = Delta::between($before, $after) {
-            $effects.push(Effect::Service {
-                id: $id.to_owned(),
-                field: ServiceField::$variant(delta),
-            });
-        }
-    };
+fn push_field<T: Clone + PartialEq>(
+    effects: &mut Vec<Effect>,
+    id: &str,
+    before: &T,
+    after: &T,
+    wrap: fn(Delta<T>) -> ServiceField,
+) {
+    if let Some(delta) = Delta::between(before, after) {
+        effects.push(Effect::Service {
+            id: id.to_owned(),
+            field: wrap(delta),
+        });
+    }
 }
 
 impl Plan {
@@ -678,7 +682,7 @@ fn service_changes(
         *lineage_id == before.lineage_id,
         "History cannot change a Service's stable lineage",
     )?;
-    field!(effects, id, &before.slug, slug, Name);
+    push_field(effects, id, &before.slug, slug, ServiceField::Name);
     let AuthoredServiceConfig {
         version,
         source,
@@ -702,85 +706,109 @@ fn service_changes(
         "History cannot change a Service's setting schema",
     )?;
     source_changes(effects, id, &before.config.source, source);
-    field!(
+    push_field(
         effects,
         id,
         &before.config.pre_deploy_command,
         pre_deploy_command,
-        PreDeployCommand
+        ServiceField::PreDeployCommand,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.start_command,
         start_command,
-        StartCommand
+        ServiceField::StartCommand,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.healthcheck,
         healthcheck,
-        Healthcheck
+        ServiceField::Healthcheck,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.restart_policy,
         restart_policy,
-        RestartPolicy
+        ServiceField::RestartPolicy,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.max_retries,
         max_retries,
-        MaxRetries
+        ServiceField::MaxRetries,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.update_order,
         update_order,
-        UpdateOrder
+        ServiceField::UpdateOrder,
     );
-    field!(effects, id, &before.config.replicas, replicas, Replicas);
-    field!(effects, id, &before.config.cpu_limit, cpu_limit, CpuLimit);
-    field!(effects, id, &before.config.mem_limit, mem_limit, MemLimit);
-    field!(
+    push_field(
+        effects,
+        id,
+        &before.config.replicas,
+        replicas,
+        ServiceField::Replicas,
+    );
+    push_field(
+        effects,
+        id,
+        &before.config.cpu_limit,
+        cpu_limit,
+        ServiceField::CpuLimit,
+    );
+    push_field(
+        effects,
+        id,
+        &before.config.mem_limit,
+        mem_limit,
+        ServiceField::MemLimit,
+    );
+    push_field(
         effects,
         id,
         &before.config.private_dns,
         private_dns,
-        PrivateDns
+        ServiceField::PrivateDns,
     );
     let ServiceBuildConfig {
         build_method,
         dockerfile_path,
         command,
     } = build;
-    field!(
+    push_field(
         effects,
         id,
         &before.config.build.build_method,
         build_method,
-        BuildMethod
+        ServiceField::BuildMethod,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.build.dockerfile_path,
         dockerfile_path,
-        DockerfilePath
+        ServiceField::DockerfilePath,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.build.command,
         command,
-        BuildCommand
+        ServiceField::BuildCommand,
     );
-    field!(effects, id, &before.config.template, template, Template);
+    push_field(
+        effects,
+        id,
+        &before.config.template,
+        template,
+        ServiceField::Template,
+    );
     for route in keys(&before.config.routes, routes, |route| &route.id) {
         if let Some(delta) = Delta::between(
             &before
@@ -804,12 +832,12 @@ fn service_changes(
             });
         }
     }
-    field!(
+    push_field(
         effects,
         id,
         &before.config.managed_hostnames,
         managed_hostnames,
-        ManagedHostnames
+        ServiceField::ManagedHostnames,
     );
     // By key, so a History page over a large Environment stays linear in its variables.
     fn by_key(variables: &[SavedVariableIntent]) -> BTreeMap<&str, &SavedVariableIntent> {
@@ -978,10 +1006,10 @@ fn source_changes(
                     field: ServiceField::GitSource(delta),
                 });
             }
-            field!(effects, id, &bb, &ab, Branch);
+            push_field(effects, id, &bb, &ab, ServiceField::Branch);
         }
         _ => {
-            field!(effects, id, before, after, Source);
+            push_field(effects, id, before, after, ServiceField::Source);
         }
     }
 }
@@ -1227,10 +1255,7 @@ impl Effect {
             && id == other_id
         {
             let source = |field: &ServiceField| {
-                matches!(
-                    field,
-                    ServiceField::Source(_) | ServiceField::GitSource(_) | ServiceField::Branch(_)
-                )
+                matches!(field.setting(), Some(Setting::Source | Setting::Branch))
             };
             if source(field) && source(other_field) {
                 return true;
@@ -2020,47 +2045,68 @@ impl Plan {
     }
 }
 impl ServiceField {
-    fn render(&self) -> (&'static str, Option<At>, Value, Value) {
-        macro_rules! setting {
-            ($path:literal, $setting:ident, $delta:expr) => {
-                (
-                    $path,
-                    Some(At::Setting(Setting::$setting)),
-                    json!($delta.before),
-                    json!($delta.after),
-                )
-            };
-        }
+    /// The Service Setting this field is a change of; the Service's name and Template
+    /// are not Settings.
+    const fn setting(&self) -> Option<Setting> {
         match self {
-            Self::Name(delta) => ("name", None, json!(delta.before), json!(delta.after)),
-            Self::Source(delta) => (
-                "source",
-                Some(At::Setting(Setting::Source)),
-                public_source(&delta.before),
-                public_source(&delta.after),
+            Self::Name(_) | Self::Template(_) => None,
+            Self::Source(_) | Self::GitSource(_) => Some(Setting::Source),
+            Self::Branch(_) => Some(Setting::Branch),
+            Self::PreDeployCommand(_) => Some(Setting::PreDeployCommand),
+            Self::StartCommand(_) => Some(Setting::StartCommand),
+            Self::Healthcheck(_) => Some(Setting::Healthcheck),
+            Self::RestartPolicy(_) => Some(Setting::RestartPolicy),
+            Self::MaxRetries(_) => Some(Setting::MaxRetries),
+            Self::UpdateOrder(_) => Some(Setting::UpdateOrder),
+            Self::Replicas(_) => Some(Setting::Replicas),
+            Self::CpuLimit(_) => Some(Setting::CpuLimit),
+            Self::MemLimit(_) => Some(Setting::MemLimit),
+            Self::PrivateDns(_) => Some(Setting::PrivateDns),
+            Self::BuildMethod(_) => Some(Setting::BuildMethod),
+            Self::DockerfilePath(_) => Some(Setting::DockerfilePath),
+            Self::BuildCommand(_) => Some(Setting::BuildCommand),
+            Self::ManagedHostnames(_) => Some(Setting::ManagedHostnames),
+        }
+    }
+    fn render(&self) -> (&'static str, Option<At>, Value, Value) {
+        let (before, after) = match self {
+            Self::Name(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Source(delta) => (public_source(&delta.before), public_source(&delta.after)),
+            Self::GitSource(delta) => (delta.before.shown(), delta.after.shown()),
+            Self::ManagedHostnames(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Branch(delta) => (json!(delta.before), json!(delta.after)),
+            Self::PreDeployCommand(delta) => (json!(delta.before), json!(delta.after)),
+            Self::StartCommand(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Healthcheck(delta) => (json!(delta.before), json!(delta.after)),
+            Self::RestartPolicy(delta) => (json!(delta.before), json!(delta.after)),
+            Self::MaxRetries(delta) => (json!(delta.before), json!(delta.after)),
+            Self::UpdateOrder(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Replicas(delta) => (json!(delta.before), json!(delta.after)),
+            Self::CpuLimit(delta) => (json!(delta.before), json!(delta.after)),
+            Self::MemLimit(delta) => (json!(delta.before), json!(delta.after)),
+            Self::PrivateDns(delta) => (json!(delta.before), json!(delta.after)),
+            Self::BuildMethod(delta) => (json!(delta.before), json!(delta.after)),
+            Self::DockerfilePath(delta) => (json!(delta.before), json!(delta.after)),
+            Self::BuildCommand(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Template(delta) => (json!(delta.before), json!(delta.after)),
+        };
+        match self.setting() {
+            Some(setting) => (
+                ServiceSetting::of(setting).map_or(setting.path(), ServiceSetting::name),
+                Some(At::Setting(setting)),
+                before,
+                after,
             ),
-            Self::GitSource(delta) => (
-                "source",
-                Some(At::Setting(Setting::Source)),
-                delta.before.shown(),
-                delta.after.shown(),
+            None => (
+                if matches!(self, Self::Template(_)) {
+                    "template"
+                } else {
+                    "name"
+                },
+                None,
+                before,
+                after,
             ),
-            Self::ManagedHostnames(delta) => setting!("managedHostnames", ManagedHostnames, delta),
-            Self::Branch(delta) => setting!("branch", Branch, delta),
-            Self::PreDeployCommand(delta) => setting!("preDeployCommand", PreDeployCommand, delta),
-            Self::StartCommand(delta) => setting!("startCommand", StartCommand, delta),
-            Self::Healthcheck(delta) => setting!("healthcheck", Healthcheck, delta),
-            Self::RestartPolicy(delta) => setting!("restartPolicy", RestartPolicy, delta),
-            Self::MaxRetries(delta) => setting!("maxRetries", MaxRetries, delta),
-            Self::UpdateOrder(delta) => setting!("updateOrder", UpdateOrder, delta),
-            Self::Replicas(delta) => setting!("replicas", Replicas, delta),
-            Self::CpuLimit(delta) => setting!("cpuLimit", CpuLimit, delta),
-            Self::MemLimit(delta) => setting!("memLimit", MemLimit, delta),
-            Self::PrivateDns(delta) => setting!("privateDns", PrivateDns, delta),
-            Self::BuildMethod(delta) => setting!("buildMethod", BuildMethod, delta),
-            Self::DockerfilePath(delta) => setting!("dockerfilePath", DockerfilePath, delta),
-            Self::BuildCommand(delta) => setting!("buildCommand", BuildCommand, delta),
-            Self::Template(delta) => ("template", None, json!(delta.before), json!(delta.after)),
         }
     }
 }
@@ -3116,6 +3162,7 @@ mod tests {
             let (path, at, before, after) = case.field.render();
             assert_eq!(path, case.path);
             assert_eq!(at, case.at.map(At::Setting), "{path}");
+            assert_eq!(case.field.setting(), case.at, "{path}");
             assert_eq!(
                 (before, after),
                 (case.before.clone(), case.after.clone()),
@@ -3173,6 +3220,19 @@ mod tests {
             .map(|(path, before, after)| (*path, *before, *after))
             .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn every_setting_but_routes_has_a_service_field() {
+        let named: BTreeSet<Setting> = cases()
+            .iter()
+            .filter_map(|case| case.field.setting())
+            .collect();
+        let unnamed: Vec<Setting> = Setting::ALL
+            .into_iter()
+            .filter(|setting| !named.contains(setting))
+            .collect();
+        assert_eq!(unnamed, [Setting::Routes]);
     }
 
     #[test]
