@@ -1221,6 +1221,27 @@ impl Session {
             let observed = crate::ingress::observe_doors(&mut client)
                 .await
                 .map_err(|failure| failure.report())?;
+            // Cloud is this SDK's caller and minted `token` itself, so the key its rows
+            // claim exposes nothing it doesn't hold. A person's token goes through the CLI,
+            // which checks the key with `SealTo`.
+            let token = match token {
+                Some(token) if doors.has(ployz_core::IngressDoor::Tunnel) => {
+                    let cluster = observed.sealing.ok_or_else(|| {
+                        RpcError::unavailable(
+                            "No online Server holds the Cluster's Sealing Key, so the tunnel \
+                             token can't be sealed.",
+                        )
+                    })?;
+                    Some(crate::ingress::NewToken {
+                        seal_for: crate::sealing_pin::SealFor {
+                            cluster,
+                            recipient: cluster,
+                        },
+                        token,
+                    })
+                }
+                _ => None,
+            };
             let doors = crate::ingress::cluster_doors_for(&observed, doors, token)
                 .map_err(|failure| failure.report())?;
             crate::ingress::use_doors(&mut client, observed, doors, cancel)

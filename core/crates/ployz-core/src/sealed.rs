@@ -1,11 +1,10 @@
 use std::fmt;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::ValueError;
+use crate::value::base64_newtype;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sealer::*;
 
@@ -225,24 +224,12 @@ impl fmt::Debug for Ciphertext {
     }
 }
 
-impl TryFrom<String> for Ciphertext {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        STANDARD
-            .decode(&value)
-            .ok()
-            .filter(|bytes| bytes.len() >= MIN_CIPHERTEXT_LEN)
-            .map(Self)
-            .ok_or_else(|| ValueError::new("sealed value", value, "base64 of at least 48 bytes"))
-    }
-}
-
-impl From<Ciphertext> for String {
-    fn from(value: Ciphertext) -> Self {
-        STANDARD.encode(value.0)
-    }
-}
+base64_newtype!(
+    Ciphertext,
+    "sealed value",
+    "base64 of at least 48 bytes",
+    AtLeast(MIN_CIPHERTEXT_LEN)
+);
 
 /// Seals a value to a Cluster's Sealing Key the way a Machine opens it: HPKE base
 /// mode over X25519, HKDF-SHA256 and ChaCha20-Poly1305, bound by
@@ -485,7 +472,19 @@ mod sealer {
             purpose: PlatformPurpose,
             sealed: &Ciphertext,
         ) -> Option<Vec<u8>> {
-            let aad = purpose.associated_data(&self.public);
+            self.open_platform_for(&self.public, purpose, sealed)
+        }
+
+        /// The bytes of `sealed` as sealed for `purpose` to the Cluster whose identity is
+        /// `cluster`, under this key as its recipient key, or `None` when it doesn't open.
+        #[must_use]
+        pub fn open_platform_for(
+            &self,
+            cluster: &SealingPublicKey,
+            purpose: PlatformPurpose,
+            sealed: &Ciphertext,
+        ) -> Option<Vec<u8>> {
+            let aad = purpose.associated_data(cluster);
             let (encapped, ciphertext) =
                 sealed.as_bytes().split_at_checked(Self::ENCAPPED_KEY_LEN)?;
             let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
@@ -625,6 +624,8 @@ mod sealer {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     use super::*;
 

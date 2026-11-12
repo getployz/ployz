@@ -3,12 +3,11 @@
 
 use std::fmt;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
-use crate::ValueError;
+use crate::value::base64_newtype;
 
 /// Names the Cloud pairing that granted a Founding Claim, without carrying its bearer.
 #[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
@@ -28,36 +27,18 @@ impl FoundingClaim {
     }
 }
 
-impl fmt::Display for FoundingClaim {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&STANDARD.encode(self.0))
-    }
-}
-
 impl fmt::Debug for FoundingClaim {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "FoundingClaim({self})")
     }
 }
 
-impl TryFrom<String> for FoundingClaim {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        STANDARD
-            .decode(&value)
-            .ok()
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-            .map(Self)
-            .ok_or_else(|| ValueError::new("Founding Claim", value, "32 bytes in base64"))
-    }
-}
-
-impl From<FoundingClaim> for String {
-    fn from(value: FoundingClaim) -> Self {
-        value.to_string()
-    }
-}
+base64_newtype!(
+    FoundingClaim,
+    "Founding Claim",
+    "32 bytes in base64",
+    Fixed(32)
+);
 
 /// What granted a founding, as the founding client states it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

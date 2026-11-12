@@ -312,6 +312,24 @@ impl ServiceMountGraph {
         &self.configs
     }
 
+    /// These mounts with their Volume declarations replaced, admitted together with the
+    /// Config mounts this graph keeps.
+    ///
+    /// # Errors
+    /// Rejects root destinations and repeated effective destinations.
+    pub fn with_volumes(&self, volumes: ServiceVolumeGraph) -> Result<Self, ServiceSpecGraphError> {
+        Self::parse(volumes, self.configs.clone())
+    }
+
+    /// These mounts with their Config declarations replaced, admitted together with the
+    /// Volume mounts this graph keeps.
+    ///
+    /// # Errors
+    /// Rejects root destinations and repeated effective destinations.
+    pub fn with_configs(&self, configs: ServiceConfigGraph) -> Result<Self, ServiceSpecGraphError> {
+        Self::parse(self.volumes.clone(), configs)
+    }
+
     /// Scope sources without changing the admitted destinations.
     ///
     /// # Errors
@@ -359,6 +377,18 @@ impl ResolvedServiceMountGraph {
     pub fn config_graph(&self) -> &ServiceConfigGraph {
         &self.configs
     }
+    /// These mounts with their Volume declarations replaced, admitted together with the
+    /// Config mounts this graph keeps.
+    ///
+    /// # Errors
+    /// Rejects root destinations, repeated effective destinations and unscoped sources.
+    pub fn with_volumes(
+        &self,
+        volumes: ResolvedServiceVolumeGraph,
+    ) -> Result<Self, ServiceSpecGraphError> {
+        Ok(ServiceMountGraph::parse(volumes.into_requested(), self.configs.clone())?.try_into()?)
+    }
+
     /// Copy the admitted mounts, retaining exact scoped source identity.
     #[must_use]
     pub fn to_requested(&self) -> ServiceMountGraph {
@@ -402,4 +432,50 @@ fn admit_target(
         return Err(ServiceSpecGraphError::DuplicateMountTarget { target });
     }
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::{
+        ConfigMount, ConfigSpec, RequestedServiceSpec, ServiceConfigGraph, ServiceSpecGraphError,
+    };
+
+    #[test]
+    fn replacing_one_half_is_admitted_against_the_other_and_a_refusal_changes_nothing() {
+        let mut spec: RequestedServiceSpec = serde_json::from_value(json!({
+            "name": "db",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "postgres:17", "pull_policy": "missing" },
+            "volumes": [{ "reference": "data", "source": { "kind": "tmpfs", "size_bytes": 4096 } }],
+            "mounts": [{ "volume": "data", "target": "/data" }],
+        }))
+        .unwrap();
+        let before = spec.clone();
+        let config = |target: &str| {
+            let mount = ConfigMount {
+                config_name: "app".into(),
+                target: Some(crate::ContainerPath::parse(target).unwrap()),
+                uid: None,
+                gid: None,
+                mode: None,
+            };
+            let config = ConfigSpec {
+                name: "app".into(),
+                content: Vec::new(),
+            };
+            ServiceConfigGraph::parse(vec![config], vec![mount]).unwrap()
+        };
+
+        assert!(matches!(
+            spec.set_config_graph(config("/data/")),
+            Err(ServiceSpecGraphError::DuplicateMountTarget { .. })
+        ));
+        assert_eq!(spec, before);
+
+        spec.set_config_graph(config("/etc/app")).unwrap();
+        assert_eq!(spec.config_mounts().len(), 1);
+        assert_eq!(spec.volume_graph(), before.volume_graph());
+    }
 }

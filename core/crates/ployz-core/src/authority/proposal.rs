@@ -10,66 +10,30 @@
 //! consumed as a signed deploy approval is. A Machine sees only its own step, so the
 //! order Cloud runs the steps in, and whether it runs them all, stays Cloud's.
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
-    canonical::{Timestamp, hex_bytes, write_hex},
+    canonical::Timestamp,
     keys::{Approver, Purpose, Signed, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
     restart::{Approved, RestartApproval, RestartFacts, SignerKey, WorkflowKind},
     session::GrantScope,
     trusted_key::TrustedKeys,
 };
+use crate::value::hex_newtype;
 use crate::{Namespace, OperationId, SealingPublicKey};
 
-/// SHA-256 of one step's canonical body, written as 64 lowercase hex digits.
-#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(try_from = "String", into = "String")]
-#[ts(type = "string")]
-pub struct StepDigest([u8; 32]);
+hex_newtype!(
+    /// SHA-256 of one step's canonical body, written as 64 lowercase hex digits.
+    StepDigest, "step digest", 32, "", "64 lowercase hex digits"
+);
 
 impl StepDigest {
     #[must_use]
     pub fn of(body: &str) -> Self {
         Self(Sha256::digest(body.as_bytes()).into())
-    }
-
-    /// # Errors
-    /// Returns a [`crate::ValueError`] unless `value` is 64 lowercase hex digits.
-    pub fn parse(value: &str) -> Result<Self, crate::ValueError> {
-        hex_bytes(value)
-            .map(Self)
-            .ok_or_else(|| crate::ValueError::new("step digest", value, "64 lowercase hex digits"))
-    }
-}
-
-impl fmt::Display for StepDigest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_hex(&self.0, formatter)
-    }
-}
-
-impl fmt::Debug for StepDigest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "StepDigest({self})")
-    }
-}
-
-impl TryFrom<String> for StepDigest {
-    type Error = crate::ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(&value)
-    }
-}
-
-impl From<StepDigest> for String {
-    fn from(digest: StepDigest) -> Self {
-        digest.to_string()
     }
 }
 

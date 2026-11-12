@@ -123,6 +123,12 @@ Run `ployz ingress use tunnel` without the switch to type the token at a prompt.
 token sealed for your servers; nobody reads it back, and a server that joins later gets it on
 its own.
 
+The CLI seals the token on your computer, to your cluster's key. Through Ployz Cloud, it seals only
+to the key [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
+`ployz device pin` once first. Until you do, or when Ployz Cloud sends another key, the command
+stops before it asks for the token and nothing changes. Over `--connect ssh://` it reads the key
+from that server and needs no pin.
+
 A domain behind the tunnel gets its certificate from Cloudflare, so Ployz stops ordering
 certificates while every server uses the tunnel. Its status says **via tunnel**. Set
 **SSL/TLS** to **Full** or **Flexible** in Cloudflare; the tunnel carries plain http to your

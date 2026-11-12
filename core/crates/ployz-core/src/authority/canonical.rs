@@ -7,7 +7,7 @@
 //! A verifier checks the exact bytes it received are the canonical form of the value they
 //! parse to, so one value has one encoding and one signature input.
 
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -222,22 +222,7 @@ impl From<Timestamp> for u64 {
     }
 }
 
-pub(super) fn hex_bytes<const N: usize>(value: &str) -> Option<[u8; N]> {
-    if !crate::value::is_lower_hex(value, N * 2) {
-        return None;
-    }
-    let mut bytes = [0; N];
-    for (byte, pair) in bytes.iter_mut().zip(value.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(bytes)
-}
-
-pub(super) fn write_hex(bytes: &[u8], formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-    bytes
-        .iter()
-        .try_for_each(|byte| write!(formatter, "{byte:02x}"))
-}
+pub(super) use crate::value::hex::{hex_bytes, write_hex};
 
 /// `deserialize_with` for a list a signed body keeps strictly ascending, so a set of
 /// elements has one encoding and one signature input.

@@ -986,3 +986,235 @@ fn only_a_switch_that_closes_an_open_public_door_goes_through_both_doors() {
     };
     assert_eq!(asked(back, &rerun), vec![IngressDoors::public()]);
 }
+
+/// web lists first and its row claims `first`, as a row Cloud planted could; edge, the
+/// entry, holds `entry`.
+fn fleet_claiming(
+    first: SealingPublicKey,
+    entry: SealingPublicKey,
+) -> ployz_testkit::fake_fleet::FleetFile {
+    serde_json::from_value(serde_json::json!({"machines": [
+        {"name": "web", "id": "2".repeat(32), "version": "0.4.0", "online": true,
+         "sealing": first.to_string()},
+        {"name": "edge", "id": "1".repeat(32), "version": "0.4.0", "online": true,
+         "sealing": entry.to_string()},
+    ]}))
+    .unwrap()
+}
+
+async fn entry_from(
+    fleet: &ployz_testkit::fake_fleet::FakeFleet,
+    source: crate::context::ConnectionSource,
+) -> crate::connect::Client {
+    let socket = fleet.socket(&MachineName::parse("edge").unwrap()).unwrap();
+    crate::connect::connect_selected_with(
+        crate::context::SelectedConnections {
+            source,
+            connections: vec![crate::context::Connection::unix(socket).unwrap()],
+        },
+        std::sync::Arc::new(crate::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap()
+}
+
+fn pin_of(key: SealingPublicKey) -> crate::sealing_pin::Pin {
+    crate::sealing_pin::Pin {
+        public_key: key,
+        server: MachineName::parse("edge").unwrap(),
+        recipient: None,
+    }
+}
+
+fn opened(cluster: &ployz_core::Keypair, doors: &ClusterDoors) -> Option<Vec<u8>> {
+    cluster.open_platform(PlatformPurpose::IngressTunnel, doors.sealed_token.as_ref()?)
+}
+
+const TUNNEL_TOKEN: &str = "cloudflare-tunnel-token";
+
+#[tokio::test]
+async fn a_tunnel_token_is_sealed_only_to_a_key_this_computer_can_vouch_for() {
+    use crate::context::ConnectionSource;
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+
+    let cluster = ployz_core::Keypair::generate();
+    let planted = ployz_core::Keypair::generate();
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        fleet_claiming(planted.public(), cluster.public()),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+
+    let mut through_cloud = entry_from(&fleet, ConnectionSource::Cloud).await;
+    let observed = observe_doors(&mut through_cloud).await.unwrap();
+    assert_eq!(observed.sealing, Some(planted.public()));
+    for (given, why) in [
+        (Some(TUNNEL_TOKEN.to_owned()), "a token on stdin"),
+        (None, "a token it would ask for"),
+    ] {
+        let refusal = checked_doors(
+            &mut through_cloud,
+            &observed,
+            IngressDoors::tunnel(),
+            given,
+            async |_| Ok(SealTo::Pinned(Some(pin_of(cluster.public())))),
+            || panic!("the token is asked for only once its key checks out"),
+        )
+        .await
+        .unwrap_err()
+        .report();
+        assert_eq!(refusal.code, RpcErrorCode::Conflict, "{why}");
+        assert!(refusal.message.contains("nothing was sealed"), "{why}");
+    }
+    let unpinned = checked_doors(
+        &mut through_cloud,
+        &observed,
+        IngressDoors::tunnel(),
+        Some(TUNNEL_TOKEN.to_owned()),
+        async |_| Ok(SealTo::Pinned(None)),
+        || unreachable!(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(unpinned.report().code, RpcErrorCode::Conflict);
+
+    let public = checked_doors(
+        &mut through_cloud,
+        &observed,
+        IngressDoors::public(),
+        Some(TUNNEL_TOKEN.to_owned()),
+        async |_| panic!("opening only the Public Door seals nothing"),
+        || unreachable!(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(public.sealed_token, None);
+
+    let mut chosen = entry_from(&fleet, ConnectionSource::Direct).await;
+    let observed = observe_doors(&mut chosen).await.unwrap();
+    let doors = checked_doors(
+        &mut chosen,
+        &observed,
+        IngressDoors::tunnel(),
+        Some(TUNNEL_TOKEN.to_owned()),
+        async |client| SealTo::of(client, async || panic!("a chosen socket reads no pin")).await,
+        || unreachable!(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        opened(&cluster, &doors).as_deref(),
+        Some(TUNNEL_TOKEN.as_bytes()),
+        "a connection the person chose seals to the entry's own key"
+    );
+    assert_eq!(opened(&planted, &doors), None);
+}
+
+#[tokio::test]
+async fn a_relayed_key_that_is_the_pin_seals_the_token_asked_for_once_it_checks_out() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+
+    let cluster = ployz_core::Keypair::generate();
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        fleet_claiming(cluster.public(), cluster.public()),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut through_cloud = entry_from(&fleet, crate::context::ConnectionSource::Cloud).await;
+    let observed = observe_doors(&mut through_cloud).await.unwrap();
+    assert_eq!(observed.cluster.sealed_token, None);
+
+    let doors = checked_doors(
+        &mut through_cloud,
+        &observed,
+        IngressDoors::tunnel(),
+        None,
+        async |_| Ok(SealTo::Pinned(Some(pin_of(cluster.public())))),
+        || Ok(TUNNEL_TOKEN.to_owned()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(doors.doors, IngressDoors::tunnel());
+    assert_eq!(
+        opened(&cluster, &doors).as_deref(),
+        Some(TUNNEL_TOKEN.as_bytes())
+    );
+}
+
+#[tokio::test]
+async fn an_activated_pin_seals_the_tunnel_token_to_its_recipient_key_once_the_relayed_key_checks_out()
+ {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+
+    let cluster = ployz_core::Keypair::generate();
+    let recipient = ployz_core::Keypair::generate();
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        fleet_claiming(cluster.public(), cluster.public()),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut through_cloud = entry_from(&fleet, crate::context::ConnectionSource::Cloud).await;
+    let observed = observe_doors(&mut through_cloud).await.unwrap();
+    let activated = crate::sealing_pin::Pin {
+        recipient: Some(recipient.public()),
+        ..pin_of(cluster.public())
+    };
+
+    let doors = checked_doors(
+        &mut through_cloud,
+        &observed,
+        IngressDoors::tunnel(),
+        Some(TUNNEL_TOKEN.to_owned()),
+        async |_| Ok(SealTo::Pinned(Some(activated))),
+        || unreachable!(),
+    )
+    .await
+    .unwrap();
+
+    let sealed = doors.sealed_token.as_ref().unwrap();
+    assert_eq!(
+        recipient
+            .open_platform_for(&cluster.public(), PlatformPurpose::IngressTunnel, sealed)
+            .as_deref(),
+        Some(TUNNEL_TOKEN.as_bytes()),
+        "the token seals to the recipient key, bound to the Cluster's identity"
+    );
+    assert_eq!(
+        opened(&cluster, &doors),
+        None,
+        "the identity no longer opens what is sealed after activation"
+    );
+
+    let planted = ployz_core::Keypair::generate();
+    let refusal = checked_doors(
+        &mut through_cloud,
+        &observed,
+        IngressDoors::tunnel(),
+        Some(TUNNEL_TOKEN.to_owned()),
+        async |_| {
+            Ok(SealTo::Pinned(Some(crate::sealing_pin::Pin {
+                recipient: Some(recipient.public()),
+                ..pin_of(planted.public())
+            })))
+        },
+        || unreachable!(),
+    )
+    .await
+    .unwrap_err()
+    .report();
+    assert_eq!(
+        refusal.code,
+        RpcErrorCode::Conflict,
+        "a pinned recipient seals nothing when the relayed identity is not the pin"
+    );
+}

@@ -8,14 +8,14 @@ use sha2::Digest as _;
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
+    canonical::{self, CanonicalError, Timestamp, hex_bytes},
     proposal::ProposalApproval,
     refusal::AuthorityRefusal,
     restart::SignerKey,
     session::{Grant, SessionGrant},
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
-use crate::{DeviceCode, DeviceKey};
+use crate::{DeviceCode, DeviceKey, value::hex_newtype};
 
 /// What a signature over a statement is for. Each purpose signs under its own prefix,
 /// so a signature made for one statement never verifies as another.
@@ -74,24 +74,13 @@ pub fn signing_input(purpose: Purpose, body: &str) -> Vec<u8> {
     input
 }
 
-/// An Ed25519 public key, written as 64 lowercase hex digits. A Device's management
-/// key is one.
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(try_from = "String", into = "String")]
-#[ts(type = "string")]
-pub struct SigningPublicKey([u8; 32]);
+hex_newtype!(
+    /// An Ed25519 public key, written as 64 lowercase hex digits. A Device's management
+    /// key is one.
+    SigningPublicKey, "signing key", 32, "", "64 lowercase hex digits", without_debug
+);
 
 impl SigningPublicKey {
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
     /// The Device code of this key, the name a person knows it by.
     #[must_use]
     pub fn code(&self) -> DeviceCode {
@@ -105,14 +94,6 @@ impl SigningPublicKey {
             key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(signature))
                 .is_ok()
         })
-    }
-
-    /// # Errors
-    /// Returns a [`crate::ValueError`] unless `value` is 64 lowercase hex digits.
-    pub fn parse(value: &str) -> Result<Self, crate::ValueError> {
-        hex_bytes(value)
-            .map(Self)
-            .ok_or_else(|| crate::ValueError::new("signing key", value, "64 lowercase hex digits"))
     }
 }
 
@@ -128,29 +109,9 @@ impl From<SigningPublicKey> for DeviceKey {
     }
 }
 
-impl fmt::Display for SigningPublicKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_hex(&self.0, formatter)
-    }
-}
-
 impl fmt::Debug for SigningPublicKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "SigningPublicKey({})", self.code())
-    }
-}
-
-impl TryFrom<String> for SigningPublicKey {
-    type Error = crate::ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(&value)
-    }
-}
-
-impl From<SigningPublicKey> for String {
-    fn from(key: SigningPublicKey) -> Self {
-        key.to_string()
     }
 }
 
