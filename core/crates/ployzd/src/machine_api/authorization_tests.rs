@@ -1375,8 +1375,9 @@ mod teardown {
     /// No Docker request since the `before`th stopped or deleted anything.
     fn assert_took_nothing_off(machine: &Enforcing, before: usize) {
         let requests = machine.fake.requests.lock().unwrap();
-        let effects: Vec<_> = requests[before..]
+        let effects: Vec<_> = requests
             .iter()
+            .skip(before)
             .filter(|(method, path)| *method == http::Method::DELETE || path.contains("/stop"))
             .collect();
         assert!(effects.is_empty(), "{effects:?}");
@@ -1412,10 +1413,7 @@ mod teardown {
         let (turn, waiting) = queued(
             &machine,
             vec![
-                (
-                    op::EnsureContainer::PATH,
-                    removal(id.clone(), Some(app.clone())),
-                ),
+                (op::EnsureContainer::PATH, removal(id, Some(app.clone()))),
                 (op::RemoveVolume::PATH, volume_removal(Some(app))),
             ],
         )
