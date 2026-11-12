@@ -573,6 +573,69 @@ impl fmt::Debug for SealingKey {
     }
 }
 
+/// The Cluster's keys as this Machine holds them. The identity is the Cluster's first
+/// Sealing Key: statements, pins and every sealed value's binding name its public half.
+/// After activation a recipient key sits beside it. New values seal to the recipient, so a
+/// past holder of the identity's private half opens none of them. The identity still opens
+/// what was sealed before activation, and the build attest key derives from the recipient.
+pub(crate) struct ClusterKeys {
+    identity: SealingKey,
+    recipient: Option<SealingKey>,
+}
+
+impl ClusterKeys {
+    /// The keys `data_dir` holds, or `None` with no identity key.
+    ///
+    /// # Errors
+    /// Returns the read errors of [`SealingKey::load`] and [`SealingKey::load_recipient`].
+    pub(crate) fn load(data_dir: &Path) -> io::Result<Option<Self>> {
+        let Some(identity) = SealingKey::load(data_dir)? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            identity,
+            recipient: SealingKey::load_recipient(data_dir)?,
+        }))
+    }
+
+    pub(crate) fn identity(&self) -> &SealingKey {
+        &self.identity
+    }
+
+    pub(crate) fn recipient(&self) -> Option<&SealingKey> {
+        self.recipient.as_ref()
+    }
+
+    /// The key new values seal to: the recipient once installed, the identity before.
+    pub(crate) fn sealing_to(&self) -> &SealingKey {
+        self.recipient.as_ref().unwrap_or(&self.identity)
+    }
+
+    pub(crate) fn open_value(&self, aad: &[u8], sealed: &Ciphertext) -> Option<Zeroizing<Vec<u8>>> {
+        self.recipient
+            .as_ref()
+            .and_then(|key| key.open_value(aad, sealed))
+            .or_else(|| self.identity.open_value(aad, sealed))
+    }
+
+    pub(crate) fn open_platform(
+        &self,
+        purpose: PlatformPurpose,
+        sealed: &Ciphertext,
+    ) -> Option<Zeroizing<Vec<u8>>> {
+        let cluster = self.identity.public_key();
+        self.recipient
+            .as_ref()
+            .and_then(|key| key.open_platform_of(&cluster, purpose, sealed))
+            .or_else(|| self.identity.open_platform_of(&cluster, purpose, sealed))
+    }
+
+    /// The build attest key: derived from the recipient once installed.
+    pub(crate) fn attest(&self) -> ployz_core::X25519Secret {
+        self.sealing_to().attest()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -1027,68 +1090,5 @@ mod tests {
                 .open_platform(PlatformPurpose::PrivateAccess, &sealed)
                 .is_none()
         );
-    }
-}
-
-/// The Cluster's keys as this Machine holds them. The identity is the Cluster's first
-/// Sealing Key: statements, pins and every sealed value's binding name its public half.
-/// After activation a recipient key sits beside it. New values seal to the recipient, so a
-/// past holder of the identity's private half opens none of them. The identity still opens
-/// what was sealed before activation, and the build attest key derives from the recipient.
-pub(crate) struct ClusterKeys {
-    identity: SealingKey,
-    recipient: Option<SealingKey>,
-}
-
-impl ClusterKeys {
-    /// The keys `data_dir` holds, or `None` with no identity key.
-    ///
-    /// # Errors
-    /// Returns the read errors of [`SealingKey::load`] and [`SealingKey::load_recipient`].
-    pub(crate) fn load(data_dir: &Path) -> io::Result<Option<Self>> {
-        let Some(identity) = SealingKey::load(data_dir)? else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
-            identity,
-            recipient: SealingKey::load_recipient(data_dir)?,
-        }))
-    }
-
-    pub(crate) fn identity(&self) -> &SealingKey {
-        &self.identity
-    }
-
-    pub(crate) fn recipient(&self) -> Option<&SealingKey> {
-        self.recipient.as_ref()
-    }
-
-    /// The key new values seal to: the recipient once installed, the identity before.
-    pub(crate) fn sealing_to(&self) -> &SealingKey {
-        self.recipient.as_ref().unwrap_or(&self.identity)
-    }
-
-    pub(crate) fn open_value(&self, aad: &[u8], sealed: &Ciphertext) -> Option<Zeroizing<Vec<u8>>> {
-        self.recipient
-            .as_ref()
-            .and_then(|key| key.open_value(aad, sealed))
-            .or_else(|| self.identity.open_value(aad, sealed))
-    }
-
-    pub(crate) fn open_platform(
-        &self,
-        purpose: PlatformPurpose,
-        sealed: &Ciphertext,
-    ) -> Option<Zeroizing<Vec<u8>>> {
-        let cluster = self.identity.public_key();
-        self.recipient
-            .as_ref()
-            .and_then(|key| key.open_platform_of(&cluster, purpose, sealed))
-            .or_else(|| self.identity.open_platform_of(&cluster, purpose, sealed))
-    }
-
-    /// The build attest key: derived from the recipient once installed.
-    pub(crate) fn attest(&self) -> ployz_core::X25519Secret {
-        self.sealing_to().attest()
     }
 }

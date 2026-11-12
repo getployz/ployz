@@ -391,7 +391,7 @@ impl LocalMachineRecord {
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.holds_key(*code))
                 .then_some(Evidence::Key { code: *code }),
-            _ => None,
+            PasskeyApprover::Routed | PasskeyApprover::Unknown => None,
         }
     }
 

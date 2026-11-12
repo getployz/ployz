@@ -201,7 +201,7 @@ impl Store<'_> {
                 | SealingTargetsView::Sync { organization, .. }) = &targets;
                 let pin = Pins::beside(&config_path(self.matches)?).get(organization)?;
                 Ok(Some((
-                    sealing_pin::check(pin.as_ref(), public_key)?,
+                    sealing_pin::check(pin.as_ref(), public_key)?.recipient,
                     targets,
                 )))
             }

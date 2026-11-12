@@ -526,7 +526,7 @@ async fn full_mutations_report_servers_without_a_direct_connection_as_omissions(
     assert_eq!(removed.gaps.outcome().unwrap_err().printed_exit(), Some(3));
     let reach = Reach::full(&mut client).await.unwrap();
     let (_, gaps) = reach
-        .fan_out(|_| async { Ok(Some(DeviceEnforcementSet { enforced: true })) })
+        .fan_out(|_| async { Ok(Some(ployz_core::DeviceEnforcementSet { enforced: true })) })
         .await;
     assert_eq!(gaps.omitted, vec![id('2'), id('3')]);
     assert_eq!(gaps.outcome().unwrap_err().printed_exit(), Some(3));
@@ -561,35 +561,6 @@ fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
             "Approving Server joiner on 10.210.7.0/24 with endpoints [2001:db8::7]:51820 (join code {}).",
             body.code()
         )
-    );
-}
-
-#[test]
-fn starting_set_summary_names_each_trusted_server_before_signing() {
-    let first = machine('1', "machine-1");
-    let second = machine('2', "machine-2");
-    let reach = Reach {
-        asked: vec![first.id, second.id],
-        silent: Vec::new(),
-        entry: None,
-        names: BTreeMap::from([(first.id, first.name.clone())]),
-    };
-    assert_eq!(
-        starting_set_summary(&reach, &[(&first).into(), (&second).into()]),
-        format!(
-            "Trusting 2 Servers from the start: machine-1 ({}, {}, key {}), {} ({}, {}, key {}).",
-            first.subnet,
-            first.id,
-            first.public_key.fingerprint(),
-            second.id,
-            second.subnet,
-            second.id,
-            second.public_key.fingerprint()
-        )
-    );
-    assert_eq!(
-        starting_set_summary(&reach, &[]),
-        "Trusting 0 Servers from the start: none."
     );
 }
 

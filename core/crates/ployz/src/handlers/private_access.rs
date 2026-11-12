@@ -104,12 +104,12 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let seal_to = super::device::seal_to(&config, client).await?;
             let observed = observe_access(client).await?;
-            let cluster = seal_to.key(client, observed.sealing).await?;
-            let sealed = seal_key(&cluster, &key)?;
+            let seal_for = seal_to.key(client, observed.sealing).await?;
+            let sealed = seal_key(&seal_for, &key)?;
             let approval = match super::device::key::load(&device_key) {
                 Ok(Some(secret)) => Some(device_approval(
                     &Signer::from_seed(&secret),
-                    cluster,
+                    seal_for.cluster,
                     &sealed,
                 )?),
                 _ => None,

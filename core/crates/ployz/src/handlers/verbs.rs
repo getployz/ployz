@@ -304,7 +304,7 @@ pub(crate) const DEVICE_APPROVE: Verb = Verb::local(
 .docs("servers/manage-servers.md");
 pub(crate) const DEVICE_ENFORCE: Verb = Verb::local(
     "device enforce",
-    Never,
+    Always,
     device::enforce_command,
     device::enforce,
 )

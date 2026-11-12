@@ -151,16 +151,13 @@ fn a_passkey_approves_nothing_but_workflows_rules_volume_workflows_and_activatio
             "{purpose}"
         );
     }
-    for purpose in [Purpose::Join] {
-        assert_eq!(
-            trusted.passkey_approval(purpose, &authenticator.answer(&HONEST), CHALLENGE),
-            Err(AuthorityRefusal::ApproveOnly {
-                code: authenticator.passkey().code(),
-                purpose,
-            }),
-            "{purpose}"
-        );
-    }
+    assert_eq!(
+        trusted.passkey_approval(Purpose::Join, &authenticator.answer(&HONEST), CHALLENGE),
+        Err(AuthorityRefusal::ApproveOnly {
+            code: authenticator.passkey().code(),
+            purpose: Purpose::Join,
+        }),
+    );
 }
 
 #[test]

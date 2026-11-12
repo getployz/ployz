@@ -79,13 +79,15 @@ src/handlers/debug.rs::send	-	invoke_raw	single	target(TARGET_RPC_TIMEOUT)	-	onc
 src/handlers/device.rs::approve_waiting_join	op::ApproveJoin	invoke	single	-	-	once
 src/handlers/device.rs::approve_waiting_join	op::PendingJoins	invoke	single	-	-	once
 src/handlers/device.rs::devices_on	op::Inspect	invoke	single	-	-	once
-src/handlers/device.rs::enforce_on	op::SetDeviceEnforcement	invoke	single	-	-	once
-src/handlers/device.rs::member_of	op::Inspect	invoke	single	-	-	once
 src/handlers/device.rs::remove_on	op::RemoveTrustedKey	invoke	single	-	-	once
 src/handlers/device.rs::remove_on	op::SetDevice	invoke	single	-	-	once
 src/handlers/device.rs::set_on	T	invoke	single	-	-	once
 src/handlers/device.rs::sign_waiting_join	op::ApproveJoin	call	unary	-	redial	keyed
 src/handlers/device.rs::sign_waiting_join	op::PendingJoins	call	unary	-	redial	read
+src/handlers/device/enforce.rs::deliver	op::SetDeviceEnforcement	invoke	single	-	-	once
+src/handlers/device/enforce.rs::found_on	op::Inspect	invoke	single	-	-	once
+src/handlers/device/enforce.rs::install_recipient	op::SetRecipientKey	invoke	single	-	-	once
+src/handlers/device/enforce.rs::settled	op::Inspect	call	setup	wait(WAIT)	redial	read
 src/handlers/recovery.rs::recover_with	op::RecoverSealingKey	call_repeatable	setup	wait(WAIT)	redial	keyed
 src/handlers/recovery.rs::require	op::DescribeContract	call_repeatable	setup	wait(WAIT)	redial	read
 src/handlers/recovery.rs::wrap_sealing_key	op::WrapSealingKey	call_repeatable	setup	wait(WAIT)	redial	keyed

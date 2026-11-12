@@ -571,7 +571,13 @@ fn activation_keeps_joins_a_kept_key_signed_and_drops_every_accepted_build() {
     );
     let written: serde_json::Value = serde_json::from_slice(&walk.bytes()).unwrap();
     assert!(written.get("accepted").is_none());
-    assert!(written["joins"].get(machine('3').as_str()).is_some());
+    assert!(
+        written
+            .get("joins")
+            .unwrap()
+            .get(machine('3').as_str())
+            .is_some()
+    );
 }
 
 #[test]

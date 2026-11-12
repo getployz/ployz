@@ -11,12 +11,40 @@ fn pinned(byte: u8) -> Pin {
     Pin {
         public_key: key(byte),
         server: MachineName::parse("web-1").unwrap(),
+        recipient: None,
+    }
+}
+
+fn to_identity(byte: u8) -> SealFor {
+    SealFor {
+        cluster: key(byte),
+        recipient: key(byte),
     }
 }
 
 #[test]
+fn a_pin_with_a_recipient_seals_to_it_and_enforce_names_it_on_the_cluster_s_pins() {
+    let dir = tempfile::tempdir().unwrap();
+    let pins = Pins::beside(&dir.path().join("config.toml"));
+    pins.set("org-a", pinned(1)).unwrap();
+    pins.set("org-b", pinned(2)).unwrap();
+
+    pins.name_recipient(key(1), key(7)).unwrap();
+
+    let named = pins.get("org-a").unwrap().unwrap();
+    assert_eq!(
+        check(Some(&named), key(1)).unwrap(),
+        SealFor {
+            cluster: key(1),
+            recipient: key(7)
+        }
+    );
+    assert_eq!(pins.get("org-b").unwrap().unwrap().recipient, None);
+}
+
+#[test]
 fn a_relayed_key_is_sealed_to_only_when_it_is_the_pinned_one() {
-    assert_eq!(check(Some(&pinned(1)), key(1)).unwrap(), key(1));
+    assert_eq!(check(Some(&pinned(1)), key(1)).unwrap(), to_identity(1));
 
     for (pin, why) in [
         (Some(pinned(1)), "a key Cloud relays in place of the pin"),
@@ -110,13 +138,14 @@ async fn a_direct_entry_seals_to_its_own_key_not_a_row_another_machine_wrote() {
     assert!(SealTo::direct(&client));
     assert_eq!(
         SealTo::Entry.key(&mut client, relayed).await.unwrap(),
-        key(1)
+        to_identity(1)
     );
     assert_eq!(
         entry_pin(&mut client).await.unwrap(),
         Pin {
             public_key: key(1),
             server: MachineName::parse("edge").unwrap(),
+            recipient: None,
         }
     );
 }
@@ -137,7 +166,7 @@ async fn a_relayed_key_other_than_the_pin_is_refused_before_anything_is_sealed()
             .key(&mut client, Some(key(9)))
             .await
             .unwrap(),
-        key(9)
+        to_identity(9)
     );
     assert_eq!(
         SealTo::Pinned(Some(pinned(1)))

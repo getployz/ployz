@@ -1627,19 +1627,26 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             capability,
             ref reason,
         } => {
-            let mut details = serde_json::json!({
-                "capability": capability,
-                "next": "ployz device enforce from an approved device, over SSH to each Server",
-            });
+            use crate::machine::local_machine::activation::Refusal;
+            let mut details = serde_json::Map::from_iter([
+                ("capability".to_owned(), serde_json::json!(capability)),
+                (
+                    "next".to_owned(),
+                    serde_json::json!(
+                        "ployz device enforce from an approved device, over SSH to each Server"
+                    ),
+                ),
+            ]);
             match reason {
-                crate::machine::local_machine::activation::Refusal::LegacyMember(id) => {
-                    details["legacy_member"] = serde_json::json!(id);
+                Refusal::LegacyMember(id) => {
+                    details.insert("legacy_member".to_owned(), serde_json::json!(id));
                 }
-                crate::machine::local_machine::activation::Refusal::LegacyKey(code) => {
-                    details["legacy_key"] = serde_json::json!(code);
+                Refusal::LegacyKey(code) => {
+                    details.insert("legacy_key".to_owned(), serde_json::json!(code));
                 }
-                _ => {}
+                Refusal::Authority(_) | Refusal::NoOff | Refusal::Activated => {}
             }
+            let details = serde_json::Value::Object(details);
             Err(ployz_core::rpc::hinted_status(
                 tonic::Code::PermissionDenied,
                 &error,

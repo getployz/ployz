@@ -292,7 +292,7 @@ async fn a_machine_reseals_only_to_its_installed_recipient() {
     let resealed = entry.reseal_values(request()).await.unwrap();
 
     assert_eq!(resealed.recipient, recipient);
-    let moved = resealed.values[0].clone().unwrap();
+    let moved = resealed.values.first().cloned().flatten().unwrap();
     assert!(
         identity_key
             .open_platform(PlatformPurpose::PrivateAccess, &moved)

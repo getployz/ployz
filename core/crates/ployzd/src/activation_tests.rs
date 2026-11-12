@@ -119,7 +119,7 @@ fn activation_is_a_process_boundary() {
     assert_eq!(record.management_scope(&device(2).into()), None);
     assert!(record.trusted_keys().passkeys.is_empty());
     let snapshot = record.trusted_snapshot().unwrap();
-    assert!(snapshot.holds_member(&admitted.members[0]));
+    assert!(snapshot.holds_member(admitted.members.first().unwrap()));
 
     let mut store = reopened(&dir, store);
     let plugin = Plugin::default();
@@ -186,7 +186,7 @@ fn enforcement_can_not_be_turned_off_after_activation_and_reload() {
     let path = dir.path().join("data").join("machine.json");
     let mut json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    json["device_enforcement"] = serde_json::Value::Bool(false);
+    *json.get_mut("device_enforcement").unwrap() = serde_json::Value::Bool(false);
     drop(store);
     std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
 
@@ -250,7 +250,11 @@ fn boot_reverifies_durable_state() {
     .unwrap();
     std::fs::write(data_dir.join("recipient-generated.key"), [9; 64]).unwrap();
     std::fs::create_dir_all(data_dir.join("tailscale.forgotten")).unwrap();
-    std::fs::write(data_dir.join("tailscale.forgotten/tailscaled.state"), b"node").unwrap();
+    std::fs::write(
+        data_dir.join("tailscale.forgotten/tailscaled.state"),
+        b"node",
+    )
+    .unwrap();
     pending(&store).write(&data_dir).unwrap();
     let mut store = reopened(&dir, store);
 
@@ -259,7 +263,7 @@ fn boot_reverifies_durable_state() {
     let joins: serde_json::Value =
         serde_json::from_slice(&std::fs::read(data_dir.join("join-approvals.json")).unwrap())
             .unwrap();
-    let proposals = joins["proposals"].as_object().unwrap();
+    let proposals = joins.get("proposals").unwrap().as_object().unwrap();
     assert!(proposals.contains_key(kept.as_str()));
     assert!(!proposals.contains_key(legacy.as_str()));
     assert!(proposals.contains_key(unapproved.as_str()));

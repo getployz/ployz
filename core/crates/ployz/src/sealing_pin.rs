@@ -32,6 +32,27 @@ pub(crate) struct Pin {
     pub(crate) public_key: SealingPublicKey,
     /// The Server that reported it.
     pub(crate) server: MachineName,
+    /// The recipient key new values seal to once the Cluster activated, as a Server reported
+    /// it over SSH or the local socket or as `ployz device enforce` here named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recipient: Option<SealingPublicKey>,
+}
+
+impl Pin {
+    fn seal_for(&self) -> SealFor {
+        SealFor {
+            cluster: self.public_key,
+            recipient: self.recipient.unwrap_or(self.public_key),
+        }
+    }
+}
+
+/// The Cluster a value seals for and the key it seals to: its recipient key once it
+/// activated, its identity before.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SealFor {
+    pub(crate) cluster: SealingPublicKey,
+    pub(crate) recipient: SealingPublicKey,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -90,6 +111,31 @@ impl Pins {
         let replaced = file.organizations.insert(organization.to_owned(), pin);
         self.save(&file)?;
         Ok(replaced)
+    }
+
+    /// Name `recipient` on every pin of the Cluster whose identity is `cluster`, as
+    /// `ployz device enforce` does once it installed the recipient it generated here.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file can't be read, isn't a pin file, or can't be written.
+    pub(crate) fn name_recipient(
+        &self,
+        cluster: SealingPublicKey,
+        recipient: SealingPublicKey,
+    ) -> Result<(), PinError> {
+        let mut file = self.load()?;
+        let mut named = false;
+        for pin in file.organizations.values_mut() {
+            if pin.public_key == cluster {
+                pin.recipient = Some(recipient);
+                named = true;
+            }
+        }
+        if named {
+            self.save(&file)?;
+        }
+        Ok(())
     }
 
     fn load(&self) -> Result<PinFile, PinError> {
@@ -171,9 +217,9 @@ impl SealTo {
         &self,
         client: &mut Client,
         relayed: Option<SealingPublicKey>,
-    ) -> Result<SealingPublicKey, Failure> {
+    ) -> Result<SealFor, Failure> {
         match self {
-            Self::Entry => entry_key(client).await,
+            Self::Entry => Ok(entry_pin(client).await?.seal_for()),
             Self::Pinned(pin) => {
                 let Some(relayed) = relayed else {
                     return Err(Failure::coded(
@@ -199,12 +245,9 @@ fn trusts(source: &ConnectionSource, transport: &Transport) -> bool {
 ///
 /// Refuses with `conflict` when nothing is pinned or the pin is another key, naming the
 /// command that pins it.
-pub(crate) fn check(
-    pin: Option<&Pin>,
-    relayed: SealingPublicKey,
-) -> Result<SealingPublicKey, Failure> {
+pub(crate) fn check(pin: Option<&Pin>, relayed: SealingPublicKey) -> Result<SealFor, Failure> {
     match pin {
-        Some(pin) if pin.public_key == relayed => Ok(pin.public_key),
+        Some(pin) if pin.public_key == relayed => Ok(pin.seal_for()),
         Some(pin) => Err(Failure::conflict(format!(
             "Ployz Cloud sent a Sealing Key other than the one this computer pinned from {}, \
              so nothing was sealed. If your Cluster's key changed, pin it again from a Server.",
@@ -235,6 +278,7 @@ pub(crate) async fn entry_pin(client: &mut Client) -> Result<Pin, Failure> {
         (Some(Sealing::Held { public_key }), Some(machine)) => Ok(Pin {
             public_key,
             server: machine.name,
+            recipient: details.sealing_recipient,
         }),
         (_, machine) => Err(Failure::conflict(format!(
             "Server {} holds no Sealing Key it can open with, so nothing can be sealed for it.",
@@ -245,10 +289,6 @@ pub(crate) async fn entry_pin(client: &mut Client) -> Result<Pin, Failure> {
         ))
         .hint(Hint::Inspect("ployz status".to_owned()))),
     }
-}
-
-async fn entry_key(client: &mut Client) -> Result<SealingPublicKey, Failure> {
-    Ok(entry_pin(client).await?.public_key)
 }
 
 #[cfg(test)]
