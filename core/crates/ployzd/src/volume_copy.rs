@@ -25,9 +25,6 @@ pub const PULL_ROUTE: &str = "Volume.Copy.Pull";
 /// The slot destroyed with its copy.
 pub const DESTROY_ROUTE: &str = "Volume.Copy.Destroy";
 
-/// The path on the writer Machine's send port that answers a Volume's bound in bytes.
-pub const BOUND_PATH_PREFIX: &str = "/volume-bound/";
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CopyRequest {
     pub name: DockerVolumeName,

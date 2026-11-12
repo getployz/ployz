@@ -31,8 +31,8 @@ use ployz_core::{
 use super::{
     frame::{self, Event, Frames, Reassembler, Stream},
     layout::{
-        ContainerKind, ContainerMeta, EXITS_FILE, GAPS_FILE, Gap, GapReason, LogFileName,
-        META_FILE, RunExit, StoreRoot, run_exits,
+        ContainerKind, ContainerMeta, EXITS_FILE, GAPS_FILE, Gap, GapReason, LogFileName, RunExit,
+        StoreRoot, read_meta, run_exits,
     },
 };
 
@@ -515,18 +515,7 @@ fn bounds(path: &Path) -> io::Result<(i64, i64)> {
     file.seek(SeekFrom::Start(len.saturating_sub(BOUND_PROBE)))?;
     let mut tail = Vec::new();
     (&mut file).take(BOUND_PROBE).read_to_end(&mut tail)?;
-    let last = tail.last_chunk::<4>().and_then(|footer| {
-        let size = usize::try_from(u32::from_be_bytes(*footer)).ok()?;
-        let start = tail.len().checked_sub(size.checked_add(8)?)?;
-        let bytes = tail.get(start..)?;
-        if bytes.get(..4)? != footer {
-            return None;
-        }
-        match Frames::new(bytes).next() {
-            Some(Event::Entry(entry)) => Some(entry.ts),
-            _ => None,
-        }
-    });
+    let last = frame::footer_ts(&tail);
     if let Some(last) = last {
         return Ok((first, last));
     }
@@ -534,16 +523,6 @@ fn bounds(path: &Path) -> io::Result<(i64, i64)> {
     tail.clear();
     file.take(BOUND_WINDOW).read_to_end(&mut tail)?;
     Ok((first, frame::last_ts(&tail).unwrap_or(i64::MAX)))
-}
-
-fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
-    match fs::read(dir.join(META_FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(io::Error::other),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
 }
 
 fn describe(id: &ContainerId, meta: &ContainerMeta) -> HistoryContainer {

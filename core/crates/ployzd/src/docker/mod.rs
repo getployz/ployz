@@ -2,6 +2,7 @@ pub(crate) mod bridge_address;
 mod checks;
 mod create;
 mod doors;
+mod error;
 pub(crate) use doors::{Door, DoorEntry};
 #[cfg(test)]
 pub(crate) use doors::{DoorFacts, NetnsId};
@@ -56,6 +57,8 @@ use tokio::sync::{Mutex, watch};
 
 use crate::sealed_compat::LogStore;
 use checks::CheckRecords;
+use error::docker_error;
+pub(crate) use error::{Status, classify};
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
@@ -169,6 +172,22 @@ impl LocalDocker {
             120,
             bollard::API_DEFAULT_VERSION,
         )?))
+    }
+
+    /// Docker's inspect of `container_id`, decoded to the fields this crate reads. A
+    /// response bollard's typed decode refuses is decoded from its raw JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ContainerNotFound` when Docker has no such Container, and another
+    /// error when Docker cannot answer or answers something undecodable.
+    async fn inspect(&self, container_id: &ContainerId) -> Result<RawContainerInspect, Error> {
+        decode_raw_inspect(
+            self.client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )
     }
 
     async fn uses_containerd_store(&self) -> Result<bool, Error> {
@@ -725,13 +744,7 @@ impl ContainerRuntime {
         // Deploy replaces it, a cost only 0.2.4 copies of a HEALTHCHECK image pay.
         for container_id in self.specs.without_healthcheck(unstamped).await? {
             // A Container Docker cannot inspect now is left for the next sync.
-            let Ok(inspected) = decode_raw_inspect(
-                self.docker
-                    .client
-                    .inspect_container(container_id.as_str(), None)
-                    .await,
-                &container_id,
-            ) else {
+            let Ok(inspected) = self.docker.inspect(&container_id).await else {
                 continue;
             };
             if !matches!(
@@ -825,13 +838,7 @@ impl ContainerRuntime {
         &self,
         container_id: &ContainerId,
     ) -> Result<ContainerRuntimeObservation, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         Ok(runtime_observation(inspected.state.as_ref()))
     }
 
@@ -847,13 +854,7 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<ployz_core::ContainerRun>, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         let ended = matches!(
             runtime_observation(inspected.state.as_ref()),
             ContainerRuntimeObservation::Exited { .. }
@@ -868,13 +869,7 @@ impl ContainerRuntime {
     ///
     /// Returns when Docker cannot inspect the Container.
     pub async fn pid(&self, container_id: &ContainerId) -> Result<Option<u32>, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         Ok(inspected
             .state
             .as_ref()
@@ -893,13 +888,7 @@ impl ContainerRuntime {
         &self,
         container_id: &ContainerId,
     ) -> Result<Option<crate::sealed_env::SealedRecord>, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         let label = inspected
             .config
             .as_ref()
@@ -953,25 +942,19 @@ impl ContainerRuntime {
         // Before the rotation: an Out clears its mark only after it wrote Out, so an
         // answer that reads no mark then reads Out, never In from before the write.
         let leaving = self.is_leaving(container_id);
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         let labels = inspected
             .config
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::MissingField("container labels"))?;
         let ServiceLabels { identity, kind } = ServiceLabels::parse(labels)?;
-        let resolved_spec = self
+        let (resolved_spec, rotation) = self
             .specs
-            .get(container_id)
+            .spec_and_rotation(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
-        let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
+        let rotation = rotation.unwrap_or_default();
         let r#gen = labels::generation(labels);
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
@@ -1156,16 +1139,6 @@ fn decode_raw_inspect(
             Ok(serde_json::from_str(&contents)?)
         }
         Err(error) => Err(docker_error(container_id, error)),
-    }
-}
-
-#[allow(clippy::wildcard_enum_match_arm)]
-fn docker_error(container_id: &ContainerId, error: bollard::errors::Error) -> Error {
-    match error {
-        bollard::errors::Error::DockerResponseServerError {
-            status_code: 404, ..
-        } => Error::ContainerNotFound(*container_id),
-        error => Error::Docker(error),
     }
 }
 

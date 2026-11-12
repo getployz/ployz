@@ -13,17 +13,29 @@ use super::{
 };
 
 impl VolumeStorage {
-    async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
-        let _guard = self.admit_mutation().await?;
-        let _pool_guard = self.pool.lock_mutation().await?;
-        let Some(pool) = self
+    /// The Pool a route for one Volume looks in, with the Pool lock held until the guard
+    /// drops. `None` when this Machine never held a Pool, so the Volume is absent.
+    ///
+    /// # Errors
+    ///
+    /// Refuses when this Machine has held a Pool that is not imported, so a Volume is
+    /// never reported absent only because its Pool is missing.
+    async fn imported_pool(&self) -> Result<(std::fs::File, Option<MachinePool>)> {
+        let guard = self.pool.lock_mutation().await?;
+        let pool = self
             .pool
             .admit(super::pool::UnlabeledBacking::Preserve)
-            .await?
-        else {
-            if self.pool.has_held_a_pool()? {
-                return Err("this Machine has held a Pool that is not imported".into());
-            }
+            .await?;
+        if pool.is_none() && self.pool.has_held_a_pool()? {
+            return Err("this Machine has held a Pool that is not imported".into());
+        }
+        Ok((guard, pool))
+    }
+
+    async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
+        let _guard = self.admit_mutation().await?;
+        let (_pool_guard, pool) = self.imported_pool().await?;
+        let Some(pool) = pool else {
             return Ok(());
         };
         let datasets = self.datasets(&pool).await?;
@@ -46,15 +58,8 @@ impl VolumeStorage {
     }
 
     async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
-        let _pool_guard = self.pool.lock_mutation().await?;
-        let Some(pool) = self
-            .pool
-            .admit(super::pool::UnlabeledBacking::Preserve)
-            .await?
-        else {
-            if self.pool.has_held_a_pool()? {
-                return Err("this Machine has held a Pool that is not imported".into());
-            }
+        let (_pool_guard, pool) = self.imported_pool().await?;
+        let Some(pool) = pool else {
             return Ok(None);
         };
         let datasets = self.datasets(&pool).await?;
