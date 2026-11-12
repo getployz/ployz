@@ -69,7 +69,7 @@ pub(super) fn sign(
         .flatten()
         .map(String::as_str);
     let seen = super::super::runtime()?.block_on(async {
-        let client = super::super::server::connect(matches, context).await?;
+        let client = super::super::route::connect(matches, context).await?;
         copies(&client, &docker).await
     })?;
     let machines = holders(&seen);

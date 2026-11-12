@@ -66,7 +66,7 @@ pub(super) fn sign(
     };
     let (namespace, docker) = docker_volume(store, volume, volume_id, environment)?;
     let seen = super::super::runtime()?.block_on(async {
-        let client = super::super::server::connect(matches, context(matches)).await?;
+        let client = super::super::route::connect(matches, context(matches)).await?;
         copies(&client, &docker).await
     })?;
     let (writer, mirror) = parties(volume, &seen, on)?;
@@ -119,7 +119,7 @@ pub(super) fn sign_move(
     };
     let (namespace, docker) = docker_volume(store, volume, volume_id, environment)?;
     let (seen, (writer, target), service) = super::super::runtime()?.block_on(async {
-        let client = super::super::server::connect(matches, context(matches)).await?;
+        let client = super::super::route::connect(matches, context(matches)).await?;
         let seen = copies(&client, &docker).await?;
         let (writer, target) = parties(volume, &seen, MirrorOn::Server(to))?;
         let service = running_spec(&client, volume, &docker, writer).await?;

@@ -24,7 +24,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Error, config_path, leaf_matches, runtime, server};
+use super::{Error, config_path, leaf_matches, route, runtime};
 use crate::cli::{base, positional, yes};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, LoginError};
@@ -174,7 +174,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         let credential = cloud_account::from_env(&store).await?;
         let settled = approve_with(&credential, code, async |request| {
             confirm_device(leaf, code)?;
-            let mut client = server::connect_full(leaf, context(leaf)).await?;
+            let mut client = route::connect_full(leaf, context(leaf)).await?;
             set_everywhere(&mut client, |client, machine_id| {
                 set_on::<op::SetDevice>(client, machine_id, SET_DEVICE_CAPABILITY, request.clone())
             })
@@ -232,7 +232,7 @@ async fn approve_passkey(
             "Nothing approved.",
         )?;
     }
-    let mut client = server::connect_full(leaf, context(leaf)).await?;
+    let mut client = route::connect_full(leaf, context(leaf)).await?;
     let request = SetPasskeyRequest::Approve {
         passkey: Box::new(passkey),
     };
@@ -285,7 +285,7 @@ struct PendingPasskey {
 }
 
 async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error> {
-    let mut client = server::connect(leaf, context(leaf)).await?;
+    let mut client = route::connect(leaf, context(leaf)).await?;
     let reach = Reach::of(&mut client).await?;
     let secret = key::load(&key::path(&config_path(leaf)?))?.ok_or_else(|| {
         Error::conflict("Approving a Server join needs this computer's approved Device key.")
@@ -402,7 +402,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let code = typed_code(leaf)?;
     runtime()?.block_on(async {
-        let mut client = server::connect_full(leaf, context(leaf)).await?;
+        let mut client = route::connect_full(leaf, context(leaf)).await?;
         let settled = set_everywhere(&mut client, |client, machine_id| {
             remove_on(client, machine_id, code)
         })
@@ -415,7 +415,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
 pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     runtime()?.block_on(async {
-        let mut client = server::connect(leaf, context(leaf)).await?;
+        let mut client = route::connect(leaf, context(leaf)).await?;
         let reach = Reach::of(&mut client).await?;
         let (answers, gaps) = reach
             .fan_out(|machine_id| devices_on(client.clone(), machine_id))
@@ -468,7 +468,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let enforced = !leaf.get_flag("off");
     runtime()?.block_on(async {
-        let mut client = server::connect_full(leaf, context(leaf)).await?;
+        let mut client = route::connect_full(leaf, context(leaf)).await?;
         let reach = Reach::full(&mut client).await?;
         let starting_set = if enforced {
             Some(sign_starting_set(&config_path(leaf)?, &client, &reach).await?)

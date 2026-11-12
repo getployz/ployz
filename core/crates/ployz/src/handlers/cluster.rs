@@ -7,7 +7,7 @@ use ployz_core::{
 use serde::Serialize;
 use serde_json::json;
 
-use super::{Error, leaf_matches, runtime, server};
+use super::{Error, leaf_matches, route, runtime, server};
 use crate::approval;
 use crate::cli::{base, positional};
 use crate::cloud_account::{Credential, Via};
@@ -46,12 +46,12 @@ pub(crate) fn name(root: &ArgMatches) -> Result<(), Error> {
     let context = leaf.get_one::<String>("context").map(String::as_str);
     let runtime = runtime()?;
     if let Some(name) = &given
-        && let Some(credential) = server::cloud_runs(&runtime, leaf)?
+        && let Some(credential) = route::cloud_runs(&runtime, leaf)?
     {
         return through_cloud(&runtime, leaf, &credential, name);
     }
     runtime.block_on(async {
-        let client = server::connect(leaf, context).await?;
+        let client = route::connect(leaf, context).await?;
         match given {
             Some(name) => {
                 let named = set(&client, name).await?;

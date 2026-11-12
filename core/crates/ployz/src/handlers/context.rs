@@ -22,7 +22,7 @@ pub(super) fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
     if std::env::var_os(crate::env::CONTEXT).is_some() {
         return None;
     }
-    let command: &[&str] = if super::server::signed_in_locally(leaf) {
+    let command: &[&str] = if super::route::signed_in_locally(leaf) {
         &["server", "ls"]
     } else {
         &["login"]

@@ -414,7 +414,7 @@ impl<'m> Store<'m> {
             .flatten()
             .cloned();
         runtime.block_on(async {
-            let mut client = match super::server::connect(self.matches, context).await {
+            let mut client = match super::route::connect(self.matches, context).await {
                 Ok(client) => client,
                 Err(error)
                     if matches!(

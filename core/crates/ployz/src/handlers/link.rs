@@ -1173,7 +1173,7 @@ impl Servers {
     }
 }
 
-/// In `server::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
+/// In `route::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
 fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     let via = |via, context| Servers {
         via,

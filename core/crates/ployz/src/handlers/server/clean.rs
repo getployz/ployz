@@ -82,7 +82,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     if let Some(namespace) = &named {
         let runtime = runtime()?;
-        if let Some(credential) = super::cloud_runs(&runtime, matches)? {
+        if let Some(credential) = super::super::route::cloud_runs(&runtime, matches)? {
             let teardown = confirm_in_cloud(&runtime, matches, &credential, namespace)?;
             return through_cloud(&runtime, matches, &credential, (namespace, teardown));
         }
@@ -100,7 +100,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
     }
     let owned = store.read(&NamespacesQuery {})?.namespaces;
     let runtime = runtime()?;
-    let mut client = runtime.block_on(super::connect(matches, context))?;
+    let mut client = runtime.block_on(super::super::route::connect(matches, context))?;
     let (observed, gaps) = runtime.block_on(client.namespaces())?;
     let unowned = observed
         .into_iter()

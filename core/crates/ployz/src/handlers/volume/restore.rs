@@ -333,7 +333,7 @@ pub(super) fn standalone(
     let (_, docker) = docker_volume(store, volume, volume_id, environment)?;
     let runtime = super::super::runtime()?;
     let planned = runtime.block_on(async {
-        let client = super::super::server::connect(matches, context).await?;
+        let client = super::super::route::connect(matches, context).await?;
         let seen = copies(&client, &docker).await?;
         let docker = &docker;
         let client = &client;

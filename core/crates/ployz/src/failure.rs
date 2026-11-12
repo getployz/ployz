@@ -32,6 +32,19 @@ pub struct Failure {
     diagnostic: Option<Box<ui::progress::Diagnostic>>,
     /// Data its `--json` error carries in `details` beside what the error says.
     added: serde_json::Map<String, Value>,
+    connect_failure: Option<Box<ConnectFailure>>,
+}
+
+/// Why no Server of a Cluster could carry a command: a fact the route found out, kept as a
+/// value so no caller recognises it by the text or the `--json` keys it was reported with.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ConnectFailure {
+    /// Ployz Cloud knows no Server of this Organization.
+    NoServers,
+    /// Servers Cloud knows, none of which answered, named where Cloud holds a name.
+    Unanswered { servers: Vec<String>, relayed: bool },
+    /// A Server refused to give this command access.
+    Refused,
 }
 
 #[derive(Debug)]
@@ -77,6 +90,7 @@ impl Failure {
             outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
+            connect_failure: None,
             inner: Inner::Command {
                 error: Box::new(error),
                 hints: Vec::new(),
@@ -108,6 +122,7 @@ impl Failure {
             outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
+            connect_failure: None,
         }
     }
 
@@ -120,6 +135,7 @@ impl Failure {
             outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
+            connect_failure: None,
         }
     }
 
@@ -180,6 +196,15 @@ impl Failure {
             next = error.source();
         }
         None
+    }
+
+    pub(crate) fn with_connect_failure(mut self, failure: ConnectFailure) -> Self {
+        self.connect_failure = Some(Box::new(failure));
+        self
+    }
+
+    pub(crate) fn connect_failure(&self) -> Option<&ConnectFailure> {
+        self.connect_failure.as_deref()
     }
 
     pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
@@ -265,6 +290,7 @@ impl Failure {
         let interrupted = self.interrupted;
         let outcome = self.outcome;
         let diagnostic = self.diagnostic.take();
+        let connect_failure = self.connect_failure.take();
         let mut contextual = Self::command(Message {
             code,
             text: message.into(),
@@ -274,6 +300,7 @@ impl Failure {
         contextual.interrupted = interrupted;
         contextual.outcome = outcome;
         contextual.diagnostic = diagnostic;
+        contextual.connect_failure = connect_failure;
         contextual
     }
 

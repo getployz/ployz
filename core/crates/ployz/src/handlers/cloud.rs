@@ -388,7 +388,7 @@ async fn enroll_current_identity(
         {
             let config = super::config_path(matches)?;
             if super::device::key::load(&super::device::key::path(&config))?.is_some() {
-                let mut entry = super::server::connect(matches, None).await?;
+                let mut entry = super::route::connect(matches, None).await?;
                 let expected = ployz_core::RegisterRequest {
                     join_approval: None,
                     join_confirmation: None,
