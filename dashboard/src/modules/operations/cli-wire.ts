@@ -58,6 +58,7 @@ export const VOLUME_RUN_BODIES = {
     kind: Schema.Literals(["delete_mirror", "delete_old_copy"]),
     slot: Schema.optional(Destination),
     confirm: Schema.optional(Schema.String),
+    approval: Schema.optional(VolumeApproval),
   }),
   move: Schema.Struct({
     environment: RunEnvironment,
@@ -67,7 +68,7 @@ export const VOLUME_RUN_BODIES = {
     service: Schema.optional(MoveService),
   }),
   release: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
-  restore: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Destination }),
+  restore: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Destination, approval: Schema.optional(VolumeApproval) }),
   resize: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("resize"), maximum_bytes: MaximumBytes, approval: Schema.optional(VolumeApproval) }),
 } as const satisfies Record<Exclude<VolumeRunRequestKind, "seed">, Schema.Top>;
 
@@ -82,7 +83,15 @@ export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
       return { kind: "sync", args: { full: true, ...(body.approval && { approval: body.approval }) } };
     case "delete_mirror":
     case "delete_old_copy":
-      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: body.kind === "delete_old_copy" ? "old_copy" : "any" } };
+      return {
+        kind: "delete_mirror",
+        args: {
+          slot: body.slot ?? null,
+          confirmed_name: body.confirm ?? null,
+          role: body.kind === "delete_old_copy" ? "old_copy" : "any",
+          ...(body.approval && { approval: body.approval }),
+        },
+      };
     case "move":
       return {
         kind: "move",
@@ -95,7 +104,7 @@ export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
     case "release":
       return { kind: "release", args: {} };
     case "restore":
-      return { kind: "restore", args: { from: body.from } };
+      return { kind: "restore", args: { from: body.from, ...(body.approval && { approval: body.approval }) } };
     case "resize":
       return { kind: "resize", args: { maximum_bytes: body.maximum_bytes, ...(body.approval && { approval: body.approval }) } };
   }

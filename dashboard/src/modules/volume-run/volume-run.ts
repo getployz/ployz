@@ -25,7 +25,8 @@ type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 /**
  * The Device-signed approval the CLI sends. A Mirror run sends it with every snapshot and pull, and the Mirror keeps it
  * for the syncs after. A Move sends it with every step, and its release with the resume or the start that ends it. A
- * resize sends it with each Server's new size. An enforcing Server refuses those steps without one; others ignore it.
+ * resize sends it with each Server's new size. A Restore sends it with the promotion, and a Mirror removal with the
+ * slot's Forget. An enforcing Server refuses those steps without one; others ignore it.
  */
 type Approved = { readonly approval?: Signed };
 
@@ -55,14 +56,14 @@ export type VolumeRunArgs = {
    * so the Machine refuses a slot that holds the other role by then. `any` is `volume mirror rm`, which deletes either. A
    * row without one was admitted before runs recorded it, and is refused rather than guessed.
    */
-  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" };
+  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" } & Approved;
   move: Destination & Approved & Starting;
   /**
    * `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. The
    * release of a Move carries the Move's approval and spec.
    */
   release: { readonly plan?: ReleasePlan; readonly follows?: MachineId } & Approved & Starting;
-  restore: { readonly from: MachineName; readonly machine?: MachineId };
+  restore: { readonly from: MachineName; readonly machine?: MachineId } & Approved;
   seed: {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
     readonly guid: string;

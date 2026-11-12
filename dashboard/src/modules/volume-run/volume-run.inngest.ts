@@ -15,7 +15,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, restoreLine, ROLE_NOUN } from "#/modules/volume-run/plan";
+import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, restoreLine, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -338,7 +338,8 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
       await step.run("03-offer-approval", () => runEffect(offerRunApproval(run, runId, B, approval)));
     }
     if (phase.kind === "sync") {
-      await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
+      // An approval that replaces the Mirror lets B delete the copy it holds, once, before its first pull.
+      await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`, approval);
       await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget", recipient: B.id }, `${A.machine.name} is still busy with ${run.volumeName}`);
       copy = null;
     }
@@ -357,16 +358,19 @@ const deleteExpect = (copy: VolumeCopy | null, role: SlotRole | null): ExpectedC
 };
 
 /**
- * Each slot's Forget withdraws its Server there before it destroys anything. Only once every slot is gone does the
- * Writer withdraw each one and drop its run snapshots, so a slot that refuses leaves the Writer as it was. Then the
- * slots' kept approvals go too.
+ * Each slot's Forget withdraws its Server there before it destroys anything, under the removal a Device signed. Only once
+ * every slot is gone does the Writer withdraw each one and drop its run snapshots, so a slot that refuses leaves the
+ * Writer as it was. Then the slots' kept approvals go too. The slot's own withdrawal is what stops its old approval, so
+ * a Writer that doesn't record one fails nothing: the run's message names it.
  */
 async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   const { step, runEffect, run, runId } = steps;
+  const approval = run.kind === "delete_mirror" ? run.args.approval : undefined;
+  const behind: string[] = [];
   try {
     for (const slot of phase.destroy) {
       const expect = deleteExpect(slot.view.copy, phase.role);
-      const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
+      const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`, approval);
       if (answer.ok) continue;
       const { role } = phase;
       const reroled = role !== null && answer.reason === "mismatch" && answer.copy?.kind === "slot" && answer.copy.role !== role;
@@ -377,19 +381,21 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
     const writer = phase.forget;
     if (writer !== null) {
       for (const slot of phase.destroy) {
-        await mustSet(steps, `04-forget-${slot.machine.name}`, writer.machine, { kind: "writer", epoch: epochOf(writer) }, {
+        const answer = await setCopy(steps, `04-forget-${slot.machine.name}`, writer.machine, { kind: "writer", epoch: epochOf(writer) }, {
           kind: "forget",
           recipient: slot.machine.id,
         }, `${writer.machine.name} is still busy with ${run.volumeName}`);
+        if (!answer.ok && !behind.includes(answer.message)) behind.push(answer.message);
       }
     }
     await step.run("04-drop-approvals", () => runEffect(dropRunApprovals(run, runId, phase.destroy.map((slot) => slot.machine.id))));
   } catch (error) {
     return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
   }
-  await finish(steps, "05-finish");
+  await finish(steps, "05-finish", withdrawnMessage(run.volumeName, phase.destroy.map((slot) => slot.machine.name), phase.forget?.machine.name, behind));
   return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
 }
+
 
 const SIZING = { grow: "Growing", shrink: "Shrinking", settle: "Setting" } satisfies Record<SizeDirection, string>;
 
@@ -549,8 +555,9 @@ async function restoreVolume(steps: RunSteps, phase: PhaseOf<"restore">, epoch: 
   const at = copy?.newest ?? null;
   if (copy === null || at === null) return fail(steps, "03-failed", `${copyName(run.volumeName, from.name)} holds no snapshot to restore`);
   const keep = copy.kind === "root" ? copy.epoch : epoch;
+  const approval = run.kind === "restore" ? run.args.approval : undefined;
   try {
-    await mustSet(steps, "03-restore", from, expectOf(copy), { kind: "writer", at: at.guid, epoch: keep, start: null }, `${from.name} is still busy with ${run.volumeName}`);
+    await mustSet(steps, "03-restore", from, expectOf(copy), { kind: "writer", at: at.guid, epoch: keep, start: null }, `${from.name} is still busy with ${run.volumeName}`, approval);
   } catch (error) {
     return stopped(steps, "03-failed", error instanceof Error ? error : new Error(String(error)));
   }
@@ -662,8 +669,9 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       if (now?.kind === "slot" && now.newest?.guid === at.guid) doomed.push({ machine, expect: expectOf(now) });
     }
     if (plan !== undefined && doomed.some(({ machine }) => !plan.forgets.includes(machine.id))) throw changed();
+    // The Move's approval lets its target delete the copy it pulled.
     for (const { machine, expect } of doomed) {
-      await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
+      await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`, approval);
     }
     if (!asksFirst) {
       const resumed = await resumeA("05-resume");
