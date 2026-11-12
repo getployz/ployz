@@ -12,6 +12,7 @@ use ployz_core::{MachineRelease, StoragePreparation};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::checkin::process_is_root;
 use crate::context::{Connection, ConnectionError, SshDestination, Transport};
 
 mod bootstrap;
@@ -740,18 +741,16 @@ pub(crate) async fn daemon_is_current(path: &Path) -> bool {
     .is_ok()
 }
 
-pub(crate) fn process_is_root() -> bool {
-    Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .is_some_and(|uid| uid.trim() == "0")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_is_what_id_reports() {
+        let output = Command::new("id").arg("-u").output().unwrap();
+        let reported = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(process_is_root(), reported.trim() == "0");
+    }
 
     #[test]
     fn a_remote_install_carries_the_release_mirror_overrides() {

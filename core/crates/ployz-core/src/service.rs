@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Container, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    DeploymentLogId, HookContainer, Machine, PartialResult, QualifiedService, ResolvedServiceSpec,
-    ServiceContainer, ServiceId, ServiceMode, ServiceSelector,
+    Container, ContainerId, ContainerObservation, ContainerRef, DeploymentLogId, HookContainer,
+    PartialResult, QualifiedService, ResolvedServiceSpec, ServiceContainer, ServiceId, ServiceMode,
+    ServiceSelector,
 };
 
 mod eligibility;
@@ -136,21 +136,6 @@ impl ObservedGlobalSlotSpec {
     #[must_use]
     pub fn into_parts(self) -> (QualifiedService, ResolvedServiceSpec) {
         (self.identity, self.resolved_spec)
-    }
-
-    /// True when this Machine already reports a running Container for this slot.
-    #[must_use]
-    pub fn is_running_on(&self, containers: &[ServiceContainer], machine: &Machine) -> bool {
-        containers.iter().any(|container| {
-            let observation = container.as_observation();
-            observation.identity() == self.identity
-                && observation.machine_id == machine.id
-                && observation.resolved_spec.serving_shape() == self.resolved_spec.serving_shape()
-                && matches!(
-                    observation.runtime,
-                    ContainerRuntimeObservation::Running { .. }
-                )
-        })
     }
 }
 

@@ -533,10 +533,6 @@ _Avoid_: replica, endpoint, upstream, Serving Pointer
 The content identity of the Resolved Service Spec fields whose change requires a new Container. Equal shapes are interchangeable Containers. It is derived from observed spec content, not Cluster intent. Service ID is not a Serving Shape.
 _Avoid_: current version, desired generation, Service ID as generation
 
-**Published Serving Shape**:
-The Serving Shape of a published observation. A row in the replicated store keeps no environment and empties Config content, so the shape hashes Config names in place of content, and Containers from an env-only or Config-only change share a shape ([#1419](https://github.com/getployz/ployz/issues/1419)). Ployz compares shapes to match observed Containers to a wanted spec, in drift checks and Global catch-up. Routing follows each Container's `rotation`, not its shape.
-_Avoid_: Serving Shape for observation rows
-
 **Public Ingress**:
 The public HTTP request path from DNS resolution through a Machine's Ingress Proxy to a Serving Container. It is a diagnostic boundary, not a single process or globally authoritative edge.
 _Avoid_: Edge

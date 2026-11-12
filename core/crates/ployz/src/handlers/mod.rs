@@ -1131,7 +1131,7 @@ mod tests {
 
     #[test]
     fn local_machine_init_requires_root_to_install() {
-        if crate::provisioning::process_is_root() {
+        if crate::checkin::process_is_root() {
             return;
         }
         let mut command = command();
@@ -1312,7 +1312,7 @@ mod tests {
 
     #[test]
     fn server_add_with_a_token_and_no_daemon_requires_sudo() {
-        if crate::provisioning::process_is_root() {
+        if crate::checkin::process_is_root() {
             return;
         }
         let token = tempfile::NamedTempFile::new().unwrap();

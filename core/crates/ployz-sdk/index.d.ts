@@ -16,9 +16,7 @@ import type {
   MetricHistoryInput,
   ObservedDataLoss,
   DataLossConfirmation,
-  PlanOptions,
   Namespace,
-  RequestedServiceSpec,
   RpcError as RpcErrorPayload,
   RpcErrorCode,
   RuntimeWatchView,
@@ -266,18 +264,6 @@ export declare function setVolumeCopyRefusal(error: unknown): import("./generate
 /** A call's state between steps. Keep it and hand it back unchanged; only the step machine reads it. */
 export type AgentState = { readonly __brand: "AgentState" };
 export type AgentTurn = { step: import("./generated/payloads").Step; state: AgentState };
-export declare function applyAll(
-  namespace: Namespace,
-  specs: readonly RequestedServiceSpec[],
-  options?: PlanOptions,
-): DeployIntent;
-
-export declare function applyOne(
-  namespace: Namespace,
-  spec: RequestedServiceSpec,
-  options?: PlanOptions,
-): DeployIntent;
-
 type WrappedClientMethods =
   | "containerLogs" | "logHistory" | "metricHistory" | "watch"
   | "prepare" | "build" | "preview" | "previewNamespaceRemoval" | "volumeSwitch"

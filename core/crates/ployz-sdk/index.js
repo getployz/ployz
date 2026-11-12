@@ -171,35 +171,6 @@ async function* iterateWatch(start, signal) {
   }
 }
 
-function defaultPlanOptions() {
-  return {
-    force_recreate: false,
-    skip_health_monitor: false,
-    placement_seed: 0,
-    selected: [],
-  };
-}
-
-function applyAll(namespace, specs, options = defaultPlanOptions()) {
-  return {
-    namespace,
-    target: specs,
-    options,
-  };
-}
-
-function applyOne(namespace, spec, options = defaultPlanOptions()) {
-  return {
-    namespace,
-    target: [spec],
-    options: {
-      ...defaultPlanOptions(),
-      ...options,
-      selected: [{ name: spec.name }],
-    },
-  };
-}
-
 // Cloud's close budget for a short-lived session (SESSION_CLOSE_CLUSTER_MS), which this package cannot import.
 const STOPPED_CLOSE_MS = 2_000;
 
@@ -327,6 +298,4 @@ module.exports = {
   Client,
   RpcError,
   SealedNames,
-  applyAll,
-  applyOne,
 };

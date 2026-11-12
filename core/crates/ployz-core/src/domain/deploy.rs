@@ -291,30 +291,6 @@ impl DeployIntent {
         Self::new(namespace, vec![spec], options)
     }
 
-    /// Target from every loaded spec; `options.selected` is this command's Service list.
-    #[must_use]
-    pub fn from_named_specs(
-        namespace: Namespace,
-        services: &BTreeMap<String, RequestedServiceSpec>,
-        dependencies: &BTreeMap<String, Vec<ServiceDependency>>,
-        options: PlanOptions,
-    ) -> Self {
-        let dependencies = dependencies
-            .iter()
-            .filter_map(|(name, deps)| {
-                Some((
-                    services.get(name)?.name.clone(),
-                    deps.iter()
-                        .filter(|dependency| services.contains_key(dependency.service.as_str()))
-                        .cloned()
-                        .collect(),
-                ))
-            })
-            .collect();
-        Self::new(namespace, services.values().cloned().collect(), options)
-            .with_dependencies(dependencies)
-    }
-
     /// `depends_on` edges used to expand and order `selected` inside the planner.
     #[must_use]
     pub fn with_dependencies(
