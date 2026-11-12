@@ -2805,6 +2805,137 @@ mod tests {
     }
 
     #[test]
+    fn container_label_keys_keep_their_live_spelling() {
+        assert_eq!(LABEL_MANAGED, "ployz.managed");
+        assert_eq!(LABEL_SERVICE_ID, "ployz.service.id");
+        assert_eq!(LABEL_SERVICE_NAME, "ployz.service.name");
+        assert_eq!(LABEL_NAMESPACE, "ployz.namespace");
+        assert_eq!(LABEL_HOOK, "ployz.service.hook");
+        assert_eq!(LABEL_HOOK_PRE_DEPLOY, "pre-deploy");
+        assert_eq!(LABEL_BRIDGE_IPV6, "ployz.network.ipv6");
+        assert_eq!(LABEL_DEPLOYMENT, "ployz.deployment.id");
+        assert_eq!(LABEL_GEN, "ployz.gen");
+        assert_eq!(crate::sealed_env::LABEL_SEALED, "ployz.env.sealed");
+        assert_eq!(ployz_core::labels::CREATION_KEY, "ployz.creation.key");
+    }
+
+    #[test]
+    fn managed_labels_parse_outcomes_and_their_messages() {
+        let id = "a".repeat(32);
+        let outcome = |labels: &[(&str, &str)]| {
+            let labels: HashMap<String, String> = labels
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            match ManagedLabels::parse(&labels) {
+                Ok(parsed) => format!(
+                    "{:?} {}/{}",
+                    parsed.kind, parsed.identity.namespace, parsed.identity.name
+                ),
+                Err(error) => error.to_string(),
+            }
+        };
+        let not_managed = "container is not managed by Ployz";
+        assert_eq!(outcome(&[]), not_managed);
+        assert_eq!(outcome(&[("ployzd.managed", "")]), not_managed);
+        assert_eq!(outcome(&[("ployz.namespace", "app")]), not_managed);
+        assert_eq!(
+            outcome(&[("ployz.managed", "")]),
+            "managed container is missing label ployz.namespace"
+        );
+        assert_eq!(
+            outcome(&[("ployz.managed", ""), ("ployz.namespace", "app")]),
+            "managed container is missing label ployz.service.id"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "app"),
+                ("ployz.service.id", &id)
+            ]),
+            "managed container is missing label ployz.service.name"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", ""),
+                ("ployz.service.id", &id),
+                ("ployz.service.name", "api")
+            ]),
+            "managed container is missing label ployz.namespace"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "app"),
+                ("ployz.service.id", ""),
+                ("ployz.service.name", "api")
+            ]),
+            "managed container is missing label ployz.service.id"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "Not_DNS"),
+                ("ployz.service.id", "short"),
+                ("ployz.service.name", "Bad_Name")
+            ]),
+            "managed container has invalid ployz.service.id",
+            "the Service ID is checked before the Namespace and the name"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "Not_DNS"),
+                ("ployz.service.id", &id),
+                ("ployz.service.name", "Bad_Name")
+            ]),
+            "managed container has invalid ployz.namespace"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "app"),
+                ("ployz.service.id", &id),
+                ("ployz.service.name", "Bad_Name")
+            ]),
+            "managed container has invalid ployz.service.name"
+        );
+        let valid = [
+            ("ployz.managed", "anything"),
+            ("ployz.namespace", "app"),
+            ("ployz.service.id", id.as_str()),
+            ("ployz.service.name", "api"),
+        ];
+        assert_eq!(outcome(&valid), "ServiceContainer app/api");
+        let mut hooked = valid.to_vec();
+        hooked.push(("ployz.service.hook", ""));
+        assert_eq!(outcome(&hooked), "PreDeployHook app/api");
+    }
+
+    #[test]
+    fn creation_slot_and_gen_read_their_labels() {
+        let id = "a".repeat(32);
+        let mut labels = HashMap::from([
+            ("ployz.managed".to_owned(), String::new()),
+            ("ployz.namespace".to_owned(), "app".to_owned()),
+            ("ployz.service.id".to_owned(), id),
+            ("ployz.service.name".to_owned(), "api".to_owned()),
+        ]);
+        assert!(creation_slot(&labels).is_none());
+        labels.insert("ployz.creation.key".to_owned(), "run:0".to_owned());
+        assert!(creation_slot(&labels).is_some());
+        labels.remove("ployz.managed");
+        assert!(creation_slot(&labels).is_none());
+
+        assert_eq!(label_gen(&HashMap::new()), Gen::FIRST);
+        let gen_of =
+            |value: &str| label_gen(&HashMap::from([("ployz.gen".to_owned(), value.to_owned())]));
+        assert_eq!(gen_of("3"), Gen::new(3));
+        assert_eq!(gen_of("three"), Gen::FIRST);
+    }
+
+    #[test]
     fn runtime_and_health_keep_unknown_values_explicit() {
         assert_eq!(
             runtime_from_parts("created", None, None),

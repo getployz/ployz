@@ -730,6 +730,14 @@ Inter-|   Receive                                                |  Transmit
             "a pre-deploy Hook is not a replica"
         );
         assert!(!super::sampled(&labels(&["com.example.other"])));
+        assert!(!super::sampled(&labels(&[])));
+        assert!(!super::sampled(&labels(&["ployz.namespace"])));
+        assert!(super::sampled(&labels(&["ployz.managed"])));
+        assert!(super::sampled(&labels(&["ployzd.managed"])));
+        assert!(
+            !super::sampled(&labels(&["ployzd.managed", "ployz.service.hook"])),
+            "the system marker does not exempt a hook"
+        );
     }
 
     #[test]
@@ -933,6 +941,68 @@ Inter-|   Receive                                                |  Transmit
             (None, None),
             "a container without a Service name is booked like a system one"
         );
+    }
+
+    #[test]
+    fn a_row_names_its_service_both_ways_or_neither() {
+        use bollard::models::{ContainerConfig, ContainerInspectResponse, ContainerState};
+
+        let fixture = Fixture::new();
+        let web = fixture.start(1);
+        let id = service(1).to_string();
+        let booked = |labels: &[(&str, &str)]| {
+            let inspected = ContainerInspectResponse {
+                config: Some(ContainerConfig {
+                    labels: Some(
+                        labels
+                            .iter()
+                            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                            .collect(),
+                    ),
+                    ..Default::default()
+                }),
+                state: Some(ContainerState {
+                    pid: Some(i64::from(web.pid)),
+                    running: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let tracked = super::track(&fixture.roots.proc, web.id, &inspected)?;
+            Some((
+                tracked.labels.service_id.is_some(),
+                tracked.labels.service.is_some(),
+            ))
+        };
+        let all = [
+            ("ployz.managed", ""),
+            ("ployz.service.id", id.as_str()),
+            ("ployz.namespace", "default"),
+            ("ployz.service.name", "web"),
+        ];
+        assert_eq!(booked(&all), Some((true, true)));
+        for without in ["ployz.service.id", "ployz.namespace", "ployz.service.name"] {
+            let labels: Vec<_> = all
+                .iter()
+                .filter(|(key, _)| *key != without)
+                .copied()
+                .collect();
+            assert_eq!(booked(&labels), Some((false, false)), "without {without}");
+        }
+        let mut bad_id = all;
+        bad_id[1] = ("ployz.service.id", "not-an-id");
+        assert_eq!(booked(&bad_id), Some((false, false)));
+        let mut bad_namespace = all;
+        bad_namespace[2] = ("ployz.namespace", "Not_DNS");
+        assert_eq!(booked(&bad_namespace), Some((false, false)));
+        let mut bad_name = all;
+        bad_name[3] = ("ployz.service.name", "Bad_Name");
+        assert_eq!(booked(&bad_name), Some((false, false)));
+        assert_eq!(
+            booked(&[("ployzd.managed", ""), ("ployz.service.id", id.as_str())]),
+            Some((false, false))
+        );
+        assert_eq!(booked(&[("com.example.other", "")]), None);
     }
 
     #[test]

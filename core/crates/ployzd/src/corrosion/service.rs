@@ -666,6 +666,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn corrosion_container_carries_the_system_marker_label() {
+        let config = container_config(Path::new("/data"), Path::new("/run"), "1:1".into());
+        assert_eq!(
+            config.labels,
+            Some(HashMap::from([(
+                "ployzd.managed".to_owned(),
+                String::new()
+            )]))
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn corrosion_readiness_wait_keeps_polling_after_fifteen_seconds() {
         let started = Instant::now();

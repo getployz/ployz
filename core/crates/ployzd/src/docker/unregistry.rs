@@ -304,6 +304,18 @@ mod tests {
     }
 
     #[test]
+    fn the_unregistry_container_is_marked_managed_without_a_namespace() {
+        let config = unregistry_config(
+            Path::new("/run/containerd/containerd.sock"),
+            "fdcc:202:202:202:202:202:202:202".parse().unwrap(),
+        );
+        assert_eq!(
+            config.labels,
+            Some(HashMap::from([("ployz.managed".to_owned(), String::new())]))
+        );
+    }
+
+    #[test]
     fn ingest_prerequisites_map_to_named_reasons() {
         let unsupported = ImageIngestPrerequisite::UnsupportedStore
             .socket()

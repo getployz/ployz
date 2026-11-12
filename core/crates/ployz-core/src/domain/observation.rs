@@ -1036,6 +1036,91 @@ mod tests {
         assert_eq!(slot.resolved_spec().container.image, "api:new");
     }
 
+    #[test]
+    fn admission_accepts_exactly_the_label_sets_consistent_with_the_retained_facts() {
+        let service = ContainerKind::ServiceContainer;
+        let hook = ContainerKind::PreDeployHook;
+        let id = "a".repeat(32);
+        // (labels, kind, rejected by)
+        let table: [(&[(&str, &str)], ContainerKind, Option<&str>); 22] = [
+            (&[], service, None),
+            (&[], hook, None),
+            (&[("ployz.managed", "")], service, None),
+            (&[("ployz.managed", "true")], service, None),
+            (&[("ployz.managed", "")], hook, Some("ployz.service.hook")),
+            (
+                &[("ployz.managed", ""), ("ployz.service.hook", "pre-deploy")],
+                service,
+                Some("ployz.service.hook"),
+            ),
+            (
+                &[("ployz.managed", ""), ("ployz.service.hook", "pre-deploy")],
+                hook,
+                None,
+            ),
+            (
+                &[("ployz.managed", ""), ("ployz.service.hook", "future-hook")],
+                hook,
+                None,
+            ),
+            (
+                &[("ployz.service.hook", "")],
+                service,
+                Some("ployz.service.hook"),
+            ),
+            (&[("ployz.service.hook", "")], hook, None),
+            (&[("ployzd.managed", "")], hook, None),
+            (&[("ployzd.managed", "")], service, None),
+            (&[("com.example.other", "x")], hook, None),
+            (&[("ployz.namespace", "app")], service, None),
+            (
+                &[("ployz.namespace", "other")],
+                service,
+                Some("ployz.namespace"),
+            ),
+            (&[("ployz.namespace", "")], service, Some("ployz.namespace")),
+            (&[("ployz.service.name", "api")], service, None),
+            (
+                &[("ployz.service.name", "web")],
+                service,
+                Some("ployz.service.name"),
+            ),
+            (&[("ployz.service.id", &id)], service, None),
+            (
+                &[("ployz.service.id", "b")],
+                service,
+                Some("ployz.service.id"),
+            ),
+            (
+                &[
+                    ("ployz.service.id", "b"),
+                    ("ployz.service.name", "web"),
+                    ("ployz.namespace", "other"),
+                ],
+                service,
+                Some("ployz.service.id"),
+            ),
+            (
+                &[("ployz.namespace", "other"), ("ployz.service.hook", "")],
+                service,
+                Some("ployz.namespace"),
+            ),
+        ];
+        for (labels, kind, rejected_by) in table {
+            let mut parts = observation(kind).into_parts();
+            parts.labels = labels
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            let admitted = ContainerObservation::try_from(parts).map(|_| ());
+            assert_eq!(
+                admitted.err().map(|error| error.label),
+                rejected_by,
+                "{labels:?} on {kind:?}"
+            );
+        }
+    }
+
     fn observation(kind: ContainerKind) -> ContainerObservation {
         let (id, image) = match kind {
             ContainerKind::ServiceContainer => ('1', "api"),

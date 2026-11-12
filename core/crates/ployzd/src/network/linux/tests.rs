@@ -1088,6 +1088,51 @@ fn each_machine_bridge_takes_an_ipv6_prefix_from_its_ipv4_subnet() {
 }
 
 #[test]
+fn the_bridge_is_made_with_and_owned_by_the_system_marker_label() {
+    let machine = subnet("10.210.1.0/24");
+    let options = required_docker_network_options(1420);
+    let request = docker_network_request(machine, &options, None);
+    assert_eq!(
+        request.labels,
+        Some(HashMap::from([(
+            "ployzd.managed".to_owned(),
+            String::new()
+        )]))
+    );
+    assert!(docker_network_owned(&inspected(&request)));
+    for (labels, owned) in [
+        (None, false),
+        (Some(HashMap::new()), false),
+        (
+            Some(HashMap::from([("ployz.managed".to_owned(), String::new())])),
+            false,
+        ),
+        (
+            Some(HashMap::from([(
+                "ployzd.managed".to_owned(),
+                "x".to_owned(),
+            )])),
+            false,
+        ),
+        (
+            Some(HashMap::from([(
+                "ployzd.managed".to_owned(),
+                String::new(),
+            )])),
+            true,
+        ),
+    ] {
+        let mut request = docker_network_request(machine, &options, None);
+        request.labels = labels.clone();
+        assert_eq!(
+            docker_network_owned(&inspected(&request)),
+            owned,
+            "{labels:?}"
+        );
+    }
+}
+
+#[test]
 fn a_dual_stack_bridge_matches_itself_and_an_ipv4_only_one_needs_readdressing() {
     let machine = subnet("10.210.1.0/24");
     let options = required_docker_network_options(1420);

@@ -2592,6 +2592,136 @@ mod tests {
     }
 
     #[test]
+    fn container_meta_classifies_by_labels_leniently() {
+        let classify = |labels: &[(&str, &str)]| {
+            container_meta(&labelled(labels)).map(|meta| {
+                (
+                    meta.kind,
+                    meta.namespace,
+                    meta.service,
+                    meta.deployment,
+                    meta.replica,
+                )
+            })
+        };
+        let owned =
+            |kind, namespace: Option<&str>, service: Option<&str>, deployment: Option<&str>| {
+                Some((
+                    kind,
+                    namespace.map(str::to_owned),
+                    service.map(str::to_owned),
+                    deployment.map(str::to_owned),
+                    "replica".to_owned(),
+                ))
+            };
+        assert_eq!(classify(&[]), None);
+        assert_eq!(classify(&[("com.example.other", "x")]), None);
+        assert_eq!(classify(&[("ployz.namespace", "app")]), None);
+        assert_eq!(
+            classify(&[("ployz.service.name", "web"), ("ployz.service.id", "x")]),
+            None
+        );
+        assert_eq!(
+            classify(&[("ployzd.managed", "")]),
+            owned(ContainerKind::System, None, None, None)
+        );
+        assert_eq!(
+            classify(&[("ployz.managed", "")]),
+            owned(ContainerKind::System, None, None, None),
+            "a managed container with no Service name is a system one"
+        );
+        assert_eq!(
+            classify(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "app"),
+                ("ployz.service.name", "web"),
+                ("ployz.deployment.id", "d1"),
+            ]),
+            owned(ContainerKind::Service, Some("app"), Some("web"), Some("d1"))
+        );
+        assert_eq!(
+            classify(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "ployz-system"),
+                ("ployz.service.name", "ingress"),
+            ]),
+            owned(
+                ContainerKind::System,
+                Some("ployz-system"),
+                Some("ingress"),
+                None
+            )
+        );
+        assert_eq!(
+            classify(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "ployz-system"),
+                ("ployz.service.name", "ingress"),
+                ("ployz.service.hook", "pre-deploy"),
+            ]),
+            owned(
+                ContainerKind::PreDeployHook,
+                Some("ployz-system"),
+                Some("ingress"),
+                None
+            ),
+            "a hook label wins over the system Namespace"
+        );
+        assert_eq!(
+            classify(&[
+                ("ployz.managed", ""),
+                ("ployz.service.name", "web"),
+                ("ployz.service.hook", ""),
+            ]),
+            owned(ContainerKind::PreDeployHook, None, Some("web"), None),
+            "any hook value is a hook"
+        );
+        assert_eq!(
+            classify(&[
+                ("ployzd.managed", ""),
+                ("ployz.service.name", "web"),
+                ("ployz.namespace", "app"),
+            ]),
+            owned(ContainerKind::Service, Some("app"), Some("web"), None),
+            "the system marker admits a container the Service labels then classify"
+        );
+        assert_eq!(
+            classify(&[("ployz.service.hook", "pre-deploy")]),
+            None,
+            "a hook label alone does not make a container Ployz's"
+        );
+    }
+
+    #[test]
+    fn meta_json_names_each_container_kind_in_snake_case() {
+        let meta = |kind| ContainerMeta {
+            service: Some("web".to_owned()),
+            namespace: Some("app".to_owned()),
+            deployment: None,
+            replica: "web-1".to_owned(),
+            kind,
+            started_at: None,
+            finished_at: None,
+            exit_code: None,
+            oom_killed: false,
+        };
+        for (kind, name) in [
+            (ContainerKind::Service, "service"),
+            (ContainerKind::PreDeployHook, "pre_deploy_hook"),
+            (ContainerKind::System, "system"),
+        ] {
+            let json = serde_json::to_value(meta(kind)).unwrap();
+            assert_eq!(json.get("kind"), Some(&serde_json::json!(name)));
+            let back: ContainerMeta = serde_json::from_value(json).unwrap();
+            assert_eq!(back.kind, kind);
+        }
+        assert_eq!(
+            serde_json::to_string(&meta(ContainerKind::Service)).unwrap(),
+            r#"{"service":"web","namespace":"app","deployment":null,"replica":"web-1","kind":"service","started_at":null,"finished_at":null,"exit_code":null,"oom_killed":false}"#
+        );
+    }
+
+    #[test]
     fn containers_still_on_another_driver_are_skipped() {
         assert_eq!(foreign_log_driver(&logging_with(Some("local"))), None);
         assert_eq!(

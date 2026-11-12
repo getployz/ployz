@@ -1150,6 +1150,85 @@ mod tests {
         );
     }
 
+    async fn stamped_labels(
+        kind: ContainerKind,
+        creation_key: Option<&str>,
+        deployment_id: Option<&ployz_core::DeploymentLogId>,
+        generation: Gen,
+    ) -> serde_json::Value {
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
+            ..FakeDocker::default()
+        })
+        .await;
+        runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                ContainerRequest {
+                    creation_key,
+                    deployment_id,
+                    r#gen: generation,
+                    ..container_request(kind, &namespace, &spec, std::future::ready(None))
+                },
+            )
+            .await
+            .unwrap();
+        let body = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap()
+            .1
+            .clone();
+        body.get("Labels").unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_created_container_carries_exactly_the_stamped_labels() {
+        let deployment = ployz_core::DeploymentLogId::parse("deploy-7").unwrap();
+        let without_service_id = |mut labels: serde_json::Value| {
+            let labels = labels.as_object_mut().unwrap();
+            let id = labels.remove("ployz.service.id").unwrap();
+            ployz_core::ServiceId::parse(id.as_str().unwrap()).unwrap();
+            serde_json::Value::Object(labels.clone())
+        };
+        let service = stamped_labels(
+            ContainerKind::ServiceContainer,
+            Some("plan:0"),
+            Some(&deployment),
+            Gen::new(3),
+        )
+        .await;
+        assert_eq!(
+            without_service_id(service),
+            serde_json::json!({
+                "ployz.managed": "",
+                "ployz.namespace": "app",
+                "ployz.service.name": "api",
+                "ployz.network.ipv6": "true",
+                "ployz.deployment.id": "deploy-7",
+                "ployz.creation.key": "plan:0",
+                "ployz.gen": "3",
+            })
+        );
+        let hook = stamped_labels(ContainerKind::PreDeployHook, None, None, Gen::FIRST).await;
+        assert_eq!(
+            without_service_id(hook),
+            serde_json::json!({
+                "ployz.managed": "",
+                "ployz.namespace": "app",
+                "ployz.service.name": "api",
+                "ployz.service.hook": "pre-deploy",
+                "ployz.network.ipv6": "true",
+                "ployz.gen": Gen::FIRST.to_string(),
+            })
+        );
+    }
+
     #[tokio::test]
     async fn a_keyed_container_is_named_after_its_service() {
         let containers =
