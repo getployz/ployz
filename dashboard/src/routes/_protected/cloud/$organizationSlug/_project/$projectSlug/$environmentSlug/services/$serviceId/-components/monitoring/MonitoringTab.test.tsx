@@ -7,6 +7,7 @@ import {
 import type { JsonValue, MachineId, MetricHistory, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
+import { needsProduction, type NeedsProduction } from "#/modules/billing/billing";
 import { storeDeploymentsOptions } from "#/modules/config-store/store-view.queries";
 import * as servers from "#/modules/machines/use-servers";
 import type { MetricRead } from "#/modules/metrics/metrics";
@@ -55,7 +56,7 @@ const store = { project: "shop", environment: "production" };
 const settled = () => screen.findAllByRole("heading", { level: 3, name: /^(Disk|Upgrade .*|Your servers are offline)$/ });
 
 async function open({ shown = uptime(), change, checker = true, read = metrics(), placedOn = 1, listed = "ready", until = settled, receivedAt = now }: {
-  shown?: ServiceUptime | null;
+  shown?: ServiceUptime | NeedsProduction | null;
   change?: ServiceSettingChange;
   checker?: boolean;
   read?: MetricRead;
@@ -165,6 +166,20 @@ it("shows no uptime and reads none on a Cloud without the uptime checker, keepin
   expect(charts()).toEqual(["CPU", "Memory", "Network", "Disk"]);
   expect(screen.getByRole("button", { name: rangeLabel(range, "UTC", Date.now()) })).toBeDefined();
   expect(queryClient.getQueryCache().findAll({ queryKey: ["uptime"] }).map((query) => query.getObserversCount())).toEqual([0]);
+});
+
+it("offers Production in place of the uptime parts, and keeps every resource chart", async () => {
+  const { queryClient } = await open({ shown: needsProduction });
+  expect(uptimeShown()).toEqual({ status: false, history: false, responseTime: false, checkNow: false });
+  expect(charts()).toEqual(["CPU", "Memory", "Network", "Disk"]);
+  expect(screen.getByText("Uptime is part of Production")).toBeDefined();
+  expect(screen.getByRole("button", { name: "See Production" }).getAttribute("href")).toBe("/cloud/acme/~/billing");
+  expect(queryClient.getQueryCache().find({ queryKey: ["uptime", "env", "api", range.from, range.to] })?.state.data).toEqual(needsProduction);
+});
+
+it("shows no upsell for a Service that has no uptime check", async () => {
+  await open({ shown: null });
+  expect(screen.queryByText("Uptime is part of Production")).toBeNull();
 });
 
 it("says No readings on each chart, not a zero, when no Server has sampled the Service", async () => {

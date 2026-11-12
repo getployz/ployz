@@ -38,10 +38,11 @@ list. Each item links to the page that does it.
   with SSH keys, not passwords, and turn on automatic security updates (`unattended-upgrades` on
   Ubuntu). If you add a firewall, keep [these ports](servers/add-a-server.md#open-the-firewall)
   open. A reboot stops the services on that server until it's back.
-- **Watch your app.** Ployz Cloud checks every service with a public address and shows its
-  [uptime](observe/uptime.md) next to its [metrics](observe/metrics.md) and
-  [logs](observe/logs.md). It emails each member when a service goes down, comes back up, or
-  keeps crashing. Each person turns these on or off for themselves in
+- **Watch your app.** Ployz Cloud shows each service's [metrics](observe/metrics.md) and
+  [logs](observe/logs.md), and emails each member when a service keeps crashing. With
+  [Production](account/organizations.md#billing) it also checks every service with a public
+  address, shows its [uptime](observe/uptime.md), and emails each member when it goes down or
+  comes back up. Each person turns these on or off for themselves in
   [Notifications](account/notifications.md).
 
 ## What Ployz doesn't do yet

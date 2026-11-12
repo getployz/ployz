@@ -87,7 +87,11 @@ function RouteComponent() {
         if (active) toast.success("Your cluster is in production. Thanks for supporting Ployz!");
       })
       .catch(() => undefined)
-      .finally(() => queryClient.invalidateQueries({ queryKey: billingKeys.org(organizationSlug) }));
+      .finally(() => {
+        void queryClient.invalidateQueries({ queryKey: billingKeys.org(organizationSlug) });
+        // Production opens uptime and analytics, which may hold the answer that asked for it.
+        for (const key of ["uptime", "analytics", "analytics-requests"]) void queryClient.invalidateQueries({ queryKey: [key] });
+      });
   }, [checkoutId]);
 
   /** Cancellation and payment changes happen in the Polar portal. */
@@ -127,7 +131,6 @@ function RouteComponent() {
           pitch={`Includes ${INCLUDED_SERVERS} servers, then $${EXTRA_SERVER_USD} per extra server.`}
           current={subscribed}
           features={PRODUCTION_FEATURES}
-          note="Nothing is locked today."
           className="border-t md:border-t-0 md:border-l"
         >
           {subscribed || !billingState.canBuy ? null : (
@@ -174,6 +177,7 @@ const PRODUCTION_FEATURES: readonly Feature[] = [
   { label: "Everything in Free" },
   { label: "Uptime checks from outside your servers" },
   { label: "Uptime alerts by email" },
+  { label: "Web analytics for your domains" },
   { label: "Longer log and metrics history", soon: true },
   { label: "Slack alerts", soon: true },
 ];
@@ -184,7 +188,6 @@ function Plan({
   pitch,
   current,
   features,
-  note,
   className,
   children,
 }: {
@@ -193,7 +196,6 @@ function Plan({
   pitch: string;
   current: boolean;
   features: readonly Feature[];
-  note?: string;
   className?: string;
   children?: React.ReactNode;
 }) {
@@ -225,7 +227,6 @@ function Plan({
           </li>
         ))}
       </ul>
-      {note ? <p className="text-muted-foreground text-sm">{note}</p> : null}
       {children}
     </section>
   );

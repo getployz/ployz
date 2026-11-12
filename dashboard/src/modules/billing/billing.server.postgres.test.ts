@@ -1,12 +1,14 @@
 import { assert, it } from "@effect/vitest";
+import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { organizationBillingState } from "#/modules/billing/tables";
 import type { CreatePolarCheckout, PolarService } from "#/modules/billing/polar-provider.server";
-import { createEmbeddedCheckout, getBillingState } from "#/modules/billing/billing.server";
+import { createEmbeddedCheckout, getBillingState, includesMonitoring } from "#/modules/billing/billing.server";
 import { member, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { holdProduction } from "#/test/billing";
 import { machineId } from "#/test/ids";
 import { enrollStoreServer, seedAnonymousStoreOrganization, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { createHash } from "node:crypto";
@@ -129,5 +131,34 @@ it.live("leaves buying Production to owners", () =>
       const refused = yield* Effect.flip(createEmbeddedCheckout({ userId: adminId }, slug));
       assert.strictEqual(refused._tag, "Forbidden");
       assert.deepStrictEqual(polar.checkouts, []);
+    }).pipe(Effect.provide(cloud));
+  }), 60_000);
+
+it.live("shows uptime and analytics to a Self-hosted Cloud's Organization whether or not its operator turns analytics on", () =>
+  Effect.gen(function* () {
+    for (const analytics of ["true", "false"]) {
+      const cloud = yield* storeTestCloud({ env: { ANALYTICS_ENABLED: analytics } });
+      yield* Effect.gen(function* () {
+        yield* seedStoreOrganization(ORGANIZATION);
+        assert.strictEqual(yield* includesMonitoring(ORGANIZATION), true, `ANALYTICS_ENABLED=${analytics} has no billing row to read`);
+      }).pipe(Effect.provide(cloud));
+    }
+  }), 60_000);
+
+it.live("shows uptime and analytics to a hosted Organization only while it holds Production", () =>
+  Effect.gen(function* () {
+    const cloud = yield* storeTestCloud({ polar: makePolar().service });
+    yield* Effect.gen(function* () {
+      yield* seedStoreOrganization(ORGANIZATION);
+      assert.strictEqual(yield* includesMonitoring(ORGANIZATION), false, "no billing row is Free");
+
+      yield* holdProduction(ORGANIZATION, false);
+      assert.strictEqual(yield* includesMonitoring(ORGANIZATION), false, "a lapsed subscription is Free");
+
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(organizationBillingState).set({
+        hasActiveSubscription: true, activeSubscriptionId: "sub-production", currentPeriodEnd: new Date("2099-01-01T00:00:00.000Z"),
+      }).where(eq(organizationBillingState.organizationId, ORGANIZATION));
+      assert.strictEqual(yield* includesMonitoring(ORGANIZATION), true);
     }).pipe(Effect.provide(cloud));
   }), 60_000);

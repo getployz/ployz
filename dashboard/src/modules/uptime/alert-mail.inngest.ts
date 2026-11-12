@@ -1,11 +1,12 @@
 import type { Effect } from "effect";
+import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { InngestClient, PloyzInngest } from "#/modules/inngest/client";
 import { sendUptimeAlerts } from "#/modules/uptime/alert-mail.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { runInngestEffect } from "#/server/run.server";
 
-type AlertEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, Database | AppConfig | InngestClient>) => Promise<A>;
+type AlertEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, Database | AppConfig | InngestClient | Polar>) => Promise<A>;
 
 /** Each minute, mail the uptime alerts the control plane wrote to uptime_alert. */
 export const createSendUptimeAlerts = (inngest: PloyzInngest, runEffect: AlertEffectRunner = runInngestEffect) =>
