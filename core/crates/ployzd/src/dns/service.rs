@@ -278,6 +278,43 @@ mod tests {
         assert!(!text.contains("[Install]"));
     }
 
+    /// Pinned from `main`: an installed Machine's unit is rewritten only when this text changes.
+    #[test]
+    fn unit_text_keeps_its_exact_bytes() {
+        assert_eq!(
+            unit_text(
+                Path::new("/usr/local/bin/ployzd"),
+                Path::new("/run/ployz/ployz.sock"),
+            ),
+            "\
+# Written by ployzd. Removed by reset, uninstall, and reboot.
+[Unit]
+Description=Ployz internal DNS
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/ployzd --socket /run/ployz/ployz.sock dns
+EnvironmentFile=-/etc/default/ployz
+Restart=always
+RestartSec=1
+RestartPreventExitStatus=78
+SuccessExitStatus=78
+FileDescriptorStoreMax=4
+TimeoutStopSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE
+"
+        );
+    }
+
     const RETIRE_CASE: &str = "PLOYZ_DNS_RETIRE_CASE";
     const RETIRE_ROOT: &str = "PLOYZ_DNS_RETIRE_ROOT";
 

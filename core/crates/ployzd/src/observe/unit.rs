@@ -96,6 +96,43 @@ mod tests {
 
     use super::*;
 
+    /// Pinned from `main`: an installed Machine's unit is rewritten only when this text changes.
+    #[test]
+    fn unit_text_keeps_its_exact_bytes() {
+        assert_eq!(
+            unit_text(
+                Path::new("/usr/local/bin/ployzd"),
+                Path::new("/var/lib/ployz"),
+                Path::new("/run/ployz/ployz.sock"),
+            ),
+            "\
+# Written by ployzd. Removed by uninstall and reboot.
+[Unit]
+Description=Ployz Log Store
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ployzd --data-dir /var/lib/ployz --socket /run/ployz/ployz.sock observe
+EnvironmentFile=-/etc/default/ployz
+Restart=always
+RestartSec=2
+CPUQuota=10%
+MemoryMax=256M
+IOWeight=10
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+"
+        );
+    }
+
     const CASE: &str = "PLOYZ_OBSERVE_UNIT_CASE";
     const ROOT: &str = "PLOYZ_OBSERVE_UNIT_ROOT";
 

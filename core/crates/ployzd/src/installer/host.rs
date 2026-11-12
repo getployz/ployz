@@ -711,6 +711,82 @@ WantedBy=sockets.target
         );
     }
 
+    /// Pinned from `main`: an installed Machine keeps these bytes until its next `install-units`.
+    #[test]
+    fn installed_unit_files_keep_their_exact_text() {
+        assert_eq!(
+            machine_daemon_service_unit(Path::new("/usr/local/bin")),
+            "\
+[Unit]
+Description=Ployz Machine daemon
+After=network-online.target docker.service ployz.socket
+Wants=network-online.target
+Requires=ployz.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/ployzd
+# Set PLOYZ_LOG=debug in /etc/default/ployz to raise verbosity.
+EnvironmentFile=-/etc/default/ployz
+TimeoutStartSec=20
+TimeoutStopSec=15
+Restart=always
+RestartPreventExitStatus=78
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+
+[Install]
+WantedBy=multi-user.target
+"
+        );
+        assert_eq!(
+            volume_plugin_socket_unit(),
+            "\
+[Unit]
+Description=Ployz Docker Volume plugin socket
+Before=docker.service
+
+[Socket]
+ListenStream=/run/docker/plugins/ployz.sock
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+Service=ployz-volume-plugin.service
+
+[Install]
+WantedBy=sockets.target
+"
+        );
+        assert_eq!(
+            volume_plugin_service_unit(Path::new("/usr/local/bin")),
+            "\
+[Unit]
+Description=Ployz Docker Volume plugin
+Before=docker.service
+After=zfs-import.target zfs-mount.service ployz-volume-plugin.socket
+Requires=ployz-volume-plugin.socket docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ployzd volume-plugin
+Sockets=ployz-volume-plugin.socket
+EnvironmentFile=-/etc/default/ployz
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+"
+        );
+    }
+
     #[test]
     fn daemon_unit_does_not_restart_after_a_network_conflict_refusal() {
         let unit = machine_daemon_service_unit(Path::new("/usr/local/bin"));
