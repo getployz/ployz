@@ -13,6 +13,14 @@ pub struct SetBranchSetup {
     pub setup: Vec<crate::SetupCommand>,
 }
 
+/// A Setup Command, by the Service lineage it runs in, so renames keep it. The stored
+/// form of a Branch's own Setup Commands, a Branch's defaults and a PR plan's.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Setup {
+    pub(crate) lineage: String,
+    pub(crate) command: String,
+}
+
 pub(crate) fn set_branch_setup(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -241,4 +249,17 @@ pub(super) fn deployed(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<BTreeSet<S
     .iter()
     .map(|row| row.text(0).map(str::to_owned))
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_branch_rows_setup_text_round_trips() {
+        let text = r#"[{"lineage":"lineage-1","command":"pnpm db:seed"}]"#;
+        let setup: Vec<Setup> = serde_json::from_str(text).unwrap();
+        assert_eq!(setup.len(), 1);
+        assert_eq!(serde_json::to_string(&setup).unwrap(), text);
+    }
 }

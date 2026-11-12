@@ -37,9 +37,7 @@ use crate::id::{
 };
 use std::collections::BTreeSet;
 
-use ployz_core::config::{
-    SavedEnvironmentIntent, ServiceGitAccess, ServiceGitBranch, ServiceSource,
-};
+use ployz_core::config::{SavedEnvironmentIntent, ServiceGitAccess, ServiceSource};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,7 +45,7 @@ use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
 use crate::branch::idle::Deadline;
-use crate::branch::{self, CreateBranch, SetupCommand};
+use crate::branch::{self, CreateBranch, Setup, SetupCommand};
 use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
@@ -493,12 +491,6 @@ struct Stored {
     setup: Vec<Setup>,
     remove_on_close: bool,
     include_bots: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Setup {
-    lineage: String,
-    command: String,
 }
 
 /// The repository's pull requests with a PR Environment in the Project, not being
@@ -1387,7 +1379,7 @@ fn create(
 
 /// Whether `source` builds from the pull request's repository.
 fn ours(event: &PullRequest, source: &ServiceSource) -> bool {
-    matches!(source, ServiceSource::Git { repository_id, .. } if *repository_id == event.repository_id.get())
+    source.builds_repository(event.repository_id.get())
 }
 
 /// A PR Environment [`make`] opened and saved, with the Cluster Domain its generated
@@ -1655,19 +1647,7 @@ fn derive(mut intent: SavedEnvironmentIntent, event: &PullRequest) -> SavedEnvir
 
 /// `intent` with the repository's Services tracking the pull request's head branch.
 fn track(mut intent: SavedEnvironmentIntent, event: &PullRequest) -> SavedEnvironmentIntent {
-    for service in &mut intent.services {
-        if let ServiceSource::Git {
-            repository_id,
-            branch,
-            ..
-        } = &mut service.config.source
-            && *repository_id == event.repository_id.get()
-        {
-            *branch = ServiceGitBranch::Connected {
-                name: event.head_branch.to_string(),
-            };
-        }
-    }
+    intent.retarget(event.repository_id.get(), event.head_branch.as_str(), None);
     intent
 }
 

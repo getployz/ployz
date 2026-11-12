@@ -27,7 +27,8 @@ pub(crate) use proposal::{Owners, release_changed};
 pub(crate) use proposal::{end_included, included};
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{
-    Own, branch_setup, refuse_service_named_setup, set_branch_setup, set_own, setup_is_not_staged,
+    Own, Setup, branch_setup, refuse_service_named_setup, set_branch_setup, set_own,
+    setup_is_not_staged,
 };
 pub use sync::{
     Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
@@ -526,13 +527,6 @@ pub(crate) struct Row {
     setup: Vec<Setup>,
 }
 
-/// A Setup Command, by the Service lineage it runs in, so renames keep it.
-#[derive(Serialize, Deserialize)]
-struct Setup {
-    lineage: String,
-    command: String,
-}
-
 /// An Environment a Branch comes from, with what it runs.
 struct Ancestor {
     environment: Environment,
@@ -551,6 +545,13 @@ fn chain(tx: &mut dyn Tx, parent: &EnvironmentId) -> Result<Vec<Ancestor>, RpcEr
         });
     }
     Ok(chain)
+}
+
+/// The nearest of `chain` that runs the node of lineage `lineage`.
+fn owner_of<'a>(chain: &'a [Ancestor], lineage: &str) -> Option<&'a Ancestor> {
+    chain
+        .iter()
+        .find(|ancestor| holds(&ancestor.applied, lineage))
 }
 
 /// The Environments `id` comes from, nearest first: none for a root.

@@ -135,6 +135,12 @@ impl ServiceSource {
             root_dir: "/".to_owned(),
         }
     }
+
+    /// Whether this builds from the Git repository `repository_id`.
+    #[must_use]
+    pub fn builds_repository(&self, repository_id: u64) -> bool {
+        matches!(self, Self::Git { repository_id: at, .. } if *at == repository_id)
+    }
 }
 
 /// How Cloud reads a GitHub repository; public access never borrows credentials.

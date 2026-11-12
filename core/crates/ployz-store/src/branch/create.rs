@@ -270,15 +270,13 @@ pub(crate) fn copy_node(
             )
         })?;
     settled(tx, &branch)?;
-    let owner = chain(tx, &row.parent)?
-        .into_iter()
-        .find(|ancestor| holds(&ancestor.applied, &lineage))
-        .ok_or_else(|| {
-            error::conflict(
-                format!("Nothing runs {}, so there is nothing to copy", copy.node),
-                json!({ "node": copy.node }),
-            )
-        })?;
+    let chain = chain(tx, &row.parent)?;
+    let owner = owner_of(&chain, &lineage).ok_or_else(|| {
+        error::conflict(
+            format!("Nothing runs {}, so there is nothing to copy", copy.node),
+            json!({ "node": copy.node }),
+        )
+    })?;
     let mut copied = BTreeSet::from([lineage]);
     if let Some(service) = owner
         .applied

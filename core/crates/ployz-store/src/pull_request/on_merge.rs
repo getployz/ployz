@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Arrives, At, Cell, Cells, PRIVATE_DOMAIN_KEY, Plan, RowId, SERVICE_NAME_KEY,
-    SavedEnvironmentIntent, SavedVariableValue, SealedCell, ServiceGitBranch, ServiceSource,
-    Setting, ValuePart, ValuePartOwner, Verdict, Why, canonicalize_environment_intent, marks_on,
+    SavedEnvironmentIntent, SavedVariableValue, SealedCell, Setting, ValuePart, ValuePartOwner,
+    Verdict, Why, canonicalize_environment_intent, marks_on,
 };
 use serde_json::Value;
 
@@ -953,20 +953,11 @@ fn land_one(
                 .iter()
                 .any(|row| row.id == RowId::node(lineage) && row.from == Cell::Absent)
         });
-    for service in &mut applied.next.services {
-        if let ServiceSource::Git {
-            repository_id,
-            branch,
-            ..
-        } = &mut service.config.source
-            && *repository_id == pull_request.repository_id.get()
-            && arriving.contains(service.lineage_id.as_str())
-        {
-            *branch = ServiceGitBranch::Connected {
-                name: target.to_string(),
-            };
-        }
-    }
+    applied.next.retarget(
+        pull_request.repository_id.get(),
+        target.as_str(),
+        Some(&arriving),
+    );
     let latest = review::latest_saved(tx, &into)?;
     let old = latest
         .as_ref()

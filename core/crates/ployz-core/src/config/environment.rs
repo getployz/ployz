@@ -10,7 +10,7 @@ use crate::{ConfigFileName, ConfigName, ContainerPath};
 
 use super::{
     AWAITING_FINGERPRINT, AuthoredServiceConfig, ConfigError, Generator, SecretCiphertext,
-    ValuePart, ValuePartOwner, parse_service_config,
+    ServiceGitBranch, ServiceSource, ValuePart, ValuePartOwner, parse_service_config,
 };
 
 /// Complete authored Environment state; compiled artifacts are not accepted here.
@@ -27,6 +27,25 @@ pub struct SavedEnvironmentIntent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<SavedConfigIntent>>")]
     pub configs: Vec<SavedConfigIntent>,
+}
+
+impl SavedEnvironmentIntent {
+    /// Make the Services that build repository `repository_id` track `branch`: every
+    /// one, or with `only`, those whose lineage is in it.
+    pub fn retarget(&mut self, repository_id: u64, branch: &str, only: Option<&BTreeSet<&str>>) {
+        for service in &mut self.services {
+            if !service.config.source.builds_repository(repository_id)
+                || only.is_some_and(|only| !only.contains(service.lineage_id.as_str()))
+            {
+                continue;
+            }
+            if let ServiceSource::Git { branch: at, .. } = &mut service.config.source {
+                *at = ServiceGitBranch::Connected {
+                    name: branch.to_owned(),
+                };
+            }
+        }
+    }
 }
 
 /// A Service owner with authored settings, variables, and resource relationships.
