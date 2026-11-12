@@ -1,13 +1,13 @@
-//! One read to many Machines at once, kept as a Partial Result in the order the targets
-//! were given. A target that does not invite an RPC is an omission, and an answer of
-//! `None` is one too.
+//! One read to many Machines at once, kept as a Partial Result. Answers are in the order
+//! the targets were given; failures and omissions are in the order they happened. A target
+//! that does not invite an RPC is an omission, and an answer of `None` is one too.
 //!
-//! Only this shape lives here. A fan-out that stops early or reports in the order Machines
-//! answer has other semantics and keeps its own loop.
+//! Only this shape lives here. A fan-out that stops early has other semantics and keeps
+//! its own loop.
 
 use std::future::Future;
 
-use futures_util::future::join_all;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use ployz_core::{Machine, MachineId, MachineObservation, PartialResult};
 
 /// What a fan-out needs to know of a target before it calls it.
@@ -96,7 +96,9 @@ where
             others.push(async move { (machine_id, call.await) });
         }
     }
-    for (machine_id, outcome) in join_all(others).await {
+    // Recorded as each answers, so failures and omissions keep the order they happened in.
+    let mut answering: FuturesUnordered<_> = others.into_iter().collect();
+    while let Some((machine_id, outcome)) = answering.next().await {
         result.record(machine_id, outcome);
     }
     if let Some((machine_id, call)) = last {
@@ -169,6 +171,29 @@ mod tests {
             [(id('c'), "c")]
         );
         assert_eq!(result.omissions, [id('b'), id('d')]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failures_are_recorded_in_the_order_they_happen() {
+        let targets = [id('a'), id('b'), id('c')];
+        let result = fan_out(targets, |target| async move {
+            let (millis, name) = match target {
+                t if t == id('a') => (0, "a"),
+                t if t == id('b') => (150, "b"),
+                _ => (10, "c"),
+            };
+            tokio::time::sleep(Duration::from_millis(millis)).await;
+            Err::<Option<()>, _>(name.to_owned())
+        })
+        .await;
+        assert_eq!(
+            result
+                .failures
+                .iter()
+                .map(|each| each.machine_id)
+                .collect::<Vec<_>>(),
+            [id('a'), id('c'), id('b')]
+        );
     }
 
     #[tokio::test(start_paused = true)]

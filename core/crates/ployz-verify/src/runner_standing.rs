@@ -209,7 +209,7 @@ enum Standing {
     Ended,
 }
 
-/// What `Run::standing` returned (store_runner.rs `Standing`, :710-749): the latch once it
+/// What `Run::standing` returned (store_runner.rs `Standing` and `standing`): the latch once it
 /// is set, else what `standing` makes of the read.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Said {
@@ -632,8 +632,8 @@ fn finish(store: &mut Store, outcome: Outcome) -> Answer {
 }
 
 impl RunnerStanding {
-    /// `Run::standing` (store_runner.rs:1326-1335): the latch with no call once it is
-    /// set, else `record(RunEvidence::Alive)` read through `standing` (:733-749), latching
+    /// `Run::standing` (store_runner.rs): the latch with no call once it is
+    /// set, else `record(RunEvidence::Alive)` read through `standing`, latching
     /// Lost and Ended. The Alive arm of `record` (lifecycle.rs) answers an Unknown
     /// Deployment, and otherwise calls `running`, which refuses an ended one as a
     /// conflict. `heeds_lost` is false where `check_ignores_lost` reads Unknown as keep.
