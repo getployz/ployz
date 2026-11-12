@@ -577,6 +577,23 @@ function unfinishedCutsBefore(volumeName: string, target: AnsweredMember, member
  * The copy a seed run restores from, or why it would refuse. Beside an old primary that came back, the run only makes
  * that copy a mirror and stops, so a restore waits for the mirror refresh that does the same.
  */
+/** The placeholder a preview plans under for a run a passkey will approve. No Server ever sees it. */
+const PREVIEW_APPROVAL: Signed = { body: "", signatures: [] };
+
+/**
+ * `input` as the dashboard runs it on `observed`: where every Server that enforces device approval takes a passkey's
+ * answer, the person approves the run before it starts, so a preview plans it as approved. Otherwise `input` as it is,
+ * which an enforcing Server refuses. Only previews and staging use it; a run plans with the approval it carries.
+ */
+export function asApproved<I extends PlanInput>(input: I, observed: readonly Member[]): I {
+  if (!APPROVED_KINDS.has(input.kind)) return input;
+  const passkeys = observed.every((member) => !member.answered || member.enforces !== true || member.passkey === true);
+  if (!passkeys || ("approval" in input.args && input.args.approval !== undefined)) return input;
+  return { ...input, args: { ...input.args, approval: PREVIEW_APPROVAL } };
+}
+
+const APPROVED_KINDS: ReadonlySet<PlanInput["kind"]> = new Set(["mirror", "sync", "move", "restore", "delete_mirror", "seed"]);
+
 export function planSeed(input: Extract<PlanInput, { kind: "seed" }>, members: readonly Member[]):
   { readonly ok: true; readonly source: AnsweredMember } | { readonly ok: false; readonly refusal: Refusal } {
   const planned = planFromCopies(input, members);

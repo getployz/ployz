@@ -20,7 +20,7 @@ import { volumeRun } from "#/modules/volume-run/tables";
 import {
   admitRun, ClusterNotConnected, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, storeRefusal, unreachable,
 } from "#/modules/volume-run/volume-run.server";
-import { planSeed } from "#/modules/volume-run/plan";
+import { asApproved, planSeed } from "#/modules/volume-run/plan";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -194,7 +194,8 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   const run = { kind: "seed", args: { into: { volumeId: id, dockerVolume: dockerVolumeName(namespace, id), name }, guid: input.guid, name: input.name } } as const;
   const members = yield* inspect(organizationId, input.environment, input.volumeId, run);
   if (!serversAnswer(members)) return { ok: false, refusal: UNANSWERED } satisfies PlacementWrite;
-  const planned = planSeed({ ...run, volumeName: source.volumeName, orphan: false }, members);
+  // The Deploy's seed runs under the passkey answer the person gives when they deploy it, so staging plans it approved.
+  const planned = planSeed(asApproved({ ...run, volumeName: source.volumeName, orphan: false }, members), members);
   if (!planned.ok) return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies PlacementWrite;
   const primary = planned.source.machine;
   const commands: BatchCommand[] = [
