@@ -4,7 +4,7 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use ployz_core::{MANAGEMENT_PORT, MachineSubnet, ManagementAddress, VOLUME_SEND_PORT};
+use ployz_core::{MANAGEMENT_PORT, MachineSubnet, ManagementAddress, VOLUME_SEND_PORT, mesh_cidr};
 
 use crate::dns;
 
@@ -464,8 +464,9 @@ fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
 }
 
 fn ipv6_fence(fence: &ployz_build::Fence) -> Vec<String> {
-    let allowed = vec![format!("-d fdcc::/16 -p tcp --dport {UNREGISTRY_PORT}")];
-    let drops = ["-d fdcc::/16".to_owned()];
+    let mesh = mesh_cidr();
+    let allowed = vec![format!("-d {mesh} -p tcp --dport {UNREGISTRY_PORT}")];
+    let drops = [format!("-d {mesh}")];
     fenced(fence, "::1/128", allowed, &drops, &PRIVATE_V6)
 }
 
@@ -485,15 +486,16 @@ fn mesh_ports() -> Vec<String> {
 /// accepts don't name.
 fn management_policy(management_address: ManagementAddress) -> Vec<String> {
     let management = format!("{}/128", management_address.0);
+    let mesh = mesh_cidr();
     let mut rules = mesh_ports();
     for (protocol, port) in [("tcp", MACHINE_API_PORT), ("udp", CORROSION_GOSSIP_PORT)] {
         rules.push(format!(
-            "-i {WIREGUARD_INTERFACE_NAME} -s fdcc::/16 -p {protocol} --dport {port} -j ACCEPT"
+            "-i {WIREGUARD_INTERFACE_NAME} -s {mesh} -p {protocol} --dport {port} -j ACCEPT"
         ));
     }
     for port in [UNREGISTRY_PORT, VOLUME_SEND_PORT] {
         rules.push(format!(
-            "-i {WIREGUARD_INTERFACE_NAME} -s fdcc::/16 -d {management} -p tcp --dport {port} -j ACCEPT"
+            "-i {WIREGUARD_INTERFACE_NAME} -s {mesh} -d {management} -p tcp --dport {port} -j ACCEPT"
         ));
     }
     rules.push(format!(

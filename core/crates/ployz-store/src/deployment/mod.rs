@@ -226,7 +226,7 @@ impl DeploymentSummary {
     pub fn label(&self) -> String {
         match (self.number, &self.push) {
             (Some(number), _) => format!("#{number}"),
-            (None, Some(push)) => push.head.as_str().get(..7).unwrap_or_default().to_owned(),
+            (None, Some(push)) => push.head.short().to_owned(),
             (None, None) => self.id.as_str().get(..8).unwrap_or_default().to_owned(),
         }
     }

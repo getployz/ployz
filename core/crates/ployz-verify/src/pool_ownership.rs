@@ -7,7 +7,7 @@
 //! (:77-83). `install_at` holds the installation gate's exclusive guard throughout
 //! (installer/mod.rs:253-258, :280). The plugin's `VolumeStorage::create`
 //! (volume_plugin/pool.rs:96-124) takes that gate's shared guard (`admit_mutation`,
-//! :102, volume_plugin/storage.rs:156-166), then the Pool mutation lock (pool.rs:103), then
+//! :102, volume_plugin/storage.rs:115-125), then the Pool mutation lock (pool.rs:103), then
 //! runs `one_usable` (:213), `recover` (:276) and, when both find nothing, `create`
 //! (:391), which builds the root-backed `ployz` Pool on a backing file. Copy's `first_pool`
 //! takes the same path (volume_plugin/copy.rs:143-157 and `first_pool` in the same file). Meanwhile the disk can go
@@ -31,7 +31,7 @@
 //! `prepare_storage` again (installer/mod.rs:277-283); docs/user/servers/add-a-server.md:207-208
 //! names that command. The model starts from either host.
 //!
-//! Docker's List (volume_plugin/removal.rs:96-104) and Inspect (:48-53) take the Pool
+//! Docker's List (volume_plugin/removal.rs:100-108) and Inspect (:52-57) take the Pool
 //! mutation lock but not the installation gate, and run `admit`: `one_usable`, which
 //! writes CONFIRMED for an imported `ployz-device` (pool.rs:236-245), then `recover`. The
 //! model has them as two steps, offered whenever a release is installed, including while
@@ -166,7 +166,7 @@ enum Plugin {
     Creating,
     /// A List's or Inspect's `one_usable` found nothing imported; its `recover` is next,
     /// under the Pool mutation lock and without the installation gate (pool.rs:255-260,
-    /// volume_plugin/removal.rs:96-104, :48-53).
+    /// volume_plugin/removal.rs:100-108, :52-57).
     Listing,
 }
 
@@ -198,7 +198,7 @@ enum Observed {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Branch {
     /// `admit_mutation`'s `try_mutation` refused: "a Ployz installation or upgrade is
-    /// active" (volume_plugin/storage.rs:156-166, ployzd mutation.rs:55-69).
+    /// active" (volume_plugin/storage.rs:115-125, ployzd mutation.rs:55-69).
     InstallationActive,
     /// `install_at`'s `try_installation` refused at once while a Volume create holds the
     /// shared guard (ployzd mutation.rs:77-81, installer/mod.rs:253-254). The installer
@@ -249,7 +249,7 @@ enum Branch {
     /// while that guard is held (ployzd mutation.rs:77-81).
     ClearsStale,
     /// The fix: `recover` found an intent whose disk is present with no label, for List or
-    /// Inspect, which hold no installation guard (volume_plugin/removal.rs:96-104, :48-53).
+    /// Inspect, which hold no installation guard (volume_plugin/removal.rs:100-108, :52-57).
     /// An installer may still be before its `zpool create`, so `recover` leaves the intent
     /// and returns `Ok(None)`. The product change: `recover` (volume_plugin/pool.rs:276)
     /// takes whether its caller holds the shared guard; `admit` (:255-260) passes it
@@ -315,7 +315,7 @@ enum Action {
     /// `local_storage` runs `zpool list` (ployzd machine/mod.rs:689-717), in an installed
     /// ployzd.
     Observe,
-    /// Docker lists Volumes (`VolumeStorage::list`, volume_plugin/removal.rs:96-104) or
+    /// Docker lists Volumes (`VolumeStorage::list`, volume_plugin/removal.rs:100-108) or
     /// inspects one (`inspect`, :48-53). Each takes the Pool mutation lock but not the
     /// installation gate, then runs `admit` (pool.rs:255-260). This step is its
     /// `one_usable`; when that finds nothing, `ListRecover` follows. Neither creates a Pool.
@@ -356,7 +356,7 @@ struct State {
 struct Broken {
     /// The installation gate admits a Volume create while `install_at` runs, and lets
     /// `install_at` start while a Volume create holds the shared guard (installer/mod.rs:254,
-    /// volume_plugin/storage.rs:160-163).
+    /// volume_plugin/storage.rs:119-122).
     gate_admits_during_install: bool,
     /// `recover` (volume_plugin/pool.rs:307-312) ignores the marker.
     recover_ignores_marker: bool,
@@ -381,7 +381,7 @@ struct Broken {
     /// with no label.
     intent_never_clears: bool,
     /// The fix's `recover` clears a stale intent for List and Inspect too, which hold no
-    /// installation guard (volume_plugin/removal.rs:96-104, :48-53).
+    /// installation guard (volume_plugin/removal.rs:100-108, :52-57).
     ungated_clears_intent: bool,
     /// The fix's `local_storage` ignores the marker, which every Machine the code as it is
     /// recorded has without an intent.
@@ -1090,10 +1090,10 @@ fn reads_as(model: &PoolOwnership, before: &State, action: Action, after: &State
             ),
         },
         Action::List if after.plugin == Plugin::Listing => {
-            "Plugin: Docker lists or inspects Volumes, under the Pool mutation lock and without the installation gate (volume_plugin/removal.rs list :96-104, inspect :48-53); admit's one_usable reads zpool list; nothing is imported, so recover is next (pool.rs one_usable)".to_owned()
+            "Plugin: Docker lists or inspects Volumes, under the Pool mutation lock and without the installation gate (volume_plugin/removal.rs list :100-108, inspect :52-57); admit's one_usable reads zpool list; nothing is imported, so recover is next (pool.rs one_usable)".to_owned()
         }
         Action::List => format!(
-            "Plugin: Docker lists or inspects Volumes, under the Pool mutation lock and without the installation gate (volume_plugin/removal.rs list :96-104, inspect :48-53); admit: {}; no Pool is created",
+            "Plugin: Docker lists or inspects Volumes, under the Pool mutation lock and without the installation gate (volume_plugin/removal.rs list :100-108, inspect :52-57); admit: {}; no Pool is created",
             reads_as(model, before, Action::OneUsable, after).trim_start_matches("Plugin: ")
         ),
         Action::ListRecover if after.took == Some(Branch::ClearsStale) => {

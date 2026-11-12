@@ -23,6 +23,7 @@ use crate::branch::{
 use crate::id::ServiceLineageId;
 use crate::scope::RemovedServices;
 use crate::storage;
+use crate::trusted::Evidence;
 use crate::variables::{self, VariableKey};
 
 /// Read a PR Environment's On merge list.
@@ -979,6 +980,7 @@ fn land_one(
     let consent = crate::deployment::loss::still_removed(review::consent(latest.as_ref()), &saved);
     review::publish(
         tx,
+        Evidence::Caller(trusted),
         who,
         &into,
         saved.clone(),
@@ -1094,11 +1096,17 @@ fn land_one(
     } else if consumed {
         scope::write_working(
             tx,
+            Evidence::Caller(trusted),
             &mut destination,
             scope::WorkingWrite::Trusted(scope::Reason::Landing),
         )?;
     } else {
-        scope::write_working(tx, &mut destination, scope::WorkingWrite::Removed)?;
+        scope::write_working(
+            tx,
+            Evidence::Caller(trusted),
+            &mut destination,
+            scope::WorkingWrite::Removed,
+        )?;
     }
 
     // The pair shares the PR Environment's values: an Edit is the Destination's own

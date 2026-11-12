@@ -6,8 +6,9 @@ use ployz_core::{
     QualifiedService, RpcError, RpcErrorCode, op,
 };
 
+use super::super::route::Reached;
 use super::super::runtime;
-use super::{ConnectionOptions, Reached, target};
+use super::{ConnectionOptions, target};
 use crate::approval;
 use crate::cloud_account::{self, Credential, Release, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
@@ -90,18 +91,17 @@ fn refuse_without_device(
 /// is gone is forgotten instead; a Cloud that couldn't hand out the connections is retried.
 /// A Server's own refusal says what is wrong with it.
 fn unanswered_reset(error: Error, matches: &ArgMatches, selector: &str) -> Error {
-    let report = error.report();
-    if report.details.get("refused").is_some() {
+    if super::super::route::refused(&error) {
         return error;
     }
-    if super::servers_unanswered(&report) {
+    if super::super::route::servers_unanswered(&error) {
         let forget = super::super::rerun(
             matches,
             &["server", "forget", selector, "--confirm", "dead"],
         );
         return error.hint(Hint::Next(forget));
     }
-    if report.code == RpcErrorCode::Unavailable {
+    if error.report().code == RpcErrorCode::Unavailable {
         return error.hint(Hint::Retry(typed_with(&[])));
     }
     error
@@ -120,8 +120,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let runtime = runtime()?;
     let reached = runtime.block_on(async {
         match removal {
-            Removal::Forget => super::connect_or_unanswered(matches, options.context()).await,
-            Removal::Reset => super::connect(matches, options.context())
+            Removal::Forget => {
+                super::super::route::connect_or_unanswered(matches, options.context()).await
+            }
+            Removal::Reset => super::super::route::connect(matches, options.context())
                 .await
                 .map(Reached::Client)
                 .map_err(|error| unanswered_reset(error, matches, &selector)),
@@ -147,12 +149,17 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         let by_device = machines.len() > 1 && machines.iter().any(enforces);
         let mut switched = selected.id == current && machines.len() > 1;
         if by_device {
-            (client, current, switched) =
-                super::connect_full_avoiding(matches, options.context(), Some(&selected)).await?;
+            (client, current, switched) = super::super::route::connect_full_avoiding(
+                matches,
+                options.context(),
+                Some(&selected),
+            )
+            .await?;
             refuse_without_device(&client, &machines, &selected, current, removal, matches)?;
         } else if switched {
             (client, current) =
-                super::connect_avoiding(matches, options.context(), &selected).await?;
+                super::super::route::connect_avoiding(matches, options.context(), &selected)
+                    .await?;
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let held = match removal {

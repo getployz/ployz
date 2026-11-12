@@ -14,7 +14,7 @@ use super::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Health, LogsAnswer, OperationsAnswer,
 };
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, place_of, store};
+use super::machine::{Cx, Effect, Stop, Tool, place_of, store};
 use super::refusal::{Call, Refusal};
 use super::status::{Container, ServiceFacts, Watch, service_status};
 use super::step::{
@@ -209,7 +209,9 @@ impl Tool for ServiceState {
                 })
             })
             .collect::<Vec<_>>();
-        Ok(json!({ "at": at(&namespace.environment), "services": services, "seen": seen.seen }))
+        Ok(
+            json!({ "at": namespace.environment.to_string(), "services": services, "seen": seen.seen }),
+        )
     }
 }
 
@@ -297,7 +299,7 @@ impl Tool for ServiceLogs {
             .into_iter();
         let logs = cx.cloud::<LogsAnswer>(answers.next())?;
         Ok(json!({
-            "at": at(&namespace.environment),
+            "at": namespace.environment.to_string(),
             "untrusted": { "servers": logs.servers },
             "seen": logs.seen,
             "notes": logs.notes,
@@ -337,7 +339,7 @@ fn service_act(
     read.insert("service".into(), service.as_str().into());
     let environment = namespace.environment.id.clone();
     let run = Run {
-        at: at(&namespace.environment),
+        at: namespace.environment.to_string(),
         subject: Subject::Service {
             environment: environment.clone(),
             service: service.clone(),

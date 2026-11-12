@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, store};
 use crate::approval::{self, Asked, Subject, Verb};
-use crate::cloud_account::{self, Credential, StoreCallError, Via};
+use crate::cloud_account::{self, CALL_DEADLINE, Credential, StoreCallError, Via};
 use crate::cloud_login::{self, CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
@@ -47,10 +47,6 @@ pub(super) use login::{login, login_command};
 pub(super) fn command(command: Command) -> Command {
     command.about("Serve the agent tools to a coding agent as MCP tools over stdio")
 }
-
-/// Outlasts the longest wait a tool may ask for and matches the default build limit. A
-/// Deployment or a Cloud operation goes on after ployz mcp stops waiting for it.
-pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
 /// Where the agent's published commands come from: the Cloud it acts in. Without
 /// `PLOYZ_TOKEN` that is the Cloud `ployz mcp login` stored, not the sign-in's.
@@ -102,7 +98,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     if local.is_none() {
         crate::ui::note(CLOUD_CREDENTIAL);
     }
-    let cloud = std::env::var(crate::cli::env::CLOUD_URL).ok();
+    let cloud = crate::cloud_origin::CloudOrigin::named_by_env();
     let token = crate::cloud_account::env_token();
     // Only Cloud runs a published command, so a local Store lists none.
     let setup = local

@@ -14,12 +14,12 @@ use ployz_store::RowId;
 use ployz_store::{
     Actor, Batch, BatchCommand, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
     DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
-    EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName, Publish,
-    SecretValue, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, SyncChanges,
-    SyncQuery, SyncView, Take, Trusted,
+    EnvironmentRef, HintSource, NeverSync, OrganizationId, Permission, Principal, ProjectId,
+    ProjectName, Publish, SecretValue, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath,
+    SyncChanges, SyncQuery, SyncView, Take, Trusted,
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod backend;
 use backend::{deploy, deploy_in_batches};
@@ -5257,5 +5257,82 @@ fn a_held_branch_takes_the_seal_below_at_the_parents_next_deploy() {
     assert_eq!(
         qa_two_tokens(&store, &who, &keys),
         vec![json!({ "secret": false }); keys.len()]
+    );
+}
+
+/// A Follow is the Store's own work: it meets the Protected Environment fence as nobody,
+/// so a Deployer who may not protect still sees production's source change land in its
+/// Branch, though the same change by them in production is refused.
+#[test]
+fn a_follow_into_a_branch_ignores_what_the_deployer_may_protect() {
+    let (store, system) = shop();
+    edit_git(&store, &system, "production", &[("web.image", None)]);
+    branch(&store, &system, 10, "production", "fix-git");
+    edit_git(
+        &store,
+        &system,
+        "production",
+        &[("web.repository", Some(json!("acme/web")))],
+    );
+    save(&store, &system, "production");
+
+    let ada = Actor {
+        organization: system.organization.clone(),
+        principal: Some(Principal::parse("ada").unwrap()),
+    };
+    let deployer = Trusted {
+        permissions: Some(BTreeSet::from([
+            Permission::ChangesStage,
+            Permission::ChangesDeploy,
+        ])),
+        ..backend::acme_repositories()
+    };
+    let refused = store
+        .write_trusted(
+            &ada,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.repository").unwrap(),
+                    value: json!("acme/docs"),
+                }],
+            },
+            &deployer,
+        )
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert_eq!(refused.message, "Needs environments:protect");
+
+    let id = ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000104").unwrap();
+    let admit = ployz_store::Admit::Deploy(ployz_store::Deploy {
+        teardown: None,
+        id: id.clone(),
+        environment: at("production"),
+        services: Vec::new(),
+        version: None,
+        upload: None,
+        accept_volume_loss: Vec::new(),
+        message: None,
+        prune: false,
+        no_prune: true,
+        approval: None,
+    });
+    // Protected, production waits for an admin's yes to exactly this deploy.
+    let asked = store.write_trusted(&ada, &admit, &deployer).unwrap_err();
+    assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
+    let digest = asked.details["approval"].as_str().unwrap();
+    let approved = Trusted {
+        approval: ployz_store::Approval::Approved(
+            ployz_store::ApprovalDigest::parse(digest).unwrap(),
+        ),
+        ..deployer
+    };
+    store.write_trusted(&ada, &admit, &approved).unwrap();
+    backend::run(&store, &id);
+
+    assert_eq!(
+        web(&store, &system, "fix-git")["repository"],
+        json!("acme/web")
     );
 }

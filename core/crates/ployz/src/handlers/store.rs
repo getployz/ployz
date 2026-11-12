@@ -19,9 +19,10 @@ use ployz_store::{
 
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::approval::{self, Asked};
-use crate::cli::{env, value};
+use crate::cli::value;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
+use crate::env;
 use ployz_core::Hint;
 
 impl From<StoreCallError> for Error {
@@ -413,7 +414,7 @@ impl<'m> Store<'m> {
             .flatten()
             .cloned();
         runtime.block_on(async {
-            let mut client = match super::server::connect(self.matches, context).await {
+            let mut client = match super::route::connect(self.matches, context).await {
                 Ok(client) => client,
                 Err(error)
                     if matches!(

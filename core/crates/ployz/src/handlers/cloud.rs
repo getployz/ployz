@@ -20,6 +20,7 @@ use crate::cloud_enroll::{
     self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, InitializeMode,
     Join, Outcome, Recovery,
 };
+use crate::cloud_origin::{CloudOrigin, DEFAULT_CLOUD};
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::provisioning::Installation;
@@ -72,7 +73,7 @@ where
     })?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
-        .map_or("ployz.dev", String::as_str);
+        .map_or(DEFAULT_CLOUD, String::as_str);
     enroll_token(root, token, cloud_url, install)
 }
 
@@ -144,7 +145,7 @@ where
     .await;
     report
         .send(
-            &cloud_enroll::report_url(cloud_url),
+            &CloudOrigin::new(cloud_url).report_url(),
             token,
             setup.as_ref().err(),
         )
@@ -177,7 +178,7 @@ where
         report.read_host();
     }
     let initial_policy = super::server::enrollment_policy(matches)?;
-    let url = cloud_enroll::enroll_url(cloud_url);
+    let url = CloudOrigin::new(cloud_url).enroll_url();
     let requested_name = super::server::requested_name(matches)?;
     let cluster_name = super::server::founding_cluster_name(matches)?;
     let requested_storage = super::server::requested_storage(matches);
@@ -232,7 +233,7 @@ where
                 *join,
                 &initial_policy,
                 pinned,
-                &cloud_enroll::callback_url(cloud_url),
+                &CloudOrigin::new(cloud_url).callback_url(),
                 &url,
                 &identity,
                 token,
@@ -388,7 +389,7 @@ async fn enroll_current_identity(
         {
             let config = super::config_path(matches)?;
             if super::device::key::load(&super::device::key::path(&config))?.is_some() {
-                let mut entry = super::server::connect(matches, None).await?;
+                let mut entry = super::route::connect(matches, None).await?;
                 let expected = ployz_core::RegisterRequest {
                     join_approval: None,
                     join_confirmation: None,
@@ -597,7 +598,7 @@ async fn refuse_founding(
     resettable: bool,
 ) -> Error {
     let released = cloud_enroll::release(
-        &cloud_enroll::callback_url(cloud_url),
+        &CloudOrigin::new(cloud_url).callback_url(),
         token,
         machine_id,
         &pairing.secret,
@@ -828,7 +829,7 @@ where
         })?;
     cloud_enroll::publish(
         command,
-        &cloud_enroll::callback_url(cloud_url),
+        &CloudOrigin::new(cloud_url).callback_url(),
         token,
         machine.id,
         &pairing.secret,
@@ -837,7 +838,7 @@ where
     .await?;
     let reply = cloud_enroll::callback(
         command,
-        &cloud_enroll::callback_url(cloud_url),
+        &CloudOrigin::new(cloud_url).callback_url(),
         token,
         machine.id,
         &pairing.secret,

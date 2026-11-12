@@ -24,7 +24,7 @@ Paths below are under `core/crates/ployzd/src/` unless they say otherwise, and a
   - A daemon start whose `clear_active` returns Io fails, and the daemon exits again (`daemon.rs:184-186`).
 - **The worker** is its own transient unit (`installer/upgrade.rs:397-459`).
 - **`ployzd install`** is its own process, with its own reader slot (`State::install`). It runs beside the daemon's reader, including daemon start.
-- **The volume plugin** is its own unit (`installer/host.rs:252-273`, `:348-371`). Its `admit_mutation` runs `try_mutation` (`volume_plugin/storage.rs:156-165`) whether or not the daemon is up.
+- **The volume plugin** is its own unit (`installer/host.rs:252-273`, `:348-371`). Its `admit_mutation` runs `try_mutation` (`volume_plugin/storage.rs:115-124`) whether or not the daemon is up.
 
 The lock is an `flock` on an open file, so a kill releases it (`mutation.rs:37`).
 
@@ -62,9 +62,9 @@ The model has three askers:
     - a Build's admission (`build.rs:196-201`).
   - The Update fast path (`machine/local_machine.rs:846-856`, `try_mutation` at `:851`). It takes every update that leaves the name, the public IP and the advertised endpoints unchanged (`:846-848`). That includes labels and the policy fields: `accepts_builds`, `accepts_services`, `accepts_ingress` and build concurrency (`core/crates/ployz-core/src/domain/machine.rs:523-541`). Other updates go through `finish_mutation`.
 - **`Asker::Plugin`**, for the volume plugin, at any time. Its `admit_mutation` gates:
-  - create (`volume_plugin/pool.rs:102`) and mount (`volume_plugin/storage.rs:297`);
-  - remove (`volume_plugin/removal.rs:17`) and resize (`volume_plugin/size.rs:28`);
-  - seed (`volume_plugin/seed.rs:25`), copy (`volume_plugin/copy.rs:145`) and departure (`volume_plugin/departure.rs:66`);
+  - create (`volume_plugin/pool.rs:102`) and mount (`volume_plugin/storage.rs:257`);
+  - remove (`volume_plugin/removal.rs:21`) and resize (`volume_plugin/size.rs:28`);
+  - seed (`volume_plugin/seed.rs:25`), copy (`volume_plugin/copy.rs:145`) and departure (`volume_plugin/departure.rs:62`);
   - the capacity reads (`volume_plugin/capacity.rs:122`, `:137`).
 - **`Asker::Older`**, under the fix only. It stands for a release before the fix.
 

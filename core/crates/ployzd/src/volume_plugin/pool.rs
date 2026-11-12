@@ -133,7 +133,7 @@ impl PoolStorage {
             stat: "stat".into(),
             df: "df".into(),
             backing: MachineLayout::production().machine_pool_file(),
-            volume_root: super::MOUNT_ROOT.into(),
+            volume_root: ployzd::dataset_layout::MOUNT_ROOT.into(),
             host_root: "/".into(),
             sys_dev_block: "/sys/dev/block".into(),
         }

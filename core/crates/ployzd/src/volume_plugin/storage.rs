@@ -10,7 +10,10 @@ use std::{
     time::Duration,
 };
 
-use ployzd::machine_pool::MachinePool;
+use ployzd::{
+    dataset_layout::{DatasetLayout, MOUNT_ROOT, Place, SlotAt},
+    machine_pool::MachinePool,
+};
 use tokio::{
     process::Command,
     sync::{Mutex, OwnedMutexGuard},
@@ -21,50 +24,6 @@ use super::{
     pool::PoolStorage,
     transfer::{RECEIVE_STALL, STOP_DEADLINE},
 };
-
-pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
-pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
-
-pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/{MIRROR_ROOT}/{name}", pool.name())
-}
-
-pub(super) fn slot_fs(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/fs", slot_parent(pool, name))
-}
-
-pub(super) fn root_dataset(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/{DATASET_ROOT}/{name}", pool.name())
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub(super) enum Place<'name> {
-    Root(&'name str),
-    Slot(&'name str),
-    Outside,
-}
-
-impl<'name> Place<'name> {
-    pub(super) fn of(dataset: &'name str, pool: &str) -> Self {
-        let Some(rest) = dataset
-            .strip_prefix(pool)
-            .and_then(|rest| rest.strip_prefix('/'))
-        else {
-            return Self::Outside;
-        };
-        if let Some(name) = rest.strip_prefix(&format!("{DATASET_ROOT}/")) {
-            return Self::Root(name);
-        }
-        match rest.strip_prefix(&format!("{MIRROR_ROOT}/")) {
-            Some(slot) => Self::Slot(slot.split('/').next().unwrap_or(slot)),
-            None => Self::Outside,
-        }
-    }
-
-    pub(super) fn commits(&self) -> bool {
-        matches!(self, Self::Root(_) | Self::Slot(_))
-    }
-}
 
 #[derive(Clone)]
 pub(super) struct VolumeStorage {
@@ -84,12 +43,12 @@ pub(super) struct VolumeStorage {
 /// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
 /// slot's `fs` copy carries the same bound and is not counted again.
 pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
-    match Place::of(&dataset.name, pool) {
-        Place::Root(_) => dataset.refquota,
-        Place::Slot(name) if dataset.name == format!("{pool}/{MIRROR_ROOT}/{name}") => {
-            dataset.refquota
-        }
-        Place::Slot(_) | Place::Outside => 0,
+    match DatasetLayout::new(pool).place(&dataset.name) {
+        Place::Root(_)
+        | Place::Slot {
+            at: SlotAt::Parent, ..
+        } => dataset.refquota,
+        Place::Slot { .. } | Place::Outside => 0,
     }
 }
 
@@ -172,8 +131,9 @@ impl VolumeStorage {
         origin: CapacityAdmission,
     ) -> Result<()> {
         let datasets = self.datasets(pool).await?;
-        let root = format!("{}/{DATASET_ROOT}", pool.name());
-        let volume = format!("{root}/{name}");
+        let layout = DatasetLayout::of(pool);
+        let root = layout.root_parent();
+        let volume = layout.root(name);
 
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_requested(name, requested)?;
@@ -185,7 +145,7 @@ impl VolumeStorage {
             return Ok(());
         }
 
-        let slot = slot_parent(pool, name);
+        let slot = layout.slot_parent(name);
         if datasets.iter().any(|dataset| dataset.name == slot) {
             return Err(VolumeError::from(format!(
                 "Volume {name} is held in slot {slot}; promote or restore it before creating it again"
@@ -213,7 +173,7 @@ impl VolumeStorage {
     ) -> Result<()> {
         let committed = datasets
             .iter()
-            .filter(|dataset| Place::of(&dataset.name, pool.name()).commits());
+            .filter(|dataset| DatasetLayout::of(pool).place(&dataset.name).commits());
         let commitment = committed
             .clone()
             .map(|dataset| committed_bytes(dataset, pool.name()))
@@ -350,14 +310,15 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &DockerVolumeName,
     ) -> Result<Option<&'datasets Dataset>> {
-        let root_name = format!("{}/{DATASET_ROOT}", pool.name());
+        let layout = DatasetLayout::of(pool);
+        let root_name = layout.root_parent();
         let root = datasets.iter().find(|dataset| dataset.name == root_name);
         if let Some(root) = root {
             root.require_mountpoint(MOUNT_ROOT)?;
             root.require_writable()?;
         }
 
-        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
+        let requested = layout.root(name);
         let descendant_prefix = format!("{requested}/");
         if let Some(dataset) = datasets
             .iter()

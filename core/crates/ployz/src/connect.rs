@@ -58,8 +58,7 @@ pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a targeted read waits before the target counts as silent.
 pub(crate) fn target_read_timeout() -> Duration {
-    crate::cli::env::seconds(crate::cli::env::TARGET_READ_TIMEOUT_SECONDS)
-        .unwrap_or(TARGET_RPC_TIMEOUT)
+    crate::env::seconds(crate::env::TARGET_READ_TIMEOUT_SECONDS).unwrap_or(TARGET_RPC_TIMEOUT)
 }
 
 /// While a call is open, the client pings the entry daemon after this long without a
@@ -1660,7 +1659,7 @@ pub struct TransportError {
     detailed: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
-    cause: Option<crate::failure::JoinedChain>,
+    cause: Option<ployz_core::error_chain::JoinedChain>,
 }
 
 impl TransportError {
@@ -1750,7 +1749,7 @@ impl TransportError {
             })
             .unwrap_or_default();
         lines.push(line);
-        self.cause = crate::failure::JoinedChain::of(lines);
+        self.cause = ployz_core::error_chain::JoinedChain::of(lines);
         self
     }
 
@@ -1814,9 +1813,11 @@ impl From<tonic::Status> for TransportError {
                     .skip_while(|line| line == status.message())
                     .collect();
                 lines.dedup();
-                crate::failure::JoinedChain::of(lines)
+                ployz_core::error_chain::JoinedChain::of(lines)
             }
-            None => sent.clone().and_then(crate::failure::JoinedChain::of),
+            None => sent
+                .clone()
+                .and_then(ployz_core::error_chain::JoinedChain::of),
         };
         // Tonic merges the response headers into a local failure's metadata.
         let marked = |key| status.metadata().contains_key(key);

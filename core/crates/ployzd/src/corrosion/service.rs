@@ -22,7 +22,7 @@ use crate::{
     docker::{DesiredContainer, Ensure, ManagedService},
     filesystem::atomic_write,
 };
-use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT};
+use ployz_core::{CORROSION_API_ADDRESS, CORROSION_GOSSIP_PORT};
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
@@ -100,7 +100,7 @@ impl CorrosionConfig {
         Self::new(
             data_dir,
             run_dir,
-            SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
+            CORROSION_API_ADDRESS,
             SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_GOSSIP_PORT)),
             DEFAULT_CONTAINER_NAME,
         )

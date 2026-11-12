@@ -21,6 +21,7 @@ use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 use crate::{Actor, Approval, Trusted};
 
 /// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
@@ -483,7 +484,13 @@ fn deploy(
         ),
         trusted.volumes.as_ref(),
     )?;
-    review::guard_saving(tx, id, review.saved.as_ref(), &saved_intent)?;
+    review::guard_saving(
+        tx,
+        Evidence::Caller(trusted),
+        id,
+        review.saved.as_ref(),
+        &saved_intent,
+    )?;
     let pruning = match prunes {
         // What this Store holds, deploying or dropping, isn't the prune's.
         true => review::Pruning::of(
@@ -502,6 +509,7 @@ fn deploy(
     review::approve(who, &review, (&saved_intent, shipping, &pruning), &gate)?;
     let (saved, _) = review::publish(
         tx,
+        Evidence::Caller(trusted),
         who,
         id,
         environment.working.clone(),

@@ -24,6 +24,8 @@ mod docker_image;
 pub(crate) mod certificates;
 pub mod corrosion;
 pub mod daemon;
+#[doc(hidden)]
+pub mod dataset_layout;
 pub mod diag;
 pub mod dns;
 pub mod docker;

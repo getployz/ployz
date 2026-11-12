@@ -16,7 +16,7 @@
 //! reconciles before it serves (daemon.rs:184-186). The worker is its own unit (:397-459),
 //! `ployzd install` its own process, and the volume plugin its own unit
 //! (installer/host.rs:359-382), which admits through `admit_mutation`
-//! (volume_plugin/storage.rs:156-165).
+//! (volume_plugin/storage.rs:115-124).
 //!
 //! Daemon start clears the marker only if its `settle` wins `try_installation` (:258-260).
 //! Otherwise `settle` returns Ok (:263), `reconcile` drops it (:349-351) and the daemon
@@ -280,7 +280,7 @@ enum Asker {
     /// A daemon RPC, through `admit_installation` (local_machine.rs:331-334) or the Update
     /// fast path (:851). It runs only while the daemon serves.
     Daemon,
-    /// The volume plugin's `admit_mutation` (volume_plugin/storage.rs:162), its own unit.
+    /// The volume plugin's `admit_mutation` (volume_plugin/storage.rs:121), its own unit.
     Plugin,
     /// The fix: a release before it, which gates on the marker as the code as it is does.
     Older,
@@ -1616,7 +1616,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
             answer_reads_as(model, before, after)
         ),
         Action::Mutate(Asker::Plugin) => format!(
-            "Volume plugin: admit_mutation's try_mutation {} (volume_plugin/storage.rs:162, mutation.rs:55-69)",
+            "Volume plugin: admit_mutation's try_mutation {} (volume_plugin/storage.rs:121, mutation.rs:55-69)",
             answer_reads_as(model, before, after)
         ),
         Action::Mutate(Asker::Older) => format!(

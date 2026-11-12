@@ -1,16 +1,16 @@
 //! `ployz device`: the people's keys every Machine admits at Full scope. Cloud relays a
 //! Device's key to the approver, who checks it against the code the Device printed.
 
-use crate::cluster::Call;
+use crate::cluster::{Call, fan_out_entry_last};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    DeviceCode, DeviceKey, DeviceSet, InspectRequest, MachineFailure, MachineId, MachineName,
-    MachineTarget, REMOVE_TRUSTED_KEY_CAPABILITY, RemoveTrustedKeyRequest, Rpc, RpcError,
-    RpcErrorCode, SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY, SetDeviceRequest,
-    SetPasskeyRequest, TrustedKeyRemoved,
+    DeviceCode, DeviceKey, DeviceSet, InspectRequest, MachineId, MachineName, MachineTarget,
+    REMOVE_TRUSTED_KEY_CAPABILITY, RemoveTrustedKeyRequest, Rpc, RpcError, RpcErrorCode,
+    SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY, SetDeviceRequest, SetPasskeyRequest,
+    TrustedKeyRemoved,
     authority::{
         Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey,
         trusted_key::{CredentialId, RelyingParty},
@@ -20,9 +20,8 @@ use ployz_core::{
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::task::JoinSet;
 
-use super::{Error, config_path, leaf_matches, runtime, server};
+use super::{Error, config_path, leaf_matches, route, runtime};
 use crate::cli::{base, positional, yes};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, LoginError};
@@ -157,7 +156,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         let credential = cloud_account::from_env(&store).await?;
         let settled = approve_with(&credential, code, async |request| {
             confirm_device(leaf, code)?;
-            let mut client = server::connect_full(leaf, context(leaf)).await?;
+            let mut client = route::connect_full(leaf, context(leaf)).await?;
             set_everywhere(&mut client, |client, machine_id| {
                 set_on::<op::SetDevice>(client, machine_id, SET_DEVICE_CAPABILITY, request.clone())
             })
@@ -215,7 +214,7 @@ async fn approve_passkey(
             "Nothing approved.",
         )?;
     }
-    let mut client = server::connect_full(leaf, context(leaf)).await?;
+    let mut client = route::connect_full(leaf, context(leaf)).await?;
     let request = SetPasskeyRequest::Approve {
         passkey: Box::new(passkey),
     };
@@ -268,7 +267,7 @@ struct PendingPasskey {
 }
 
 async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error> {
-    let mut client = server::connect(leaf, context(leaf)).await?;
+    let mut client = route::connect(leaf, context(leaf)).await?;
     let reach = Reach::of(&mut client).await?;
     let secret = key::load(&key::path(&config_path(leaf)?))?.ok_or_else(|| {
         Error::conflict("Approving a Server join needs this computer's approved Device key.")
@@ -389,7 +388,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let code = typed_code(leaf)?;
     runtime()?.block_on(async {
-        let mut client = server::connect_full(leaf, context(leaf)).await?;
+        let mut client = route::connect_full(leaf, context(leaf)).await?;
         let settled = set_everywhere(&mut client, |client, machine_id| {
             remove_on(client, machine_id, code)
         })
@@ -403,7 +402,7 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let own = key::load(&key::path(&config_path(leaf)?))?.map(|secret| key::public(&secret).code());
     runtime()?.block_on(async {
-        let mut client = server::connect(leaf, context(leaf)).await?;
+        let mut client = route::connect(leaf, context(leaf)).await?;
         let reach = Reach::of(&mut client).await?;
         let (answers, gaps) = reach
             .fan_out(|machine_id| devices_on(client.clone(), machine_id))
@@ -693,33 +692,20 @@ impl Reach {
 
     async fn fan_out<T, F, Fut>(&self, call: F) -> (Vec<(MachineId, T)>, Gaps)
     where
-        T: Send + 'static,
         F: Fn(MachineId) -> Fut,
-        Fut: Future<Output = Result<Option<T>, RpcError>> + Send + 'static,
+        Fut: Future<Output = Result<Option<T>, RpcError>>,
     {
         let entry = self.entry.filter(|id| self.asked.contains(id));
-        let mut tasks = JoinSet::new();
-        for &machine_id in self.asked.iter().filter(|id| Some(**id) != entry) {
-            let answer = call(machine_id);
-            tasks.spawn(async move { (machine_id, answer.await) });
-        }
-        let mut answers = Vec::new();
+        let result = fan_out_entry_last(self.asked.iter().copied(), entry, call).await;
         let mut gaps = Gaps::default();
         gaps.omitted.extend(&self.silent);
-        let mut sort = |machine_id, answer| match answer {
-            Ok(Some(answer)) => answers.push((machine_id, answer)),
-            Ok(None) => gaps.omitted.push(machine_id),
-            Err(error) => gaps.failures.push(MachineFailure { machine_id, error }),
-        };
-        while let Some(joined) = tasks.join_next().await {
-            let (machine_id, answer) = joined.expect("a Device fan-out task does not panic");
-            sort(machine_id, answer);
-        }
-        if let Some(machine_id) = entry {
-            sort(machine_id, call(machine_id).await);
-        }
-        answers
-            .sort_by_key(|(machine_id, _)| self.asked.iter().position(|asked| asked == machine_id));
+        gaps.omitted.extend(result.omissions);
+        gaps.failures.extend(result.failures);
+        let answers = result
+            .successes
+            .into_iter()
+            .map(|success| (success.machine_id, success.value))
+            .collect();
         (answers, gaps)
     }
 

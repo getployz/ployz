@@ -194,10 +194,7 @@ impl CheckinClient {
             .build()?;
         Ok(Self {
             http,
-            url: format!(
-                "{}/api/checkin",
-                crate::cloud_enroll::cloud_origin(cloud_url)
-            ),
+            url: crate::cloud_origin::CloudOrigin::new(cloud_url).checkin_url(),
             token,
         })
     }

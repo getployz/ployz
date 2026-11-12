@@ -114,8 +114,8 @@ struct Copy {
 }
 
 /// What A's pool holds for `into`: nothing, the root `<pool>/ployz/<into>`, or the slot
-/// parent `<pool>/ployz-mirror/<into>` with or without its `fs` (storage.rs `root_dataset`,
-/// `slot_parent`, `slot_fs`).
+/// parent `<pool>/ployz-mirror/<into>` with or without its `fs` (`DatasetLayout::root`,
+/// `slot_parent`, `slot_fs` in ployzd's dataset_layout.rs).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Into {
     Absent,

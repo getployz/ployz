@@ -257,7 +257,7 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
     let followed = Next::new(taken, next);
     crate::ui::finish(&followed, || {
-        let into = format!("{}/{}", into.project, into.name);
+        let into = into.to_string();
         crate::ui::stream(format_args!(
             "Took {}'s value into {into}.",
             taken.from.name
@@ -478,7 +478,7 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     }
     let followed = Next::new(&json, next);
     crate::ui::finish(&followed, || {
-        let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
+        let (from, into) = (&synced.from.name, into.to_string());
         let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
         crate::ui::stream(format_args!("Synced {from} → {into}."));
         if !synced.staged.is_empty() {

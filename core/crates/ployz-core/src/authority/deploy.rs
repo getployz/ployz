@@ -474,7 +474,7 @@ impl DeployApproval {
     ) -> Result<BrowserDraft, BrowserDraftError> {
         if let Some(spec) = target
             .iter()
-            .find(|spec| spec.container.image.starts_with("ployz-build/"))
+            .find(|spec| crate::is_built_image(&spec.container.image))
         {
             return Err(BrowserDraftError::Built(spec.name.clone()));
         }

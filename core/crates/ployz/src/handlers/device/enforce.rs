@@ -25,7 +25,7 @@ use ployz_core::{
 use serde::Serialize;
 
 use super::super::recovery::{KEEP_BOTH_CODES, print_code, store_recipient_backup};
-use super::super::{Error, config_path, leaf_matches, runtime, server};
+use super::super::{Error, config_path, leaf_matches, route, runtime};
 use super::{Reach, compat, context, key, known::KnownMachines};
 use crate::cli::{base, yes};
 use crate::cluster::{Call, Wait};
@@ -114,7 +114,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         .collect::<Result<BTreeSet<_>, _>>()?;
     let unattended = leaf.get_flag("yes");
     runtime()?.block_on(async {
-        let mut client = server::connect_full(leaf, context(leaf)).await?;
+        let mut client = route::connect_full(leaf, context(leaf)).await?;
         let reach = Reach::full(&mut client).await?;
         let (found, gaps) = reach
             .fan_out(|machine_id| found_on(client.clone(), machine_id))

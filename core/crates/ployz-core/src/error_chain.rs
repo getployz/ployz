@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, fmt};
 
 use crate::RpcError;
 
@@ -241,5 +241,52 @@ mod tests {
             "Volume web: no space"
         );
         assert_eq!(with_reason("Volume web", "  "), "Volume web");
+    }
+}
+
+/// Error lines kept as a source chain, when the errors themselves can't be kept.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinedChain {
+    line: String,
+    next: Option<Box<JoinedChain>>,
+}
+
+impl JoinedChain {
+    /// A chain of `lines`, outermost first; `None` when there are none.
+    #[must_use]
+    pub fn of(lines: Vec<String>) -> Option<Self> {
+        lines.into_iter().rev().fold(None, |next, line| {
+            Some(Self {
+                line,
+                next: next.map(Box::new),
+            })
+        })
+    }
+}
+
+impl fmt::Display for JoinedChain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.line)
+    }
+}
+
+impl Error for JoinedChain {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.next
+            .as_deref()
+            .map(|next| next as &(dyn Error + 'static))
+    }
+}
+
+#[cfg(test)]
+mod joined_chain_tests {
+    use super::*;
+
+    #[test]
+    fn lines_become_a_chain_outermost_first() {
+        let chain = JoinedChain::of(vec!["outer".into(), "middle".into(), "inner".into()]).unwrap();
+        assert_eq!(chain.to_string(), "outer");
+        assert_eq!(causes(&chain), ["middle", "inner"]);
+        assert!(JoinedChain::of(Vec::new()).is_none());
     }
 }

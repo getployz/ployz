@@ -20,7 +20,8 @@ use ployz_core::{
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 
-use super::server::{self, Reach, Unreached};
+use super::route::{self, Reach, Unreached};
+use super::server;
 use super::status::model::{Attention, NotServingCopy, Subject};
 use super::{Error, leaf_matches};
 use crate::cloud_login::LoginError;
@@ -59,7 +60,7 @@ pub(super) fn attention(
         .map_err(Unreached::from)
         .and_then(|runtime| {
             runtime.block_on(async {
-                match server::reach_or_silent(leaf, context).await? {
+                match route::reach_or_silent(leaf, context).await? {
                     Some(Reach::Dial(mut client)) => {
                         let machines = client.machines().await.map_err(Error::from)?;
                         let (observed, disks) = tokio::join!(

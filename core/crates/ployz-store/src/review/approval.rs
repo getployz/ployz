@@ -288,7 +288,10 @@ fn destructive_effects(
                 let prefix = &managed.prefix;
                 let hostname = cluster_domains
                     .get(&(deployed.id.clone(), prefix.clone()))
-                    .map_or_else(|| prefix.clone(), |cluster| format!("{prefix}.{cluster}"));
+                    .map_or_else(
+                        || prefix.clone(),
+                        |cluster| crate::domain::generated_hostname(prefix, cluster),
+                    );
                 let path = format!("{slug}.managedHostnames");
                 effects.insert(effect(DestructiveKind::RemovesDomain, &hostname, path));
             }

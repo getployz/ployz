@@ -14,7 +14,7 @@ use ployz_core::{
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Error, config_path, leaf_matches, runtime, server};
+use super::{Error, config_path, leaf_matches, route, runtime};
 use crate::cli::{base, switch};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_enroll::RecoveryBackup;
@@ -101,7 +101,7 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
             }
             // A rotation may have left Cloud a backup under a newer code than the seed's,
             // and after activation Cloud also keeps the recipient key's.
-            let credential = match server::signed_in(&runtime, matches) {
+            let credential = match route::signed_in(&runtime, matches) {
                 Ok(credential) => credential,
                 Err(error) if why == Some(RecoveryRefusal::NoBackup) => return Err(error),
                 Err(_) => None,
@@ -187,7 +187,7 @@ fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> 
         return Err(Error::usage(NO_ONE_SEES_THE_CODE));
     }
     let runtime = runtime()?;
-    let Some(credential) = server::signed_in(&runtime, matches)? else {
+    let Some(credential) = route::signed_in(&runtime, matches)? else {
         return Err(Error::coded(
             RpcErrorCode::Unauthenticated,
             "Sign in first: ployz recovery rotate stores the new backup in Cloud.",

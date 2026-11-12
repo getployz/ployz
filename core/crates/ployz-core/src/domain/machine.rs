@@ -180,13 +180,31 @@ impl From<DeviceKey> for ClientKey {
     }
 }
 
+/// The leading bytes of every Machine's management address: the mesh's `fdcc::/16`.
+pub const MESH_PREFIX_BYTES: [u8; 2] = [0xfd, 0xcc];
+
+/// How many leading bits of a management address are [`MESH_PREFIX_BYTES`].
+pub const MESH_PREFIX_BITS: u8 = 16;
+
+/// The mesh prefix as a firewall rule names it: `fdcc::/16`.
+#[must_use]
+pub fn mesh_cidr() -> String {
+    format!("{}/{MESH_PREFIX_BITS}", mesh_address(&[]))
+}
+
+/// The address with the mesh prefix, then `host` bytes, then zeros.
+fn mesh_address(host: &[u8]) -> std::net::Ipv6Addr {
+    let mut address = [0_u8; 16];
+    for (slot, byte) in address.iter_mut().zip(MESH_PREFIX_BYTES.iter().chain(host)) {
+        *slot = *byte;
+    }
+    std::net::Ipv6Addr::from(address)
+}
+
 /// Deterministic management-plane address for a WireGuard identity.
 #[must_use]
 pub fn management_address(public_key: WireGuardPublicKey) -> ManagementAddress {
-    let mut address = [0_u8; 16];
-    address[..2].copy_from_slice(&[0xfd, 0xcc]);
-    address[2..].copy_from_slice(&public_key.0[..14]);
-    ManagementAddress(std::net::Ipv6Addr::from(address))
+    ManagementAddress(mesh_address(&public_key.0[..14]))
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -1320,5 +1338,20 @@ mod client_key_tests {
         let device = DeviceKey::from_bytes([5; 32]);
 
         assert_eq!(ClientKey::from(device).as_bytes(), device.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod mesh_prefix_tests {
+    use super::{WireGuardPublicKey, management_address, mesh_cidr};
+
+    #[test]
+    fn the_mesh_prefix_is_fdcc_slash_16_in_every_management_address() {
+        assert_eq!(mesh_cidr(), "fdcc::/16");
+        let address = management_address(WireGuardPublicKey([0xab; 32]));
+        assert_eq!(
+            address.0.to_string(),
+            "fdcc:abab:abab:abab:abab:abab:abab:abab"
+        );
     }
 }

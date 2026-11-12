@@ -17,6 +17,7 @@ use crate::error;
 use crate::followup::FollowUp;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision, VolumeName};
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 
 /// Which Environment a request addresses. An omitted Project means the
 /// Organization's only Project; an omitted Environment means the Project's
@@ -41,6 +42,20 @@ pub struct EnvironmentSummary {
     pub name: EnvironmentName,
     /// Working State's revision after the request.
     pub revision: Revision,
+}
+
+impl std::fmt::Display for EnvironmentSummary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&environment_label(&self.project, &self.name))
+    }
+}
+
+/// How a person names an Environment: `project/environment`.
+pub(crate) fn environment_label(
+    project: &impl std::fmt::Display,
+    name: &impl std::fmt::Display,
+) -> String {
+    format!("{project}/{name}")
 }
 
 pub(crate) struct Project {
@@ -777,7 +792,12 @@ pub(crate) fn save_working_from(
     trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
     validate_and_refresh_working_from(tx, environment, from, trusted)?;
-    write_working(tx, environment, WorkingWrite::Validated(Checked(())))
+    write_working(
+        tx,
+        Evidence::Caller(trusted),
+        environment,
+        WorkingWrite::Validated(Checked(())),
+    )
 }
 
 /// Proof that the Working State about to be written passed
@@ -807,22 +827,28 @@ pub(crate) enum WorkingWrite {
     Removed,
 }
 
-/// Write `environment` as `write` says.
+/// Write `environment` as `write` says, meeting the Protected Environment fence as
+/// `evidence` says.
 pub(crate) fn write_working(
     tx: &mut dyn Tx,
+    evidence: Evidence<'_>,
     environment: &mut Environment,
     write: WorkingWrite,
 ) -> Result<(), RpcError> {
     match write {
         WorkingWrite::Validated(Checked(()))
         | WorkingWrite::Trusted(Reason::Landing | Reason::Publish | Reason::Inherit) => {
-            persist_working(tx, environment)
+            persist_working(tx, evidence, environment)
         }
         WorkingWrite::Removed => persist_removed(tx, environment),
     }
 }
 
-fn persist_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
+fn persist_working(
+    tx: &mut dyn Tx,
+    evidence: Evidence<'_>,
+    environment: &mut Environment,
+) -> Result<(), RpcError> {
     let rows = tx.query(
         "SELECT working, removed FROM config_environment WHERE id = ?1",
         &[environment.summary.id.as_str().into()],
@@ -832,7 +858,7 @@ fn persist_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(),
     let mut removed: RemovedServices = row.json(1, "removed Services")?;
     // A write that skipped validation still never stores a value it owes.
     crate::variables::make_generated(&mut environment.working)?;
-    crate::storage::admit_protect(tx, |tx| {
+    crate::storage::admit_protect(tx, evidence, |tx| {
         crate::review::touches_source(
             tx,
             &environment.summary.id,
@@ -912,9 +938,14 @@ impl ValidatedWorking {
     pub(crate) fn environment(&self) -> &Environment {
         &self.environment
     }
-    pub(crate) fn persist(mut self, tx: &mut dyn Tx) -> Result<EnvironmentSummary, RpcError> {
+    pub(crate) fn persist(
+        mut self,
+        tx: &mut dyn Tx,
+        evidence: Evidence<'_>,
+    ) -> Result<EnvironmentSummary, RpcError> {
         write_working(
             tx,
+            evidence,
             &mut self.environment,
             WorkingWrite::Validated(Checked(())),
         )?;

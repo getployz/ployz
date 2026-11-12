@@ -141,7 +141,7 @@ fn no_managed_host(matches: &ArgMatches) -> bool {
     let context = matches.try_get_one::<String>("context").ok().flatten();
     runtime.block_on(async {
         let observe = async {
-            let mut client = super::server::connect(matches, context.map(String::as_str))
+            let mut client = super::route::connect(matches, context.map(String::as_str))
                 .await
                 .ok()?;
             let mut machines = client.machines().await.ok()?;

@@ -92,8 +92,8 @@ pub(crate) fn named_for<'a>(
 /// # Errors
 /// Returns `internal` when `volume` can't name a Docker Volume.
 pub fn docker_volume(namespace: &Namespace, volume: &str) -> Result<DockerVolumeName, RpcError> {
-    let logical = DockerVolumeName::parse(format!("vol-{volume}"))
-        .map_err(|_| error::corrupt("Volume ID"))?;
+    let logical =
+        DockerVolumeName::for_resource(volume).map_err(|_| error::corrupt("Volume ID"))?;
     Ok(namespace.volume_name(&logical))
 }
 

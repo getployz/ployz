@@ -4,12 +4,16 @@ use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
 };
-use ployzd::{VolumePluginStatus, machine_pool::MachinePool};
+use ployzd::{
+    VolumePluginStatus,
+    dataset_layout::{DatasetLayout, MOUNT_ROOT},
+    machine_pool::MachinePool,
+};
 use serde::Serialize;
 
 use super::{
-    DATASET_ROOT, DockerVolumeName, ErrorResponse, HangUp, Result, VolumeRequest, VolumeStorage,
-    error_response, marks::Mark,
+    DockerVolumeName, ErrorResponse, HangUp, Result, VolumeRequest, VolumeStorage, error_response,
+    marks::Mark,
 };
 
 impl VolumeStorage {
@@ -39,7 +43,7 @@ impl VolumeStorage {
             return Ok(());
         };
         let datasets = self.datasets(&pool).await?;
-        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
+        let requested = DatasetLayout::of(&pool).root(name);
         if !datasets.iter().any(|dataset| dataset.name == requested) {
             return Ok(());
         }
@@ -109,13 +113,14 @@ impl VolumeStorage {
             return Ok(Vec::new());
         };
         let datasets = self.datasets(&pool).await?;
-        let root_name = format!("{}/{DATASET_ROOT}", pool.name());
+        let layout = DatasetLayout::of(&pool);
+        let root_name = layout.root_parent();
         let root = datasets.iter().find(|dataset| dataset.name == root_name);
         if let Some(root) = root {
-            root.require_mountpoint(super::MOUNT_ROOT)?;
+            root.require_mountpoint(MOUNT_ROOT)?;
             root.require_writable()?;
         }
-        let prefix = format!("{}/{DATASET_ROOT}/", pool.name());
+        let prefix = format!("{root_name}/");
         let mut volumes = Vec::new();
         for dataset in &datasets {
             let Some(name) = dataset.name.strip_prefix(&prefix) else {

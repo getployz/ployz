@@ -7,7 +7,7 @@ use ployz_core::{ConfigFileName, ConfigName, ServiceName};
 use serde_json::{Value, json};
 
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, written};
+use super::machine::{Cx, Effect, Stop, Tool, written};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -133,7 +133,7 @@ impl Tool for ConfigWrite {
             }
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "config": staged.config.name,
             "created": !exists,
             "written": names,
@@ -180,7 +180,7 @@ impl Tool for ConfigRename {
             }
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "config": staged.config.name,
             "renamed_from": self.config,
             "staged": true,
@@ -233,7 +233,7 @@ impl Tool for ConfigRemove {
             }
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "config": staged.config.name,
             "whole": self.file.is_none(),
             "file": self.file,

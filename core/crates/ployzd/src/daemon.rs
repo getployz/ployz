@@ -3,14 +3,14 @@
 use std::{
     fs::File,
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
 use ployz_core::{
-    CORROSION_API_PORT, LocalMachinePhase, MACHINE_START_WAIT, MachineLayout, VOLUME_SEND_PORT,
+    CORROSION_API_ADDRESS, LocalMachinePhase, MACHINE_START_WAIT, MachineLayout, VOLUME_SEND_PORT,
 };
 use sd_notify::NotifyState;
 use thiserror::Error;
@@ -901,7 +901,7 @@ async fn start_corrosion(
         CorrosionConfig::new(
             paths.data_dir,
             paths.run_dir,
-            SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
+            CORROSION_API_ADDRESS,
             SocketAddr::new(
                 IpAddr::V6(machine.management_address().0),
                 CORROSION_GOSSIP_PORT,

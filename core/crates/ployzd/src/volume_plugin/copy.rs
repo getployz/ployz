@@ -9,6 +9,7 @@ use ployz_core::{
     SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
 };
 use ployzd::{
+    dataset_layout::DatasetLayout,
     faults::{Identity, Want},
     machine_pool::MachinePool,
     volume_copy::{
@@ -23,7 +24,6 @@ use super::{
     marks::{Mark, Marks},
     mirror,
     pool::UnlabeledBacking,
-    storage::{DATASET_ROOT, slot_fs, slot_parent},
     transfer::{Busy, ReceiveFailure, Stop, pulling},
 };
 
@@ -317,7 +317,7 @@ impl VolumeStorage {
         self.ensure_mirror_root(&scope.pool, &scope.datasets)
             .await
             .map_err(internal)?;
-        let parent = slot_parent(&scope.pool, name);
+        let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
         if scope.slot().is_none() {
             self.create_bounded_slot(&parent, refquota).await?;
         }
@@ -325,8 +325,12 @@ impl VolumeStorage {
             .set_role(SlotRole::OldCopy)
             .await
             .map_err(internal)?;
-        self.z(&["rename", &root_name, &slot_fs(&scope.pool, name)])
-            .await?;
+        self.z(&[
+            "rename",
+            &root_name,
+            &DatasetLayout::of(&scope.pool).slot_fs(name),
+        ])
+        .await?;
         self.copy_now(&scope).await
     }
 
@@ -441,7 +445,7 @@ impl VolumeStorage {
     async fn copy_writer(&self, request: &WriterRequest) -> Result<Copy, RpcError> {
         let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let name = &scope.name;
-        let root_name = super::storage::root_dataset(&scope.pool, name);
+        let root_name = DatasetLayout::of(&scope.pool).root(name);
         if let Some(root) = scope.root()? {
             let (readonly, mountpoint) = (root.readonly, root.mountpoint.clone());
             let epoch = self.marks(&root_name).epoch().await.map_err(internal)?;
@@ -465,7 +469,7 @@ impl VolumeStorage {
                     .map_err(internal)?;
             }
             if scope.slot().is_some() && scope.fs().is_none() {
-                self.z(&["destroy", &slot_parent(&scope.pool, name)])
+                self.z(&["destroy", &DatasetLayout::of(&scope.pool).slot_parent(name)])
                     .await?;
             }
             self.make_writable(&root_name, &mountpoint, readonly, name)
@@ -498,12 +502,12 @@ impl VolumeStorage {
         }
         marks.promote_slot(request.epoch).await.map_err(internal)?;
         // A Machine that only ever mirrored has no managed parent for the root yet.
-        let parent = format!("{}/{DATASET_ROOT}", scope.pool.name());
+        let parent = DatasetLayout::of(&scope.pool).root_parent();
         if !scope.datasets.iter().any(|dataset| dataset.name == parent) {
             self.create_root(&parent).await.map_err(internal)?;
         }
         self.z(&["rename", &fs_name, &root_name]).await?;
-        self.z(&["destroy", &slot_parent(&scope.pool, name)])
+        self.z(&["destroy", &DatasetLayout::of(&scope.pool).slot_parent(name)])
             .await?;
         self.make_writable(&root_name, "", true, name).await?;
         self.copy_now(&scope).await
@@ -576,7 +580,7 @@ impl VolumeStorage {
                 )
                 .await);
         }
-        let parent = slot_parent(&scope.pool, name);
+        let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
         let target = request.target.to_string();
         let pulling = match scope.slot() {
             Some(_) => self
@@ -641,7 +645,7 @@ impl VolumeStorage {
                 "slot {parent} carries no bound"
             ))));
         }
-        let fs = slot_fs(&scope.pool, name);
+        let fs = DatasetLayout::of(&scope.pool).slot_fs(name);
         let newest = match scope.fs() {
             Some(_) => self
                 .snapshots(&fs)
@@ -903,8 +907,12 @@ impl VolumeStorage {
                 );
                 self.z(&["destroy", "-r", &root.name]).await?;
                 if scope.slot().is_some() && !self.receives.status(name).busy() {
-                    self.z(&["destroy", "-r", &slot_parent(&scope.pool, name)])
-                        .await?;
+                    self.z(&[
+                        "destroy",
+                        "-r",
+                        &DatasetLayout::of(&scope.pool).slot_parent(name),
+                    ])
+                    .await?;
                     self.receives.forget(name);
                 }
                 return self.copy_now(&scope).await;
@@ -935,8 +943,12 @@ impl VolumeStorage {
             "SetVolumeCopy.MirrorToForget",
             Some(forgetting(wire, request.r#gen)),
         );
-        self.z(&["destroy", "-r", &slot_parent(&scope.pool, name)])
-            .await?;
+        self.z(&[
+            "destroy",
+            "-r",
+            &DatasetLayout::of(&scope.pool).slot_parent(name),
+        ])
+        .await?;
         self.receives.forget(name);
         self.copy_now(&scope).await
     }

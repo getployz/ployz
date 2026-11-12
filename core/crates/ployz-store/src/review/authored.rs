@@ -5,6 +5,7 @@ use super::{NodeChange, Review};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, shown};
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 use crate::{Trusted, error, scope};
 use ployz_core::config::{
     At, AuthoredServiceConfig, BuildMethod, ChangeKind, CompiledNodeConfig, ConfigAttachment,
@@ -2199,7 +2200,11 @@ impl Prepared {
     pub(super) fn not_set(&self) -> &[NotSetVariable] {
         &self.not_set
     }
-    pub(super) fn persist(self, tx: &mut dyn Tx) -> Result<(EnvironmentSummary, bool), RpcError> {
+    pub(super) fn persist(
+        self,
+        tx: &mut dyn Tx,
+        evidence: Evidence<'_>,
+    ) -> Result<(EnvironmentSummary, bool), RpcError> {
         match self.state {
             PreparedState::Unchanged(summary) => Ok((summary, false)),
             PreparedState::Changed { before, working } => {
@@ -2208,7 +2213,7 @@ impl Prepared {
                     &working.environment().summary.id,
                     (&before, &working.environment().working),
                 )?;
-                Ok(((*working).persist(tx)?, true))
+                Ok(((*working).persist(tx, evidence)?, true))
             }
         }
     }
