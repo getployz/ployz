@@ -19,7 +19,7 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DoorChange,
     DoorOutcome, Namespace, PrivateAccessFailure, PrivateAccessProblem, PrivateAccessSet,
     ResolvedServiceSpec, SetPrivateAccessRequest, private_access_router_joined,
-    private_access_sealed_key, private_access_state,
+    private_access_sealed_key,
 };
 use zeroize::Zeroizing;
 
@@ -320,15 +320,16 @@ impl LocalMachine {
             let state = containers
                 .keep_private_access_state()
                 .map_err(Error::PrivateAccessState)?;
-            let spec = if private_access_state(&spec.container.labels) == Some(state) {
-                spec
-            } else {
-                let spec = private_access_router(local.cluster_network().await?, &sealed, state);
-                containers
-                    .prepare_pinned_image(&spec.container.image)
-                    .await?;
-                spec
-            };
+            let pinned = private_access_router(local.cluster_network().await?, &sealed, state);
+            if spec != pinned {
+                tracing::warn!(
+                    "the Private Access router here was created from a spec this daemon doesn't build; it is replaced with the pinned one, not started"
+                );
+            }
+            containers
+                .prepare_pinned_image(&pinned.container.image)
+                .await?;
+            let spec = pinned;
             containers
                 .write_private_access_key(&key)
                 .map_err(Error::PrivateAccessKeyFile)?;

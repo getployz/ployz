@@ -486,6 +486,24 @@ impl LocalMachine {
                 );
                 return Ok(None);
             }
+            let pinned = doors_as_found(
+                &inventory,
+                held.specs.proxy.service_id,
+                containers.tunnel_door_closed(),
+            );
+            if pinned != held.specs {
+                tracing::warn!(
+                    "a door here was created from a spec this daemon doesn't build; it is replaced with the pinned one, not started"
+                );
+            }
+            for spec in [Some(&pinned.holder), Some(&pinned.proxy), pinned.tunnel.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                containers
+                    .prepare_pinned_image(&spec.container.image)
+                    .await?;
+            }
             if let Some(sealed) = &held.sealed {
                 let token = containers
                     .open_tunnel_token(sealed)
@@ -496,7 +514,7 @@ impl LocalMachine {
             }
             let _turn = local.owner.admission_lock().write_owned().await;
             local
-                .converge_doors_admitted(&containers, &inventory, &held.specs, Legacy::No)
+                .converge_doors_admitted(&containers, &inventory, &pinned, Legacy::No)
                 .await
                 .map(Some)
         })
