@@ -23,7 +23,7 @@ use crate::checkin::{
     unit,
 };
 use crate::cli::{base, switch, value};
-use crate::cloud_login::DEFAULT_CLOUD;
+use crate::cloud_origin::DEFAULT_CLOUD;
 use crate::env;
 
 const UNIT_DIR: &str = "/etc/systemd/system";

@@ -6,9 +6,9 @@ use serde::Serialize;
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{switch, value};
 use crate::cloud_login::{
-    self, Account, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Pending, SignedIn,
-    Start,
+    self, Account, CredentialStore, LoginError, Organization, Pending, SignedIn, Start,
 };
+use crate::cloud_origin::{CloudOrigin, DEFAULT_CLOUD, NotWebUrl};
 use crate::env;
 
 pub(super) fn login_command(command: Command) -> Command {
@@ -65,20 +65,18 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
         .cloned()
         .or(stored)
         .unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
-    if let Some((scheme, _)) = cloud.split_once("://")
-        && !["http", "https"].contains(&scheme.to_ascii_lowercase().as_str())
-    {
+    if let Err(NotWebUrl { given }) = CloudOrigin::checked(&cloud) {
         let named = match matches.value_source("cloud-url") {
             Some(clap::parser::ValueSource::EnvVariable) => env::CLOUD_URL,
             Some(_) => "--cloud-url",
             None => {
                 return Err(Error::usage(format!(
-                    "The stored Cloud {cloud} is not an http:// or https:// URL; name one with --cloud-url"
+                    "The stored Cloud {given} is not an http:// or https:// URL; name one with --cloud-url"
                 )));
             }
         };
         return Err(Error::usage(format!(
-            "{named} takes a host such as ployz.dev, or an http:// or https:// URL, not {cloud}"
+            "{named} takes a host such as ployz.dev, or an http:// or https:// URL, not {given}"
         )));
     }
     let wait = matches.get_flag("wait") || !crate::ui::json();

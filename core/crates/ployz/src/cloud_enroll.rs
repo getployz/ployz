@@ -401,35 +401,6 @@ impl From<RecoveryWire> for Recovery {
     }
 }
 
-/// Enroll URL: host without a scheme is HTTPS. The token travels only as a bearer header,
-/// so it never reaches a URL that proxies and access logs record.
-#[must_use]
-pub(crate) fn enroll_url(cloud_url: &str) -> String {
-    format!("{}/api/enroll", cloud_origin(cloud_url))
-}
-
-/// Final enrollment completion: `POST /api/enroll/callback`.
-#[must_use]
-pub(crate) fn callback_url(cloud_url: &str) -> String {
-    format!("{}/callback", enroll_url(cloud_url))
-}
-
-/// Best-effort setup report: `POST /api/enroll/report`.
-#[must_use]
-pub(crate) fn report_url(cloud_url: &str) -> String {
-    format!("{}/report", enroll_url(cloud_url))
-}
-
-/// `https://` + a bare host, or the URL as given; no trailing slash.
-pub(crate) fn cloud_origin(cloud_url: &str) -> String {
-    let host = cloud_url.trim().trim_end_matches('/');
-    if host.contains("://") {
-        host.to_owned()
-    } else {
-        format!("https://{host}")
-    }
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnrollCallback<'a> {
@@ -1065,6 +1036,7 @@ mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
+    use crate::cloud_origin::CloudOrigin;
     use ployz_core::error_chain;
 
     #[tokio::test]
@@ -1441,23 +1413,6 @@ mod tests {
     }
 
     #[test]
-    fn host_without_scheme_is_https_under_ployz_dev() {
-        assert_eq!(enroll_url("ployz.dev"), "https://ployz.dev/api/enroll");
-        assert_eq!(
-            enroll_url("http://127.0.0.1:9"),
-            "http://127.0.0.1:9/api/enroll"
-        );
-        assert_eq!(
-            callback_url("ployz.dev"),
-            "https://ployz.dev/api/enroll/callback"
-        );
-        assert_eq!(
-            report_url("ployz.dev"),
-            "https://ployz.dev/api/enroll/report"
-        );
-    }
-
-    #[test]
     fn join_payload_is_pairing_plus_registration() {
         let value = serde_json::json!({
             "kind": "join",
@@ -1697,7 +1652,8 @@ mod tests {
                 .unwrap();
             String::from_utf8_lossy(buf.get(..read).unwrap()).into_owned()
         });
-        let url = enroll_url(&origin);
+        let origin = CloudOrigin::new(&origin);
+        let url = origin.enroll_url();
         enroll(Command::ServerAdd, &url, &token(), &identity(), &|_| {})
             .await
             .unwrap();
@@ -1709,7 +1665,7 @@ mod tests {
                 .lines()
                 .any(|line| line.eq_ignore_ascii_case("authorization: Bearer pmet_test"))
         );
-        for url in [url, callback_url(&origin), report_url(&origin)] {
+        for url in [url, origin.callback_url(), origin.report_url()] {
             assert!(!url.contains(token().as_str()), "{url}");
         }
     }
@@ -1730,7 +1686,7 @@ mod tests {
         });
         let error = enroll(
             Command::ServerAdd,
-            &enroll_url(&origin),
+            &CloudOrigin::new(&origin).enroll_url(),
             &token(),
             &identity(),
             &|_| {},
@@ -1766,7 +1722,7 @@ mod tests {
         let stages = std::cell::RefCell::new(Vec::new());
         let outcome = enroll(
             Command::ServerAdd,
-            &enroll_url(&origin),
+            &CloudOrigin::new(&origin).enroll_url(),
             &token(),
             &identity(),
             &|stage| {
@@ -1820,7 +1776,7 @@ mod tests {
             answers_after + Duration::from_secs(10),
             enroll(
                 Command::ServerAdd,
-                &enroll_url(&origin),
+                &CloudOrigin::new(&origin).enroll_url(),
                 &token(),
                 &identity(),
                 &|_| {},

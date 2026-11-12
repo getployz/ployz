@@ -98,7 +98,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     if local.is_none() {
         crate::ui::note(CLOUD_CREDENTIAL);
     }
-    let cloud = std::env::var(crate::env::CLOUD_URL).ok();
+    let cloud = crate::cloud_origin::CloudOrigin::named_by_env();
     let token = crate::cloud_account::env_token();
     // Only Cloud runs a published command, so a local Store lists none.
     let setup = local

@@ -11,10 +11,8 @@ use ployz_core::{Departed, MachineId, MachineName, RpcError, cloud_contract};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::cloud_enroll::cloud_origin;
-use crate::cloud_login::{
-    self, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Secret, SignedIn,
-};
+use crate::cloud_login::{self, CredentialStore, LoginError, Organization, Secret, SignedIn};
+use crate::cloud_origin::CloudOrigin;
 
 /// How long a call Cloud answers only after reading the Servers waits for that answer.
 /// Cloud may spend up to 50s reading them to plan a clean, so the client's 15s default
@@ -97,7 +95,8 @@ pub(crate) async fn credential(
         return Err(LoginError::TokenMalformed);
     }
     Ok(Credential::Token {
-        cloud: named_cloud(store, true, cloud)?.unwrap_or_else(|| cloud_origin(DEFAULT_CLOUD)),
+        cloud: named_cloud(store, true, cloud)?
+            .unwrap_or_else(|| CloudOrigin::default_cloud().into_string()),
         token: Secret::new(token),
         from: TokenFrom::Env,
     })
@@ -139,7 +138,7 @@ pub(crate) fn named_cloud(
         },
         cloud => store.cloud()?.or(cloud),
     };
-    Ok(named.map(|cloud| cloud_origin(&cloud)))
+    Ok(named.map(|cloud| CloudOrigin::new(&cloud).into_string()))
 }
 
 /// [`credential`] from `PLOYZ_TOKEN` and `PLOYZ_CLOUD_URL`: the one way commands
@@ -149,12 +148,7 @@ pub(crate) fn named_cloud(
 ///
 /// Returns the stored sign-in's [`LoginError`] when there is no token.
 pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, LoginError> {
-    credential(
-        store,
-        env_token(),
-        std::env::var(crate::env::CLOUD_URL).ok(),
-    )
-    .await
+    credential(store, env_token(), CloudOrigin::named_by_env()).await
 }
 
 /// The Organization `credential` acts in: the device's, or the token's own.

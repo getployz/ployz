@@ -346,7 +346,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let Some(verb) = verbs::find(&path) else {
         let setup = crate::published::Setup::beside(
             &config_path(leaf_matches(matches))?,
-            std::env::var(crate::env::CLOUD_URL).ok(),
+            crate::cloud_origin::CloudOrigin::named_by_env(),
         );
         if let Some(cached) = setup.cached()
             && let Some(published) = cached.find(&path)
