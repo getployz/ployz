@@ -1,13 +1,18 @@
 import { Schema } from "effect";
 
-/** The Production plan bills this many Servers at least, so the first two cost $10 a month. */
-export const MINIMUM_UNITS = 2;
-export const UNIT_PRICE_USD = 5;
+/**
+ * The Production product in Polar: a fixed $10 a month, plus a graduated unit price of $0 for the first two Servers and
+ * $5 for each after. One unit is one Server, so checkout and invoices show the Servers the Organization runs.
+ */
+export const BASE_PRICE_USD = 10;
+export const INCLUDED_SERVERS = 2;
+export const EXTRA_SERVER_USD = 5;
 
-/** How many Servers a Production subscription bills for: one unit per Server, never fewer than the minimum. */
-export const billedUnits = (servers: number) => Math.max(MINIMUM_UNITS, servers);
+/** The units a Production subscription carries: one per Server, at least the one Polar requires. */
+export const billedUnits = (servers: number) => Math.max(1, servers);
 
-export const monthlyPriceUsd = (servers: number) => billedUnits(servers) * UNIT_PRICE_USD;
+export const monthlyPriceUsd = (servers: number) =>
+  BASE_PRICE_USD + Math.max(0, servers - INCLUDED_SERVERS) * EXTRA_SERVER_USD;
 
 export const ManagedSubscriptionSnapshot = Schema.Struct({
   activeSubscriptionId: Schema.NullOr(Schema.String),
