@@ -656,6 +656,19 @@ impl ClusterKeys {
             .or_else(|| self.identity.open_platform_of(&cluster, purpose, sealed))
     }
 
+    /// The keys a Move's handoff receipt may be signed under: the recipient's derivation
+    /// once one is installed, and the identity's too for an approval issued before this
+    /// Machine activated, so a receipt already issued keeps verifying while a past holder
+    /// of the identity can't sign one for a later Move.
+    pub(crate) fn receipt_keys(
+        &self,
+        issued_before_activation: bool,
+    ) -> impl Iterator<Item = &SealingKey> {
+        let identity =
+            (self.recipient.is_some() && issued_before_activation).then_some(&self.identity);
+        std::iter::once(self.sealing_to()).chain(identity)
+    }
+
     /// The build attest key: derived from the recipient once installed.
     pub(crate) fn attest(&self) -> ployz_core::X25519Secret {
         self.sealing_to().attest()
@@ -917,6 +930,40 @@ mod tests {
         assert_eq!(
             attest.to_string(),
             "f68dfa2222a3be1f41768b8b1e5ddc3baeaa6b05b4462501fa74f583068ee215"
+        );
+    }
+
+    #[test]
+    fn after_activation_only_an_earlier_approval_takes_a_receipt_under_the_identity() {
+        let dir = TestDir::new("receipt-keys");
+        fs::create_dir_all(&dir.0).unwrap();
+        let identity = SealingKey::generate();
+        SealingKey::set(&dir.0, Some(&identity)).unwrap();
+        let signers = |keys: &ClusterKeys, earlier| {
+            keys.receipt_keys(earlier)
+                .map(|key| key.receipt_signer().public())
+                .collect::<Vec<_>>()
+        };
+        let before = ClusterKeys::load(&dir.0).unwrap().unwrap();
+        assert_eq!(
+            signers(&before, true),
+            vec![identity.receipt_signer().public()]
+        );
+
+        let recipient = SealingKey::generate();
+        SealingKey::set_recipient(&dir.0, &recipient).unwrap();
+        let after = ClusterKeys::load(&dir.0).unwrap().unwrap();
+
+        assert_eq!(
+            signers(&after, false),
+            vec![recipient.receipt_signer().public()]
+        );
+        assert_eq!(
+            signers(&after, true),
+            vec![
+                recipient.receipt_signer().public(),
+                identity.receipt_signer().public()
+            ]
         );
     }
 

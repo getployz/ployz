@@ -702,6 +702,7 @@ impl LocalMachineStore {
                 );
             }
             installed.activation = Some(joined.operation);
+            installed.activated_at = Some(ployz_core::authority::Timestamp::now());
             tracing::info!(
                 operation = %joined.operation,
                 "installed the Cluster's recipient key from the join"
@@ -1123,6 +1124,7 @@ impl LocalMachineStore {
                 SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
         }
         updated.activation = Some(pending.operation);
+        updated.activated_at = Some(ployz_core::authority::Timestamp::now());
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(retired)

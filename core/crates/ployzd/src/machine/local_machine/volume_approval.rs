@@ -387,9 +387,9 @@ impl LocalMachine {
     /// The receipt for `handed`, signed with the Cluster's receipt key. Ed25519 signs one
     /// body one way, so a resend carries the same bytes.
     fn receipt_of(&self, handed: &Handed) -> Result<HandoffReceiptEnvelope, Error> {
-        let key = self.receipt_key()?;
+        let keys = self.receipt_keys()?;
         let receipt = HandoffReceipt {
-            cluster: key.public_key(),
+            cluster: keys.identity().public_key(),
             operation: handed.operation,
             approval: handed.digest,
             volume: handed.volume.clone(),
@@ -400,7 +400,7 @@ impl LocalMachine {
             from_epoch: handed.handoff.from_epoch,
             epoch: handed.handoff.epoch,
         };
-        MachineSigned::sign(&receipt, &key.receipt_signer()).map_err(|error| {
+        MachineSigned::sign(&receipt, &keys.sealing_to().receipt_signer()).map_err(|error| {
             Error::VolumeStepRefused(AuthorityRefusal::MalformedMachineStatement {
                 kind: "volume-handoff",
                 problem: error.to_string(),
@@ -417,31 +417,46 @@ impl LocalMachine {
         receipt: &HandoffReceiptEnvelope,
         at: Lands<'_>,
     ) -> Result<HandoffReceipt, Error> {
-        let key = self.receipt_key()?;
+        let keys = self.receipt_keys()?;
         let body = approval.open().map_err(Error::VolumeStepRefused)?;
-        volume::verify_receipt(
-            receipt,
-            &HandoffFacts {
-                key: key.receipt_signer().public(),
-                cluster: key.public_key(),
-                machine: &self.record().id(),
-                operation: body.operation,
-                approval: StepDigest::of(&approval.body),
-                volume,
-                at,
-            },
-        )
-        .map_err(|refusal| {
-            tracing::warn!(%volume, "Volume handoff receipt refused: {refusal}");
-            Error::VolumeStepRefused(refusal)
-        })
+        let record = self.record();
+        let machine = record.id();
+        let facts = |key: &SealingKey| HandoffFacts {
+            key: key.receipt_signer().public(),
+            cluster: keys.identity().public_key(),
+            machine: &machine,
+            operation: body.operation,
+            approval: StepDigest::of(&approval.body),
+            volume,
+            at,
+        };
+        let issued_before_activation = record
+            .activated_at()
+            .is_some_and(|activated_at| body.issued_at < activated_at);
+        let mut accepted = keys.receipt_keys(issued_before_activation);
+        let first = accepted
+            .next()
+            .expect("a Cluster always accepts its current receipt key");
+        accepted
+            .fold(
+                volume::verify_receipt(receipt, &facts(first)),
+                |verified, key| verified.or_else(|_| volume::verify_receipt(receipt, &facts(key))),
+            )
+            .map_err(|refusal| {
+                tracing::warn!(%volume, "Volume handoff receipt refused: {refusal}");
+                Error::VolumeStepRefused(refusal)
+            })
     }
 
-    /// The Sealing Key this Machine holds, which its receipt key derives from.
-    fn receipt_key(&self) -> Result<SealingKey, Error> {
-        let held = self
-            .held_sealing(self.record().phase())
-            .and_then(|_| SealingKey::load(self.owner.data_dir()).ok().flatten());
+    /// The Cluster keys this Machine holds. Its receipt key derives from the recipient once
+    /// one is installed, so a past holder of the identity can't sign a receipt for a Move
+    /// approved after activation.
+    fn receipt_keys(&self) -> Result<crate::sealing_key::ClusterKeys, Error> {
+        let held = self.held_sealing(self.record().phase()).and_then(|_| {
+            crate::sealing_key::ClusterKeys::load(self.owner.data_dir())
+                .ok()
+                .flatten()
+        });
         held.ok_or(Error::VolumeStepRefused(
             AuthorityRefusal::NoClusterIdentity,
         ))

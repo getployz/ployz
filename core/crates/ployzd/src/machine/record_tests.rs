@@ -182,6 +182,7 @@ fn resetting_keeps_every_field_but_the_body() {
         enrollment,
         trusted_snapshot,
         activation,
+        activated_at,
     } = before.clone();
 
     let LocalMachineRecord {
@@ -201,6 +202,7 @@ fn resetting_keeps_every_field_but_the_body() {
         enrollment: kept_enrollment,
         trusted_snapshot: kept_snapshot,
         activation: kept_activation,
+        activated_at: kept_activated_at,
     } = before.into_resetting();
 
     assert_eq!(
@@ -224,6 +226,7 @@ fn resetting_keeps_every_field_but_the_body() {
     assert_eq!(kept_enrollment, enrollment);
     assert_eq!(kept_snapshot, trusted_snapshot);
     assert_eq!(kept_activation, activation);
+    assert_eq!(kept_activated_at, activated_at);
 }
 
 #[test]

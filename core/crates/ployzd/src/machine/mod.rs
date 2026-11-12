@@ -222,6 +222,11 @@ pub struct LocalMachineRecord {
     /// cleared: an activated record enforces, and reads only snapshot keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     activation: Option<ployz_core::OperationId>,
+    /// When the boot commit, or a join after activation, activated this record. A Volume
+    /// approval issued before it may carry a receipt signed under the identity's
+    /// derivation; one issued after needs the recipient's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    activated_at: Option<ployz_core::authority::Timestamp>,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -376,6 +381,11 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn activation(&self) -> Option<ployz_core::OperationId> {
         self.activation
+    }
+
+    #[must_use]
+    pub fn activated_at(&self) -> Option<ployz_core::authority::Timestamp> {
+        self.activated_at
     }
 
     /// The evidence a Full caller gives a key it installs here: the local socket's, or the
@@ -739,6 +749,7 @@ impl LocalMachineRecord {
             enrollment: None,
             trusted_snapshot: Some(TrustedSnapshot::default()),
             activation: None,
+            activated_at: None,
         }
     }
 
