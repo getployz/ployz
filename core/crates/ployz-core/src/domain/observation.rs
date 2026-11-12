@@ -357,6 +357,14 @@ impl ContainerObservationParts {
     pub fn creation_key(&self) -> Option<&str> {
         self.labels.label(labels::CREATION_KEY)
     }
+
+    /// Whether its creation key names a slot of `run`.
+    #[must_use]
+    pub fn made_under(&self, run: &DeploymentLogId) -> bool {
+        self.creation_key()
+            .and_then(|key| key.strip_prefix(run.as_str()))
+            .is_some_and(|slot| slot.starts_with(':'))
+    }
 }
 
 /// The newest Container of a set: the latest Docker creation time, ties to the larger
@@ -1049,7 +1057,8 @@ mod tests {
         let hook = ContainerKind::PreDeployHook;
         let id = "a".repeat(32);
         // (labels, kind, rejected by)
-        let table: [(&[(&str, &str)], ContainerKind, Option<&str>); 22] = [
+        type Case<'a> = (&'a [(&'a str, &'a str)], ContainerKind, Option<&'a str>);
+        let table: [Case; 22] = [
             (&[], service, None),
             (&[], hook, None),
             (&[("ployz.managed", "")], service, None),
@@ -1126,6 +1135,44 @@ mod tests {
                 "{labels:?} on {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn label_accessors_read_the_run_and_the_creation_key() {
+        let mut parts: crate::ContainerObservationParts =
+            observation(ContainerKind::ServiceContainer).into();
+        let run = crate::DeploymentLogId::parse("deploy-7").unwrap();
+        let other = crate::DeploymentLogId::parse("deploy-70").unwrap();
+        let read = |parts: &crate::ContainerObservationParts| {
+            ContainerObservation::try_from(parts.clone()).unwrap()
+        };
+        let bare = read(&parts);
+        assert_eq!(bare.deployment_label(), None);
+        assert_eq!(bare.creation_key(), None);
+        assert!(!bare.made_under(&run));
+
+        parts.labels.insert(
+            crate::labels::DEPLOYMENT_ID.to_owned(),
+            "deploy-7".to_owned(),
+        );
+        parts.labels.insert(
+            crate::labels::CREATION_KEY.to_owned(),
+            "deploy-7:0".to_owned(),
+        );
+        let stamped = read(&parts);
+        assert_eq!(stamped.deployment_label(), Some("deploy-7"));
+        assert_eq!(stamped.deploy_label(), Some(run.clone()));
+        assert_eq!(stamped.creation_key(), Some("deploy-7:0"));
+        assert!(stamped.made_under(&run));
+        assert!(!stamped.made_under(&other));
+
+        parts.labels.insert(
+            crate::labels::DEPLOYMENT_ID.to_owned(),
+            "not a run!".to_owned(),
+        );
+        let unparsed = read(&parts);
+        assert_eq!(unparsed.deployment_label(), Some("not a run!"));
+        assert_eq!(unparsed.deploy_label(), None);
     }
 
     fn observation(kind: ContainerKind) -> ContainerObservation {
