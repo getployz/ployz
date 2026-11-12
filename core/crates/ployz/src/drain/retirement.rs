@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::connect::{Client, ConnectError};
 use crate::deploy::cleanup::{self, ACK_WAIT, Copy, EmptyPolicy, RotationFailure};
-use crate::deploy::{MachineOperations, MachineRef, OldCopyEnd, Unconfirmed};
+use crate::deploy::{CopyLifecycle, MachineRef, OldCopyEnd, Unconfirmed};
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
 
 /// What retiring one Global on the drained Server came to.
@@ -81,7 +81,7 @@ impl RetireClient for Client {
     }
 }
 
-pub(crate) async fn copies_on<C: MachineOperations>(
+pub(crate) async fn copies_on<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     service: &QualifiedService,
@@ -95,7 +95,7 @@ pub(crate) async fn copies_on<C: MachineOperations>(
         .collect())
 }
 
-pub(crate) async fn retire_copies<C: MachineOperations>(
+pub(crate) async fn retire_copies<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     service: &QualifiedService,
@@ -125,7 +125,7 @@ pub(crate) async fn retire_copies<C: MachineOperations>(
 /// Remove `machine_id`'s Ingress Proxy: every Tunnel Connector and Caddy, then every
 /// holder. Docker refuses to remove a holder while a Container joined to its network
 /// exists, so one that stays stops the removal before any holder.
-pub(crate) async fn retire_ingress_proxy<C: MachineOperations>(
+pub(crate) async fn retire_ingress_proxy<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     cancellation: &CancellationToken,
@@ -150,7 +150,7 @@ pub(crate) async fn retire_ingress_proxy<C: MachineOperations>(
     Ok(())
 }
 
-pub(crate) async fn let_go<C: MachineOperations>(
+pub(crate) async fn let_go<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     name: &(dyn Fn(&MachineId) -> MachineRef + Sync),

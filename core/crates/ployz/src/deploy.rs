@@ -15,9 +15,9 @@ use thiserror::Error;
 pub(crate) mod cleanup;
 mod convergence;
 mod exec;
+pub(crate) use exec::{CopyLifecycle, ProxyPlacement, RestartTolerant};
 #[cfg(test)]
-pub(crate) use exec::RedialFailure;
-pub(crate) use exec::{MachineOperations, RestartTolerant};
+pub(crate) use exec::{RedialFailure, Session};
 pub(crate) mod pipeline;
 mod planning;
 mod progress;

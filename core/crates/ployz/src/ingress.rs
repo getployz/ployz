@@ -23,7 +23,7 @@ use ts_rs::TS;
 use crate::{
     cluster::Call,
     connect::{Client, ConnectError},
-    deploy::{MachineOperations, RestartTolerant, SlotAction},
+    deploy::{ProxyPlacement, RestartTolerant, SlotAction},
     failure::Failure,
     ui::progress::{Detail, Diagnostic, StartFailure},
 };
@@ -388,7 +388,7 @@ async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Res
 /// Ask each of `machines` to set `doors` for `proxy`, `at_once` at a time, in order.
 /// A call whose reply was lost, or that met a restarting daemon, is sent again, since
 /// the daemon converges on a resend.
-async fn set_doors<C: MachineOperations>(
+async fn set_doors<C: ProxyPlacement>(
     client: &C,
     machines: &[DoorMachine],
     proxy: ServiceId,
@@ -406,7 +406,7 @@ async fn set_doors<C: MachineOperations>(
         .await
 }
 
-async fn set_door<C: MachineOperations>(
+async fn set_door<C: ProxyPlacement>(
     client: &C,
     machine: DoorMachine,
     proxy: ServiceId,

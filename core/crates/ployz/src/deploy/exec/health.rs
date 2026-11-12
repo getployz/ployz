@@ -7,9 +7,9 @@ use ployz_core::{
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::{MachineOperations, Progress};
+use super::{CopyLifecycle, Progress};
 
-pub(super) async fn wait_healthy<C: MachineOperations>(
+pub(super) async fn wait_healthy<C: CopyLifecycle>(
     client: &C,
     index: usize,
     progress: &Progress,

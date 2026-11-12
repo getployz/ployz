@@ -241,7 +241,7 @@ async fn observe(
         Some(reader) => {
             stream::iter(services)
                 .map(|service| async move {
-                    let read = crate::deploy::MachineOperations::read_routes(
+                    let read = crate::deploy::CopyLifecycle::read_routes(
                         client,
                         &reader,
                         &service.identity,

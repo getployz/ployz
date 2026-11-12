@@ -4,14 +4,20 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerRefusal, ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId,
-    DockerVolumeName, HealthFailure, HealthObservation, LastHealthCheck, MembershipObservation,
-    Namespace, RotationTarget, RpcErrorCode, ServiceName, ServiceResult, UpdateOrder,
+    AnswerWhen, ContainerLimitsUpdated, ContainerNow, ContainerRefusal, ContainerRefusalReason,
+    ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
+    EnsuredContainer, HealthFailure, HealthObservation, HookFailure, ImagePulled, LastHealthCheck,
+    MembershipObservation, Namespace, NewContainer, OutOfMemory, RotationTarget, RoutesRead,
+    RpcErrorCode, RunRotation, RunTarget, ServiceName, ServiceResult, UpdateOrder,
 };
 
+use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 use crate::deploy::{DeployOutcome, FailedOperation};
 
+use super::machine_ops::{DeployOperations, Listed, omission_requires_observation};
+use super::transport::{RESTART_POLL, RESTART_WAIT, wait_out_restart};
 use super::*;
+use crate::deploy::cleanup::ACK_POLL;
 
 fn test_namespace() -> Namespace {
     Namespace::parse("app").unwrap()
@@ -1168,24 +1174,15 @@ fn edge_refusal(refused: ployz_core::RotationRefusal) -> ContainerRefusal {
     }
 }
 
-impl MachineOperations for Scripted {
+impl Session for Scripted {
     async fn redial(&self) -> Option<Result<(), RedialFailure>> {
         let answer = self.redial.clone()?;
         *self.redials.lock().unwrap() += 1;
         Some(answer)
     }
+}
 
-    async fn prepare_volumes(
-        &self,
-        machine_id: &MachineId,
-        _specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        unit(self.next(Call::Prepare(*machine_id)))?;
-        if let Some(cancel) = &self.cancel_on_prepare {
-            cancel.cancel();
-        }
-        Ok(ployz_core::PreparedVolumes { names: Vec::new() })
-    }
+impl CopyLifecycle for Scripted {
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -1331,44 +1328,6 @@ impl MachineOperations for Scripted {
         }
     }
 
-    async fn read_routes(
-        &self,
-        machine_id: &MachineId,
-        service: &QualifiedService,
-    ) -> Result<RoutesRead, RpcError> {
-        self.read_at(Some(machine_id), service).await
-    }
-
-    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
-        {
-            let mut blipped = self.blipped_entry_reads.lock().unwrap();
-            if *blipped > 0 {
-                *blipped -= 1;
-                return Err(RpcError::unanswered_target(
-                    RpcErrorCode::Unavailable,
-                    "target Machine RPC timed out".into(),
-                ));
-            }
-        }
-        self.read_at(None, service).await
-    }
-
-    async fn set_ingress_doors(
-        &self,
-        _machine_id: &MachineId,
-        _request: ployz_core::SetIngressDoorsRequest,
-    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
-        unreachable!("a Deploy never places the Ingress Proxy")
-    }
-
-    async fn set_private_access(
-        &self,
-        _machine_id: &MachineId,
-        _request: ployz_core::SetPrivateAccessRequest,
-    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
-        unreachable!("a Deploy never places the Private Access router")
-    }
-
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
@@ -1424,6 +1383,42 @@ impl MachineOperations for Scripted {
         }
     }
 
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        self.read_at(Some(machine_id), service).await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        {
+            let mut blipped = self.blipped_entry_reads.lock().unwrap();
+            if *blipped > 0 {
+                *blipped -= 1;
+                return Err(RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    "target Machine RPC timed out".into(),
+                ));
+            }
+        }
+        self.read_at(None, service).await
+    }
+}
+
+impl DeployOperations for Scripted {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        _specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        unit(self.next(Call::Prepare(*machine_id)))?;
+        if let Some(cancel) = &self.cancel_on_prepare {
+            cancel.cancel();
+        }
+        Ok(ployz_core::PreparedVolumes { names: Vec::new() })
+    }
+
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
         unit(self.next(Call::RemoveVolume(id.clone())))
     }
@@ -1467,6 +1462,24 @@ impl MachineOperations for Scripted {
             },
             Err,
         )
+    }
+}
+
+impl ProxyPlacement for Scripted {
+    async fn set_ingress_doors(
+        &self,
+        _machine_id: &MachineId,
+        _request: ployz_core::SetIngressDoorsRequest,
+    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
+        unreachable!("a Deploy never places the Ingress Proxy")
+    }
+
+    async fn set_private_access(
+        &self,
+        _machine_id: &MachineId,
+        _request: ployz_core::SetPrivateAccessRequest,
+    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
+        unreachable!("a Deploy never places the Private Access router")
     }
 }
 

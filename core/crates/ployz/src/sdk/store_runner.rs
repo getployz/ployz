@@ -33,7 +33,7 @@ use super::{
 };
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
-use crate::deploy::MachineOperations;
+use crate::deploy::CopyLifecycle;
 use crate::deploy::cleanup::{self, Copy, Rotated, RotationFailure};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
@@ -569,7 +569,7 @@ fn kept_copies(view: &DeploymentView) -> Vec<RetireLeft> {
         .collect()
 }
 
-async fn retire_copies<C: MachineOperations>(
+async fn retire_copies<C: CopyLifecycle>(
     client: &C,
     machines: &[MachineObservation],
     copies: Vec<LeftCopy>,
@@ -613,7 +613,7 @@ async fn retire_copies<C: MachineOperations>(
         .collect()
 }
 
-async fn retire_copy<C: MachineOperations>(
+async fn retire_copy<C: CopyLifecycle>(
     client: &C,
     names: &BTreeMap<MachineId, String>,
     machine_id: MachineId,
