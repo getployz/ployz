@@ -111,12 +111,7 @@ pub(crate) const DURABLE: &[(&str, Rule)] = &[
             "the router's node state, restored to the same node and tailnet with the pinned image",
         ),
     ),
-    (
-        "tailscale.forgotten/",
-        Rule::Kept(
-            "a node this Machine stopped wanting; nothing reads it, and the next forget removes it",
-        ),
-    ),
+    ("tailscale.forgotten/", Rule::Deleted),
     (".run/", Rule::Kept("runtime files each start rewrites")),
 ];
 
@@ -241,6 +236,7 @@ pub(crate) fn commit_pending(
             .map_err(CommitError::Durable)?;
     let dropped =
         crate::machine::local_machine::ConsumptionLog::new(&data_dir).at_activation(&trusted)?;
+    remove_dir(&data_dir.join("tailscale.forgotten"))?;
     remove_file(&data_dir.join("recipient-generated.key"))?;
     let retired = store.commit_activation(&pending)?;
     PendingActivation::remove(&data_dir).map_err(CommitError::Pending)?;
@@ -274,6 +270,13 @@ fn kept_devices(store: &LocalMachineStore, pending: &PendingActivation) -> Vec<D
                     .is_some_and(|snapshot| snapshot.holds_key(key.code()))
         })
         .collect()
+}
+
+fn remove_dir(dir: &Path) -> Result<(), CommitError> {
+    match std::fs::remove_dir_all(dir) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(CommitError::Durable(error)),
+        _ => Ok(()),
+    }
 }
 
 fn remove_file(file: &Path) -> Result<(), CommitError> {

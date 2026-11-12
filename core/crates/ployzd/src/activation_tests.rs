@@ -249,6 +249,8 @@ fn boot_reverifies_durable_state() {
     )
     .unwrap();
     std::fs::write(data_dir.join("recipient-generated.key"), [9; 64]).unwrap();
+    std::fs::create_dir_all(data_dir.join("tailscale.forgotten")).unwrap();
+    std::fs::write(data_dir.join("tailscale.forgotten/tailscaled.state"), b"node").unwrap();
     pending(&store).write(&data_dir).unwrap();
     let mut store = reopened(&dir, store);
 
@@ -262,6 +264,7 @@ fn boot_reverifies_durable_state() {
     assert!(!proposals.contains_key(legacy.as_str()));
     assert!(proposals.contains_key(unapproved.as_str()));
     assert!(!data_dir.join("recipient-generated.key").exists());
+    assert!(!data_dir.join("tailscale.forgotten").exists());
 }
 
 #[test]
