@@ -15,7 +15,7 @@ import {
 } from "./volume-placement";
 import { approveVolume, VolumeNotApproved, type VolumeScope } from "#/modules/approval-session/volume-approval";
 import { readVolumeScope } from "#/modules/volume-run/volume-approval-scope";
-import { type PlacementApproval, type PlacementAsk, placementAsks, seedAsk } from "./placement-approvals";
+import { type PlacementApproval, type PlacementAsk, seedAsk, stagedAsks } from "./placement-approvals";
 import { deleteCopyServerFn, discardPlacementServerFn, keepPlacementApprovalsServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
@@ -179,9 +179,7 @@ async function placementApprovalAsks(
   const moving = changes.find((change) => change.kind === "move" && change.how !== "restore");
   const from = moving?.kind === "move" ? moving.from?.id ?? null : null;
   const read = await readVolumeScope(queryClient, organizationSlug, environment, volume.id, from);
-  const fresh = placementChanges(volume, read.members, row);
-  const removing = fresh.flatMap((change) => (change.kind === "remove_mirror" ? [change.server.id] : []));
-  return fresh.flatMap((change) => placementAsks(volume.name, change, read.members, read, removing).map((ask) => ({ scope: read, ask })));
+  return stagedAsks(volume, read.members, row, read).map((ask) => ({ scope: read, ask }));
 }
 
 export function usePlacementStaged(organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume) {

@@ -1,10 +1,11 @@
 import type { MachineId, ResolvedServiceSpec, Signed } from "@ployz/sdk";
-import { volumeApprovalBody } from "@ployz/sdk/authority";
+import { type DraftWorkflow, volumeApprovalBody } from "@ployz/sdk/authority";
 import { describe, expect, it } from "vitest";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
-import { keptFor, type PlacementApproval, placementAsks, seedAsk, withApproval } from "./placement-approvals";
-import { placementChanges, type PlacementChange, type PlacementRow } from "./volume-placement";
+import { keptFor, type PlacementApproval, placementAsks, seedAsk, stagedAsks, withApproval } from "./placement-approvals";
+import { planFromCopies } from "#/modules/volume-run/plan";
+import { nextPlacementStep, placementChanges, type PlacementChange, type PlacementRow } from "./volume-placement";
 
 const id = (server: string) => server.padEnd(32, "0") as MachineId;
 const ref = (server: string) => ({ id: id(server), name: server });
@@ -12,7 +13,7 @@ const volume = { id: "v1", name: "data" };
 const RUNNING = { name: "db", container: { image: "postgres@sha256:" + "a".repeat(64) } } as ResolvedServiceSpec;
 const terms = { running: RUNNING, recorded: 4_000_000_000 };
 /** An approval body with only the fields these tests name: a Volume's workflow, a tag, or padding past the bound. */
-type Body = { readonly volume?: string; readonly workflow?: Workflow; readonly for?: string; readonly pad?: string };
+type Body = { readonly volume?: string; readonly workflow?: Workflow | DraftWorkflow; readonly for?: string; readonly pad?: string };
 type Workflow = { readonly kind: string } & Readonly<Record<string, string>>;
 const signed = (body: Body): Signed => ({ body: JSON.stringify(body), signatures: [], assertions: [] });
 const row = (staged: PlacementRow["staged"], mirrors: MachineId[] = []): PlacementRow =>
@@ -73,6 +74,39 @@ describe("placementAsks", () => {
     expect(seedAsk(change, "app_vol-v1", id("web-1"))).toMatchObject({
       run: "seed", machine: id("web-1"), change: { workflow: { kind: "seed", machine: id("web-1"), source: "app_vol-v1", at: "42" }, parties: [id("web-1")] },
     });
+  });
+});
+
+describe("stagedAsks", () => {
+  const enforcing = (server: string, copy: Parameters<typeof member>[1]): Member => {
+    const each = member(server, copy);
+    return each.answered ? { ...each, enforces: true, passkey: true } : each;
+  };
+
+  it("drafts what a Move's Deploy runs after it from the copies it leaves: the old copy cleared, then the mirror fed by the new writer", () => {
+    const before = [enforcing("web-1", "writer"), enforcing("web-2", "empty"), enforcing("web-3", "empty")];
+    const staged = row({ primary: id("web-2"), mirrors: [id("web-3")], deletes: [] });
+    const asks = stagedAsks(volume, before, staged, terms);
+    expect(asks.map(({ run, change }) => ({ run, workflow: change.workflow }))).toEqual([
+      { run: "move", workflow: expect.objectContaining({ kind: "move", from: id("web-1"), to: id("web-2") }) },
+      { run: "delete_mirror", workflow: { kind: "mirror_removal", mirror: id("web-1"), role: "old_copy", writer: id("web-2") } },
+      { run: "mirror", workflow: { kind: "mirror", writer: id("web-2"), mirror: id("web-3"), replace: false } },
+    ]);
+
+    // Once the Move lands, each next run the Deploy plans carries its approval and plans to run.
+    const kept: PlacementApproval[] = asks.map((ask) =>
+      ({ run: ask.run, machine: ask.machine, approval: signed({ volume: "app_vol-v1", workflow: ask.change.workflow }) }));
+    const after = [enforcing("web-1", "old"), enforcing("web-2", "writer"), enforcing("web-3", "empty")];
+    const next = nextPlacementStep(placementChanges(volume, after, staged), []);
+    const run = next === null ? null : withApproval(next.run, kept, after);
+    if (run?.kind !== "delete_mirror") throw new Error(`expected the old copy's removal next, got ${run?.kind}`);
+    expect(planFromCopies({ kind: run.kind, args: run.args, volumeName: "data", orphan: false }, after).ok).toBe(true);
+  });
+
+  it("drafts a staged change with no Move over the copies as they stand", () => {
+    const members = [member("web-1", "writer"), member("web-2", "empty")];
+    const asks = stagedAsks(volume, members, row({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [] }), terms);
+    expect(asks.map(({ change }) => change.workflow)).toEqual([{ kind: "mirror", writer: id("web-1"), mirror: id("web-2"), replace: false }]);
   });
 });
 

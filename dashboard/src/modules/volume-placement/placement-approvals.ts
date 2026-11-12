@@ -1,10 +1,12 @@
-import type { MachineId, ResolvedServiceSpec, Signed } from "@ployz/sdk";
+import type { MachineId, ResolvedServiceSpec, Signed, VolumeCopy } from "@ployz/sdk";
 import type { DraftWorkflow } from "@ployz/sdk/authority";
 import { Option, Schema } from "effect";
 import type { VolumeChange } from "#/modules/approval-session/volume-approval";
 import { MAX_APPROVAL_BYTES, MAX_SERVICE_BYTES } from "#/modules/volume-run/plan";
 import { copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
-import { type MachineRef, observePlacement, type PlacementChange } from "./volume-placement";
+import {
+  type MachineRef, observePlacement, type PlacementChange, placementChanges, type PlacementRow, type PlacementVolume,
+} from "./volume-placement";
 
 /** The runs a staged change makes that a Server enforcing device approval takes only under an approval. */
 export type ApprovedRunKind = "move" | "restore" | "mirror" | "delete_mirror" | "seed";
@@ -113,6 +115,44 @@ export function placementAsks(
     case "seed":
       return [];
   }
+}
+
+/**
+ * The Volume workflows a Deploy of `row`'s staged changes runs, in order, as `placementAsks` drafts each. Steps after a
+ * Move are drafted over the copies as they stand once it lands, since its Deploy plans them then: the new writer feeds
+ * each added mirror, and the copy the Move leaves behind is cleared first.
+ */
+export function stagedAsks(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, terms: PlacementTerms): PlacementAsk[] {
+  const changes = placementChanges(volume, members, row);
+  const removing = changes.flatMap((change) => (change.kind === "remove_mirror" ? [change.server.id] : []));
+  const move = changes.find((change) => change.kind === "move");
+  const first = move === undefined ? changes : changes.filter((change) => change.kind !== "add_mirror");
+  const asks = first.flatMap((change) => placementAsks(volume.name, change, members, terms, removing));
+  if (move?.kind !== "move") return asks;
+  const landed = afterMove(members, changes, move);
+  const later = placementChanges(volume, landed, row).filter((change) => change.kind === "add_mirror");
+  return [...asks, ...later.flatMap((change) => placementAsks(volume.name, change, landed, terms))];
+}
+
+/**
+ * The copies once `move` and the removals before it ran: its target writes, the Server it leaves keeps an old copy, and
+ * every copy deleted on the way holds nothing.
+ */
+function afterMove(members: readonly Member[], changes: readonly PlacementChange[], move: Extract<PlacementChange, { kind: "move" }>): Member[] {
+  const deleted = changes.flatMap((change) =>
+    change.kind === "delete_copy" || change.kind === "remove_mirror" ? [change.server.id] : change.kind === "move" ? change.clears.map((server) => server.id) : []);
+  const epoch = Math.max(0, ...members.map((member) => (member.answered && member.view.copy?.kind === "root" ? member.view.copy.epoch : 0))) + 1;
+  return members.map((member): Member => {
+    if (!member.answered) return member;
+    const copy = member.view.copy;
+    const id = member.machine.id;
+    if (id === move.to.id) return { ...member, view: { ...member.view, copy: { kind: "root", readonly: false, newest: copy?.newest ?? null, epoch, seed: false } } };
+    if (deleted.includes(id)) return { ...member, view: { ...member.view, copy: null } };
+    if (id !== move.from?.id || copy === null) return member;
+    // The slot's name is the Server's to choose; nothing drafted from it reads it.
+    const old: VolumeCopy = { kind: "slot", slot: "old", readonly: true, newest: copy.newest, resume_token: null, pull: null, role: "old_copy" };
+    return { ...member, view: { ...member.view, copy: old } };
+  });
 }
 
 /** The Restore a "Use mirror" makes: the copy on its target becomes the writer at its newest snapshot. */

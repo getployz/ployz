@@ -87,8 +87,12 @@ export function runChange(name: string, run: VolumeRunInput, members: readonly M
       };
     }
     case "delete_mirror": {
-      if (run.args.slot === null && run.args.machine === undefined) throw new UndraftedRun(`This doesn't name which copy of ${name} to delete.`);
-      const slot = server(run.args.slot ?? "", run.args.machine);
+      // A removal that names no copy deletes every mirror, as the run plans it; one approval covers one, so only a sole mirror drafts.
+      const slots = observed.copies.filter((copy) => copy.kind === "slot");
+      const sole = slots.length === 1 ? slots[0] : undefined;
+      const unnamed = run.args.slot === null && run.args.machine === undefined;
+      if (unnamed && sole === undefined) throw new UndraftedRun(`Name which copy of ${name} to delete.`);
+      const slot = unnamed && sole !== undefined ? sole.server : server(run.args.slot ?? "", run.args.machine);
       const copy = answered(slot.id)?.view.copy;
       if (copy?.kind !== "slot" || copy.role === undefined) throw new UndraftedRun(`${slot.name} doesn't report what ${copyName(name, slot.name)} holds.`);
       return {

@@ -18,3 +18,15 @@ describe("runChange for a resize", () => {
     expect(resize(20).parties).toEqual([members[0]?.machine.id, members[1]?.machine.id]);
   });
 });
+
+describe("runChange for a Mirror removal that names no copy", () => {
+  const remove = (copies: typeof members) => runChange("data", { kind: "delete_mirror", args: { slot: null, confirmed_name: null } }, copies, terms);
+
+  it("drafts the removal of the sole mirror, as the run deletes it", () => {
+    expect(remove(members).workflow).toEqual({ kind: "mirror_removal", mirror: members[1]?.machine.id, role: "mirror", writer: members[0]?.machine.id });
+  });
+
+  it("refuses with two mirrors, as one approval covers one", () => {
+    expect(() => remove([...members, member("fsn-4", "mirror")])).toThrow("Name which copy of data to delete.");
+  });
+});
