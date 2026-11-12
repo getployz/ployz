@@ -1109,3 +1109,91 @@ async fn user_commands_run_either_ingress_door_unrouted() {
         }
     }
 }
+
+/// A user command whose proxy wait ends unconfirmed or cancelled says so in the sentence
+/// its command owns, with the error code the caller exits on.
+#[tokio::test(start_paused = true)]
+async fn a_user_command_whose_proxy_wait_fails_says_so_word_for_word() {
+    let (copy, proxy) = (container('1'), machine('b'));
+    let rows = [
+        (
+            Command::Restart,
+            CopyRotation::In,
+            false,
+            format!(
+                "Container {copy} was not restarted: the proxies on {proxy} did not confirm they stopped routing it. It is back In."
+            ),
+        ),
+        (
+            Command::Restart,
+            CopyRotation::In,
+            true,
+            format!(
+                "Container {copy} was not restarted: the wait for its proxies was cancelled. It is back In."
+            ),
+        ),
+        (
+            Command::Stop,
+            CopyRotation::In,
+            true,
+            format!(
+                "Container {copy} was not stopped: the wait for its proxies was cancelled. It is back In."
+            ),
+        ),
+        (
+            Command::Remove,
+            CopyRotation::In,
+            false,
+            format!(
+                "Container {copy} is left running and Out: the proxies on {proxy} did not confirm they stopped routing it."
+            ),
+        ),
+        (
+            Command::Remove,
+            CopyRotation::In,
+            true,
+            format!(
+                "Container {copy} is left running and Out: the wait for its proxies was cancelled."
+            ),
+        ),
+    ];
+    for (command, rotation, cancelled, message) in rows {
+        let mut fake =
+            Scripted::new(vec![inspected()]).with_copy(&machine('a'), &copy, rotation.clone());
+        fake.acks.insert(proxy, Ack::Never);
+        let recording = Recording::of(fake);
+        let cancellation = CancellationToken::new();
+        if cancelled {
+            let cancel = cancellation.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                cancel.cancel();
+            });
+        }
+        let none = || StopOptions {
+            signal: None,
+            grace_period_seconds: None,
+        };
+        let error = match command {
+            Command::Restart => {
+                cleanup::user_restart(&recording, &machine('a'), &copy, none(), 1, &cancellation)
+                    .await
+                    .map(drop)
+            }
+            Command::Stop => {
+                cleanup::user_stop(&recording, &machine('a'), &copy, none(), 1, &cancellation).await
+            }
+            Command::Remove => {
+                cleanup::user_remove(&recording, &machine('a'), &copy, &cancellation).await
+            }
+            Command::Start => unreachable!(),
+        }
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            RpcErrorCode::Unavailable,
+            "{command:?} {rotation:?}"
+        );
+        assert_eq!(error.message, message, "{command:?} {rotation:?}");
+    }
+}

@@ -487,6 +487,64 @@ async fn retire_copies_names_the_proxy_that_did_not_confirm_and_keeps_the_copy()
     );
 }
 
+/// A retirement the owner refuses gives the owner's reason as the error; one the drain's
+/// cancel ends says so, and neither removes the copy.
+#[tokio::test(start_paused = true)]
+async fn retire_copies_gives_the_refusal_or_the_cancel_as_its_error() {
+    let (drained, other, stuck) = (
+        machine('1', "drained"),
+        machine('2', "other"),
+        machine('3', "stuck"),
+    );
+    let refused = Cluster::of(
+        &[&drained, &other],
+        vec![copy_on(&drained, 'a', CopyRotation::In)],
+    );
+    let error = retire_copies(
+        &refused,
+        &drained.id,
+        &qualified("app", "api"),
+        &Names::new(),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect_err("the last copy in rotation stays");
+    assert_eq!(error.message, "it is the last copy in rotation");
+    assert_eq!(
+        error,
+        ContainerRefusal {
+            reason: ContainerRefusalReason::LastIn,
+            message: "it is the last copy in rotation".into(),
+            capability: None,
+        }
+        .into_error()
+    );
+    assert_eq!(refused.wants(), [out('a', CopyRotation::In)]);
+
+    let cancellation = CancellationToken::new();
+    let mut cancelled = Cluster::of(
+        &[&drained, &other, &stuck],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::In),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    )
+    .frozen(&stuck);
+    cancelled.cancel_on_read = Some(cancellation.clone());
+    let error = retire_copies(
+        &cancelled,
+        &drained.id,
+        &qualified("app", "api"),
+        &Names::new(),
+        &cancellation,
+    )
+    .await
+    .expect_err("a cancelled drain retires nothing more");
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(error.message, "the drain was cancelled while it retired");
+    assert_eq!(cancelled.wants(), [out('a', CopyRotation::In)]);
+}
+
 #[tokio::test]
 async fn the_ingress_proxy_goes_caddy_first_then_its_holder() {
     let (drained, other) = (machine('1', "drained"), machine('2', "other"));

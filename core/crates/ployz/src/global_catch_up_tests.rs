@@ -587,6 +587,131 @@ async fn own_superseded_copies_retire_after_in() {
     assert!(client.removed.is_empty());
 }
 
+fn unconfirmed(ids: &[MachineId]) -> cleanup::Unconfirmed {
+    cleanup::Unconfirmed {
+        machines: ids.to_vec(),
+        unanswered: Vec::new(),
+    }
+}
+
+fn refusal(reason: ContainerRefusalReason) -> ContainerRefusal {
+    ContainerRefusal {
+        reason,
+        message: format!("owner refused: {reason:?}"),
+        capability: None,
+    }
+}
+
+#[test]
+fn a_step_reads_as_the_error_each_outcome_names() {
+    let (one, two) = (machine('1', "one").id, machine('2', "two").id);
+    step_error(Step::Done).unwrap();
+    let refused = refusal(ContainerRefusalReason::LastIn);
+    assert_eq!(
+        step_error(Step::Refused(refused.clone())).unwrap_err(),
+        refused.into_error()
+    );
+    let unconfirmed = step_error(Step::NotConfirmed(unconfirmed(&[one, two]))).unwrap_err();
+    assert_eq!(unconfirmed.code, ployz_core::RpcErrorCode::Unavailable);
+    assert_eq!(
+        unconfirmed.message,
+        format!("{one}, {two} did not confirm the copy left its routes")
+    );
+    let cancelled = step_error(Step::Cancelled).unwrap_err();
+    assert_eq!(cancelled.code, ployz_core::RpcErrorCode::Internal);
+    assert_eq!(cancelled.message, "Cancelled.");
+}
+
+/// A superseded copy that does not retire stays, and the Service is named with the reason
+/// its outcome gave. Cancellation ends the retirement without a reason of its own.
+#[tokio::test(start_paused = true)]
+async fn a_superseded_copy_that_does_not_retire_names_why_it_stays() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let stuck = machine('2', "stuck").id;
+    type Outcome = (fn() -> Step, Option<String>);
+    let outcomes: [Outcome; 4] = [
+        (
+            || Step::Refused(refusal(ContainerRefusalReason::LastIn)),
+            Some("superseded copy {old} stays: owner refused: LastIn".into()),
+        ),
+        (
+            || Step::NotConfirmed(unconfirmed(&[machine('2', "stuck").id])),
+            Some(format!(
+                "superseded copy {{old}} stays: {stuck} did not confirm it left the routes"
+            )),
+        ),
+        (|| Step::Cancelled, None),
+        (|| Step::Done, None),
+    ];
+    for (retire, stays) in outcomes {
+        let service = global_service(
+            identity.clone(),
+            'a',
+            Placement::default(),
+            rotated(running_on(&founder, 'b'), CopyRotation::In),
+        );
+        let mut client = fake(&joiner, vec![service]);
+        client.target_services = Some(vec![
+            global_service(
+                identity.clone(),
+                'a',
+                Placement::default(),
+                running_on(&joiner, 'c'),
+            ),
+            global_service(
+                identity.clone(),
+                'a',
+                Placement::default(),
+                running_on(&joiner, 'a'),
+            ),
+        ]);
+        client.run_result = Ok(Some(container_id('c')));
+        client.retire_step = retire;
+        let old = container_id('a');
+        let result = catch_up(&mut client, &joiner).await;
+        match stays {
+            None => result.unwrap(),
+            Some(stays) => {
+                let error = result.unwrap_err();
+                let text = message(error, &joiner);
+                let stays = stays.replace("{old}", old.as_str());
+                assert!(text.contains(&format!("app/api: {stays}")), "{text}");
+            }
+        }
+    }
+}
+
+/// A started copy the owner refuses In is removed; when that removal does not finish, the
+/// reason says the copy stays and how its removal ended.
+#[tokio::test(start_paused = true)]
+async fn a_refused_started_copy_whose_removal_does_not_finish_says_it_stays() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let service = global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&founder, 'a'),
+    );
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(vec![global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&joiner, 'b'),
+    )]);
+    client.run_result = Ok(Some(container_id('b')));
+    client.bring_in = FakeBringIn::Refused(ContainerRefusalReason::OlderThanIn);
+    client.remove_step = || Step::Refused(refusal(ContainerRefusalReason::InRotation));
+    let text = message(catch_up(&mut client, &joiner).await.unwrap_err(), &joiner);
+    let stays = format!(
+        "{OUTDATED}; the started copy stays: Refused(ContainerRefusal {{ reason: InRotation, message: \"owner refused: InRotation\", capability: None }})"
+    );
+    assert!(text.contains(&stays), "{text}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_ingress_proxy_is_set_once_through_its_doors() {
     let joiner = machine('1', "joiner");
@@ -989,6 +1114,8 @@ struct FakeCatchUpClient {
     brought_in: Vec<Copy>,
     retired: Vec<Copy>,
     removed: Vec<Copy>,
+    retire_step: fn() -> Step,
+    remove_step: fn() -> Step,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
     names: crate::drain::retirement::Names,
@@ -1015,6 +1142,8 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         brought_in: Vec::new(),
         retired: Vec::new(),
         removed: Vec::new(),
+        retire_step: || Step::Done,
+        remove_step: || Step::Done,
         failures: Vec::new(),
         omissions: Vec::new(),
         names: Vec::new(),
@@ -1185,12 +1314,12 @@ impl CatchUpClient for FakeCatchUpClient {
         _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Step, RpcError> {
         self.retired.push(copy.clone());
-        Ok(Step::Done)
+        Ok((self.retire_step)())
     }
 
     async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError> {
         self.removed.push(copy.clone());
-        Ok(Step::Done)
+        Ok((self.remove_step)())
     }
 
     async fn target_containers(
