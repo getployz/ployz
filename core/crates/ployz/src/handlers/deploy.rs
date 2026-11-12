@@ -10,6 +10,7 @@ mod built;
 mod follow_tests;
 mod progress;
 
+use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress};
 use crate::ui::{self, Cell, Table, Tone};
 use std::collections::BTreeMap;
@@ -25,7 +26,7 @@ use ployz_store::{
     Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
-use super::store::{Next, Store, environment, mint, next, scoped, store};
+use super::store::{Store, environment, mint, next, scoped, store};
 use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
@@ -244,8 +245,8 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
             format_args!("Nothing staged in {where_}."),
         );
     };
-    let hint = next(matches, &["deploy"]);
-    ui::finish(&Next::new(&saved, Some(hint.clone())), || {
+    let followed = Next::new(&saved, Some(next(matches, &["deploy"])));
+    ui::finish(&followed, || {
         if saved.created {
             ui::stream(format_args!(
                 "Saved version #{version} of {where_}. Not deployed."
@@ -255,7 +256,7 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
                 "Version #{version} already holds everything staged in {where_}. Not deployed."
             ));
         }
-        ui::hint(&Hint::Next(hint));
+        followed.say();
     })
 }
 
@@ -420,14 +421,14 @@ impl Shipped {
             view: &self.view,
             approved: &self.approved,
         };
-        let next = Next::new(&result, Some(self.hint.clone()));
+        let next = Next::new(&result, Some(self.hint));
         if self.presented {
             ui::finish(&next, || say_unserved(&self.view))?;
         } else {
             ui::finish(&next, || say_view(&self.view))?;
         }
         if self.needs_upload {
-            ui::hint(&Hint::Next(self.hint));
+            next.say();
         }
         self.ran
     }
@@ -1074,7 +1075,8 @@ fn plan(
         ingress_unchecked,
         prunes,
     };
-    crate::ui::finish(&Next::new(&shown, Some(hint.clone())), || {
+    let followed = Next::new(&shown, Some(hint));
+    crate::ui::finish(&followed, || {
         let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
         if plan.changes.is_empty() {
             crate::ui::stream(format_args!("No authored changes to deploy in {where_}."));
@@ -1121,7 +1123,7 @@ fn plan(
         if let Some(undecided) = undecided(&plan.unresolved) {
             ui::stream(format_args!("{undecided}"));
         }
-        ui::hint(&Hint::Next(hint.clone()));
+        followed.say();
     })
 }
 
@@ -1293,10 +1295,9 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
             Cell::from(deployment.saved.to_string()),
         ]);
     }
-    ui::list(&Next::new(&page, hint.clone()), &table)?;
-    if let Some(hint) = hint {
-        ui::hint(&Hint::Next(hint));
-    }
+    let followed = Next::new(&page, hint);
+    ui::list(&followed, &table)?;
+    followed.say();
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 //! Running Cloud's enroll instruction in-process, as `ployz server add` does, while the
 //! loop keeps reporting the attempt's stage on each check-in.
 
+use ployz_core::error_chain;
 use std::{fs, path::Path, time::Duration};
 
 use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
@@ -159,7 +160,7 @@ pub(super) async fn attempt<H: Host>(
         }
         Err(message) => {
             let line = failure_line(attempt.fail(*moved.borrow(), message));
-            crate::ui::note(crate::ui::then_sentence(&line, "Waiting for Cloud."));
+            crate::ui::note(error_chain::then_sentence(&line, "Waiting for Cloud."));
             status.answer = Seen::Wait;
             status.message = Some(line);
             status.attempt = Some(attempt);

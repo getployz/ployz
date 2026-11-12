@@ -1,10 +1,10 @@
 //! `ployz token` and `ployz org`: acting in Cloud as this device's
 //! sign-in or `PLOYZ_TOKEN`. None of them needs a Server.
 
+use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use serde::Serialize;
 
-use super::store::Next;
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;

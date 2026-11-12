@@ -15,6 +15,7 @@
 //! through SetPrivateAccess from the sealed auth key an observed router carries.
 
 use crate::cluster::Call;
+use ployz_core::error_chain;
 use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, EnvironmentValues,
@@ -267,10 +268,9 @@ impl CatchUpClient for Client {
                     .map_or_else(|| Copy::observed(&existing), Copy::observed),
             ));
         }
-        let capacity = self
-            .bridge_capacity(machine_id)
-            .await
-            .map_err(|error| crate::ui::rpc_error(ployz_core::RpcErrorCode::Unavailable, &error))?;
+        let capacity = self.bridge_capacity(machine_id).await.map_err(|error| {
+            error_chain::rpc_error(ployz_core::RpcErrorCode::Unavailable, &error)
+        })?;
         if let Some(error) = endpoint_capacity_error(1, capacity.as_ref()) {
             return Err(RpcError::conflict(error.to_string()));
         }
@@ -397,7 +397,7 @@ fn step_error(rotated: Rotated) -> Result<(), RpcError> {
                 .join(", ")
         )),
         RotationFailure::Cancelled => {
-            crate::ui::rpc_error(ployz_core::RpcErrorCode::Internal, &Failure::cancelled())
+            error_chain::rpc_error(ployz_core::RpcErrorCode::Internal, &Failure::cancelled())
         }
     })
 }
@@ -744,7 +744,7 @@ async fn remove_started<C: CatchUpClient>(client: &mut C, copy: &Copy, message: 
     match client.remove_copy(copy).await {
         Ok(Removal::Removed) => message,
         Ok(removal) => format!("{message}; the started copy stays: {removal:?}"),
-        Err(error) => format!("{message}; {}", crate::ui::row(&error)),
+        Err(error) => format!("{message}; {}", error_chain::row(&error)),
     }
 }
 
@@ -868,7 +868,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 };
                 let failure = match answer {
                     Ok(set) => crate::private_access::failure_of(&set),
-                    Err(error) => Some(crate::ui::row(&error)),
+                    Err(error) => Some(error_chain::row(&error)),
                 };
                 match failure {
                     None => {
@@ -906,7 +906,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                     Ok(Some(set)) => {
                         crate::ingress::failure_of(&set).map(|failure| failure.cause().to_owned())
                     }
-                    Err(error) => Some(crate::ui::row(&error)),
+                    Err(error) => Some(error_chain::row(&error)),
                 };
                 match failure {
                     None => {
@@ -942,7 +942,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 continue;
             }
             Err(error) => {
-                failures.push((identity.clone(), crate::ui::row(&error)));
+                failures.push((identity.clone(), error_chain::row(&error)));
                 observe(CatchUpFact::Failed(identity));
                 continue;
             }
@@ -957,7 +957,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 Ok(Err(NotIn::Refused(refusal))) => {
                     Some(remove_started(client, &copy, refusal.message).await)
                 }
-                Err(error) => Some(crate::ui::row(&error)),
+                Err(error) => Some(error_chain::row(&error)),
             };
             if let Some(message) = outcome {
                 failures.push((identity.clone(), message));
@@ -1046,7 +1046,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                         .collect::<Vec<_>>()
                         .join(", ")
                 )),
-                Err(error) => Some(crate::ui::row(&error)),
+                Err(error) => Some(error_chain::row(&error)),
             };
             if let Some(message) = left {
                 failures.push((

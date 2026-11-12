@@ -6,6 +6,7 @@
 //! labels, Machine ids or secrets. On failure, `error` is the message the user saw; Cloud
 //! removes IP addresses from it, but hostnames may remain.
 
+use ployz_core::error_chain;
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -201,7 +202,7 @@ impl SetupReport {
             Some(error) => Outcome::Failed {
                 failed_step: step,
                 failed_step_seconds: since.elapsed().as_secs_f64(),
-                error: crate::ui::row(error),
+                error: error_chain::row(error),
             },
         };
         let body = Body {

@@ -1,3 +1,4 @@
+use ployz_core::error_chain;
 use std::{borrow::Cow, error::Error, fmt, io};
 
 use ployz_core::{
@@ -303,7 +304,7 @@ impl Failure {
     pub fn causes(&self) -> Vec<String> {
         match &self.inner {
             Inner::Command { error, .. } if refusal_before_context(error.as_ref()).is_none() => {
-                ui::causes(error.as_ref())
+                error_chain::causes(error.as_ref())
             }
             Inner::Command { .. } | Inner::Partial | Inner::Exit(_) => Vec::new(),
         }
@@ -441,7 +442,7 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
     ) = error.downcast_ref::<ProvisionError>()
     {
         let mut cleanup_lines = vec![cleanup.to_string()];
-        cleanup_lines.extend(ui::causes(cleanup.as_ref()));
+        cleanup_lines.extend(error_chain::causes(cleanup.as_ref()));
         let mut details = serde_json::json!({ "cleanup": cleanup_lines });
         Hint::into_details(&[Hint::Next(remove.to_string())], &mut details);
         return (provision_code(failed), details);
@@ -820,7 +821,7 @@ pub(crate) fn partial_failure_details<T>(
             format!(
                 "{}: {}",
                 server(&failure.machine_id),
-                crate::ui::row(&failure.error)
+                error_chain::row(&failure.error)
             )
         })
         .chain(
@@ -1183,7 +1184,7 @@ mod tests {
         };
         let failure = Failure::caused(RpcErrorCode::Internal, "Could not save the context.", write);
         assert_eq!(
-            crate::ui::chain_text(&failure),
+            error_chain::row(&failure),
             "Could not save the context: Could not write Ployz config /etc/ployz/config.yaml: disk full"
         );
     }
@@ -1380,10 +1381,10 @@ mod tests {
             Some("Connection refused (os error 111)")
         );
         assert!(
-            ui::row(&wrapped)
+            error_chain::row(&wrapped)
                 .ends_with("Corrosion HTTP request failed: Connection refused (os error 111)"),
             "{}",
-            ui::row(&wrapped)
+            error_chain::row(&wrapped)
         );
     }
 

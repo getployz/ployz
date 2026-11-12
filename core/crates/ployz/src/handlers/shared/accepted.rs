@@ -59,7 +59,7 @@ pub(in crate::handlers) fn unfinished(
     ran: Result<(), Error>,
     again: &str,
 ) -> Result<(), Error> {
-    crate::ui::finish(&store::Next::new(view, Some(again.to_owned())), || {
+    crate::ui::finish(&crate::ui::Next::new(view, Some(again.to_owned())), || {
         deploy::say_view(view);
     })?;
     not_applied(matches, ran, again.to_owned())

@@ -2,6 +2,7 @@
 //! transport, with sentinels for every application mutation. Docker execution
 //! is proved at rung 4.
 use ployz_build::{Stage, TargetEvidence, WorkEvidence, remote::Outcome};
+use ployz_core::error_chain;
 use ployz_core::{
     EnvValue, MachineImages, MembershipObservation, RpcError, RpcErrorCode, ServiceName,
 };
@@ -498,7 +499,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         failed.machine.id
     );
     assert!(
-        crate::ui::chain_text(&result.failures.first().unwrap().error)
+        error_chain::row(&result.failures.first().unwrap().error)
             .contains("containerd image store")
     );
     let unserved = result.failures.get(1).unwrap();

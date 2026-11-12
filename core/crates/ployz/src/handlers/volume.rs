@@ -6,18 +6,19 @@
 //!
 //! Mirror, Sync and Mirror removal are Volume runs in Ployz Cloud; see [`run`].
 
+use crate::ui::Next;
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::cloud_contract::MIN_MANAGED_VOLUME_BYTES;
 use ployz_core::config::VolumeKind;
 use ployz_core::{
-    Hint, MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
+    MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
 };
 use ployz_store::{
     CreateVolume, Mount, RemoveVolume, SetVolumeSharedWrites, SetVolumeStorage, VolumeId,
     VolumeListing, VolumeName, VolumeQuery, VolumeStaged, VolumesQuery,
 };
 
-use super::store::{self, Next};
+use super::store;
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
 use crate::ui::{Cell, Fields, Table, Tone};
@@ -455,8 +456,8 @@ fn staged(
             ),
         );
     }
-    let hint = store::next(matches, &["deploy"]);
-    crate::ui::finish(&Next::new(result, Some(hint.clone())), || {
+    let followed = Next::new(result, Some(store::next(matches, &["deploy"])));
+    crate::ui::finish(&followed, || {
         crate::ui::stream(format_args!(
             "{what} {} in {}/{}.",
             result.volume.name, result.environment.project, result.environment.name
@@ -467,7 +468,7 @@ fn staged(
                 storage_word(result.volume.storage)
             ));
         }
-        crate::ui::hint(&Hint::Next(hint));
+        followed.say();
     })
 }
 

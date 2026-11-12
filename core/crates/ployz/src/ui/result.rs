@@ -73,6 +73,29 @@ pub(crate) fn hint(hint: &Hint) {
     }
 }
 
+/// A command's result and, when there is one, the command to run next. The one string is
+/// the JSON result's `next` key and, through [`Next::say`], the human `next:` line.
+#[derive(Serialize)]
+pub(crate) struct Next<'a, T> {
+    #[serde(flatten)]
+    value: &'a T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<String>,
+}
+
+impl<'a, T> Next<'a, T> {
+    pub(crate) fn new(value: &'a T, next: Option<String>) -> Self {
+        Self { value, next }
+    }
+
+    /// The `next:` line for a person; `--json` carries the key instead.
+    pub(crate) fn say(&self) {
+        if let Some(next) = &self.next {
+            hint(&Hint::Next(next.clone()));
+        }
+    }
+}
+
 /// Warn on one stderr line; the command's JSON result lists it under `warnings`.
 pub(crate) fn warn(warning: impl Into<String>) {
     let warning = warning.into();
@@ -371,7 +394,7 @@ impl Gaps {
         if crate::private_access::router_not_serving(&failure.error) {
             return (
                 failure.error.message.clone(),
-                super::causes(&failure.error)
+                ployz_core::error_chain::causes(&failure.error)
                     .last()
                     .cloned()
                     .map(Under::Cause),
@@ -387,7 +410,7 @@ impl Gaps {
         }
         (
             missing_rows(&name),
-            super::causes(&failure.error)
+            ployz_core::error_chain::causes(&failure.error)
                 .last()
                 .cloned()
                 .map(Under::Cause),
@@ -473,6 +496,19 @@ impl<'a, T> Fanout<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_result_carries_its_next_command_beside_its_own_keys() {
+        let saved = serde_json::json!({ "version": 4 });
+        assert_eq!(
+            serde_json::to_value(Next::new(&saved, Some("ployz deploy".to_owned()))).unwrap(),
+            serde_json::json!({ "version": 4, "next": "ployz deploy" })
+        );
+        assert_eq!(
+            serde_json::to_value(Next::new(&saved, None)).unwrap(),
+            serde_json::json!({ "version": 4 })
+        );
+    }
 
     #[test]
     fn warnings_land_in_the_next_json_result_once() {

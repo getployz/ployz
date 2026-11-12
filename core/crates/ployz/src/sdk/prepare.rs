@@ -2,6 +2,7 @@
 use crate::build::CapabilityCheckError;
 use crate::cluster::{Call, Deadline};
 use crate::connect::ConnectError;
+use ployz_core::error_chain;
 use ployz_core::{
     DescribeContractRequest, MachineId, MachineName, MachineObservation, MachineTarget, RpcError,
     RpcErrorCode, op,
@@ -179,7 +180,7 @@ pub async fn select_build_machine(
                     Err(error) => (
                         format!(
                             "Build capability could not be verified: {}",
-                            crate::ui::row(&error)
+                            error_chain::row(&error)
                         ),
                         // A refusal by device enforcement is no failed check: it says what it is.
                         if matches!(error, CapabilityCheckError::RefusedByEnforcement(_))
@@ -194,7 +195,7 @@ pub async fn select_build_machine(
                 Err(error) => (
                     format!(
                         "Build capability could not be verified: {}",
-                        crate::ui::row(&error)
+                        error_chain::row(&error)
                     ),
                     if error.code == RpcErrorCode::Unavailable {
                         "did not answer"

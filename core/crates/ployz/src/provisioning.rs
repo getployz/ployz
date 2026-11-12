@@ -1,3 +1,4 @@
+use ployz_core::error_chain;
 use std::{
     env,
     ffi::OsString,
@@ -561,7 +562,7 @@ fn finish_remote(
         (Err(primary), Ok(())) => Err(primary),
         (Ok(()), Err(cleanup)) => Err(cleanup),
         (Err(primary), Err(cleanup)) => Err(ProvisionError::CleanupAfter {
-            causes: crate::failure::JoinedChain::of(crate::ui::causes(&primary)),
+            causes: crate::failure::JoinedChain::of(error_chain::causes(&primary)),
             primary: Box::new(primary),
             cleanup: Box::new(cleanup),
             remove,

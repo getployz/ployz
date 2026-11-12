@@ -5,6 +5,7 @@
 //! recorded: the next Deploy reads the new writer off the Servers.
 
 use crate::cluster::{Call, Deadline};
+use crate::ui::Next;
 use std::time::{Duration, Instant};
 
 use chrono::DateTime;
@@ -19,7 +20,7 @@ use ployz_core::{
 use ployz_store::{EnvironmentSummary, NamespacesQuery, VolumeId, VolumeName};
 use serde::Serialize;
 
-use super::super::store::{self, Next};
+use super::super::store;
 use super::super::{Error, leaf_matches};
 use crate::connect::TARGET_RPC_TIMEOUT;
 
@@ -358,7 +359,8 @@ pub(super) fn standalone(
             .map(|newest| newest.created_unix_seconds),
         already_writer: matches!(planned, Planned::AlreadyWriter),
     };
-    crate::ui::finish(&Next::new(&restored, Some(deploy.clone())), || {
+    let followed = Next::new(&restored, Some(deploy));
+    crate::ui::finish(&followed, || {
         match (&planned, &lost_after) {
             (Planned::AlreadyWriter, _) => crate::ui::stream(format_args!(
                 "{volume}'s writer is already on {from}; nothing to restore."
@@ -375,7 +377,7 @@ pub(super) fn standalone(
             )),
         }
         crate::ui::note("Deploy to start the Services that use it.");
-        crate::ui::hint(&Hint::Next(deploy.clone()));
+        followed.say();
     })
 }
 

@@ -46,6 +46,66 @@ pub fn inline(error: &(dyn Error + 'static)) -> String {
     text
 }
 
+/// A per-Server row, record or report field: [`inline`] with its lines folded onto one.
+#[must_use]
+pub fn row(error: &(dyn Error + 'static)) -> String {
+    one_line(&inline(error))
+}
+
+/// Foreign text on one line: a registry's `denied\ndenied` would break the
+/// indented line it lands in. Repeated lines print once.
+#[must_use]
+pub fn one_line(text: &str) -> String {
+    joined(text.lines().map(str::trim))
+}
+
+/// `trimmed` lines without the empty ones and without a line that repeats the one
+/// before, joined with `; `.
+#[must_use]
+pub fn joined<'a>(trimmed: impl Iterator<Item = &'a str>) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    for line in trimmed.filter(|line| !line.is_empty()) {
+        if lines.last() != Some(&line) {
+            lines.push(line);
+        }
+    }
+    lines.join("; ")
+}
+
+/// `error` as an [`RpcError`] of `code`, its message the [`row`] of the chain.
+#[must_use]
+pub fn rpc_error(code: crate::RpcErrorCode, error: &(dyn Error + 'static)) -> RpcError {
+    RpcError::new(code, row(error))
+}
+
+/// `text` as a failure's first line: a sentence, ending with a period.
+#[must_use]
+pub fn sentence(mut text: String) -> String {
+    if !text.ends_with(['.', '!', '?']) {
+        text.push('.');
+    }
+    text
+}
+
+/// `next` follows `message` as its own sentence, with one break however
+/// `message` ended. A dangling colon introduces nothing, so it becomes the break.
+#[must_use]
+pub fn then_sentence(message: &str, next: &str) -> String {
+    match message.trim_end().trim_end_matches(':').trim_end() {
+        "" => next.to_owned(),
+        message => format!("{} {next}", sentence(message.to_owned())),
+    }
+}
+
+/// `what`, then `: reason` when there is a reason to give.
+#[must_use]
+pub fn with_reason(what: impl std::fmt::Display, reason: &str) -> String {
+    match reason.trim() {
+        "" => what.to_string(),
+        reason => format!("{what}: {reason}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +193,53 @@ mod tests {
             inline(&error),
             "Could not create the Container: Docker responded with status code 500: denied"
         );
+    }
+
+    #[test]
+    fn a_foreign_line_end_trims_off_the_one_line_form() {
+        let error = std::io::Error::other("refused a.txt\r\n\tdenied \r\n");
+        assert_eq!(row(&error), "refused a.txt; denied");
+        let wire = serde_json::to_value(rpc_error(crate::RpcErrorCode::Internal, &error));
+        assert_eq!(
+            wire.unwrap().pointer("/message").unwrap(),
+            "refused a.txt; denied"
+        );
+    }
+
+    #[test]
+    fn a_failure_sentence_ends_with_one_period() {
+        assert_eq!(sentence("Could not deploy".to_owned()), "Could not deploy.");
+        assert_eq!(
+            sentence("Could not deploy.".to_owned()),
+            "Could not deploy."
+        );
+        assert_eq!(sentence("Really?".to_owned()), "Really?");
+        assert_eq!(sentence("Stop!".to_owned()), "Stop!");
+    }
+
+    #[test]
+    fn the_next_sentence_follows_with_one_break_however_the_message_ended() {
+        assert_eq!(
+            then_sentence("Could not deploy", "Run it again."),
+            "Could not deploy. Run it again."
+        );
+        assert_eq!(
+            then_sentence("Could not deploy.  ", "Run it again."),
+            "Could not deploy. Run it again."
+        );
+        assert_eq!(
+            then_sentence("Could not deploy:", "Run it again."),
+            "Could not deploy. Run it again."
+        );
+        assert_eq!(then_sentence(" : ", "Run it again."), "Run it again.");
+    }
+
+    #[test]
+    fn a_reason_follows_its_subject_only_when_there_is_one() {
+        assert_eq!(
+            with_reason("Volume web", " no space "),
+            "Volume web: no space"
+        );
+        assert_eq!(with_reason("Volume web", "  "), "Volume web");
     }
 }

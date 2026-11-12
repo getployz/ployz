@@ -3,6 +3,7 @@
 //! evidence, so the Deploy Intent with its unsealed secrets, the session and the raw
 //! SDK evidence never leave it: the caller gets only the Deployment's summary.
 
+use ployz_core::error_chain;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -899,7 +900,7 @@ impl Run {
                 .await
                 .map_err(message)
             }
-            Err(error) => Err(crate::ui::row(&error)),
+            Err(error) => Err(error_chain::row(&error)),
         };
         let evidence: Vec<_> = match filled {
             Ok(check) => (!check.repairs.is_empty())
@@ -984,7 +985,9 @@ impl Run {
                 }
                 Err(error) => match needs_upload(&error) {
                     Some(services) => uploads.extend(services),
-                    None => failed.push(format!("{}: {}", target.service, crate::ui::row(&error))),
+                    None => {
+                        failed.push(format!("{}: {}", target.service, error_chain::row(&error)))
+                    }
                 },
             }
         }
@@ -1066,13 +1069,13 @@ impl Run {
                 let error = RpcError::internal("No Server started the build");
                 (
                     BuildStatus::Failed,
-                    Some(crate::ui::row(&error)),
+                    Some(error_chain::row(&error)),
                     Err(error),
                 )
             }
             Err(error) => (
                 BuildStatus::Failed,
-                Some(crate::ui::row(&error)),
+                Some(error_chain::row(&error)),
                 Err(error),
             ),
         };
@@ -1596,7 +1599,7 @@ fn targets(
             failed.push(format!(
                 "{}: {}",
                 source.service,
-                crate::ui::then_sentence(why, "No other Builder in your Build Order can take it")
+                error_chain::then_sentence(why, "No other Builder in your Build Order can take it")
             ));
             continue;
         }

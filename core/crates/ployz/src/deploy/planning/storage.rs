@@ -1,6 +1,7 @@
 //! Plan-wide provisioning budgets and capacity-aware volume placement.
 
 use crate::deploy::{DeploySnapshot, PlanError};
+use ployz_core::error_chain;
 use ployz_core::{
     DockerVolumeName, MachineObservation, ProvisionedVolumeMaximumBytes, RawVolumeSource,
     ServiceVolume, StorageBudget, StorageCapacity, StorageCapacityError,
@@ -40,7 +41,7 @@ pub(super) fn capacity<'snapshot>(
             machine: machine.machine.name.clone(),
             source: StorageCapacityError::StorageCapacityUnknown {
                 message: match failure {
-                    Some(Err(error)) => crate::ui::row(error),
+                    Some(Err(error)) => error_chain::row(error),
                     _ => "the Machine did not return fresh storage capacity".into(),
                 },
             },

@@ -1,5 +1,6 @@
 use crate::cluster::{Call, Deadline};
 use clap::ArgMatches;
+use ployz_core::error_chain;
 use ployz_core::{
     DescribeContractRequest, Hint, LiveServices, Machine, MachineId, MachineTarget,
     QualifiedService, RpcError, RpcErrorCode, op,
@@ -483,13 +484,13 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             && cloud_kept == Some(false)
         {
             // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
-            crate::ui::warn(crate::ui::then_sentence(
+            crate::ui::warn(error_chain::then_sentence(
                 &format!("Cloud let go of Server {}, but {reason}", selected.name),
                 "Reset does not erase volume data.",
             ));
         } else if let Some(reason) = reset_doubt {
-            crate::ui::warn(crate::ui::then_sentence(
-                &crate::ui::with_reason(
+            crate::ui::warn(error_chain::then_sentence(
+                &error_chain::with_reason(
                     format_args!("Server {} was not fully cleaned up or reset", selected.name),
                     reason,
                 ),
@@ -500,7 +501,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 row_warning: Some(warning),
             }) = &departed
             {
-                crate::ui::warn(crate::ui::sentence(crate::ui::with_reason(
+                crate::ui::warn(error_chain::sentence(error_chain::with_reason(
                     format_args!(
                         "Server {} reset, but its own row removal failed",
                         selected.name

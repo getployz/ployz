@@ -1676,6 +1676,7 @@ mod tests {
 #[cfg(test)]
 mod scope_tests {
     use super::*;
+    use ployz_core::error_chain;
 
     #[test]
     fn a_log_window_with_no_time_in_it_is_refused() {
@@ -1742,7 +1743,7 @@ mod scope_tests {
         assert!(gaps.outcome().is_ok());
         let failure = ployz_core::MachineFailure {
             machine_id: ployz_core::MachineId::parse("1".repeat(32)).unwrap(),
-            error: crate::ui::rpc_error(
+            error: error_chain::rpc_error(
                 RpcErrorCode::Unavailable,
                 &std::io::Error::other("ployz-observe is down"),
             ),

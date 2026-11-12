@@ -900,21 +900,6 @@ pub(crate) fn mint() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// A command's result and, when there is one, the command to run next.
-#[derive(serde::Serialize)]
-pub(crate) struct Next<'a, T> {
-    #[serde(flatten)]
-    value: &'a T,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<String>,
-}
-
-impl<'a, T> Next<'a, T> {
-    pub(crate) fn new(value: &'a T, next: Option<String>) -> Self {
-        Self { value, next }
-    }
-}
-
 /// `ployz WORDS…` in the same Project and Environment as this command.
 pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
     let mut next = vec!["ployz".to_owned()];
