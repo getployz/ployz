@@ -134,7 +134,9 @@ where
     // A send whose answer was lost: the Machine may have done it.
     let mut lost: Option<RpcError> = None;
     // A Machine that didn't answer: stronger news than an earlier lost reply, as
-    // `keep_lost_call` holds.
+    // `keep_lost_call` holds. That fold and `keep_target_reply` are this one's twin for
+    // `Client::repeat`; they differ only in a refused redial, where this wait keeps saying
+    // what the lost send may have done (`still_lost`) and `keep_lost_call` does not.
     let mut silent: Option<RpcError> = None;
     loop {
         let error = match op().await {
