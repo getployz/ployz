@@ -33,6 +33,7 @@ mod logs;
 mod metrics;
 mod payloads;
 pub(crate) mod preparation;
+pub(crate) mod preparation_failure;
 pub(crate) mod prepare;
 mod running;
 mod sealed;
@@ -1693,6 +1694,7 @@ pub(crate) fn preparation_error(
     cancellation_requested: bool,
 ) -> RpcError {
     use crate::sdk::prepare::PreparationError;
+    use preparation_failure::{Preparation, PreparationFailure, Stage};
     let message = crate::ui::rpc_error(RpcErrorCode::Internal, &error).message;
     let same_again = error.same_again();
     match error {
@@ -1713,10 +1715,12 @@ pub(crate) fn preparation_error(
             let message =
                 "No eligible Build Machine was selected; no build was started.".to_owned();
             RpcError::unavailable(message.clone())
-                .with_details(
-                    serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
-                    "message":message, "rejections":rejections}}),
-                )
+                .with_evidence(&PreparationFailure::of(Preparation::Failed {
+                    stage: Some(Stage::Selection),
+                    message,
+                    rejections: Some(rejections),
+                    work: None,
+                }))
                 .with_causes(if reasons.is_empty() {
                     Vec::new()
                 } else {
@@ -1724,38 +1728,33 @@ pub(crate) fn preparation_error(
                 })
         }
         PreparationError::Connect(_) => {
-            RpcError::unavailable("Could not read Machine observations during preparation.")
-                .with_details(
-                    serde_json::json!({"preparation":{"kind":"failed", "stage":"Observation",
-                "message":"Could not read Machine observations during preparation."}}),
-                )
+            let message = "Could not read Machine observations during preparation.";
+            RpcError::unavailable(message).with_evidence(&PreparationFailure::of(
+                Preparation::Failed {
+                    stage: Some(Stage::Observation),
+                    message: message.to_owned(),
+                    rejections: None,
+                    work: None,
+                },
+            ))
         }
         PreparationError::Build(crate::build::Error::RemoteBuild { outcome }) => {
-            let cancelled = cancellation_requested
-                && matches!(*outcome, crate::build::RemoteBuildFailure::Failed { .. });
-            let mut details = serde_json::json!({"preparation": outcome});
-            // Failed confirms termination; a cancellation request alone cannot erase Unknown.
-            if cancelled {
-                *details
-                    .pointer_mut("/preparation/kind")
-                    .expect("remote Build failures serialize a kind") =
-                    serde_json::json!("cancelled");
-            }
-            RpcError::internal(message).with_details(details)
+            RpcError::internal(message).with_evidence(&PreparationFailure::of(
+                Preparation::remote_build(*outcome, cancellation_requested),
+            ))
         }
         PreparationError::UploadNeeded(services) => preparation::upload_needed(&services),
-        PreparationError::Cancelled => RpcError::unavailable(message)
-            .with_details(serde_json::json!({"preparation":{"kind":"cancelled"}})),
+        PreparationError::Cancelled => RpcError::unavailable(message).with_evidence(
+            &PreparationFailure::of(Preparation::Cancelled {
+                stage: None,
+                message: None,
+                work: None,
+            }),
+        ),
         PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
-            let mut details = serde_json::Map::new();
-            details.insert(
-                "preparation".into(),
-                serde_json::json!({"kind":"failed", "message":message}),
-            );
-            if same_again {
-                details.insert("same_again".into(), Value::Bool(true));
-            }
-            RpcError::internal(message).with_details(Value::Object(details))
+            RpcError::internal(message.clone()).with_evidence(
+                &PreparationFailure::of(Preparation::failed(message)).again(same_again),
+            )
         }
     }
 }
