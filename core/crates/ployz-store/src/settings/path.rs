@@ -485,6 +485,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_path_naming_no_setting_lists_every_setting_and_an_example() {
+        let refused = name_a_setting("web");
+        assert_eq!(
+            refused.details,
+            json!({
+                "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
+                "example": "web.replicas",
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_variable_field_lists_the_two_there_are() {
+        let refused = SettingPath::parse("web.env.KEY.nope").unwrap_err();
+        assert_eq!(
+            refused.details,
+            json!({ "valid_children": ["exported", "description"] })
+        );
+    }
+
+    #[test]
     fn only_a_services_preferred_builder_is_one() {
         let is = |path: &str| SettingPath::parse(path).unwrap().is_preferred_builder();
         assert!(is("web.preferredBuilder"));

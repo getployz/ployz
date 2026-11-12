@@ -351,6 +351,207 @@ mod tests {
         assert_eq!(Hint::from_details(&details), hints);
     }
 
+    fn written(hints: &[Hint], mut details: serde_json::Value) -> serde_json::Value {
+        Hint::into_details(hints, &mut details);
+        details
+    }
+
+    #[test]
+    fn each_hint_writes_its_own_key_and_shape() {
+        use serde_json::{Value, json};
+        let null = Value::Null;
+        assert_eq!(
+            written(&[Hint::Next("ployz deploy".into())], null.clone()),
+            json!({ "next": "ployz deploy" })
+        );
+        assert_eq!(
+            written(&[Hint::Retry("ployz rm web --yes".into())], null.clone()),
+            json!({ "retry": "ployz rm web --yes" })
+        );
+        assert_eq!(
+            written(
+                &[Hint::Undo("ployz env sync --undo s3".into())],
+                null.clone()
+            ),
+            json!({ "undo": "ployz env sync --undo s3" })
+        );
+        assert_eq!(
+            written(&[Hint::Closest("web".into())], null.clone()),
+            json!({ "did_you_mean": "web" })
+        );
+        assert_eq!(
+            written(&[Hint::valid(["web", "db"])], null.clone()),
+            json!({ "valid_children": ["web", "db"] })
+        );
+        assert_eq!(
+            written(&[Hint::Inspect("ployz ps".into())], null),
+            json!({ "inspect": ["ployz ps"] })
+        );
+    }
+
+    #[test]
+    fn hints_merge_into_the_details_already_there() {
+        use serde_json::json;
+        let details = json!({
+            "deployment": "d1",
+            "next": "ployz old",
+            "inspect": ["ployz old-inspect"],
+            "valid_children": ["old"],
+            "retry": "ployz old retry",
+        });
+        assert_eq!(
+            written(
+                &[
+                    Hint::Next("ployz deploy".into()),
+                    Hint::Inspect("ployz ps".into()),
+                    Hint::valid(["web"]),
+                ],
+                details
+            ),
+            json!({
+                "deployment": "d1",
+                "next": "ployz deploy",
+                "inspect": ["ployz ps"],
+                "valid_children": ["web"],
+                "retry": "ployz old retry",
+            })
+        );
+    }
+
+    #[test]
+    fn the_last_hint_of_a_single_valued_kind_wins_and_inspects_collect_in_order() {
+        use serde_json::json;
+        assert_eq!(
+            written(
+                &[
+                    Hint::Next("ployz one".into()),
+                    Hint::Inspect("ployz b".into()),
+                    Hint::Next("ployz two".into()),
+                    Hint::Inspect("ployz a".into()),
+                    Hint::Closest("x".into()),
+                    Hint::Closest("y".into()),
+                ],
+                json!({})
+            ),
+            json!({
+                "next": "ployz two",
+                "inspect": ["ployz b", "ployz a"],
+                "did_you_mean": "y",
+            })
+        );
+    }
+
+    #[test]
+    fn details_that_are_not_an_object_become_one_when_a_hint_is_written() {
+        use serde_json::{Value, json};
+        for before in [
+            Value::Null,
+            json!("text"),
+            json!(7),
+            json!(["next"]),
+            json!(true),
+        ] {
+            assert_eq!(
+                written(&[Hint::Next("ployz deploy".into())], before),
+                json!({ "next": "ployz deploy" })
+            );
+        }
+    }
+
+    #[test]
+    fn no_hints_leave_the_details_as_they_were() {
+        use serde_json::{Value, json};
+        for before in [Value::Null, json!("text"), json!({ "a": 1 })] {
+            assert_eq!(written(&[], before.clone()), before);
+        }
+    }
+
+    #[test]
+    fn an_empty_valid_list_is_absent_and_an_empty_valid_hint_writes_an_empty_list() {
+        use serde_json::json;
+        assert_eq!(Hint::from_details(&json!({ "valid_children": [] })), []);
+        assert_eq!(
+            Hint::from_details(&json!({ "valid_children": [1, null, {}] })),
+            []
+        );
+        assert_eq!(
+            written(&[Hint::Valid(Vec::new())], json!({})),
+            json!({ "valid_children": [] })
+        );
+    }
+
+    #[test]
+    fn details_of_the_wrong_shape_read_as_no_hint() {
+        use serde_json::{Value, json};
+        assert_eq!(Hint::from_details(&Value::Null), []);
+        assert_eq!(Hint::from_details(&json!("next")), []);
+        assert_eq!(
+            Hint::from_details(&json!({
+                "next": ["ployz deploy"],
+                "retry": 3,
+                "undo": null,
+                "did_you_mean": { "name": "web" },
+                "inspect": "ployz ps",
+                "valid_children": "web",
+            })),
+            []
+        );
+    }
+
+    #[test]
+    fn a_list_key_reads_its_strings_and_skips_the_rest() {
+        use serde_json::json;
+        assert_eq!(
+            Hint::from_details(&json!({
+                "inspect": ["ployz ps", 3, null, "ployz logs web"],
+                "valid_children": ["web", 1, "db"],
+            })),
+            [
+                Hint::Inspect("ployz ps".into()),
+                Hint::Inspect("ployz logs web".into()),
+                Hint::valid(["web", "db"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn hints_read_in_one_fixed_order_whatever_the_key_order() {
+        use serde_json::json;
+        let details = json!({
+            "valid_children": ["web"],
+            "did_you_mean": "web",
+            "undo": "ployz u",
+            "retry": "ployz r",
+            "inspect": ["ployz i"],
+            "next": "ployz n",
+            "unrelated": 1,
+        });
+        assert_eq!(
+            Hint::from_details(&details),
+            [
+                Hint::Next("ployz n".into()),
+                Hint::Inspect("ployz i".into()),
+                Hint::Retry("ployz r".into()),
+                Hint::Undo("ployz u".into()),
+                Hint::Closest("web".into()),
+                Hint::valid(["web"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_kind_a_reader_gets_one_of_replaces_another_and_inspects_replace_only_themselves() {
+        let next = Hint::Next("ployz a".into());
+        assert!(next.replaces(&Hint::Next("ployz b".into())));
+        assert!(!next.replaces(&Hint::Retry("ployz a".into())));
+        let inspect = Hint::Inspect("ployz ps".into());
+        assert!(inspect.replaces(&Hint::Inspect("ployz ps".into())));
+        assert!(!inspect.replaces(&Hint::Inspect("ployz ls".into())));
+        assert!(Hint::valid(["a"]).replaces(&Hint::valid(["b", "c"])));
+        assert!(Hint::Closest("a".into()).replaces(&Hint::Closest("b".into())));
+        assert!(!Hint::Closest("a".into()).replaces(&Hint::valid(["a"])));
+    }
+
     #[test]
     fn a_foreign_cause_stays_on_its_line() {
         let mut out = anstream::StripStream::new(Vec::new());
