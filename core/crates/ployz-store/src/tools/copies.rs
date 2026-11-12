@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{CopiesAnswer, OperationsAnswer, VolumeCopies};
 use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, store};
@@ -21,7 +22,7 @@ use crate::{
 fn volume_show(cx: &Cx<'_>, volume: &VolumeName) -> Call {
     let mut input = cx.place_args();
     input.insert("volume".into(), volume.as_str().into());
-    Call::new("volume_show", Value::Object(input))
+    Call::to(ToolId::VolumeShow, Value::Object(input))
 }
 
 /// The Volume the call names, read alone.
@@ -80,7 +81,7 @@ impl Tool for VolumeShow {
     const NAME: &'static str = "volume_show";
     const DESCRIPTION: &'static str = "Where a Volume's data is: its writable copy, its mirror and last sync, and recent runs with how each ended.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata" })
@@ -203,7 +204,7 @@ impl Tool for VolumeMirror {
     const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "server": "db-2", "wait_seconds": 120 })
@@ -269,7 +270,7 @@ impl Tool for VolumeMirror {
                     "It already has a mirror on {}; remove it first",
                     mirror.name.as_str()
                 ))
-                .with_next(Call::new("volume_mirror_remove", Value::Object(input)))
+                .with_next(Call::to(ToolId::VolumeMirrorRemove, Value::Object(input)))
                 .into());
             }
             (Some(to), None) => VolumeRun::Mirror { to },
@@ -304,7 +305,7 @@ impl Tool for VolumeMirrorRemove {
         "Delete a Volume's mirror; if it is the last copy, its data goes too.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata" })
@@ -356,7 +357,7 @@ impl Tool for VolumeMove {
     const DESCRIPTION: &'static str = "Put a Volume and the Service using it on server to. The Service is down only for the final copy; the old server keeps a mirror. If a move stopped, the same call continues it.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "to": "db-2", "wait_seconds": WAIT_CAP_SECONDS })
@@ -411,7 +412,7 @@ impl Tool for VolumeRelease {
     const DESCRIPTION: &'static str = "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "wait_seconds": 120 })
@@ -466,7 +467,7 @@ impl Tool for VolumeRestore {
     const DESCRIPTION: &'static str = "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down until the next deploy.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "from": "db-2", "wait_seconds": 120 })
@@ -504,7 +505,7 @@ fn handed_over(stop: Stop, mut moving: Map<String, Value>) -> Stop {
         .and_then(|details| details.remove("move_to"));
     if let Some(Value::String(to)) = to {
         moving.insert("to".into(), to.into());
-        refusal.retry = Call::new("volume_move", Value::Object(moving));
+        refusal.retry = Call::to(ToolId::VolumeMove, Value::Object(moving));
     }
     if refusal.details.as_object().is_some_and(Map::is_empty) {
         refusal.details = Value::Null;

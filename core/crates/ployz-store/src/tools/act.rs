@@ -3,6 +3,7 @@
 
 use serde_json::{Value, json};
 
+use super::ToolId;
 use super::cloud::{Operation, OperationsAnswer, ServerReport, ServerState, ServersAnswer};
 use super::machine::{Cx, Stop};
 use super::refusal::{Call, Refusal};
@@ -23,7 +24,7 @@ pub(crate) fn server_show(server: Option<&ServerName>) -> Call {
         Some(server) => json!({ "server": server.as_str() }),
         None => json!({}),
     };
-    Call::new("server_show", input)
+    Call::to(ToolId::ServerShow, input)
 }
 
 /// The Servers a name is checked against. Unread because no Server answers, the

@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::ToolId;
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::step::{Ask, CloudQuery, DashboardPage, Gate};
@@ -78,7 +79,7 @@ impl Tool for EnvironmentShow {
                 "configs": [],
                 "staged": 0,
                 "latest_deployment": null,
-                "next": Call::new("project_create", json!({})),
+                "next": Call::to(ToolId::ProjectCreate, json!({})),
             }));
         }
         let services = cx.view::<ServicesQuery>(answers.next())?;
@@ -208,7 +209,7 @@ impl Tool for EnvironmentPr {
                     "No repository is connected to this Project yet",
                     "repository",
                 )
-                .with_next(Call::new("github_connect", json!({})))
+                .with_next(Call::to(ToolId::GithubConnect, json!({})))
                 .into());
             }
             (None, plans) => {
@@ -325,7 +326,7 @@ impl Tool for EnvironmentSetup {
     const NAME: &'static str = "environment_setup";
     const DESCRIPTION: &'static str = "What this Environment still needs before it can deploy: servers, a GitHub connection, a cluster domain.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "environment": "staging" })

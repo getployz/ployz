@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use super::ToolId;
 use super::act::{resolve, roster, servers};
 use super::cloud::{MetricEvent, MetricsAnswer};
 use super::machine::{Cx, Effect, Stop, Tool, at, place_of, store};
@@ -97,7 +98,7 @@ impl Tool for ServiceMetrics {
     const NAME: &'static str = "service_metrics";
     const DESCRIPTION: &'static str = "A Service's CPU, memory, network and disk (now, avg, peak) and its OOM kills, exits and restarts. Default: the last hour.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("deployment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::DeploymentShow);
 
     fn example() -> Value {
         json!({ "service": "web", "deployment": 12 })
@@ -155,8 +156,8 @@ impl Tool for ServiceMetrics {
                         Refusal::not_found("No deployed Service by that name here")
                             .with_did_you_mean(did_you_mean(self.service.as_str(), names()))
                             .with_valid(names())
-                            .with_next(Call::new(
-                                "environment_show",
+                            .with_next(Call::to(
+                                ToolId::EnvironmentShow,
                                 place_of(&namespace.environment),
                             )),
                     )

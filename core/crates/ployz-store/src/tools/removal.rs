@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use super::ToolId;
 use super::act::{server_show, servers};
 use super::cloud::ServersAnswer;
 use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, store};
@@ -31,10 +32,10 @@ enum Target {
 }
 
 impl Target {
-    const fn tool(self) -> &'static str {
+    const fn tool(self) -> ToolId {
         match self {
-            Self::Environment => EnvironmentRemove::NAME,
-            Self::Project => ProjectRemove::NAME,
+            Self::Environment => ToolId::EnvironmentRemove,
+            Self::Project => ToolId::ProjectRemove,
         }
     }
 
@@ -157,7 +158,7 @@ fn refused(target: Target, error: RpcError, call: &Call, writes: Writes) -> Refu
             "version".into(),
             offer.get("version").cloned().unwrap_or(Value::Null),
         );
-        refusal = refusal.with_detail("every_copy", json!(Call::new(target.tool(), input.into())));
+        refusal = refusal.with_detail("every_copy", json!(Call::to(target.tool(), input.into())));
     }
     if let Some(waiting) = details.get("waiting_on") {
         refusal = refusal.with_detail("waiting_on", waiting.clone());
@@ -258,8 +259,8 @@ fn remove(
     if let Some(first) = left.first() {
         shown.insert(
             "next".into(),
-            json!(Call::new(
-                "deployment_show",
+            json!(Call::to(
+                ToolId::DeploymentShow,
                 json!({
                     "project": command.project,
                     "environment": first.environment.name,
