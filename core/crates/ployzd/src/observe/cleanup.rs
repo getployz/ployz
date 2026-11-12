@@ -37,13 +37,12 @@ use ployz_core::ContainerId;
 
 use super::{
     layout::{
-        CONTAINERS_DIR, ENV_FILE, ENV_TEMP_FILE, EXITS_FILE, EXITS_TEMP_FILE, FIRST_SET_FILE,
-        FIRST_SET_TEMP_FILE, GAPS_FILE, LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE,
-        METRICS_DIR, NANOS_PER_SEC, RAW_DIR, ROLLUP_DIR, SCANNED_FILE, SCANNED_TEMP_FILE,
-        SegmentName, StoreRoot, VERSION_DIR, run_exits,
+        CONTAINERS_DIR, EXITS_FILE, LogFileName, METRICS_DIR, NANOS_PER_SEC, RAW_DIR, ROLLUP_DIR,
+        SegmentName, StoreRoot, VERSION_DIR, run_exits, store_file_names,
     },
     metrics::policy::RETENTION,
 };
+use crate::filesystem::temporary_path;
 
 const GIB: u64 = 1 << 30;
 
@@ -471,24 +470,13 @@ fn scan_container(
     })
 }
 
-const STORE_FILES: [&str; 12] = [
-    META_FILE,
-    META_TEMP_FILE,
-    ENV_FILE,
-    ENV_TEMP_FILE,
-    GAPS_FILE,
-    EXITS_FILE,
-    EXITS_TEMP_FILE,
-    LINKING_FILE,
-    SCANNED_FILE,
-    SCANNED_TEMP_FILE,
-    FIRST_SET_FILE,
-    FIRST_SET_TEMP_FILE,
-];
-
 fn is_store_file(name: &CString) -> bool {
     let name = name.to_bytes();
-    name == b"." || name == b".." || STORE_FILES.iter().any(|file| file.as_bytes() == name)
+    name == b"."
+        || name == b".."
+        || store_file_names()
+            .iter()
+            .any(|file| file.as_bytes() == name)
 }
 
 /// Drops the exits in `dir` before `before`, in Unix nanoseconds, and any
@@ -524,7 +512,7 @@ fn prune_exits(dir: &Path, before: i64) -> io::Result<()> {
         serde_json::to_writer(&mut kept_lines, &exit).map_err(io::Error::other)?;
         kept_lines.push(b'\n');
     }
-    let temp = dir.join(EXITS_TEMP_FILE);
+    let temp = temporary_path(&path);
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -586,8 +574,12 @@ fn remove_container_dir(containers_fd: RawFd, name: &CString) -> nix::Result<boo
         DIR_FLAGS,
         Mode::empty(),
     )?;
-    for file in STORE_FILES {
-        match unlinkat(Some(dir.as_raw_fd()), file, UnlinkatFlags::NoRemoveDir) {
+    for file in store_file_names() {
+        match unlinkat(
+            Some(dir.as_raw_fd()),
+            file.as_str(),
+            UnlinkatFlags::NoRemoveDir,
+        ) {
             Ok(()) | Err(Errno::ENOENT) => {}
             Err(error) => return Err(error),
         }

@@ -2,7 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, chown},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// Mode of the Machine API socket, whether systemd or ployzd binds it.
@@ -10,8 +10,13 @@ pub(crate) const MACHINE_API_SOCKET_MODE: u32 = 0o660;
 /// Mode of the Ployz runtime and data directories.
 pub(crate) const PLOYZ_DIR_MODE: u32 = 0o750;
 
+/// The file [`atomic_write`] writes before it renames it over `path`.
+pub(crate) fn temporary_path(path: &Path) -> PathBuf {
+    path.with_extension("tmp")
+}
+
 pub fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
-    let temporary = path.with_extension("tmp");
+    let temporary = temporary_path(path);
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
