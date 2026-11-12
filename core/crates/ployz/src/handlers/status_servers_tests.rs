@@ -2396,3 +2396,129 @@ fn a_check_that_could_not_see_every_server_is_partial() {
         "status skips the copy check on purpose while a deploy runs"
     );
 }
+
+fn one_of_each_attention() -> Vec<Attention> {
+    let [one, ..] = machines();
+    let copy = || NotServingCopy {
+        machine: "machine-1".to_owned(),
+        container: container_id('1'),
+        rotation: CopyRotation::In,
+        runtime: ContainerRuntimeObservation::Exited { code: 143 },
+        run: Some(ContainerRun {
+            restart_count: 2,
+            started_at_unix_nanos: 5,
+        }),
+    };
+    vec![
+        Attention {
+            reason: "no_server_answers".to_owned(),
+            message: "None answered.".to_owned(),
+            deployment: None,
+            next: None,
+            subject: Some(Subject::Unanswered {
+                servers: vec!["machine-1".to_owned(), "machine-2".to_owned()],
+            }),
+        },
+        Attention {
+            reason: "not_found".to_owned(),
+            message: "No such Project.".to_owned(),
+            deployment: None,
+            next: Some("ployz link --project PROJECT".to_owned()),
+            subject: None,
+        },
+        Attention {
+            reason: "deployment_failed".to_owned(),
+            message: "Deployment 4 did not complete".to_owned(),
+            deployment: Some(ployz_store::DeploymentId::parse("a".repeat(32)).unwrap()),
+            next: Some("ployz deploy status".to_owned()),
+            subject: None,
+        },
+        Attention {
+            reason: "copies_not_serving".to_owned(),
+            message: "Serving 0 of 1 copy.".to_owned(),
+            deployment: None,
+            next: Some("ployz logs web".to_owned()),
+            subject: Some(Subject::NotServing {
+                service: qualified("app", "web"),
+                serving: 0,
+                wanted: 1,
+                copies: vec![copy()],
+            }),
+        },
+        Attention {
+            reason: "copies_left_pending".to_owned(),
+            message: "1 copy takes no traffic.".to_owned(),
+            deployment: None,
+            next: Some("ployz deploy web".to_owned()),
+            subject: Some(Subject::LeftPending {
+                service: qualified("app", "web"),
+                copies: vec![copy()],
+            }),
+        },
+        down_attention(&listed(&[], &[&one])[0]),
+        Attention {
+            reason: "disk_full".to_owned(),
+            message: "Its disk is nearly full.".to_owned(),
+            deployment: None,
+            next: None,
+            subject: Some(Subject::DiskFull {
+                machine: one.name.clone(),
+                free_bytes: 30_000_000,
+            }),
+        },
+        no_copies(qualified("app", "web"), false, |words| words.join(" ")),
+        not_picked_up(
+            qualified("app", "web"),
+            vec!["machine-1".to_owned(), "machine-2".to_owned()],
+        ),
+        stale_address(
+            qualified("app", "web"),
+            "machine-1".to_owned(),
+            BTreeSet::from([ContainerAddress(Ipv4Addr::new(10, 210, 0, 1))]),
+        ),
+    ]
+}
+
+#[test]
+fn every_attention_and_subject_serializes_to_these_bytes() {
+    let attention = one_of_each_attention();
+    let bytes = attention
+        .iter()
+        .map(|attention| serde_json::to_string(attention).unwrap())
+        .collect::<Vec<_>>();
+    let copy = r#"{"machine":"machine-1","container":"%s","rotation":"in","runtime":{"state":"exited","code":143},"run":{"restart_count":2,"started_at_unix_nanos":5}}"#.replace("%s", &"1".repeat(64));
+    assert_eq!(
+        bytes,
+        [
+            r#"{"reason":"no_server_answers","message":"None answered.","servers":["machine-1","machine-2"]}"#.to_owned(),
+            r#"{"reason":"not_found","message":"No such Project.","next":"ployz link --project PROJECT"}"#.to_owned(),
+            r#"{"reason":"deployment_failed","message":"Deployment 4 did not complete","deployment":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","next":"ployz deploy status"}"#.to_owned(),
+            format!(r#"{{"reason":"copies_not_serving","message":"Serving 0 of 1 copy.","next":"ployz logs web","service":"app/web","serving":0,"wanted":1,"copies":[{copy}]}}"#),
+            format!(r#"{{"reason":"copies_left_pending","message":"1 copy takes no traffic.","next":"ployz deploy web","service":"app/web","copies":[{copy}]}}"#),
+            r#"{"reason":"machine_down","message":"Down. Its copies serve again once it's back.","machine":"machine-1"}"#.to_owned(),
+            r#"{"reason":"disk_full","message":"Its disk is nearly full.","machine":"machine-1","free_bytes":30000000}"#.to_owned(),
+            r#"{"reason":"no_copies","message":"No copies running. For a global Service, no Server matches its placement.","next":"deploy web","service":"app/web"}"#.to_owned(),
+            r#"{"reason":"routes_not_acked","message":"machine-1, machine-2 have not picked up the new copies. Check their network.","service":"app/web","machines":["machine-1","machine-2"]}"#.to_owned(),
+            r#"{"reason":"routes_stale_address","message":"machine-1 routes a copy to 10.210.0.1, which its owner does not report. Check its network.","service":"app/web","machine":"machine-1","addresses":["10.210.0.1"]}"#.to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn every_attention_renders_under_the_label_its_subject_gives() {
+    assert_eq!(
+        super::super::link::rendered(one_of_each_attention()),
+        "organization     ?\n\
+         signed in as     local\n\
+         needs attention  None answered.\n\
+         needs attention  No such Project.\n\
+         needs attention  Deployment 4 did not complete\n\
+         web              Serving 0 of 1 copy.\n\
+         web              1 copy takes no traffic.\n\
+         machine-1        Down. Its copies serve again once it's back.\n\
+         machine-1        Its disk is nearly full.\n\
+         web              No copies running. For a global Service, no Server matches its placement.\n\
+         web              machine-1, machine-2 have not picked up the new copies. Check their network.\n\
+         web              machine-1 routes a copy to 10.210.0.1, which its owner does not report. Check its network.\n"
+    );
+}
