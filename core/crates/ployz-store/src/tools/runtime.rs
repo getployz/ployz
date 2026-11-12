@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::LineCap;
+use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Health, LogsAnswer, OperationsAnswer,
@@ -37,8 +38,8 @@ fn deployed<'a>(
         Refusal::not_found("No deployed Service by that name here")
             .with_did_you_mean(did_you_mean(service.as_str(), names()))
             .with_valid(names())
-            .with_next(Call::new(
-                "environment_show",
+            .with_next(Call::to(
+                ToolId::EnvironmentShow,
                 place_of(&namespace.environment),
             ))
             .into()
@@ -80,7 +81,7 @@ impl Tool for ServiceState {
     const NAME: &'static str = "service_status";
     const DESCRIPTION: &'static str = "A Service's state as the canvas shows it, and its containers per server: health, restarts, image, Deployment, latest restart, start or stop.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "service": "web" })
@@ -120,8 +121,8 @@ impl Tool for ServiceState {
                         names.iter().map(String::as_str),
                     ))
                     .with_valid(names.iter().map(String::as_str))
-                    .with_next(Call::new(
-                        "environment_show",
+                    .with_next(Call::to(
+                        ToolId::EnvironmentShow,
                         place_of(&namespace.environment),
                     ))
                     .into());
@@ -249,7 +250,7 @@ impl Tool for ServiceLogs {
     const NAME: &'static str = "service_logs";
     const DESCRIPTION: &'static str = "A Service's recent logs: at most 200 lines, 16 KB and 500 B a line, secrets shown by name. With deployment, that Deployment's containers, or its build log if the build failed.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("deployment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::DeploymentShow);
 
     fn example() -> Value {
         json!({ "service": "web", "deployment": 12, "lines": 50 })
@@ -358,7 +359,7 @@ fn service_act(
             only,
             verb,
         },
-        read: Call::new("service_status", Value::Object(read)),
+        read: Call::to(ToolId::ServiceState, Value::Object(read)),
     };
     operate(cx, run, key, wait_seconds)
 }
@@ -393,7 +394,7 @@ macro_rules! service_act_tool {
             const DESCRIPTION: &'static str = $description;
             const EFFECT: Effect = Effect::Change;
             const GATE: Gate = $gate;
-            const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+            const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
             fn example() -> Value {
                 json!({ "service": "web", "wait_seconds": 60 })

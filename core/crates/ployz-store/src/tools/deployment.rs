@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::ToolId;
 use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, store};
 use super::refusal::{Call, Refusal};
 use super::release::version_for_loss;
@@ -137,8 +138,8 @@ fn diagnose(view: &DeploymentView, cx: &Cx<'_>) -> Option<[Call; 2]> {
     input.insert("deployment".into(), view.deployment.number.into());
     let input = Value::Object(input);
     Some([
-        Call::new("service_logs", input.clone()),
-        Call::new("service_metrics", input),
+        Call::to(ToolId::ServiceLogs, input.clone()),
+        Call::to(ToolId::ServiceMetrics, input),
     ])
 }
 
@@ -201,7 +202,7 @@ fn follow(cx: &Cx<'_>, number: u64) -> Call {
     let mut input = cx.place_args();
     input.insert("deployment".into(), number.into());
     input.insert("wait_seconds".into(), 120.into());
-    Call::new("deployment_show", Value::Object(input))
+    Call::to(ToolId::DeploymentShow, Value::Object(input))
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -252,7 +253,7 @@ impl Tool for DeploymentList {
             }
             object.insert(
                 "next".into(),
-                json!([Call::new(Self::NAME, Value::Object(input))]),
+                json!([Call::to(ToolId::DeploymentList, Value::Object(input))]),
             );
         }
         Ok(listed)

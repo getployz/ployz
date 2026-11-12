@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::LineCap;
+use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, server_show, servers};
 use super::cloud::{LogsAnswer, Operation, OperationsAnswer, RunState, ServersAnswer, UnknownEnd};
 use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, store};
@@ -459,8 +460,8 @@ impl Tool for ServerClean {
             return Err(Refusal::conflict(
                 "That is no leftover: an Environment owns it; it is not cleaned here",
             )
-            .with_next(Call::new(
-                "environment_show",
+            .with_next(Call::to(
+                ToolId::EnvironmentShow,
                 json!({ "project": owner.project, "environment": owner.environment }),
             ))
             .into());

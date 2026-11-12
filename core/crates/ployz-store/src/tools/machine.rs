@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
 
+use super::ToolId;
 use super::cloud::Operation;
 use super::refusal::{Call, Refusal, ToolResult, Writes, from_store};
 use super::schema;
@@ -111,7 +112,7 @@ pub(crate) trait Tool: DeserializeOwned + JsonSchema {
     const GATE: Gate = Gate::Never;
     const EFFECT: Effect;
     /// The Store read a local call is pointed to when this tool needs Cloud.
-    const LOCAL_NEXT: Option<&'static str> = None;
+    const LOCAL_NEXT: Option<ToolId> = None;
 
     /// A complete input that decodes.
     fn example() -> Value;
@@ -142,7 +143,7 @@ pub(crate) struct Cx<'run> {
     place: &'run Place,
     call: Call,
     call_key: &'run str,
-    local_next: Option<&'static str>,
+    local_next: Option<ToolId>,
 }
 
 impl Cx<'_> {
@@ -162,7 +163,7 @@ impl Cx<'_> {
     /// A local call's next: the Store read, in the same place.
     fn local_next(&self) -> Option<Call> {
         self.local_next
-            .map(|tool| Call::new(tool, self.place_args().into()))
+            .map(|tool| Call::to(tool, self.place_args().into()))
     }
 
     /// The Environment `project` and `environment` name, else the place's.
@@ -432,12 +433,12 @@ impl Cx<'_> {
         let tool = match self.call.input.get("service") {
             Some(service) => {
                 next.insert("service".into(), service.clone());
-                "service_inspect"
+                ToolId::ServiceInspect
             }
-            None => "environment_show",
+            None => ToolId::EnvironmentShow,
         };
         Refusal::conflict("The Environment changed since you read it; read it again before writing")
-            .with_next(Call::new(tool, next.into()))
+            .with_next(Call::to(tool, next.into()))
     }
 
     fn recorded(&mut self, kind: Kind) -> Result<Option<Vec<Result<Value, RpcError>>>, Stop> {
@@ -525,7 +526,7 @@ pub(crate) struct Entry {
     pub(crate) def: fn() -> ToolDef,
     pub(crate) example: fn() -> Value,
     run: fn(&mut Cx<'_>, &Value) -> Result<Value, Stop>,
-    local_next: Option<&'static str>,
+    local_next: Option<ToolId>,
 }
 
 pub(crate) const fn entry<T: Tool>() -> Entry {

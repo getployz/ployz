@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::ToolId;
 use super::environment::{GithubAnswer, REPOSITORY};
 use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::{Call, Refusal};
@@ -117,7 +118,7 @@ fn missing(repository: &RepositoryName, path: Option<&str>, git_ref: &str) -> Re
         None => json!({ "repository": repository, "ref": git_ref }),
     };
     let mut refusal = Refusal::not_found("No file or directory at that path")
-        .with_next(Call::new(GithubLs::NAME, input));
+        .with_next(Call::to(ToolId::GithubLs, input));
     refusal.field = Some("path".to_owned());
     refusal
 }
