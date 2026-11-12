@@ -3,14 +3,13 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{RpcError, RpcErrorCode};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::ToolId;
 use super::act::{server_show, servers};
 use super::cloud::ServersAnswer;
-use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, store};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal, Writes, from_store};
 use super::step::{AcceptedLoss, DashboardPage, Fix, Gate, ServerName};
 use crate::catalog::NODE_NAME;
@@ -274,30 +273,28 @@ fn remove(
 
 /// The Project a call names, else the one it is in.
 fn project(cx: &Cx<'_>, named: Option<&ProjectName>) -> Result<ProjectName, Stop> {
-    cx.scope(named, None)
+    cx.scope_in(named, None)
         .project
         .ok_or_else(|| Refusal::invalid("Name the Project", "project").into())
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvironmentRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    environment: EnvironmentName,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Vec<String>")]
-    accept_volume_loss: Vec<VolumeName>,
-    #[serde(default)]
-    #[schemars(with = "Vec<String>")]
-    every_copy: Vec<VolumeName>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
-    wait_seconds: u32,
+tool_input! {
+    pub(crate) struct EnvironmentRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        environment: EnvironmentName,
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        project: Option<ProjectName>,
+        #[serde(default)]
+        #[schemars(with = "Vec<String>")]
+        accept_volume_loss: Vec<VolumeName>,
+        #[serde(default)]
+        #[schemars(with = "Vec<String>")]
+        every_copy: Vec<VolumeName>,
+        #[serde(default)]
+        version: Option<String>,
+        @wait,
+    }
 }
 
 impl Tool for EnvironmentRemove {
@@ -340,20 +337,18 @@ impl Tool for EnvironmentRemove {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ProjectRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    project: ProjectName,
-    #[serde(default)]
-    accept_volume_loss: Vec<String>,
-    #[serde(default)]
-    every_copy: Vec<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
-    wait_seconds: u32,
+tool_input! {
+    pub(crate) struct ProjectRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        project: ProjectName,
+        #[serde(default)]
+        accept_volume_loss: Vec<String>,
+        #[serde(default)]
+        every_copy: Vec<String>,
+        #[serde(default)]
+        version: Option<String>,
+        @wait,
+    }
 }
 
 impl Tool for ProjectRemove {

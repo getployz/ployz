@@ -13,6 +13,7 @@ use ts_rs::TS;
 
 use super::ToolId;
 use super::cloud::Operation;
+use super::input::HasPlace;
 use super::refusal::{Call, Refusal, ToolResult, Writes, from_store};
 use super::schema;
 use super::step::{
@@ -166,8 +167,13 @@ impl Cx<'_> {
             .map(|tool| Call::to(tool, self.place_args().into()))
     }
 
+    /// The Environment `place` names, else the place the call is in.
+    pub(crate) fn scope(&self, place: &impl HasPlace) -> EnvironmentRef {
+        self.scope_in(place.project(), place.environment())
+    }
+
     /// The Environment `project` and `environment` name, else the place's.
-    pub(crate) fn scope(
+    pub(crate) fn scope_in(
         &self,
         project: Option<&ProjectName>,
         environment: Option<&EnvironmentName>,

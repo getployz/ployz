@@ -4,20 +4,18 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{MachineId, RpcErrorCode};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ToolId;
-use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, store};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::release::version_for_loss;
-use super::step::{Gate, RequestKey};
-use crate::catalog::NODE_NAME;
+use super::step::Gate;
 use crate::{
     Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentWarning, DeploymentsQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start, VolumeName,
+    DeploymentWarning, DeploymentsQuery, EnvironmentRef, EnvironmentSummary, NodeOutcome,
+    NumberedDeploymentQuery, Outcome, Retry, RowState, Start, VolumeName,
 };
 
 /// The Deployment `number` names, or the latest numbered one when it names none,
@@ -205,22 +203,15 @@ fn follow(cx: &Cx<'_>, number: u64) -> Call {
     Call::to(ToolId::DeploymentShow, Value::Object(input))
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeploymentList {
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 100))]
-    limit: Option<usize>,
-    #[serde(default)]
-    cursor: Option<String>,
-    /// Project name. Omit for the one you are in.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DeploymentList {
+        #[serde(default)]
+        #[schemars(range(min = 1, max = 100))]
+        limit: Option<usize>,
+        #[serde(default)]
+        cursor: Option<String>,
+        @place(here),
+    }
 }
 
 impl Tool for DeploymentList {
@@ -234,7 +225,7 @@ impl Tool for DeploymentList {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let page = cx.one(&DeploymentsQuery {
             environment: scope,
             limit: self.limit,
@@ -260,25 +251,15 @@ impl Tool for DeploymentList {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeploymentShow {
-    /// The Deployment's number. Omit for the latest.
-    #[serde(default)]
-    #[schemars(range(min = 1))]
-    deployment: Option<u64>,
-    /// Wait up to this long for the outcome.
-    #[serde(default)]
-    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
-    wait_seconds: u32,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DeploymentShow {
+        /// The Deployment's number. Omit for the latest.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        deployment: Option<u64>,
+        @wait["Wait up to this long for the outcome."],
+        @place(named),
+    }
 }
 
 impl Tool for DeploymentShow {
@@ -291,7 +272,7 @@ impl Tool for DeploymentShow {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let (query, mut view) = find(cx, scope, self.deployment)?;
         let mut attempt = 0;
         while view.deployment.in_flight {
@@ -324,21 +305,14 @@ impl Tool for DeploymentShow {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeploymentCancel {
-    /// The Deployment's number. Omit for the latest.
-    #[serde(default)]
-    #[schemars(range(min = 1))]
-    deployment: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DeploymentCancel {
+        /// The Deployment's number. Omit for the latest.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        deployment: Option<u64>,
+        @place(named),
+    }
 }
 
 impl Tool for DeploymentCancel {
@@ -352,7 +326,7 @@ impl Tool for DeploymentCancel {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let (_, view) = find(cx, scope, self.deployment)?;
         if !view.deployment.in_flight {
             return Err(Refusal::conflict("That Deployment already ended").into());
@@ -368,29 +342,20 @@ impl Tool for DeploymentCancel {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeploymentRetry {
-    /// The Deployment's number. Omit for the latest.
-    #[serde(default)]
-    #[schemars(range(min = 1))]
-    deployment: Option<u64>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-    request_key: Option<RequestKey>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(with = "Vec<String>")]
-    accept_volume_loss: Vec<VolumeName>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DeploymentRetry {
+        /// The Deployment's number. Omit for the latest.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        deployment: Option<u64>,
+        @key,
+        #[serde(default)]
+        version: Option<String>,
+        #[serde(default)]
+        #[schemars(with = "Vec<String>")]
+        accept_volume_loss: Vec<VolumeName>,
+        @place(named),
+    }
 }
 
 impl Tool for DeploymentRetry {
@@ -405,7 +370,7 @@ impl Tool for DeploymentRetry {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         version_for_loss(&self.accept_volume_loss, self.version.as_ref())?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let id: DeploymentId = cx.mint(self.request_key)?;
         let number = match self.deployment {
             Some(number) => Some(number),
@@ -489,21 +454,14 @@ fn retried(
     })
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeploymentStart {
-    /// The Deployment's number. Omit for the latest.
-    #[serde(default)]
-    #[schemars(range(min = 1))]
-    deployment: Option<u64>,
-    /// Project name. Omit for the one you are in.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct DeploymentStart {
+        /// The Deployment's number. Omit for the latest.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        deployment: Option<u64>,
+        @place(here),
+    }
 }
 
 impl Tool for DeploymentStart {
@@ -516,7 +474,7 @@ impl Tool for DeploymentStart {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let (_, queued) = find(cx, scope, self.deployment)?;
         let started = cx.write(&Start {
             deployment: queued.deployment.id.clone(),

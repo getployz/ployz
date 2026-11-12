@@ -5,22 +5,19 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ToolId;
+use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, at};
 use super::refusal::Call;
-use super::step::RequestKey;
 use crate::catalog::NODE_NAME;
 use crate::{CreateProject, EnvironmentId, ProjectId, ProjectName, RenameProject};
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ProjectCreate {
-    /// The new Project's name, unique in the Organization.
-    #[schemars(with = "String", pattern(NODE_NAME), example = &"docs")]
-    name: ProjectName,
-    /// Any id you choose. A call that repeats a key gets the Project the first call made, not a second one.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-    request_key: Option<RequestKey>,
+tool_input! {
+    pub(crate) struct ProjectCreate {
+        /// The new Project's name, unique in the Organization.
+        #[schemars(with = "String", pattern(NODE_NAME), example = &"docs")]
+        name: ProjectName,
+        @key["Any id you choose. A call that repeats a key gets the Project the first call made, not a second one."],
+    }
 }
 
 impl Tool for ProjectCreate {

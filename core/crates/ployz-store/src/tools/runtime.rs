@@ -5,8 +5,6 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use ployz_core::ServiceName;
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::LineCap;
@@ -15,7 +13,8 @@ use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Health, LogsAnswer, OperationsAnswer,
 };
-use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, place_of, store};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, at, place_of, store};
 use super::refusal::{Call, Refusal};
 use super::status::{Container, ServiceFacts, Watch, service_status};
 use super::step::{
@@ -62,19 +61,14 @@ const fn container(report: &ContainerReport) -> Container {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceState {
-    /// Omit for every Service here.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    service: Option<ServiceName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceState {
+        /// Omit for every Service here.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        service: Option<ServiceName>,
+        @place,
+    }
 }
 
 impl Tool for ServiceState {
@@ -89,7 +83,7 @@ impl Tool for ServiceState {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let mut answers = cx
             .read(vec![
                 store(&ServicesQuery {
@@ -219,31 +213,26 @@ impl Tool for ServiceState {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceLogs {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    service: ServiceName,
-    /// Deployment number.
-    #[serde(default)]
-    #[schemars(range(min = 1))]
-    deployment: Option<u64>,
-    /// Only from this server.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    server: Option<ServerName>,
-    #[serde(default)]
-    #[schemars(with = "u16", range(min = 1, max = 200))]
-    lines: LineCap,
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 10080))]
-    since_minutes: Option<u32>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceLogs {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        service: ServiceName,
+        /// Deployment number.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        deployment: Option<u64>,
+        /// Only from this server.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        server: Option<ServerName>,
+        #[serde(default)]
+        #[schemars(with = "u16", range(min = 1, max = 200))]
+        lines: LineCap,
+        #[serde(default)]
+        #[schemars(range(min = 1, max = 10080))]
+        since_minutes: Option<u32>,
+        @place,
+    }
 }
 
 impl Tool for ServiceLogs {
@@ -258,7 +247,7 @@ impl Tool for ServiceLogs {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let mut asks = vec![store(&NamespaceQuery {
             environment: scope.clone(),
         })?];
@@ -329,7 +318,7 @@ fn service_act(
     environment: Option<&EnvironmentName>,
 ) -> Result<Value, Stop> {
     cx.cloud_only()?;
-    let scope = cx.scope(project, environment);
+    let scope = cx.scope_in(project, environment);
     let mut asks = vec![store(&NamespaceQuery { environment: scope })?];
     if server.is_some() {
         asks.push(servers());
@@ -366,27 +355,18 @@ fn service_act(
 
 macro_rules! service_act_tool {
     ($tool:ident, $name:literal, $verb:expr, $gate:expr, $description:literal) => {
-        #[derive(Deserialize, JsonSchema)]
-        #[serde(deny_unknown_fields)]
-        pub(crate) struct $tool {
-            #[schemars(with = "String", pattern(NODE_NAME))]
-            service: ServiceName,
-            /// Only on this server.
-            #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-            server: Option<ServerName>,
-            #[serde(default)]
-            #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
-            wait_seconds: u32,
-            #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
-            request_key: Option<RequestKey>,
-            #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-            project: Option<ProjectName>,
-            #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-            environment: Option<EnvironmentName>,
+        tool_input! {
+            pub(crate) struct $tool {
+                #[schemars(with = "String", pattern(NODE_NAME))]
+                service: ServiceName,
+                /// Only on this server.
+                #[serde(default)]
+                #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+                server: Option<ServerName>,
+                @wait,
+                @key,
+                @place,
+            }
         }
 
         impl Tool for $tool {
