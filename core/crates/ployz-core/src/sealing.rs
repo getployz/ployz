@@ -1,11 +1,10 @@
 use std::fmt;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use zeroize::Zeroizing;
 
-use crate::ValueError;
+use crate::value::base64_newtype;
 
 /// Public half of a Cluster's Sealing Key.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
@@ -25,36 +24,18 @@ impl SealingPublicKey {
     }
 }
 
-impl fmt::Display for SealingPublicKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&STANDARD.encode(self.0))
-    }
-}
-
 impl fmt::Debug for SealingPublicKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "SealingPublicKey({self})")
     }
 }
 
-impl TryFrom<String> for SealingPublicKey {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        STANDARD
-            .decode(&value)
-            .ok()
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-            .map(Self)
-            .ok_or_else(|| ValueError::new("Sealing public key", value, "32 bytes in base64"))
-    }
-}
-
-impl From<SealingPublicKey> for String {
-    fn from(value: SealingPublicKey) -> Self {
-        value.to_string()
-    }
-}
+base64_newtype!(
+    SealingPublicKey,
+    "Sealing public key",
+    "32 bytes in base64",
+    Fixed(32)
+);
 
 /// A Cluster's Sealing Key private half, sealed by the issuing member to one
 /// joiner's WireGuard key. Only that joiner can open it.
@@ -81,22 +62,7 @@ impl fmt::Debug for SealedSealingKey {
     }
 }
 
-impl TryFrom<String> for SealedSealingKey {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        STANDARD
-            .decode(&value)
-            .map(Self)
-            .map_err(|_| ValueError::new("sealed Sealing Key", value, "base64"))
-    }
-}
-
-impl From<SealedSealingKey> for String {
-    fn from(value: SealedSealingKey) -> Self {
-        STANDARD.encode(value.0)
-    }
-}
+base64_newtype!(SealedSealingKey, "sealed Sealing Key", "base64", Any);
 
 /// The Sealing Key wrapped under a recovery code. Cloud stores it; only the
 /// code opens it.
@@ -123,22 +89,7 @@ impl fmt::Debug for SealingKeyBackup {
     }
 }
 
-impl TryFrom<String> for SealingKeyBackup {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        STANDARD
-            .decode(&value)
-            .map(Self)
-            .map_err(|_| ValueError::new("Sealing Key backup", value, "base64"))
-    }
-}
-
-impl From<SealingKeyBackup> for String {
-    fn from(value: SealingKeyBackup) -> Self {
-        STANDARD.encode(value.0)
-    }
-}
+base64_newtype!(SealingKeyBackup, "Sealing Key backup", "base64", Any);
 
 /// What a founder of an Organization's next Cluster recovers instead of
 /// generating a Sealing Key: the public key its sealed values need, and the
@@ -264,6 +215,8 @@ pub enum Sealing {
 
 #[cfg(test)]
 mod tests {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
     use super::*;
 
     #[test]

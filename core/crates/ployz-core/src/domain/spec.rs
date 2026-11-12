@@ -636,7 +636,7 @@ impl RequestedServiceSpec {
         &mut self,
         volumes: ServiceVolumeGraph,
     ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph = crate::ServiceMountGraph::parse(volumes, self.config_graph().clone())?;
+        self.mount_graph = self.mount_graph.with_volumes(volumes)?;
         Ok(())
     }
 
@@ -648,7 +648,7 @@ impl RequestedServiceSpec {
         &mut self,
         configs: ServiceConfigGraph,
     ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph = crate::ServiceMountGraph::parse(self.volume_graph().clone(), configs)?;
+        self.mount_graph = self.mount_graph.with_configs(configs)?;
         Ok(())
     }
 
@@ -720,9 +720,7 @@ impl ResolvedServiceSpec {
         &mut self,
         volumes: crate::ResolvedServiceVolumeGraph,
     ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph =
-            crate::ServiceMountGraph::parse(volumes.into_requested(), self.config_graph().clone())?
-                .try_into()?;
+        self.mount_graph = self.mount_graph.with_volumes(volumes)?;
         Ok(())
     }
 

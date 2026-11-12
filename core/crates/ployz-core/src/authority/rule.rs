@@ -8,14 +8,14 @@
 //! signed rule. Nothing here verifies a JWT or touches a key, so it builds for the browser.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
+    canonical::{self, CanonicalError, Timestamp},
     deploy::{Creation, PayloadDigest, content_addressed, drop_nulls},
     keys::{Approver, Purpose, Signed, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
@@ -23,6 +23,7 @@ use super::{
     session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
 };
+use crate::value::hex_newtype;
 use crate::{
     BuildGrantId, ContainerKind, GithubToken, MachineId, Namespace, RequestedServiceSpec,
     SealedRecord, SealingPublicKey, ServiceName,
@@ -31,72 +32,6 @@ use crate::{
 /// What prefixes every build audience, so a token minted for a Ployz build names no other
 /// relying party's audience.
 pub const AUDIENCE_PREFIX: &str = "ployz-build:";
-
-macro_rules! hex_newtype {
-    ($(#[$attribute:meta])* $name:ident, $label:literal, $len:literal, $prefix:literal) => {
-        $(#[$attribute])*
-        #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-        #[serde(try_from = "String", into = "String")]
-        #[ts(type = "string")]
-        pub struct $name([u8; $len]);
-
-        impl $name {
-            #[must_use]
-            pub const fn from_bytes(bytes: [u8; $len]) -> Self {
-                Self(bytes)
-            }
-
-            #[must_use]
-            pub const fn as_bytes(&self) -> &[u8; $len] {
-                &self.0
-            }
-
-            /// # Errors
-            /// Returns a [`crate::ValueError`] unless `value` is the prefix, if any, and
-            /// then lowercase hex of the right length.
-            pub fn parse(value: &str) -> Result<Self, crate::ValueError> {
-                value
-                    .strip_prefix($prefix)
-                    .and_then(hex_bytes)
-                    .map(Self)
-                    .ok_or_else(|| {
-                        crate::ValueError::new(
-                            $label,
-                            value,
-                            concat!($prefix, "lowercase hex of ", stringify!($len), " bytes"),
-                        )
-                    })
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str($prefix)?;
-                write_hex(&self.0, formatter)
-            }
-        }
-
-        impl fmt::Debug for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(formatter, concat!(stringify!($name), "({})"), self)
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = crate::ValueError;
-
-            fn try_from(value: String) -> Result<Self, Self::Error> {
-                Self::parse(&value)
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(value: $name) -> Self {
-                value.to_string()
-            }
-        }
-    };
-}
 
 hex_newtype!(
     /// One rule across all its generations: 128 random bits the approver's client makes,

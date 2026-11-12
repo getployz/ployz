@@ -8,7 +8,7 @@
 //! names whatever Cloud last wrote under it.
 
 use std::collections::BTreeMap;
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,7 +16,7 @@ use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
+    canonical::{self, CanonicalError, Timestamp},
     keys::{Approver, Purpose, Signed, Statement},
     proposal::{self, ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
@@ -26,17 +26,17 @@ use super::{
     shown::Shown,
     trusted_key::TrustedKeys,
 };
+use crate::value::hex_newtype;
 use crate::{
     ContainerKind, EnvValue, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
     RequestedServiceSpec, ResolvedServiceSpec, SealingPublicKey, ServiceName,
 };
 
-/// SHA-256 of one Service's requested spec in canonical JSON, without its replica count
-/// and rollout order, written as 64 lowercase hex digits.
-#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(try_from = "String", into = "String")]
-#[ts(type = "string")]
-pub struct PayloadDigest([u8; 32]);
+hex_newtype!(
+    /// SHA-256 of one Service's requested spec in canonical JSON, without its replica count
+    /// and rollout order, written as 64 lowercase hex digits.
+    PayloadDigest, "payload digest", 32, "", "64 lowercase hex digits"
+);
 
 impl PayloadDigest {
     /// The digest of `spec` as it runs in `namespace`. Managed Volumes are scoped to
@@ -84,14 +84,6 @@ impl PayloadDigest {
         text.truncate(12);
         text
     }
-
-    /// # Errors
-    /// Returns a [`crate::ValueError`] unless `value` is 64 lowercase hex digits.
-    pub fn parse(value: &str) -> Result<Self, crate::ValueError> {
-        hex_bytes(value).map(Self).ok_or_else(|| {
-            crate::ValueError::new("payload digest", value, "64 lowercase hex digits")
-        })
-    }
 }
 
 pub(super) fn drop_nulls(value: &mut Value) {
@@ -102,32 +94,6 @@ pub(super) fn drop_nulls(value: &mut Value) {
         }
         Value::Array(items) => items.iter_mut().for_each(drop_nulls),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
-}
-
-impl fmt::Display for PayloadDigest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_hex(&self.0, formatter)
-    }
-}
-
-impl fmt::Debug for PayloadDigest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "PayloadDigest({self})")
-    }
-}
-
-impl TryFrom<String> for PayloadDigest {
-    type Error = crate::ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(&value)
-    }
-}
-
-impl From<PayloadDigest> for String {
-    fn from(digest: PayloadDigest) -> Self {
-        digest.to_string()
     }
 }
 

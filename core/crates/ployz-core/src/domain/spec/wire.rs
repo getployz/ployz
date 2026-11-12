@@ -122,16 +122,7 @@ impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
             placement: wire.placement,
             ports: wire.ports,
             mount_graph: crate::ServiceMountGraph::parse(
-                ServiceVolumeGraph::parse(
-                    wire.volumes
-                        .into_iter()
-                        .map(|volume| ServiceVolume {
-                            reference: volume.reference,
-                            source: volume.source.into_requested(),
-                        })
-                        .collect(),
-                    wire.mounts,
-                )?,
+                ServiceVolumeGraph::parse(volumes_from_wire(wire.volumes), wire.mounts)?,
                 ServiceConfigGraph::parse(wire.configs, wire.container.config_mounts)?,
             )?
             .try_into()?,
@@ -144,7 +135,7 @@ impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
 impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
     fn from(spec: ResolvedServiceSpec) -> Self {
         let (volumes, configs) = spec.mount_graph.into_parts();
-        let (volumes, mounts) = volumes.into_parts();
+        let (volumes, mounts) = volumes_to_wire(volumes);
         let (configs, config_mounts) = configs.into_parts();
         Self {
             service_id: spec.service_id,
@@ -156,16 +147,7 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
             },
             placement: spec.placement,
             ports: spec.ports,
-            volumes: volumes
-                .into_iter()
-                .map(|volume| ResolvedServiceVolumeWire {
-                    reference: volume.reference,
-                    source: volume
-                        .source
-                        .try_into()
-                        .expect("resolved graph establishes scope"),
-                })
-                .collect(),
+            volumes,
             mounts,
             configs,
             pre_deploy: spec.pre_deploy,
@@ -179,6 +161,33 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
 struct ResolvedServiceVolumeWire {
     reference: crate::ServiceVolumeReference,
     source: crate::ResolvedVolumeSource,
+}
+
+fn volumes_from_wire(volumes: Vec<ResolvedServiceVolumeWire>) -> Vec<ServiceVolume> {
+    volumes
+        .into_iter()
+        .map(|volume| ServiceVolume {
+            reference: volume.reference,
+            source: volume.source.into_requested(),
+        })
+        .collect()
+}
+
+fn volumes_to_wire(
+    graph: crate::ResolvedServiceVolumeGraph,
+) -> (Vec<ResolvedServiceVolumeWire>, Vec<ServiceMount>) {
+    let (volumes, mounts) = graph.into_parts();
+    let volumes = volumes
+        .into_iter()
+        .map(|volume| ResolvedServiceVolumeWire {
+            reference: volume.reference,
+            source: volume
+                .source
+                .try_into()
+                .expect("a resolved graph holds only scoped sources"),
+        })
+        .collect();
+    (volumes, mounts)
 }
 
 /// Storage-only wire admission retains the same checked scope as resolved Services.
@@ -196,37 +205,114 @@ impl TryFrom<ServiceStorageSpecWire> for super::ServiceStorageSpec {
     fn try_from(wire: ServiceStorageSpecWire) -> Result<Self, Self::Error> {
         Ok(Self {
             placement: wire.placement,
-            volumes: ServiceVolumeGraph::parse(
-                wire.volumes
-                    .into_iter()
-                    .map(|volume| ServiceVolume {
-                        reference: volume.reference,
-                        source: volume.source.into_requested(),
-                    })
-                    .collect(),
-                wire.mounts,
-            )?
-            .try_into()?,
+            volumes: ServiceVolumeGraph::parse(volumes_from_wire(wire.volumes), wire.mounts)?
+                .try_into()?,
         })
     }
 }
 
 impl From<super::ServiceStorageSpec> for ServiceStorageSpecWire {
     fn from(spec: super::ServiceStorageSpec) -> Self {
-        let (volumes, mounts) = spec.volumes.into_parts();
+        let (volumes, mounts) = volumes_to_wire(spec.volumes);
         Self {
             placement: spec.placement,
-            volumes: volumes
-                .into_iter()
-                .map(|volume| ResolvedServiceVolumeWire {
-                    reference: volume.reference,
-                    source: volume
-                        .source
-                        .try_into()
-                        .expect("resolved graph establishes scope"),
-                })
-                .collect(),
+            volumes,
             mounts,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::{ResolvedServiceSpec, ServiceStorageSpec};
+
+    fn volumes() -> serde_json::Value {
+        json!([
+            {
+                "reference": "data",
+                "source": {
+                    "kind": "provisioned",
+                    "name": "app_data",
+                    "maximum_bytes": 5_000_000_000_u64,
+                    "labels": {},
+                    "scope": { "namespace": "app", "logical_name": "data" }
+                }
+            },
+            {
+                "reference": "scratch",
+                "source": { "kind": "tmpfs", "size_bytes": 4096, "mode": null, "options": [], "scope": null }
+            }
+        ])
+    }
+
+    fn mounts() -> serde_json::Value {
+        json!([
+            { "volume": "data", "target": "/data", "read_only": false, "no_copy": false, "subpath": null },
+            { "volume": "scratch", "target": "/scratch", "read_only": false, "no_copy": false, "subpath": null }
+        ])
+    }
+
+    fn resolved() -> serde_json::Value {
+        json!({
+            "service_id": "a".repeat(32),
+            "name": "db",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": {
+                "image": "postgres:17",
+                "pull_policy": "missing",
+                "config_mounts": [{ "config_name": "app", "target": "/app" }]
+            },
+            "volumes": volumes(),
+            "mounts": mounts(),
+            "configs": [{ "name": "app", "content": [104, 105] }],
+        })
+    }
+
+    /// The Resolved Service Spec is replicated and sealed into Container labels: its Volumes,
+    /// mounts and Configs keep their wire shape through admission and back.
+    #[test]
+    fn a_resolved_spec_with_a_provisioned_volume_writes_the_volumes_it_read() {
+        let spec: ResolvedServiceSpec = serde_json::from_value(resolved()).unwrap();
+        let wire = serde_json::to_value(&spec).unwrap();
+        assert_eq!(wire.pointer("/volumes"), Some(&volumes()));
+        assert_eq!(wire.pointer("/mounts"), Some(&mounts()));
+        assert_eq!(wire.pointer("/configs"), resolved().pointer("/configs"));
+        assert_eq!(
+            wire.pointer("/container/config_mounts/0/target"),
+            Some(&json!("/app"))
+        );
+        assert_eq!(
+            serde_json::from_value::<ResolvedServiceSpec>(wire).unwrap(),
+            spec
+        );
+    }
+
+    #[test]
+    fn a_storage_spec_writes_the_volumes_its_resolved_spec_read() {
+        let spec: ResolvedServiceSpec = serde_json::from_value(resolved()).unwrap();
+        let storage = ServiceStorageSpec::from(&spec);
+        let wire = serde_json::to_value(&storage).unwrap();
+        assert_eq!(wire.pointer("/volumes"), Some(&volumes()));
+        assert_eq!(wire.pointer("/mounts"), Some(&mounts()));
+        assert_eq!(
+            serde_json::from_value::<ServiceStorageSpec>(wire).unwrap(),
+            storage
+        );
+    }
+
+    #[test]
+    fn a_managed_volume_without_its_scope_is_refused_by_both_wire_forms() {
+        let mut unscoped = resolved();
+        unscoped
+            .pointer_mut("/volumes/0/source")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("scope");
+        assert!(serde_json::from_value::<ResolvedServiceSpec>(unscoped.clone()).is_err());
+        let storage =
+            json!({ "placement": {}, "volumes": unscoped.pointer("/volumes"), "mounts": mounts() });
+        assert!(serde_json::from_value::<ServiceStorageSpec>(storage).is_err());
     }
 }
