@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import type { EnvironmentRef, Signed, VolumeListing } from "@ployz/sdk";
 import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
 import { approveVolume } from "#/modules/approval-session/volume-approval";
+import { runChange } from "#/modules/volume-run/run-approval";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { SettingsRow } from "#/components/settings/settings-section";
 import { FieldError } from "#/components/ui/field";
@@ -78,14 +79,7 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
   async function growApproved(asked: Asking) {
     try {
       const scope = await readVolumeScope(queryClient, organizationSlug, environment, volume.id);
-      const holding = scope.members.flatMap((member) => (member.answered && member.view.copy !== null ? [member.machine.id] : []));
-      const approved = await approveVolume(scope, {
-        title: `Grow ${volume.name}`,
-        action: "Approve and grow",
-        workflow: { kind: "resize", machines: holding, maximum_bytes: asked.grow.to, shrink: false },
-        parties: holding,
-        command: `ployz volume set ${volume.name} --size ${gigabytes(asked.grow.to)}`,
-      });
+      const approved = await approveVolume(scope, runChange(volume.name, { kind: "resize", args: { maximum_bytes: asked.grow.to } }, scope.members, scope));
       if (approved === null) return asked.settle();
       if (approved === undefined) return setAsking(asked);
       await grow(asked, approved.approval);

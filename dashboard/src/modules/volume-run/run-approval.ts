@@ -101,10 +101,12 @@ export function runChange(name: string, run: VolumeRunInput, members: readonly M
     }
     case "resize": {
       const holding = members.flatMap((member) => (member.answered && member.view.copy !== null ? [member.machine.id] : []));
-      const shrink = terms.recorded !== null && run.args.maximum_bytes < terms.recorded;
+      // A resize to the recorded size may lower a copy above it, so it is approved as a shrink, as the CLI signs it.
+      const shrink = terms.recorded !== null && run.args.maximum_bytes <= terms.recorded;
+      const verb = !shrink ? "grow" : run.args.maximum_bytes === terms.recorded ? "resize" : "shrink";
       return {
-        title: `${shrink ? "Shrink" : "Grow"} ${name}`,
-        action: `Approve ${shrink ? "shrink" : "grow"}`,
+        title: `${verb === "grow" ? "Grow" : verb === "shrink" ? "Shrink" : "Resize"} ${name}`,
+        action: `Approve ${verb}`,
         workflow: { kind: "resize", machines: holding, maximum_bytes: run.args.maximum_bytes, shrink },
         parties: holding,
         command: `ployz volume set ${name} --size ${gigabytes(run.args.maximum_bytes)}`,
