@@ -16,10 +16,6 @@ use crate::{RawVolumeSource, ServiceMount, ServiceName, ServiceVolume, VolumeSou
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ServingShape(u64);
 
-/// Serving Shape of a published observation, whose Config content is redacted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PublishedServingShape(ServingShape);
-
 impl ServingShape {
     /// Shape of one observed Resolved Service Spec.
     #[must_use]
@@ -203,16 +199,6 @@ impl ResolvedServiceSpec {
     #[must_use]
     pub fn serving_shape(&self) -> ServingShape {
         ServingShape::of_resolved(self)
-    }
-
-    /// Serving Shape of this spec as a daemon publishes it.
-    #[must_use]
-    pub fn published_serving_shape(&self) -> PublishedServingShape {
-        let names = self.mount_graph.config_graph().configs().iter();
-        let configs = sorted_json(names.map(|config| &config.name));
-        PublishedServingShape(ServingShape::from_fields(&ServingShape::resolved_fields(
-            self, configs,
-        )))
     }
 }
 

@@ -787,7 +787,7 @@ impl ResolvedServiceSpec {
 }
 
 mod serving_shape;
-pub use serving_shape::{PublishedServingShape, ServingShape, global_creation_key};
+pub use serving_shape::{ServingShape, global_creation_key};
 
 mod comparison;
 pub use comparison::compare_specs;
