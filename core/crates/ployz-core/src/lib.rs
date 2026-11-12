@@ -24,6 +24,7 @@ pub mod namespace;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod port_holder;
 mod ports;
+pub mod probe_document;
 mod release;
 #[cfg(not(target_arch = "wasm32"))]
 mod release_mirror;

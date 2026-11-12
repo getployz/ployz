@@ -5,7 +5,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::super::teardown::confirm;
+use super::super::shared::confirm::confirm;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::approval::{self, Verb};
 use crate::cli::{base, value};

@@ -266,3 +266,205 @@ fn a_refusal_a_retry_may_get_past_does_not_claim_to_fail_the_same_way_again() {
     assert!(!delivery.same_again);
     assert_eq!(delivery.error.details.get("same_again"), None);
 }
+
+/// Each arm's wire `details`, byte for byte: the keys are frozen for every reader of an
+/// old or new daemon's answer.
+fn details_text(error: &RpcError) -> String {
+    serde_json::to_string(&error.details).unwrap()
+}
+
+fn remote_build(
+    outcome: crate::build::RemoteBuildFailure,
+    cancellation_requested: bool,
+) -> RpcError {
+    preparation_error(
+        crate::sdk::prepare::PreparationError::Build(crate::build::Error::RemoteBuild {
+            outcome: Box::new(outcome),
+        }),
+        cancellation_requested,
+    )
+}
+
+fn work() -> ployz_build::WorkEvidence {
+    ployz_build::WorkEvidence(
+        [
+            ("api".to_owned(), ployz_build::TargetEvidence::Unattempted),
+            ("web".to_owned(), ployz_build::TargetEvidence::Validated),
+        ]
+        .into(),
+    )
+}
+
+#[test]
+fn golden_selection_details() {
+    let remote = |details| {
+        crate::sdk::prepare::PreparationError::Selection(ConnectError::Remote(RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: "provider token=secret".into(),
+            details,
+            cause: Vec::new(),
+        }))
+    };
+    let with_reasons = preparation_error(
+        remote(serde_json::json!({
+            "rejections": {"builds disabled": 2},
+            "reasons": ["no Build Machine", "all drained"],
+        })),
+        false,
+    );
+    assert_eq!(with_reasons.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        with_reasons.message,
+        "No eligible Build Machine was selected; no build was started."
+    );
+    assert_eq!(with_reasons.cause, ["no Build Machine; all drained"]);
+    assert_eq!(
+        details_text(&with_reasons),
+        r#"{"preparation":{"kind":"failed","message":"No eligible Build Machine was selected; no build was started.","rejections":{"builds disabled":2},"stage":"Selection"}}"#
+    );
+    let bare = preparation_error(remote(Value::Null), false);
+    assert!(bare.cause.is_empty());
+    assert_eq!(
+        details_text(&bare),
+        r#"{"preparation":{"kind":"failed","message":"No eligible Build Machine was selected; no build was started.","rejections":null,"stage":"Selection"}}"#
+    );
+    let local = preparation_error(
+        crate::sdk::prepare::PreparationError::Selection(ConnectError::EntryNotReady),
+        true,
+    );
+    assert_eq!(details_text(&local), details_text(&bare));
+}
+
+#[test]
+fn golden_observation_details() {
+    let error = preparation_error(
+        crate::sdk::prepare::PreparationError::Connect(ConnectError::EntryNotReady),
+        false,
+    );
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        error.message,
+        "Could not read Machine observations during preparation."
+    );
+    assert_eq!(
+        details_text(&error),
+        r#"{"preparation":{"kind":"failed","message":"Could not read Machine observations during preparation.","stage":"Observation"}}"#
+    );
+}
+
+#[test]
+fn golden_remote_build_details() {
+    let failed = || crate::build::RemoteBuildFailure::Failed {
+        stage: ployz_build::Stage::Push,
+        message: "denied".into(),
+        work: work(),
+    };
+    let unknown = || crate::build::RemoteBuildFailure::Unknown {
+        stage: ployz_build::Stage::Upload,
+        message: "lost the stream".into(),
+        work: work(),
+    };
+    assert_eq!(
+        details_text(&remote_build(failed(), false)),
+        r#"{"preparation":{"kind":"failed","message":"denied","stage":"Push","work":{"api":"Unattempted","web":"Validated"}}}"#
+    );
+    assert_eq!(
+        details_text(&remote_build(unknown(), false)),
+        r#"{"preparation":{"kind":"unknown","message":"lost the stream","stage":"Upload","work":{"api":"Unattempted","web":"Validated"}}}"#
+    );
+    // Only a confirmed failure becomes `cancelled`; an unknown outcome stays unknown.
+    assert_eq!(
+        details_text(&remote_build(failed(), true)),
+        r#"{"preparation":{"kind":"cancelled","message":"denied","stage":"Push","work":{"api":"Unattempted","web":"Validated"}}}"#
+    );
+    assert_eq!(
+        details_text(&remote_build(unknown(), true)),
+        r#"{"preparation":{"kind":"unknown","message":"lost the stream","stage":"Upload","work":{"api":"Unattempted","web":"Validated"}}}"#
+    );
+    assert_eq!(remote_build(failed(), true).code, RpcErrorCode::Internal);
+}
+
+#[test]
+fn golden_cancelled_details() {
+    let error = preparation_error(crate::sdk::prepare::PreparationError::Cancelled, true);
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        error.message,
+        "preparation cancelled; no application changes attempted"
+    );
+    assert_eq!(
+        details_text(&error),
+        r#"{"preparation":{"kind":"cancelled"}}"#
+    );
+}
+
+#[test]
+fn golden_upload_needed_details() {
+    let services = vec![
+        ployz_core::ServiceName::parse("one").unwrap(),
+        ployz_core::ServiceName::parse("two").unwrap(),
+    ];
+    let error = preparation_error(
+        crate::sdk::prepare::PreparationError::UploadNeeded(services.clone()),
+        false,
+    );
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+    assert_eq!(
+        details_text(&error),
+        r#"{"preparation":{"kind":"upload_needed","services":["one","two"]}}"#
+    );
+    assert_eq!(
+        crate::sdk::preparation::needs_upload(&error),
+        Some(services)
+    );
+}
+
+#[test]
+fn golden_generic_failure_and_same_again_details() {
+    use crate::deploy::{HostnameRefusal, PlanError};
+    use ployz_core::{IngressHost, Namespace, QualifiedService, ServiceName};
+    let conflict = PlanError::HostnameConflict {
+        hostname: IngressHost::parse("shop.example.com").unwrap(),
+        owner: QualifiedService::new(
+            Namespace::parse("shop").unwrap(),
+            ServiceName::parse("web").unwrap(),
+        ),
+        refusal: HostnameRefusal::RequestedTwice {
+            to: ServiceName::parse("api").unwrap(),
+        },
+    };
+    assert_eq!(
+        details_text(&prepared(conflict.clone()).error),
+        r#"{"preparation":{"kind":"failed","message":"hostname shop.example.com is requested by both shop/web and api: keep it on one of them"},"same_again":true}"#
+    );
+    assert_eq!(
+        details_text(&planned(conflict).error),
+        r#"{"same_again":true}"#
+    );
+    assert_eq!(
+        details_text(&prepared(PlanError::CapacityUnknown).error),
+        r#"{"preparation":{"kind":"failed","message":"capacity unknown: an eligible Machine did not return fresh bridge telemetry"}}"#
+    );
+    assert_eq!(
+        details_text(&planned(PlanError::CapacityUnknown).error),
+        r#"null"#
+    );
+    let delivery = unprepared(
+        crate::sdk::prepare::PreparationError::Delivery("the image never arrived".into()),
+        false,
+    );
+    assert_eq!(
+        details_text(&delivery.error),
+        r#"{"preparation":{"kind":"failed","message":"the image never arrived"}}"#
+    );
+    let invalid = unprepared(
+        crate::sdk::prepare::PreparationError::Build(crate::build::Error::Invalid(
+            "no Dockerfile".into(),
+        )),
+        false,
+    );
+    assert_eq!(
+        details_text(&invalid.error),
+        r#"{"preparation":{"kind":"failed","message":"The Build failed, so no Service, hook, or volume change was attempted: invalid Build: no Dockerfile"}}"#
+    );
+}

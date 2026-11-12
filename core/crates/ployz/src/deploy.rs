@@ -1006,11 +1006,14 @@ impl PlanError {
             | Self::RemovalInTarget { .. }
             | Self::RemovalNotSelected { .. }
             | Self::RemovalInReservedNamespace { .. }) => {
-                RpcError::invalid_argument(error.to_string()).with_details(if error.same_again() {
-                    serde_json::json!({"same_again": true})
+                let refusal = RpcError::invalid_argument(error.to_string());
+                if error.same_again() {
+                    refusal.with_evidence(
+                        &crate::sdk::preparation_failure::PreparationFailure::same_again(),
+                    )
                 } else {
-                    serde_json::Value::Null
-                })
+                    refusal
+                }
             }
         }
     }

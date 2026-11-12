@@ -51,8 +51,7 @@ pub enum Recipe {
 }
 
 /// Remote failure evidence cannot contain a successful build outcome.
-#[derive(Clone, Debug, Eq, Error, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RemoteBuildFailure {
     /// The Build Machine confirmed the attempt ended without an image. The
     /// caller says the Build failed; this is why.
