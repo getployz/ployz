@@ -248,8 +248,8 @@ connection under omissions. Either way the command exits 3.
 
 ### Pin your cluster's key
 
-`ployz private-access on` and sealed variables seal the secret on your computer, to your
-cluster's key. Before the CLI seals through Ployz Cloud, it checks the key Ployz Cloud sends
+`ployz private-access on`, `ployz ingress use tunnel` and sealed variables seal the secret on
+your computer, to your cluster's key. Before the CLI seals through Ployz Cloud, it checks the key Ployz Cloud sends
 against one it read from a server itself. Read it once per organization, over SSH or on a server:
 
 ```sh
@@ -264,8 +264,8 @@ isn't the one Ployz Cloud has for that organization.
 Until you pin the key, the CLI refuses to seal through Ployz Cloud and names `ployz device pin`.
 If Ployz Cloud later sends a different key, the CLI refuses too, and the secret never leaves your
 computer. If your cluster's key really changed, for example because you started a new cluster,
-run `pin` again. Over `--connect ssh://`, `ployz private-access on` reads the key from that
-server and needs no pin.
+run `pin` again. Over `--connect ssh://`, `ployz private-access on` and `ployz ingress use tunnel`
+read the key from that server and need no pin.
 
 ### Add a passkey
 
