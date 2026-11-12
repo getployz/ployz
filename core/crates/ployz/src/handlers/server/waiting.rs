@@ -13,7 +13,8 @@ use super::signed_in;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::LoginError;
 use crate::handlers::{Error, runtime};
-use crate::ui::{self, Cell, Fields, Hint, Table, Tone, printable};
+use crate::ui::{self, Cell, Fields, Table, Tone, printable};
+use ployz_core::Hint;
 
 /// One waiting server: the row Cloud sent, which `--json` prints, and the fields read from it.
 /// Both keep Cloud's strings; only what a person reads goes through [`printable`].

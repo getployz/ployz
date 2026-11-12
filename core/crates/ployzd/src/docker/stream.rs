@@ -1,3 +1,4 @@
+use ployz_core::labels;
 use std::time::Duration;
 
 use bollard::{
@@ -163,7 +164,7 @@ impl ContainerRuntime {
                 service_id: observation.service_id(),
                 service_name: observation.resolved_spec.name.clone(),
                 container_id: observation.container_id,
-                hook: observation.labels.get(super::LABEL_HOOK).cloned(),
+                hook: observation.labels.get(labels::HOOK).cloned(),
             },
             machine_id: *machine_id,
             machine_name: machine_name.clone(),
@@ -171,7 +172,7 @@ impl ContainerRuntime {
         let record = sealed_env::record_from_label(
             observation
                 .labels
-                .get(sealed_env::LABEL_SEALED)
+                .get(labels::SEALED_ENV)
                 .map(String::as_str),
         )
         .map_err(|error| docker_status(error.into()))?;

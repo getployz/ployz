@@ -3,10 +3,10 @@ mod test_dir;
 use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsExt};
 
 use ployz_core::{
-    AdvertisedEndpoint, DeviceKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest, LeaveRequest,
-    Left, LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName, MachineRuntime,
-    MachineUpdate, ManagementClientLabel, ManagementScope, PublicIpUpdate, Registered,
-    SelectedEndpoint, SetManagementClientRequest,
+    AdvertisedEndpoint, ClientKey, DeviceKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest,
+    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName,
+    MachineRuntime, MachineUpdate, ManagementClientLabel, ManagementScope, PublicIpUpdate,
+    Registered, SelectedEndpoint, SetManagementClientRequest,
 };
 use ployzd::machine::{
     EnrollPlan, LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior,
@@ -272,9 +272,11 @@ async fn clear_persists_a_tombstone_of_public_keys_only() {
                 .unwrap()
                 .capability
                 .unwrap();
-            let public = *iroh::SecretKey::from_bytes(capability.client_secret())
-                .public()
-                .as_bytes();
+            let public = ClientKey::from_bytes(
+                *iroh::SecretKey::from_bytes(capability.client_secret())
+                    .public()
+                    .as_bytes(),
+            );
             (capability, public)
         }
     };
@@ -1115,7 +1117,7 @@ fn a_fresh_joiner_admits_the_issuers_devices_and_a_replay_keeps_its_own() {
     );
     assert_eq!(store.record().devices().collect::<Vec<_>>(), [approved]);
     assert_eq!(
-        store.record().management_scope(approved.as_bytes()),
+        store.record().management_scope(&approved.into()),
         Some(ManagementScope::Full)
     );
 

@@ -655,8 +655,9 @@ fn network_conflict_names_observed_values_without_debug_wrappers() {
 fn stale_network(name: &str, managed_label: Option<&str>, attached: bool) -> NetworkInspect {
     NetworkInspect {
         name: Some(name.into()),
-        labels: managed_label
-            .map(|value| HashMap::from([(DOCKER_NETWORK_MANAGED_LABEL.into(), value.into())])),
+        labels: managed_label.map(|value| {
+            HashMap::from([(ployz_core::labels::SYSTEM_MANAGED.into(), value.into())])
+        }),
         containers: attached.then(|| HashMap::from([("7074faa8a368".into(), Default::default())])),
         ..Default::default()
     }
@@ -741,7 +742,7 @@ fn fitting_network(machine: &Machine, attached: &[&str]) -> NetworkInspect {
         driver: Some("bridge".into()),
         scope: Some("local".into()),
         labels: Some(HashMap::from([(
-            DOCKER_NETWORK_MANAGED_LABEL.into(),
+            ployz_core::labels::SYSTEM_MANAGED.into(),
             String::new(),
         )])),
         ipam: Some(Ipam {
@@ -1085,6 +1086,51 @@ fn each_machine_bridge_takes_an_ipv6_prefix_from_its_ipv4_subnet() {
         docker_network_ipv6(subnet("10.210.4.0/24")).subnet,
         ipv6.subnet
     );
+}
+
+#[test]
+fn the_bridge_is_made_with_and_owned_by_the_system_marker_label() {
+    let machine = subnet("10.210.1.0/24");
+    let options = required_docker_network_options(1420);
+    let request = docker_network_request(machine, &options, None);
+    assert_eq!(
+        request.labels,
+        Some(HashMap::from([(
+            "ployzd.managed".to_owned(),
+            String::new()
+        )]))
+    );
+    assert!(docker_network_owned(&inspected(&request)));
+    for (labels, owned) in [
+        (None, false),
+        (Some(HashMap::new()), false),
+        (
+            Some(HashMap::from([("ployz.managed".to_owned(), String::new())])),
+            false,
+        ),
+        (
+            Some(HashMap::from([(
+                "ployzd.managed".to_owned(),
+                "x".to_owned(),
+            )])),
+            false,
+        ),
+        (
+            Some(HashMap::from([(
+                "ployzd.managed".to_owned(),
+                String::new(),
+            )])),
+            true,
+        ),
+    ] {
+        let mut request = docker_network_request(machine, &options, None);
+        request.labels = labels.clone();
+        assert_eq!(
+            docker_network_owned(&inspected(&request)),
+            owned,
+            "{labels:?}"
+        );
+    }
 }
 
 #[test]

@@ -10,9 +10,9 @@ use std::{
 };
 
 use ployz_core::{
-    DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId,
-    MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel, PREPARE_DIR_NAME,
-    PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint,
+    ClientKey, DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine,
+    MachineId, MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel,
+    PREPARE_DIR_NAME, PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint,
     apply_machine_update,
 };
 use reqwest::Url;
@@ -586,7 +586,7 @@ impl LocalMachineStore {
                 (
                     key.label(),
                     ManagementClientSlot::Live(LiveSlot::Active {
-                        accepted: *key.as_bytes(),
+                        accepted: ClientKey::from(key),
                     }),
                 )
             }));
@@ -722,7 +722,7 @@ impl LocalMachineStore {
     pub fn stage_management_client(
         &mut self,
         label: ManagementClientLabel,
-        pending: [u8; 32],
+        pending: ClientKey,
     ) -> Result<(), StoreError> {
         let slot = match self.record.accepted_client(&label) {
             Some(accepted) => ManagementClientSlot::Live(LiveSlot::Rotating { accepted, pending }),
@@ -759,7 +759,7 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn activate_management_client(&mut self, remote: [u8; 32]) -> Result<(), StoreError> {
+    pub fn activate_management_client(&mut self, remote: ClientKey) -> Result<(), StoreError> {
         let Some(label) = self.record.pending_label(&remote).cloned() else {
             return Ok(());
         };
@@ -779,7 +779,7 @@ impl LocalMachineStore {
     pub fn approve_device(&mut self, key: DeviceKey) -> Result<bool, StoreError> {
         let label = key.label();
         let slot = ManagementClientSlot::Live(LiveSlot::Active {
-            accepted: *key.as_bytes(),
+            accepted: ClientKey::from(key),
         });
         if self.record.management_clients.get(&label) == Some(&slot) {
             return Ok(false);
@@ -1503,9 +1503,9 @@ mod device_slot_tests {
         let store = reopened_unvetted(&dir, store);
 
         let record = store.record();
-        assert_eq!(record.management_scope(key().as_bytes()), None);
+        assert_eq!(record.management_scope(&key().into()), None);
         assert_eq!(record.devices().count(), 0);
-        assert!(record.clears_management_client(key().as_bytes()));
+        assert!(record.clears_management_client(&key().into()));
     }
 
     #[test]
@@ -1528,7 +1528,7 @@ mod device_slot_tests {
         let store = reopened(&dir, store);
 
         assert_eq!(
-            store.record().management_scope(key().as_bytes()),
+            store.record().management_scope(&key().into()),
             Some(ManagementScope::Full)
         );
         assert_eq!(store.record().devices().collect::<Vec<_>>(), vec![key()]);
@@ -1541,7 +1541,7 @@ mod device_slot_tests {
         let store = reopened(&dir, store);
 
         assert_eq!(
-            store.record().management_scope(key().as_bytes()),
+            store.record().management_scope(&key().into()),
             Some(ManagementScope::Full)
         );
     }

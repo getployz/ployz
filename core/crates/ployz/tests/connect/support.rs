@@ -18,13 +18,12 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerList, ContractDescription, CreateVolumeRequest,
     DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, ForgetRequest, Forgotten, Left, LeftPhase, LocalMachinePhase,
-    MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachinePath, MachineRpcServer, MachineStorageObservation,
-    MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RoutesRead, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
-    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
-    encode_runtime_watch_frame, op,
+    Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
+    MachineRpcServer, MachineStorageObservation, MembershipObservation, ObservedDataLoss,
+    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    RoutesRead, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
+    WireGuardPublicKey, encode_runtime_watch_frame, labels, op,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
 use serde_json::Value;
@@ -1682,8 +1681,8 @@ pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
 pub(super) fn owned_volume(machine_id: MachineId, name: &str, namespace: &str) -> DockerVolume {
     DockerVolume {
         labels: BTreeMap::from([
-            (MANAGED_LABEL.to_owned(), String::new()),
-            (NAMESPACE_LABEL.to_owned(), namespace.to_owned()),
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::NAMESPACE.to_owned(), namespace.to_owned()),
         ]),
         ..docker_volume(machine_id, name)
     }

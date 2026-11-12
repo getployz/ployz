@@ -165,7 +165,7 @@ fn other_namespace_resources_are_left_alone() {
     let mut other_volume = owned_volume(machine_id('1'), "data");
     other_volume
         .labels
-        .insert(NAMESPACE_LABEL.to_owned(), "other".to_owned());
+        .insert(labels::NAMESPACE.to_owned(), "other".to_owned());
     other_volume.id.name = Namespace::parse("other")
         .unwrap()
         .volume_name(&DockerVolumeName::parse("data").unwrap());

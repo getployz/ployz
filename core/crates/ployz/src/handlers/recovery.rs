@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    DescribeContractRequest, MachineLayout, RECOVER_SEALING_KEY_CAPABILITY,
+    DescribeContractRequest, Hint, MachineLayout, RECOVER_SEALING_KEY_CAPABILITY,
     RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup,
     SealingPublicKey, WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest, op,
 };
@@ -18,7 +18,7 @@ use crate::cloud_enroll::RecoveryBackup;
 use crate::cloud_login::LoginError;
 use crate::connect::{Client, ConnectError, SystemConnector};
 use crate::context::Transport;
-use crate::ui::{self, Fields, Hint};
+use crate::ui::{self, Fields};
 
 pub(crate) const RECOVERY_CODE_NOT_SAVED: &str =
     "Recovery code not saved. Run ployz recovery rotate now to make one.";

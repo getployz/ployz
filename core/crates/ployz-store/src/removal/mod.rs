@@ -331,7 +331,7 @@ pub(crate) fn remove(
     {
         return Err(error::invalid(
             format!("This removes no Environment named {unknown}"),
-            json!({ "valid_children": names }),
+            error::valid(&names),
         ));
     }
     let mut reviews = Vec::new();
@@ -506,7 +506,7 @@ fn review_member(
                 "Removing {} deletes no Volume named {unknown}",
                 environment.summary.name
             ),
-            json!({ "valid_children": names }),
+            error::valid(&names),
         ));
     }
     let (losses, unanswered) = held(removed, trusted.volumes.as_ref())?;

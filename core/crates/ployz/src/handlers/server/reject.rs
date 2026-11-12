@@ -12,7 +12,8 @@ use serde_json::json;
 use super::waiting::{self, Enrolling, Rejection, Stopped, Waiting};
 use crate::cli::{base, positional};
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
-use crate::ui::{self, Cell, Hint, Table, printable};
+use crate::ui::{self, Cell, Table, printable};
+use ployz_core::Hint;
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Reject servers waiting to join")

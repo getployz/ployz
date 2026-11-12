@@ -67,7 +67,7 @@ pub(crate) fn create_branch(
     if own.is_empty() {
         return Err(error::invalid(
             "Pick something to copy",
-            json!({ "valid_children": names(working) }),
+            error::valid(names(working)),
         ));
     }
     for name in &create.live {

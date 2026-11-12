@@ -1,5 +1,6 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
+use ployz_core::labels;
 use ployz_core::{
     CertificateHost, ContainerAddress, ContainerId, ContainerObservation,
     ContainerRuntimeObservation, DeploymentLogId, HttpProtocol, IngressHost, Machine, MachineId,
@@ -24,7 +25,6 @@ use crate::{
         Error as CorrosionError, IngressRouteAck, IngressRouteChange, MachineView, ReplicatedStore,
         Subscription, published_cover,
     },
-    docker::LABEL_DEPLOYMENT,
     filesystem::{atomic_write, set_ployz_group},
     route_acks::{DownMachines, load_down},
 };
@@ -170,7 +170,7 @@ impl PublicationTrace {
                 let deploy = newest
                     .as_observation()
                     .labels
-                    .get(LABEL_DEPLOYMENT)
+                    .get(labels::DEPLOYMENT_ID)
                     .and_then(|label| DeploymentLogId::parse(label).ok());
                 (service, Self { deploy, placement })
             })

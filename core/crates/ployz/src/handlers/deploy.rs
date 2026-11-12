@@ -11,14 +11,14 @@ mod follow_tests;
 mod progress;
 
 use crate::ui::progress::{Disposition, Progress};
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::ui::{self, Cell, Table, Tone};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
     DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, NodeStatus, PlanQuery,

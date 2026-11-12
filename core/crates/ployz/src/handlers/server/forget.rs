@@ -9,7 +9,7 @@ use crate::approval::{self, Verb};
 use crate::cli::{base, positional, value};
 use crate::cloud_account::{self, Credential, ForgetCheck, ObservedServer, ServersForgotten};
 use crate::cloud_login::CredentialStore;
-use crate::ui::Hint;
+use ployz_core::Hint;
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Forget a Server without resetting it, or every Server when they were deleted",
@@ -200,7 +200,7 @@ fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
                 forgotten.cancelled.len()
             ));
         }
-        crate::ui::hint(&crate::ui::Hint::Next("ployz server add".into()));
+        crate::ui::hint(&Hint::Next("ployz server add".into()));
     })
 }
 

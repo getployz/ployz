@@ -12,7 +12,8 @@ use ployz_core::RpcErrorCode;
 use crate::approval;
 use crate::cloud_account::{self, Credential, ServerClears, TokenKind, TokenPreset};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::ui::{self, Cell, Table, Tone};
+use ployz_core::Hint;
 
 pub(super) fn token_group(command: Command) -> Command {
     command.about("Manage Organization Tokens and signed-in devices")

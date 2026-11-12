@@ -1,8 +1,8 @@
 //! Trace page facts in the projection and their rendering.
 
 use super::{ingress, observation, projection};
-use crate::docker::LABEL_DEPLOYMENT;
 use crate::ingress::{IngressProjection, PublicationTrace};
+use ployz_core::labels;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DeploymentLogId,
     HealthObservation, HttpProtocol, MachineId, Namespace, service_containers,
@@ -40,7 +40,7 @@ fn labeled(container: ContainerObservation, deploy: &str) -> ContainerObservatio
     with(container, |parts| {
         parts
             .labels
-            .insert(LABEL_DEPLOYMENT.to_owned(), deploy.to_owned());
+            .insert(labels::DEPLOYMENT_ID.to_owned(), deploy.to_owned());
     })
 }
 

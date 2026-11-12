@@ -543,7 +543,7 @@ impl Scripted {
                 if let Some(deploy) = deploy {
                     parts
                         .labels
-                        .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.to_string());
+                        .insert(ployz_core::labels::DEPLOYMENT_ID.into(), deploy.to_string());
                 }
             })
             .unwrap();
@@ -607,9 +607,10 @@ impl Scripted {
                 listed
                     .try_update(|parts| {
                         if let Some(deploy) = &copy.deploy {
-                            parts
-                                .labels
-                                .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.to_string());
+                            parts.labels.insert(
+                                ployz_core::labels::DEPLOYMENT_ID.into(),
+                                deploy.to_string(),
+                            );
                         }
                         if let Some(key) = &copy.key {
                             parts.labels.insert(
@@ -1657,7 +1658,7 @@ fn serving(
             if let Some(deploy) = deploy {
                 parts
                     .labels
-                    .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.into());
+                    .insert(ployz_core::labels::DEPLOYMENT_ID.into(), deploy.into());
             }
         })
         .unwrap();

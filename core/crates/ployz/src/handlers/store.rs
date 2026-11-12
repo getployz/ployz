@@ -22,7 +22,7 @@ use crate::approval::{self, Asked};
 use crate::cli::{env, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::ui::Hint;
+use ployz_core::Hint;
 
 impl From<StoreCallError> for Error {
     fn from(error: StoreCallError) -> Self {

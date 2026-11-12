@@ -57,13 +57,13 @@ pub(super) use ployz_core::{
     AdvertisedEndpoint, BridgeEndpointCapacity, ContainerId, ContainerKind, ContainerObservation,
     ContainerPath, ContainerResources, ContainerRuntimeObservation, DeviceMapping,
     DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, HealthObservation, HostBind, MANAGED_LABEL, Machine, MachineId,
-    MachineName, MachineObservation, MachinePath, MembershipObservation, NAMESPACE_LABEL,
-    Namespace, PidMode, Placement, PlacementConstraint, PortPublication, PreDeployHook,
-    ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig,
-    RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
-    ServiceVolume, ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig,
-    UpdateOrder, WireGuardPublicKey, compare_specs,
+    DockerVolumeStorageObservation, HealthObservation, HostBind, Machine, MachineId, MachineName,
+    MachineObservation, MachinePath, MembershipObservation, Namespace, PidMode, Placement,
+    PlacementConstraint, PortPublication, PreDeployHook, ProvisionedVolumeMaximumBytes, PullPolicy,
+    RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId,
+    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
+    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, WireGuardPublicKey, compare_specs,
+    labels,
 };
 pub(super) fn spec(name: &str) -> RequestedServiceSpec {
     let mut requested = requested(ServiceMode::Replicated {
@@ -220,8 +220,8 @@ pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> DockerVol
         },
         options: Default::default(),
         labels: BTreeMap::from([
-            (MANAGED_LABEL.to_owned(), String::new()),
-            (NAMESPACE_LABEL.to_owned(), "app".to_owned()),
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::NAMESPACE.to_owned(), "app".to_owned()),
         ]),
         storage: DockerVolumeStorageObservation::Plain {
             driver: "local".into(),

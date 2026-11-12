@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq, ne, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
+import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import type { ServerRelease } from "#/modules/machines/machine-removal";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -91,7 +92,7 @@ export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
   function* (input: { organizationId: string; machineId: MachineId; generation: string; removal: "reset" | "membership" | "unconfirmed" }) {
     const { organizationId, generation } = input;
     const database = yield* Database;
-    return yield* database.transaction(Effect.gen(function* () {
+    const released = yield* database.transaction(Effect.gen(function* () {
       const pairing = yield* lockWitnessedPairing(organizationId, generation);
       if (pairing.kind === "gone") return { kind: "released" } as const;
       if (pairing.kind === "replaced") return replaced;
@@ -114,6 +115,8 @@ export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
       }
       return { kind: "last" } as const;
     }));
+    yield* requestBillingSync(organizationId, "server-removed");
+    return released;
   },
 );
 

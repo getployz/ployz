@@ -7,12 +7,12 @@
 //! (`--all` adds the rest), `get SERVICE` shows every Setting and its domains plus
 //! the `values` object that `set SERVICE --patch` takes back.
 
-use crate::ui::{self, Hint};
+use crate::ui;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 use std::io::{IsTerminal as _, Read};
 
-use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
+use ployz_core::{Hint, MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
     NodeName, Revision, SettingPath, SettingRow, TypedAddresses,

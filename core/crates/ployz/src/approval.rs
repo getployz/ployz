@@ -7,7 +7,7 @@ use std::fmt::Display;
 use std::time::Duration;
 
 use chrono::{Local, SecondsFormat, TimeZone};
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{Hint, RpcError, RpcErrorCode};
 use ployz_store::{DestructiveEffect, DestructiveKind, DiffView};
 use reqwest::Method;
 use serde::Deserialize;
@@ -442,7 +442,7 @@ pub(crate) fn settle(
             crate::ui::note(&asked.reason);
         }
         crate::ui::note(for_another_approver(credential, &asked.id));
-        crate::ui::hint(&crate::ui::Hint::Inspect(format!(
+        crate::ui::hint(&Hint::Inspect(format!(
             "ployz org approval show {}",
             asked.id
         )));
@@ -452,7 +452,7 @@ pub(crate) fn settle(
             &asked.id,
             asked.organization.as_deref(),
         ));
-        crate::ui::hint(&crate::ui::Hint::Next(format!(
+        crate::ui::hint(&Hint::Next(format!(
             "ployz org approval approve {}",
             asked.id
         )));
@@ -495,9 +495,7 @@ pub(crate) fn settle(
         )
         .interrupted(),
     };
-    Err(StoreCallError::Stopped(
-        stopped.hint(crate::ui::Hint::Retry(retry)),
-    ))
+    Err(StoreCallError::Stopped(stopped.hint(Hint::Retry(retry))))
 }
 
 /// Where a human answers approval `id`: the Ployz agent's panel, where it waits under
@@ -577,7 +575,7 @@ pub(crate) fn approved<T>(
             return Err(refused.into());
         };
         if crate::ui::json() {
-            return Err(Failure::from(refused).hint(crate::ui::Hint::Retry(retry(&asked.id))));
+            return Err(Failure::from(refused).hint(Hint::Retry(retry(&asked.id))));
         }
         approval = Some(settle(runtime, credential, verb, &asked, retry(&asked.id))?);
     }

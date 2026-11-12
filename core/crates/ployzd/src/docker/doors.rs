@@ -2,6 +2,7 @@
 //! Proxy's network namespace, the Caddy that joins it, and the Tunnel Connector that
 //! joins it too.
 
+use ployz_core::labels;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -12,7 +13,7 @@ use ployz_core::{
 };
 
 use super::{
-    ContainerRuntime, Error, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_NAME, docker_error,
+    ContainerRuntime, Error, docker_error,
     lifecycle::{failed_start, is_running},
 };
 use crate::docker_image::prepare_image;
@@ -225,9 +226,9 @@ impl super::LocalDocker {
     ) -> Result<Vec<(ContainerId, std::collections::HashMap<String, String>)>, Error> {
         let identity = door.identity();
         self.labelled(vec![
-            LABEL_MANAGED.to_owned(),
-            format!("{LABEL_NAMESPACE}={}", identity.namespace),
-            format!("{LABEL_SERVICE_NAME}={}", identity.name),
+            labels::MANAGED.to_owned(),
+            format!("{}={}", labels::NAMESPACE, identity.namespace),
+            format!("{}={}", labels::SERVICE_NAME, identity.name),
         ])
         .await
     }

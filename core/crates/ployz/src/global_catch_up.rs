@@ -18,11 +18,11 @@ use crate::cluster::Call;
 use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerObservation,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
-    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet, InspectRequest,
-    ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
-    PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
-    RunTarget, ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
-    SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, op,
+    EnvironmentValues, HealthFailure, HealthVerdict, Hint, IngressDoors, IngressDoorsSet,
+    InspectRequest, ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget,
+    NewContainer, PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError,
+    RunRotation, RunTarget, ServiceId, ServiceMode, ServiceObservation,
+    ServicePlacementEligibility, SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, op,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -436,16 +436,16 @@ pub(crate) fn joined_catch_up_error(
     let mut failure = error.cause.context(message);
     for identity in error.unresolved {
         let hint = if identity == QualifiedService::system_ingress() {
-            crate::ui::Hint::Retry(command(&[
+            Hint::Retry(command(&[
                 "server",
                 "set",
                 &server.id.to_string(),
                 "--accepts-ingress=true",
             ]))
         } else if identity.is_private_access_router() {
-            crate::ui::Hint::Retry(command(&["private-access", "on", "--auth-key-stdin"]))
+            Hint::Retry(command(&["private-access", "on", "--auth-key-stdin"]))
         } else {
-            crate::ui::Hint::Inspect(command(&[
+            Hint::Inspect(command(&[
                 "logs",
                 &identity.to_string(),
                 "--machine",
@@ -566,7 +566,7 @@ pub(crate) async fn follow_globals(
         unarrived.push(serde_json::json!({ "id": id, "name": name, "next": next }));
     }
     if !unarrived.is_empty() {
-        crate::ui::hint(&crate::ui::Hint::Inspect(list));
+        crate::ui::hint(&Hint::Inspect(list));
     }
     (unarrived, result)
 }

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use clap::ArgMatches;
 use clap::parser::ValueSource;
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{Hint, RpcError, RpcErrorCode};
 use reqwest::Method;
 use serde_json::{Map, Value};
 
@@ -14,7 +14,7 @@ use super::wire::Ran;
 use super::{ArgKind, PublishError, PublishedCommand, Render, Setup, Typed, UNKNOWN_COMMAND};
 use crate::cloud_account::{self, StoreCallError};
 use crate::failure::Failure;
-use crate::ui::{self, Hint};
+use crate::ui;
 
 /// Run `command` with the arguments under `root`, on `setup`'s Cloud.
 ///

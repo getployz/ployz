@@ -1,4 +1,5 @@
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::ui::{self, Cell, Table, Tone};
+use ployz_core::Hint;
 use std::path::Path;
 
 use clap::{ArgMatches, Command};

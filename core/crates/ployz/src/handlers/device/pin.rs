@@ -13,7 +13,8 @@ use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, Organization};
 use crate::connect::Client;
 use crate::sealing_pin::{Pin, Pins, SealTo, entry_pin};
-use crate::ui::{self, Fields, Hint};
+use crate::ui::{self, Fields};
+use ployz_core::Hint;
 
 pub(crate) fn pin_command(command: Command) -> Command {
     base(command, "Pin the Cluster's Sealing Key on this computer")

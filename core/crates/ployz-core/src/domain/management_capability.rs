@@ -5,7 +5,7 @@ use std::fmt;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
-use crate::ValueError;
+use crate::{ClientKey, ValueError};
 
 /// The only relay the management transport is configured with. Public relays are never used.
 pub const DEFAULT_RELAY_URL: &str = "https://relay.ployz.dev";
@@ -63,7 +63,7 @@ pub const MANAGEMENT_PROOF_LABEL: &[u8] = b"ployz management client proof v1";
 /// capability never share a relay identity. The Machine admits the key this proves.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ManagementProof {
-    pub client: [u8; 32],
+    pub client: ClientKey,
     pub signature: [u8; 64],
 }
 
@@ -82,7 +82,7 @@ impl ManagementProof {
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::LEN] {
         let mut bytes = [0; Self::LEN];
-        bytes[..32].copy_from_slice(&self.client);
+        bytes[..32].copy_from_slice(self.client.as_bytes());
         bytes[32..].copy_from_slice(&self.signature);
         bytes
     }
@@ -91,7 +91,9 @@ impl ManagementProof {
     pub fn from_bytes(bytes: &[u8; Self::LEN]) -> Self {
         let (client, signature) = bytes.split_at(32);
         Self {
-            client: client.try_into().expect("split at 32 of a 96-byte proof"),
+            client: ClientKey::from_bytes(
+                client.try_into().expect("split at 32 of a 96-byte proof"),
+            ),
             signature: signature
                 .try_into()
                 .expect("split at 32 of a 96-byte proof"),

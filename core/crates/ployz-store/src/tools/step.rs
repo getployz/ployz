@@ -411,11 +411,6 @@ impl AttemptId {
         // Version 8 with the RFC 4122 variant: the bits `uuidFrom` sets.
         Self(uuid::Builder::from_custom_bytes(bytes).into_uuid())
     }
-
-    #[must_use]
-    pub const fn as_uuid(&self) -> &Uuid {
-        &self.0
-    }
 }
 
 impl std::fmt::Display for AttemptId {

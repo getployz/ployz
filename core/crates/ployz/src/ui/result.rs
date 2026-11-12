@@ -12,10 +12,10 @@ use std::{
     io::{self, IsTerminal, Write},
 };
 
-use ployz_core::{MachineFailure, MachineId, MachineName, PartialResult, RpcError};
+use ployz_core::{Hint, MachineFailure, MachineId, MachineName, PartialResult, RpcError};
 use serde::Serialize;
 
-use super::{Fields, Hint, Mode, Table, Tone, escaped_lines};
+use super::{Fields, Mode, Table, Tone, escaped_lines};
 use crate::failure::Failure;
 
 thread_local! {
@@ -69,7 +69,7 @@ pub(crate) fn note_inline(text: impl Display) {
 /// A hint line on stderr. `--json` carries hints as result keys instead.
 pub(crate) fn hint(hint: &Hint) {
     if !json() {
-        let _ = hint.write(&mut anstream::stderr());
+        let _ = super::error::write_hint(&mut anstream::stderr(), hint);
     }
 }
 

@@ -626,7 +626,7 @@ pub(crate) fn set_generated_domain(
             .ok_or_else(|| {
                 error::not_found(
                     format!("{} has no generated domain {name}", set.service),
-                    json!({ "valid_children": shown() }),
+                    error::valid(shown()),
                 )
             })?,
         (None, [only]) => only,
@@ -636,7 +636,7 @@ pub(crate) fn set_generated_domain(
                     "{} has several generated domains: name the one to change",
                     set.service
                 ),
-                json!({ "valid_children": shown() }),
+                error::valid(shown()),
             ));
         }
     };
@@ -655,7 +655,7 @@ pub(crate) fn set_generated_domain(
         .ok_or_else(|| {
             error::not_found(
                 format!("{} has no generated domain {current}", set.service),
-                json!({ "valid_children": shown() }),
+                error::valid(shown()),
             )
         })?;
     let port = set.port.unwrap_or(managed.target_port);
@@ -1277,6 +1277,6 @@ fn no_domain(environment: &Environment, trusted: &Trusted) -> RpcError {
         .collect::<Vec<_>>();
     error::not_found(
         format!("No such domain in Environment {}", environment.summary.name),
-        json!({ "valid_children": names }),
+        error::valid(names),
     )
 }

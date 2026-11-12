@@ -1,3 +1,4 @@
+use ployz_core::labels::{self, Stamp};
 use std::{
     collections::{BTreeSet, HashMap},
     net::IpAddr,
@@ -17,10 +18,7 @@ use ployz_core::{
     TransportProtocol,
 };
 
-use super::{
-    Error, LABEL_BRIDGE_IPV6, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_NAMESPACE,
-    LABEL_SERVICE_ID, LABEL_SERVICE_NAME,
-};
+use super::Error;
 use crate::sealed_env;
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
@@ -128,23 +126,21 @@ pub(super) fn container_create_body(
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    labels.extend([
-        (LABEL_MANAGED.into(), String::new()),
-        (LABEL_NAMESPACE.into(), namespace.to_string()),
-        (LABEL_SERVICE_ID.into(), spec.service_id.to_string()),
-        (LABEL_SERVICE_NAME.into(), spec.name.to_string()),
-    ]);
-    if hook.is_some() {
-        labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
-    }
     let publishes_host_port = spec
         .ports
         .iter()
         .any(|port| matches!(port, PortPublication::Host { .. }));
-    labels.insert(LABEL_BRIDGE_IPV6.into(), (!publishes_host_port).to_string());
+    Stamp {
+        namespace,
+        service_id: &spec.service_id,
+        service_name: &spec.name,
+        kind,
+        bridge_ipv6: !publishes_host_port,
+    }
+    .write(&mut labels);
     if let Some(record) = &opened.record {
         labels.insert(
-            sealed_env::LABEL_SEALED.into(),
+            labels::SEALED_ENV.into(),
             serde_json::to_string(record).expect("a sealed record serializes"),
         );
     }

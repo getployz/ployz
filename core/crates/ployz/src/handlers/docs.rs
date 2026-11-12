@@ -4,7 +4,8 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_store::docs::{self, Lookup};
 
 use super::{Error, leaf_matches};
-use crate::ui::{self, Hint};
+use crate::ui;
+use ployz_core::Hint;
 
 pub(super) fn command(command: Command) -> Command {
     command.about("Search the Ployz docs, or print a page").arg(

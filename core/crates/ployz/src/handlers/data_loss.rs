@@ -3,10 +3,10 @@
 use super::{Error, leaf_matches, string_values};
 use crate::{connect::Client, context::ConnectionSource};
 use clap::ArgMatches;
-use ployz_core::{DataLoss, DataLossConfirmation, ObservedDataLoss};
+use ployz_core::{DataLoss, DataLossConfirmation, Hint, ObservedDataLoss};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ui::{self, Hint, Tree};
+use crate::ui::{self, Tree};
 
 #[derive(Clone, Copy)]
 pub(super) enum VolumeEffect {

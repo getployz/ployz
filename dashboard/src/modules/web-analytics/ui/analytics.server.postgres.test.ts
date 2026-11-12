@@ -9,6 +9,7 @@ import { addDays, localDay } from "#/modules/web-analytics/local-time";
 import { dayOf, ensurePartitions, forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
 import { analyticsGoal, analyticsRequest } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
+import { holdProduction, hostedPolar } from "#/test/billing";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { createGoal, deleteGoal, readAnalyticsView, readApiView, readErrorsView } from "./analytics.server";
 
@@ -18,15 +19,8 @@ const PRODUCTION = "00000000-0000-4000-8000-00000000f503";
 const KEPT_GOAL = "00000000-0000-4000-8000-00000000f504";
 const scope = { organizationSlug: "acme", environmentId: PRODUCTION };
 
-const hosted: PolarService = {
-  mode: "hosted",
-  productId: "pro",
-  listActiveSubscriptions: () => Effect.die("not used"),
-  createCustomerPortal: () => Effect.die("not used"),
-};
-
-/** Acme's production Environment with one goal on `/kept`, on the given plan, with analytics on or off there. */
-const setup = Effect.fn(function* (plan: { polar?: PolarService; analyticsEnabled: boolean }, siteEnabled: boolean) {
+/** Acme's production Environment with one goal on `/kept`, on the given plan, with analytics on or off there. A hosted Cloud reads Production from the billing row, so `production` seeds it. */
+const setup = Effect.fn(function* (plan: { polar?: PolarService; analyticsEnabled: boolean }, siteEnabled: boolean, production = false) {
   forgetPartitions();
   const services = yield* storeTestCloud({
     ...(plan.polar && { polar: plan.polar }),
@@ -34,6 +28,7 @@ const setup = Effect.fn(function* (plan: { polar?: PolarService; analyticsEnable
   });
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
+  if (production) yield* provide(holdProduction(ORGANIZATION));
   const store = yield* provide(cloudStore);
   yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: PRODUCTION }));
   yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: siteEnabled, timezone: "UTC" }));
@@ -72,7 +67,7 @@ it.live("goal writes go through where the plan and the Environment have analytic
 }).pipe(Effect.scoped));
 
 it.live("every hosted Cloud Organization writes goals, with no subscription and ANALYTICS_ENABLED unset", () => Effect.gen(function* () {
-  const { provide, goals, actor } = yield* setup({ polar: hosted, analyticsEnabled: false }, true);
+  const { provide, goals, actor } = yield* setup({ polar: hostedPolar, analyticsEnabled: false }, true);
   yield* provide(createGoal(actor, { ...scope, name: "Signup", pathPattern: "/signup*" }));
   expect(yield* goals()).toEqual(["/kept", "/signup*"]);
 }).pipe(Effect.scoped));
@@ -128,6 +123,35 @@ for (const { name, plan, siteEnabled } of refusals) {
     expect([api, errors]).toEqual([{ gate: closed }, { gate: closed }]);
   }).pipe(Effect.scoped));
 }
+
+it.live("a hosted Organization without Production reads none of the three views, though its Environment counts", () => Effect.gen(function* () {
+  const { provide, actor } = yield* setup({ polar: hostedPolar, analyticsEnabled: false }, true);
+  const today = localDay("UTC", Date.now());
+  yield* provide(insertPageviews([{ ts: new Date(`${today}T01:00:00Z`), visitorId: 1n }]));
+  const views = yield* provide(Effect.all([
+    readAnalyticsView(actor, { ...scope, range: "30d" }),
+    readApiView(actor, { ...scope, window: "24h" }),
+    readErrorsView(actor, { ...scope, window: "24h" }),
+  ]));
+  expect(views).toEqual([{ gate: "production" }, { gate: "production" }, { gate: "production" }]);
+}).pipe(Effect.scoped));
+
+it.live("a hosted Organization with Production reads its views, with ANALYTICS_ENABLED unset", () => Effect.gen(function* () {
+  const { provide, actor } = yield* setup({ polar: hostedPolar, analyticsEnabled: false }, true, true);
+  const today = localDay("UTC", Date.now());
+  yield* provide(insertPageviews([{ ts: new Date(`${today}T01:00:00Z`), visitorId: 1n }]));
+  const web = yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }));
+  const [api, errors] = yield* provide(Effect.all([
+    readApiView(actor, { ...scope, window: "24h" }),
+    readErrorsView(actor, { ...scope, window: "24h" }),
+  ]));
+  expect([web.gate, api.gate, errors.gate]).toEqual(["on", "on", "on"]);
+}).pipe(Effect.scoped));
+
+it.live("a hosted Organization with Production still sees analytics off in an Environment that counts nothing", () => Effect.gen(function* () {
+  const { provide, actor } = yield* setup({ polar: hostedPolar, analyticsEnabled: false }, false, true);
+  expect(yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }))).toEqual({ gate: "site-off" });
+}).pipe(Effect.scoped));
 
 it.live("the Errors view draws every hour of the window, quiet ones as zero, and lists the services that served people", () => Effect.gen(function* () {
   const { provide, actor } = yield* setup({ analyticsEnabled: true }, true);

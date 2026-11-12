@@ -28,14 +28,23 @@ async fn a_refused_container_tail_names_the_capability_and_the_machine() {
     .expect("connect must not hang")
     .unwrap();
 
+    let names = ployz::sdk::SealedNames::new();
+    let feed = names.clone();
+    tokio::spawn(async move {
+        feed.wanted().await;
+        feed.begin().done(Some(std::collections::BTreeSet::new()));
+    });
     let Err(error) = client
-        .container_logs(ployz::sdk::ContainerLogInput {
-            machine_id: description.machine_id,
-            container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
-            tail: 10,
-            follow: true,
-            since_unix_seconds: None,
-        })
+        .scrubbed_logs(
+            ployz::sdk::ContainerLogInput {
+                machine_id: description.machine_id,
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                tail: 10,
+                follow: true,
+                since_unix_seconds: None,
+            },
+            &names,
+        )
         .await
     else {
         panic!("a refused tail must not open a stream");

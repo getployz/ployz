@@ -14,7 +14,7 @@ mod tree;
 
 #[cfg(test)]
 pub(crate) use error::chain_text;
-pub use error::{Hint, VALID_SHOWN, causes};
+pub use error::{VALID_SHOWN, causes};
 pub(crate) use error::{
     WaitNotices, row, rpc_error, sentence, then_sentence, warn_cause, with_reason,
 };

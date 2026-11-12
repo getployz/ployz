@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, io::IsTerminal, time::Duration};
 use chrono::DateTime;
 use clap::{ArgMatches, Command};
 use globset::GlobMatcher;
-use ployz_core::{RpcErrorCode, StorageChoice};
+use ployz_core::{Hint, RpcErrorCode, StorageChoice};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,7 +14,7 @@ use super::super::waiting::{self, Waiting};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
-use crate::ui::{self, Cell, Hint, Table, printable};
+use crate::ui::{self, Cell, Table, printable};
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Enroll servers waiting to join")

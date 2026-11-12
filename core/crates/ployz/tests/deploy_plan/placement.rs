@@ -1960,7 +1960,7 @@ fn left_by(mut copy: ContainerObservation, run: &str, key: &str) -> ContainerObs
         parts.rotation = Some(ployz_core::CopyRotation::Pending);
         parts
             .labels
-            .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), run.into());
+            .insert(ployz_core::labels::DEPLOYMENT_ID.into(), run.into());
         parts
             .labels
             .insert(ployz_core::labels::CREATION_KEY.into(), key.into());

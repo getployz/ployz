@@ -2,6 +2,7 @@
 //! Sync, or take a hint), copy a Live Node into it, keep it.
 
 use clap::ArgMatches;
+use ployz_core::Hint;
 use ployz_core::ServiceName;
 use ployz_core::config::{ChangeKind, ReviewLifecycleKind, ServiceSettingChange};
 use ployz_store::{
@@ -204,7 +205,7 @@ fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
             "Undid Sync {} in {}/{}.",
             request.sync, into.project, into.name
         ));
-        crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
+        crate::ui::hint(&Hint::Next(next.clone()));
     })
 }
 
@@ -263,7 +264,7 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
             ));
         }
         if let Some(next) = &next {
-            crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
+            crate::ui::hint(&Hint::Next(next.clone()));
         }
     })
 }
@@ -485,9 +486,9 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
         if synced.closing {
             crate::ui::stream(format_args!("Closing {from}."));
         }
-        crate::ui::hint(&crate::ui::Hint::Undo(undo));
+        crate::ui::hint(&Hint::Undo(undo));
         if let Some(next) = &next {
-            crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
+            crate::ui::hint(&Hint::Next(next.clone()));
         }
     })
 }
@@ -579,7 +580,7 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
             }
         }
         if let Some(next) = next {
-            crate::ui::hint(&crate::ui::Hint::Next(next));
+            crate::ui::hint(&Hint::Next(next));
         }
     })
 }
