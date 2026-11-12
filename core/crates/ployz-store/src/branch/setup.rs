@@ -196,16 +196,7 @@ pub(crate) fn set_own(
         .filter(|setup| setup.lineage != lineage)
         .collect();
     setup.extend(command.map(|command| Setup { lineage, command }));
-    tx.execute(
-        "UPDATE config_environment_branch SET setup = ?1 WHERE environment_id = ?2",
-        &[
-            serde_json::to_string(&setup)
-                .expect("Setup Commands are JSON")
-                .as_str()
-                .into(),
-            environment.summary.id.as_str().into(),
-        ],
-    )?;
+    rows::set_setup(tx, &environment.summary.id, &setup)?;
     Ok(true)
 }
 

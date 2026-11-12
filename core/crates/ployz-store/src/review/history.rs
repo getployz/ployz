@@ -321,22 +321,13 @@ fn snapshot(
     scrub: &review::Scrub,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
-    let rows = tx.query(
-        "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
-        &[
-            environment.summary.id.as_str().into(),
-            revision_param(revision)?.into(),
-        ],
-    )?;
-    let mut intent = rows
-        .first()
-        .ok_or_else(|| {
+    let mut intent =
+        review::saved::intent_at(tx, &environment.summary.id, revision)?.ok_or_else(|| {
             error::not_found(
                 format!("No saved version has revision {revision}"),
                 json!({ "revision": revision }),
             )
-        })?
-        .intent(0, "Saved State")?;
+        })?;
     scrub.apply(revision, &mut intent);
     // A value an Environment above sealed since reads Sealed, as History shows it
     // (#3756). Its fingerprint stays, so Undo still sees each change to it, and

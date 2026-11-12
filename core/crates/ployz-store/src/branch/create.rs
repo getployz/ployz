@@ -206,20 +206,14 @@ pub(crate) fn create_branch(
     // A Branch first, so what it lands uses its Parent's nodes live. What it is made
     // with is what it and its Parent share.
     let made_with = document(&base);
-    tx.execute(
-        "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, made_with, setup) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        &[
-            create.id.as_str().into(),
-            who.organization.as_str().into(),
-            parent.summary.id.as_str().into(),
-            i64::from(create.keep).into(),
-            made_with.as_str().into(),
-            serde_json::to_string(&setup)
-                .expect("Setup Commands are JSON")
-                .as_str()
-                .into(),
-        ],
+    rows::insert(
+        tx,
+        who.organization.as_str(),
+        &create.id,
+        &parent.summary.id,
+        create.keep,
+        &made_with,
+        &setup,
     )?;
     share(tx, (&create.id, &parent.summary.id), &base)?;
     let carried = Carried::of(tx, &parent.summary.id, &from)?;
@@ -386,13 +380,7 @@ pub(crate) fn keep_branch(
     crate::removal::marked(tx, &branch)?;
     let row = branch_row(tx, &branch)?;
     if row.kept != keep.kept {
-        tx.execute(
-            "UPDATE config_environment_branch SET kept = ?1 WHERE environment_id = ?2",
-            &[
-                i64::from(keep.kept).into(),
-                branch.summary.id.as_str().into(),
-            ],
-        )?;
+        rows::set_kept(tx, &branch.summary.id, keep.kept)?;
     }
     Ok(Branched {
         branch: view(tx, &branch)?,

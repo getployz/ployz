@@ -251,13 +251,7 @@ pub(crate) fn set_protected(
     }
     let kind = if crate::pr_environment::of(tx, &summary.id)?.is_some() {
         Some("a PR Environment")
-    } else if !tx
-        .query(
-            "SELECT parent_id FROM config_environment_branch WHERE environment_id = ?1",
-            &[summary.id.as_str().into()],
-        )?
-        .is_empty()
-    {
+    } else if crate::branch::parent_of(tx, summary.id.as_str())?.is_some() {
         Some("a Branch")
     } else {
         None

@@ -1901,16 +1901,8 @@ pub(crate) fn saved_at(
         return scope::load_by_id(tx, environment)
             .map(|loaded| crate::scope::empty(&loaded.working.environment_slug));
     }
-    let rows = tx.query(
-        "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
-        &[
-            environment.as_str().into(),
-            revision_param(revision)?.into(),
-        ],
-    )?;
-    rows.first()
-        .ok_or_else(|| error::corrupt("Saved State"))?
-        .intent(0, "Saved State")
+    crate::review::saved::intent_at(tx, environment, revision)?
+        .ok_or_else(|| error::corrupt("Saved State"))
         .map(canonicalize_environment_intent)
 }
 

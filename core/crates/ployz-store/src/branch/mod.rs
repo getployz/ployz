@@ -12,6 +12,7 @@ mod live;
 mod never_sync;
 mod pair;
 mod proposal;
+mod rows;
 mod setup;
 mod sync;
 pub(crate) use create::*;
@@ -25,6 +26,7 @@ pub(crate) use proposal::remove as remove_proposal;
 pub use proposal::{Included, ProposalSource, RemoveProposal, Removed};
 pub(crate) use proposal::{Owners, release_changed};
 pub(crate) use proposal::{end_included, included};
+pub(crate) use rows::{Row, parent_and_made_with, parent_of, row};
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{
     Own, Setup, branch_setup, refuse_service_named_setup, set_branch_setup, set_own,
@@ -520,13 +522,6 @@ pub(crate) fn not_set(
     Ok(not_set)
 }
 
-/// A Branch's row.
-pub(crate) struct Row {
-    pub(crate) parent: EnvironmentId,
-    pub(crate) kept: bool,
-    setup: Vec<Setup>,
-}
-
 /// An Environment a Branch comes from, with what it runs.
 struct Ancestor {
     environment: Environment,
@@ -569,21 +564,6 @@ pub(crate) fn ancestors(
         at = row.parent;
     }
     Ok(found)
-}
-
-pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, RpcError> {
-    let rows = tx.query(
-        "SELECT parent_id, kept, setup FROM config_environment_branch WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    Ok(Some(Row {
-        parent: row.parse::<EnvironmentId>(0, "Branch")?,
-        kept: row.int(1)? != 0,
-        setup: row.json(2, "Branch")?,
-    }))
 }
 
 /// `environment`'s Branch row, or why only a Branch does this.
