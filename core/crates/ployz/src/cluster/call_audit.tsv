@@ -132,6 +132,7 @@ src/ingress.rs::declaration_of	op::DescribeContract	call	unary	-	redial	read
 src/ingress.rs::declare	op::SetClusterDoors	call_shared	single	-	-	once
 src/ingress.rs::declare	op::SetClusterDoors	call_shared	single	-	-	once
 src/sdk.rs::about	op::DescribeContract	unary	unary	-	redial	read
+src/sdk.rs::activate_enforcement	op::ActivateEnforcement	invoke	single	target(crate::connect::TARGET_RPC_TIMEOUT)	-	once
 src/sdk.rs::clear_management_client	op::SetManagementClient	call_unretried	single	reply(crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT)	-	once
 src/sdk.rs::copy_container_image	ployz_core::op::InspectContainer	invoke	single	target(crate::connect::TARGET_RPC_TIMEOUT)	-	once
 src/sdk.rs::inspect	op::Inspect	unary	unary	-	redial	read
@@ -141,6 +142,8 @@ src/sdk.rs::inspect_machine	op::Inspect	invoke	single	target(crate::connect::TAR
 src/sdk.rs::mint_build_grant	op::MintBuildGrant	call_unretried	single	reply(crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT)	-	once
 src/sdk.rs::publish_certificate_material	op::PublishCertificateMaterial	unary	unary	-	redial	keyed
 src/sdk.rs::request_machine_upgrade	op::RequestMachineUpgrade	repeatable	unary	budget(target_read_timeout)	redial	keyed
+src/sdk.rs::reseal_values	op::ResealValues	call	unary	budget(target_read_timeout)	redial	keyed
+src/sdk.rs::set_recipient_key	op::SetRecipientKey	call	unary	budget(target_read_timeout)	redial	keyed
 src/sdk.rs::set_cluster_name	op::SetClusterName	unary	unary	-	redial	keyed
 src/sdk.rs::set_management_client	op::SetManagementClient	unary_answered	unary	-	redial	keyed
 src/sdk.rs::set_push_target	op::SetPushTarget	unary	unary	-	redial	keyed

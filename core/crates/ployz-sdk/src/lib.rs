@@ -945,6 +945,58 @@ impl Client {
         to_json(&attempt)
     }
 
+    /// Hand one Machine a person's signed starting set, once. Inspect's `activation` reports
+    /// how it settled.
+    #[napi(ts_return_type = "Promise<DeviceEnforcementSet>")]
+    pub async fn activate_enforcement(
+        &self,
+        machine: String,
+        #[napi(ts_arg_type = "ActivateEnforcementRequest")] request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let request: ployz_core::ActivateEnforcementRequest =
+            from_js(request).map_err(invalid_argument)?;
+        let set = self
+            .inner
+            .activate_enforcement(&machine, request)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&set)
+    }
+
+    /// Generate, install or share the recipient key of one Machine's activation.
+    #[napi(ts_return_type = "Promise<RecipientKeySet>")]
+    pub async fn set_recipient_key(
+        &self,
+        machine: String,
+        #[napi(ts_arg_type = "SetRecipientKeyRequest")] request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let request: ployz_core::SetRecipientKeyRequest =
+            from_js(request).map_err(invalid_argument)?;
+        let set = self
+            .inner
+            .set_recipient_key(&machine, request)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&set)
+    }
+
+    /// Ask one activated Machine to seal values again to its own recipient key.
+    #[napi(ts_return_type = "Promise<ValuesResealed>")]
+    pub async fn reseal_values(
+        &self,
+        machine: String,
+        #[napi(ts_arg_type = "ResealValuesRequest")] request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let request: ployz_core::ResealValuesRequest =
+            from_js(request).map_err(invalid_argument)?;
+        let resealed = self
+            .inner
+            .reseal_values(&machine, request)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&resealed)
+    }
+
     /// Give every Participating Machine of a Cluster founded before Sealing Keys the one
     /// Sealing Key. Each Machine RPC is bounded and safe to repeat; rerun after a
     /// `waiting` report or a failed Machine. The report carries no ciphertext.
