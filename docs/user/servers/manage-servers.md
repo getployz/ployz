@@ -327,28 +327,42 @@ a volume comes off only under a [teardown](#take-things-off-servers-that-enforce
 was already used, including after the server restarts. It allows two minutes of clock difference
 when checking the issue time and expiry.
 
+Turning enforcement on is called activation. You do it once per cluster, after every server
+runs Ployz 0.4, and it can't be turned off. Read [Upgrade to Ployz 0.4](upgrade-to-0-4.md)
+first: it says what activation removes and what it can't undo.
+
 ```sh
-ployz device enforce
-ployz device enforce --off
+ployz device enforce --connect ssh://root@203.0.113.10
 ```
 
-`enforce` needs this computer's approved device key. Before it changes anything, it asks each
-server for its own ID, WireGuard key and subnet. It prints that starting set as
-`Trusting N Servers from the start:`, then each server's name, subnet, Machine ID and WireGuard key
-fingerprint, and signs it. Check the list. Each server then trusts only the servers in that signed set, plus servers whose join
-an approved device signed later. A server row that no server answers for is left out, even if
-it was registered just before. A server refuses a set that leaves itself out, is not signed by
-one of its devices, is over 15 minutes old, or was already used. With enforcement already on,
-`enforce` adds the servers in the new set. It sets every server that answers and lists each server's
-state. A server that doesn't answer is listed under failures, and one with no direct connection
-under omissions. Either way the command exits 3, and that server keeps its old setting. Run `enforce` again once it is reachable. A server
-from before this setting is reported with its rows missing, the same as one that's down, and
-restarts as before. Upgrade it first.
+`enforce` needs this computer's approved device key. It trusts a server's key only when this
+computer learned it without going through Ployz Cloud:
 
-The starting set is trust on first use, like the first SSH connection to a host. It is only as
-trustworthy as Ployz Cloud is at the moment you turn enforcement on. To check it, run
-`sudo ployz status` on each server and compare its **wireguard key** line with the fingerprint
-printed next to that server. If they differ, run `ployz device enforce --off` and don't trust that set.
+- the server's join was approved from this computer, or
+- you reach that server over SSH or run the command on it, or
+- you confirm the key's fingerprint. Run `sudo ployz status` on the server and compare its
+  **wireguard key** line with the one `enforce` shows, or pass it with `--pin`.
+
+A server whose key doesn't match what this computer saw before stops the command, and nothing is
+signed. A server you don't confirm is left out and stays as it was. So is a server running a
+Ployz older than 0.4.
+
+Next, `enforce` lists the devices and passkeys added while enforcement was off. Activation
+removes each one unless you keep it. Keep a key only after checking its code with
+`ployz device ls` on that computer, or pass it with `--keep`. With `--yes`, `enforce` keeps no
+older key and leaves out every server it hasn't confirmed.
+
+It then prints `Signing the N Servers every Server trusts from now on:`, each server's name,
+subnet, Machine ID and key fingerprint, and the keys you kept, and signs that list. Each server
+checks the list, restarts, and reports itself activated. `enforce` waits for each one, then
+gives the cluster a new key for sealed values, made on this computer. Values you seal from then
+on use it, so no one holding the old key can open them. It lists each server as `activated`,
+`left out` or `refused`, with why, and exits 3 unless every server activated. Run it again for a
+server it left out.
+
+After activation a server trusts only the servers in the signed list, plus servers whose join an
+approved device signs later. A server that held a key or server from before enforcement refuses
+a list delivered through Ployz Cloud, so reach each such server over SSH.
 
 Enforcement also covers deploys: a server creates a container only from a spec an approved
 device signed with `ployz deploy`, and only from an image pinned by digest. See
@@ -361,7 +375,7 @@ sealed value or runs any step, and a build Ployz Cloud already started can't ope
 or push again once you turn enforcement on, though a request already in progress may finish. A build started over a device's own connection still runs, and so does a push under an
 [automatic deploy rule](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval).
 A rule names the servers it was approved for, so after you add a server, approve it again with
-`ployz github rule approve`. Turn enforcement off to build through Ployz Cloud again. See
+`ployz github rule approve`. See
 [Builds on servers that enforce device approval](../builds/where-builds-run.md#builds-on-servers-that-enforce-device-approval).
 
 Enforcement also covers volume moves, resizes, restores and mirror removals. A server moves a
@@ -374,7 +388,7 @@ working. See
 [Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval),
 [Restore a volume](../services/restore-a-volume.md#on-servers-that-enforce-device-approval) and
 [Mirror a volume](../services/mirror-a-volume.md#mirror-on-servers-that-enforce-device-approval).
-Restoring a point into a new volume waits for a later release; turn enforcement off first.
+Restoring a point into a new volume on these servers waits for a later release.
 
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
 allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).

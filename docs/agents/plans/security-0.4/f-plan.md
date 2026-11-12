@@ -120,9 +120,14 @@ Activation is today's `ployz device enforce` with five changes. It promotes noth
   | `restart-approvals.json`, `accepted` (`:239`, `:293`) | `AcceptedBuild`: generation, commit and image, with no signer. `rule_deploy.rs:100` uses it to skip the GitHub token check for a later creation. | Drop every entry, because the entry can't show its rule was signed by a snapshot key. The next Container under each rule needs a fresh token check. Every request still re-verifies the rule's own signature against the trusted keys (`rule_deploy.rs:74`), so this costs one token check per rule and Service. |
   | `restart-approvals.json`, `rules` | Each rule's highest generation and fixed identity | Keep. It only refuses. A mark that a planted rule raised can refuse a real rule, which is a drop. |
   | `restart-approvals.json`, `proofs`, `rule_hooks`, `operations`, `expiry_time_floor` | Consumed tokens, the hook already run per push, consumed operations, and the expiry floor | Keep. Each only refuses a replay. |
-  | `upgrade-attempt.json` (`ployzd/src/installer/upgrade.rs:20`) | One upgrade attempt | Keep one that hasn't reached its worker only if it names the release the signed channel resolves to. A running worker installs a Ployz-signed release, forward only. |
-  | `sealing.key` | The Sealing Key | Rotated after the commit |
-  | `sealed.json` (`ployzd/src/build/sealed.rs`) | One Build's captured values, still sealed | Delete. No Build survives the restart. |
+  | `upgrade-attempt.json` (`ployzd/src/installer/upgrade.rs:20`) | One upgrade attempt | Keep. *As built:* boot launches no worker, and a running worker installs a Ployz-signed release, forward only, so the channel check moved to the upgrade route itself. |
+  | `sealing.key` | The Cluster's identity Sealing Key | Keep. *As built (gap 8, option A):* it stays the identity and opens only what was sealed before activation. |
+  | `recipient.key` | The recipient key a verified `SealingRotation` installed | Keep. Only a verified rotation writes it. |
+  | `recipient-generated.key` | A recipient generated for the dashboard path, not yet named by a rotation | Delete. A rotation after the commit generates again. |
+  | `activation-pending.json` | The admitted starting set | Applied by the commit, then deleted. |
+  | `restart-approvals.json`, `volumes` | Volume operations and the grants that let a step run | Keep each operation and drop every grant. Each later step is re-verified. |
+  | `restart-approvals.json`, `upgrade_channels` | Signed channel statements consumed | Keep. It only refuses a replay. |
+  | ~~`sealed.json`~~ | *As built:* no such file exists at head; a Build's values stay in memory. | None. |
   | `account.json` (`ployzd/src/certificates.rs`) | The ACME account key | Keep. It is DNS and ACME authority, `Bound` under thread X. |
   | `config.toml` (`ployzd/src/corrosion/service.rs`) | The replicated store's own configuration | Keep. The daemon writes it, and it holds no key. |
   | `dns.json`, `bridge-stopped-members.json`, `bridge-member-addresses.json` | DNS and bridge state derived from the record and the store | Keep. Each is rebuilt from the activated record and the filtered `machines` table. |

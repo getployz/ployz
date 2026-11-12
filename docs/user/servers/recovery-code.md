@@ -8,6 +8,10 @@ key your servers keep. The recovery code is the spare key: if you lose every ser
 the next one open your sealed values again. Ployz Cloud keeps a backup of the key that only
 this code opens, so Ployz can't open it for you.
 
+After you [activate Ployz 0.4](upgrade-to-0-4.md), new sealed values use a new key, and the
+recovery code opens only the values sealed before. Keep at least two servers running, since
+losing every server means setting those newer values again.
+
 ## Get your recovery code
 
 When you add the first server of your organization with `ployz server add` in a terminal, it

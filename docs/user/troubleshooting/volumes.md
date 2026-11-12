@@ -57,9 +57,9 @@ The approval ran out before every step started. Steps a server already took fini
 else changes. Approve the change again.
 
 If you turned enforcement on while a move was running, or a move's own release failed, the servers
-refuse to start your service on either side, so it stays stopped. No data is lost. Run
-`ployz device enforce --off`, then `ployz volume release data`, which finishes or undoes the
-move, whichever it reached. Then turn enforcement back on.
+refuse to start your service on either side, so it stays stopped. No data is lost. From an
+approved device, run `ployz volume move data --to <server>` again with the server it was moving
+to. It signs the move, which continues from where it stopped.
 
 ## A restore says the server enforces device approval
 

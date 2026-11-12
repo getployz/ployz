@@ -196,6 +196,13 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
             install_recipient(&config, &client, &reach, &activated, &set, &signer).await?;
         }
         print_retired(&activated, &reach, &kept, own);
+        let mut gaps = gaps;
+        gaps.omitted.extend(
+            outcomes
+                .iter()
+                .filter(|outcome| outcome.state != State::Activated)
+                .map(|outcome| outcome.machine_id),
+        );
         let gaps = reach.named(gaps);
         ui::finish_fanout("servers", &outcomes, &gaps, || {
             let mut table = Table::new(["SERVER", "ACTIVATION"], "No servers answered.");
@@ -570,7 +577,7 @@ async fn install_recipient(
     }
     crate::sealing_pin::Pins::beside(config).name_recipient(identity, rotation.recipient)?;
     ui::note(
-        "Your recovery code still opens only values sealed before activation. Keep this device's key safe.",
+        "Values sealed from now on open only on your activated Servers. Your recovery code opens only values sealed before.",
     );
     Ok(())
 }
