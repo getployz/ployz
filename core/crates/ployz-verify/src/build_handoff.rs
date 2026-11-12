@@ -70,6 +70,9 @@
 
 use std::fmt::Write as _;
 
+use ployz_decide::github_build::{
+    self as real, EndKind, EndedRun, First, GithubLook, Hold, Target, github_end_holds,
+};
 use stateright::{Model, Property};
 
 /// The most looks the walk takes (`for (let check = 0; ; check += 1)`,
@@ -160,41 +163,55 @@ enum Deployment {
 /// Why a build failed or was passed on, as the message the Store records says.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Why {
-    /// "the run ran out of time" (core/crates/ployz/src/sdk/github_build.rs:546-548).
+    /// `Why::RanOutOfTime` in `ployz-decide`.
     RanOutOfTime,
-    /// "the run ended without pushing an image" (core/crates/ployz/src/sdk/github_build.rs:549-551).
+    /// `Why::EndedWithoutPushing` in `ployz-decide`.
     EndedWithoutPushing,
-    /// "no runner started the build in time" (core/crates/ployz/src/sdk/github_build.rs:491-492).
+    /// `Why::NoRunnerInTime` in `ployz-decide`.
     NoRunnerInTime,
-    /// "the run ended before it started the build" (core/crates/ployz/src/sdk/github_build.rs:494).
+    /// `Why::EndedBeforeStart` in `ployz-decide`.
     EndedBeforeStart,
     /// `OLD_MINT_SKIPS` (core/crates/ployz/src/sdk/github_build.rs:276-277).
     OldMint,
-    /// "a build step failed" (core/crates/ployz/src/sdk/github_build.rs:543-545).
+    /// `Why::StepFailed` in `ployz-decide`.
     StepFailed,
-    /// "your Machine couldn't be reached to confirm the push"
-    /// (core/crates/ployz/src/sdk/github_build.rs:514-518).
+    /// `Why::Unreachable` in `ployz-decide`.
     Unreachable,
-    /// The Machine's refusal (core/crates/ployz/src/sdk/github_build.rs:508-510).
+    /// `Why::Refused` in `ployz-decide`: the Machine's refusal.
     Refused,
     /// "cancelled" (core/crates/ployz/src/sdk/github_build.rs:657-659).
     Cancelled,
 }
 
 impl Why {
-    fn message(self) -> &'static str {
+    /// The sentence the Store records, which the real [`real::Why`] says for the ones
+    /// `github_finish` ends a build with.
+    fn message(self) -> String {
         match self {
-            Self::RanOutOfTime => "the run ran out of time",
-            Self::EndedWithoutPushing => "the run ended without pushing an image",
-            Self::NoRunnerInTime => "no runner started the build in time",
-            Self::EndedBeforeStart => "the run ended before it started the build",
+            Self::RanOutOfTime => real::Why::RanOutOfTime.message().to_owned(),
+            Self::EndedWithoutPushing => real::Why::EndedWithoutPushing.message().to_owned(),
+            Self::NoRunnerInTime => real::Why::NoRunnerInTime.message().to_owned(),
+            Self::EndedBeforeStart => real::Why::EndedBeforeStart.message().to_owned(),
+            Self::StepFailed => real::Why::StepFailed.message().to_owned(),
+            Self::Unreachable => real::Why::Unreachable.message().to_owned(),
             Self::OldMint => {
-                "GitHub builds a sealed value only with an up-to-date Ployz on the runner and your server"
+                "GitHub builds a sealed value only with an up-to-date Ployz on the runner and your server".to_owned()
             }
-            Self::StepFailed => "a build step failed",
-            Self::Unreachable => "your Machine couldn't be reached to confirm the push",
-            Self::Refused => "<the Machine's refusal>",
-            Self::Cancelled => "cancelled",
+            Self::Refused => "<the Machine's refusal>".to_owned(),
+            Self::Cancelled => "cancelled".to_owned(),
+        }
+    }
+
+    /// The model's name for what `github_finish` ends a build with.
+    fn of(why: &real::Why) -> Self {
+        match why {
+            real::Why::RanOutOfTime => Self::RanOutOfTime,
+            real::Why::EndedWithoutPushing => Self::EndedWithoutPushing,
+            real::Why::NoRunnerInTime => Self::NoRunnerInTime,
+            real::Why::EndedBeforeStart => Self::EndedBeforeStart,
+            real::Why::StepFailed => Self::StepFailed,
+            real::Why::Unreachable => Self::Unreachable,
+            real::Why::Refused(_) => Self::Refused,
         }
     }
 }
@@ -219,32 +236,13 @@ impl std::fmt::Display for End {
     }
 }
 
-/// The look that calls `githubFinish`, which Cloud passes it as its `look` argument (`code`):
-/// the budget (:214), the start limit (:219), or a run that ended (:217, :223, and the
-/// report's own at :312).
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Look {
-    Budget,
-    StartLimit,
-    Ended,
-}
-
-impl Look {
-    /// What `github_finish(timed_out)` was passed for it before the code passed the look.
-    fn timed_out(self) -> bool {
-        match self {
-            Self::Budget | Self::StartLimit => true,
-            Self::Ended => false,
-        }
-    }
-
-    /// The look as Cloud passes it.
-    fn code(self) -> &'static str {
-        match self {
-            Self::Budget => "budget",
-            Self::StartLimit => "start_limit",
-            Self::Ended => "ended",
-        }
+/// The look as Cloud passes it to `githubFinish` (`code`): the budget (:214), the start
+/// limit (:219), or a run that ended (:217, :223, and the report's own at :312).
+fn code(look: GithubLook) -> &'static str {
+    match look {
+        GithubLook::Budget => "budget",
+        GithubLook::StartLimit => "start_limit",
+        GithubLook::Ended => "ended",
     }
 }
 
@@ -275,14 +273,20 @@ enum Mint {
     Fails,
 }
 
-/// A `github_finish` statement next (core/crates/ployz/src/sdk/github_build.rs:466-556).
+/// A digest for what the grant's Machine received: the model tracks only that it did.
+fn digest() -> ployz_core::ImageDigest {
+    ployz_core::ImageDigest::parse(format!("sha256:{}", "a".repeat(64)))
+        .expect("a digest is sha256 and 64 hex")
+}
+
+/// A `github_finish` statement next (`github_finish` in core/crates/ployz/src/sdk/github_build.rs).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Finish {
-    /// The re-read of the build (core/crates/ployz/src/sdk/github_build.rs:473-484).
+    /// The re-read of the build, then `first` in `ployz-decide`.
     Read,
-    /// `inspect_grant` (core/crates/ployz/src/sdk/github_build.rs:506), with the end the re-read found (core/crates/ployz/src/sdk/github_build.rs:521).
+    /// `inspect_grant`, then `after_read` in `ployz-decide`, with the end the re-read found.
     Inspect { ended: Option<RunEnd> },
-    /// `settle`'s `github_end` (core/crates/ployz/src/sdk/github_build.rs:558-569).
+    /// `settle`'s `github_end`.
     Settle(End),
 }
 
@@ -323,7 +327,7 @@ enum At {
     /// `runEnded` is next: at :217 without a grant, at :223 with one.
     AskingGithub { grant: bool },
     /// `finish` (:207-211), called with `look`.
-    Finishing { look: Look, at: Finish },
+    Finishing { look: GithubLook, at: Finish },
     /// `cancelDispatchedGithubRun` after the start limit's finish (:220). `waiting` is what
     /// the finish answered, which :221 returns.
     LimitCancel { waiting: bool },
@@ -534,7 +538,7 @@ enum Branch {
     Cancelled(Canceller),
     Finish {
         by: Finisher,
-        look: Look,
+        look: GithubLook,
         step: FinishStep,
     },
     /// The step failed, by a crash or a refused settle; `retried`: Inngest runs it again.
@@ -648,16 +652,26 @@ struct State {
 }
 
 impl State {
-    /// `github_end` (core/crates/ployz-store/src/build.rs:1239-1287), for run `run`.
+    /// `github_end` in core/crates/ployz-store/src/build.rs, for run `run`; its guard is
+    /// `github_end_holds` in `ployz-decide`.
     fn github_end(&mut self, broken: Broken, run: Run, end: End) -> Result<Status, ()> {
-        let holds = match end {
-            End::Unstarted(_) => self
-                .row
-                .building_on(run)
-                .is_some_and(|github| broken.unstarted_ignores_grant || github.grant.is_none()),
-            End::Built | End::Failed(_) | End::Skipped(_) => self.row.building_on(run).is_some(),
+        // Without the grant guard the Store treats an Unstarted end like any other.
+        let kind = match end {
+            End::Unstarted(_) if broken.unstarted_ignores_grant => EndKind::Failed,
+            End::Unstarted(_) => EndKind::Unstarted,
+            End::Built => EndKind::Built,
+            End::Failed(_) => EndKind::Failed,
+            End::Skipped(_) => EndKind::Skipped,
         };
-        if !holds {
+        let building_on =
+            self.row
+                .building_on(run)
+                .map(|github| match (github.grant, github.ended) {
+                    (None, _) => Hold::Dispatched,
+                    (Some(_), None) => Hold::CheckedIn,
+                    (Some(_), Some(_)) => Hold::Reported,
+                });
+        if !github_end_holds(kind, Target::Run { building_on }) {
             return Err(());
         }
         let status = match end {
@@ -732,15 +746,15 @@ fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
 }
 
-fn finished(state: &State, by: Finisher, look: Look, step: FinishStep) -> bool {
+fn finished(state: &State, by: Finisher, look: GithubLook, step: FinishStep) -> bool {
     took(state, Branch::Finish { by, look, step })
 }
 
-fn walk_settled(state: &State, look: Look, end: End) -> bool {
+fn walk_settled(state: &State, look: GithubLook, end: End) -> bool {
     finished(state, Finisher::Walk, look, FinishStep::Settled(end))
 }
 
-fn settled_by(state: &State, by: Finisher, look: Look) -> bool {
+fn settled_by(state: &State, by: Finisher, look: GithubLook) -> bool {
     matches!(
         state.took,
         Some(Branch::Finish { by: b, look: l, step: FinishStep::Settled(_) }) if b == by && l == look
@@ -749,7 +763,7 @@ fn settled_by(state: &State, by: Finisher, look: Look) -> bool {
 
 /// A `look`'s inspect read nothing pushed for a run that pushed and reported Built, because
 /// its grant's Machine lost the grant, and its settle of Skipped `why` is next.
-fn lost_after_built(state: &State, look: Look, why: Why) -> bool {
+fn lost_after_built(state: &State, look: GithubLook, why: Why) -> bool {
     let Some(Branch::Finish {
         by,
         look: read_by,
@@ -989,7 +1003,7 @@ const COVERAGE: &[Coverage] = &[
             finished(
                 state,
                 Finisher::Walk,
-                Look::StartLimit,
+                GithubLook::StartLimit,
                 FinishStep::Reread { grant: true },
             )
         },
@@ -998,13 +1012,23 @@ const COVERAGE: &[Coverage] = &[
         name: "the start limit passes on a run that never checked in, Unstarted \"no runner started the build in time\"",
         reach: Reach::Both,
         reached: |_, state| {
-            walk_settled(state, Look::StartLimit, End::Unstarted(Why::NoRunnerInTime))
+            walk_settled(
+                state,
+                GithubLook::StartLimit,
+                End::Unstarted(Why::NoRunnerInTime),
+            )
         },
     },
     Coverage {
         name: "an Ended look passes on a run that never checked in, Unstarted \"the run ended before it started the build\"",
         reach: Reach::Both,
-        reached: |_, state| walk_settled(state, Look::Ended, End::Unstarted(Why::EndedBeforeStart)),
+        reached: |_, state| {
+            walk_settled(
+                state,
+                GithubLook::Ended,
+                End::Unstarted(Why::EndedBeforeStart),
+            )
+        },
     },
     Coverage {
         name: "the start limit's Unstarted is refused because the run checked in, and github_finish answers Waiting",
@@ -1013,7 +1037,7 @@ const COVERAGE: &[Coverage] = &[
             finished(
                 state,
                 Finisher::Walk,
-                Look::StartLimit,
+                GithubLook::StartLimit,
                 FinishStep::Refused(End::Unstarted(Why::NoRunnerInTime)),
             ) && state.limit_waited
         },
@@ -1021,12 +1045,20 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "the start limit settles a run that checked in Skipped \"the run ran out of time\"",
         reach: Reach::TimedOut,
-        reached: |_, state| walk_settled(state, Look::StartLimit, End::Skipped(Why::RanOutOfTime)),
+        reached: |_, state| {
+            walk_settled(
+                state,
+                GithubLook::StartLimit,
+                End::Skipped(Why::RanOutOfTime),
+            )
+        },
     },
     Coverage {
         name: "the start limit fails a run that checked in, its grant's Machine unreachable",
         reach: Reach::TimedOut,
-        reached: |_, state| walk_settled(state, Look::StartLimit, End::Failed(Why::Unreachable)),
+        reached: |_, state| {
+            walk_settled(state, GithubLook::StartLimit, End::Failed(Why::Unreachable))
+        },
     },
     Coverage {
         name: "github_finish settles Built from a pushed grant and a Built report",
@@ -1061,7 +1093,7 @@ const COVERAGE: &[Coverage] = &[
             matches!(
                 state.took,
                 Some(Branch::Finish {
-                    look: Look::Ended,
+                    look: GithubLook::Ended,
                     step: FinishStep::Settled(End::Skipped(Why::EndedWithoutPushing)),
                     ..
                 })
@@ -1071,12 +1103,14 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "the budget settles Skipped \"the run ran out of time\"",
         reach: Reach::Both,
-        reached: |_, state| walk_settled(state, Look::Budget, End::Skipped(Why::RanOutOfTime)),
+        reached: |_, state| {
+            walk_settled(state, GithubLook::Budget, End::Skipped(Why::RanOutOfTime))
+        },
     },
     Coverage {
         name: "the budget fails the build, its grant's Machine unreachable",
         reach: Reach::Both,
-        reached: |_, state| walk_settled(state, Look::Budget, End::Failed(Why::Unreachable)),
+        reached: |_, state| walk_settled(state, GithubLook::Budget, End::Failed(Why::Unreachable)),
     },
     Coverage {
         name: "an Ended look waits for an unreachable grant Machine",
@@ -1085,7 +1119,7 @@ const COVERAGE: &[Coverage] = &[
             matches!(
                 state.took,
                 Some(Branch::Finish {
-                    look: Look::Ended,
+                    look: GithubLook::Ended,
                     step: FinishStep::WaitsForMachine,
                     ..
                 })
@@ -1108,17 +1142,23 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "after the start limit waited for a run that checked in, an Ended look settles it",
         reach: Reach::Both,
-        reached: |_, state| state.limit_waited && settled_by(state, Finisher::Walk, Look::Ended),
+        reached: |_, state| {
+            state.limit_waited && settled_by(state, Finisher::Walk, GithubLook::Ended)
+        },
     },
     Coverage {
         name: "after the start limit waited for a run that checked in, the budget settles it",
         reach: Reach::Both,
-        reached: |_, state| state.limit_waited && settled_by(state, Finisher::Walk, Look::Budget),
+        reached: |_, state| {
+            state.limit_waited && settled_by(state, Finisher::Walk, GithubLook::Budget)
+        },
     },
     Coverage {
         name: "after the start limit waited for a run that checked in, the report's own github_finish settles it",
         reach: Reach::Both,
-        reached: |_, state| state.limit_waited && settled_by(state, Finisher::Report, Look::Ended),
+        reached: |_, state| {
+            state.limit_waited && settled_by(state, Finisher::Report, GithubLook::Ended)
+        },
     },
     // Inngest's at-least-once steps (dashboard/src/modules/config-store/store-deployment.inngest.ts:41).
     Coverage {
@@ -1376,12 +1416,12 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "after the grant's Machine lost a grant that received the push, an Ended look reads nothing pushed for a Built report, and its Skipped \"the run ended without pushing an image\" settle is next",
         reach: Reach::Both,
-        reached: |_, state| lost_after_built(state, Look::Ended, Why::EndedWithoutPushing),
+        reached: |_, state| lost_after_built(state, GithubLook::Ended, Why::EndedWithoutPushing),
     },
     Coverage {
         name: "after the grant's Machine lost a grant that received the push, the budget reads nothing pushed for a Built report, and its Skipped \"the run ran out of time\" settle is next",
         reach: Reach::Both,
-        reached: |_, state| lost_after_built(state, Look::Budget, Why::RanOutOfTime),
+        reached: |_, state| lost_after_built(state, GithubLook::Budget, Why::RanOutOfTime),
     },
     // The Deployment runner.
     Coverage {
@@ -1458,7 +1498,7 @@ const COVERAGE: &[Coverage] = &[
             state.retried
                 && !state.retry_won
                 && state.limit_waited
-                && [Look::Ended, Look::Budget]
+                && [GithubLook::Ended, GithubLook::Budget]
                     .into_iter()
                     .any(|look| settled_by(state, Finisher::Walk, look))
         },
@@ -1535,8 +1575,20 @@ enum Next {
 
 impl BuildHandoff {
     /// One `github_finish` statement under `look`, by `by`.
-    fn finish(&self, state: &mut State, by: Finisher, look: Look, at: Finish, pick: Pick) -> Next {
-        let timed_out = look.timed_out();
+    fn finish(
+        &self,
+        state: &mut State,
+        by: Finisher,
+        look: GithubLook,
+        at: Finish,
+        pick: Pick,
+    ) -> Next {
+        // Under the finding, the start limit passes the look the code passed before it had one.
+        let called = if look == GithubLook::StartLimit && self.broken.start_limit_reads_the_grant {
+            GithubLook::Budget
+        } else {
+            look
+        };
         let step = |step| Some(Branch::Finish { by, look, step });
         match at {
             Finish::Read => {
@@ -1552,20 +1604,13 @@ impl BuildHandoff {
                 state.took = step(FinishStep::Reread {
                     grant: github.grant.is_some(),
                 });
-                if look == Look::StartLimit && !self.broken.start_limit_reads_the_grant {
-                    return Next::At(Finish::Settle(End::Unstarted(Why::NoRunnerInTime)));
-                }
-                match github.grant {
-                    // core/crates/ployz/src/sdk/github_build.rs:489-504.
-                    None => Next::At(Finish::Settle(End::Unstarted(if timed_out {
-                        Why::NoRunnerInTime
-                    } else {
-                        Why::EndedBeforeStart
-                    }))),
-                    Some(_) => Next::At(Finish::Inspect {
+                // core/crates/ployz/src/sdk/github_build.rs: `github_finish` asks `first`.
+                Next::At(match real::first(github.grant.as_ref(), called) {
+                    First::Unstarted(why) => Finish::Settle(End::Unstarted(Why::of(&why))),
+                    First::ReadGrant(_) => Finish::Inspect {
                         ended: github.ended,
-                    }),
-                }
+                    },
+                })
             }
             Finish::Inspect { ended } => {
                 let Pick::Grant(read) = pick else {
@@ -1584,28 +1629,32 @@ impl BuildHandoff {
                         FinishStep::Inspected(read)
                     },
                 );
-                match read {
-                    GrantRead::Refused => Next::At(Finish::Settle(End::Failed(Why::Refused))),
-                    GrantRead::Unreachable if !timed_out => {
+                // `inspect_grant`'s answer, as `github_finish` hands it to `after_read`.
+                let answer = match read {
+                    GrantRead::Pushed => real::GrantRead::Pushed(read_push.then(digest)),
+                    GrantRead::Refused => real::GrantRead::Refused(Why::Refused.message()),
+                    GrantRead::Unreachable => real::GrantRead::Unreachable,
+                };
+                let ended = ended.map(|ended| match ended {
+                    RunEnd::Built => EndedRun::Built(()),
+                    RunEnd::Failed => EndedRun::Failed,
+                });
+                match real::after_read(ended, called, answer) {
+                    None => {
                         state.took = step(FinishStep::WaitsForMachine);
                         Next::Returned(Finished::Waiting)
                     }
-                    GrantRead::Unreachable => {
-                        Next::At(Finish::Settle(End::Failed(Why::Unreachable)))
-                    }
-                    // core/crates/ployz/src/sdk/github_build.rs:521-552.
-                    GrantRead::Pushed => Next::At(Finish::Settle(match (read_push, ended) {
-                        (true, Some(RunEnd::Built)) => End::Built,
-                        (_, Some(RunEnd::Failed)) => End::Failed(Why::StepFailed),
-                        _ if timed_out => End::Skipped(Why::RanOutOfTime),
-                        _ => End::Skipped(Why::EndedWithoutPushing),
+                    Some(ending) => Next::At(Finish::Settle(match ending {
+                        real::Ending::Built { .. } => End::Built,
+                        real::Ending::Failed(why) => End::Failed(Why::of(&why)),
+                        real::Ending::Skipped(why) => End::Skipped(Why::of(&why)),
                     })),
                 }
             }
             Finish::Settle(end) => {
                 // core/crates/ployz/src/sdk/github_build.rs:485 takes the run from the re-read; the model has one.
                 let started = state.row.started_on(RUN);
-                let limit = by == Finisher::Walk && look == Look::StartLimit;
+                let limit = by == Finisher::Walk && look == GithubLook::StartLimit;
                 match state.github_end(self.broken, RUN, end) {
                     Ok(status) => {
                         state.took = step(FinishStep::Settled(end));
@@ -1840,7 +1889,7 @@ impl BuildHandoff {
                 // :217 and :223 read `seen.ended`, and :223 the read's `ended`, before GitHub.
                 if ended || (grant && reported) {
                     state.took = Some(Branch::SeenEnded { grant });
-                    return finishing(Look::Ended);
+                    return finishing(GithubLook::Ended);
                 }
                 state.took = Some(Branch::StillQueued { grant });
                 Some(At::AskingGithub { grant })
@@ -1855,7 +1904,7 @@ impl BuildHandoff {
             At::BudgetCancel => {
                 state.cancelled = true;
                 state.took = Some(Branch::Cancelled(Canceller::Budget));
-                finishing(Look::Budget)
+                finishing(GithubLook::Budget)
             }
             At::AskingGithub { grant } => {
                 // `runEnded` (:177-179).
@@ -1869,7 +1918,7 @@ impl BuildHandoff {
                     start_limit,
                 });
                 if says_ended {
-                    return finishing(Look::Ended);
+                    return finishing(GithubLook::Ended);
                 }
                 // :218 and :224. Check 0 is the start limit, `check === 0 && target.hasNext`
                 // (dashboard/src/modules/config-store/store-deployment.inngest.ts:157): the model's walk has a next Builder.
@@ -1877,7 +1926,7 @@ impl BuildHandoff {
                     waits(state);
                     return None;
                 }
-                finishing(Look::StartLimit)
+                finishing(GithubLook::StartLimit)
             }
             At::Finishing { look, at } => {
                 match self.finish(state, Finisher::Walk, look, at, pick) {
@@ -1888,7 +1937,8 @@ impl BuildHandoff {
                     }
                     Next::Returned(found) => {
                         let waiting = found == Finished::Waiting;
-                        if look == Look::StartLimit && (!waiting || self.broken.cancel_ignores_done)
+                        if look == GithubLook::StartLimit
+                            && (!waiting || self.broken.cancel_ignores_done)
                         {
                             return Some(At::LimitCancel { waiting });
                         }
@@ -2036,7 +2086,7 @@ impl BuildHandoff {
                 }
             }
             Job::Finishing(at) => {
-                match self.finish(state, Finisher::Report, Look::Ended, at, pick) {
+                match self.finish(state, Finisher::Report, GithubLook::Ended, at, pick) {
                     Next::At(at) => Job::Finishing(at),
                     // :312-318: what it returned, or its error, is logged.
                     Next::Returned(_) => Job::Waking,
@@ -2380,8 +2430,8 @@ const SERVERS_REPORT_LANDS: &str =
     "record never refuses the Servers' report on a build the walk left them";
 
 /// How the walk calls `finish` for `look`.
-fn call(look: Look) -> String {
-    format!("finish(\"{}\")", look.code())
+fn call(look: GithubLook) -> String {
+    format!("finish(\"{}\")", code(look))
 }
 
 /// The name a story gives `who`.
@@ -2559,15 +2609,15 @@ fn reads_as(model: &BuildHandoff, before: &State, action: Action, after: &State)
                 "runEnded says the run is still running (:177-179)"
             };
             let then = match (grant, ended, start_limit) {
-                (false, true, _) => format!("it calls {} (:217)", call(Look::Ended)),
+                (false, true, _) => format!("it calls {} (:217)", call(GithubLook::Ended)),
                 (false, false, false) => "it is not the start limit, so it returns waiting (:218)".to_owned(),
-                (false, false, true) => format!("at the start limit it calls {} (:219)", call(Look::StartLimit)),
-                (true, true, _) => format!("it calls {} (:223)", call(Look::Ended)),
+                (false, false, true) => format!("at the start limit it calls {} (:219)", call(GithubLook::StartLimit)),
+                (true, true, _) => format!("it calls {} (:223)", call(GithubLook::Ended)),
                 (true, false, _) => "it returns waiting (:224)".to_owned(),
             };
             format!("github-check: {read}; {then}")
         }
-        Branch::Cancelled(Canceller::Budget) => format!("github-check: cancelDispatchedGithubRun cancels the run on GitHub (:213); {} is next (:214)", call(Look::Budget)),
+        Branch::Cancelled(Canceller::Budget) => format!("github-check: cancelDispatchedGithubRun cancels the run on GitHub (:213); {} is next (:214)", call(GithubLook::Budget)),
         Branch::Cancelled(Canceller::StartLimit) => {
             let waiting = matches!(after.walk, Walk::Open(_));
             format!(
@@ -2588,15 +2638,15 @@ fn reads_as(model: &BuildHandoff, before: &State, action: Action, after: &State)
         Branch::Finish { by, look, step } => {
             let finisher = match (by, look) {
                 (Finisher::Report, _) => "the report handler's github_finish(\"ended\") (:312)".to_owned(),
-                (Finisher::Walk, Look::StartLimit) if model.broken.start_limit_reads_the_grant => "github_finish(\"start_limit\"), settling by the grant as timed_out=true did (under Broken)".to_owned(),
-                (Finisher::Walk, look) => format!("github_finish(\"{}\")", look.code()),
+                (Finisher::Walk, GithubLook::StartLimit) if model.broken.start_limit_reads_the_grant => "github_finish(\"start_limit\"), settling by the grant as timed_out=true did (under Broken)".to_owned(),
+                (Finisher::Walk, look) => format!("github_finish(\"{}\")", code(look)),
             };
             let what = match step {
                 FinishStep::PassedOn => "re-reads the build: GitHub passed it on, so it returns Ended(Pending) (core/crates/ployz/src/sdk/github_build.rs:473-480)".to_owned(),
                 FinishStep::NotBuilding(found) => format!("re-reads the build: it is {}, so it returns it (core/crates/ployz/src/sdk/github_build.rs:473-484)", status(found)),
                 FinishStep::Reread { grant: true } => format!(
                     "re-reads the build and finds the grant (core/crates/ployz/src/sdk/github_build.rs:473, :505); {}",
-                    if look == Look::StartLimit && by == Finisher::Walk && !model.broken.start_limit_reads_the_grant {
+                    if look == GithubLook::StartLimit && by == Finisher::Walk && !model.broken.start_limit_reads_the_grant {
                         "the start limit settles Unstarted whatever it found"
                     } else {
                         "inspect_grant is next (core/crates/ployz/src/sdk/github_build.rs:506)"
@@ -2875,7 +2925,7 @@ mod tests {
             settled.took,
             Some(Branch::Finish {
                 by: Finisher::Walk,
-                look: Look::StartLimit,
+                look: GithubLook::StartLimit,
                 step: FinishStep::Settled(End::Skipped(Why::RanOutOfTime)),
             })
         );
@@ -2902,7 +2952,7 @@ mod tests {
             last(&found).took,
             Some(Branch::Finish {
                 by: Finisher::Walk,
-                look: Look::StartLimit,
+                look: GithubLook::StartLimit,
                 step: FinishStep::Settled(End::Skipped(Why::RanOutOfTime) | End::Failed(_)),
             })
         ));
@@ -2916,7 +2966,7 @@ mod tests {
             last(path).took
                 == Some(Branch::Finish {
                     by: Finisher::Walk,
-                    look: Look::StartLimit,
+                    look: GithubLook::StartLimit,
                     step: FinishStep::Settled(End::Failed(Why::Unreachable)),
                 })
         });
@@ -2976,7 +3026,7 @@ mod tests {
             after.took,
             Some(Branch::Finish {
                 by: Finisher::Walk,
-                look: Look::StartLimit,
+                look: GithubLook::StartLimit,
                 step: FinishStep::Refused(End::Unstarted(Why::NoRunnerInTime)),
             })
         );
@@ -2993,11 +3043,11 @@ mod tests {
         for (row, look) in [
             (
                 "after the start limit waited for a run that checked in, an Ended look settles it",
-                Look::Ended,
+                GithubLook::Ended,
             ),
             (
                 "after the start limit waited for a run that checked in, the budget settles it",
-                Look::Budget,
+                GithubLook::Budget,
             ),
         ] {
             let path = breaks(code(), row);
@@ -3007,7 +3057,7 @@ mod tests {
                 |branch| branch
                     == Branch::Finish {
                         by: Finisher::Walk,
-                        look: Look::StartLimit,
+                        look: GithubLook::StartLimit,
                         step: FinishStep::Refused(End::Unstarted(Why::NoRunnerInTime)),
                     },
                 |branch| matches!(
@@ -3090,7 +3140,7 @@ mod tests {
             };
             let mut at = Finish::Read;
             let returned = loop {
-                match model.finish(&mut state, Finisher::Walk, Look::StartLimit, at, GO) {
+                match model.finish(&mut state, Finisher::Walk, GithubLook::StartLimit, at, GO) {
                     Next::At(next) => at = next,
                     Next::Returned(returned) => break returned,
                 }
@@ -3139,7 +3189,7 @@ mod tests {
             last(&path).took,
             Some(Branch::Finish {
                 by: Finisher::Walk,
-                look: Look::StartLimit,
+                look: GithubLook::StartLimit,
                 step: FinishStep::Settled(End::Unstarted(Why::NoRunnerInTime)),
             })
         );
@@ -3273,7 +3323,7 @@ mod tests {
             |path| {
                 branches(path).contains(&Branch::Finish {
                     by: Finisher::Walk,
-                    look: Look::StartLimit,
+                    look: GithubLook::StartLimit,
                     step: FinishStep::Settled(End::Unstarted(Why::NoRunnerInTime)),
                 })
             },
@@ -3320,7 +3370,7 @@ mod tests {
             branch,
             Branch::Finish {
                 by: Finisher::Walk,
-                look: Look::StartLimit,
+                look: GithubLook::StartLimit,
                 step: FinishStep::Refused(End::Unstarted(Why::NoRunnerInTime)),
             }
         )));

@@ -10,5 +10,6 @@
 //! `RestartPolicy`) stay there.
 
 pub mod caddy_load;
+pub mod github_build;
 pub mod issuance;
 pub mod volume_records;

@@ -4031,6 +4031,7 @@ dependencies = [
  "oci-client",
  "ployz-build",
  "ployz-core",
+ "ployz-decide",
  "ployz-store",
  "ployz-testkit",
  "regex",
@@ -4130,6 +4131,7 @@ version = "0.3.17"
 dependencies = [
  "ployz-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4157,6 +4159,7 @@ dependencies = [
  "hex",
  "idna",
  "ployz-core",
+ "ployz-decide",
  "postgres",
  "regex",
  "ring",
