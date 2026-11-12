@@ -10,7 +10,9 @@ mod authored;
 pub(crate) mod diff;
 pub(crate) mod history;
 pub(crate) mod publish;
+mod required;
 pub(crate) mod sealed;
+mod version;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,6 +32,10 @@ pub use approval::{DestructiveEffect, DestructiveKind, LostAfter};
 pub(crate) use approval::{
     Gate, Moving, Pruning, TakingOff, approve, approve_move, approve_retry, move_asks,
 };
+pub use required::{
+    ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, OperationVerb,
+};
+pub use version::{MalformedReviewVersion, ReviewVersion};
 
 use crate::Actor;
 use crate::error;

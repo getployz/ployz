@@ -47,12 +47,12 @@ fn asked(protected: bool, pruning: &Pruning) -> ployz_core::RpcError {
         spares_harmless: false,
     };
     let effects = effects();
-    gate.require(
+    gate.ask(
         json!({ "command": "deploy" }),
         "A human must approve this first".to_owned(),
         (&effects, &diff()),
     )
-    .map_err(|asked| pruning.unnamed(asked))
+    .map_err(|asking| pruning.unnamed(asking).refusal())
     .unwrap_err()
 }
 
@@ -133,7 +133,8 @@ fn a_prune_that_may_remove_what_nothing_names_says_so() {
 #[test]
 fn the_digest_a_human_approves_keeps_its_text() {
     let ask = asked(false, &Pruning::Off);
-    let digest: ApprovalDigest = serde_json::from_value(ask.details["approval"].clone()).unwrap();
+    let digest: ApprovalDigest =
+        serde_json::from_value(ask.details.get("approval").cloned().unwrap()).unwrap();
     assert_eq!(digest.as_str(), DIGEST);
 }
 

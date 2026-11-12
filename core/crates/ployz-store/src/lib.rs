@@ -113,8 +113,9 @@ pub use removal::{
 pub use reseal::{LegacyCount, Resealed};
 pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{
-    DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange,
-    introduced_source,
+    ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, DataEffect,
+    DestructiveEffect, DestructiveKind, DiffView, LostAfter, MalformedReviewVersion, NodeChange,
+    OperationVerb, ReviewVersion, introduced_source,
 };
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};

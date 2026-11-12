@@ -1,4 +1,5 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
+use ployz_store::ReviewVersion;
 
 use crate::handlers;
 
@@ -211,44 +212,12 @@ pub(crate) fn reviewed_version() -> Arg {
         .help("Refuse unless this is still the reviewed version; a data-loss refusal names it")
 }
 
-/// A review's version is `REVISION:SAVED:TOKEN`, and a data-loss refusal's adds
-/// `:DIGEST`. Cloud binds a review's version to the copy loss it refused with
-/// `#loss-HASH`, which the server checks. A Project removal's is `PROJECT:DIGEST`.
+/// A review's version, handed on as it was typed; the grammar is [`ReviewVersion`]'s.
 fn review_version(version: &str) -> Result<String, &'static str> {
-    let (reviewed, bound) = match version.split_once("#loss-") {
-        Some((reviewed, hash)) => (reviewed, Some(hash)),
-        None => (version, None),
-    };
-    let base36 = |hash: &str| {
-        !hash.is_empty()
-            && hash
-                .chars()
-                .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
-    };
-    if bound.is_some_and(|hash| !base36(hash)) {
-        return Err(MALFORMED_VERSION);
-    }
-    let parts: Vec<&str> = reviewed.split(':').collect();
-    match (parts.as_slice(), bound) {
-        ([project, digest], None)
-            if !digest.is_empty() && ployz_store::ProjectId::parse(*project).is_ok() =>
-        {
-            Ok(version.to_owned())
-        }
-        ([revision, saved, token, digests @ ..], _)
-            if revision.parse::<u64>().is_ok()
-                && saved.parse::<u64>().is_ok()
-                && token.split_once('.').is_some_and(|(deployed, ended)| {
-                    deployed.parse::<u64>().is_ok() && ended.parse::<u64>().is_ok()
-                })
-                && digests.iter().all(|digest| {
-                    !digest.is_empty() && digest.chars().all(|c| c.is_ascii_hexdigit())
-                }) =>
-        {
-            Ok(version.to_owned())
-        }
-        _ => Err(MALFORMED_VERSION),
-    }
+    version
+        .parse::<ReviewVersion>()
+        .map(|version| version.to_string())
+        .map_err(|_| MALFORMED_VERSION)
 }
 
 const MALFORMED_VERSION: &str =
