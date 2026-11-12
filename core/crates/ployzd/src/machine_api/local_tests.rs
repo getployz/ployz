@@ -189,6 +189,7 @@ async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
     let response = service
         .forget(Request::new(
             op::Forget::into_request(ForgetRequest {
+                teardown: None,
                 machine_id: MachineId::random(),
             })
             .encode()

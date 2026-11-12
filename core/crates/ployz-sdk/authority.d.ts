@@ -13,6 +13,10 @@ export type {
   PayloadDigest,
   PrivateAccessApproval,
   PrivateAccessTerms,
+  Teardown,
+  TeardownApproval,
+  TeardownScope,
+  TeardownTerms,
   ProposalApproval,
   ProposalRef,
   ProposalStep,
@@ -34,7 +38,7 @@ export type {
   VolumeWorkflow,
 } from "./generated/payloads";
 
-import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView } from "./generated/payloads";
+import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView, TeardownTerms } from "./generated/payloads";
 
 /**
  * The deploy approval a browser key signs for `plan`, a Store plan read with `target`, under `terms`: the canonical body
@@ -61,6 +65,16 @@ export function autoDeployRuleEndBody(view: RuleView, terms: Pick<RuleTerms, "is
  * this browser, bound by its digest, which ployz-core takes here as the Servers do. Throws an Error for malformed terms.
  */
 export function privateAccessApprovalBody(terms: PrivateAccessTerms): string;
+
+/**
+ * The teardown a passkey answers for `terms`, in canonical form, and the lines a person reads before answering, rendered
+ * from that body as the Servers read it. `names.servers` gives each Server the name Cloud knows it by, and `names.volumes`
+ * each Docker Volume its Volume's name, shown beside it. Throws an Error for malformed terms.
+ */
+export function teardownBody(
+  terms: TeardownTerms,
+  names?: { servers?: Record<string, string>; volumes?: Record<string, string> },
+): { body: string; lines: string[] };
 
 /**
  * The review a person signs of `view`, the Store's view of a PR Environment's preview, for its head under `terms`: the

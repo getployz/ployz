@@ -725,12 +725,17 @@ impl Client {
         &self,
         machine: String,
         #[napi(ts_arg_type = "DataLossConfirmation")] confirm_data_loss: serde_json::Value,
+        #[napi(ts_arg_type = "TeardownApproval | null")] teardown: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
             from_js(confirm_data_loss).map_err(invalid_argument)?;
+        let teardown = teardown
+            .map(from_js)
+            .transpose()
+            .map_err(invalid_argument)?;
         let removed = self
             .inner
-            .remove_machine(&machine, &confirm_data_loss)
+            .remove_machine(&machine, &confirm_data_loss, teardown)
             .await
             .map_err(rpc_to_napi)?;
         to_json(&removed)
@@ -820,9 +825,17 @@ impl Client {
     /// Returns a generated [`RpcError`] JSON payload when the session is closed or the
     /// Machine can't be taken out: not visible, or the last one while held.
     #[napi]
-    pub async fn remove_machine_membership(&self, machine: String) -> Result<()> {
+    pub async fn remove_machine_membership(
+        &self,
+        machine: String,
+        #[napi(ts_arg_type = "TeardownApproval | null")] teardown: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let teardown = teardown
+            .map(from_js)
+            .transpose()
+            .map_err(invalid_argument)?;
         self.inner
-            .remove_machine_membership(&machine)
+            .remove_machine_membership(&machine, teardown)
             .await
             .map_err(rpc_to_napi)
     }
@@ -998,12 +1011,22 @@ impl Client {
         namespace: String,
         #[napi(ts_arg_type = "DataLossConfirmation")] confirm_data_loss: serde_json::Value,
         destroy_volumes: bool,
+        #[napi(ts_arg_type = "TeardownApproval | null")] teardown: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
             from_js(confirm_data_loss).map_err(invalid_argument)?;
+        let teardown = teardown
+            .map(from_js)
+            .transpose()
+            .map_err(invalid_argument)?;
         let outcome = self
             .inner
-            .destroy_namespace(&namespace, &confirm_data_loss, volume_fate(destroy_volumes))
+            .destroy_namespace(
+                &namespace,
+                &confirm_data_loss,
+                volume_fate(destroy_volumes),
+                teardown,
+            )
             .await
             .map_err(rpc_to_napi)?;
         to_json(&outcome)

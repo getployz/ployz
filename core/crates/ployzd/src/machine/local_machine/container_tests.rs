@@ -372,7 +372,7 @@ async fn removal_warning_restarts_and_keeps_recovery_available_without_container
         .with_containers(Some(runtime))
         .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))))
         .with_plugin(plugin);
-    let left = local.leave(LeaveRequest {}).await.unwrap();
+    let left = local.leave(LeaveRequest { teardown: None }).await.unwrap();
     assert!(
         matches!(
             left,

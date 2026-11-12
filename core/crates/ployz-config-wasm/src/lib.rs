@@ -1,6 +1,7 @@
 //! The SDK's WASM ABI for Node and the browser: config rules, the deploy approval a
-//! browser key signs, the automatic deploy rule and Private Access approval a passkey
-//! answers, and the review of a preview a person signs. All policy lives in ployz-core.
+//! browser key signs, the automatic deploy rule, Private Access approval and teardown a
+//! passkey answers, and the review of a preview a person signs. All policy lives in
+//! ployz-core.
 use ployz_core::authority::{
     AutoDeployRule, DeployApproval, DeployTerms, PreviewReview, PreviewRule, PrivateAccessApproval,
     PrivateAccessTerms, ReviewTerms, RuleBasis, RuleTerms, Signed, SignerKey, Timestamp,
@@ -101,6 +102,52 @@ pub fn auto_deploy_rule_end_body(input: &str) -> Result<String, JsError> {
         .drafted(&input.view)
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TeardownInput {
+    terms: ployz_core::authority::TeardownTerms,
+    /// The name Cloud knows each Server by.
+    #[serde(default)]
+    servers: std::collections::BTreeMap<ployz_core::MachineId, String>,
+    /// The name of the Volume each Docker Volume holds.
+    #[serde(default)]
+    volumes: std::collections::BTreeMap<ployz_core::DockerVolumeName, String>,
+}
+
+#[derive(serde::Serialize)]
+struct TeardownDraft {
+    body: String,
+    lines: Vec<String>,
+}
+
+/// The teardown a passkey answers for `terms`, in canonical form, and the lines a person
+/// reads before answering, rendered from that body by the ployz-core code the Servers run.
+///
+/// # Errors
+/// Rejects malformed terms.
+#[wasm_bindgen]
+pub fn teardown_body(input: &str) -> Result<String, JsError> {
+    let TeardownInput {
+        terms,
+        servers,
+        volumes,
+    } = serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    let body = ployz_core::authority::Teardown::drafted(terms);
+    let lines = body.lines(
+        |id| servers.get(id).cloned().unwrap_or_else(|| id.to_string()),
+        |volume| {
+            volumes
+                .get(volume)
+                .cloned()
+                .unwrap_or_else(|| volume.to_string())
+        },
+    );
+    let body = ployz_core::authority::canonical::to_canonical(&body)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&TeardownDraft { body, lines })
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// The Private Access approval a passkey answers for `terms`, in canonical form, with the

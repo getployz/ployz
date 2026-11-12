@@ -330,7 +330,9 @@ pub(crate) fn of_deployment(
     if !ployz_core::authority::preview::is_preview_namespace(namespace) {
         return Ok(None);
     }
+    // A person's removal of a preview still comes off under the rule that made it.
     if deployment.summary.admitted_by.is_some()
+        && !deployment.summary.remove
         && crate::deployment::preview_review(tx, &deployment.summary.id)?.is_none()
     {
         return Ok(None);

@@ -27,7 +27,7 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
     let reviewed_confirmation = confirmation(observed.data_loss);
 
     let removed = client
-        .remove_machine(worker.name.as_str(), &reviewed_confirmation)
+        .remove_machine(worker.name.as_str(), &reviewed_confirmation, None)
         .await
         .unwrap();
     assert!(removed.reset_warning().is_none());
@@ -42,7 +42,7 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
 
     let empty_confirmation = confirmation(Vec::<DataLoss>::new());
     let none = client
-        .remove_machine(empty.name.as_str(), &empty_confirmation)
+        .remove_machine(empty.name.as_str(), &empty_confirmation, None)
         .await
         .unwrap();
     assert!(none.reset_warning().is_none());
@@ -59,12 +59,12 @@ async fn sending_a_removal_again_skips_a_machine_already_forgotten_by_id() {
             .data_loss,
     );
     client
-        .remove_machine(worker.name.as_str(), &confirmed)
+        .remove_machine(worker.name.as_str(), &confirmed, None)
         .await
         .unwrap();
 
     let again = client
-        .remove_machine(worker.id.as_str(), &confirmed)
+        .remove_machine(worker.id.as_str(), &confirmed, None)
         .await
         .unwrap();
     assert_eq!(
@@ -72,7 +72,7 @@ async fn sending_a_removal_again_skips_a_machine_already_forgotten_by_id() {
         Some("its reset couldn't be confirmed: it was already gone from the Cluster")
     );
     client
-        .remove_machine_membership(worker.id.as_str())
+        .remove_machine_membership(worker.id.as_str(), None)
         .await
         .unwrap();
     // Neither send reached the Machine: one Leave and one Forget, from the first removal.
@@ -85,7 +85,7 @@ async fn sending_a_removal_again_skips_a_machine_already_forgotten_by_id() {
         &[worker.id]
     );
     let error = client
-        .remove_machine(worker.name.as_str(), &confirmed)
+        .remove_machine(worker.name.as_str(), &confirmed, None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
@@ -319,7 +319,7 @@ async fn remove_machine_fails_when_fresh_data_loss_is_unconfirmed() {
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .remove_machine(worker.name.as_str(), &confirmation)
+        .remove_machine(worker.name.as_str(), &confirmation, None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -344,7 +344,7 @@ async fn remove_machine_ignores_confirmed_names_that_no_longer_exist() {
     ]);
 
     client
-        .remove_machine(worker.id.as_str(), &confirmation)
+        .remove_machine(worker.id.as_str(), &confirmation, None)
         .await
         .unwrap();
     assert_eq!(
@@ -360,7 +360,7 @@ async fn remove_machine_refuses_the_current_entry_while_another_is_visible() {
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .remove_machine(entry.as_str(), &confirmation)
+        .remove_machine(entry.as_str(), &confirmation, None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -394,7 +394,7 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
     ]);
 
     let removed = client
-        .remove_machine(worker.machine.name.as_str(), &confirmation)
+        .remove_machine(worker.machine.name.as_str(), &confirmation, None)
         .await
         .unwrap();
     assert_eq!(removed.reset_warning(), Some("replicated delete failed"));
@@ -424,7 +424,7 @@ async fn cloud_removes_the_last_machine_it_holds() {
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let removed = client
-        .remove_machine(entry.machine.name.as_str(), &confirmation)
+        .remove_machine(entry.machine.name.as_str(), &confirmation, None)
         .await
         .unwrap();
     assert!(removed.reset_warning().is_none());

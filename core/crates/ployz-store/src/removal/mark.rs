@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ployz_core::authority::TeardownApproval;
 use ployz_core::{DockerVolumeId, MachineId, RpcError};
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +68,9 @@ pub(crate) struct Mark {
     pub(crate) members: Vec<EnvironmentId>,
     pub(crate) evidence: BTreeMap<EnvironmentId, Evidence>,
     pub(crate) residuals: Vec<Residual>,
+    /// The teardown the person who asked signed, which each removal Deployment the mark
+    /// admits carries to every Server.
+    pub(crate) teardown: Option<TeardownApproval>,
 }
 
 impl Mark {
@@ -93,12 +97,13 @@ impl Mark {
             members,
             evidence: BTreeMap::new(),
             residuals: Vec::new(),
+            teardown: None,
         }
     }
 }
 
 const COLUMNS: &str = "id, environment_id, project_id, target_name, by, at, retried, state, \
-     accepted, members, evidence, residuals";
+     accepted, members, evidence, residuals, teardown";
 
 fn read(row: &Row) -> Result<Mark, RpcError> {
     let target = match (
@@ -122,6 +127,10 @@ fn read(row: &Row) -> Result<Mark, RpcError> {
         members: row.json(9, "Removal")?,
         evidence: row.json(10, "Removal")?,
         residuals: row.json(11, "Removal")?,
+        teardown: row
+            .optional_text(12)?
+            .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt("Teardown")))
+            .transpose()?,
     })
 }
 
@@ -236,13 +245,14 @@ pub(crate) fn save(tx: &mut dyn Tx, who: &Actor, mark: &Mark) -> Result<(), RpcE
         Target::Environment(id) => (Some(id.as_str()), None),
         Target::Project(id) => (None, Some(id.as_str())),
     };
+    let teardown = mark.teardown.as_ref().map(text);
     tx.execute(
         &format!(
             "INSERT INTO config_removal_mark (organization_id, {COLUMNS}) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
              ON CONFLICT (id) DO UPDATE SET retried = excluded.retried, state = excluded.state, \
              accepted = excluded.accepted, evidence = excluded.evidence, \
-             residuals = excluded.residuals"
+             residuals = excluded.residuals, teardown = excluded.teardown"
         ),
         &[
             who.organization.as_str().into(),
@@ -258,6 +268,7 @@ pub(crate) fn save(tx: &mut dyn Tx, who: &Actor, mark: &Mark) -> Result<(), RpcE
             text(&mark.members).as_str().into(),
             text(&mark.evidence).as_str().into(),
             text(&mark.residuals).as_str().into(),
+            teardown.as_deref().into(),
         ],
     )?;
     Ok(())

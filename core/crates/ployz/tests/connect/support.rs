@@ -1563,7 +1563,7 @@ impl FakeMachine for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::Forget(ForgetRequest { machine_id }) = request.body else {
+        let RpcRequestBody::Forget(ForgetRequest { machine_id, .. }) = request.body else {
             return Err(Status::invalid_argument("expected forget"));
         };
         if self

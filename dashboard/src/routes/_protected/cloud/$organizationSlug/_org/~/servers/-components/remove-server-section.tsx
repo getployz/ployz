@@ -24,6 +24,28 @@ import { SettingsDanger, SettingsSection } from "#/components/settings/settings-
 import { listNames, plural } from "#/lib/plural";
 import type { RemoveHint } from "#/modules/machines/server-drain-view";
 import { useClusterReleased } from "#/providers/runtime-provider";
+import { reviewApproval } from "#/modules/approval-session/approval-prompt";
+import { approveTeardown, departure } from "#/modules/approval-session/teardown-approval";
+
+/**
+ * The person's approval of taking `machine` out of the Cluster, when a Server enforces Device approval: it leaves, the
+ * others forget it, and `lost`, by Docker name, can't be reached again. Undefined when no Server enforces.
+ */
+function approveDeparture(machines: Parameters<typeof approveTeardown>[0]["machines"], machine: RuntimeMachineRecord,
+  lost: readonly { docker: string; name: string }[], verb: "Remove" | "Forget") {
+  return approveTeardown({
+    machines,
+    near: [machine.id],
+    scope: departure(machine.id, lost.map(({ docker }) => docker)),
+    volumes: Object.fromEntries(lost.map(({ docker, name }) => [docker, name])),
+    title: `${verb} ${machine.name}?`,
+    action: verb,
+  }, reviewApproval);
+}
+
+/** Each lost Docker volume by Docker name, and the name Cloud found for it. */
+const lostVolumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) =>
+  rust.map(({ id }) => ({ docker: id.name, name: names.find(({ docker }) => docker === id.name)?.name ?? id.name }));
 
 /** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
 async function waitForMachineRemoveAttempt(
@@ -70,8 +92,10 @@ const volumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) =
  * the runtime, and once the Server is gone the page returns to Servers. An `offline` Server can't be reset, so it is
  * forgotten instead: by another Server, or with Forget Servers when it is the last.
  */
-export function RemoveServerSection({ machine, organizationSlug, last, offline, hint, gate }: {
+export function RemoveServerSection({ machine, machines, organizationSlug, last, offline, hint, gate }: {
   machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
+  /** Every Server, as the page last saw them: an enforcing one makes the removal ask for a passkey. */
+  machines: readonly RuntimeMachineRecord[];
   /** Whether your role may remove Servers. */
   gate: RoleGate;
   /** What still runs here, and the Drain button that would move it. */
@@ -94,7 +118,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
     <SettingsSection id="remove-server" title="Danger">
       {offline ? last
         ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} />
-        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} /> : <SettingsDanger
+        : <ForgetServerRow machine={machine} machines={machines} organizationSlug={organizationSlug} gate={gate} /> : <SettingsDanger
         label={`Remove ${machine.name}`}
         hint={last
           ? "Resets it. It's your only server, so everything running here stops until you add another."
@@ -135,9 +159,9 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
             // Leaving the page stops the wait too, checked once the enqueue returns and after every poll. It's the location,
             // not the mount: this section unmounts once the Server leaves the runtime, and that user should still land on Servers.
             const stillHere = markHere();
-            const queued = await enqueueMachineRemoveServerFn({
-              data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities },
-            });
+            const data = { organizationSlug, machineId: machine.id, confirmDataLoss: identities };
+            const teardown = await approveDeparture(machines, machine, lostVolumes(identities, namesRef.current), "Remove");
+            const queued = await enqueueMachineRemoveServerFn({ data: teardown === undefined ? data : { ...data, teardown } });
             const result = await waitForMachineRemoveAttempt(organizationSlug, machine.name, queued.id,
               () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
@@ -183,20 +207,25 @@ function ForgetLastServerRow({ machine, organizationSlug, gate }: { machine: Run
  * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says which come
  * back from a mirror and which are lost.
  */
-function ForgetServerRow({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
+function ForgetServerRow({ machine, machines, organizationSlug, gate }: {
+  machine: RuntimeMachineRecord; machines: readonly RuntimeMachineRecord[]; organizationSlug: string; gate: RoleGate;
+}) {
   const navigate = useNavigate();
   const markHere = useStillHere();
   const [open, setOpen] = useState(false);
 
+  // What the dialog showed lost, which the teardown names: often nothing, since a Server that doesn't answer lists none.
   const load = async () => {
     const lost = await loadMachineDataLossServerFn({ data: { organizationSlug, machineId: machine.id } })
-      .then(({ rust, names }) => volumes(rust, names), () => []);
-    return { items: lost, evidence: null };
+      .then(({ rust, names }) => lostVolumes(rust, names), () => []);
+    return { items: lost.map(({ name }): DeletionItem => ({ kind: "volume", name })), evidence: lost };
   };
 
-  const forget = async () => {
+  const forget = async (lost: readonly { docker: string; name: string }[]) => {
     const stillHere = markHere();
-    const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
+    const data = { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() };
+    const teardown = await approveDeparture(machines, machine, lost, "Forget");
+    const answer = await forgetServerServerFn({ data: teardown === undefined ? data : { ...data, teardown } });
     const result = await waitForMachineRemoveAttempt(organizationSlug, machine.name, answer.id, () => !stillHere());
     if (result === "aborted") return;
     if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);

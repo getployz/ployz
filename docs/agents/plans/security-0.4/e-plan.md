@@ -526,6 +526,8 @@ Outcome. A dashboard Move, Mirror, Restore, Mirror removal or resize shows the b
 7. **Automatic effects (thread F).** Automatic sync runs under the Mirror's standing approval (E3), and the orphan sweep under the approval that orphaned the slot (E6). F's maintenance list names "Volume recovery". In this plan that is a Release under the Move's own approval. F's coverage table gains the six Volume rows, the two existing capabilities and the two new ones.
 8. **`RemoveVolume` (threads C and F).** A Deploy that removes a Volume deletes data through `RemoveVolume` after `--accept-volume-loss`. E does not gate it. Thread C's inventory leaves it to F. One of them takes it, or it joins E6.
 
+   **Settled.** F5 took it, as f-plan's gap 5 alternative: `RemoveVolume` is admitted under a signed teardown that names the Docker Volume and the Machine. E6 has no `Remove` workflow.
+
 ## Appendix B. Handoffs
 
 - **Thread A.** Gaps 1 to 3. Gap 4 is satisfied on `main`.

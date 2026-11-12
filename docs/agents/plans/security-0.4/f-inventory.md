@@ -44,7 +44,7 @@ Refused at dispatch for any caller but the local socket or a Device's own connec
 | `EnsureContainer` | `ployz.container.ensure.v1` | Creations need a deploy approval. Lifecycle steps need a restart, deploy, proposal or rule approval. | `Signed(Deploy, Restart, Proposal, Rule)` | `Teardown` added at F5 |
 | `UpdateContainerLimits` | `ployz.container.limits.update.v1` | CPU and memory limits | `Bound("residual: a limit can slow or stop a Service, a drop")` | |
 | `PrepareVolumes` | `ployz.storage.prepare.v1` | Creates datasets ahead of a Deploy. Thread C checks a Volume when a Container mounts it. | `Bound("checked at mount by C")` | |
-| `RemoveVolume` | `ployz.volume.remove.v1` | **Admitted.** Deletes a Docker Volume. Data loss, not a bar crossing. | `Pending("E6")` | `Signed(Volume)` at E6 (gap 5) |
+| `RemoveVolume` | `ployz.volume.remove.v1` | **Admitted.** Deletes a Docker Volume. Data loss, not a bar crossing. | `Pending("E6")` | `Signed(Teardown)` at F5 (gap 5) |
 | `SeedVolume` | `ployz.volume.seed.v1` | Refused (E1) | `Signed(Volume)` | Admitted under approval at E7 |
 | `SetVolumeCopy` | `ployz.volume.copy.set.v1` | A Writer want with a start is refused (E1). Pulls, cuts, promotes and forgets are admitted. `Floor` and `Snapshot` are residuals. | `Pending("E3 to E6")` | `Signed(Volume)` at E6 |
 | `SetVolumeSize` | `ployz.volume.size.set.v1` | Admitted. A shrink below what the copy holds is refused by the Machine. | `Pending("E7")` | `Signed(Volume)` at E7 |

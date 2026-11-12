@@ -83,6 +83,7 @@ fn admit(
     store.write_trusted(
         who,
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id(n),
             environment: EnvironmentRef::default(),
             services: services
@@ -3129,6 +3130,7 @@ fn retry(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: None,
@@ -3338,6 +3340,7 @@ fn rollback(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: Some(confirmed.to_vec()),
@@ -4320,6 +4323,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
         store.write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -4427,6 +4431,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4545,6 +4550,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                 .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
+                        teardown: None,
                         id: id(n),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
@@ -4633,6 +4639,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         store.write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4763,6 +4770,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(5),
                 environment: staging,
                 services: Vec::new(),
@@ -4806,6 +4814,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     };
     let admit = |n: u8, who: &Actor| {
         let command = Command::Admit(Admit::Deploy(Deploy {
+            teardown: None,
             id: id(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
@@ -4891,6 +4900,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
         store.write(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4915,6 +4925,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
         .write(
             &who,
             &Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: id(2),
                 deployment: id(1),
                 rolls_back: None,
@@ -5412,6 +5423,7 @@ fn deploy_choosing(
     choose: impl FnOnce(&mut Deploy),
 ) -> Result<DeploymentSummary, RpcError> {
     let mut deploy = Deploy {
+        teardown: None,
         id: id(n),
         environment: EnvironmentRef::default(),
         services: Vec::new(),
@@ -5716,6 +5728,7 @@ fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(n),
                 deployment: id(1),
                 rolls_back: None,
@@ -5761,6 +5774,7 @@ fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() 
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(1),
                 rolls_back: None,
@@ -5861,6 +5875,7 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(4),
                 deployment: id(2),
                 rolls_back: None,
@@ -5932,6 +5947,7 @@ fn agent_deploys_only(
     store.write_trusted(
         who,
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id(n),
             environment: EnvironmentRef::default(),
             services: vec![ServiceName::parse(service).unwrap()],
@@ -5974,6 +5990,7 @@ fn agent_deploys_upload(
     store.write_trusted(
         who,
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
@@ -6021,6 +6038,7 @@ fn agent_retries(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: None,
@@ -6057,6 +6075,7 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(2),
                 rolls_back: None,
@@ -6216,6 +6235,7 @@ fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
         .write(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(2),
                 rolls_back: None,
@@ -6516,6 +6536,7 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(2),
                 rolls_back: None,
@@ -6601,6 +6622,7 @@ fn retry_as(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: None,
@@ -7328,6 +7350,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id(n),
                     environment: EnvironmentRef::default(),
                     services: vec![ServiceName::parse("web").unwrap()],
@@ -7402,6 +7425,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(4),
                 environment: EnvironmentRef::default(),
                 services: vec![ServiceName::parse("web").unwrap()],
@@ -7445,6 +7469,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id(n),
                     environment: EnvironmentRef::default(),
                     services: vec![ServiceName::parse("web").unwrap()],
@@ -7582,6 +7607,7 @@ fn a_rollback_that_takes_a_service_off_asks_and_names_it() {
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(1),
                 rolls_back: None,
@@ -7631,6 +7657,7 @@ fn a_retry_that_takes_nothing_off_still_asks_nothing() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(2),
                 deployment: id(1),
                 rolls_back: None,
@@ -7809,6 +7836,7 @@ fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_star
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(1),
                 rolls_back: None,
@@ -7909,6 +7937,7 @@ fn rollback_to(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(to),
             rolls_back: None,
@@ -8244,6 +8273,7 @@ fn a_device_approval_of_the_plan_reaches_the_runner_with_the_specs_it_names() {
         store.write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -8279,6 +8309,7 @@ fn retry_approved(
     store.write_trusted(
         who,
         &Admit::Retry(Retry {
+            teardown: None,
             id: id(n),
             deployment: id(source),
             rolls_back: None,
@@ -8371,6 +8402,7 @@ fn a_rollbacks_approval_names_what_its_runner_lowers() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(1),
                 rolls_back: Some(vec![2]),
@@ -8407,6 +8439,7 @@ fn a_redeploy_without_an_approval_runs_as_before_and_its_source_lends_none() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(1),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),

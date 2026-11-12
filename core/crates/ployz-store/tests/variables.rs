@@ -164,6 +164,7 @@ fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
     store.write_trusted(
         &who(),
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id.clone(),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
@@ -321,6 +322,7 @@ fn references_that_resolve_past_any_container_refuse_only_a_deploy_that_starts_t
         .write_trusted(
             &who(),
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
                 environment: EnvironmentRef::default(),
                 services: vec![ServiceName::parse("api").unwrap()],

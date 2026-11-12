@@ -668,6 +668,7 @@ fn teardown_cancels_hold() {
     system(&store, &push(None, Some(H2), None));
     let [hold] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
     let remove = Remove {
+        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: None,
         version: None,
@@ -813,6 +814,7 @@ fn cancelled_hold_cannot_be_retried() {
         .write_trusted(
             &who,
             &ployz_store::Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000199")
                     .unwrap(),
                 deployment: hold.id.clone(),

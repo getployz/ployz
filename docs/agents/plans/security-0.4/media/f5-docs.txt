@@ -1,0 +1,41 @@
+# docs/user/servers/manage-servers.md, read against lanes 2 and 3
+
+### Take things off servers that enforce
+
+With enforcement on, a server takes containers, volumes or itself off only under a teardown a person
+approved. A teardown names the namespaces, the servers and each volume whose data goes, and lasts
+15 minutes. It covers:
+
+- deleting an environment or a project,
+- **Remove server** and **Forget server**,
+- removing a namespace no project owns, and
+- a deploy that deletes volume data you accepted losing.
+
+In the dashboard, type the name as usual. Ployz then shows every line your passkey approves, and
+asks your passkey once:
+
+```text
+Approved: stop and remove every service of my-app-staging on web-1, web-2.
+Approved: delete volume data (my-app-staging_vol-0f8fad5b) there. Its data is gone for good.
+  cluster "NdiV1QY9P3ZyoC82YA/FaBs0zlWTG/CXU1tLfcS0CDg="
+  signer your passkey
+  valid 2026-11-12T03:19:09Z to 2026-11-12T03:34:09Z
+```
+
+`ployz env rm`, `ployz project rm`, `ployz server clean --namespace` and
+`ployz deploy --accept-volume-loss` on an approved device print the same lines and sign them with
+the device key once you answer yes. Without a terminal, `--confirm <name>` signs them for the
+first three, and `--yes` for `ployz deploy`. Each server
+checks the teardown itself and logs `teardown approved`, so Ployz Cloud can't take anything else
+off. Closing a pull request removes its preview with no prompt, under the
+[preview rule](../environments/preview-environments.md#previews-on-servers-that-enforce-device-approval)
+that opened it.
+
+A server that answers more than 15 minutes later refuses the old teardown, and its part stays.
+Delete again to approve a new one. A server checks the teardown again when the deletion's turn comes, so
+if you remove the device or passkey that approved it, or turn enforcement on, while the deletion
+waits, that server refuses it then and takes nothing off. A branch's **Shut down** and the automatic close of an idle branch
+carry no teardown yet, so servers that enforce refuse them.
+Delete the environment instead. A server that enforces and runs a Ployz from before 0.4 can't take
+a teardown: the dashboard names it and deletes nothing, so upgrade it first.
+

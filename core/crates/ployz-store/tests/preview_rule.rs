@@ -212,6 +212,7 @@ fn production(store: &ConfigStore, who: &Actor) {
         .write_trusted(
             who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                teardown: None,
                 id: deployment.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -623,6 +624,7 @@ fn an_untrusted_pull_request_opens_its_preview_and_deploys_only_once_reviewed() 
         .write_trusted(
             &person(&Actor::system(OrganizationId::parse("org").unwrap())),
             &ployz_store::Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: again.clone(),
                 deployment,
                 rolls_back: None,

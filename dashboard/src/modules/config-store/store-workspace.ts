@@ -1,4 +1,4 @@
-import type { ConfigCommand, ConfigWritten, EnvironmentListing, Removal } from "@ployz/sdk";
+import type { ConfigCommand, ConfigWritten, EnvironmentListing, Removal, TeardownApproval } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { StoreRefused } from "./store.contract";
 import type { Write } from "./store-write";
@@ -90,28 +90,31 @@ function same(left: ByEnvironment, right: ByEnvironment) {
  * Delete `target`, as `ployz env rm` and `ployz project rm` do: one `remove`, which the Store finishes on its own.
  * Without a version the Store names the one it reviewed; when it loses exactly the Volumes the user accepted, that
  * version goes back at once, and anything else is a question for the user. So is a Server that couldn't say whether
- * it holds the data: the Store offers giving up every copy.
+ * it holds the data: the Store offers giving up every copy. `teardown`, the person's approval of what goes, rides along
+ * for Servers that enforce Device approval.
  */
-export async function removeTarget(commit: Commit, target: TeardownTarget, consent: RemovalConsent): Promise<RemovalAnswer> {
+export async function removeTarget(commit: Commit, target: TeardownTarget, consent: RemovalConsent, teardown?: TeardownApproval): Promise<RemovalAnswer> {
+  const command: Extract<ConfigCommand, { command: "remove" }> = {
+    command: "remove", project: target.project, environment: target.environment, version: consent.version,
+    accept_volume_loss: carried(consent.accept), every_copy: carried(consent.everyCopy),
+  };
+  if (teardown !== undefined) command.teardown = teardown;
   let written: ConfigWritten;
   try {
-    written = await commit({
-      command: "remove", project: target.project, environment: target.environment, version: consent.version,
-      accept_volume_loss: carried(consent.accept), every_copy: carried(consent.everyCopy),
-    }, ["confirmation_required", "unavailable"]);
+    written = await commit(command, ["confirmation_required", "unavailable"]);
   } catch (error) {
     if (!(error instanceof StoreRefused)) throw error;
-    return answerRefusal(commit, target, consent, error);
+    return answerRefusal(commit, target, consent, error, teardown);
   }
   if (written.written !== "removal") throw new Error(`The Store answered a removal with ${written.written}`);
   return { sent: written };
 }
 
-async function answerRefusal(commit: Commit, target: TeardownTarget, consent: RemovalConsent, refused: StoreRefused): Promise<RemovalAnswer> {
+async function answerRefusal(commit: Commit, target: TeardownTarget, consent: RemovalConsent, refused: StoreRefused, teardown?: TeardownApproval): Promise<RemovalAnswer> {
   const reviewed = refused.code === "confirmation_required" ? Option.getOrNull(decodeReviewed(refused.details)) : null;
   if (reviewed) {
     const asked: RemovalConsent = { ...consent, accept: reviewed.accept, version: reviewed.version };
-    return consent.version === null && same(asked.accept, consent.accept) ? removeTarget(commit, target, asked) : { ask: asked, waitingOn: [] };
+    return consent.version === null && same(asked.accept, consent.accept) ? removeTarget(commit, target, asked, teardown) : { ask: asked, waitingOn: [] };
   }
   const unchecked = refused.code === "unavailable" ? Option.getOrNull(decodeUnchecked(refused.details)) : null;
   if (!unchecked) throw refused;
@@ -120,4 +123,24 @@ async function answerRefusal(commit: Commit, target: TeardownTarget, consent: Re
     ask: { accept: input.accept_volume_loss, version: input.version, everyCopy: input.every_copy },
     waitingOn: unchecked.waiting_on,
   };
+}
+
+/** One Environment a deletion takes off: its Namespace, and the Volumes whose data it deletes, as the Store reads them. */
+export type RemovedEnvironment = {
+  readonly name: string;
+  readonly namespace: string;
+  readonly volumes: readonly { readonly name: string; readonly docker_volume: string }[];
+};
+
+/**
+ * What the person's teardown names for deleting `environments` under `consent`, as `ployz env rm` drafts its own: every
+ * Namespace, and the Docker Volume of each Volume whose loss they accepted, by the Volume's name.
+ */
+export function removalTeardown(environments: readonly RemovedEnvironment[], consent: RemovalConsent) {
+  const volumes: Record<string, string> = {};
+  for (const environment of environments) {
+    const accepted = new Set([...consent.accept[environment.name] ?? [], ...consent.everyCopy[environment.name] ?? []]);
+    for (const volume of environment.volumes) if (accepted.has(volume.name)) volumes[volume.docker_volume] = volume.name;
+  }
+  return { namespaces: environments.map((environment) => environment.namespace), volumes };
 }

@@ -23,6 +23,7 @@ pub mod rule_draft;
 pub mod session;
 pub mod shown;
 pub mod starting_set;
+pub mod teardown;
 pub mod trusted_key;
 pub mod validity;
 pub mod volume;
@@ -60,6 +61,10 @@ pub use rule::{
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use session::{ActionFamily, GrantBody, SessionGrant};
 pub use starting_set::{Member, StartingSet};
+pub use teardown::{
+    Teardown, TeardownApproval, TeardownApproved, TeardownFacts, TeardownScope, TeardownStep,
+    TeardownTerms,
+};
 pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
     TrustedPasskey,

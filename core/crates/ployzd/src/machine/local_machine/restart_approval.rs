@@ -128,20 +128,6 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// Under Device enforcement an Operator caller's `Leave` or `Forget` is refused before
-    /// any Container stops. Either one resets a Server: `Leave` this one, and `Forget`
-    /// another, which fences itself once its row goes. Neither is Cloud's to start. A Full
-    /// caller and a Machine not enforcing pass untouched.
-    ///
-    /// # Errors
-    /// Returns [`Error::DepartureRefused`] naming `capability` under enforcement.
-    pub(crate) fn admit_operator_departure(&self, capability: &'static str) -> Result<(), Error> {
-        if self.record().device_enforcement() {
-            return Err(Error::DepartureRefused { capability });
-        }
-        Ok(())
-    }
-
     /// Under Device enforcement an Operator caller's `Build` or `MintBuildGrant` is
     /// refused before anything opens. A Build runs recipe steps of the caller's choosing
     /// with Sealed values opened, and a Build Grant hands them to a key the caller names,

@@ -54,6 +54,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
         .write_trusted(
             &actor,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployment.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -91,6 +92,7 @@ fn take_over(run: &Run, actor: &ployz_store::Actor) {
         .write_trusted(
             actor,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployment.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -1080,6 +1082,7 @@ fn separately_uploaded() -> Claimed {
             .write_trusted(
                 &actor,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: deployment.clone(),
                     environment: EnvironmentRef::default(),
                     services: services

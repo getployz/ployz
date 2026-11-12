@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb, Signed, TeardownApproval } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
@@ -131,7 +131,7 @@ export const setServer = (caller: Caller, machineId: MachineId, change: ServerPo
     return yield* planKeyedServerPolicyChange(caller, machineId, change);
   })));
 
-export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall) =>
+export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall, teardown: TeardownApproval | null = null) =>
   holding(caller, call, OPERATIONS["namespace.clean"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {
     const plan = yield* planClean(caller.organization.id, namespace);
     const gated = yield* gate(caller, call, plan);
@@ -141,6 +141,7 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
       namespace,
       confirmDataLoss: plan.doomed.map(({ identity }) => identity),
       approvalId: gated.approvalId,
+      teardown,
     }).pipe(Effect.map((id) => ({ ok: true, id }) as const));
   })));
 
@@ -150,15 +151,15 @@ export const removeServer = (
 ) => removal(caller, machineId, confirmed, call, serverName);
 
 /** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
-export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName) =>
-  removal(caller, machineId, null, call, serverName);
+export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName, teardown: TeardownApproval | null = null) =>
+  removal(caller, machineId, null, call, serverName, teardown);
 
 /** The dashboard's Forget of Server `machineId`: only a Caller who may remove Servers; answers the removal's id. */
-export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string) =>
+export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string, teardown: TeardownApproval | null = null) =>
   Effect.gen(function* () {
     const refusal = unheld(caller, OPERATIONS["server.forget"].requires);
     if (refusal !== null) return yield* new Forbidden({ message: refusal.refusal.message, userFacing: true });
-    const admission = yield* forgetServer(caller, machineId, { key, approvalId: null });
+    const admission = yield* forgetServer(caller, machineId, { key, approvalId: null }, undefined, teardown);
     if (admission === null) return yield* new NotFound({ message: "The server was not found." });
     if (admission.ok) return { id: admission.id };
     return yield* new Conflict({ userFacing: true, message: admission.refusal.message });
@@ -167,6 +168,7 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
 /** Its run keeps `serverName`, the name the caller showed, else the Server's name in the frame it planned from. */
 const removal = (
   caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall, serverName: MachineName | undefined,
+  teardown: TeardownApproval | null = null,
 ) =>
   holding(caller, call, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
@@ -191,6 +193,7 @@ const removal = (
         machineId,
         serverName: serverName || plan.name,
         approvalId: gated.approvalId,
+        teardown,
         ...(noReset ? { confirmDataLoss: [], noReset: true } : { confirmDataLoss: [...confirmed] }),
       }).pipe(Effect.map((started) => ({ ok: true, id: started.id }) as const));
     }));

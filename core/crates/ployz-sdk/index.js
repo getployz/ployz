@@ -57,8 +57,8 @@ class Client {
     return withRpcError(this._inner.dataLossIfNamespaceDestroyed(namespace, destroyVolumes));
   }
 
-  destroyNamespace(namespace, confirmDataLoss, destroyVolumes = false) {
-    return withRpcError(this._inner.destroyNamespace(namespace, confirmDataLoss, destroyVolumes));
+  destroyNamespace(namespace, confirmDataLoss, destroyVolumes = false, teardown = null) {
+    return withRpcError(this._inner.destroyNamespace(namespace, confirmDataLoss, destroyVolumes, teardown));
   }
 }
 

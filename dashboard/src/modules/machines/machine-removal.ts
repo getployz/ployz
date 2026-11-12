@@ -1,4 +1,5 @@
-import type { Departed, MachineId } from "@ployz/sdk";
+import type { Departed, MachineId, TeardownApproval } from "@ployz/sdk";
+import { TeardownInput } from "#/modules/approval-session/approvals-input";
 import { Schema } from "effect";
 import {
   dataLossIdentitySchema,
@@ -32,6 +33,8 @@ export const EnqueueMachineRemoveInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   machineId: rustMachineIdSchema,
   confirmDataLoss: Schema.Array(dataLossIdentitySchema),
+  /** The person's teardown of the Server, which a Server that enforces Device approval needs. */
+  teardown: Schema.optionalKey(TeardownInput),
 });
 
 export type EnqueueMachineRemoveInput = typeof EnqueueMachineRemoveInput.Type;
@@ -41,6 +44,8 @@ export const ForgetServerInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   machineId: rustMachineIdSchema,
   requestId: Schema.String.check(Schema.isUUID()),
+  /** As `EnqueueMachineRemoveInput.teardown`. */
+  teardown: Schema.optionalKey(TeardownInput),
 });
 export type ForgetServerInput = typeof ForgetServerInput.Type;
 
@@ -176,6 +181,8 @@ export type MachineRemoveAttemptContext = {
   confirmDataLoss: DataLossIdentity[];
   /** Take the Server out without resetting it: it keeps its state, and Cloud never lets go of the Cluster for it. */
   noReset: boolean;
+  /** The person's teardown of the departure, handed to every Server it reaches. */
+  teardown: TeardownApproval | null;
 };
 
 export type MachineRemoveCompletion =

@@ -3391,6 +3391,7 @@ fn roll_back(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployment
         .write_trusted(
             who,
             &ployz_store::Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: id(n),
                 deployment: id(1),
                 rolls_back: None,

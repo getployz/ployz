@@ -160,8 +160,10 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
     let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
+    let signing = teardown::drafted(matches, &store, (&name, None))?;
     let mut shown = None;
-    confirm(matches, name.as_str(), "Project", store.again(&[]), || {
+    let confirming = (name.as_str(), signing.as_ref());
+    confirm(matches, confirming, "Project", store.again(&[]), || {
         unconfirmed(&store, &name).map(|(refusal, loss, listed)| {
             shown = Some(listed);
             (refusal, loss)
@@ -174,8 +176,15 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
         .find(|listing| listing.name == name)
         .map(|listing| listing.environments)
         .unwrap_or_default();
+    let signed = signing.map(teardown::Drafted::sign).transpose()?;
     let events = deploy::open_events(matches)?;
-    let Some(removed) = teardown::remove(matches, &store, (&name, None), shown.as_ref(), events)?
+    let Some(removed) = teardown::remove(
+        matches,
+        &store,
+        (&name, None),
+        (shown.as_ref(), signed),
+        events,
+    )?
     else {
         return Ok(());
     };
