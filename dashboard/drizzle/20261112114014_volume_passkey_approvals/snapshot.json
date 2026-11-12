@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "1b9ae341-73d2-4cd3-bd5f-6950a49dd193",
+  "id": "5da68eb8-b173-467c-8917-888465a2b40b",
   "prevIds": [
-    "559ce53b-c898-48d8-a4eb-2494e9387c20"
+    "58d2320b-8bf5-4412-abab-389ff2b8ea64"
   ],
   "ddl": [
     {
@@ -3766,6 +3766,19 @@
       "table": "machine_remove_attempt"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "teardown",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": true,
@@ -3982,6 +3995,19 @@
       "generated": null,
       "identity": null,
       "name": "confirm_data_loss",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "namespace_cleanup"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "teardown",
       "entityType": "columns",
       "schema": "public",
       "table": "namespace_cleanup"
