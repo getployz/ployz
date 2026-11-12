@@ -1,13 +1,15 @@
 //! Answers one metric history query from the stored rows.
 //!
 //! A range that starts within the last 23 hours reads raw segments and can
-//! take any step. A longer range reads the 5 minute rollups, then raw rows for
-//! the hours not folded yet, and averages both into buckets no narrower than
-//! 5 minutes. Cleanup deletes a raw hour once it began a day ago, so 23 hours
-//! is the oldest start whose first hour is still whole.
+//! take any step. A longer range reads the 5 minute rollups of the hours that
+//! have one and raw rows for every other hour, and averages both into buckets
+//! no narrower than 5 minutes. An hour that failed to fold is read from raw
+//! until it folds, even when a later hour has. Cleanup deletes a raw hour once
+//! it ended a day ago, so 23 hours (`Retention::raw_span_nanos`) is the oldest
+//! start whose first hour is still whole.
 
 use std::{
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     io,
 };
 
@@ -18,31 +20,30 @@ use ployz_core::metrics::{
 };
 
 use super::{
+    policy::{HOUR_NANOS, RETENTION},
     rate::{self, Buckets, Mean},
-    rollup::{self, Rolled, STEP_NANOS, ServiceRow},
+    rollup::{self, Rolled, ServiceRow},
     segment::{self, Selected},
 };
-use crate::observe::layout::StoreRoot;
+use crate::observe::layout::{SegmentName, StoreRoot};
 
-const HOUR_NANOS: i64 = 3_600 * 1_000_000_000;
-const RAW_SPAN: i64 = 23 * HOUR_NANOS;
 /// Read before a raw range so its first rate has a previous sample.
-const LEAD_IN: i64 = STEP_NANOS;
+const LEAD_IN: i64 = RETENTION.step_nanos();
 /// Keeps a reply well under the 4 MiB gRPC message limit.
 const MAX_MARKERS: usize = 1_000;
 
 /// The bucket grid `request` is answered on at `now` Unix nanoseconds.
 fn grid(request: &MetricHistoryRequest, now: i64) -> Buckets {
     let buckets = Buckets::new(request.range, request.step_nanos);
-    if raw_only(request.range, now) || buckets.step() >= STEP_NANOS {
+    if raw_only(request.range, now) || buckets.step() >= RETENTION.step_nanos() {
         buckets
     } else {
-        Buckets::new(request.range, Some(STEP_NANOS))
+        Buckets::new(request.range, Some(RETENTION.step_nanos()))
     }
 }
 
 fn raw_only(range: MetricRange, now: i64) -> bool {
-    range.since_nanos >= now.saturating_sub(RAW_SPAN)
+    range.since_nanos >= now.saturating_sub(RETENTION.raw_span_nanos())
 }
 
 /// Reads the history `request` asks for, as of `now` Unix nanoseconds.
@@ -62,51 +63,71 @@ pub(crate) fn history(
     if raw_only(range, now) {
         return raw(store, range, &request.scope, buckets, now);
     }
-    let raw_from = rollup::folded_until(store)?.map_or(range.since_nanos, |until| {
-        until.clamp(range.since_nanos, range.until_nanos)
-    });
-    let (rolled, mut markers) = rollup::read(
-        store,
-        MetricRange {
-            until_nanos: raw_from,
-            ..range
-        },
-        &request.scope,
-    )?;
-    let fresh = if raw_from < range.until_nanos {
-        let tail = MetricRange {
-            since_nanos: raw_from,
-            ..range
-        };
+    let (rolled, mut markers) = rollup::read(store, range, &request.scope)?;
+    let mut fresh = Vec::new();
+    for tail in unfolded(&segment::hours(store)?, &rollup::folded(store)?, range) {
         let tail = raw(
             store,
             tail,
             &request.scope,
-            Buckets::new(tail, Some(STEP_NANOS)),
+            Buckets::new(tail, Some(RETENTION.step_nanos())),
             now,
         )?;
         markers.extend(tail.markers);
-        Some(tail.points)
-    } else {
-        None
-    };
+        fresh.push(tail.points);
+    }
     let mut reply = match rolled {
         Rolled::Machine(mut points) => {
-            if let Some(MetricPoints::Machine(fresh)) = fresh {
-                points.extend(fresh);
+            for fresh in fresh {
+                if let MetricPoints::Machine(fresh) = fresh {
+                    points.extend(fresh);
+                }
             }
             average_hosts(&points, buckets)
         }
         Rolled::Service(rows) => {
             let mut points = sum_services(rows);
-            if let Some(MetricPoints::Service(fresh)) = fresh {
-                points.extend(fresh);
+            for fresh in fresh {
+                if let MetricPoints::Service(fresh) = fresh {
+                    points.extend(fresh);
+                }
             }
             average_services(&points, buckets)
         }
     };
     reply.markers = newest(markers);
     Ok(reply)
+}
+
+/// The stretches of `range` to read from raw rows: each run of consecutive
+/// raw hours that has no rollup, cut to `range`, oldest first. An hour is
+/// either folded or read raw, so an older hour that failed to fold is not
+/// taken as folded because a newer one is. An hour with neither a rollup nor
+/// a raw segment is in no stretch and shows as a gap.
+fn unfolded(
+    raw_hours: &BTreeSet<SegmentName>,
+    folded: &BTreeSet<SegmentName>,
+    range: MetricRange,
+) -> Vec<MetricRange> {
+    let mut runs: Vec<MetricRange> = Vec::new();
+    for hour in raw_hours.difference(folded) {
+        let (start, end) = (hour.start_nanos(), hour.end_nanos());
+        if start >= range.until_nanos || end <= range.since_nanos {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(run) if run.until_nanos == start => run.until_nanos = end,
+            _ => runs.push(MetricRange {
+                since_nanos: start,
+                until_nanos: end,
+            }),
+        }
+    }
+    for run in &mut runs {
+        run.since_nanos = run.since_nanos.max(range.since_nanos);
+        run.until_nanos = run.until_nanos.min(range.until_nanos);
+    }
+    runs
 }
 
 /// The newest `MAX_MARKERS` of `markers`, oldest first.
@@ -147,7 +168,9 @@ fn raw(
     buckets: Buckets,
     now: i64,
 ) -> io::Result<MetricHistoryReply> {
-    let oldest = segment::oldest(store)?.unwrap_or(range.until_nanos);
+    let oldest = segment::hours(store)?
+        .first()
+        .map_or(range.until_nanos, |hour| hour.start_nanos());
     let since = range.since_nanos.saturating_sub(LEAD_IN).max(oldest);
     let mut hosts = Vec::new();
     let mut fold = rate::ServiceFold::new(buckets);
@@ -411,12 +434,13 @@ pub(crate) mod tests {
         },
     };
 
-    use super::{MAX_MARKERS, history};
+    use super::{MAX_MARKERS, history, unfolded};
     use crate::{
         observe::{
             layout::{SegmentName, StoreRoot},
             metrics::{
-                rollup::{self, STEP_NANOS, ServiceRow},
+                policy::RETENTION,
+                rollup::{self, ServiceRow},
                 segment::{self, Row},
             },
         },
@@ -424,6 +448,7 @@ pub(crate) mod tests {
     };
 
     pub(crate) const SEC: i64 = 1_000_000_000;
+    const STEP_NANOS: i64 = RETENTION.step_nanos();
     const MIN: i64 = 60 * SEC;
     const HOUR: i64 = 60 * MIN;
     const DAY: i64 = 24 * HOUR;
@@ -857,6 +882,107 @@ pub(crate) mod tests {
         assert_eq!(step(now - HOUR), SEC);
         assert_eq!(step(now - 7 * DAY), STEP_NANOS);
         assert_eq!(step(now - 90 * DAY), 90 * DAY / 4_000);
+    }
+
+    #[test]
+    fn an_hour_that_failed_to_fold_is_read_from_raw_while_a_later_hour_is_read_from_its_rollup() {
+        let (_dir, store) = store();
+        write(&store, T0, T0 + 3 * HOUR, |ts| {
+            vec![
+                host(ts),
+                container(1, Some(1), 1, ts, 10),
+                container(2, Some(1), 2, ts, 20),
+            ]
+        });
+        // The middle hour did not fold, and cleanup already took the raw
+        // rows of the two that did.
+        for hour in [T0, T0 + 2 * HOUR] {
+            rollup::fold_hour(&store, SegmentName::containing(hour).unwrap()).unwrap();
+            let name = SegmentName::containing(hour).unwrap().to_string();
+            fs::remove_file(store.raw_metrics().join(name)).unwrap();
+        }
+        let now = T0 + 3 * HOUR;
+        let since = now - 7 * DAY;
+
+        let scope = MetricScope::Service {
+            service: qualified(1),
+        };
+        let reply = history(&store, &request(scope, since, now, Some(STEP_NANOS)), now).unwrap();
+        let points = service_points(&reply);
+        let first = T0 + HOUR;
+        let ts: Vec<i64> = points
+            .iter()
+            .map(|point| point.ts)
+            .filter(|&ts| ts < T0 + 2 * HOUR && ts >= first)
+            .collect();
+        let want: Vec<i64> = (0..12).map(|i| first + i * STEP_NANOS).collect();
+        assert_eq!(ts, want);
+        for point in points {
+            assert!(near(point.cpu_usec, 30.0), "{point:?}");
+        }
+        assert!(
+            reply
+                .gaps
+                .iter()
+                .all(|gap| gap.to <= first || gap.from >= T0 + 2 * HOUR),
+            "{:?}",
+            reply.gaps
+        );
+
+        let asked = request(MetricScope::Machine, since, now, Some(STEP_NANOS));
+        let reply = history(&store, &asked, now).unwrap();
+        let points = host_points(&reply);
+        let ts: Vec<i64> = points
+            .iter()
+            .map(|point| point.ts)
+            .filter(|&ts| ts < T0 + 2 * HOUR && ts >= first)
+            .collect();
+        assert_eq!(ts, want);
+        assert_host_rates(points);
+    }
+
+    #[test]
+    fn a_range_reads_raw_only_for_the_runs_of_hours_without_a_rollup() {
+        let hours = |starts: &[i64]| -> std::collections::BTreeSet<SegmentName> {
+            starts
+                .iter()
+                .map(|&start| SegmentName::containing(start).unwrap())
+                .collect()
+        };
+        let range = |since: i64, until: i64| MetricRange {
+            since_nanos: since,
+            until_nanos: until,
+        };
+        let raw = hours(&[T0, T0 + HOUR, T0 + 2 * HOUR, T0 + 4 * HOUR]);
+
+        let nothing_folded = unfolded(&raw, &hours(&[]), range(T0 - DAY, T0 + 5 * HOUR));
+        assert_eq!(
+            nothing_folded,
+            [
+                range(T0, T0 + 3 * HOUR),
+                range(T0 + 4 * HOUR, T0 + 5 * HOUR)
+            ]
+        );
+
+        let middle_failed = unfolded(
+            &raw,
+            &hours(&[T0, T0 + 2 * HOUR]),
+            range(T0 - DAY, T0 + 5 * HOUR),
+        );
+        assert_eq!(
+            middle_failed,
+            [
+                range(T0 + HOUR, T0 + 2 * HOUR),
+                range(T0 + 4 * HOUR, T0 + 5 * HOUR)
+            ]
+        );
+
+        let cut = unfolded(
+            &raw,
+            &hours(&[]),
+            range(T0 + 30 * MIN, T0 + 2 * HOUR + 10 * MIN),
+        );
+        assert_eq!(cut, [range(T0 + 30 * MIN, T0 + 2 * HOUR + 10 * MIN)]);
     }
 
     #[test]

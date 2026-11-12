@@ -35,17 +35,17 @@ use nix::{
 };
 use ployz_core::ContainerId;
 
-use super::layout::{
-    CONTAINERS_DIR, ENV_FILE, ENV_TEMP_FILE, EXITS_FILE, EXITS_TEMP_FILE, FIRST_SET_FILE,
-    FIRST_SET_TEMP_FILE, GAPS_FILE, LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE,
-    METRICS_DIR, RAW_DIR, ROLLUP_DIR, SCANNED_FILE, SCANNED_TEMP_FILE, SegmentName, StoreRoot,
-    VERSION_DIR, run_exits,
+use super::{
+    layout::{
+        CONTAINERS_DIR, ENV_FILE, ENV_TEMP_FILE, EXITS_FILE, EXITS_TEMP_FILE, FIRST_SET_FILE,
+        FIRST_SET_TEMP_FILE, GAPS_FILE, LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE,
+        METRICS_DIR, NANOS_PER_SEC, RAW_DIR, ROLLUP_DIR, SCANNED_FILE, SCANNED_TEMP_FILE,
+        SegmentName, StoreRoot, VERSION_DIR, run_exits,
+    },
+    metrics::policy::RETENTION,
 };
 
 const GIB: u64 = 1 << 30;
-const NANOS_PER_SEC: i64 = 1_000_000_000;
-const RAW_METRICS_AGE: Duration = Duration::from_secs(24 * 60 * 60);
-const ROLLUP_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
@@ -189,8 +189,8 @@ pub fn run(
 
     let hour_age_limit =
         |age: Duration| i64::try_from(now_secs.saturating_sub(age.as_secs())).unwrap_or(i64::MAX);
-    let raw_age_limit = hour_age_limit(RAW_METRICS_AGE);
-    let rollup_age_limit = hour_age_limit(ROLLUP_AGE);
+    let raw_age_limit = hour_age_limit(RETENTION.raw);
+    let rollup_age_limit = hour_age_limit(RETENTION.rollup);
     let age_limit = now
         .checked_sub(limits.max_age)
         .and_then(|limit| limit.duration_since(SystemTime::UNIX_EPOCH).ok())

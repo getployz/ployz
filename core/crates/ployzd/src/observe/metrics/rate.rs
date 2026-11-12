@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+use super::policy::RETENTION;
 use ployz_core::{
     ContainerId,
     metrics::{
@@ -22,7 +23,7 @@ use ployz_core::{
 const TARGET_BUCKETS: i64 = 300;
 /// The sampler's tick. A default bucket narrower than this would be empty
 /// between samples.
-const SAMPLE_NANOS: i64 = 10_000_000_000;
+const SAMPLE_NANOS: i64 = RETENTION.sample_nanos();
 /// Bounds the bucket table whatever step a caller asks for.
 const MAX_BUCKETS: i64 = 4_000;
 const NANOS_PER_SEC: f64 = 1e9;
