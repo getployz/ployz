@@ -1057,3 +1057,6 @@ pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), 
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
