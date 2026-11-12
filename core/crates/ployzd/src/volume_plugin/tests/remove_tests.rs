@@ -508,3 +508,16 @@ async fn remove_refuses_while_a_held_pool_is_not_imported() {
     assert!(error(&response).contains("not imported"), "{response}");
     server.abort();
 }
+
+#[tokio::test]
+async fn get_refuses_while_a_held_pool_is_not_imported() {
+    let test = TestDir::new();
+    let (zpool, zfs) = fake_zfs(&test.0, "");
+    fs::create_dir(test.0.join("ployz-volumes")).unwrap();
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    assert_hangs_up(&socket, "/VolumeDriver.Get", br#"{"Name":"data"}"#).await;
+    server.abort();
+}
