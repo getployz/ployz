@@ -9,8 +9,8 @@ use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
     CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, CopyRole, DockerVolume,
-    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, MIRROR_ROOT,
-    ResolvedServiceSpec, VolumeInventory,
+    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, ResolvedServiceSpec,
+    VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -496,7 +496,7 @@ fn observe_copies(
             continue;
         }
         let (Ok(mountpoint), Some(bound_bytes)) = (
-            ployz_core::MachinePath::parse(format!("/var/lib/{MIRROR_ROOT}/{name}/fs")),
+            ployz_core::MachinePath::parse(crate::dataset_layout::slot_fs_mountpoint(name)),
             std::num::NonZeroU64::new(copy.maximum_bytes.get()),
         ) else {
             continue;

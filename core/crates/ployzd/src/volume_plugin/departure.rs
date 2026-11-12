@@ -25,13 +25,9 @@ use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
 use ployz_core::{DepartureFailure, RpcError, SlotRole, StorageDeparture};
-use ployzd::machine_pool::MachinePool;
+use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
-use super::{
-    Dataset, DockerVolumeName, MIRROR_ROOT, Place, VolumeStorage,
-    inspect::internal,
-    storage::{slot_fs, slot_parent},
-};
+use super::{Dataset, DockerVolumeName, VolumeStorage, inspect::internal};
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
 pub(super) const DEPARTURE_SNAPSHOT_PREFIX: &str = "dep-";
@@ -78,10 +74,7 @@ impl VolumeStorage {
         let datasets = self.datasets(&pool).await?;
         let names = datasets
             .iter()
-            .filter_map(|dataset| match Place::of(&dataset.name, pool.name()) {
-                Place::Root(name) | Place::Slot(name) => Some(name),
-                Place::Outside => None,
-            })
+            .filter_map(|dataset| DatasetLayout::of(&pool).place(&dataset.name).volume())
             .filter(|name| !stuck.iter().any(|stuck| stuck == name))
             .collect::<BTreeSet<&str>>()
             .into_iter()
@@ -120,7 +113,7 @@ impl VolumeStorage {
     /// next slot, and a slot made meanwhile keeps it. The root holds no data, so a
     /// failure here only leaves it behind; the departure's answer stands.
     async fn drop_empty_mirror_root(&self, pool: &MachinePool) {
-        let mirror_root = format!("{}/{MIRROR_ROOT}", pool.name());
+        let mirror_root = DatasetLayout::of(pool).mirror_root();
         let children = format!("{mirror_root}/");
         let datasets = match self.datasets(pool).await {
             Ok(datasets) => datasets,
@@ -156,7 +149,7 @@ impl VolumeStorage {
             Departure::Root(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
                 self.ensure_mirror_root(pool, &datasets).await?;
-                let parent = slot_parent(pool, name);
+                let parent = DatasetLayout::of(pool).slot_parent(name);
                 self.create_slot_parent(&parent, root.refquota).await?;
                 self.marks(&parent).set_role(SlotRole::OldCopy).await?;
                 self.move_into_slot(pool, root, name).await?;
@@ -164,7 +157,7 @@ impl VolumeStorage {
             }
             Departure::RootBesideEmptySlot(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
-                self.marks(&slot_parent(pool, name))
+                self.marks(&DatasetLayout::of(pool).slot_parent(name))
                     .set_role(SlotRole::OldCopy)
                     .await?;
                 self.move_into_slot(pool, root, name).await?;
@@ -183,7 +176,7 @@ impl VolumeStorage {
             Departure::Departed => false,
             Departure::Mirror => match mirrors {
                 Mirrors::Destroy => {
-                    self.zfs(&["destroy", "-r", &slot_parent(pool, name)])
+                    self.zfs(&["destroy", "-r", &DatasetLayout::of(pool).slot_parent(name)])
                         .await?;
                     self.receives.forget(name);
                     true
@@ -293,7 +286,7 @@ impl VolumeStorage {
         root: &Dataset,
         name: &DockerVolumeName,
     ) -> super::Result<()> {
-        let fs = slot_fs(pool, name);
+        let fs = DatasetLayout::of(pool).slot_fs(name);
         self.zfs(&["rename", &root.name, &fs]).await?;
         self.seal_fs(&fs).await
     }

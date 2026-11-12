@@ -35,7 +35,7 @@ use tokio::{
 
 use super::{
     cgroup::{self, MemoryLimit},
-    disk::{self, DatasetPlace, SlowReading},
+    disk::{self, SlowReading},
     host::{self, HostCounters},
     net::{self, NetCounters},
     policy::RETENTION,
@@ -45,6 +45,7 @@ use super::{
     zfs_usage::{ZFS_LIST_TIMEOUT, ZfsUsageReader},
 };
 use crate::{
+    dataset_layout::Place,
     machine::store,
     network::DOCKER_NETWORK_NAME,
     observe::{
@@ -413,9 +414,10 @@ fn volume_io(
 ) -> HashMap<ContainerId, DatasetIo> {
     let by_volume: HashMap<&str, DatasetIo> = datasets
         .iter()
-        .filter_map(|(dataset, io)| match DatasetPlace::of(dataset) {
-            DatasetPlace::Volume(volume) => Some((volume, *io)),
-            DatasetPlace::Slot | DatasetPlace::Other => None,
+        .filter_map(|(dataset, io)| {
+            Place::in_any_pool(dataset)
+                .writer_root()
+                .map(|volume| (volume, *io))
         })
         .collect();
     let mut owners: HashMap<(Option<ServiceId>, &str), ContainerId> = HashMap::new();

@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{DATASET_ROOT, MIRROR_ROOT, metrics::DiskBreakdown};
+use ployz_core::metrics::DiskBreakdown;
 use tokio::{
     sync::watch,
     time::{MissedTickBehavior, interval},
@@ -22,42 +22,13 @@ use super::{
     host::FsBytes,
     zfs_usage::{ZfsUsage, ZfsUsageReader},
 };
-use crate::observe::layout::StoreRoot;
+use crate::{
+    dataset_layout::{Place, pool_of_root_parent},
+    observe::layout::StoreRoot,
+};
 
 const INTERVAL: Duration = Duration::from_secs(60);
 const BLOCK_BYTES: u64 = 512;
-
-/// What a Pool dataset holds, from its place under the Pool.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum DatasetPlace<'name> {
-    /// The root copy of the named Volume, the one its replicas mount.
-    Volume(&'name str),
-    /// A mirror slot, or its `fs` child.
-    Slot,
-    Other,
-}
-
-impl<'name> DatasetPlace<'name> {
-    pub(super) fn of(dataset: &'name str) -> Self {
-        let Some((_pool, rest)) = dataset.split_once('/') else {
-            return Self::Other;
-        };
-        if let Some(volume) = rest
-            .strip_prefix(DATASET_ROOT)
-            .and_then(|rest| rest.strip_prefix('/'))
-            .filter(|volume| !volume.contains('/'))
-        {
-            return Self::Volume(volume);
-        }
-        match rest
-            .strip_prefix(MIRROR_ROOT)
-            .and_then(|rest| rest.strip_prefix('/'))
-        {
-            Some(_) => Self::Slot,
-            None => Self::Other,
-        }
-    }
-}
 
 /// The Machine Pool's bytes, as far as they sit on the filesystem holding the
 /// Observe Store.
@@ -157,17 +128,14 @@ fn pool_bytes(usage: &ZfsUsage, placement: Placement) -> PoolBytes {
     };
     let (mut volumes, mut mirror_slots, mut free) = (0_u64, 0_u64, None);
     for (name, usage) in datasets {
-        match DatasetPlace::of(name) {
-            DatasetPlace::Volume(_) => volumes = volumes.saturating_add(usage.referenced),
-            DatasetPlace::Slot => mirror_slots = mirror_slots.saturating_add(usage.referenced),
-            DatasetPlace::Other => {}
+        match Place::in_any_pool(name) {
+            place if place.writer_root().is_some() => {
+                volumes = volumes.saturating_add(usage.referenced);
+            }
+            Place::Slot { .. } => mirror_slots = mirror_slots.saturating_add(usage.referenced),
+            Place::Root(_) | Place::Outside => {}
         }
-        if let Some(root) = name
-            .strip_suffix(DATASET_ROOT)
-            .and_then(|pool| pool.strip_suffix('/'))
-            .filter(|pool| !pool.contains('/'))
-            .and_then(|pool| datasets.get(pool))
-        {
+        if let Some(root) = pool_of_root_parent(name).and_then(|pool| datasets.get(pool)) {
             free = Some(free.unwrap_or(0_u64).saturating_add(root.available));
         }
     }
@@ -253,8 +221,7 @@ mod tests {
     use ployz_core::metrics::DiskBreakdown;
 
     use super::{
-        DatasetPlace, Placement, PoolBytes, SlowReading, breakdown, locate_pool, pool_bytes,
-        store_bytes,
+        Placement, PoolBytes, SlowReading, breakdown, locate_pool, pool_bytes, store_bytes,
     };
     use crate::{
         observe::metrics::{
@@ -302,26 +269,23 @@ mod tests {
     }
 
     #[test]
-    fn datasets_are_placed_by_their_path_under_the_pool() {
-        assert_eq!(
-            DatasetPlace::of("ployz/ployz/prod_db"),
-            DatasetPlace::Volume("prod_db")
-        );
-        assert_eq!(
-            DatasetPlace::of("ployz/ployz-mirror/prod_db"),
-            DatasetPlace::Slot
-        );
-        assert_eq!(
-            DatasetPlace::of("ployz/ployz-mirror/prod_db/fs"),
-            DatasetPlace::Slot
-        );
-        for other in [
-            "ployz",
-            "ployz/ployz",
-            "ployz/ployz/db/child",
-            "ployz/elsewhere",
+    fn only_a_volumes_root_and_slots_are_counted_under_any_pool() {
+        for (dataset, volume, slot) in [
+            ("ployz/ployz/prod_db", Some("prod_db"), false),
+            ("ployz/ployz-mirror/prod_db", None, true),
+            ("ployz/ployz-mirror/prod_db/fs", None, true),
+            ("ployz", None, false),
+            ("ployz/ployz", None, false),
+            ("ployz/ployz/db/child", None, false),
+            ("ployz/elsewhere", None, false),
         ] {
-            assert_eq!(DatasetPlace::of(other), DatasetPlace::Other, "{other}");
+            let place = crate::dataset_layout::Place::in_any_pool(dataset);
+            assert_eq!(place.writer_root(), volume, "{dataset}");
+            assert_eq!(
+                matches!(place, crate::dataset_layout::Place::Slot { .. }),
+                slot,
+                "{dataset}"
+            );
         }
     }
 

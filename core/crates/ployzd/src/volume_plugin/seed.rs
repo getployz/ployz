@@ -9,7 +9,7 @@ use axum::{Json, extract::State};
 use ployz_core::{
     RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError, VolumeCopyView,
 };
-use ployzd::machine_pool::MachinePool;
+use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 use tokio::process::Command;
 
 use super::{
@@ -17,7 +17,7 @@ use super::{
     inspect::{answering, internal},
     marks::{Mark, Marks},
     mirror,
-    storage::{HeldMutation, root_dataset, slot_fs, slot_parent},
+    storage::HeldMutation,
     transfer::{Busy, Stop, ZfsChild, exited},
 };
 
@@ -222,8 +222,8 @@ impl VolumeStorage {
         into: &DockerVolumeName,
         guid: SnapshotGuid,
     ) -> Result<SeedProgress, RpcError> {
-        let root = root_dataset(pool, into);
-        let parent = slot_parent(pool, into);
+        let root = DatasetLayout::of(pool).root(into);
+        let parent = DatasetLayout::of(pool).slot_parent(into);
         let slot = Self::slot(datasets, pool, into).is_some();
         if Self::dataset(datasets, pool, into)
             .map_err(internal)?
@@ -289,7 +289,7 @@ impl VolumeStorage {
         into: &DockerVolumeName,
         guid: SnapshotGuid,
     ) -> Result<Source, RpcError> {
-        let root = root_dataset(pool, name);
+        let root = DatasetLayout::of(pool).root(name);
         let Some(bound) = datasets
             .iter()
             .find(|dataset| dataset.name == root)
@@ -324,8 +324,8 @@ impl VolumeStorage {
         into: &DockerVolumeName,
         source: Source,
     ) -> Result<VolumeCopyView, RpcError> {
-        let parent = slot_parent(pool, into);
-        let fs = slot_fs(pool, into);
+        let parent = DatasetLayout::of(pool).slot_parent(into);
+        let fs = DatasetLayout::of(pool).slot_fs(into);
         let Source { root, point, bound } = source;
         self.create_bounded_slot(&parent, bound).await?;
         self.marks(&parent)
