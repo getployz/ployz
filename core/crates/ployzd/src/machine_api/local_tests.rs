@@ -6621,6 +6621,62 @@ mod ensure_container {
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
+        #[tokio::test]
+        async fn a_set_over_the_local_socket_activates_a_server_whose_keys_predate_evidence() {
+            let (data_dir, store, service, _fake) =
+                fake_docker_service("ployzd-enforce-local-socket").await;
+            let signer = Signer::from_seed(&[8; 32]);
+            let device = DeviceKey::from(signer.public());
+            store
+                .mutate(move |store| store.approve_device(device, None).unwrap())
+                .await
+                .unwrap();
+            let issued_at = Timestamp::now();
+            let set = StartingSet {
+                operation: OperationId::random(),
+                members: vec![service.local.record().machine().unwrap().into()],
+                issued_at,
+                expires_at: issued_at.plus(60_000),
+                signer: ployz_core::authority::SignerKey::Device(device),
+                kept_keys: Vec::new(),
+            };
+            let request = || {
+                Request::new(
+                    op::SetDeviceEnforcement::into_request(SetDeviceEnforcementRequest {
+                        enforced: true,
+                        starting_set: Some(Signed::sign(&set, &signer).unwrap()),
+                    })
+                    .encode()
+                    .unwrap(),
+                )
+            };
+
+            let routed = service.set_device_enforcement(request()).await.unwrap_err();
+            assert_eq!(routed.code(), tonic::Code::PermissionDenied);
+
+            let mut local = request();
+            local
+                .extensions_mut()
+                .insert(tonic::transport::server::UdsConnectInfo {
+                    peer_addr: None,
+                    peer_cred: None,
+                });
+            let reply = service
+                .set_device_enforcement(local)
+                .await
+                .unwrap()
+                .into_inner()
+                .decode_response()
+                .unwrap()
+                .decode::<op::SetDeviceEnforcement>()
+                .unwrap();
+
+            assert!(reply.enforced);
+            service.local.commit_activation_as_if_restarted().await;
+            assert!(service.local.record().device_enforcement());
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
         const PINNED: &str = "example.test/api@sha256:00000000000000000000000000000000000000000000000000000000000000aa";
 
         impl Enforced {

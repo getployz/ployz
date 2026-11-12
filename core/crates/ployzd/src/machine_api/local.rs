@@ -524,8 +524,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
         let request = expect::<op::SetDeviceEnforcement>(request)?;
-        finish(self.local.set_device_enforcement(request).await)
+        finish(local.set_device_enforcement(request).await)
     }
 
     async fn activate_enforcement(
