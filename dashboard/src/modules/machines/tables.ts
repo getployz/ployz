@@ -503,12 +503,15 @@ export const clusterSealingKey = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     clusterKey: text("cluster_key").notNull(),
     publicKey: text("public_key").notNull(),
+    /** The key new values seal to once a Server of this Cluster reported one, after activation. It never goes back. */
+    recipientPublicKey: text("recipient_public_key"),
     createdAt,
   },
   (table) => [
     primaryKey({ columns: [table.organizationId, table.clusterKey] }),
     check("cluster_sealing_key_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
     check("cluster_sealing_key_public_key_check", sql`${table.publicKey} ~ '^[A-Za-z0-9+/]{43}=$'`),
+    check("cluster_sealing_key_recipient_public_key_check", sql`${table.recipientPublicKey} ~ '^[A-Za-z0-9+/]{43}=$'`),
   ],
 );
 

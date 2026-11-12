@@ -47,7 +47,7 @@ export async function executeResealOrganization(organizationId: string, step: St
   const environments = await step.run("environments", () => runEffect(resealEnvironments(organizationId)));
   let resealed = 0;
   for (const environmentId of environments) {
-    const done = await step.run(`reseal-${environmentId}`, () => runEffect(reseal(environmentId, sealing.publicKey)));
+    const done = await step.run(`reseal-${environmentId}`, () => runEffect(reseal(environmentId, sealing.sealTo)));
     resealed += done.resealed;
   }
   const after = await step.run("count-after", () => runEffect(legacyCount(organizationId).pipe(

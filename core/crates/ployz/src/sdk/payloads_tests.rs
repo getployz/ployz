@@ -114,3 +114,29 @@ fn cloud_contract_files_spell_every_constant_in_all_three_module_forms() {
         format!("{HEADER}\"use strict\";\n\n{cjs}")
     );
 }
+
+/// The dashboard drafts an activation with `@ployz/sdk/authority` and drives it with the
+/// SDK's activation methods, so each type they name is declared.
+#[test]
+fn the_activation_statements_and_requests_are_declared() {
+    let payloads = file("payloads.d.ts");
+    for name in [
+        "StartingSet",
+        "StartingSetTerms",
+        "SealingRotation",
+        "ActivationDraft",
+        "Member",
+        "ActivateEnforcementRequest",
+        "DeviceEnforcementSet",
+        "SetRecipientKeyRequest",
+        "RecipientKeySet",
+        "ResealValuesRequest",
+        "ValuesResealed",
+        "ActivationReport",
+    ] {
+        assert!(
+            payloads.contains(&format!("export type {name} =")),
+            "{name} is not declared"
+        );
+    }
+}

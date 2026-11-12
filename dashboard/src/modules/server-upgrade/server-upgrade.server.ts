@@ -20,6 +20,7 @@ import {
   endEvidence,
   type EndEvidence,
   type FinalOutcome,
+  crossesIntoEnforcement,
   isBehind,
   type LatestUpgrade,
   outlivedObservation,
@@ -230,8 +231,8 @@ const haltedReleases = Effect.fn("ServerUpgrade.halted")(function* (organization
 /**
  * Every Server observed online and idle on a release older than the newest on `channel` for its line, in name order:
  * a Server ahead of it (on a beta, after switching to Stable) isn't behind. An automatic rollout also skips a release
- * the Organization is halted on, and one published less than `automaticUpgradeReleaseAgeMs` ago (72 hours unless
- * configured). A Cluster Cloud can't reach, or a release whose date can't be read, has none.
+ * the Organization is halted on, one published less than `automaticUpgradeReleaseAgeMs` ago (72 hours unless
+ * configured), and one that crosses from 0.3 to 0.4, which only a person starts. A Cluster Cloud can't reach, or a release whose date can't be read, has none.
  */
 export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function* (
   organizationId: string,
@@ -247,6 +248,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
     const line = releaseLine(server.version);
     const release = line === null ? null : yield* channelRelease(channel, line);
     if (release === null || !isBehind(server.version, release) || halted.has(release)) continue;
+    if (automatic && crossesIntoEnforcement(server.version, release)) continue;
     if (minimumAge > 0 && Date.now() - (yield* releasePublishedAt(release)) < minimumAge) continue;
     behind.push({ ...server, status: "online" });
   }

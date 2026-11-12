@@ -105,6 +105,16 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::TeardownTerms>();
     declarations.add::<ployz_core::authority::TeardownScope>();
     declarations.add::<ployz_core::authority::AutoDeployRule>();
+    declarations.add::<ployz_core::authority::StartingSet>();
+    declarations.add::<ployz_core::authority::StartingSetTerms>();
+    declarations.add::<ployz_core::authority::SealingRotation>();
+    declarations.add::<ployz_core::authority::ActivationDraft>();
+    declarations.add::<ployz_core::ActivateEnforcementRequest>();
+    declarations.add::<ployz_core::DeviceEnforcementSet>();
+    declarations.add::<ployz_core::SetRecipientKeyRequest>();
+    declarations.add::<ployz_core::RecipientKeySet>();
+    declarations.add::<ployz_core::ResealValuesRequest>();
+    declarations.add::<ployz_core::ValuesResealed>();
     declarations.add::<ployz_core::authority::UpgradeChannel>();
     declarations.add::<ployz_core::authority::RuleTerms>();
     declarations.add::<ployz_core::authority::RuleDraft>();

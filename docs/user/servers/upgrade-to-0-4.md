@@ -12,7 +12,8 @@ and it can't be turned off.
 
 Upgrade each server from **Servers** in the dashboard, or with `ployz server upgrade`, as in
 [Upgrade Ployz on a server](manage-servers.md#upgrade-ployz-on-a-server). Your services keep
-running while each server upgrades.
+running while each server upgrades. Automatic upgrades never move a server from 0.3 to 0.4, so
+you start this one yourself.
 
 Until you activate, your servers work as they did on 0.3, and the **Servers** page shows each one
 as **Awaiting activation**.
@@ -26,8 +27,9 @@ Pick one of these.
 Reach each server over SSH, or confirm each server's key with `sudo ployz status` on it. This
 works for every cluster.
 
-**From the dashboard.** When no server holds a device, passkey or server it can't vouch for, the
-dashboard offers **Activate** on the **Servers** page. Your passkey approves the list of servers.
+**From the dashboard.** When every server runs 0.4 and none holds a device, passkey or server it
+can't vouch for, the dashboard offers **Activate** on the **Servers** page. Otherwise it names
+what stops it. Your passkey approves the list of servers.
 A second passkey prompt approves the cluster's new key for sealed values, which one of your
 servers makes. If the dashboard says a server holds keys from before, activate from your
 computer instead. The dashboard never shows a recovery code, so make one afterwards from your
@@ -61,7 +63,8 @@ enforcement was off:
 - **Web traffic and Private Access set up before activation.** Each server keeps the
   [Cloudflare Tunnel or public ports](../services/cloudflare-tunnel.md) and the
   [Private Access](../services/private-networking.md) router it had, exactly as they were.
-  `ployz device enforce` names each server that keeps a router, and the tailnet it joined. If
+  `ployz device enforce` and the dashboard name each server that keeps a router, and the tailnet
+  it joined. If
   you don't recognize that tailnet, run `ployz private-access off`, then turn it on again from
   an approved device.
 

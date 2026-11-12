@@ -1,4 +1,4 @@
-import { auto_deploy_rule_body, auto_deploy_rule_end_body, deploy_approval_body, preview_review_body, private_access_approval_body, teardown_body, volume_approval_body } from './generated/config-wasm.mjs';
+import { auto_deploy_rule_body, auto_deploy_rule_end_body, deploy_approval_body, preview_review_body, private_access_approval_body, sealing_rotation_body, starting_set_body, teardown_body, volume_approval_body } from './generated/config-wasm.mjs';
 
 export function deployApprovalBody(plan, terms) {
   if (plan.target === undefined) throw new Error('Read the plan with target set to sign a deploy.');
@@ -28,4 +28,12 @@ export function previewReviewBody(view, terms) {
 
 export function volumeApprovalBody(terms) {
   return JSON.parse(volume_approval_body(JSON.stringify(terms)));
+}
+
+export function startingSetBody(terms, names = {}) {
+  return JSON.parse(starting_set_body(JSON.stringify({ terms, servers: names.servers ?? {} })));
+}
+
+export function sealingRotationBody(terms, names = {}) {
+  return JSON.parse(sealing_rotation_body(JSON.stringify({ terms, servers: names.servers ?? {} })));
 }

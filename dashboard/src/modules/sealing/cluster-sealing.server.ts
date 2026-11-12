@@ -2,20 +2,26 @@ import "@tanstack/react-start/server-only";
 import type { SealingPublicKey } from "@ployz/sdk";
 import { Effect } from "effect";
 import { currentFounder, currentGeneration } from "#/modules/machines/connections.server";
-import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
+import { readSealingPublicKey, readSealingRecipient } from "#/modules/machines/sealing-key-read.server";
 import { recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 
-/** The key a client seals an Organization's Sealed values to, once its Cluster has one. */
+/**
+ * The key a client seals an Organization's Sealed values to, once its Cluster has one. `publicKey` is the Cluster's
+ * identity, which sealed values bind to. `sealTo` is the key they seal to: the recipient key a Server reported after
+ * activation, or the identity before.
+ */
 export type ClusterSealing =
   | { readonly state: "no_server"; readonly awaitsRecovery?: true }
-  | { readonly state: "ready"; readonly publicKey: SealingPublicKey };
+  | { readonly state: "ready"; readonly publicKey: SealingPublicKey; readonly sealTo: SealingPublicKey };
 
 /** The Cluster's Sealing public key, or no server while it has no current pairing or none of its Servers has reported one. */
 export const readClusterSealing = Effect.fn("ClusterSealing.read")(function* (organizationId: string) {
   const generation = yield* currentGeneration(organizationId);
   const publicKey = generation === null ? undefined : yield* readSealingPublicKey(organizationId, generation);
-  return (publicKey === undefined ? { state: "no_server" } : { state: "ready", publicKey }) satisfies ClusterSealing;
+  if (generation === null || publicKey === undefined) return { state: "no_server" } satisfies ClusterSealing;
+  const recipient = yield* readSealingRecipient(organizationId, generation);
+  return { state: "ready", publicKey, sealTo: recipient ?? publicKey } satisfies ClusterSealing;
 });
 
 /**

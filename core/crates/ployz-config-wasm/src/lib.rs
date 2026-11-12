@@ -1,7 +1,8 @@
 //! The SDK's WASM ABI for Node and the browser: config rules, the deploy approval a
 //! browser key signs, the automatic deploy rule, Private Access approval and teardown a
-//! passkey answers, the review of a preview a person signs, and the Volume approval a
-//! passkey answers. All policy lives in ployz-core.
+//! passkey answers, the review of a preview a person signs, the Volume approval a passkey
+//! answers, and an activation's starting set and rotation a passkey answers. All policy
+//! lives in ployz-core.
 use ployz_core::authority::{
     AutoDeployRule, DeployApproval, DeployTerms, PreviewReview, PreviewRule, PrivateAccessApproval,
     PrivateAccessTerms, ReviewTerms, RuleBasis, RuleTerms, Signed, SignerKey, Timestamp,
@@ -204,6 +205,57 @@ pub fn volume_approval_body(input: &str) -> Result<String, JsError> {
         serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
     let draft = terms
         .draft()
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartingSetInput {
+    terms: ployz_core::authority::StartingSetTerms,
+    /// The name Cloud knows each Server by.
+    #[serde(default)]
+    servers: std::collections::BTreeMap<ployz_core::MachineId, String>,
+}
+
+/// The starting set a passkey answers for `terms`, in canonical form, and the lines a
+/// person reads before answering, rendered from that body as a Server parses it.
+///
+/// # Errors
+/// Rejects malformed terms.
+#[wasm_bindgen]
+pub fn starting_set_body(input: &str) -> Result<String, JsError> {
+    let StartingSetInput { terms, servers } =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    let draft = ployz_core::authority::StartingSet::draft(
+        terms,
+        ployz_core::authority::activation_draft::named(&servers),
+    )
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SealingRotationInput {
+    terms: ployz_core::authority::SealingRotation,
+    /// The name Cloud knows each Server by.
+    #[serde(default)]
+    servers: std::collections::BTreeMap<ployz_core::MachineId, String>,
+}
+
+/// The rotation a passkey answers to name the recipient key of `terms`, in canonical form,
+/// and the lines a person reads before answering, rendered from that body as a Server
+/// parses it.
+///
+/// # Errors
+/// Rejects malformed terms.
+#[wasm_bindgen]
+pub fn sealing_rotation_body(input: &str) -> Result<String, JsError> {
+    let SealingRotationInput { terms, servers } =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    let draft = terms
+        .draft(ployz_core::authority::activation_draft::named(&servers))
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
 }

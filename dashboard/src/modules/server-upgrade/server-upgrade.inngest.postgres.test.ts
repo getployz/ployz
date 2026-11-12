@@ -22,6 +22,7 @@ import {
 } from "#/modules/server-upgrade/server-upgrade.inngest";
 import {
   approveUpgradeChannel,
+  channelRelease,
   listLatestServerUpgrades,
   readCliServerUpgrade,
   planCliServerUpgrade,
@@ -552,6 +553,28 @@ describe("roll-out-server-upgrade", () => {
       await rollOut(null, "automatic");
 
       expect(requests.map(({ machine }) => machine)).toEqual([serverId("2")]);
+    });
+
+    it("an automatic rollout never moves a 0.3 Server to 0.4, which brings activation; a manual Upgrade does", async () => {
+      published = "0.4.0";
+      // Past the pointer cache, so v0's pointer is read again and names 0.4.0.
+      const start = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(start + 10 * 60_000);
+      onTestFinished(async () => {
+        // Leave v0's cached pointer naming 0.2.2 again, as every other test on v0 reads it.
+        published = "0.2.2";
+        clock.mockReturnValue(start + 20 * 60_000);
+        await harness.runEffect(channelRelease("stable", "v0"));
+        clock.mockRestore();
+      });
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "0.3.17"), server("2", "web-2", "0.4.0-beta.2")] });
+
+      await rollOut(null, "automatic");
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("2")]);
+
+      requests = [];
+      await rollOut(serverId("1"));
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("1")]);
     });
 
     it("AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS=0 takes a release as soon as it's out, without reading its date", async () => {

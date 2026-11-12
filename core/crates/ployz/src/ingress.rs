@@ -194,6 +194,9 @@ pub(crate) struct Doors {
     pub(crate) listed: PartialResult<Vec<ContainerObservation>, RpcError>,
     /// The Cluster's Sealing Key, from the first Server that holds it.
     pub(crate) sealing: Option<SealingPublicKey>,
+    /// The key new values seal to once the Cluster activated, as the entry reports it for
+    /// that Sealing Key.
+    pub(crate) recipient: Option<SealingPublicKey>,
 }
 
 /// The Doors to open: `doors`, with `token` sealed to the Cluster when the Tunnel Door is
@@ -225,7 +228,7 @@ pub(crate) fn cluster_doors_for(
             };
             seal_platform(
                 sealing,
-                sealing,
+                observed.recipient.as_ref().unwrap_or(sealing),
                 PlatformPurpose::IngressTunnel,
                 token.as_bytes(),
             )
@@ -283,6 +286,15 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
             Some(Sealing::Held { public_key }) => Some(*public_key),
             Some(Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. }) | None => None,
         });
+    let recipient = match sealing {
+        Some(identity) => client
+            .call::<op::Inspect>(ployz_core::InspectRequest::default(), Call::read())
+            .await
+            .ok()
+            .filter(|details| matches!(details.sealing, Some(Sealing::Held { public_key }) if public_key == identity))
+            .and_then(|details| details.sealing_recipient),
+        None => None,
+    };
     Ok(Doors {
         machines: door_machines(&machines),
         proxy: proxy_service(&services),
@@ -292,6 +304,7 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         open: machine_doors(&services),
         listed: live.containers,
         sealing,
+        recipient,
     })
 }
 

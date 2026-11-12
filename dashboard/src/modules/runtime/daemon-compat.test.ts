@@ -36,6 +36,8 @@ describe("serverSupports", () => {
     expect(requirementFor("ployz.image.prune.v1")).toBe(requirements.pruneImages);
     expect(requirementFor("ployz.metrics.history.v1")).toBe(requirements.metrics);
     expect(requirementFor("ployz.volume.size.shrink.v1")).toEqual({ capability: "ployz.volume.size.shrink.v1", feature: "Volume shrink" });
+    expect(requirementFor("ployz.machine.activate.v1")).toBe(requirements.activate);
+    expect(requirementFor("ployz.sealing.recipient.v1")).toBe(requirements.recipientKey);
     expect(requirementFor("ployz.something.v9")).toBeNull();
   });
 });
