@@ -67,7 +67,7 @@ async function sealingReady() {
   const kem = new DhkemX25519HkdfSha256();
   const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
   const publicKey = btoa(String.fromCharCode(...raw));
-  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey } });
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey, sealTo: publicKey } });
   return publicKey;
 }
 

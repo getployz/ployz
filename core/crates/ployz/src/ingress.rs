@@ -196,6 +196,10 @@ pub(crate) struct Doors {
     /// The Cluster's Sealing Key as the first Server's row claims it. Cloud can write
     /// that row, so the CLI seals only to a key [`SealTo`] checks.
     pub(crate) sealing: Option<SealingPublicKey>,
+    /// The key new values seal to once the Cluster activated, as the entry reports it for
+    /// that Sealing Key. Only Cloud's own SDK seals to it; the CLI seals to the recipient its
+    /// pin names.
+    pub(crate) recipient: Option<SealingPublicKey>,
 }
 
 /// A Cloudflare tunnel token to seal, with the Cluster's keys to seal it to.
@@ -320,6 +324,15 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
             Some(Sealing::Held { public_key }) => Some(*public_key),
             Some(Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. }) | None => None,
         });
+    let recipient = match sealing {
+        Some(identity) => client
+            .call::<op::Inspect>(ployz_core::InspectRequest::default(), Call::read())
+            .await
+            .ok()
+            .filter(|details| matches!(details.sealing, Some(Sealing::Held { public_key }) if public_key == identity))
+            .and_then(|details| details.sealing_recipient),
+        None => None,
+    };
     Ok(Doors {
         machines: door_machines(&machines),
         proxy: proxy_service(&services),
@@ -329,6 +342,7 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         open: machine_doors(&services),
         listed: live.containers,
         sealing,
+        recipient,
     })
 }
 

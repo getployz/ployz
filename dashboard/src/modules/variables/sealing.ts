@@ -46,10 +46,10 @@ async function sealer(queryClient: QueryClient, organizationSlug: string): Promi
     .catch((error) => { throw isUnauthorized(error) ? error : new SealError(UNREAD); });
   const { sealing, organizationId } = fresh;
   if (sealing.state === "no_server") throw new SealError(NO_SERVER);
-  const recipient = { organizationId, publicKey: sealing.publicKey };
+  const recipient = { organizationId, publicKey: sealing.sealTo };
   const seal = async ({ key, value, target }: SealItem): Promise<ClientSealedValue> =>
     ({ sealedFor: target.environment, value: { sealed: await sealed(recipient, target, key, value), scope: { service: target.service }, key } });
-  return Object.assign(seal, { publicKey: sealing.publicKey });
+  return Object.assign(seal, { publicKey: sealing.sealTo });
 }
 
 async function sealed(...input: Parameters<typeof sealValue>) {

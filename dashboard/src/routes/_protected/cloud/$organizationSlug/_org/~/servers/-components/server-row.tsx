@@ -7,6 +7,7 @@ import type { Server } from "#/modules/machines/use-servers";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
 import { runsHere, serviceNames } from "./runs-here";
 import { ServerMeters } from "./server-meters";
+import type { ActivationState } from "#/modules/server-upgrade/activation";
 
 /** What a Server row says about itself: a dot always, a visible word only when someone should look. */
 export type ServerRowState = "online" | "building" | "offline" | "unknown" | "upgrading" | "upgrade-failed";
@@ -47,6 +48,13 @@ const SEALING = {
   awaits_recovery: <Badge variant="warning">Needs recovery</Badge>,
 };
 
+/** A Server's activation, named on the row until it's done. There's no off, so an activated Server shows nothing. */
+const ACTIVATION = {
+  awaiting: <Badge variant="warning">Awaiting activation</Badge>,
+  activating: <Badge variant="info">Activating</Badge>,
+  activated: null,
+};
+
 /** The list's column template, shared by its rows and its skeleton so both line up. */
 export const SERVER_ROW_GRID = cn(
   "grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-1 px-3 py-2.5 text-sm",
@@ -61,11 +69,13 @@ export const SERVER_LIST = "@container flex flex-col divide-y overflow-hidden ro
  * One Server as a row that opens its page: dot, name, what runs there, CPU and memory when the row is wide, and a
  * state word. A narrow row puts what runs under the name and drops the meters.
  */
-export function ServerRow({ organizationSlug, server, upgrade, stale }: {
+export function ServerRow({ organizationSlug, server, upgrade, stale, activation = null }: {
   organizationSlug: string;
   server: Server;
   upgrade: ServerUpgradeLine;
   stale: boolean;
+  /** Its activation, as it last reported it; null on a Ployz older than 0.4 or before it answered. */
+  activation?: ActivationState | null;
 }) {
   const { word, dot, tone } = STATES[serverRowState(server.status, upgrade)];
   const names = serviceNames(server);
@@ -89,6 +99,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
         )}
         {STORAGE[server.machine.storage ?? "unknown"]}
         {sealing ? SEALING[sealing.kind] : null}
+        {activation === null ? null : ACTIVATION[activation]}
       </span>
       <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>

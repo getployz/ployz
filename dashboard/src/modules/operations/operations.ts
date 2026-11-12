@@ -8,6 +8,7 @@ import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
 import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
+import { ActivateServersInput, GenerateRecipientInput, InstallRecipientInput, PasskeyAnswered } from "#/modules/server-upgrade/activation";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
@@ -486,6 +487,53 @@ export const OPERATIONS = {
         input: SetPrivateAccessInput,
         ungated: "The human pasted the auth key, which the browser sealed, pressed Connect and, where a Server enforces, approved it with their passkey; or pressed Turn off.",
         options: { to: { via: "to" }, authKey: { via: "on" } },
+      },
+    },
+  }),
+  "cluster.activate": operation({
+    options: Schema.Struct({ startingSet: PasskeyAnswered }),
+    requires: "servers:operate",
+    gate: "approval",
+    idempotency: { none: "Each Server takes one starting set for good and refuses another, so a second call changes nothing." },
+    surfaces: {
+      cli: { absent: "`ployz device enforce` activates from a Device through Server Access, not Cloud." },
+      agent: { absent: "Turning device enforcement on stays with a person's passkey or Device." },
+      ui: {
+        fn: "activateServersServerFn",
+        input: ActivateServersInput,
+        ungated: "The human read every Server the starting set names and answered it with their passkey, which each Server checks.",
+        options: { startingSet: { via: "startingSet" } },
+      },
+    },
+  }),
+  "cluster.recipient_generate": operation({
+    options: Schema.Struct({ operation: Name }),
+    requires: "servers:operate",
+    gate: "none",
+    idempotency: { none: "Nothing holds until the person approves the key in the next prompt; a key not approved is never used." },
+    surfaces: {
+      cli: { absent: "`ployz device enforce` has a Server generate the key from a Device through Server Access, not Cloud." },
+      agent: { absent: "Naming the key new values seal to stays with a person's passkey or Device." },
+      ui: {
+        fn: "generateRecipientServerFn",
+        input: GenerateRecipientInput,
+        options: { operation: { via: "operation" } },
+      },
+    },
+  }),
+  "cluster.recipient_key": operation({
+    options: Schema.Struct({ rotation: PasskeyAnswered, generator: Name }),
+    requires: "servers:operate",
+    gate: "approval",
+    idempotency: { none: "A Server that already holds the key the rotation names installs it again as it was." },
+    surfaces: {
+      cli: { absent: "`ployz device enforce` sets the new key from a Device through Server Access, not Cloud." },
+      agent: { absent: "Naming the key new values seal to stays with a person's passkey or Device." },
+      ui: {
+        fn: "installRecipientServerFn",
+        input: InstallRecipientInput,
+        ungated: "The human read the key and every Server it goes to and answered it with their passkey, which each Server checks.",
+        options: { rotation: { via: "rotation" }, generator: { via: "generator" } },
       },
     },
   }),

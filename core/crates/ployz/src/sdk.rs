@@ -1235,7 +1235,7 @@ impl Session {
                     Some(crate::ingress::NewToken {
                         seal_for: crate::sealing_pin::SealFor {
                             cluster,
-                            recipient: cluster,
+                            recipient: observed.recipient.unwrap_or(cluster),
                         },
                         token,
                     })

@@ -30,10 +30,13 @@ export type {
   RuleSource,
   RuleSummary,
   RuleTerms,
+  SealingRotation,
   SessionGrant,
   Signed,
   SignerKey,
   StepDigest,
+  StartingSet,
+  StartingSetTerms,
   StepKind,
   UpgradeChannel,
   VolumeApproval,
@@ -42,7 +45,7 @@ export type {
   VolumeWorkflow,
 } from "./generated/payloads";
 
-import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView, TeardownTerms, VolumeDraft, VolumeTerms } from "./generated/payloads";
+import type { ActivationDraft, ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView, SealingRotation, StartingSetTerms, TeardownTerms, VolumeDraft, VolumeTerms } from "./generated/payloads";
 
 /**
  * The deploy approval a browser key signs for `plan`, a Store plan read with `target`, under `terms`: the canonical body
@@ -94,3 +97,18 @@ export function previewReviewBody(view: PreviewReviewView, terms: Pick<ReviewTer
  * Throws an Error for malformed terms, or a Move whose Service runs an image not pinned by digest.
  */
 export function volumeApprovalBody(terms: VolumeTerms): VolumeDraft;
+
+/**
+ * The starting set a passkey answers to activate the Servers `terms.members` names, in canonical form, and the lines a
+ * person reads before answering, rendered from that body as the Servers parse it. It keeps no key added while enforcement
+ * was off. `names.servers` gives each Server the name Cloud knows it by, shown beside what the body names. Throws an
+ * Error for malformed terms.
+ */
+export function startingSetBody(terms: StartingSetTerms, names?: { servers?: Record<string, string> }): ActivationDraft;
+
+/**
+ * The rotation a passkey answers to name `terms.recipient`, the recipient key a Server generated, for the Members it
+ * names, in canonical form, and the lines a person reads before answering, rendered from that body as the Servers parse
+ * it. `names.servers` gives each Server the name Cloud knows it by. Throws an Error for malformed terms.
+ */
+export function sealingRotationBody(terms: SealingRotation, names?: { servers?: Record<string, string> }): ActivationDraft;

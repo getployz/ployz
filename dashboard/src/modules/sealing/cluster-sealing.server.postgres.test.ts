@@ -6,6 +6,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
+import { recordSealingRecipient } from "#/modules/machines/sealing-key-read.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { OrganizationRuntime, type RuntimeEntry } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -111,17 +112,27 @@ describe("readClusterSealing", () => {
   it("is ready with the current pairing's key", async () => {
     await pair();
     await report();
-    expect(await read()).toEqual({ state: "ready", publicKey });
+    expect(await read()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
+  });
+
+  it("seals to the recipient a Server of the Cluster reported, and keeps the identity it binds to", async () => {
+    await pair();
+    await report();
+    const recipient = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+    await harness.runEffect(recordSealingRecipient(organizationId, clusterKey, otherKey, recipient));
+    expect(await read()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
+    await harness.runEffect(recordSealingRecipient(organizationId, clusterKey, publicKey, recipient));
+    expect(await read()).toEqual({ state: "ready", publicKey, sealTo: recipient });
   });
 
   it("to seal, records the key a lone recovered Server holds that Cloud never recorded", async () => {
     await pair();
     cluster = frameOf({ [founder]: held(publicKey) });
-    expect(await readToSeal()).toEqual({ state: "ready", publicKey });
-    expect(await read()).toEqual({ state: "ready", publicKey });
+    expect(await readToSeal()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
+    expect(await read()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
     expect(await reseals()).toBe(1);
 
-    expect(await readToSeal()).toEqual({ state: "ready", publicKey });
+    expect(await readToSeal()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
     expect([opened, await reseals()]).toEqual([1, 1]);
   });
 
@@ -142,20 +153,20 @@ describe("readClusterSealing", () => {
     cluster = frameOf({ [founder]: held(publicKey) });
     const stalled = new Inngest({ id: "stalled" });
     vi.spyOn(stalled, "send").mockReturnValue(new Promise(() => {}));
-    expect(await readToSeal(stalled)).toEqual({ state: "ready", publicKey });
+    expect(await readToSeal(stalled)).toEqual({ state: "ready", publicKey, sealTo: publicKey });
     expect(await reseals()).toBe(1);
   });
 
   it("to seal, records the held key while another Server still awaits recovery", async () => {
     await pair();
     cluster = frameOf({ [founder]: held(publicKey), [joiner]: awaitsRecovery });
-    expect(await readToSeal()).toEqual({ state: "ready", publicKey });
+    expect(await readToSeal()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
   });
 
   it("to seal, reads the Cluster only through its first Server, and records the key another of its Servers recovered", async () => {
     await pair();
     cluster = frameOf({ [founder]: { kind: "needs_access" }, [joiner]: held(publicKey) });
-    expect(await readToSeal()).toEqual({ state: "ready", publicKey });
+    expect(await readToSeal()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
     expect(entries).toEqual([{ only: founder }]);
   });
 
@@ -179,6 +190,6 @@ describe("readClusterSealing", () => {
     expect(await readToSeal()).toEqual({ state: "no_server" });
     await pair();
     await report();
-    expect(await readToSeal()).toEqual({ state: "ready", publicKey });
+    expect(await readToSeal()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
   });
 });

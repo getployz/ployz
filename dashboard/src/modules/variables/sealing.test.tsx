@@ -59,7 +59,7 @@ function setup(cached: Read | undefined, fresh: () => Promise<Read>) {
 
 it("seals with the key a fresh read returns, never the cached one", async () => {
   const [a, b] = await Promise.all([keyPair(), keyPair()]);
-  const test = setup({ organizationId: "org_cached", sealing: { state: "ready", publicKey: a.publicKey } }, async () => ({ organizationId: "org_fresh", sealing: { state: "ready", publicKey: b.publicKey } }));
+  const test = setup({ organizationId: "org_cached", sealing: { state: "ready", publicKey: a.publicKey, sealTo: a.publicKey } }, async () => ({ organizationId: "org_fresh", sealing: { state: "ready", publicKey: b.publicKey, sealTo: b.publicKey } }));
 
   expect(test.sealing.state).toBe("ready");
   const [sealed] = await test.sealing.prepare([item]);
@@ -73,9 +73,21 @@ it("seals with the key a fresh read returns, never the cached one", async () => 
   expect(await opensWith(value, a.privateKey)).toBe(false);
 });
 
+it("seals to the recipient key once the Cluster activated, not its identity", async () => {
+  const [identity, recipient] = await Promise.all([keyPair(), keyPair()]);
+  const test = setup(undefined, async () => ({ organizationId: "org_fresh", sealing: { state: "ready", publicKey: identity.publicKey, sealTo: recipient.publicKey } }));
+
+  const [sealed] = await test.sealing.prepare([item]);
+
+  // SAFETY: a ready read seals every item.
+  const value = sealed as ClientSealedValue;
+  expect(await opensWith(value, recipient.privateKey)).toBe(true);
+  expect(await opensWith(value, identity.privateKey)).toBe(false);
+});
+
 it("reads afresh before any read lands, and shows no state until one does", async () => {
   const { publicKey } = await keyPair();
-  const test = setup(undefined, async () => ({ organizationId: "org_fresh", sealing: { state: "ready", publicKey } }));
+  const test = setup(undefined, async () => ({ organizationId: "org_fresh", sealing: { state: "ready", publicKey, sealTo: publicKey } }));
 
   expect(test.sealing.state).toBeUndefined();
   expect(await test.sealing.prepare([item])).toMatchObject([{ sealedFor: target.environment }]);
@@ -83,7 +95,7 @@ it("reads afresh before any read lands, and shows no state until one does", asyn
 
 it("rejects without the value when there is no server or the read fails", async () => {
   const { publicKey } = await keyPair();
-  const noServer = setup({ organizationId: "org", sealing: { state: "ready", publicKey } }, async () => ({ organizationId: "org", sealing: { state: "no_server" } }));
+  const noServer = setup({ organizationId: "org", sealing: { state: "ready", publicKey, sealTo: publicKey } }, async () => ({ organizationId: "org", sealing: { state: "no_server" } }));
   await expect(noServer.sealing.prepare([item])).rejects.toEqual(new SealError("Add a server to set sealed values."));
 
   cleanup();
@@ -94,7 +106,7 @@ it("rejects without the value when there is no server or the read fails", async 
 
 it("refuses a value the browser can't seal", async () => {
   const { publicKey } = await keyPair();
-  const test = setup(undefined, async () => ({ organizationId: "org", sealing: { state: "ready", publicKey } }));
+  const test = setup(undefined, async () => ({ organizationId: "org", sealing: { state: "ready", publicKey, sealTo: publicKey } }));
 
   await expect(test.sealing.prepare([{ ...item, key: "PORT", value: "8080" }])).rejects.toEqual(new SealError("PORT can't be sealed: Ployz reads it to route traffic."));
 });

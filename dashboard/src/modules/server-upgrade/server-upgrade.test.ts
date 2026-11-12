@@ -3,6 +3,7 @@ import {
   channelApprovalBody,
   channelScope,
   compareVersions,
+  crossesIntoEnforcement,
   needsApproval,
   metricsOnBeta,
   newMajorLine,
@@ -14,6 +15,18 @@ import {
   UPGRADE_OBSERVATION_LIMIT_MS,
   type LatestUpgrade,
 } from "./server-upgrade";
+
+describe("crossesIntoEnforcement", () => {
+  it("is an upgrade from 0.3 or older to 0.4 or newer, betas of 0.4 included", () => {
+    expect(crossesIntoEnforcement("0.3.17", "0.4.0")).toBe(true);
+    expect(crossesIntoEnforcement("0.3.17", "0.4.0-beta.1")).toBe(true);
+    expect(crossesIntoEnforcement("0.2.9", "0.5.1")).toBe(true);
+    expect(crossesIntoEnforcement("0.3.16", "0.3.17")).toBe(false);
+    expect(crossesIntoEnforcement("0.4.0-beta.1", "0.4.0")).toBe(false);
+    expect(crossesIntoEnforcement("0.4.1", "0.4.2")).toBe(false);
+    expect(crossesIntoEnforcement("dev", "0.4.0")).toBe(false);
+  });
+});
 
 describe("compareVersions", () => {
   it("orders the published forms as semver, a beta before its release", () => {

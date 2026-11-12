@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type {
   AccessChanged,
+  DeviceEnforcementSet,
   PrivateAccessOn,
   BackfillSealingKeyReport,
   BackfillSealingKeyRequest,
@@ -29,7 +30,9 @@ import type {
   MetricHistoryInput,
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
+  RecipientKeySet,
   RequestMachineUpgradeRequest,
+  SetRecipientKeyRequest,
   RuntimeWatchView,
   Signed,
   TeardownApproval,
@@ -155,6 +158,10 @@ export interface PloyzSession {
     release: string,
     channel: Signed | null,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
+  /** Hand one Server a person's signed starting set, once: it checks the set itself and restarts to commit it. */
+  readonly activateEnforcement: (machine: string, startingSet: Signed) => Effect.Effect<DeviceEnforcementSet, PloyzSdkError>;
+  /** Generate, install or share the recipient key of one Server's activation; each answers the same when repeated. */
+  readonly setRecipientKey: (machine: string, request: SetRecipientKeyRequest) => Effect.Effect<RecipientKeySet, PloyzSdkError>;
   readonly volumeSwitch: <R extends VolumeSwitchRequest>(
     machine: MachineTarget,
     request: R,
@@ -436,6 +443,9 @@ function wrapClient(client: Client): PloyzSession {
       if (channel !== null) request.channel = channel;
       return sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, request));
     },
+    activateEnforcement: (machine, startingSet) =>
+      sdkPromise("activate enforcement", () => client.activateEnforcement(machine, { starting_set: startingSet })),
+    setRecipientKey: (machine, request) => sdkPromise("set recipient key", () => client.setRecipientKey(machine, request)),
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,
