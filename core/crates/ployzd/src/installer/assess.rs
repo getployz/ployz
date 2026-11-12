@@ -161,6 +161,18 @@ pub(super) enum ZfsTarget {
     Disk { by_id: String },
 }
 
+/// The document `ployzd install --probe --json` prints and the check-in reads.
+pub(super) fn probe_json(facts: &HostFacts, assessment: &Assessment) -> Result<String, Error> {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "facts": facts,
+        "assessment": assessment,
+    }))
+    .map_err(|error| Error::Io {
+        stage: "print host probe",
+        source: io::Error::other(error),
+    })
+}
+
 pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
     let os = OsRelease::read(&paths.os_release)?;
     let uts = nix::sys::utsname::uname().map_err(|errno| Error::Io {

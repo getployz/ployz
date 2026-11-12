@@ -798,3 +798,245 @@ fn probe_secure_boot_unreadable_contract() {
         [],
     );
 }
+
+/// `ployzd install --probe --json` prints `assessment` then `facts`, each object's keys sorted,
+/// and every CLI release reads it back, so its bytes only grow.
+#[test]
+fn probe_document_bytes_are_frozen() {
+    let facts = host();
+    let assessment = assess(&facts);
+    assert_eq!(
+        probe_json(&facts, &assessment).unwrap(),
+        ELIGIBLE_DOCUMENT_GOLDEN
+    );
+
+    let mut facts = host();
+    facts.virt = Virtualization::OpenVz;
+    facts.cgroup = Some(CgroupVersion::Hybrid);
+    facts.docker = DockerFacts::Stopped;
+    facts.systemd = false;
+    facts.secure_boot = None;
+    facts.cpu_count = None;
+    facts.disks = None;
+    facts.zpool_present = None;
+    facts.unread = vec!["read CPU count: no processor lines in cpuinfo".into()];
+    let assessment = assess(&facts);
+    assert_eq!(
+        probe_json(&facts, &assessment).unwrap(),
+        REFUSED_DOCUMENT_GOLDEN
+    );
+}
+
+const ELIGIBLE_DOCUMENT_GOLDEN: &str = r#"{
+  "assessment": {
+    "blockers": [],
+    "warnings": [],
+    "zfs": {
+      "Eligible": {
+        "prepare_minutes": 1,
+        "targets": [
+          "MainDisk",
+          {
+            "Disk": {
+              "by_id": "virtio-data"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "facts": {
+    "arch": "x86_64",
+    "cgroup": "V2",
+    "cpu_count": 4,
+    "disks": [
+      {
+        "by_id": "virtio-root",
+        "path": "/dev/vda",
+        "role": {
+          "Root": {
+            "available": 85899345920
+          }
+        },
+        "size_bytes": 107374182400
+      },
+      {
+        "by_id": "virtio-data",
+        "path": "/dev/vdb",
+        "role": "Empty",
+        "size_bytes": 214748364800
+      }
+    ],
+    "docker": {
+      "Present": {
+        "api": "1.53",
+        "buildx": "v0.37.1",
+        "containerd_store": true,
+        "error": null,
+        "version": "29.1.0"
+      }
+    },
+    "kernel": "6.8.0-41-generic",
+    "memory_total_bytes": 8589934592,
+    "os": {
+      "id": "ubuntu",
+      "name": "Ubuntu",
+      "version_id": "24.04"
+    },
+    "root_filesystem": {
+      "available_bytes": 85899345920,
+      "size_bytes": 107374182400
+    },
+    "secure_boot": false,
+    "systemd": true,
+    "unread": [],
+    "virt": {
+      "Vm": {
+        "kind": "kvm"
+      }
+    },
+    "zpool_present": false
+  }
+}"#;
+
+const REFUSED_DOCUMENT_GOLDEN: &str = r#"{
+  "assessment": {
+    "blockers": [
+      {
+        "code": "docker_stopped",
+        "message": "Docker is installed but not running. Start it (systemctl start docker) and run this again."
+      },
+      {
+        "code": "no_systemd",
+        "message": "Ployz requires systemd"
+      }
+    ],
+    "warnings": [
+      {
+        "code": "cgroup_v1",
+        "message": "This Server uses cgroup v1. Ployz expects cgroup v2, so container limits may not apply."
+      }
+    ],
+    "zfs": {
+      "Ineligible": {
+        "reason": {
+          "code": "openvz",
+          "message": "OpenVZ does not allow this Machine to load the host ZFS kernel module"
+        }
+      }
+    }
+  },
+  "facts": {
+    "arch": "x86_64",
+    "cgroup": "Hybrid",
+    "cpu_count": null,
+    "disks": null,
+    "docker": "Stopped",
+    "kernel": "6.8.0-41-generic",
+    "memory_total_bytes": 8589934592,
+    "os": {
+      "id": "ubuntu",
+      "name": "Ubuntu",
+      "version_id": "24.04"
+    },
+    "root_filesystem": {
+      "available_bytes": 85899345920,
+      "size_bytes": 107374182400
+    },
+    "secure_boot": null,
+    "systemd": false,
+    "unread": [
+      "read CPU count: no processor lines in cpuinfo"
+    ],
+    "virt": "OpenVz",
+    "zpool_present": null
+  }
+}"#;
+
+#[test]
+fn probe_document_variants_serialize_as_serde_defaults() {
+    let lxc = |privileged| Virtualization::Lxc { privileged };
+    let virt = [
+        (Virtualization::BareMetal, json!("BareMetal")),
+        (
+            Virtualization::Vm { kind: "kvm".into() },
+            json!({"Vm": {"kind": "kvm"}}),
+        ),
+        (Virtualization::OpenVz, json!("OpenVz")),
+        (lxc(Some(true)), json!({"Lxc": {"privileged": true}})),
+        (lxc(None), json!({"Lxc": {"privileged": null}})),
+        (
+            Virtualization::Container {
+                kind: "docker".into(),
+            },
+            json!({"Container": {"kind": "docker"}}),
+        ),
+        (Virtualization::Unknown, json!("Unknown")),
+    ];
+    for (virt, expected) in virt {
+        assert_eq!(serde_json::to_value(&virt).unwrap(), expected, "{virt:?}");
+    }
+    for (cgroup, expected) in [
+        (CgroupVersion::V1, "V1"),
+        (CgroupVersion::V2, "V2"),
+        (CgroupVersion::Hybrid, "Hybrid"),
+    ] {
+        assert_eq!(serde_json::to_value(cgroup).unwrap(), json!(expected));
+    }
+    let docker = [
+        (DockerFacts::Absent, json!("Absent")),
+        (DockerFacts::Stopped, json!("Stopped")),
+        (DockerFacts::SocketActivated, json!("SocketActivated")),
+        (
+            DockerFacts::Present {
+                version: "29.1.0".into(),
+                api: "1.53".into(),
+                buildx: None,
+                containerd_store: None,
+                error: Some("buildx broke".into()),
+            },
+            json!({"Present": {
+                "version": "29.1.0",
+                "api": "1.53",
+                "buildx": null,
+                "containerd_store": null,
+                "error": "buildx broke",
+            }}),
+        ),
+    ];
+    for (docker, expected) in docker {
+        assert_eq!(serde_json::to_value(&docker).unwrap(), expected);
+    }
+    for (role, expected) in [
+        (
+            DiskRole::Root { available: 7 },
+            json!({"Root": {"available": 7}}),
+        ),
+        (DiskRole::Empty, json!("Empty")),
+    ] {
+        assert_eq!(serde_json::to_value(&role).unwrap(), expected);
+    }
+    let eligible = ZfsEligibility::Eligible {
+        targets: vec![
+            ZfsTarget::MainDisk,
+            ZfsTarget::Disk {
+                by_id: "nvme-1".into(),
+            },
+        ],
+        prepare_minutes: 12,
+    };
+    assert_eq!(
+        serde_json::to_value(&eligible).unwrap(),
+        json!({"Eligible": {
+            "targets": ["MainDisk", {"Disk": {"by_id": "nvme-1"}}],
+            "prepare_minutes": 12,
+        }})
+    );
+    let ineligible = ZfsEligibility::Ineligible {
+        reason: Blocker::new("openvz", "No."),
+    };
+    assert_eq!(
+        serde_json::to_value(&ineligible).unwrap(),
+        json!({"Ineligible": {"reason": {"code": "openvz", "message": "No."}}})
+    );
+}

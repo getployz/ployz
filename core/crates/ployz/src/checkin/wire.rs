@@ -650,3 +650,7 @@ fn virt(virt: Virt) -> String {
         Virt::Unknown => "unknown".to_owned(),
     }
 }
+
+#[cfg(test)]
+#[path = "wire_tests.rs"]
+mod tests;
