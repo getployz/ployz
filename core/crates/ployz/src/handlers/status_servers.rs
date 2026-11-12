@@ -12,18 +12,16 @@ use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ByteCapacity, ContainerAddress, ContainerId, ContainerObservation, ContainerRun,
-    ContainerRuntimeObservation, CopyRotation, EnvironmentValues, LiveServices, MachineId,
-    MachineName, MachineObservation, MachineTarget, MembershipObservation, Namespace,
-    QualifiedService, ReadRoutedAddressesRequest, RoutedAddresses, RoutesRead, RpcError,
-    RpcErrorCode, ServiceContainer, ServiceMode, ServiceName, ServiceObservation, ServingContainer,
-    Unacked, op, serving_containers,
+    ByteCapacity, ContainerAddress, ContainerId, ContainerObservation, ContainerRuntimeObservation,
+    CopyRotation, EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation,
+    MachineTarget, MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
+    RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode,
+    ServiceName, ServiceObservation, ServingContainer, Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
-use serde::Serialize;
 
-use super::link::Attention;
 use super::server::{self, Reach, Unreached};
+use super::status::model::{Attention, NotServingCopy, Subject};
 use super::{Error, leaf_matches};
 use crate::cloud_login::LoginError;
 use crate::context::ContextError;
@@ -37,55 +35,6 @@ const ROUTED_READ_TIMEOUT: Duration = Duration::from_secs(3);
 /// Docker's restart policy counts a run shorter than this as a failed start, so a copy it
 /// restarted less than this long ago has not shown that it stays up.
 const RESTART_SETTLE: Duration = Duration::from_secs(10);
-
-#[derive(Serialize)]
-#[serde(untagged)]
-pub(super) enum Subject {
-    NotPickedUp {
-        service: QualifiedService,
-        /// Each such Machine by name, else by ID when the Machine list lacks it.
-        machines: Vec<String>,
-    },
-    NotServing {
-        service: QualifiedService,
-        serving: usize,
-        wanted: usize,
-        copies: Vec<NotServingCopy>,
-    },
-    LeftPending {
-        service: QualifiedService,
-        copies: Vec<NotServingCopy>,
-    },
-    Down {
-        machine: MachineName,
-    },
-    DiskFull {
-        machine: MachineName,
-        free_bytes: u64,
-    },
-    NoCopies {
-        service: QualifiedService,
-    },
-    StaleAddress {
-        service: QualifiedService,
-        machine: String,
-        addresses: Vec<ContainerAddress>,
-    },
-    /// The Servers that didn't answer, by name where known.
-    Unanswered {
-        servers: Vec<String>,
-    },
-}
-
-#[derive(Serialize)]
-pub(super) struct NotServingCopy {
-    machine: String,
-    container: ContainerId,
-    rotation: CopyRotation,
-    runtime: ContainerRuntimeObservation,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    run: Option<ContainerRun>,
-}
 
 /// What the Server check found, and whether it could not see every Server.
 pub(super) struct ServerCheck {
@@ -148,15 +97,13 @@ pub(super) fn attention(
             silent: Some(silent),
             ..
         }) => ServerCheck {
-            attention: vec![Attention {
-                reason: "no_server_answers".to_owned(),
-                message: format!("{silent}. {}", silent.next()),
-                deployment: None,
-                next: None,
-                subject: Some(Subject::Unanswered {
+            attention: vec![Attention::new(
+                Some(Subject::Unanswered {
                     servers: silent.names().to_vec(),
                 }),
-            }],
+                "no_server_answers",
+                format!("{silent}. {}", silent.next()),
+            )],
             partial: true,
         },
         Err(Unreached { error, .. }) if !named && nothing_set_up(&error) => ServerCheck {
@@ -179,15 +126,15 @@ fn disk_attention(
 ) -> Vec<Attention> {
     server::full_disks(machines, disks)
         .into_iter()
-        .map(|full| Attention {
-            reason: "disk_full".to_owned(),
-            message: full.reason(),
-            deployment: None,
-            next: None,
-            subject: Some(Subject::DiskFull {
-                machine: full.machine.clone(),
-                free_bytes: full.free_bytes,
-            }),
+        .map(|full| {
+            Attention::new(
+                Some(Subject::DiskFull {
+                    machine: full.machine.clone(),
+                    free_bytes: full.free_bytes,
+                }),
+                "disk_full",
+                full.reason(),
+            )
         })
         .collect()
 }
@@ -656,19 +603,17 @@ fn stale_address(
         .map(|address| address.0.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    Attention {
-        reason: "routes_stale_address".to_owned(),
-        message: format!(
-            "{machine} routes {copies} to {listed}, which {owners} not report. Check its network."
-        ),
-        deployment: None,
-        next: None,
-        subject: Some(Subject::StaleAddress {
+    Attention::new(
+        Some(Subject::StaleAddress {
             service,
-            machine,
+            machine: machine.clone(),
             addresses,
         }),
-    }
+        "routes_stale_address",
+        format!(
+            "{machine} routes {copies} to {listed}, which {owners} not report. Check its network."
+        ),
+    )
 }
 
 /// A Down Server. One that never arrived holds no copies, and one whose join is still under
@@ -683,16 +628,14 @@ fn down_attention(observed: &MachineObservation) -> Attention {
     } else {
         "Down. Its copies serve again once it's back.".to_owned()
     };
-    Attention {
-        reason: "machine_down".to_owned(),
-        message,
-        deployment: None,
-        // Not the one obvious command: a join still under way looks the same.
-        next: None,
-        subject: Some(Subject::Down {
+    // No `next`, not the one obvious command: a join still under way looks the same.
+    Attention::new(
+        Some(Subject::Down {
             machine: observed.machine.name.clone(),
         }),
-    }
+        "machine_down",
+        message,
+    )
 }
 
 /// Status can't tell a global Service from a replicated one with no copy to read, so the
@@ -702,18 +645,17 @@ fn no_copies(
     removed: bool,
     next: impl Fn(&[&str]) -> String,
 ) -> Attention {
-    Attention {
-        reason: "no_copies".to_owned(),
-        message: "No copies running. For a global Service, no Server matches its placement."
-            .to_owned(),
-        deployment: None,
-        next: Some(if removed {
-            next(&["deploy"])
-        } else {
-            next(&["deploy", service.name.as_str()])
-        }),
-        subject: Some(Subject::NoCopies { service }),
-    }
+    let next = if removed {
+        next(&["deploy"])
+    } else {
+        next(&["deploy", service.name.as_str()])
+    };
+    Attention::new(
+        Some(Subject::NoCopies { service }),
+        "no_copies",
+        "No copies running. For a global Service, no Server matches its placement.",
+    )
+    .next(next)
 }
 
 fn not_picked_up(service: QualifiedService, machines: Vec<String>) -> Attention {
@@ -721,16 +663,15 @@ fn not_picked_up(service: QualifiedService, machines: Vec<String>) -> Attention 
         [_] => ("has", "its"),
         _ => ("have", "their"),
     };
-    Attention {
-        reason: "routes_not_acked".to_owned(),
-        message: format!(
-            "{} {have} not picked up the new copies. Check {its} network.",
-            machines.join(", ")
-        ),
-        deployment: None,
-        next: None,
-        subject: Some(Subject::NotPickedUp { service, machines }),
-    }
+    let message = format!(
+        "{} {have} not picked up the new copies. Check {its} network.",
+        machines.join(", ")
+    );
+    Attention::new(
+        Some(Subject::NotPickedUp { service, machines }),
+        "routes_not_acked",
+        message,
+    )
 }
 
 fn service_names(services: &[QualifiedService]) -> String {
@@ -856,22 +797,23 @@ impl Check {
         } else {
             next(&["deploy", name])
         };
-        Some(Attention {
-            reason: "copies_not_serving".to_owned(),
-            message: format!(
-                "Serving {serving} of {wanted} {}. {}.",
-                if wanted == 1 { "copy" } else { "copies" },
-                states.join(", ")
-            ),
-            deployment: None,
-            next: Some(hint),
-            subject: Some(Subject::NotServing {
-                service: service.identity.clone(),
-                serving,
-                wanted,
-                copies: kept.into_iter().map(|copy| self.copy(copy)).collect(),
-            }),
-        })
+        Some(
+            Attention::new(
+                Some(Subject::NotServing {
+                    service: service.identity.clone(),
+                    serving,
+                    wanted,
+                    copies: kept.into_iter().map(|copy| self.copy(copy)).collect(),
+                }),
+                "copies_not_serving",
+                format!(
+                    "Serving {serving} of {wanted} {}. {}.",
+                    if wanted == 1 { "copy" } else { "copies" },
+                    states.join(", ")
+                ),
+            )
+            .next(hint),
+        )
     }
 
     /// A Down Server's copies or anything else the check could not see leaves it partial.
@@ -933,20 +875,22 @@ impl Check {
         } else {
             next(&["deploy", name.as_str()])
         };
-        Some(Attention {
-            reason: "copies_left_pending".to_owned(),
-            message: format!(
-                "{} {copies} no deploy brought into routing {take} no traffic. {}.",
-                left.len(),
-                states.join(", ")
-            ),
-            deployment: None,
-            next: Some(hint),
-            subject: Some(Subject::LeftPending {
-                service: service.identity.clone(),
-                copies: left.into_iter().map(|copy| self.copy(copy)).collect(),
-            }),
-        })
+        let message = format!(
+            "{} {copies} no deploy brought into routing {take} no traffic. {}.",
+            left.len(),
+            states.join(", ")
+        );
+        Some(
+            Attention::new(
+                Some(Subject::LeftPending {
+                    service: service.identity.clone(),
+                    copies: left.into_iter().map(|copy| self.copy(copy)).collect(),
+                }),
+                "copies_left_pending",
+                message,
+            )
+            .next(hint),
+        )
     }
 
     fn copy(&self, copy: &ContainerObservation) -> NotServingCopy {

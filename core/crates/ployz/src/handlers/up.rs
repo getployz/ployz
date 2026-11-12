@@ -101,7 +101,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             services: Vec::new(),
             version: matches.get_one::<String>("expect-version").cloned(),
             source: Some(directory),
-            accept: super::teardown::accepted(matches)?,
+            accept: super::shared::accepted::accepted(matches)?,
             message: None,
             no_prune: matches.get_flag("no-prune"),
         },

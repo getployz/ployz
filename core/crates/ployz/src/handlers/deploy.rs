@@ -218,7 +218,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         services,
         version: matches.get_one::<String>("expect-version").cloned(),
         source,
-        accept: super::teardown::accepted(matches)?,
+        accept: super::shared::accepted::accepted(matches)?,
         message: matches.get_one::<String>("message").cloned(),
         no_prune,
     };
@@ -232,7 +232,7 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
         environment: environment(matches)?,
         version: matches.get_one::<String>("expect-version").cloned(),
         message: matches.get_one::<String>("message").cloned(),
-        accept_volume_loss: super::teardown::accepted(matches)?,
+        accept_volume_loss: super::shared::accepted::accepted(matches)?,
     };
     let saved = store
         .publish(&saving)
@@ -1413,7 +1413,7 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
             deployment: source.clone(),
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
-            accept_volume_loss: super::teardown::accepted(matches)?,
+            accept_volume_loss: super::shared::accepted::accepted(matches)?,
             approvals: device
                 .as_mut()
                 .map(|device| std::mem::take(&mut device.approvals))
@@ -1586,7 +1586,7 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("{line}"));
         }
     }
-    if super::teardown::left_on_old_servers(&view.deployment) {
+    if super::shared::accepted::left_on_old_servers(&view.deployment) {
         crate::ui::stream(format_args!(
             "  Left on old servers: no Server was left to take it off, so whatever ran there still runs"
         ));
