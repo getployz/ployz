@@ -21,8 +21,9 @@ use serde_json::json;
 
 use super::config::expect;
 use super::deploy;
+use super::shared::confirm::confirm;
 use super::store::{self, mint, project, project_arg, store};
-use super::teardown::{self, Inventory, Removed, confirm, inventory};
+use super::teardown::{self, Inventory, Removed, inventory};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
 use crate::ui::Tree;

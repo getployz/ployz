@@ -1,4 +1,4 @@
-//! Removing what ran: the typed confirmation, what goes, and the removal Deployment
+//! Removing what ran: what goes, and the removal Deployment
 //! that takes an Environment off the Servers first. `env rm` and `project rm` share it.
 
 use clap::ArgMatches;
@@ -9,43 +9,16 @@ use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
     DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
     EnvironmentSummary, EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal,
-    RemovalsQuery, Remove, RemovedQuery, ServicesQuery, ShutDown, VolumeName, VolumesQuery,
-    Waiting,
+    RemovalsQuery, Remove, RemovedQuery, ServicesQuery, VolumeName, VolumesQuery, Waiting,
 };
 use serde_json::json;
 
 use super::Error;
 use super::deploy;
+use super::shared::accepted::{accepted, not_applied, with_accepted};
 use super::store::{self, Store, mint};
 use crate::cloud_account::StoreCallError;
 use crate::ui::{self, Tree};
-
-/// `--confirm` typed `name`, or a person typed it at the prompt after seeing
-/// `unconfirmed`'s loss tree. Anywhere else its refusal is the error; a
-/// different `--confirm` is a usage error naming `retry`.
-pub(super) fn confirm(
-    matches: &ArgMatches,
-    name: &str,
-    what: &str,
-    retry: String,
-    unconfirmed: impl FnOnce() -> Result<(Error, Tree), Error>,
-) -> Result<(), Error> {
-    match matches.get_one::<String>("confirm") {
-        Some(typed) if typed == name => Ok(()),
-        Some(typed) => Err(Error::usage(format!(
-            "--confirm {} does not match {what} {name}. No changes made.",
-            typed.escape_debug()
-        ))
-        .hint(Hint::Retry(retry))),
-        None => {
-            let (refusal, loss) = unconfirmed()?;
-            if ui::can_prompt() {
-                ui::note_inline(&loss);
-            }
-            ui::confirm_name(name, || refusal, "Cancelled. Nothing was removed.")
-        }
-    }
-}
 
 pub(super) fn inventory(store: &Store, at: &EnvironmentRef) -> Result<Inventory, Error> {
     try_inventory(store, at).map_err(|error| store.fail(error))
@@ -102,19 +75,6 @@ fn listed(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Shown::of(&inventories))
-}
-
-/// Every `--accept-volume-loss` name.
-pub(super) fn accepted(matches: &ArgMatches) -> Result<Vec<VolumeName>, Error> {
-    store::volume_names(matches, "accept-volume-loss")
-}
-
-/// `--accept-volume-loss` for each of `accept`, the words a retry repeats.
-pub(super) fn with_accepted(accept: &[VolumeName]) -> Vec<&str> {
-    accept
-        .iter()
-        .flat_map(|name| ["--accept-volume-loss", name.as_str()])
-        .collect()
 }
 
 /// Remove `environment` of `project`, or the whole Project, in one write: each
@@ -865,61 +825,6 @@ fn stalled(project: &ProjectName, environment: Option<&EnvironmentName>, left: &
         format!("Nothing more of {target} can come off the Servers now{why}"),
         json!({ "left": left }),
     )
-}
-
-/// Whether removal Deployment `deployment` found no Server left to take it off, so
-/// whatever ran is still on the Servers that ran it: "Left on old servers".
-pub(super) fn left_on_old_servers(deployment: &DeploymentSummary) -> bool {
-    matches!(deployment.outcome, Some(ployz_store::Outcome::Forgotten))
-}
-
-/// Take Environment `at` off the Servers: admit a removal Deployment under the
-/// destructive review, accepting the loss of `accept` as reviewed at `version`, then run or follow it as
-/// `deploy` does. A volume-loss refusal names this command again, accepting.
-pub(super) fn take_off(
-    matches: &ArgMatches,
-    store: &Store,
-    at: &EnvironmentRef,
-    (accept, version): (&[VolumeName], Option<String>),
-    events: Option<std::io::BufWriter<std::fs::File>>,
-) -> Result<(DeploymentView, Result<(), Error>), Error> {
-    deploy::refuse_local_detach(matches, store)?;
-    let admitted = store
-        .admit(&Admit::ShutDown(ShutDown {
-            id: DeploymentId::parse(mint())?,
-            environment: at.clone(),
-            version,
-            accept_volume_loss: accept.to_vec(),
-        }))
-        .map_err(|error| store.accepting(error))?;
-    let deploy::Shipped { view, ran, .. } =
-        deploy::execute(matches, store, &admitted, None, events)?;
-    Ok((view, ran))
-}
-
-/// Report a shutdown Deployment that didn't apply (yet), naming `again`, the
-/// command that finishes it: exit 3, or 0 when `--detach` asked not to wait.
-pub(super) fn unfinished(
-    matches: &ArgMatches,
-    view: &DeploymentView,
-    ran: Result<(), Error>,
-    again: &str,
-) -> Result<(), Error> {
-    crate::ui::finish(&store::Next::new(view, Some(again.to_owned())), || {
-        deploy::say_view(view);
-    })?;
-    not_applied(matches, ran, again.to_owned())
-}
-
-/// How a command ends after a removal Deployment didn't apply: how running it
-/// failed, naming `again`, the command that finishes it; else exit 3, or 0 when
-/// `--detach` asked not to wait.
-fn not_applied(matches: &ArgMatches, ran: Result<(), Error>, again: String) -> Result<(), Error> {
-    ran.map_err(|error| error.hint(Hint::Retry(again)))
-        .and_then(|()| match matches.get_flag("detach") {
-            true => Ok(()),
-            false => Err(Error::partial()),
-        })
 }
 
 /// What removing an Environment deletes: its Services and Volumes, by name.
