@@ -22,7 +22,7 @@ use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use memchr::memmem::Finder;
 use ployz_core::{
-    ContainerId, MachineId, Namespace, QualifiedService, ServiceId, ServiceName,
+    ContainerId, MachineId,
     metrics::{MarkerKind, MetricMarker, MetricRange},
 };
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,6 @@ use super::{
     ship::Outbox,
 };
 
-const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
 const LOCAL_LOGS_DIR: &str = "local-logs";
 /// Docker's default `max-file` for the `local` driver.
 const DEFAULT_MAX_FILES: usize = 5;
@@ -1732,18 +1731,7 @@ fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {
 
 pub(super) fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta> {
     let labels = inspected.config.as_ref()?.labels.as_ref()?;
-    if !labels.contains_key(labels::MANAGED) && !labels.contains_key(LABEL_SYSTEM_MANAGED) {
-        return None;
-    }
-    let kind = if labels.contains_key(labels::HOOK) {
-        ContainerKind::PreDeployHook
-    } else if labels.get(labels::NAMESPACE).map(String::as_str) == Some(Namespace::SYSTEM) {
-        ContainerKind::System
-    } else if labels.contains_key(labels::SERVICE_NAME) {
-        ContainerKind::Service
-    } else {
-        ContainerKind::System
-    };
+    let kind = ContainerKind::of(labels)?;
     let state = inspected.state.as_ref();
     let finished_at = state
         .and_then(|state| state.finished_at.clone())
@@ -1802,11 +1790,7 @@ fn service_event(
     let labelled = labelled_by_event(message);
     let meta = container_meta(&labelled).filter(|meta| meta.kind == ContainerKind::Service)?;
     let attributes = labelled.config.and_then(|config| config.labels)?;
-    let service_id = ServiceId::parse(attributes.get(labels::SERVICE_ID)?.clone()).ok()?;
-    let service = QualifiedService::new(
-        Namespace::parse(meta.namespace.as_deref()?).ok()?,
-        ServiceName::parse(meta.service.as_deref()?).ok()?,
-    );
+    let (service_id, service) = labels::service_pair(&attributes)?;
     let ts = message
         .time_nano
         .or_else(|| message.time.map(|secs| secs.saturating_mul(NANOS_PER_SEC)))

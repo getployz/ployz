@@ -12,7 +12,7 @@
 //! the Pool's objset kstats. The Machine row's disk breakdown takes the last
 //! 60 s reading from [`disk`] and never waits for it.
 
-use ployz_core::labels;
+use ployz_core::labels::{self, Class};
 use std::{
     collections::{BTreeMap, HashMap, HashSet, hash_map::Entry},
     fs, io,
@@ -24,8 +24,8 @@ use bollard::{
     Docker, models::ContainerInspectResponse, query_parameters::ListContainersOptionsBuilder,
 };
 use ployz_core::{
-    ContainerId, DockerVolumeName, MachineId, MachineLayout, Namespace, PROVISIONED_VOLUME_DRIVER,
-    QualifiedService, ServiceId, ServiceName,
+    ContainerId, DockerVolumeName, MachineId, MachineLayout, PROVISIONED_VOLUME_DRIVER,
+    QualifiedService, ServiceId,
     metrics::{CpuJiffies, DiskBreakdown, HostMemory, HostSample, InterfaceBytes, MetricSample},
 };
 use tokio::{
@@ -54,7 +54,6 @@ use crate::{
 
 const INTERVAL: Duration = Duration::from_secs(10);
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(5);
-const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
 const CGROUP_V2_PREFIX: &str = "0::";
 const LOOPBACK: &str = "lo";
 /// The host end of each container's veth pair. Its bytes are the
@@ -227,8 +226,7 @@ async fn refresh(docker: &Docker, roots: &Roots, tracked: &mut HashMap<Container
 /// Service's labels but is not one of its replicas, so it stays out of the
 /// Service's numbers.
 fn sampled(labels: &HashMap<String, String>) -> bool {
-    (labels.contains_key(labels::MANAGED) || labels.contains_key(LABEL_SYSTEM_MANAGED))
-        && !labels.contains_key(labels::HOOK)
+    Class::of(labels).is_some_and(|class| class != Class::PreDeployHook)
 }
 
 fn track(
@@ -243,25 +241,14 @@ fn track(
         .pid
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|pid| *pid != 0)?;
-    let service_id = inspected
+    // A row names its Service both ways or neither, so a half-labelled
+    // container is booked like a system one.
+    let (service_id, service) = inspected
         .config
         .as_ref()
         .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get(labels::SERVICE_ID))
-        .and_then(|label| ServiceId::parse(label.clone()).ok());
-    let service = meta.namespace.as_deref().zip(meta.service.as_deref());
-    let service = service.and_then(|(namespace, name)| {
-        Some(QualifiedService::new(
-            Namespace::parse(namespace).ok()?,
-            ServiceName::parse(name).ok()?,
-        ))
-    });
-    // A row names its Service both ways or neither, so a half-labelled
-    // container is booked like a system one.
-    let (service_id, service) = match (service_id, service) {
-        (Some(id), Some(service)) => (Some(id), Some(service)),
-        _ => (None, None),
-    };
+        .and_then(labels::service_pair)
+        .unzip();
     let volumes = inspected
         .mounts
         .iter()
@@ -724,7 +711,7 @@ Inter-|   Receive                                                |  Transmit
                 .collect()
         };
         assert!(super::sampled(&labels(&[labels::MANAGED])));
-        assert!(super::sampled(&labels(&[super::LABEL_SYSTEM_MANAGED])));
+        assert!(super::sampled(&labels(&[labels::SYSTEM_MANAGED])));
         assert!(
             !super::sampled(&labels(&[labels::MANAGED, labels::HOOK])),
             "a pre-deploy Hook is not a replica"
@@ -1015,7 +1002,7 @@ Inter-|   Receive                                                |  Transmit
         let corrosion = fixture.start(1);
         let inspected = ContainerInspectResponse {
             config: Some(ContainerConfig {
-                labels: Some([(super::LABEL_SYSTEM_MANAGED.to_owned(), String::new())].into()),
+                labels: Some(ployz_core::labels::system_labels()),
                 ..Default::default()
             }),
             state: Some(ContainerState {
