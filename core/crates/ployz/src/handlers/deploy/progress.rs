@@ -519,10 +519,7 @@ fn superseded(
     let (message, inspect) = match successor {
         Some(newer) => {
             let from = newer.push.as_ref().map_or(String::new(), |push| {
-                format!(
-                    " (push {})",
-                    push.head.as_str().get(..7).unwrap_or_default()
-                )
+                format!(" (push {})", push.head.short())
             });
             let shown = target(newer);
             (

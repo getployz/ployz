@@ -504,7 +504,7 @@ fn freeze(
             .insert(
                 "source".into(),
                 json!({"type":"image", "version":1,
-            "image":format!("ployz-build/{name}:pending"), "credentials":{"type":"none"}}),
+            "image":ployz_core::pending_image(&name), "credentials":{"type":"none"}}),
             );
     }
     if !source_commits.is_empty() {

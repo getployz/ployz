@@ -22,16 +22,13 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use ployz_core::{
-    DATASET_ROOT, DockerVolumeName, MIRROR_ROOT, MachineId, MachineName, SendSource, SendStream,
-    SnapshotName,
-};
+use ployz_core::{DockerVolumeName, MachineId, MachineName, SendSource, SendStream, SnapshotName};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
 pub mod protocol;
 
-use crate::machine_pool;
+use crate::{dataset_layout::DatasetLayout, machine_pool};
 
 /// Whether this Machine sends a Volume to a mesh peer.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,13 +244,11 @@ async fn resolve_root(programs: &Programs, name: &DockerVolumeName) -> Result<St
         &["list", "-H", "-o", "name", "-t", "filesystem"],
     )
     .await?;
-    [
-        format!("{}/{DATASET_ROOT}/{name}", pool.name()),
-        format!("{}/{MIRROR_ROOT}/{name}/fs", pool.name()),
-    ]
-    .into_iter()
-    .find(|dataset| filesystems.contains(dataset))
-    .ok_or_else(|| Refusal::Unknown(format!("Volume {name} has no writer on this Machine")))
+    let layout = DatasetLayout::new(pool.name());
+    [layout.root(name), layout.slot_fs(name)]
+        .into_iter()
+        .find(|dataset| filesystems.contains(dataset))
+        .ok_or_else(|| Refusal::Unknown(format!("Volume {name} has no writer on this Machine")))
 }
 
 /// The `zfs send` arguments for `stream`, once its names resolve on this Machine.

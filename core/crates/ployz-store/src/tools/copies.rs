@@ -7,7 +7,7 @@ use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{CopiesAnswer, OperationsAnswer, VolumeCopies};
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
     AcceptedLoss, Action, Ask, CloudQuery, Gate, RequestKey, ServerName, Subject, VolumeRun,
@@ -49,7 +49,7 @@ fn on_volume(
 ) -> Result<Value, Stop> {
     let id = view.volume.volume.id.clone();
     let run = Run {
-        at: at(&view.environment),
+        at: view.environment.to_string(),
         subject: Subject::Volume { volume: id.clone() },
         action: Action::Volume { volume: id, run },
         read: volume_show(cx, &view.volume.volume.name),
@@ -104,7 +104,7 @@ impl Tool for VolumeShow {
         };
         let namespace = cx.view::<NamespaceQuery>(answers.next())?;
         if volumes.is_empty() {
-            return Ok(json!({ "at": at(&place), "volumes": [], "seen": null }));
+            return Ok(json!({ "at": place.to_string(), "volumes": [], "seen": null }));
         }
         let mut asks = vec![Ask::Cloud(CloudQuery::Copies {
             namespace: namespace.namespace,
@@ -143,7 +143,7 @@ impl Tool for VolumeShow {
                 })
             })
             .collect::<Vec<_>>();
-        Ok(json!({ "at": at(&place), "volumes": shown, "seen": copies.seen }))
+        Ok(json!({ "at": place.to_string(), "volumes": shown, "seen": copies.seen }))
     }
 }
 

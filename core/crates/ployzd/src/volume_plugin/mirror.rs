@@ -2,11 +2,12 @@
 //! snapshot cleanup a slot or root needs.
 
 use ployz_core::{RpcError, Snapshot};
-use ployzd::machine_pool::MachinePool;
+use ployzd::{
+    dataset_layout::{DatasetLayout, MIRROR_MOUNT_ROOT},
+    machine_pool::MachinePool,
+};
 
-use super::{Dataset, DockerVolumeName, MIRROR_ROOT, VolumeStorage, inspect::internal};
-
-pub(super) const MIRROR_MOUNT_ROOT: &str = "/var/lib/ployz-mirror";
+use super::{Dataset, DockerVolumeName, VolumeStorage, inspect::internal};
 
 pub(super) fn name(name: &ployz_core::DockerVolumeName) -> Result<DockerVolumeName, RpcError> {
     name.as_str().parse().map_err(internal)
@@ -19,7 +20,7 @@ impl VolumeStorage {
         pool: &MachinePool,
         datasets: &[Dataset],
     ) -> super::Result<()> {
-        let mirror_root = format!("{}/{MIRROR_ROOT}", pool.name());
+        let mirror_root = DatasetLayout::of(pool).mirror_root();
         if datasets.iter().any(|dataset| dataset.name == mirror_root) {
             return Ok(());
         }

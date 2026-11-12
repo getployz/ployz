@@ -5,7 +5,7 @@ use ployz_core::{RpcError, RpcErrorCode};
 use serde_json::{Value, json};
 
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at};
+use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::{Call, Refusal, Writes, from_store};
 use crate::{HistoryAction, HistoryPreviewQuery, Revision, StageHistory};
 
@@ -82,7 +82,7 @@ fn stage(history: History, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         .map(|variable| format!("{}.env.{}", variable.service, variable.key))
         .collect::<Vec<_>>();
     Ok(json!({
-        "at": at(&staged.environment),
+        "at": staged.environment.to_string(),
         "revision": revision.0,
         "changed": staged.changed,
         "not_set": not_set,

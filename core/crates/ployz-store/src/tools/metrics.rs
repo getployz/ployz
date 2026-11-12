@@ -13,7 +13,7 @@ use super::ToolId;
 use super::act::{resolve, roster, servers};
 use super::cloud::{MetricEvent, MetricsAnswer};
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::Refusal;
 use super::runtime::deployed;
 use super::step::{
@@ -186,7 +186,7 @@ impl Tool for ServiceMetrics {
             })
             .collect();
         let mut shown = shown(answer, events);
-        shown.insert("at".into(), json!(at(&namespace.environment)));
+        shown.insert("at".into(), json!(namespace.environment.to_string()));
         Ok(Value::Object(shown))
     }
 }

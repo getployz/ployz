@@ -44,6 +44,20 @@ pub struct EnvironmentSummary {
     pub revision: Revision,
 }
 
+impl std::fmt::Display for EnvironmentSummary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&environment_label(&self.project, &self.name))
+    }
+}
+
+/// How a person names an Environment: `project/environment`.
+pub(crate) fn environment_label(
+    project: &impl std::fmt::Display,
+    name: &impl std::fmt::Display,
+) -> String {
+    format!("{project}/{name}")
+}
+
 pub(crate) struct Project {
     pub(crate) id: ProjectId,
     pub(crate) name: ProjectName,

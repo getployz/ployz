@@ -5,7 +5,7 @@ use ployz_core::{ProvisionedVolumeMaximumBytes, ServiceName};
 use serde_json::{Value, json};
 
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at, written};
+use super::machine::{Cx, Effect, Stop, Tool, written};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -132,7 +132,7 @@ impl Tool for VolumeAdd {
             }
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "volume": volume(&staged.volume),
             "mounts": mounts.iter().map(|mount| json!({ "service": mount.service, "path": mount.path })).collect::<Vec<_>>(),
             "staged": true,
@@ -209,7 +209,7 @@ impl Tool for VolumeUpdate {
             }
         };
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "volume": volume(&staged.volume),
             "staged": !staged.staged.is_empty(),
         }))
@@ -250,7 +250,7 @@ impl Tool for VolumeRemove {
             volume: self.volume,
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "removed": staged.volume.name,
             "asks_approval": asks_approval,
         }))

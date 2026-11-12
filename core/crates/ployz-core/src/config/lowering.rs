@@ -313,10 +313,12 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             else {
                 continue;
             };
-            let name = format!("vol-{named}");
-            let reference: crate::ServiceVolumeReference =
-                name.clone().try_into().map_err(lowering_error)?;
-            let name = crate::DockerVolumeName::parse(name).map_err(lowering_error)?;
+            let name = crate::DockerVolumeName::for_resource(named).map_err(lowering_error)?;
+            let reference: crate::ServiceVolumeReference = name
+                .as_str()
+                .to_owned()
+                .try_into()
+                .map_err(lowering_error)?;
             volume_names.insert(
                 input.namespace.volume_name(&name),
                 mount.volume_name.clone(),

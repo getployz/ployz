@@ -241,7 +241,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         .map(|(_, open)| open)
         .next()
         .unwrap_or(open);
-    let short = &head.as_str()[..7];
+    let short = head.short();
     let sentence = match &approved.environment {
         Some(environment) => format!("Approved #{number} at {short}. {environment} deploys it."),
         None => format!("Approved #{number} at {short}."),
@@ -251,7 +251,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
 
 /// A pull request's standing as the PR plans list shows it.
 fn standing(open: &OpenPullRequest) -> String {
-    let short = |head: &ployz_store::CommitSha| head.as_str()[..7].to_owned();
+    let short = |head: &ployz_store::CommitSha| head.short().to_owned();
     match (&open.standing, &open.head) {
         (Standing::Trusted, _) => "deploys".to_owned(),
         (Standing::Approved(head), _) => format!("approved {}", short(head)),

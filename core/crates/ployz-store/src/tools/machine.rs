@@ -515,11 +515,6 @@ pub(crate) fn written<T>(
         .ok_or_else(|| Refusal::internal("The Config Store answered in an unknown shape").into())
 }
 
-/// Where a result ran: `project/environment`.
-pub(crate) fn at(environment: &EnvironmentSummary) -> String {
-    format!("{}/{}", environment.project, environment.name)
-}
-
 /// `project` and `environment` as a Store view resolved them: the arguments of
 /// a `next` call to where the view was read.
 pub(crate) fn place_of(environment: &EnvironmentSummary) -> Value {

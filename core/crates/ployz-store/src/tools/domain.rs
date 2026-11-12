@@ -5,7 +5,7 @@ use ployz_core::{DomainPrefix, RpcErrorCode, ServiceName};
 use serde_json::{Value, json};
 
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at};
+use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -161,7 +161,7 @@ impl Tool for DomainAdd {
             .map(dns)
             .unwrap_or_default();
         Ok(json!({
-            "at": at(&added.written.environment),
+            "at": added.written.environment.to_string(),
             "added": added.added,
             "domain": domain(written),
             "dns": dns,
@@ -196,7 +196,7 @@ impl Tool for DomainCheck {
             domain: self.domain,
         })?;
         Ok(json!({
-            "at": at(&view.environment),
+            "at": view.environment.to_string(),
             "service": view.domain.domain.service,
             "domain": row(&view.domain),
         }))
@@ -275,7 +275,7 @@ impl Tool for DomainUpdate {
             }
         };
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "domain": domain(&staged.domain),
             "staged": true,
         }))
@@ -313,7 +313,7 @@ impl Tool for DomainRemove {
             domain: self.domain,
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "removed": staged.domain.shown(),
             "asks_approval": asks_approval,
         }))

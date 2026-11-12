@@ -3,6 +3,7 @@
 use super::super::storage::committed_bytes;
 use super::inspect_tests::start;
 use super::*;
+use ployzd::dataset_layout::DatasetLayout;
 
 #[tokio::test]
 async fn docker_never_sees_a_slot() {
@@ -84,31 +85,14 @@ async fn mirror_admission_uses_ensure_capacity() {
 }
 
 #[test]
-fn places_follow_the_dataset_layout() {
-    for (dataset, place) in [
-        ("tank", Place::Outside),
-        ("tank/ployz", Place::Outside),
-        ("tank/ployz/data", Place::Root("data")),
-        ("tank/ployz/data/child", Place::Root("data/child")),
-        ("tank/ployz-mirror", Place::Outside),
-        ("tank/ployz-mirror/data", Place::Slot("data")),
-        ("tank/ployz-mirror/data/fs", Place::Slot("data")),
-        ("tank/other/data", Place::Outside),
-        ("tankard/ployz/data", Place::Outside),
-    ] {
-        assert_eq!(Place::of(dataset, "tank"), place, "{dataset}");
-    }
-}
-
-#[test]
 fn mirror_commitment_counts_only_the_slot_parent() {
     let bound = 1_073_741_824_u64;
     for name in ["crash", "fs"] {
         let datasets = [
-            format!("tank/{MIRROR_ROOT}/{name}"),
-            format!("tank/{MIRROR_ROOT}/{name}/fs"),
-            format!("other/{MIRROR_ROOT}/{name}"),
-            format!("other/{MIRROR_ROOT}/{name}/fs"),
+            DatasetLayout::new("tank").slot_parent(name),
+            DatasetLayout::new("tank").slot_fs(name),
+            DatasetLayout::new("other").slot_parent(name),
+            DatasetLayout::new("other").slot_fs(name),
         ]
         .map(|dataset| {
             Dataset::parse(

@@ -293,7 +293,7 @@ pub(crate) fn close(
             let summary = &environment.summary;
             let mark = Mark::new(
                 who,
-                (target, format!("{}/{}", summary.project, summary.name)),
+                (target, summary.to_string()),
                 vec![id.clone()],
                 [(id.clone(), Accepted::Everything { because })].into(),
             );

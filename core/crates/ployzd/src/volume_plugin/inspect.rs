@@ -5,13 +5,10 @@ use ployz_core::{
     InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, SlotId, Snapshot, SnapshotGuid,
     SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
 };
-use ployzd::machine_pool::MachinePool;
+use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
 use super::{
-    Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
-    marks::Mark,
-    storage::{slot_fs, slot_parent},
-    transfer::Status,
+    Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage, marks::Mark, transfer::Status,
 };
 
 /// The `ployz:*` marks [`RootCopy::parse`] reads off a root. They narrow which steps can
@@ -294,7 +291,7 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &DockerVolumeName,
     ) -> Option<&'datasets Dataset> {
-        let parent = slot_parent(pool, name);
+        let parent = DatasetLayout::of(pool).slot_parent(name);
         datasets.iter().find(|dataset| dataset.name == parent)
     }
 
@@ -304,7 +301,7 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &DockerVolumeName,
     ) -> Option<&'datasets Dataset> {
-        let fs = slot_fs(pool, name);
+        let fs = DatasetLayout::of(pool).slot_fs(name);
         datasets.iter().find(|dataset| dataset.name == fs)
     }
 

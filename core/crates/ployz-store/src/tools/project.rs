@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::ToolId;
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, at};
+use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::Call;
 use crate::catalog::NODE_NAME;
 use crate::{CreateProject, EnvironmentId, ProjectId, ProjectName, RenameProject};
@@ -42,7 +42,7 @@ impl Tool for ProjectCreate {
             default_environment,
         })?;
         Ok(json!({
-            "at": at(&created.environment),
+            "at": created.environment.to_string(),
             "project": created.project.name,
             "environment": created.environment.name,
             "next": Call::to(ToolId::EnvironmentShow, json!({ "project": created.project.name })),
