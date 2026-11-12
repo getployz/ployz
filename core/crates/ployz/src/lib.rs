@@ -41,6 +41,7 @@ pub mod service;
 mod setup_report;
 mod setup_retry;
 pub mod ui;
+mod volume_recovery;
 // Shared Machine transport fixtures also exercise the in-process CLI handlers.
 #[cfg(test)]
 extern crate self as ployz;
