@@ -3,7 +3,7 @@
 //! activation adds are both backed up this way.
 
 use chacha20poly1305::{
-    ChaCha20Poly1305, Key, KeyInit as _, Nonce,
+    ChaCha20Poly1305, KeyInit as _, Nonce,
     aead::{Aead as _, Payload},
 };
 use hkdf::Hkdf;
@@ -60,10 +60,11 @@ pub fn open(
     };
     let (salt, rest) = rest.split_at(SALT_LEN);
     let (nonce, sealed) = rest.split_at(NONCE_LEN);
+    let nonce = <[u8; NONCE_LEN]>::try_from(nonce).map_err(|_| BackupError::Malformed)?;
     let opened = Zeroizing::new(
         cipher(code, salt)
             .decrypt(
-                Nonce::from_slice(nonce),
+                &Nonce::from(nonce),
                 Payload {
                     msg: sealed,
                     aad: &HEADER,
@@ -86,7 +87,7 @@ fn seal(
     backup.extend_from_slice(&HEADER);
     let sealed = cipher(code, &salt)
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: secret,
                 aad: &HEADER,
@@ -104,7 +105,8 @@ fn cipher(code: &RecoveryCode, salt: &[u8]) -> ChaCha20Poly1305 {
     Hkdf::<Sha256>::new(Some(salt), code.as_bytes())
         .expand(INFO, key.as_mut_slice())
         .expect("32 bytes is a valid HKDF-SHA256 output length");
-    ChaCha20Poly1305::new(Key::from_slice(key.as_slice()))
+    ChaCha20Poly1305::new_from_slice(key.as_slice())
+        .expect("HKDF gives ChaCha20-Poly1305 its 32-byte key")
 }
 
 #[cfg(test)]
