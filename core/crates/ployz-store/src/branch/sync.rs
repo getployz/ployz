@@ -7,7 +7,7 @@ use uuid::Uuid;
 use super::proposal;
 use super::*;
 use crate::variables::{VariableKey, refuse_template, validate_text};
-use crate::{SecretValue, Trusted, client_sealed, old_cli};
+use crate::{SecretValue, Trusted, client_sealed};
 
 /// Sync one Environment's changes into another of its Project, staged in the
 /// receiver's Working State. Nothing is deleted, published or deployed.
@@ -226,7 +226,7 @@ pub(crate) fn sync(
     let values = sealed(
         checked.rows(),
         [&from, &into],
-        old_cli::Guard::from(trusted),
+        trusted.sealer(who),
         &picks,
         &values,
     )?;
@@ -543,11 +543,11 @@ fn receiving<'receiver>(
 const NOT_THERE: &str = "its Service isn't there yet, so nothing can be sealed for it";
 
 /// `values` sealed, each for a picked secret the receiver `into` lacks. Plain text
-/// is refused, through `guard` for the CLI.
+/// is refused, through `sealer` for the CLI.
 pub(crate) fn sealed(
     rows: &[PlannedRow],
     [from, into]: [&Environment; 2],
-    guard: old_cli::Guard,
+    sealer: client_sealed::Sealer<'_>,
     picks: &BTreeSet<RowId>,
     values: &BTreeMap<RowId, SecretValue>,
 ) -> Result<BTreeMap<RowId, SealedCell>, RpcError> {
@@ -572,21 +572,21 @@ pub(crate) fn sealed(
                     json!({ "row": row }),
                 ));
             }
-            let sealed = seal_secret(row, &label, value, into, guard)?;
+            let sealed = seal_secret(row, &label, value, into, sealer)?;
             Ok((row.clone(), SealedCell::Secret(sealed)))
         })
         .collect()
 }
 
 /// `value` for secret `row` (labelled `label`) of `receiver`, once it is one the row
-/// takes. Plain text is refused, through `guard` for the CLI. A client-sealed value
+/// takes. Plain text is refused, through `sealer` for the CLI. A client-sealed value
 /// binds to the receiver's own Service, so it needs that Service there already.
 pub(crate) fn seal_secret(
     row: &RowId,
     label: &str,
     value: &SecretValue,
     receiver: &Environment,
-    guard: old_cli::Guard,
+    sealer: client_sealed::Sealer<'_>,
 ) -> Result<SealedSecret, RpcError> {
     let At::Variable(key) = row.at() else {
         return Err(error::invalid(
@@ -599,7 +599,7 @@ pub(crate) fn seal_secret(
         |message: &str| error::invalid(format!("{label}: {message}"), json!({ "row": row }));
     match value {
         SecretValue::Text(_) => {
-            Err(guard.refuse(key.as_str(), refused(client_sealed::PLAINTEXT_REFUSED)))
+            Err(sealer.refuse(key.as_str(), refused(client_sealed::PLAINTEXT_REFUSED)))
         }
         SecretValue::ClientSealed(value) => {
             let service = receiving(receiver, row).ok_or_else(|| refused(NOT_THERE))?;

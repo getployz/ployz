@@ -1004,3 +1004,40 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
     // reaches its old-CLI refusal before refusing the edit for something else.
     assert!(held >= 240, "{held}");
 }
+
+#[test]
+fn the_refusal_of_a_secret_s_plain_text_is_pinned_for_the_cli_and_for_anyone_else() {
+    let store = backend::open();
+    shop(&store);
+    let cli = Trusted {
+        from_cli: true,
+        ..Trusted::default()
+    };
+    for (value, key) in [
+        (json!({ "secret": SECRET }), "TOKEN"),
+        (
+            json!({ "value": { "secret": SECRET }, "exported": true }),
+            "TOKEN",
+        ),
+    ] {
+        let path = format!("web.env.{key}");
+        let error = edit_trusted(&store, &path, value.clone(), &cli).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str(), error.details),
+            (
+                RpcErrorCode::Unsupported,
+                "TOKEN: update ployz to set a Sealed value.",
+                json!({ "variable": "TOKEN", "next": "curl -fsSL https://ployz.sh | sh" }),
+            )
+        );
+        let error = edit(&store, &path, value).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str(), error.details),
+            (
+                RpcErrorCode::InvalidArgument,
+                "TOKEN: secrets are sealed on your device",
+                json!({ "variable": "TOKEN" }),
+            )
+        );
+    }
+}

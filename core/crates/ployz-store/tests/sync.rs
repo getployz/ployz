@@ -2518,3 +2518,45 @@ fn plain_text_for_a_synced_secret_is_refused_and_an_old_cli_is_told_to_update() 
         Value::Null
     );
 }
+
+#[test]
+fn the_refusal_of_a_synced_secret_s_plain_text_is_pinned_for_the_cli_and_for_anyone_else() {
+    let (store, who) = shop(false);
+    let copy = service_id(&store, &who, "fix-web", "web");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[(
+            "web.env.TOKEN",
+            backend::sealed_secret(&uuid(9), copy.as_str(), "TOKEN", 1),
+        )],
+    );
+    let review = view(&store, &who);
+    let with_value = SyncChanges {
+        values: BTreeMap::from([("web.env.TOKEN".into(), "plain-value".into())]),
+        ..sync(&review, Some(&["web.env.TOKEN"]))
+    };
+    let cli = Trusted {
+        from_cli: true,
+        ..Trusted::default()
+    };
+    let error = store.write_trusted(&who, &with_value, &cli).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str(), error.details),
+        (
+            RpcErrorCode::Unsupported,
+            "TOKEN: update ployz to set a Sealed value.",
+            json!({ "variable": "TOKEN", "next": "curl -fsSL https://ployz.sh | sh" }),
+        )
+    );
+    let error = store.write(&who, &with_value).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str(), error.details),
+        (
+            RpcErrorCode::InvalidArgument,
+            "web.env.TOKEN: secrets are sealed on your device",
+            json!({ "row": "00000000-0000-4000-8000-000000000003:variables.TOKEN" }),
+        )
+    );
+}
