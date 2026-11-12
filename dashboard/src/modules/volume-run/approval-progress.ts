@@ -5,6 +5,9 @@ import type { StepAnswer, VolumeRunView } from "#/modules/volume-run/volume-run"
 export const EXPIRED_NOTE = "Approval expired. Nothing new can start.";
 export const FINISHING_NOTE = "Finishing what started.";
 
+/** How long past an approval's signed expiry a Server still takes a step from it, for clocks that disagree. */
+export const CLOCK_SKEW_MS = 2 * 60 * 1000;
+
 const ApprovedBody = Schema.fromJsonString(Schema.Struct({
   expires_at: Schema.Number,
   workflow: Schema.Struct({
@@ -30,7 +33,8 @@ export type ServerProgress = {
  * finishes what a Server already took (the Servers let a started workflow finish), or nothing new can start.
  */
 export type ApprovalProgress = {
-  readonly expiresAt: number;
+  /** The last moment a Server takes a new step under the approval: its signed expiry, plus the skew Servers allow. */
+  readonly until: number;
   readonly note: typeof EXPIRED_NOTE | typeof FINISHING_NOTE | null;
   readonly servers: readonly ServerProgress[];
 };
@@ -64,10 +68,11 @@ export function approvalProgress(
     };
   });
   const took = run.answers.some((answer) => answer.accepted);
-  const note = now < expiresAt || run.state === "done" ? null
+  const until = expiresAt + CLOCK_SKEW_MS;
+  const note = now <= until || run.state === "done" ? null
     : ACTIVE.includes(run.state) && took ? FINISHING_NOTE
     : EXPIRED_NOTE;
-  return { expiresAt, note, servers };
+  return { until, note, servers };
 }
 
 const STEP_WORDS = new Map([

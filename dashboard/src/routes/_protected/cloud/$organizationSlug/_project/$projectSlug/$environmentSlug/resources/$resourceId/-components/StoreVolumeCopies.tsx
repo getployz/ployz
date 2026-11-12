@@ -162,7 +162,7 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
 /** A run asked under the person's passkey approval: until when it holds, then whether the run finishes, and each Server's answer. */
 function RunApprovalAlert({ progress }: { progress: ApprovalProgress }) {
   return <Alert>
-    <AlertTitle>{progress.note ?? `Approved until ${lossTime(new Date(progress.expiresAt))}`}</AlertTitle>
+    <AlertTitle>{progress.note ?? `Approved until ${lossTime(new Date(progress.until))}`}</AlertTitle>
     <AlertDescription>
       <ul aria-label="Server answers">{progress.servers.map((server) => <li key={server.machine}>{serverLine(server)}</li>)}</ul>
     </AlertDescription>

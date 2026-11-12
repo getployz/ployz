@@ -13,9 +13,8 @@ use ployz_core::{
     MachineId, ManagementAddress, OperationId, Sealing, SlotRole, SnapshotGuid, SnapshotName,
     Start, VolumeCopy, WriterEpoch,
     authority::{
-        Approver, AuthorityRefusal, Handed as Lands, HandoffFacts, HandoffReceipt, MachineSigned,
-        Purpose, Signed, StepDigest, Timestamp, VolumeApproval, VolumeFacts, VolumeStep,
-        VolumeWorkflow,
+        AuthorityRefusal, Handed as Lands, HandoffFacts, HandoffReceipt, MachineSigned, Purpose,
+        Signed, StepDigest, Timestamp, VolumeApproval, VolumeFacts, VolumeStep, VolumeWorkflow,
         deploy::{self, Creation},
         volume,
     },

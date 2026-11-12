@@ -1,6 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { approvalProgress, EXPIRED_NOTE, FINISHING_NOTE, serverLine } from "./approval-progress";
+import { approvalProgress, CLOCK_SKEW_MS, EXPIRED_NOTE, FINISHING_NOTE, serverLine } from "./approval-progress";
 import type { StepAnswer, VolumeRunView } from "./volume-run";
 
 const a = "a".repeat(32) as MachineId;
@@ -30,7 +30,13 @@ describe("approvalProgress", () => {
     ["a run that ended on its expired approval says so", "failed", [answer(a, "web-1", "writer", true)], EXPIRED_NOTE],
     ["a run that finished needs no note", "done", [answer(a, "web-1", "writer", true)], null],
   ])("%s", (_, state, answers, note) => {
-    expect(approvalProgress(run(state, answers), EXPIRES, names)?.note).toBe(note);
+    expect(approvalProgress(run(state, answers), EXPIRES + CLOCK_SKEW_MS + 1, names)?.note).toBe(note);
+  });
+
+  it("counts an approval live through the clock skew Servers allow past its expiry, and shows that end", () => {
+    const progress = approvalProgress(run("running", []), EXPIRES + CLOCK_SKEW_MS, names);
+    expect(progress?.note).toBeNull();
+    expect(progress?.until).toBe(EXPIRES + CLOCK_SKEW_MS);
   });
 
   it("lets a Server's latest answer to a step stand", () => {
