@@ -1,7 +1,8 @@
 use ployz_core::host_preparation::PrepSteps;
 use serde_json::{Value, json};
 
-use super::Probe;
+use super::host_report;
+use ployz_core::probe_document::ProbeDocument;
 
 /// What `ployzd install --probe --json` prints for a ready host: `assessment` first, keys sorted.
 const ELIGIBLE: &str = r#"{
@@ -131,14 +132,21 @@ const REFUSED: &str = r#"{
   }
 }"#;
 
-fn read(document: &str) -> Result<Probe, serde_json::Error> {
+fn read(document: &str) -> Result<ProbeDocument, serde_json::Error> {
     serde_json::from_str(document)
 }
 
 fn report(document: &Value) -> Value {
-    let probe: Probe = serde_json::from_value(document.clone()).unwrap();
-    serde_json::to_value(probe.report("host".into(), &PrepSteps::default(), false, false, None))
-        .unwrap()
+    let probe: ProbeDocument = serde_json::from_value(document.clone()).unwrap();
+    serde_json::to_value(host_report(
+        probe,
+        "host".into(),
+        &PrepSteps::default(),
+        false,
+        false,
+        None,
+    ))
+    .unwrap()
 }
 
 fn eligible() -> Value {

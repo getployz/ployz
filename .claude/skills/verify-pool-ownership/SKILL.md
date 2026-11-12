@@ -53,7 +53,7 @@ A Volume create or copy records it the same way. The model has that step: `one_u
 
 The installer's RPM path's note says the RPMs enable `zfs-import-cache` (`installer/storage.rs:707-709`). The run did not check the RPM or Debian presets. To check another distro, use Boat lane F1's disk (PR #3842's Live lanes):
 
-1. Boot one Machine with the `verify-server` skill (lane F1 used `scripts/verify-cluster up --bare --machines 1 --daemon checkout`). Do not use a loop device. It is gone after a reboot, and the installer refuses it: `empty_device` keeps only devices that lsblk reports as TYPE `disk` (`installer/assess.rs:468`, `:529-531`), and a loop device reports `loop`.
+1. Boot one Machine with the `verify-server` skill (lane F1 used `scripts/verify-cluster up --bare --machines 1 --daemon checkout`). Do not use a loop device. It is gone after a reboot, and the installer refuses it: `empty_device` keeps only devices that lsblk reports as TYPE `disk` (the `type == "disk"` filter in `disks_from_lsblk` and the `device_blocker` check in `empty_device`, both in `installer/assess.rs`), and a loop device reports `loop`.
 2. Attach a sparse file as `/dev/nbd0` with `qemu-nbd`, from a unit that runs before ZFS imports. This is lane F1's unit, after `apt-get install qemu-utils`, `mkdir -p /var/lanef1 && truncate -s 4G /var/lanef1/disk.img` and `echo "options nbd nbds_max=1 max_part=0" > /etc/modprobe.d/lanef1-nbd.conf`:
 
    ```ini

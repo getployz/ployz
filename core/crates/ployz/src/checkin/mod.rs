@@ -23,15 +23,15 @@ use chrono::{DateTime, Utc};
 use ployz_core::MachineLayout;
 use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
 use ployz_core::host_preparation::{PrepSteps, StateError, read_state};
+use ployz_core::probe_document::ProbeDocument;
 use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, Hold, KeyError};
 pub(crate) use enroll::Committed;
 use probe::Probes;
-use wire::{Answer, CheckinRequest, PrepRecord, Wait};
+use wire::{Answer, CheckinRequest, PrepRecord, Wait, host_report};
 pub(crate) use wire::{
-    Attempt, DOCKER_INSTALL_FAILED, DockerPrep, EnrollInstruction, Issue, Prep, Probe, StopReason,
-    ZfsPrep,
+    Attempt, DOCKER_INSTALL_FAILED, DockerPrep, EnrollInstruction, Issue, Prep, StopReason, ZfsPrep,
 };
 
 const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
@@ -175,7 +175,7 @@ pub(crate) enum CheckinEnd {
 }
 
 pub(crate) trait Host {
-    async fn probe(&self) -> Result<Probe, String>;
+    async fn probe(&self) -> Result<ProbeDocument, String>;
     fn hostname(&self) -> String;
     /// Whether systemd says `ployz-prepare` runs.
     async fn prepare_running(&self) -> Result<bool, String>;
@@ -228,7 +228,7 @@ impl System {
 }
 
 impl Host for System {
-    async fn probe(&self) -> Result<Probe, String> {
+    async fn probe(&self) -> Result<ProbeDocument, String> {
         let run = |error: io::Error| format!("run {}: {error}", self.ployzd.display());
         let child = tokio::process::Command::new(&self.ployzd)
             .args(["install", "--probe", "--json"])
@@ -954,7 +954,14 @@ async fn check_in<H: Host>(
             return (next, Some(status));
         }
     };
-    let mut report = probe.report(host.hostname(), &state, preparing, gave_up, prepare_started);
+    let mut report = host_report(
+        probe,
+        host.hostname(),
+        &state,
+        preparing,
+        gave_up,
+        prepare_started,
+    );
     report.blockers.extend(stale);
     report.blockers.extend(member);
     report.blockers.extend(port_taken);

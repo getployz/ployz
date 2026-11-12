@@ -12,10 +12,11 @@ use ployz_core::host_preparation::{
     Begun, DockerOutcome, PrepState, PrepStep, StateError, ZfsBuild, ZfsOutcome, encode_state,
     read_state,
 };
+use ployz_core::probe_document::OsRelease;
 
 use super::assess::{assess, read_facts};
 use super::host::{install_docker, verify_docker};
-use super::os_release::OsRelease;
+use super::os_release;
 use super::storage::{
     self, BuildFailure, OPENZFS_BUILD_DEPENDENCIES, OPENZFS_SHA256, debian_contrib_source,
     debian_kernel_flavour_step, download_openzfs, enable_debian_contrib, kernel_devel,
@@ -154,7 +155,8 @@ async fn docker_step(paths: &InstallPaths) -> Result<(), String> {
 }
 
 fn debian_family(paths: &InstallPaths) -> bool {
-    OsRelease::read(&paths.os_release).is_ok_and(|os| matches!(os.id.as_str(), "debian" | "ubuntu"))
+    os_release::read(&paths.os_release)
+        .is_ok_and(|os| matches!(os.id.as_str(), "debian" | "ubuntu"))
 }
 
 /// Configures packages a killed run left unpacked, which would stop every apt call after it.
@@ -871,7 +873,7 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         path: state_path(paths),
         state: load(paths),
     };
-    let package_manager = OsRelease::read(&paths.os_release)
+    let package_manager = os_release::read(&paths.os_release)
         .ok()
         .as_ref()
         .and_then(ZfsRoute::for_os)

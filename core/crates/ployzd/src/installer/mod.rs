@@ -24,6 +24,7 @@ use std::{
 
 use ployz_core::{
     MachineLayout, MachineRelease, MachineUpgradeStage, MachineVersion, StoragePreparation,
+    probe_document::ProbeDocument,
 };
 use thiserror::Error;
 
@@ -241,7 +242,7 @@ pub fn probe() -> Result<String, Error> {
     require_root()?;
     let facts = read_facts(&InstallPaths::production())?;
     let assessment = assess(&facts);
-    assess::probe_json(&facts, &assessment)
+    assess::probe_json(&ProbeDocument { facts, assessment })
 }
 
 async fn install_at(

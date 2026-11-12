@@ -54,11 +54,14 @@ fn host() -> HostFacts {
     }
 }
 
-fn codes(blockers: &[Blocker]) -> Vec<&'static str> {
-    blockers.iter().map(|blocker| blocker.code).collect()
+fn codes(blockers: &[Blocker]) -> Vec<&str> {
+    blockers
+        .iter()
+        .map(|blocker| blocker.code.as_str())
+        .collect()
 }
 
-fn zfs_refusal(facts: &HostFacts) -> Option<&'static str> {
+fn zfs_refusal(facts: &HostFacts) -> Option<BlockerCode> {
     zfs_reason(facts).map(|reason| reason.code)
 }
 
@@ -100,7 +103,7 @@ fn a_stopped_docker_blocks() {
     assert_eq!(
         assess(&facts).blockers,
         [Blocker::new(
-            "docker_stopped",
+            BlockerCode::DockerStopped,
             "Docker is installed but not running. Start it (systemctl start docker) and run this again."
         )]
     );
@@ -127,7 +130,7 @@ fn an_old_docker_engine_blocks() {
     let [blocker] = blockers.as_slice() else {
         panic!("{blockers:?}");
     };
-    assert_eq!(blocker.code, "docker_too_old");
+    assert_eq!(blocker.code, BlockerCode::DockerTooOld);
     assert!(
         blocker
             .message
@@ -151,7 +154,7 @@ fn an_old_buildx_blocks() {
     let [blocker] = blockers.as_slice() else {
         panic!("{blockers:?}");
     };
-    assert_eq!(blocker.code, "buildx_too_old");
+    assert_eq!(blocker.code, BlockerCode::BuildxTooOld);
     let (major, minor) = MINIMUM_BUILDX;
     assert!(
         blocker.message.starts_with(&format!(
@@ -191,7 +194,7 @@ fn a_docker_that_stopped_answering_blocks_with_its_error() {
     assert_eq!(
         assess(&facts).blockers,
         [Blocker::new(
-            "docker_unreadable",
+            BlockerCode::DockerUnreadable,
             "checking Docker: docker: 'buildx' is not a docker command."
         )]
     );
@@ -204,7 +207,10 @@ fn no_systemd_blocks() {
     facts.systemd = false;
     assert_eq!(
         assess(&facts).blockers,
-        [Blocker::new("no_systemd", "Ployz requires systemd")]
+        [Blocker::new(
+            BlockerCode::NoSystemd,
+            "Ployz requires systemd"
+        )]
     );
 }
 
@@ -220,7 +226,7 @@ fn a_root_disk_under_30_gib_blocks() {
             assert_eq!(
                 blockers,
                 [Blocker::new(
-                    "disk_too_small",
+                    BlockerCode::DiskTooSmall,
                     "Disk is 29 GiB. Ployz needs 30 GiB."
                 )]
             );
@@ -260,7 +266,7 @@ fn openvz_cannot_prepare_zfs() {
     assert_eq!(
         zfs_reason(&facts),
         Some(Blocker::new(
-            "openvz",
+            BlockerCode::OpenVz,
             "OpenVZ does not allow this Machine to load the host ZFS kernel module"
         ))
     );
@@ -285,7 +291,7 @@ fn only_unprivileged_lxc_cannot_prepare_zfs() {
     assert_eq!(
         zfs_reason(&facts),
         Some(Blocker::new(
-            "unprivileged_lxc",
+            BlockerCode::UnprivilegedLxc,
             "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module"
         ))
     );
@@ -294,7 +300,7 @@ fn only_unprivileged_lxc_cannot_prepare_zfs() {
     };
     assert_eq!(zfs_refusal(&facts), None);
     facts.virt = Virtualization::Lxc { privileged: None };
-    assert_eq!(zfs_refusal(&facts), Some("lxc_privilege_unknown"));
+    assert_eq!(zfs_refusal(&facts), Some(BlockerCode::LxcPrivilegeUnknown));
 }
 
 #[test]
@@ -324,7 +330,7 @@ fn zfs_needs_a_supported_distribution() {
     let ZfsEligibility::Ineligible { reason } = assess(&facts).zfs else {
         panic!("Fedora was eligible");
     };
-    assert_eq!(reason.code, "unsupported_os");
+    assert_eq!(reason.code, BlockerCode::UnsupportedOs);
     assert!(
         reason.message.contains("this Server runs Fedora Linux 41."),
         "{}",
@@ -344,14 +350,14 @@ fn secure_boot_stops_zfs_only_where_the_module_is_built() {
         (
             Some(true),
             Some(Blocker::new(
-                "secure_boot",
+                BlockerCode::SecureBoot,
                 "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for Debian. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
             )),
         ),
         (
             None,
             Some(Blocker::new(
-                "secure_boot_unknown",
+                BlockerCode::SecureBootUnknown,
                 "Couldn't tell whether Secure Boot is on, and under it this Server can't load the ZFS module Ployz builds for Debian. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
             )),
         ),
@@ -383,7 +389,7 @@ fn zfs_validation_preserves_the_host_root_reserve() {
     assert_eq!(
         reason,
         Blocker::new(
-            ROOT_RESERVE,
+            BlockerCode::RootReserve,
             format!(
                 "Host root has {} bytes available; ZFS validation needs {ZFS_SMOKE_BYTES} bytes while preserving the {reserve}-byte host-root reserve",
                 reserve + ZFS_SMOKE_BYTES - 1
@@ -434,7 +440,7 @@ fn lsblk_keeps_the_root_disk_and_empty_disks() {
     ] {
         assert_eq!(
             device_blocker(&disks, Path::new(device)).unwrap().code,
-            "device_not_empty"
+            BlockerCode::DeviceNotEmpty
         );
     }
     let summary: Vec<_> = disks
@@ -662,7 +668,7 @@ fn probe_docker_unreadable_contract() {
         let blocker = docker_blocker(&facts.docker).unwrap();
         assert_eq!(
             (blocker.code, blocker.message.as_str()),
-            ("docker_unreadable", REASON)
+            (BlockerCode::DockerUnreadable, REASON)
         );
         write_script(&docker, DOCKER);
         let refusal = crate::installer::host::verify_docker().unwrap_err();
@@ -773,7 +779,7 @@ fn probe_secure_boot_unreadable_contract() {
             "{:?}",
             facts.unread
         );
-        assert_eq!(zfs_refusal(&facts), Some("secure_boot_unknown"));
+        assert_eq!(zfs_refusal(&facts), Some(BlockerCode::SecureBootUnknown));
         fs::write(root.join("child-completed"), "secure-boot").unwrap();
         return;
     }
@@ -806,7 +812,7 @@ fn probe_document_bytes_are_frozen() {
     let facts = host();
     let assessment = assess(&facts);
     assert_eq!(
-        probe_json(&facts, &assessment).unwrap(),
+        probe_json(&ProbeDocument { facts, assessment }).unwrap(),
         ELIGIBLE_DOCUMENT_GOLDEN
     );
 
@@ -822,7 +828,7 @@ fn probe_document_bytes_are_frozen() {
     facts.unread = vec!["read CPU count: no processor lines in cpuinfo".into()];
     let assessment = assess(&facts);
     assert_eq!(
-        probe_json(&facts, &assessment).unwrap(),
+        probe_json(&ProbeDocument { facts, assessment }).unwrap(),
         REFUSED_DOCUMENT_GOLDEN
     );
 }
@@ -1033,7 +1039,7 @@ fn probe_document_variants_serialize_as_serde_defaults() {
         }})
     );
     let ineligible = ZfsEligibility::Ineligible {
-        reason: Blocker::new("openvz", "No."),
+        reason: Blocker::new(BlockerCode::OpenVz, "No."),
     };
     assert_eq!(
         serde_json::to_value(&ineligible).unwrap(),

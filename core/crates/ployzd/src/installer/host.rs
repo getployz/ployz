@@ -18,7 +18,7 @@ use ployz_core::{
 };
 
 use super::assess::{docker_blocker, read_docker};
-use super::os_release::OsRelease;
+use super::os_release;
 use super::release::{fetch, installed_release};
 use super::{
     Error, InstallPaths, PLOYZ_USER, command_exists, refuse, run_apt, run_host, systemctl,
@@ -411,7 +411,7 @@ pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
     if command_exists("dockerd") {
         return Ok(());
     }
-    if OsRelease::read(&paths.os_release)?.is_amazon_linux() {
+    if os_release::read(&paths.os_release)?.is_amazon_linux() {
         write_file_atomically(
             &paths.yum_repos_dir.join("ployz-docker-ce.repo"),
             DOCKER_CE_REPO,
