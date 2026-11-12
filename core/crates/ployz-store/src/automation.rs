@@ -23,6 +23,7 @@ use ts_rs::TS;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, GitPush};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId, ServiceLineageId};
+use crate::merge_deploy;
 use crate::policy::{self, is_repository_path};
 use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
@@ -512,37 +513,21 @@ pub(crate) fn deploy_landed(
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     let (branch, commit) = (merge.target, merge.commit);
-    let earlier = tx.query(
-        "SELECT services, removed_services FROM config_merge_deploy \
-         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
-        &[
-            environment.as_str().into(),
-            repository_id.into(),
-            branch.as_str().into(),
-            commit.as_str().into(),
-        ],
-    )?;
-    if let Some(row) = earlier.first() {
-        pending.extend(merged_services(row)?);
+    let landed = merge_deploy::Landed {
+        environment,
+        repository_id,
+        branch: branch.as_str(),
+        commit: commit.as_str(),
+    };
+    if let Some(row) = merge_deploy::get(tx, landed)? {
+        pending.extend(merged_services(&row)?);
     }
-    tx.execute(
-        "INSERT INTO config_merge_deploy \
-         (environment_id, repository_id, branch, commit_sha, seq, organization_id, services, \
-          removed_services) \
-         SELECT ?1, ?2, ?3, ?4, COALESCE(MAX(seq), 0) + 1, ?5, ?6, ?7 FROM config_merge_deploy \
-         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 \
-         ON CONFLICT (environment_id, repository_id, branch, commit_sha) \
-         DO UPDATE SET services = excluded.services, \
-         removed_services = excluded.removed_services",
-        &[
-            environment.as_str().into(),
-            repository_id.into(),
-            branch.as_str().into(),
-            commit.as_str().into(),
-            who.organization.as_str().into(),
-            json_of(&pending.updates).as_str().into(),
-            json_of(&pending.removals).as_str().into(),
-        ],
+    merge_deploy::put(
+        tx,
+        who.organization.as_str(),
+        landed,
+        &json_of(&pending.updates),
+        &json_of(&pending.removals),
     )?;
     let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
         return Ok(());
@@ -598,15 +583,7 @@ fn landed(
     environment: &EnvironmentId,
     push: &GitPush,
 ) -> Result<(Vec<String>, MergedServices), RpcError> {
-    let rows = tx.query(
-        "SELECT services, removed_services, commit_sha FROM config_merge_deploy \
-         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 ORDER BY seq",
-        &[
-            environment.as_str().into(),
-            push.repository_id.into(),
-            push.branch.as_str().into(),
-        ],
-    )?;
+    let rows = merge_deploy::on_branch(tx, environment, push.repository_id, push.branch.as_str())?;
     let mut commits = rows
         .iter()
         .map(|row| row.text(2).map(str::to_owned))
@@ -886,16 +863,15 @@ pub(crate) fn shipped_landed(
     environment: &EnvironmentId,
     shipped: &Shipped<'_>,
 ) -> Result<(), RpcError> {
-    let rows = tx.query(
-        "SELECT services, removed_services, repository_id, branch, commit_sha \
-         FROM config_merge_deploy WHERE environment_id = ?1",
-        &[environment.as_str().into()],
-    )?;
+    let rows = merge_deploy::of_environment(tx, environment)?;
     for row in &rows {
         let mut pending = merged_services(row)?;
-        let repository_id: RepositoryId = row.number(2, "merge deploy")?;
-        let branch = row.text(3)?;
-        let commit = row.text(4)?;
+        let landed = merge_deploy::Landed {
+            environment,
+            repository_id: row.number(2, "merge deploy")?,
+            branch: row.text(3)?,
+            commit: row.text(4)?,
+        };
         let before = (pending.updates.len(), pending.removals.len());
         match shipped {
             // Its outcome isn't known yet, so a removal stays for the next push, which
@@ -913,32 +889,14 @@ pub(crate) fn shipped_landed(
         if (pending.updates.len(), pending.removals.len()) == before {
             continue;
         }
-        let key = [
-            environment.as_str().into(),
-            repository_id.into(),
-            branch.into(),
-            commit.into(),
-        ];
         if pending.is_empty() {
-            tx.execute(
-                "DELETE FROM config_merge_deploy WHERE environment_id = ?1 \
-                 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
-                &key,
-            )?;
+            merge_deploy::forget(tx, landed)?;
         } else {
-            let [environment, repository_id, branch, commit] = key;
-            tx.execute(
-                "UPDATE config_merge_deploy SET services = ?5, removed_services = ?6 \
-                 WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 \
-                 AND commit_sha = ?4",
-                &[
-                    environment,
-                    repository_id,
-                    branch,
-                    commit,
-                    json_of(&pending.updates).as_str().into(),
-                    json_of(&pending.removals).as_str().into(),
-                ],
+            merge_deploy::replace(
+                tx,
+                landed,
+                &json_of(&pending.updates),
+                &json_of(&pending.removals),
             )?;
         }
     }
@@ -954,15 +912,14 @@ fn forget_landed(
     commits: &[String],
 ) -> Result<(), RpcError> {
     for commit in commits {
-        tx.execute(
-            "DELETE FROM config_merge_deploy WHERE environment_id = ?1 \
-             AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
-            &[
-                environment.as_str().into(),
-                push.repository_id.into(),
-                push.branch.as_str().into(),
-                commit.as_str().into(),
-            ],
+        merge_deploy::forget(
+            tx,
+            merge_deploy::Landed {
+                environment,
+                repository_id: push.repository_id,
+                branch: push.branch.as_str(),
+                commit,
+            },
         )?;
     }
     Ok(())
@@ -982,7 +939,7 @@ fn last_built(
          AND b.status IN ('built', 'reused') ORDER BY d.admitted DESC",
         &[
             id.as_str().into(),
-            format!("%\"{}\"%", service.id).as_str().into(),
+            deployment::node_pattern(&service.id).as_str().into(),
         ],
     )?;
     for row in &rows {

@@ -22,6 +22,7 @@ mod followup;
 mod git;
 mod github;
 mod id;
+mod merge_deploy;
 mod names;
 mod old_cli;
 mod permission;

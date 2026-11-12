@@ -233,13 +233,9 @@ pub(crate) fn setup_is_not_staged(path: &crate::SettingPath) -> RpcError {
 
 /// The IDs of the Services that have deployed in Environment `id`.
 pub(super) fn deployed(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<BTreeSet<String>, RpcError> {
-    tx.query(
-        "SELECT node_id FROM config_applied WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?
-    .iter()
-    .map(|row| row.text(0).map(str::to_owned))
-    .collect()
+    Ok(crate::deployment::applied::node_ids(tx, id)?
+        .into_iter()
+        .collect())
 }
 
 #[cfg(test)]
