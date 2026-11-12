@@ -6,8 +6,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use crate::{
     dns::{InstalledExe, identity_of},
-    observe, runtime_unit,
+    runtime_unit,
     runtime_unit::UnitSupervision,
+    units::Unit,
 };
 
 #[derive(Clone, Default)]
@@ -47,7 +48,7 @@ impl LogStore {
 
 async fn runs_own_software(own: &InstalledExe) -> bool {
     let main_pid =
-        runtime_unit::systemctl(&["show", "-p", "MainPID", "--value", observe::unit::UNIT_NAME])
+        runtime_unit::systemctl(&["show", "-p", "MainPID", "--value", Unit::Observe.name()])
             .await
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
     let theirs = main_pid

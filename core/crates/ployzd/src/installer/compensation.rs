@@ -7,17 +7,13 @@ use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, error_chai
 use thiserror::Error;
 
 use super::{Error as InstallError, InstallMode, InstallPaths, InstallRequest, ReleaseSource};
-use crate::mutation;
+use crate::{mutation, units::Unit};
 
 /// How long a ready daemon must keep running before an Upgrade succeeds.
 #[cfg(not(test))]
 const SOAK: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const SOAK: Duration = Duration::from_millis(100);
-
-/// Units besides the daemon that an Upgrade restarts and compensation must bring back. The
-/// restored daemon moves the Observe Store onto its own binary itself.
-const HELPER_UNITS: [&str; 2] = ["ployz-volume-plugin.socket", "ployz-volume-plugin.service"];
 
 /// Why an Upgrade failed, and whether the previous release went back into service. Its text is
 /// the attempt's recorded failure.
@@ -56,7 +52,8 @@ pub(super) async fn install_or_compensate(
         .map_err(UpgradeFailure::NotRestored)?;
     // A unit that crashes on the new release is no longer running, so `try-restart` would leave
     // it stopped after the restore.
-    let active_plugins: Vec<&str> = HELPER_UNITS
+    let active_plugins: Vec<&str> = Unit::HELPERS
+        .map(Unit::name)
         .into_iter()
         .filter(|unit| super::systemctl("check unit", ["is-active", "--quiet", unit]).is_ok())
         .collect();
@@ -93,7 +90,10 @@ async fn soak(paths: &InstallPaths, target: &MachineVersion) -> Result<(), Insta
     if running != started {
         return Err(super::refuse(
             "soak daemon",
-            format!("ployz.service restarted (main PID {started} became {running})"),
+            format!(
+                "{} restarted (main PID {started} became {running})",
+                Unit::Ployz.name()
+            ),
         ));
     }
     super::host::verify_daemon_contract(&paths.socket(), target).await
@@ -110,14 +110,14 @@ async fn restore(
     // fails on a unit that is not loaded, so it only names units known to be.
     super::systemctl(
         "clear daemon failure",
-        ["reset-failed", "ployz.socket", "ployz.service"],
+        ["reset-failed", Unit::PloyzSocket.name(), Unit::Ployz.name()],
     )?;
     for unit in plugins {
         super::systemctl("clear unit failure", ["reset-failed", unit])?;
     }
     super::systemctl(
         "restart daemon",
-        ["restart", "ployz.socket", "ployz.service"],
+        ["restart", Unit::PloyzSocket.name(), Unit::Ployz.name()],
     )?;
     for unit in plugins {
         super::systemctl("restart unit", ["restart", unit])?;

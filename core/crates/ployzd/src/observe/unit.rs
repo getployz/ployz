@@ -7,9 +7,8 @@ use std::{io, path::Path};
 use crate::{
     dns::InstalledExe,
     runtime_unit::{self, UNIT_DIR, systemctl},
+    units::Unit,
 };
-
-pub(crate) const UNIT_NAME: &str = "ployz-observe.service";
 
 /// Write the runtime unit and start the Observe Store, restarting it when
 /// systemd reloaded the unit or it runs other software. A legacy unit in `/etc` shadows the runtime one until
@@ -35,24 +34,23 @@ async fn converge_in(
     data_dir: &Path,
     socket: &Path,
 ) -> io::Result<()> {
+    let unit = Unit::Observe.name();
     let reloaded = runtime_unit::install(
-        &unit_dir.join(UNIT_NAME),
+        &unit_dir.join(unit),
         &unit_text(exe.path(), data_dir, socket),
     )
     .await?;
     // A crash loop, here or under a release that rolled back, can leave the
     // unit at its start limit; a daemon start is a fresh attempt.
-    systemctl(&["reset-failed", UNIT_NAME]).await;
-    let verb = if reloaded || runtime_unit::runs_other_software(UNIT_NAME, exe).await {
+    systemctl(&["reset-failed", unit]).await;
+    let verb = if reloaded || runtime_unit::runs_other_software(unit, exe).await {
         "restart"
     } else {
         "start"
     };
-    match systemctl(&[verb, "--no-block", UNIT_NAME]).await {
+    match systemctl(&[verb, "--no-block", unit]).await {
         Some(_) => Ok(()),
-        None => Err(io::Error::other(format!(
-            "systemctl {verb} {UNIT_NAME} failed"
-        ))),
+        None => Err(io::Error::other(format!("systemctl {verb} {unit} failed"))),
     }
 }
 

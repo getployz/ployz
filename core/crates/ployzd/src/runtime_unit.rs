@@ -14,11 +14,11 @@ use tokio::process::Command;
 use crate::{
     dns::{InstalledExe, identity_of},
     filesystem::atomic_write,
+    units::Unit,
 };
 
 pub(crate) const UNIT_DIR: &str = "/run/systemd/system";
 const SYSTEMCTL_BOUND: Duration = Duration::from_secs(5);
-const HOST_UNIT_NAME: &str = "ployz.service";
 
 /// Whether the daemon writes its runtime units and drives them with `systemctl`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +50,7 @@ fn runs_as_host_unit(cgroup: &str) -> bool {
     cgroup
         .lines()
         .filter_map(|line| line.rsplit('/').next())
-        .any(|unit| unit.trim_end() == HOST_UNIT_NAME)
+        .any(|unit| unit.trim_end() == Unit::Ployz.name())
 }
 
 /// Write `text` to `file` and reload systemd when its loaded copy of the unit
