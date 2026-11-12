@@ -5163,6 +5163,16 @@ mod tests {
                 vec![(t(2), false, false)],
             ),
             (
+                "a kill after the exit is not taken by the next exit",
+                vec![
+                    Event("start", 1, NONE),
+                    Event("die", 2, FAILED),
+                    Event("kill", 3, TERM),
+                    Event("die", 4, FAILED),
+                ],
+                vec![(t(2), false, false), (t(4), false, false)],
+            ),
+            (
                 "a signal Docker does not name is no kill",
                 vec![
                     Event("start", 1, NONE),
