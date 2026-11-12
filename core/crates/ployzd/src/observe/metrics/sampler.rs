@@ -14,7 +14,7 @@
 
 use ployz_core::labels::{self, Class};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, hash_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -41,11 +41,11 @@ use super::{
     policy::RETENTION,
     rollup,
     segment::{self, Row},
+    volume_io::{Mounts, VolumeLedger},
     zfs_io::{self, DatasetIo},
     zfs_usage::{ZFS_LIST_TIMEOUT, ZfsUsageReader},
 };
 use crate::{
-    dataset_layout::Place,
     machine::store,
     network::DOCKER_NETWORK_NAME,
     observe::{
@@ -335,7 +335,15 @@ fn sample(
     let (live, gone): (Vec<&Tracked>, Vec<&Tracked>) = containers.iter().partition(|container| {
         cgroup_path(&roots.proc, container.pid).as_deref() == Some(container.cgroup.as_str())
     });
-    ledger.book(zfs_io::read(&roots.zfs_kstat), &live);
+    let mounts: Vec<Mounts<'_>> = live
+        .iter()
+        .map(|container| Mounts {
+            id: container.id,
+            service_id: container.labels.service_id,
+            volumes: &container.volumes,
+        })
+        .collect();
+    ledger.book(zfs_io::read(&roots.zfs_kstat), &mounts);
     let mut rows = Vec::with_capacity(live.len() + 1);
     for container in live {
         let dir = roots.cgroup.join(container.cgroup.trim_start_matches('/'));
@@ -349,7 +357,7 @@ fn sample(
             container,
             &counters,
             net,
-            ledger.booked.get(&container.id).copied(),
+            ledger.booked(&container.id),
         )));
     }
     let host = host::read_host(&roots.proc, &[store]);
@@ -363,90 +371,6 @@ fn sample(
         rows,
         gone.into_iter().map(|container| container.id).collect(),
     )
-}
-
-/// Volume bytes as each container's own running total. A kstat counts from
-/// its dataset's mount, so booking it whole would jump whenever another
-/// replica takes a Volume over or a kstat misses a tick. Only the growth
-/// between two readings of a dataset is booked.
-#[derive(Debug, Default)]
-struct VolumeLedger {
-    seen: HashMap<String, DatasetIo>,
-    booked: HashMap<ContainerId, DatasetIo>,
-}
-
-impl VolumeLedger {
-    fn book(&mut self, datasets: BTreeMap<String, DatasetIo>, live: &[&Tracked]) {
-        let grown: BTreeMap<String, DatasetIo> = datasets
-            .into_iter()
-            .map(|(dataset, now)| {
-                let grown = self.seen.insert(dataset.clone(), now).map_or_else(
-                    DatasetIo::default,
-                    |last| DatasetIo {
-                        read_bytes: growth(last.read_bytes, now.read_bytes),
-                        write_bytes: growth(last.write_bytes, now.write_bytes),
-                    },
-                );
-                (dataset, grown)
-            })
-            .collect();
-        for (container, io) in volume_io(&grown, live) {
-            let total = self.booked.entry(container).or_default();
-            total.read_bytes = total.read_bytes.saturating_add(io.read_bytes);
-            total.write_bytes = total.write_bytes.saturating_add(io.write_bytes);
-        }
-        self.booked
-            .retain(|id, _| live.iter().any(|container| container.id == *id));
-    }
-}
-
-/// A counter below its last reading restarted, as a remount resets it.
-fn growth(last: u64, now: u64) -> u64 {
-    now.checked_sub(last).unwrap_or(now)
-}
-
-/// Each Volume's ZFS bytes, booked once per Service on the lowest container
-/// id that mounts it. Replicas sharing a Volume cannot be told apart, and
-/// booking it on each would count it once per replica.
-fn volume_io(
-    datasets: &BTreeMap<String, DatasetIo>,
-    containers: &[&Tracked],
-) -> HashMap<ContainerId, DatasetIo> {
-    let by_volume: HashMap<&str, DatasetIo> = datasets
-        .iter()
-        .filter_map(|(dataset, io)| {
-            Place::in_any_pool(dataset)
-                .writer_root()
-                .map(|volume| (volume, *io))
-        })
-        .collect();
-    let mut owners: HashMap<(Option<ServiceId>, &str), ContainerId> = HashMap::new();
-    for container in containers {
-        for volume in &container.volumes {
-            if !by_volume.contains_key(volume.as_str()) {
-                continue;
-            }
-            match owners.entry((container.labels.service_id, volume.as_str())) {
-                Entry::Occupied(mut owner) if container.id < *owner.get() => {
-                    owner.insert(container.id);
-                }
-                Entry::Occupied(_) => {}
-                Entry::Vacant(owner) => {
-                    owner.insert(container.id);
-                }
-            }
-        }
-    }
-    let mut booked: HashMap<ContainerId, DatasetIo> = HashMap::new();
-    for ((_, volume), owner) in owners {
-        let Some(io) = by_volume.get(volume) else {
-            continue;
-        };
-        let total = booked.entry(owner).or_default();
-        total.read_bytes = total.read_bytes.saturating_add(io.read_bytes);
-        total.write_bytes = total.write_bytes.saturating_add(io.write_bytes);
-    }
-    booked
 }
 
 fn container_sample(

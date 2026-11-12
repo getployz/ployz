@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use super::policy::RETENTION;
+use super::{counters::Counters, policy::RETENTION};
 use ployz_core::{
     ContainerId,
     metrics::{
@@ -172,19 +172,6 @@ impl Mean {
     }
 }
 
-/// The container counters that become rates, in `ServicePoint` order.
-const COUNTERS: usize = 5;
-
-fn counters(sample: &MetricSample) -> [Option<u64>; COUNTERS] {
-    [
-        sample.cpu_usec,
-        sample.rx,
-        sample.tx,
-        sample.io_r,
-        sample.io_w,
-    ]
-}
-
 /// Every container of a Service at one sampling tick, summed.
 #[derive(Clone, Copy, Debug)]
 struct Tick {
@@ -198,7 +185,7 @@ struct Tick {
 /// Memory sums the containers at each tick and averages those sums, so a
 /// replica replaced mid-bucket counts once, not twice.
 struct ServiceBucket {
-    rates: [Delta; COUNTERS],
+    rates: Counters<Delta>,
     tick: Option<Tick>,
     mem: Mean,
     /// `None` once a sample in the bucket reported no limit.
@@ -208,7 +195,7 @@ struct ServiceBucket {
 impl Default for ServiceBucket {
     fn default() -> Self {
         Self {
-            rates: [Delta::default(); COUNTERS],
+            rates: Counters::default(),
             tick: None,
             mem: Mean::default(),
             limit: Some(Mean::default()),
@@ -242,7 +229,7 @@ impl ServiceBucket {
             .rates
             .iter_mut()
             .zip(prev.counters)
-            .zip(counters(sample))
+            .zip(Counters::of_sample(sample))
         {
             delta.add(before, after, prev.ts, sample.ts);
         }
@@ -259,17 +246,11 @@ impl ServiceBucket {
 
     fn into_point(mut self, ts: i64) -> ServicePoint {
         self.close_tick();
-        let [cpu_usec, rx, tx, io_r, io_w] = self.rates.map(Delta::per_sec);
-        ServicePoint {
+        self.rates.map(Delta::per_sec).into_point(
             ts,
-            cpu_usec,
-            mem_bytes: self.mem.get(),
-            mem_limit: self.limit.and_then(Mean::get),
-            rx,
-            tx,
-            io_r,
-            io_w,
-        }
+            self.mem.get(),
+            self.limit.and_then(Mean::get),
+        )
     }
 }
 
@@ -277,14 +258,14 @@ impl ServiceBucket {
 #[derive(Clone, Copy)]
 struct Reading {
     ts: i64,
-    counters: [Option<u64>; COUNTERS],
+    counters: Counters<Option<u64>>,
 }
 
 impl Reading {
     fn of(sample: &MetricSample) -> Self {
         Self {
             ts: sample.ts,
-            counters: counters(sample),
+            counters: Counters::of_sample(sample),
         }
     }
 }
@@ -494,7 +475,7 @@ mod tests {
 
     use ployz_core::{ContainerId, MachineId, QualifiedService, ServiceId, metrics::CpuJiffies};
 
-    use super::*;
+    use super::{super::counters::COUNTERS, *};
 
     const SEC: i64 = 1_000_000_000;
 
@@ -552,7 +533,7 @@ mod tests {
     }
 
     fn rates(point: &ServicePoint) -> [Option<f64>; COUNTERS] {
-        [point.cpu_usec, point.rx, point.tx, point.io_r, point.io_w]
+        Counters::of_point(point).0
     }
 
     #[test]

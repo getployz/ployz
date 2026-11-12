@@ -20,6 +20,7 @@ use ployz_core::metrics::{
 };
 
 use super::{
+    counters::{self, Counters},
     policy::{HOUR_NANOS, RETENTION},
     rate::{self, Buckets, Mean},
     rollup::{self, Rolled, ServiceRow},
@@ -265,10 +266,6 @@ fn raw(
     Raw::new(store, scope, now, oldest).read(range, buckets)
 }
 
-fn rates(point: &ServicePoint) -> [Option<f64>; 5] {
-    [point.cpu_usec, point.rx, point.tx, point.io_r, point.io_w]
-}
-
 /// A Service's point at each `ts`: the points of every Service id that held
 /// its name, summed. The memory limit is unknown once any id's is.
 fn sum_services(rows: Vec<ServiceRow>) -> Vec<ServicePoint> {
@@ -281,28 +278,7 @@ fn sum_services(rows: Vec<ServiceRow>) -> Vec<ServicePoint> {
             }
             Entry::Occupied(entry) => entry.into_mut(),
         };
-        let added = rates(&point);
-        for (total, rate) in [
-            &mut sum.cpu_usec,
-            &mut sum.rx,
-            &mut sum.tx,
-            &mut sum.io_r,
-            &mut sum.io_w,
-        ]
-        .into_iter()
-        .zip(added)
-        {
-            if let Some(rate) = rate {
-                *total = Some(total.unwrap_or(0.0) + rate);
-            }
-        }
-        if let Some(mem) = point.mem_bytes {
-            sum.mem_bytes = Some(sum.mem_bytes.unwrap_or(0).saturating_add(mem));
-        }
-        sum.mem_limit = sum
-            .mem_limit
-            .zip(point.mem_limit)
-            .map(|(total, limit)| total.saturating_add(limit));
+        counters::combine(sum, point);
     }
     at.into_values().collect()
 }
@@ -355,7 +331,7 @@ fn fill<P, B: Default>(
 }
 
 struct ServiceMean {
-    rates: [RateMean; 5],
+    rates: Counters<RateMean>,
     mem: Mean,
     /// `None` once a point in the bucket had no limit.
     limit: Option<Mean>,
@@ -364,7 +340,7 @@ struct ServiceMean {
 impl Default for ServiceMean {
     fn default() -> Self {
         Self {
-            rates: [RateMean::default(); 5],
+            rates: Counters::default(),
             mem: Mean::default(),
             limit: Some(Mean::default()),
         }
@@ -378,7 +354,7 @@ fn average_services(points: &[ServicePoint], buckets: Buckets) -> MetricHistoryR
         buckets,
         |point| point.ts,
         |mean: &mut ServiceMean, point| {
-            for (rate, value) in mean.rates.iter_mut().zip(rates(point)) {
+            for (rate, value) in mean.rates.iter_mut().zip(Counters::of_point(point)) {
                 rate.add(value);
             }
             mean.mem.add(point.mem_bytes);
@@ -391,17 +367,11 @@ fn average_services(points: &[ServicePoint], buckets: Buckets) -> MetricHistoryR
     let points = filled
         .into_iter()
         .map(|(ts, mean)| {
-            let [cpu_usec, rx, tx, io_r, io_w] = mean.rates.map(RateMean::get);
-            ServicePoint {
+            mean.rates.map(RateMean::get).into_point(
                 ts,
-                cpu_usec,
-                mem_bytes: mean.mem.get(),
-                mem_limit: mean.limit.and_then(Mean::get),
-                rx,
-                tx,
-                io_r,
-                io_w,
-            }
+                mean.mem.get(),
+                mean.limit.and_then(Mean::get),
+            )
         })
         .collect();
     MetricHistoryReply {
