@@ -88,7 +88,8 @@ where
             continue;
         }
         asked.push(machine_id);
-        let call = call(target);
+        // Boxed so many targets' futures live on the heap, not in the caller's stack frame.
+        let call = Box::pin(call(target));
         if Some(machine_id) == entry {
             last = Some((machine_id, call));
         } else {
