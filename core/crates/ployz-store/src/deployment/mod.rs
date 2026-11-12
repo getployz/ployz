@@ -24,7 +24,7 @@ pub(crate) use lowering::*;
 pub(crate) use rows::servers;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
-    StoppedBy, starts_container,
+    StoppedBy,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

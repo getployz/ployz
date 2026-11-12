@@ -64,6 +64,17 @@ pub enum Stage {
     Parallel(Vec<usize>),
 }
 
+impl Stage {
+    /// The operation indices the stage runs.
+    #[must_use]
+    pub fn tasks(&self) -> &[usize] {
+        match self {
+            Self::Serial(index) => std::slice::from_ref(index),
+            Self::Parallel(indices) => indices,
+        }
+    }
+}
+
 /// One Service's operations and the Services it starts after.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceGroup {
@@ -193,10 +204,10 @@ impl Schedule {
         self.slots
             .iter()
             .position(|slot| {
-                slot.group.steps.iter().any(|step| match step {
-                    Stage::Serial(index) => *index == task,
-                    Stage::Parallel(indices) => indices.contains(&task),
-                })
+                slot.group
+                    .steps
+                    .iter()
+                    .any(|step| step.tasks().contains(&task))
             })
             .expect("every task belongs to one group")
     }
@@ -243,8 +254,8 @@ impl Schedule {
             group
                 .steps
                 .iter()
-                .flat_map(step_tasks)
-                .map(|task| self.task(task).kind)
+                .flat_map(Stage::tasks)
+                .map(|task| self.task(*task).kind)
         };
         kinds().any(|kind| kind == TaskKind::Update) && kinds().all(|kind| kind != TaskKind::Start)
     }
@@ -259,7 +270,8 @@ impl Schedule {
                 slot.group
                     .steps
                     .iter()
-                    .flat_map(step_tasks)
+                    .flat_map(Stage::tasks)
+                    .copied()
                     .collect::<Vec<_>>()
             })
             .find(|tasks| !tasks.is_empty())
@@ -288,9 +300,10 @@ impl Schedule {
         let mut blocked = Vec::new();
         for Slot { group, phase } in &self.slots {
             let pending = match phase {
-                Phase::Waiting if !self.failed && self.dependencies_done(group) => {
-                    group.steps.first().map_or(Vec::new(), step_tasks)
-                }
+                Phase::Waiting if !self.failed && self.dependencies_done(group) => group
+                    .steps
+                    .first()
+                    .map_or(Vec::new(), |step| step.tasks().to_vec()),
                 Phase::Active { pending, .. } => pending.clone(),
                 Phase::Waiting | Phase::Publishing | Phase::Done | Phase::Failed => Vec::new(),
             };
@@ -423,7 +436,7 @@ impl Schedule {
         self.group(group)
             .steps
             .first()
-            .is_some_and(|first| step_tasks(first).len() != pending.len())
+            .is_some_and(|first| first.tasks().len() != pending.len())
     }
 
     fn windows(&self) -> BTreeMap<MachineId, usize> {
@@ -439,7 +452,7 @@ impl Schedule {
         match group.steps.get(step) {
             Some(tasks) => Phase::Active {
                 step,
-                pending: step_tasks(tasks),
+                pending: tasks.tasks().to_vec(),
                 running: BTreeSet::new(),
             },
             None if group.publishing_service().is_some() => Phase::Publishing,
@@ -492,15 +505,8 @@ impl Schedule {
 
 /// A new Container of the Service starts here, so the task takes a window
 /// slot and the Deploy removes the Container if the Service never switches.
-pub(crate) fn starts_container(operation: &DeployOperation) -> bool {
+pub(crate) fn creates_container(operation: &DeployOperation) -> bool {
     TaskKind::of(operation) == TaskKind::Start
-}
-
-fn step_tasks(step: &Stage) -> Vec<usize> {
-    match step {
-        Stage::Serial(index) => vec![*index],
-        Stage::Parallel(indices) => indices.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -1036,5 +1042,11 @@ mod tests {
         schedule.apply(Event::Completed(0));
         assert_eq!(publishes(&mut schedule), Vec::<usize>::new());
         assert!(schedule.finished());
+    }
+
+    #[test]
+    fn a_stage_names_the_tasks_it_runs() {
+        assert_eq!(Stage::Serial(4).tasks(), [4]);
+        assert_eq!(Stage::Parallel(vec![1, 3]).tasks(), [1, 3]);
     }
 }

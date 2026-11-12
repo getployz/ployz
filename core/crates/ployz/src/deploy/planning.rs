@@ -14,7 +14,7 @@ use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
     EliminatingConstraint, HeldIngress, HostnameRefusal, PlanError, PlanOptions,
     ReplacementOperation,
-    schedule::{ServiceGroup, Stage, TaskKind, starts_container},
+    schedule::{ServiceGroup, Stage, TaskKind, creates_container},
 };
 
 pub(super) mod capacity;
@@ -310,7 +310,7 @@ fn service_group(
         |operation: &DeployOperation| TaskKind::of(operation) == TaskKind::Unroute;
     let publish = service.is_some()
         && indexed()
-            .any(|(_, operation)| starts_container(operation) || rollout_removal(operation));
+            .any(|(_, operation)| creates_container(operation) || rollout_removal(operation));
     let rolling = indexed().any(|(_, operation)| {
         operation
             .spec()
@@ -346,7 +346,7 @@ fn service_group(
     for (index, operation) in indexed() {
         if publish && rollout_removal(operation) {
             removals.push(Stage::Serial(index));
-        } else if starts_container(operation) {
+        } else if creates_container(operation) {
             starts.push(index);
         } else {
             flush(&mut steps, &mut starts);
