@@ -96,6 +96,7 @@ restart_policy! {
     CopyLifecycle {
         wait fn service_containers(&self, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
         wait fn listed_copies(&self, service: &QualifiedService) -> Result<Listed, RpcError>;
+        wait fn target_copies(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
         once("a failed read leaves the gen to the live answers") fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
         wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
         wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;

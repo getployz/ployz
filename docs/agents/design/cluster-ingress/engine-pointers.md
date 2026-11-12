@@ -28,7 +28,7 @@ Files:
 - `crates/ployzd/src/ingress/caddy.rs:233-300` `render_caddyfile` adds the `http://:8480` site block with `bind 127.0.0.1 ::1`, plus the scoped `servers :8480` trust (point 5). The verify handlers answer with `Ployz-Door: tunnel` (`verify_handle` :486).
 - `crates/ployz/src/ingress.rs:32-60,344-396`. `service_spec`, `IngressImage::{Keep,Latest,Given}` and `desired` collapse, since the daemon picks the image. `crates/ployz/src/ingress/caddy.rs` (`latest_image`, `pinned_image`, the `--ingress-image` parse) is deleted, along with its CLI flag and docs. `follow_roles` (:67) and `slot_repairs` (:209) must deploy two slots, holder before Caddy.
 - `crates/ployz/src/deploy/apply.rs:17` `apply_requested` handles one spec, so ordering holder→Caddy needs either two calls or a single reserved route (see E2: `SetIngressDoors` could own both from E1 on).
-- `retire_ingress_proxy` in `crates/ployz/src/drain/retirement.rs` stops Caddy, then the holder. `global_catch_up.rs:511` `is_proxy` covers the holder.
+- `retire_ingress_proxy` in `crates/ployz/src/global_slot/lifecycle.rs` stops Caddy, then the holder. `global_catch_up.rs:511` `is_proxy` covers the holder.
 - `crates/ployzd/src/certificates.rs` (point 4) can land in E1 or E2.
 
 Nearest tests:

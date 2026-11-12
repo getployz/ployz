@@ -55,10 +55,10 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
     let unlisted = machine('e', "unlisted");
     for failed in [true, false] {
         let mut client = fake(&joiner, Vec::new());
-        client.names = vec![
+        client.names = ServerNames::listing([
             (joiner.id, joiner.name.clone()),
             (peer.id, peer.name.clone()),
-        ];
+        ]);
         if failed {
             client.failures = vec![ployz_core::MachineFailure {
                 machine_id: peer.id,
@@ -109,7 +109,8 @@ async fn unreadable_answer_asks_to_update_ployz_not_connectivity() {
     ));
     for omitted in [false, true] {
         let mut client = fake(&joiner, Vec::new());
-        client.names = vec![(newer.id, newer.name.clone()), (down.id, down.name.clone())];
+        client.names =
+            ServerNames::listing([(newer.id, newer.name.clone()), (down.id, down.name.clone())]);
         client.failures = vec![ployz_core::MachineFailure {
             machine_id: newer.id,
             error: unreadable.clone(),
@@ -137,11 +138,11 @@ async fn only_omissions_that_are_not_unarrived_block_catch_up() {
     let peer = machine('f', "peer");
     let claimed = machine('e', "claimed");
     let mut client = fake(&joiner, Vec::new());
-    client.names = vec![
+    client.names = ServerNames::listing([
         (peer.id, peer.name.clone()),
         (claimed.id, claimed.name.clone()),
-    ];
-    client.unarrived = vec![(claimed.id, claimed.name.clone())];
+    ]);
+    client.unarrived = ServerNames::listing([(claimed.id, claimed.name.clone())]);
     client.omissions = vec![claimed.id];
     catch_up(&mut client, &joiner).await.unwrap();
 
@@ -1119,8 +1120,8 @@ struct FakeCatchUpClient {
     remove_step: fn() -> Removal,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
-    names: crate::drain::retirement::Names,
-    unarrived: crate::drain::retirement::Names,
+    names: ServerNames,
+    unarrived: ServerNames,
     declared: Option<ployz_core::IngressDoors>,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
@@ -1147,8 +1148,8 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         remove_step: || Removal::Removed,
         failures: Vec::new(),
         omissions: Vec::new(),
-        names: Vec::new(),
-        unarrived: Vec::new(),
+        names: ServerNames::default(),
+        unarrived: ServerNames::default(),
         declared: None,
         relisted: None,
         listings: 0,
@@ -1207,33 +1208,12 @@ fn flatten(services: &[ServiceObservation]) -> Vec<ContainerObservation> {
         .collect()
 }
 
-impl CatchUpClient for FakeCatchUpClient {
-    async fn live_services(&mut self) -> Result<Observed, Failure> {
-        self.listings += 1;
-        let (services, failures, omissions) = match &self.relisted {
-            Some(relisted) if self.listings > 1 => (relisted, Vec::new(), Vec::new()),
-            _ => (
-                &self.services,
-                self.failures.clone(),
-                self.omissions.clone(),
-            ),
-        };
-        let live = LiveServices {
-            containers: ployz_core::PartialResult {
-                successes: vec![ployz_core::MachineSuccess {
-                    machine_id: self.machine_id,
-                    value: flatten(services),
-                }],
-                failures,
-                omissions,
-            },
-        };
-        Ok(Observed {
-            live,
-            names: self.names.clone(),
-            unarrived: self.unarrived.clone(),
-            declared: self.declared.clone(),
-        })
+impl SlotIo for FakeCatchUpClient {
+    async fn list_target(
+        &mut self,
+        _machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        panic!("orchestration delegates listing to run_slot")
     }
 
     async fn bridge_capacity(
@@ -1245,12 +1225,60 @@ impl CatchUpClient for FakeCatchUpClient {
 
     async fn retire_if_ineligible(
         &mut self,
-        machine_id: &MachineId,
+        _machine_id: &MachineId,
         _new: &NewContainer,
         _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<bool, RpcError> {
-        assert_eq!(machine_id, &self.machine_id);
-        Ok(matches!(self.run_result, Ok(None)))
+        panic!("orchestration delegates eligibility to run_slot")
+    }
+
+    async fn retire_copy(
+        &mut self,
+        copy: &Copy,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Rotated, RpcError> {
+        self.retired.push(copy.clone());
+        Ok((self.retire_step)())
+    }
+
+    async fn ensure_pending(
+        &mut self,
+        _target: &MachineTarget,
+        _container: RunTarget,
+    ) -> Result<ContainerNow, RpcError> {
+        panic!("orchestration delegates creation to run_slot")
+    }
+}
+
+impl CatchUpClient for FakeCatchUpClient {
+    async fn live_services(&mut self) -> Result<Observed, Failure> {
+        self.listings += 1;
+        let (services, failures, omissions) = match &self.relisted {
+            Some(relisted) if self.listings > 1 => (relisted, Vec::new(), Vec::new()),
+            _ => (
+                &self.services,
+                self.failures.clone(),
+                self.omissions.clone(),
+            ),
+        };
+        let services = LiveServices {
+            containers: ployz_core::PartialResult {
+                successes: vec![ployz_core::MachineSuccess {
+                    machine_id: self.machine_id,
+                    value: flatten(services),
+                }],
+                failures,
+                omissions,
+            },
+        };
+        Ok(Observed {
+            live: Live {
+                services,
+                names: self.names.clone(),
+            },
+            unarrived: self.unarrived.clone(),
+            declared: self.declared.clone(),
+        })
     }
 
     async fn run_slot(
@@ -1307,15 +1335,6 @@ impl CatchUpClient for FakeCatchUpClient {
                 capability: None,
             }),
         })
-    }
-
-    async fn retire_copy(
-        &mut self,
-        copy: &Copy,
-        _cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Rotated, RpcError> {
-        self.retired.push(copy.clone());
-        Ok((self.retire_step)())
     }
 
     async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
@@ -1396,6 +1415,136 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
     });
     let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert!(message(error, &joiner).contains("creation key conflict"));
+}
+
+/// A joiner as `place_slot` sees it: what it lists, and what it was asked.
+struct FakeSlot {
+    eligible: bool,
+    listing: Vec<ContainerObservation>,
+    retired: Vec<ContainerId>,
+    ensured: Vec<&'static str>,
+}
+
+impl FakeSlot {
+    fn listing(listing: Vec<ContainerObservation>) -> Self {
+        Self {
+            eligible: true,
+            listing,
+            retired: Vec::new(),
+            ensured: Vec::new(),
+        }
+    }
+}
+
+impl SlotIo for FakeSlot {
+    async fn list_target(
+        &mut self,
+        _machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        Ok(self.listing.clone())
+    }
+
+    async fn bridge_capacity(
+        &mut self,
+        _machine_id: &MachineId,
+    ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
+        Ok(Some(BridgeEndpointCapacity::new(10, 0)))
+    }
+
+    async fn retire_if_ineligible(
+        &mut self,
+        _machine_id: &MachineId,
+        _new: &NewContainer,
+        _cancel: &CancellationToken,
+    ) -> Result<bool, RpcError> {
+        Ok(!self.eligible)
+    }
+
+    async fn retire_copy(
+        &mut self,
+        copy: &Copy,
+        _cancel: &CancellationToken,
+    ) -> Result<Rotated, RpcError> {
+        self.retired.push(copy.container_id);
+        Ok(Rotated::Done)
+    }
+
+    async fn ensure_pending(
+        &mut self,
+        _target: &MachineTarget,
+        container: RunTarget,
+    ) -> Result<ContainerNow, RpcError> {
+        self.ensured.push(match container {
+            RunTarget::New(_) => "new",
+            RunTarget::Existing(_) => "existing",
+        });
+        Ok(ContainerNow::Absent {
+            of: ployz_core::ContainerLocator::Id(container_id('f')),
+        })
+    }
+}
+
+async fn placed(
+    slot: &mut FakeSlot,
+    joiner: &Machine,
+    origin: &ContainerObservation,
+) -> Result<Option<Copy>, RpcError> {
+    place_slot(
+        slot,
+        &joiner.id,
+        new_copy(origin),
+        &CancellationToken::new(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_slot_the_joiner_rules_out_is_retired_and_creates_nothing() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let mut slot = FakeSlot::listing(Vec::new());
+    slot.eligible = false;
+    assert!(placed(&mut slot, &joiner, &origin).await.unwrap().is_none());
+    assert!(slot.ensured.is_empty());
+}
+
+#[tokio::test]
+async fn a_slot_with_no_copy_here_creates_one() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let mut slot = FakeSlot::listing(Vec::new());
+    placed(&mut slot, &joiner, &origin).await.unwrap();
+    assert_eq!(slot.ensured, ["new"]);
+}
+
+#[tokio::test]
+async fn a_slot_whose_copy_runs_here_is_adopted_not_recreated() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let here = running_on(&joiner, 'b');
+    let mut slot = FakeSlot::listing(vec![here.clone()]);
+    let copy = placed(&mut slot, &joiner, &origin).await.unwrap().unwrap();
+    assert_eq!(copy.container_id, here.container_id);
+    assert_eq!(slot.ensured, ["existing"]);
+}
+
+#[tokio::test]
+async fn an_out_copy_goes_before_a_new_one_is_made_and_a_held_one_refuses() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let here = running_on(&joiner, 'b');
+
+    let mut slot = FakeSlot::listing(vec![rotated(here.clone(), CopyRotation::Out)]);
+    placed(&mut slot, &joiner, &origin).await.unwrap();
+    assert_eq!(slot.retired, [here.container_id]);
+    assert_eq!(slot.ensured, ["new"]);
+
+    let held = CopyRotation::Held(DeploymentLogId::parse("dep-a").unwrap());
+    let mut slot = FakeSlot::listing(vec![rotated(here.clone(), held)]);
+    let error = placed(&mut slot, &joiner, &origin).await.unwrap_err();
+    assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
+    assert!(error.message.contains("stopped on this Machine by a user"));
+    assert!(slot.ensured.is_empty() && slot.retired.is_empty());
 }
 
 #[path = "global_catch_up_rpc_tests.rs"]

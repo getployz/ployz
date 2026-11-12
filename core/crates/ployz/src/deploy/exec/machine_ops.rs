@@ -85,6 +85,17 @@ pub(crate) trait CopyLifecycle: Session {
             unanswered: Vec::new(),
         })
     }
+    /// `service`'s copies on `machine_id`, listed by that Machine alone, so no other
+    /// Machine's silence fails it. The default asks every Machine and keeps its copies.
+    async fn target_copies(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        let mut copies = self.service_containers(service).await?;
+        copies.retain(|copy| copy.machine_id == *machine_id);
+        Ok(copies)
+    }
     /// Every Container row in the entry Machine's store, which keeps the rows of
     /// a Machine that does not answer.
     async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
@@ -257,6 +268,34 @@ impl CopyLifecycle for Client {
             })
             .collect();
         Ok(Listed { copies, unanswered })
+    }
+
+    async fn target_copies(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        let listed = self
+            .clone()
+            .call::<op::ListContainers>(
+                ListContainersRequest {
+                    environment: EnvironmentValues::Redacted,
+                },
+                Call::read()
+                    .to(&MachineTarget::from(machine_id))
+                    .budget(crate::connect::target_read_timeout()),
+            )
+            .await
+            .map_err(crate::connect::rpc_error)?
+            .containers;
+        Ok(listed
+            .into_iter()
+            .filter(|observed| {
+                observed.machine_id == *machine_id
+                    && observed.kind == ContainerKind::ServiceContainer
+                    && observed.identity() == *service
+            })
+            .collect())
     }
 
     async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {

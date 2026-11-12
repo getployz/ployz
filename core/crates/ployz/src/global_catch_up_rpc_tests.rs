@@ -159,7 +159,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                 .await
                 .is_ok()
             } else {
-                CatchUpClient::bridge_capacity(&mut client, &target.id)
+                SlotIo::bridge_capacity(&mut client, &target.id)
                     .await
                     .is_ok()
             };
@@ -1176,7 +1176,8 @@ async fn catch_up_keeps_a_sealed_value_off_a_machine_that_cannot_open_it() {
     } = crate::sealed_compat::tests::fleet(&[ployz_core::MANAGEMENT_SCOPE_CAPABILITY]).await;
     let new = new_container("global:test", crate::sealed_compat::tests::spec(true));
 
-    let error = ensure_retried(&mut client, &target, RunTarget::New(new))
+    let error = client
+        .ensure_pending(&target, RunTarget::New(new))
         .await
         .unwrap_err();
 
