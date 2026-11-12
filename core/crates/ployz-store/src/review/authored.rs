@@ -294,15 +294,19 @@ struct Plan {
 /// The saved versions a plan goes from and to.
 type Sides<'a> = (&'a SavedEnvironmentIntent, &'a SavedEnvironmentIntent);
 
-macro_rules! field {
-    ($effects:expr, $id:expr, $before:expr, $after:expr, $variant:ident) => {
-        if let Some(delta) = Delta::between($before, $after) {
-            $effects.push(Effect::Service {
-                id: $id.to_owned(),
-                field: ServiceField::$variant(delta),
-            });
-        }
-    };
+fn push_field<T: Clone + PartialEq>(
+    effects: &mut Vec<Effect>,
+    id: &str,
+    before: &T,
+    after: &T,
+    wrap: fn(Delta<T>) -> ServiceField,
+) {
+    if let Some(delta) = Delta::between(before, after) {
+        effects.push(Effect::Service {
+            id: id.to_owned(),
+            field: wrap(delta),
+        });
+    }
 }
 
 impl Plan {
@@ -678,7 +682,7 @@ fn service_changes(
         *lineage_id == before.lineage_id,
         "History cannot change a Service's stable lineage",
     )?;
-    field!(effects, id, &before.slug, slug, Name);
+    push_field(effects, id, &before.slug, slug, ServiceField::Name);
     let AuthoredServiceConfig {
         version,
         source,
@@ -702,85 +706,109 @@ fn service_changes(
         "History cannot change a Service's setting schema",
     )?;
     source_changes(effects, id, &before.config.source, source);
-    field!(
+    push_field(
         effects,
         id,
         &before.config.pre_deploy_command,
         pre_deploy_command,
-        PreDeployCommand
+        ServiceField::PreDeployCommand,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.start_command,
         start_command,
-        StartCommand
+        ServiceField::StartCommand,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.healthcheck,
         healthcheck,
-        Healthcheck
+        ServiceField::Healthcheck,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.restart_policy,
         restart_policy,
-        RestartPolicy
+        ServiceField::RestartPolicy,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.max_retries,
         max_retries,
-        MaxRetries
+        ServiceField::MaxRetries,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.update_order,
         update_order,
-        UpdateOrder
+        ServiceField::UpdateOrder,
     );
-    field!(effects, id, &before.config.replicas, replicas, Replicas);
-    field!(effects, id, &before.config.cpu_limit, cpu_limit, CpuLimit);
-    field!(effects, id, &before.config.mem_limit, mem_limit, MemLimit);
-    field!(
+    push_field(
+        effects,
+        id,
+        &before.config.replicas,
+        replicas,
+        ServiceField::Replicas,
+    );
+    push_field(
+        effects,
+        id,
+        &before.config.cpu_limit,
+        cpu_limit,
+        ServiceField::CpuLimit,
+    );
+    push_field(
+        effects,
+        id,
+        &before.config.mem_limit,
+        mem_limit,
+        ServiceField::MemLimit,
+    );
+    push_field(
         effects,
         id,
         &before.config.private_dns,
         private_dns,
-        PrivateDns
+        ServiceField::PrivateDns,
     );
     let ServiceBuildConfig {
         build_method,
         dockerfile_path,
         command,
     } = build;
-    field!(
+    push_field(
         effects,
         id,
         &before.config.build.build_method,
         build_method,
-        BuildMethod
+        ServiceField::BuildMethod,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.build.dockerfile_path,
         dockerfile_path,
-        DockerfilePath
+        ServiceField::DockerfilePath,
     );
-    field!(
+    push_field(
         effects,
         id,
         &before.config.build.command,
         command,
-        BuildCommand
+        ServiceField::BuildCommand,
     );
-    field!(effects, id, &before.config.template, template, Template);
+    push_field(
+        effects,
+        id,
+        &before.config.template,
+        template,
+        ServiceField::Template,
+    );
     for route in keys(&before.config.routes, routes, |route| &route.id) {
         if let Some(delta) = Delta::between(
             &before
@@ -804,12 +832,12 @@ fn service_changes(
             });
         }
     }
-    field!(
+    push_field(
         effects,
         id,
         &before.config.managed_hostnames,
         managed_hostnames,
-        ManagedHostnames
+        ServiceField::ManagedHostnames,
     );
     // By key, so a History page over a large Environment stays linear in its variables.
     fn by_key(variables: &[SavedVariableIntent]) -> BTreeMap<&str, &SavedVariableIntent> {
@@ -978,10 +1006,10 @@ fn source_changes(
                     field: ServiceField::GitSource(delta),
                 });
             }
-            field!(effects, id, &bb, &ab, Branch);
+            push_field(effects, id, &bb, &ab, ServiceField::Branch);
         }
         _ => {
-            field!(effects, id, before, after, Source);
+            push_field(effects, id, before, after, ServiceField::Source);
         }
     }
 }
@@ -1227,10 +1255,7 @@ impl Effect {
             && id == other_id
         {
             let source = |field: &ServiceField| {
-                matches!(
-                    field,
-                    ServiceField::Source(_) | ServiceField::GitSource(_) | ServiceField::Branch(_)
-                )
+                matches!(field.setting(), Some(Setting::Source | Setting::Branch))
             };
             if source(field) && source(other_field) {
                 return true;
@@ -2020,47 +2045,68 @@ impl Plan {
     }
 }
 impl ServiceField {
-    fn render(&self) -> (&'static str, Option<At>, Value, Value) {
-        macro_rules! setting {
-            ($path:literal, $setting:ident, $delta:expr) => {
-                (
-                    $path,
-                    Some(At::Setting(Setting::$setting)),
-                    json!($delta.before),
-                    json!($delta.after),
-                )
-            };
-        }
+    /// The Service Setting this field is a change of; the Service's name and Template
+    /// are not Settings.
+    const fn setting(&self) -> Option<Setting> {
         match self {
-            Self::Name(delta) => ("name", None, json!(delta.before), json!(delta.after)),
-            Self::Source(delta) => (
-                "source",
-                Some(At::Setting(Setting::Source)),
-                public_source(&delta.before),
-                public_source(&delta.after),
+            Self::Name(_) | Self::Template(_) => None,
+            Self::Source(_) | Self::GitSource(_) => Some(Setting::Source),
+            Self::Branch(_) => Some(Setting::Branch),
+            Self::PreDeployCommand(_) => Some(Setting::PreDeployCommand),
+            Self::StartCommand(_) => Some(Setting::StartCommand),
+            Self::Healthcheck(_) => Some(Setting::Healthcheck),
+            Self::RestartPolicy(_) => Some(Setting::RestartPolicy),
+            Self::MaxRetries(_) => Some(Setting::MaxRetries),
+            Self::UpdateOrder(_) => Some(Setting::UpdateOrder),
+            Self::Replicas(_) => Some(Setting::Replicas),
+            Self::CpuLimit(_) => Some(Setting::CpuLimit),
+            Self::MemLimit(_) => Some(Setting::MemLimit),
+            Self::PrivateDns(_) => Some(Setting::PrivateDns),
+            Self::BuildMethod(_) => Some(Setting::BuildMethod),
+            Self::DockerfilePath(_) => Some(Setting::DockerfilePath),
+            Self::BuildCommand(_) => Some(Setting::BuildCommand),
+            Self::ManagedHostnames(_) => Some(Setting::ManagedHostnames),
+        }
+    }
+    fn render(&self) -> (&'static str, Option<At>, Value, Value) {
+        let (before, after) = match self {
+            Self::Name(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Source(delta) => (public_source(&delta.before), public_source(&delta.after)),
+            Self::GitSource(delta) => (delta.before.shown(), delta.after.shown()),
+            Self::ManagedHostnames(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Branch(delta) => (json!(delta.before), json!(delta.after)),
+            Self::PreDeployCommand(delta) => (json!(delta.before), json!(delta.after)),
+            Self::StartCommand(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Healthcheck(delta) => (json!(delta.before), json!(delta.after)),
+            Self::RestartPolicy(delta) => (json!(delta.before), json!(delta.after)),
+            Self::MaxRetries(delta) => (json!(delta.before), json!(delta.after)),
+            Self::UpdateOrder(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Replicas(delta) => (json!(delta.before), json!(delta.after)),
+            Self::CpuLimit(delta) => (json!(delta.before), json!(delta.after)),
+            Self::MemLimit(delta) => (json!(delta.before), json!(delta.after)),
+            Self::PrivateDns(delta) => (json!(delta.before), json!(delta.after)),
+            Self::BuildMethod(delta) => (json!(delta.before), json!(delta.after)),
+            Self::DockerfilePath(delta) => (json!(delta.before), json!(delta.after)),
+            Self::BuildCommand(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Template(delta) => (json!(delta.before), json!(delta.after)),
+        };
+        match self.setting() {
+            Some(setting) => (
+                ServiceSetting::of(setting).map_or(setting.path(), ServiceSetting::name),
+                Some(At::Setting(setting)),
+                before,
+                after,
             ),
-            Self::GitSource(delta) => (
-                "source",
-                Some(At::Setting(Setting::Source)),
-                delta.before.shown(),
-                delta.after.shown(),
+            None => (
+                if matches!(self, Self::Template(_)) {
+                    "template"
+                } else {
+                    "name"
+                },
+                None,
+                before,
+                after,
             ),
-            Self::ManagedHostnames(delta) => setting!("managedHostnames", ManagedHostnames, delta),
-            Self::Branch(delta) => setting!("branch", Branch, delta),
-            Self::PreDeployCommand(delta) => setting!("preDeployCommand", PreDeployCommand, delta),
-            Self::StartCommand(delta) => setting!("startCommand", StartCommand, delta),
-            Self::Healthcheck(delta) => setting!("healthcheck", Healthcheck, delta),
-            Self::RestartPolicy(delta) => setting!("restartPolicy", RestartPolicy, delta),
-            Self::MaxRetries(delta) => setting!("maxRetries", MaxRetries, delta),
-            Self::UpdateOrder(delta) => setting!("updateOrder", UpdateOrder, delta),
-            Self::Replicas(delta) => setting!("replicas", Replicas, delta),
-            Self::CpuLimit(delta) => setting!("cpuLimit", CpuLimit, delta),
-            Self::MemLimit(delta) => setting!("memLimit", MemLimit, delta),
-            Self::PrivateDns(delta) => setting!("privateDns", PrivateDns, delta),
-            Self::BuildMethod(delta) => setting!("buildMethod", BuildMethod, delta),
-            Self::DockerfilePath(delta) => setting!("dockerfilePath", DockerfilePath, delta),
-            Self::BuildCommand(delta) => setting!("buildCommand", BuildCommand, delta),
-            Self::Template(delta) => ("template", None, json!(delta.before), json!(delta.after)),
         }
     }
 }
@@ -2812,4 +2858,494 @@ fn lifecycle_rows(
         }
     }
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::config::{ServiceGitAccess, ServiceImageCredentials};
+    use ployz_core::{RestartPolicy, ServiceTemplateId};
+    use std::num::NonZeroU32;
+
+    fn delta<T>(before: T, after: T) -> Delta<T> {
+        Delta { before, after }
+    }
+    fn dns(name: &str) -> ServiceName {
+        ServiceName::parse(name).unwrap()
+    }
+    fn git(root_dir: &str, branch: &str) -> ServiceSource {
+        ServiceSource::Git {
+            version: 2,
+            repository: "acme/web".to_owned(),
+            repository_id: 7,
+            access: ServiceGitAccess::Public,
+            root_dir: root_dir.to_owned(),
+            branch: ServiceGitBranch::Connected {
+                name: branch.to_owned(),
+            },
+        }
+    }
+    fn service(source: ServiceSource) -> SavedServiceIntent {
+        SavedServiceIntent {
+            id: "svc".to_owned(),
+            lineage_id: "lineage".to_owned(),
+            slug: "web".to_owned(),
+            config: AuthoredServiceConfig {
+                version: 2,
+                source,
+                pre_deploy_command: Some("migrate".to_owned()),
+                start_command: Some("serve".to_owned()),
+                healthcheck: ServiceHealthcheck::None,
+                restart_policy: ServiceRestartPolicy(RestartPolicy::UnlessStopped),
+                max_retries: 10,
+                update_order: None,
+                replicas: 1,
+                cpu_limit: None,
+                mem_limit: None,
+                private_dns: dns("web"),
+                routes: Vec::new(),
+                managed_hostnames: Vec::new(),
+                build: ServiceBuildConfig::default(),
+                template: None,
+            },
+            variables: Vec::new(),
+            volume_attachments: Vec::new(),
+            config_attachments: Vec::new(),
+        }
+    }
+
+    /// One service field with what it names and shows, and what reversing it puts back
+    /// into a Service whose document is otherwise `service(git("/", "main"))`.
+    struct Case {
+        field: ServiceField,
+        path: &'static str,
+        at: Option<Setting>,
+        before: Value,
+        after: Value,
+        shown_before: Value,
+        shown_after: Value,
+        restored: Vec<(&'static str, Value)>,
+    }
+    fn case(
+        field: ServiceField,
+        path: &'static str,
+        at: Option<Setting>,
+        (before, after): (Value, Value),
+        restored: Vec<(&'static str, Value)>,
+    ) -> Case {
+        let (shown_before, shown_after) = (
+            public_setting(path, at.map(At::Setting).as_ref(), before.clone()),
+            public_setting(path, at.map(At::Setting).as_ref(), after.clone()),
+        );
+        Case {
+            field,
+            path,
+            at,
+            before,
+            after,
+            shown_before,
+            shown_after,
+            restored,
+        }
+    }
+    fn cases() -> Vec<Case> {
+        let image = ServiceSource::Image {
+            version: 1,
+            image: "nginx".to_owned(),
+            credentials: ServiceImageCredentials::Configured {
+                credential_id: "cred".to_owned(),
+            },
+        };
+        let disconnected = ServiceGitBranch::Disconnected {
+            previous_name: Some("dev".to_owned()),
+        };
+        let selection = |root_dir: &str| GitSelection {
+            version: 2,
+            repository: "acme/lib".to_owned(),
+            repository_id: 9,
+            access: ServiceGitAccess::Public,
+            root_dir: root_dir.to_owned(),
+        };
+        let template = ServiceTemplate {
+            id: ServiceTemplateId::parse("redis").unwrap(),
+            version: NonZeroU32::new(3).unwrap(),
+        };
+        let http = ServiceHealthcheck::Http {
+            path: "/up".to_owned(),
+            timeout_seconds: 5,
+        };
+        let hostname = ServiceManagedHostname {
+            prefix: "app".to_owned(),
+            target_port: Some(8080),
+        };
+        vec![
+            case(
+                ServiceField::Name(delta("api".to_owned(), "web".to_owned())),
+                "name",
+                None,
+                (json!("api"), json!("web")),
+                vec![("/slug", json!("api"))],
+            ),
+            case(
+                ServiceField::Source(delta(image.clone(), git("/", "main"))),
+                "source",
+                Some(Setting::Source),
+                (
+                    json!({"type":"image","image":"nginx","credentials":{"type":"configured","credentialId":"cred"}}),
+                    json!({"type":"git","repository":"acme/web","rootDir":"/","branch":{"type":"connected","name":"main"}}),
+                ),
+                vec![(
+                    "/config/source",
+                    json!({"type":"image","version":1,"image":"nginx","credentials":{"type":"configured","credentialId":"cred"}}),
+                )],
+            ),
+            case(
+                ServiceField::GitSource(delta(selection("/lib"), selection("/"))),
+                "source",
+                Some(Setting::Source),
+                (
+                    json!({"type":"git","repository":"acme/lib","rootDir":"/lib"}),
+                    json!({"type":"git","repository":"acme/lib","rootDir":"/"}),
+                ),
+                vec![
+                    ("/config/source/repository", json!("acme/lib")),
+                    ("/config/source/repositoryId", json!(9)),
+                    ("/config/source/rootDir", json!("/lib")),
+                ],
+            ),
+            case(
+                ServiceField::Branch(delta(
+                    disconnected.clone(),
+                    ServiceGitBranch::Connected {
+                        name: "main".to_owned(),
+                    },
+                )),
+                "branch",
+                Some(Setting::Branch),
+                (
+                    json!({"type":"disconnected","previousName":"dev"}),
+                    json!({"type":"connected","name":"main"}),
+                ),
+                vec![(
+                    "/config/source/branch",
+                    json!({"type":"disconnected","previousName":"dev"}),
+                )],
+            ),
+            case(
+                ServiceField::PreDeployCommand(delta(None, Some("migrate".to_owned()))),
+                "preDeployCommand",
+                Some(Setting::PreDeployCommand),
+                (json!(null), json!("migrate")),
+                vec![("/config/preDeployCommand", json!(null))],
+            ),
+            case(
+                ServiceField::StartCommand(delta(Some("old".to_owned()), Some("serve".to_owned()))),
+                "startCommand",
+                Some(Setting::StartCommand),
+                (json!("old"), json!("serve")),
+                vec![("/config/startCommand", json!("old"))],
+            ),
+            case(
+                ServiceField::Healthcheck(delta(http, ServiceHealthcheck::None)),
+                "healthcheck",
+                Some(Setting::Healthcheck),
+                (
+                    json!({"type":"http","path":"/up","timeoutSeconds":5}),
+                    json!({"type":"none"}),
+                ),
+                vec![(
+                    "/config/healthcheck",
+                    json!({"type":"http","path":"/up","timeoutSeconds":5}),
+                )],
+            ),
+            case(
+                ServiceField::RestartPolicy(delta(
+                    ServiceRestartPolicy(RestartPolicy::Always),
+                    ServiceRestartPolicy(RestartPolicy::UnlessStopped),
+                )),
+                "restartPolicy",
+                Some(Setting::RestartPolicy),
+                (json!("always"), json!("unless-stopped")),
+                vec![("/config/restartPolicy", json!("always"))],
+            ),
+            case(
+                ServiceField::MaxRetries(delta(3, 10)),
+                "maxRetries",
+                Some(Setting::MaxRetries),
+                (json!(3), json!(10)),
+                vec![("/config/maxRetries", json!(3))],
+            ),
+            case(
+                ServiceField::UpdateOrder(delta(
+                    Some(ServiceUpdateOrder::Rolling),
+                    Some(ServiceUpdateOrder::StopFirst),
+                )),
+                "updateOrder",
+                Some(Setting::UpdateOrder),
+                (json!("rolling"), json!("stop-first")),
+                vec![("/config/updateOrder", json!("rolling"))],
+            ),
+            case(
+                ServiceField::Replicas(delta(3, 1)),
+                "replicas",
+                Some(Setting::Replicas),
+                (json!(3), json!(1)),
+                vec![("/config/replicas", json!(3))],
+            ),
+            case(
+                ServiceField::CpuLimit(delta(Some(0.5), None)),
+                "cpuLimit",
+                Some(Setting::CpuLimit),
+                (json!(0.5), json!(null)),
+                vec![("/config/cpuLimit", json!(0.5))],
+            ),
+            case(
+                ServiceField::MemLimit(delta(None, Some(256.0))),
+                "memLimit",
+                Some(Setting::MemLimit),
+                (json!(null), json!(256.0)),
+                vec![("/config/memLimit", json!(null))],
+            ),
+            case(
+                ServiceField::PrivateDns(delta(dns("api"), dns("web"))),
+                "privateDns",
+                Some(Setting::PrivateDns),
+                (json!("api"), json!("web")),
+                vec![("/config/privateDns", json!("api"))],
+            ),
+            case(
+                ServiceField::BuildMethod(delta(BuildMethod::Dockerfile, BuildMethod::Railpack)),
+                "buildMethod",
+                Some(Setting::BuildMethod),
+                (json!("dockerfile"), json!("railpack")),
+                vec![("/config/build/buildMethod", json!("dockerfile"))],
+            ),
+            case(
+                ServiceField::DockerfilePath(delta(Some("Dockerfile".to_owned()), None)),
+                "dockerfilePath",
+                Some(Setting::DockerfilePath),
+                (json!("Dockerfile"), json!(null)),
+                vec![("/config/build/dockerfilePath", json!("Dockerfile"))],
+            ),
+            case(
+                ServiceField::BuildCommand(delta(None, Some("make".to_owned()))),
+                "buildCommand",
+                Some(Setting::BuildCommand),
+                (json!(null), json!("make")),
+                vec![("/config/build/command", json!(null))],
+            ),
+            case(
+                ServiceField::Template(delta(Some(template), None)),
+                "template",
+                None,
+                (json!({"id":"redis","version":3}), json!(null)),
+                vec![("/config/template", json!({"id":"redis","version":3}))],
+            ),
+            case(
+                ServiceField::ManagedHostnames(delta(vec![hostname], Vec::new())),
+                "managedHostnames",
+                Some(Setting::ManagedHostnames),
+                (json!([{"prefix":"app","targetPort":8080}]), json!([])),
+                vec![(
+                    "/config/managedHostnames",
+                    json!([{"prefix":"app","targetPort":8080}]),
+                )],
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_service_field_names_its_row_and_shows_its_values() {
+        let cases = cases();
+        assert_eq!(cases.len(), 19);
+        for case in &cases {
+            let (path, at, before, after) = case.field.render();
+            assert_eq!(path, case.path);
+            assert_eq!(at, case.at.map(At::Setting), "{path}");
+            assert_eq!(case.field.setting(), case.at, "{path}");
+            assert_eq!(
+                (before, after),
+                (case.before.clone(), case.after.clone()),
+                "{path}"
+            );
+        }
+        let shown: Vec<_> = cases
+            .iter()
+            .map(|case| (case.path, &case.shown_before, &case.shown_after))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("name", &json!("api"), &json!("web")),
+                (
+                    "source",
+                    &json!({"type":"image","image":"nginx","credentials":{"type":"configured","credentialId":"cred"}}),
+                    &json!({"type":"git","repository":"acme/web","rootDir":"/","branch":{"type":"connected","name":"main"}}),
+                ),
+                (
+                    "source",
+                    &json!({"type":"git","repository":"acme/lib","rootDir":"/lib"}),
+                    &json!({"type":"git","repository":"acme/lib","rootDir":"/"}),
+                ),
+                ("branch", &json!("dev"), &json!("main")),
+                ("preDeployCommand", &json!(null), &json!("migrate")),
+                ("startCommand", &json!("old"), &json!("serve")),
+                (
+                    "healthcheck",
+                    &json!({"path":"/up","timeoutSeconds":5}),
+                    &json!(null),
+                ),
+                ("restartPolicy", &json!("always"), &json!("unless-stopped")),
+                ("maxRetries", &json!(3), &json!(10)),
+                ("updateOrder", &json!("rolling"), &json!("stop-first")),
+                ("replicas", &json!(3), &json!(1)),
+                ("cpuLimit", &json!(0.5), &json!(null)),
+                ("memLimit", &json!(null), &json!(256.0)),
+                ("privateDns", &json!("api"), &json!("web")),
+                ("buildMethod", &json!("dockerfile"), &json!("railpack")),
+                ("dockerfilePath", &json!("Dockerfile"), &json!(null)),
+                ("buildCommand", &json!(null), &json!("make")),
+                (
+                    "template",
+                    &json!({"id":"redis","version":3}),
+                    &json!(null),
+                ),
+                (
+                    "managedHostnames",
+                    &json!([{"prefix":"app","targetPort":8080}]),
+                    &json!([]),
+                ),
+            ]
+            .iter()
+            .map(|(path, before, after)| (*path, *before, *after))
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn every_setting_but_routes_has_a_service_field() {
+        let named: BTreeSet<Setting> = cases()
+            .iter()
+            .filter_map(|case| case.field.setting())
+            .collect();
+        let unnamed: Vec<Setting> = Setting::ALL
+            .into_iter()
+            .filter(|setting| !named.contains(setting))
+            .collect();
+        assert_eq!(unnamed, [Setting::Routes]);
+    }
+
+    #[test]
+    fn reversing_a_service_field_restores_only_what_it_changed() {
+        for case in cases() {
+            let mut intent = service(git("/", "main"));
+            let mut expected = serde_json::to_value(&intent).unwrap();
+            for (pointer, value) in &case.restored {
+                let (parent, key) = pointer.rsplit_once('/').unwrap();
+                expected
+                    .pointer_mut(parent)
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(key.to_owned(), value.clone());
+            }
+            case.field.reverse_into(&mut intent).unwrap();
+            assert_eq!(
+                serde_json::to_value(&intent).unwrap(),
+                expected,
+                "{}",
+                case.path
+            );
+        }
+    }
+
+    #[test]
+    fn reversing_a_git_field_on_another_source_is_a_conflict() {
+        let mut intent = service(ServiceSource::empty());
+        for field in [
+            ServiceField::Branch(delta(
+                ServiceGitBranch::Disconnected {
+                    previous_name: None,
+                },
+                ServiceGitBranch::Connected {
+                    name: "main".to_owned(),
+                },
+            )),
+            ServiceField::GitSource(delta(
+                GitSelection {
+                    version: 2,
+                    repository: "acme/lib".to_owned(),
+                    repository_id: 9,
+                    access: ServiceGitAccess::Public,
+                    root_dir: "/".to_owned(),
+                },
+                GitSelection {
+                    version: 2,
+                    repository: "acme/lib".to_owned(),
+                    repository_id: 9,
+                    access: ServiceGitAccess::Public,
+                    root_dir: "/lib".to_owned(),
+                },
+            )),
+        ] {
+            assert!(field.reverse_into(&mut intent).is_err());
+        }
+    }
+
+    #[test]
+    fn the_source_family_drags_each_other_and_nothing_else() {
+        let empty = SavedEnvironmentIntent {
+            version: 1,
+            environment_slug: "prod".to_owned(),
+            services: Vec::new(),
+            volumes: Vec::new(),
+            configs: Vec::new(),
+        };
+        let sides = (&empty, &empty);
+        let effect = |id: &str, field| Effect::Service {
+            id: id.to_owned(),
+            field,
+        };
+        let family = |field: &ServiceField| {
+            matches!(
+                field,
+                ServiceField::Source(_) | ServiceField::GitSource(_) | ServiceField::Branch(_)
+            )
+        };
+        let effects = |id: &str| -> Vec<(&'static str, bool, Effect)> {
+            cases()
+                .into_iter()
+                .map(|case| (case.path, family(&case.field), effect(id, case.field)))
+                .collect()
+        };
+        for (left_path, left_family, left) in effects("svc") {
+            for (right_path, right_family, right) in effects("svc") {
+                let drags = left.drags(&right, sides);
+                if left_family && right_family {
+                    assert!(drags, "{left_path} drags {right_path}");
+                } else if left_family != right_family {
+                    assert!(!drags, "{left_path} drags {right_path}");
+                }
+            }
+        }
+        let other_id = effect(
+            "one",
+            ServiceField::Source(delta(ServiceSource::empty(), git("/", "main"))),
+        )
+        .drags(
+            &effect(
+                "two",
+                ServiceField::Branch(delta(
+                    ServiceGitBranch::Disconnected {
+                        previous_name: None,
+                    },
+                    ServiceGitBranch::Connected {
+                        name: "main".to_owned(),
+                    },
+                )),
+            ),
+            sides,
+        );
+        assert!(!other_id);
+    }
 }
