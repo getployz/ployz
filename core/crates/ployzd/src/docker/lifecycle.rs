@@ -36,6 +36,14 @@ use super::{
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
+/// How a Container leaves through [`ContainerRuntime::retire`].
+pub(super) enum How {
+    /// A request to remove it, as asked.
+    Asked { remove_volumes: bool, force: bool },
+    /// The Machine is leaving: stopped, then removed with its anonymous volumes.
+    Departing,
+}
+
 /// The Container one creation landed on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ContainerCreated {
@@ -304,7 +312,7 @@ impl ContainerRuntime {
                 .put(&container_id, slot.as_ref(), spec)
                 .await
             {
-                self.force_remove_container(&container_id).await?;
+                self.remove_if_present(&container_id).await?;
                 return Err(error.into());
             }
             Ok(ContainerCreated {
@@ -352,17 +360,7 @@ impl ContainerRuntime {
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
         let name = &creation_name(&machine.id, namespace, &spec.name, kind, key);
-        let existing = match self.keyed_container(&machine.id, name, key).await {
-            Err(Error::SpecNotFound(container_id))
-                if self.half_made(operation, &container_id).await? =>
-            {
-                self.force_remove_container(&container_id).await?;
-                return Ok(None);
-            }
-            // A restore's Container now holds the records it took over.
-            Err(Error::SpecNotFound(_)) => self.keyed_container(&machine.id, name, key).await,
-            found => found,
-        }?;
+        let existing = self.resolve_slot(operation, &machine.id, name, key).await?;
         let Some(existing) = existing else {
             return Ok(None);
         };
@@ -386,7 +384,7 @@ impl ContainerRuntime {
         if !self.half_made(&mut operation, container_id).await? {
             return Ok(false);
         }
-        self.force_remove_container(container_id).await?;
+        self.remove_if_present(container_id).await?;
         Ok(true)
     }
 
@@ -455,20 +453,33 @@ impl ContainerRuntime {
         name: &str,
         key: &str,
     ) -> Result<Option<ContainerObservation>, Error> {
-        // Under the lock no create is between Docker's create and its spec's write. A
-        // create that ran while this waited may have replaced the Container, so the slot
-        // is read again.
+        // A create that ran while this waited may have replaced the Container, so the
+        // slot is read again under the lock.
         let mut operation = self.specs.config_operation().await;
+        self.resolve_slot(&mut operation, machine_id, name, key)
+            .await
+    }
+
+    /// The Container in the creation slot `name`, read under the config lock `operation`
+    /// holds, so no create is between Docker's create and its spec's write. A Container
+    /// with no spec is one of two things. A daemon killed before its spec's write left
+    /// it half made, and it is removed, so the slot reads empty and holds nothing that
+    /// keeps its Volumes in use; the create that follows makes it again. A restore
+    /// made it, and the records it took over are found now, so the slot is read again.
+    async fn resolve_slot(
+        &self,
+        operation: &mut ConfigOperation<'_>,
+        machine_id: &MachineId,
+        name: &str,
+        key: &str,
+    ) -> Result<Option<ContainerObservation>, Error> {
         match self.keyed_container(machine_id, name, key).await {
             Err(Error::SpecNotFound(container_id))
-                if self.half_made(&mut operation, &container_id).await? =>
+                if self.half_made(operation, &container_id).await? =>
             {
-                // Removed, so a slot read as empty holds nothing that keeps its Volumes in
-                // use. The create that follows makes it again.
-                self.force_remove_container(&container_id).await?;
+                self.remove_if_present(&container_id).await?;
                 Ok(None)
             }
-            // A restore's Container now holds the records it took over.
             Err(Error::SpecNotFound(_)) => self.keyed_container(machine_id, name, key).await,
             found => found,
         }
@@ -746,33 +757,15 @@ impl ContainerRuntime {
         remove_volumes: bool,
         force: bool,
     ) -> Result<(), Error> {
-        match self.ensure_managed(container_id).await {
-            Ok(_) => {}
-            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
-                self.forget(container_id).await;
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        }
-        let options = RemoveContainerOptionsBuilder::default()
-            .v(remove_volumes)
-            .force(force)
-            .build();
-        match self
-            .docker
-            .client
-            .remove_container(container_id.as_str(), Some(options))
-            .await
-            .map_err(|error| docker_error(container_id, error))
-        {
-            Ok(()) => {
-                config_operation.remove(container_id).await?;
-            }
-            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {}
-            Err(error) => return Err(error),
-        }
-        self.forget(container_id).await;
-        Ok(())
+        self.retire(
+            config_operation,
+            container_id,
+            How::Asked {
+                remove_volumes,
+                force,
+            },
+        )
+        .await
     }
 
     pub async fn remove_all_managed(&self) -> Result<(), Error> {
@@ -787,11 +780,55 @@ impl ContainerRuntime {
                 .is_ok_and(|managed| managed.identity == QualifiedService::system_ingress_holder())
         });
         for (container_id, _) in managed {
-            self.stop_if_running(&container_id).await?;
-            self.force_remove_container(&container_id).await?;
-            config_operation.remove(&container_id).await?;
-            self.forget(&container_id).await;
+            self.retire(&mut config_operation, &container_id, How::Departing)
+                .await?;
         }
+        Ok(())
+    }
+
+    /// Takes a Container out of Docker, then out of the Machine's records, then out of
+    /// the daemon's memory, in that order. A crash after the first step leaves a record
+    /// with no Container, which the next inventory settles; the reverse order would
+    /// leave a Container no record describes. A Container Docker no longer has is
+    /// settled only if a record of it remained, so a name that was never ours still
+    /// answers not found.
+    async fn retire(
+        &self,
+        config_operation: &mut super::spec_store::ConfigOperation<'_>,
+        container_id: &ContainerId,
+        how: How,
+    ) -> Result<(), Error> {
+        let removed = match how {
+            How::Asked {
+                remove_volumes,
+                force,
+            } => match self.ensure_managed(container_id).await {
+                Ok(_) => {
+                    let options = RemoveContainerOptionsBuilder::default()
+                        .v(remove_volumes)
+                        .force(force)
+                        .build();
+                    self.docker
+                        .client
+                        .remove_container(container_id.as_str(), Some(options))
+                        .await
+                        .map_err(|error| docker_error(container_id, error))
+                }
+                Err(error) => Err(error),
+            },
+            How::Departing => {
+                self.stop_if_running(container_id).await?;
+                self.remove_if_present(container_id).await
+            }
+        };
+        match removed {
+            Ok(()) => {
+                config_operation.remove(container_id).await?;
+            }
+            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {}
+            Err(error) => return Err(error),
+        }
+        self.forget(container_id).await;
         Ok(())
     }
 
@@ -816,10 +853,6 @@ impl ContainerRuntime {
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
         Ok(inspected)
-    }
-
-    async fn force_remove_container(&self, container_id: &ContainerId) -> Result<(), Error> {
-        self.remove_if_present(container_id).await
     }
 
     /// Stops `container_id`. A Container already stopped or gone is success.
@@ -2100,6 +2133,100 @@ mod tests {
         assert!(retry_name_conflict(1, &conflict));
         assert!(!retry_name_conflict(CONTAINER_NAME_ATTEMPTS, &conflict));
         assert!(!retry_name_conflict(1, &server_error));
+    }
+
+    #[tokio::test]
+    async fn removing_a_container_drops_its_record_after_docker_removed_it() {
+        let (runtime, fake, container_id) =
+            crate::docker::test_support::runtime_with_running_container().await;
+
+        runtime.remove(&container_id, false, true).await.unwrap();
+
+        assert!(
+            fake.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, path)| method == axum::http::Method::DELETE
+                    && path.contains(container_id.as_str())),
+            "Docker was asked to remove it"
+        );
+        assert!(runtime.specs.get(&container_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn removing_a_container_docker_lost_succeeds_only_when_a_record_remained() {
+        let (runtime, fake, container_id) =
+            crate::docker::test_support::runtime_with_running_container().await;
+        fake.existing_container.lock().unwrap().take();
+
+        runtime.remove(&container_id, false, true).await.unwrap();
+        assert!(runtime.specs.get(&container_id).await.unwrap().is_none());
+
+        assert!(matches!(
+            runtime.remove(&container_id, false, true).await,
+            Err(Error::ContainerNotFound(id)) if id == container_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn leaving_stops_then_removes_each_managed_container_and_its_record() {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            list_named: true,
+            ..Default::default()
+        })
+        .await;
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let created = runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                ContainerRequest {
+                    creation_key: Some("plan:0"),
+                    ..container_request(
+                        ContainerKind::ServiceContainer,
+                        &namespace,
+                        &spec,
+                        std::future::ready(None),
+                    )
+                },
+            )
+            .await
+            .unwrap();
+
+        runtime.remove_all_managed().await.unwrap();
+
+        assert!(containers.lock().unwrap().is_empty());
+        assert!(
+            runtime
+                .specs
+                .get(&created.container_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let calls = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| {
+                path.contains(created.container_id.as_str()) || path.contains(&created.display_name)
+            })
+            .filter(|(method, path)| {
+                *method == axum::http::Method::DELETE
+                    || (*method == axum::http::Method::POST && path.ends_with("/stop"))
+            })
+            .map(|(method, _)| method.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls,
+            [axum::http::Method::POST, axum::http::Method::DELETE],
+            "stop, then remove"
+        );
     }
 }
 
