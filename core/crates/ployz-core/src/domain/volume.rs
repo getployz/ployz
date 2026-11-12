@@ -513,6 +513,11 @@ pub struct RemoveVolumesRequest {
     /// Force-remove an in-use Docker Volume. Defaults to false.
     #[serde(default)]
     pub force: bool,
+    /// The teardown each Machine checks before it deletes its Volumes, as
+    /// [`crate::RemoveVolumeRequest::teardown`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
 }
 
 /// Wire source in a Resolved Service Spec. Import checks physical identity correspondence.

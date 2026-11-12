@@ -224,7 +224,10 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
     // A route a Full caller alone may use, as Leave is, goes the same way; each call dials anew.
     for _ in 0..2 {
         let _ = client
-            .call_shared::<op::Leave>(LeaveRequest {}, Call::once().to(&target('b')))
+            .call_shared::<op::Leave>(
+                LeaveRequest { teardown: None },
+                Call::once().to(&target('b')),
+            )
             .await;
     }
     assert_eq!(
@@ -252,7 +255,10 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
     // entry's too, naming the target.
     for id in ['a', 'c'] {
         let _ = client
-            .call_shared::<op::Leave>(LeaveRequest {}, Call::once().to(&target(id)))
+            .call_shared::<op::Leave>(
+                LeaveRequest { teardown: None },
+                Call::once().to(&target(id)),
+            )
             .await;
         assert_eq!(
             pinned.seen(),
@@ -266,7 +272,7 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
         .call_shared::<op::Inspect>(InspectRequest::default(), Call::once())
         .await;
     let _ = client
-        .call_shared::<op::Leave>(LeaveRequest {}, Call::once())
+        .call_shared::<op::Leave>(LeaveRequest { teardown: None }, Call::once())
         .await;
     assert_eq!(
         pinned.seen(),
@@ -281,7 +287,10 @@ async fn a_client_with_no_full_connection_sends_every_route_through_the_entry() 
     let _ = pinned.dials();
     let _ = pinned
         .client
-        .call_shared::<op::Leave>(LeaveRequest {}, Call::once().to(&target('b')))
+        .call_shared::<op::Leave>(
+            LeaveRequest { teardown: None },
+            Call::once().to(&target('b')),
+        )
         .await;
     assert_eq!(
         pinned.seen(),
@@ -294,7 +303,7 @@ async fn a_client_with_no_full_connection_sends_every_route_through_the_entry() 
 async fn a_raw_call_routes_by_scope_as_a_unary_one_does() {
     let (pinned, _) = pinned(true).await;
     let _ = pinned.dials();
-    let request = op::Leave::into_request(LeaveRequest {});
+    let request = op::Leave::into_request(LeaveRequest { teardown: None });
     let _ = pinned
         .client
         .call_raw(&request, op::Leave::PATH, Call::once().to(&target('b')))
@@ -497,6 +506,7 @@ async fn the_reads_that_list_machines_without_a_deadline_wait_for_a_slow_daemon(
         "remove_volumes",
         client
             .remove_volumes(ployz_core::RemoveVolumesRequest {
+                teardown: None,
                 volumes: Vec::new(),
                 force: false,
             })

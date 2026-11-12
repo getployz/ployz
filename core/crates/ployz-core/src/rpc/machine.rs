@@ -80,8 +80,16 @@ pub enum Enrolled {
     Refused { now: MachineNow, error: RpcError },
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct LeaveRequest {}
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct LeaveRequest {
+    /// A person's teardown naming this request, or the preview rule whose own preview it
+    /// closes. A Machine under Device enforcement requires it from an Operator caller; an
+    /// older daemon ignores it. Sent only to a daemon advertising
+    /// [`crate::TEARDOWN_CAPABILITY`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
+}
 
 /// A successful Leave cannot report a Machine that still participates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -109,6 +117,13 @@ pub enum Left {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ForgetRequest {
     pub machine_id: MachineId,
+    /// A person's teardown naming this request, or the preview rule whose own preview it
+    /// closes. A Machine under Device enforcement requires it from an Operator caller; an
+    /// older daemon ignores it. Sent only to a daemon advertising
+    /// [`crate::TEARDOWN_CAPABILITY`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
 }
 
 /// A missing row is success.

@@ -30,7 +30,8 @@ use crate::{
     SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
     SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY,
     SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
-    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, TEARDOWN_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY,
     UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
     WRAP_SEALING_KEY_CAPABILITY,
 };
@@ -63,7 +64,8 @@ impl Statement {
             Self::Rule => &[DEPLOY_RULE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY],
             Self::PrivateAccess => &[PRIVATE_ACCESS_APPROVAL_CAPABILITY],
             Self::Volume => &[VOLUME_APPROVAL_CAPABILITY],
-            Self::Upgrade | Self::Teardown => &[],
+            Self::Teardown => &[TEARDOWN_CAPABILITY],
+            Self::Upgrade => &[],
         }
     }
 }
@@ -88,7 +90,7 @@ pub enum Authorization {
 }
 
 use Authorization::{Bound, Full, Pending, Read, Signed};
-use Statement::{Deploy, Join, PrivateAccess, Proposal, Restart, Rule, Volume};
+use Statement::{Deploy, Join, PrivateAccess, Proposal, Restart, Rule, Teardown, Volume};
 
 const IMAGE_BOUND: &str = "content-addressed; checked at creation by C";
 
@@ -134,13 +136,13 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         INSTALL_SEALING_KEY_CAPABILITY,
         Bound("Cloud holds no Machine's key to seal from"),
     ),
-    (LEAVE_MACHINE_CAPABILITY, Signed(&[])),
-    (FORGET_MACHINE_CAPABILITY, Signed(&[])),
+    (LEAVE_MACHINE_CAPABILITY, Signed(&[Teardown])),
+    (FORGET_MACHINE_CAPABILITY, Signed(&[Teardown])),
     (LIST_CONTAINERS_CAPABILITY, Read),
     (INSPECT_CONTAINER_CAPABILITY, Read),
     (
         ENSURE_CONTAINER_CAPABILITY,
-        Signed(&[Deploy, Restart, Proposal, Rule]),
+        Signed(&[Deploy, Restart, Proposal, Rule, Teardown]),
     ),
     (
         UPDATE_CONTAINER_LIMITS_CAPABILITY,
@@ -149,7 +151,7 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (INSPECT_STORAGE_CAPABILITY, Read),
     (PREPARE_VOLUMES_CAPABILITY, Bound("checked at mount by C")),
     (LIST_VOLUMES_CAPABILITY, Read),
-    (REMOVE_VOLUME_CAPABILITY, Pending("F5")),
+    (REMOVE_VOLUME_CAPABILITY, Signed(&[Teardown])),
     (INSPECT_VOLUME_COPY_CAPABILITY, Read),
     (SEED_VOLUME_CAPABILITY, Signed(&[Volume])),
     (SET_VOLUME_COPY_CAPABILITY, Signed(&[Volume])),
@@ -201,12 +203,16 @@ pub fn authorization(capability: &str) -> Option<Authorization> {
         .map(|(_, class)| *class)
 }
 
-/// Whether an Operator caller can never be served `capability` on an enforcing Machine,
-/// so a client holding a Full path must send it there itself: a call forwarded over the
-/// mesh arrives as an Operator's.
+/// Whether an Operator caller is served `capability` on an enforcing Machine only with a
+/// person's teardown or not at all, so a client holding a Full path sends it there itself:
+/// a call forwarded over the mesh arrives as an Operator's, and a Device's own call needs
+/// no teardown.
 #[must_use]
 pub fn needs_full_caller(capability: &str) -> bool {
-    matches!(authorization(capability), Some(Full | Signed(&[])))
+    matches!(
+        authorization(capability),
+        Some(Full | Signed(&[] | [Statement::Teardown]))
+    )
 }
 
 /// What an enforcing Machine must do with a case sent by Cloud, with no statement.
@@ -464,9 +470,9 @@ pub const CASES: &[Case] = &[
     ),
     case(
         REMOVE_VOLUME_CAPABILITY,
-        "any Volume",
-        "a RemoveVolume of a Docker Volume",
-        Expected::Served,
+        "no teardown",
+        "a RemoveVolume of a Docker Volume, with no teardown",
+        Expected::Refused(&[TEARDOWN_CAPABILITY]),
     ),
     case(
         SEED_VOLUME_CAPABILITY,

@@ -801,7 +801,7 @@ mod departure {
 
     fn leave() -> Request<OpaquePayload> {
         Request::new(
-            op::Leave::into_request(ployz_core::LeaveRequest {})
+            op::Leave::into_request(ployz_core::LeaveRequest { teardown: None })
                 .encode()
                 .unwrap(),
         )
@@ -810,6 +810,7 @@ mod departure {
     fn forget(machine: MachineId) -> Request<OpaquePayload> {
         Request::new(
             op::Forget::into_request(ployz_core::ForgetRequest {
+                teardown: None,
                 machine_id: machine,
             })
             .encode()
@@ -1080,6 +1081,246 @@ mod private_access {
         let machine = Enforcing::new(false).await;
         let key = sealed(&machine, "tskey-auth-unenforced");
         let answer = turn(&machine, on(key, None)).await;
+        assert!(!answer.for_authority(), "{answer:?}");
+        machine.remove();
+    }
+}
+
+mod teardown {
+    //! A teardown under Device enforcement: an Operator's takedown, Volume removal, `Leave`
+    //! or `Forget` runs only when a person's teardown names this Server and what goes.
+
+    use ployz_core::authority::{
+        SignerKey, Teardown, TeardownApproval, TeardownScope, TeardownTerms, Timestamp,
+    };
+    use ployz_core::{
+        DockerVolumeId, DockerVolumeName, EnsureContainerRequest, ForgetRequest, LeaveRequest,
+        Namespace, RemoveVolumeRequest,
+    };
+
+    use super::*;
+
+    fn approval(machine: &Enforcing, signer: &Signer, scope: TeardownScope) -> TeardownApproval {
+        let cluster = SealingKey::load(&machine.data_dir)
+            .unwrap()
+            .unwrap()
+            .public_key();
+        TeardownApproval::Signed(
+            Signed::sign(
+                &Teardown::drafted(TeardownTerms {
+                    cluster,
+                    scope,
+                    issued_at: Timestamp::now(),
+                    signer: SignerKey::Device(signer.public().into()),
+                }),
+                signer,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn device() -> Signer {
+        Signer::from_seed(&[7; 32])
+    }
+
+    fn namespace(
+        name: &str,
+        machines: Vec<MachineId>,
+        volumes: Vec<DockerVolumeId>,
+    ) -> TeardownScope {
+        TeardownScope::Namespace {
+            namespaces: vec![Namespace::parse(name).unwrap()],
+            machines,
+            volumes,
+        }
+    }
+
+    fn data(machine: &Enforcing) -> DockerVolumeId {
+        DockerVolumeId {
+            machine_id: machine.machine.id,
+            name: DockerVolumeName::parse("app_data").unwrap(),
+        }
+    }
+
+    async fn remove_volume(machine: &Enforcing, teardown: Option<TeardownApproval>) -> Answer {
+        let request = RemoveVolumeRequest {
+            name: DockerVolumeName::parse("app_data").unwrap(),
+            force: false,
+            teardown: teardown.map(Box::new),
+        };
+        machine
+            .unary(
+                op::RemoveVolume::PATH,
+                &op::RemoveVolume::into_request(request),
+            )
+            .await
+    }
+
+    async fn take_down(machine: &Enforcing, state: &str, teardown: TeardownApproval) -> Answer {
+        let id = running_container(machine).await;
+        let want = match state {
+            "start" => {
+                json!({"state":"running", "rotation":"pending", "container":{"existing":{"id":id}}})
+            }
+            "remove" => json!({"state":"gone", "container":{"id":id}, "drain":0}),
+            other => panic!("no takedown sample for {other:?}"),
+        };
+        let mut request: EnsureContainerRequest =
+            serde_json::from_value(json!({"want": want})).unwrap();
+        request.teardown = Some(Box::new(teardown));
+        machine
+            .unary(
+                op::EnsureContainer::PATH,
+                &op::EnsureContainer::into_request(request),
+            )
+            .await
+    }
+
+    #[track_caller]
+    fn refused(answer: &Answer, capability: &str) {
+        assert!(
+            matches!(answer, Answer::Refused { capability: Some(name), .. } if name == capability),
+            "{answer:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_teardown_removes_only_the_containers_it_names_and_starts_nothing() {
+        let machine = Enforcing::new(true).await;
+        let here = machine.machine.id;
+        let other_namespace = approval(&machine, &device(), namespace("shop", vec![here], vec![]));
+        refused(
+            &take_down(&machine, "remove", other_namespace).await,
+            ployz_core::TEARDOWN_CAPABILITY,
+        );
+        let elsewhere = approval(
+            &machine,
+            &device(),
+            namespace("app", vec![machine.peer.id], vec![]),
+        );
+        refused(
+            &take_down(&machine, "remove", elsewhere).await,
+            ployz_core::TEARDOWN_CAPABILITY,
+        );
+        let stranger = approval(
+            &machine,
+            &Signer::from_seed(&[8; 32]),
+            namespace("app", vec![here], vec![]),
+        );
+        refused(
+            &take_down(&machine, "remove", stranger).await,
+            ployz_core::TEARDOWN_CAPABILITY,
+        );
+        let app = approval(&machine, &device(), namespace("app", vec![here], vec![]));
+        refused(
+            &take_down(&machine, "start", app.clone()).await,
+            ployz_core::TEARDOWN_CAPABILITY,
+        );
+        let removed = take_down(&machine, "remove", app).await;
+        assert!(!removed.for_authority(), "{removed:?}");
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_volume_goes_only_under_a_teardown_that_names_it_here() {
+        let machine = Enforcing::new(true).await;
+        let before = machine.snapshot().await;
+        refused(
+            &remove_volume(&machine, None).await,
+            ployz_core::TEARDOWN_CAPABILITY,
+        );
+        let containers_only = approval(
+            &machine,
+            &device(),
+            namespace("app", vec![machine.machine.id], vec![]),
+        );
+        refused(
+            &remove_volume(&machine, Some(containers_only)).await,
+            ployz_core::TEARDOWN_CAPABILITY,
+        );
+        let mut peers = data(&machine);
+        peers.machine_id = machine.peer.id;
+        let on_the_peer = approval(&machine, &device(), namespace("app", vec![], vec![peers]));
+        refused(
+            &remove_volume(&machine, Some(on_the_peer)).await,
+            ployz_core::TEARDOWN_CAPABILITY,
+        );
+        assert_eq!(
+            machine.snapshot().await,
+            before,
+            "a refusal changed nothing"
+        );
+        let named = approval(
+            &machine,
+            &device(),
+            namespace("app", vec![], vec![data(&machine)]),
+        );
+        let answer = remove_volume(&machine, Some(named)).await;
+        assert!(!answer.for_authority(), "{answer:?}");
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_departure_runs_only_under_a_server_teardown_naming_this_server() {
+        let machine = Enforcing::new(true).await;
+        let here = machine.machine.id;
+        let peer = machine.peer.id;
+        let server = |leaving, forgetting| TeardownScope::Server {
+            leaving,
+            forgetting,
+            volumes: vec![],
+        };
+        let forget = |teardown: TeardownApproval| {
+            op::Forget::into_request(ForgetRequest {
+                machine_id: peer,
+                teardown: Some(Box::new(teardown)),
+            })
+        };
+        let before = machine.snapshot().await;
+        let not_this_one = approval(&machine, &device(), server(peer, vec![]));
+        refused(
+            &machine
+                .unary(
+                    op::Leave::PATH,
+                    &op::Leave::into_request(LeaveRequest {
+                        teardown: Some(Box::new(not_this_one)),
+                    }),
+                )
+                .await,
+            ployz_core::LEAVE_MACHINE_CAPABILITY,
+        );
+        let others_forget = approval(&machine, &device(), server(peer, vec![]));
+        refused(
+            &machine
+                .unary(op::Forget::PATH, &forget(others_forget))
+                .await,
+            ployz_core::FORGET_MACHINE_CAPABILITY,
+        );
+        let namespace_teardown =
+            approval(&machine, &device(), namespace("app", vec![here], vec![]));
+        refused(
+            &machine
+                .unary(op::Forget::PATH, &forget(namespace_teardown))
+                .await,
+            ployz_core::FORGET_MACHINE_CAPABILITY,
+        );
+        assert_eq!(
+            machine.snapshot().await,
+            before,
+            "a refusal changed nothing"
+        );
+        let forgets = approval(&machine, &device(), server(peer, vec![here]));
+        let answer = machine.unary(op::Forget::PATH, &forget(forgets)).await;
+        assert!(!answer.for_authority(), "{answer:?}");
+        let leaves = approval(&machine, &device(), server(here, vec![]));
+        let answer = machine
+            .unary(
+                op::Leave::PATH,
+                &op::Leave::into_request(LeaveRequest {
+                    teardown: Some(Box::new(leaves)),
+                }),
+            )
+            .await;
         assert!(!answer.for_authority(), "{answer:?}");
         machine.remove();
     }

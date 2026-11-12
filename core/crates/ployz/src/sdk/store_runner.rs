@@ -1897,6 +1897,7 @@ async fn remove_volumes(
     }
     session
         .remove_volumes(ployz_core::RemoveVolumesRequest {
+            teardown: None,
             volumes,
             force: false,
         })

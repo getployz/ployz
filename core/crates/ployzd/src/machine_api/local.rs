@@ -605,7 +605,18 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::EnsureContainer>(request)?;
-        let want = if operator {
+        let teardown_only = request.approval.is_none()
+            && request.deploy.is_none()
+            && request.rule.is_none()
+            && request.preview.is_none();
+        let want = if let (true, true, Some(teardown)) =
+            (operator, teardown_only, request.teardown.as_deref())
+        {
+            match self.local.admit_teardown_step(request.want, teardown).await {
+                Ok(want) => want,
+                Err(error) => return local_error(error),
+            }
+        } else if operator {
             match self
                 .local
                 .admit_operator_restart(
@@ -682,7 +693,15 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::RemoveVolume>(request)?;
+        if operator
+            && let Err(error) = self
+                .local
+                .admit_operator_volume_removal(&request.name, request.teardown.as_deref())
+        {
+            return local_error(error);
+        }
         finish(self.local.remove_volume(request.name, request.force).await)
     }
 
@@ -1014,7 +1033,7 @@ impl MachineRpc for MachineService {
         if operator
             && let Err(error) = self
                 .local
-                .admit_operator_departure(ployz_core::LEAVE_MACHINE_CAPABILITY)
+                .admit_operator_departure(None, request.teardown.as_deref())
         {
             return local_error(error);
         }
@@ -1030,7 +1049,7 @@ impl MachineRpc for MachineService {
         if operator
             && let Err(error) = self
                 .local
-                .admit_operator_departure(ployz_core::FORGET_MACHINE_CAPABILITY)
+                .admit_operator_departure(Some(&request.machine_id), request.teardown.as_deref())
         {
             return local_error(error);
         }
@@ -1432,18 +1451,28 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY,
         )),
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
-        LocalMachineError::DepartureRefused { capability } => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::TeardownRefused(_) => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,
             serde_json::json!({
-                "capability": capability,
-                "next": if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
-                    "ployz server forget from an approved device"
-                } else {
-                    "ployz server rm from an approved device"
-                },
+                "capability": ployz_core::TEARDOWN_CAPABILITY,
+                "next": "delete it again with your passkey in the dashboard, or from an approved device",
             }),
         )),
+        LocalMachineError::DepartureRefused { capability, .. } => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": capability,
+                    "next": if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
+                        "ployz server forget from an approved device, or Forget server with your passkey in the dashboard"
+                    } else {
+                        "ployz server rm from an approved device, or Remove server with your passkey in the dashboard"
+                    },
+                }),
+            ))
+        }
         LocalMachineError::PrivateAccessRefused(_) => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,

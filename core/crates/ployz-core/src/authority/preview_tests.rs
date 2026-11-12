@@ -942,3 +942,52 @@ fn a_review_line_names_own_secrets_setup_and_changed_settings() {
         "{own}"
     );
 }
+
+#[test]
+fn a_rule_closes_only_its_own_previews_and_starts_nothing() {
+    use super::super::restart::RestartStep;
+    use super::super::teardown::{TeardownFacts, TeardownStep, verify_preview_close};
+    let mut ended = rule();
+    ended.ended = true;
+    let signed = Signed::sign(&ended, &signer()).unwrap();
+    let trusted = TrustedKeys {
+        devices: vec![DeviceKey::from_bytes(*signer().public().as_bytes())],
+        passkeys: Vec::new(),
+    };
+    let own = preview_namespace(ended.rule, &search());
+    let other = preview_namespace(RuleId::from_bytes([0x22; 16]), &search());
+    let parent = Namespace::parse("app").unwrap();
+    let data = own.volume_name(&crate::DockerVolumeName::parse("data").unwrap());
+    let theirs = other.volume_name(&crate::DockerVolumeName::parse("data").unwrap());
+    let unnamed = MachineId::parse("9".repeat(32)).unwrap();
+    let check = |step| {
+        verify_preview_close(
+            &signed,
+            &TeardownFacts {
+                cluster: Some(SealingPublicKey::from_bytes([9; 32])),
+                machine: &unnamed,
+                trusted: &trusted,
+                step,
+                now: Timestamp::from_millis(5_000).unwrap(),
+            },
+        )
+        .map(drop)
+    };
+    let step = |namespace, step| TeardownStep::Container { namespace, step };
+    assert_eq!(
+        check(step(&own, RestartStep::Remove)),
+        Ok(()),
+        "an ended rule still closes"
+    );
+    assert_eq!(check(step(&own, RestartStep::Out)), Ok(()));
+    assert_eq!(check(TeardownStep::Volume(&data)), Ok(()));
+    for refused in [
+        step(&own, RestartStep::Start),
+        step(&other, RestartStep::Remove),
+        step(&parent, RestartStep::Remove),
+        TeardownStep::Volume(&theirs),
+        TeardownStep::Leave,
+    ] {
+        assert!(check(refused).is_err(), "{refused:?}");
+    }
+}

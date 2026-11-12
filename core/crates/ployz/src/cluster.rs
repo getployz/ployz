@@ -1143,6 +1143,7 @@ impl Client {
         crate::sealed_compat::admit(self, &target, &want).await?;
         let carried = self.deploy.carried(&want);
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
+            teardown: None,
             preview: carried.preview,
             want,
             approval: carried.restart,
@@ -1334,6 +1335,7 @@ async fn remove_volumes_on(
             match client
                 .call_shared::<op::RemoveVolume>(
                     RemoveVolumeRequest {
+                        teardown: None,
                         name: id.name.clone(),
                         force: request.force,
                     },
@@ -1783,7 +1785,7 @@ async fn depart(
 ) -> Result<LocalMachineRemoved, RpcError> {
     let departed = match client
         .call::<op::Leave>(
-            LeaveRequest {},
+            LeaveRequest { teardown: None },
             Call::keyed().to(&MachineTarget::from(&machine)),
         )
         .await
@@ -1841,7 +1843,13 @@ impl LeftNotForgotten {
 /// Delete `machine_id`'s shared row through the entry Machine.
 pub(crate) async fn forget(client: &mut Client, machine_id: MachineId) -> Result<(), RpcError> {
     match client
-        .call::<op::Forget>(ForgetRequest { machine_id }, Call::keyed())
+        .call::<op::Forget>(
+            ForgetRequest {
+                teardown: None,
+                machine_id,
+            },
+            Call::keyed(),
+        )
         .await
         .map_err(RpcError::from)?
     {

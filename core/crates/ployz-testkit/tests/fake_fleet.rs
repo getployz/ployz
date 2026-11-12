@@ -72,6 +72,7 @@ async fn client(fleet: &FakeFleet, machine: &str) -> Client {
 
 fn stop(container: &str) -> EnsureContainerRequest {
     EnsureContainerRequest {
+        teardown: None,
         preview: None,
         approval: None,
         deploy: None,
@@ -283,6 +284,7 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
     let error = client
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
+                teardown: None,
                 preview: None,
                 approval: None,
                 deploy: None,
@@ -345,6 +347,7 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
         client
             .call::<op::EnsureContainer>(
                 EnsureContainerRequest {
+                    teardown: None,
                     preview: None,
                     want,
                     approval: None,

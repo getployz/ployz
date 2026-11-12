@@ -96,6 +96,7 @@ pub(crate) use resize_seed_approval::Landing;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
+mod teardown;
 pub(crate) use sealing_recovery::Error as RecoveryError;
 mod upgrade;
 mod volume_approval;
@@ -229,10 +230,17 @@ pub enum Error {
     /// names `capability` in its details.
     #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
     BuildRefused { capability: &'static str },
-    /// Device enforcement refused an Operator's `Leave` or `Forget`, before any Container
-    /// stopped. The refusal names `capability` in its details.
-    #[error("{}", departure_text(.capability))]
-    DepartureRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's `Leave` or `Forget` that no teardown names,
+    /// before any Container stopped. The refusal names `capability` in its details.
+    #[error("{}: {refusal}", departure_text(.capability))]
+    DepartureRefused {
+        capability: &'static str,
+        refusal: ployz_core::authority::AuthorityRefusal,
+    },
+    /// Device enforcement refused an Operator's Container step or Volume removal that no
+    /// teardown names.
+    #[error("This server takes this off only under your approval: {0}")]
+    TeardownRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `SetPrivateAccess` turning Private Access on
     /// without an approval of its auth key.
     #[error("This Server joins a tailnet only with your approval: {0}")]

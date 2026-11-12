@@ -222,6 +222,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.restart.session-grant.v2",
             "ployz.restart.start-approval.v1",
             "ployz.restart.proposal.v1",
+            "ployz.teardown.v1",
             "ployz.container.deploy-approval.v1",
             "ployz.container.deploy-proposal.v1",
             "ployz.container.deploy-rule.v1",
@@ -427,6 +428,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.restart.proposal.v1",
         "gated: Cloud sends a proposal step only to a Machine that advertises it, and names an older one as needing a newer Ployz before the person signs; an older enforcing Machine refuses the step's envelope as unknown bytes",
+    ),
+    (
+        "ployz.teardown.v1",
+        "refused legibly: an older daemon ignores the teardown and, enforcing, refuses Leave and Forget as before and the takedown as unapproved, naming the Server; one not enforcing takes it off as before",
     ),
     (
         "ployz.restart.start-approval.v1",
@@ -707,7 +712,6 @@ mod coverage {
             [
                 ("ployz.machine.enroll.v1", "F7"),
                 ("ployz.machine.enroll-for-recovery.v1", "F7"),
-                ("ployz.volume.remove.v1", "F5"),
             ]
         );
     }

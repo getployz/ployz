@@ -13,6 +13,12 @@ pub struct RemoveVolumeRequest {
     pub name: DockerVolumeName,
     #[serde(default)]
     pub force: bool,
+    /// A person's teardown naming this request, or the preview rule whose own preview it
+    /// closes. A Machine under Device enforcement requires it from an Operator caller; an
+    /// older daemon ignores it. Sent only to a daemon advertising
+    /// [`crate::TEARDOWN_CAPABILITY`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
 }
 
 /// One Docker Volume whose name is present but whose current detail is unavailable.
