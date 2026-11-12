@@ -655,8 +655,9 @@ fn network_conflict_names_observed_values_without_debug_wrappers() {
 fn stale_network(name: &str, managed_label: Option<&str>, attached: bool) -> NetworkInspect {
     NetworkInspect {
         name: Some(name.into()),
-        labels: managed_label
-            .map(|value| HashMap::from([(DOCKER_NETWORK_MANAGED_LABEL.into(), value.into())])),
+        labels: managed_label.map(|value| {
+            HashMap::from([(ployz_core::labels::SYSTEM_MANAGED.into(), value.into())])
+        }),
         containers: attached.then(|| HashMap::from([("7074faa8a368".into(), Default::default())])),
         ..Default::default()
     }
@@ -741,7 +742,7 @@ fn fitting_network(machine: &Machine, attached: &[&str]) -> NetworkInspect {
         driver: Some("bridge".into()),
         scope: Some("local".into()),
         labels: Some(HashMap::from([(
-            DOCKER_NETWORK_MANAGED_LABEL.into(),
+            ployz_core::labels::SYSTEM_MANAGED.into(),
             String::new(),
         )])),
         ipam: Some(Ipam {

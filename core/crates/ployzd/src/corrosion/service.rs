@@ -1,7 +1,6 @@
 //! Runs the Corrosion agent in a Docker container the daemon creates and keeps.
 
 use std::{
-    collections::HashMap,
     fs,
     future::Future,
     net::{Ipv4Addr, SocketAddr},
@@ -377,7 +376,7 @@ fn container_config(data_dir: &Path, run_dir: &Path, user: String) -> ContainerC
             data_dir.join("config.toml").to_string_lossy().into_owned(),
         ]),
         user: Some(user),
-        labels: Some(HashMap::from([("ployzd.managed".into(), String::new())])),
+        labels: Some(ployz_core::labels::system_labels()),
         host_config: Some(HostConfig {
             network_mode: Some("host".into()),
             restart_policy: Some(RestartPolicy {
@@ -669,13 +668,7 @@ mod tests {
     #[test]
     fn corrosion_container_carries_the_system_marker_label() {
         let config = container_config(Path::new("/data"), Path::new("/run"), "1:1".into());
-        assert_eq!(
-            config.labels,
-            Some(HashMap::from([(
-                "ployzd.managed".to_owned(),
-                String::new()
-            )]))
-        );
+        assert_eq!(config.labels, Some(ployz_core::labels::system_labels()));
     }
 
     #[tokio::test(start_paused = true)]
