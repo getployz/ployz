@@ -7,18 +7,21 @@ use std::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
-    HealthObservation, HostnameVerdict, HttpProtocol, IngressHost, IssuanceClock, IssuanceFailure,
-    MACHINE_API_PORT, Machine, MachineId, Namespace, PortPublication, Refusal, ResolvedServiceSpec,
-    ServiceId, ServiceName, resolve_certificate_policy,
+    HealthObservation, HttpProtocol, IngressHost, IssuanceClock, IssuanceFailure, MACHINE_API_PORT,
+    Machine, MachineId, Namespace, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
+    resolve_certificate_policy,
+};
+use ployz_decide::issuance::{
+    Held, Issuance, IssuanceAction, Pass, RANK_STEP, RETRY_INTERVAL, action_due, issuance_action,
+    issued, wake,
 };
 use serde_json::json;
 
 use super::{
-    CHALLENGE_WAIT, DoorStanding, HostIssuance, IssuanceAction, RANK_STEP, RETRY_INTERVAL,
-    challenge_probe_addresses, directory_from_env, door_standing, ingress_challenge_ips,
-    issuance_action, issue_wanted, issued, machine_jitter, machine_rank, material_validity,
-    order_certificate, ordering_machines, poll_wait, probe_client, renewal_window, run, step,
-    verify_answers, wait_for_http01, wake, wanted_certificate_hosts,
+    DoorStanding, Host, advance, challenge_probe_addresses, directory_from_env, door_standing,
+    held, ingress_challenge_ips, issue_wanted, machine_jitter, material_validity,
+    order_certificate, ordering_machines, probe_client, renewal_window, run, verify_answers,
+    wait_for_http01, wanted_certificate_hosts,
 };
 use crate::corrosion::{
     CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
@@ -32,14 +35,6 @@ fn policy_for(directory: &str) -> CertificatePolicy {
 
 fn default_policy() -> CertificatePolicy {
     CertificatePolicy::built_in(None)
-}
-
-fn policy_probe(seconds: u64) -> CertificatePolicy {
-    resolve_certificate_policy(
-        Some(&format!(r#"{{"probe_timeout":{seconds}}}"#)),
-        &CertificatePolicy::built_in(None),
-    )
-    .unwrap()
 }
 
 #[tokio::test]
@@ -204,54 +199,12 @@ fn self_signed(names: &[&str]) -> CertificateMaterial {
 }
 
 #[test]
-fn lowest_machine_id_is_rank_zero() {
-    let low = MachineId::parse("a".repeat(32)).unwrap();
-    let high = MachineId::parse("f".repeat(32)).unwrap();
-    assert_eq!(machine_rank(&low, &[high, low]), 0);
-    assert_eq!(machine_rank(&high, &[low]), 1);
-    assert_eq!(machine_rank(&low, &[]), 0);
-}
-
-#[test]
-fn only_rank_zero_orders_immediately() {
-    assert_eq!(RANK_STEP, Duration::from_secs(30));
-    assert_eq!(decide(None, 0, Duration::ZERO), IssuanceAction::Order);
-    assert_eq!(
-        decide(None, 1, Duration::from_secs(30) - Duration::from_millis(1)),
-        IssuanceAction::Nothing
-    );
-    assert_eq!(
-        decide(None, 1, Duration::from_secs(30)),
-        IssuanceAction::Order
-    );
-    assert_eq!(
-        decide(None, 2, Duration::from_secs(30)),
-        IssuanceAction::Nothing
-    );
-    assert_eq!(
-        decide(None, 2, Duration::from_secs(60)),
-        IssuanceAction::Order
-    );
-    assert_eq!(
-        issuance_action(
-            None,
-            1,
-            Duration::from_secs(30),
-            UNIX_EPOCH,
-            &machine_id("a"),
-            &policy_probe(120)
-        ),
-        IssuanceAction::Nothing
-    );
-}
-
-#[test]
 fn unparseable_stored_material_does_not_suppress_repair() {
     let row = CertificateRow::decode(r#"{"certificate":"CERT","private_key":"KEY"}"#).unwrap();
     assert!(row.material().is_none());
     assert!(row.last_error().unwrap().contains("invalid"));
     assert_eq!(
-        decide(Some(&row), 0, Duration::from_secs(60)),
+        action(Some(&row), 0, Duration::from_secs(60)),
         IssuanceAction::Order
     );
 }
@@ -337,19 +290,12 @@ fn same_certificate_renews_at_two_thirds_for_long_and_short_lifetimes() {
         let window =
             renewal_window(not_before, not_after, policy.renew_at_lifetime_fraction()).unwrap();
         assert_eq!(
-            issuance_action(
-                Some(&row),
-                0,
-                Duration::ZERO,
-                window - Duration::from_secs(1),
-                &machine,
-                &policy
-            ),
+            action_at(&row, 0, window - Duration::from_secs(1), &machine, &policy),
             IssuanceAction::Nothing,
             "lifetime {lifetime:?}"
         );
         assert_eq!(
-            issuance_action(Some(&row), 0, Duration::ZERO, not_after, &machine, &policy),
+            action_at(&row, 0, not_after, &machine, &policy),
             IssuanceAction::Renew,
             "lifetime {lifetime:?}"
         );
@@ -371,14 +317,13 @@ fn renewal_uses_rank_delay_after_jitter() {
     )
     .unwrap();
     assert_eq!(
-        issuance_action(Some(&row), 1, Duration::ZERO, due, &machine, &policy),
+        action_at(&row, 1, due, &machine, &policy),
         IssuanceAction::Nothing
     );
     assert_eq!(
-        issuance_action(
-            Some(&row),
+        action_at(
+            &row,
             1,
-            Duration::ZERO,
             due + RANK_STEP - Duration::from_millis(1),
             &machine,
             &policy
@@ -386,14 +331,7 @@ fn renewal_uses_rank_delay_after_jitter() {
         IssuanceAction::Nothing
     );
     assert_eq!(
-        issuance_action(
-            Some(&row),
-            1,
-            Duration::ZERO,
-            due + RANK_STEP,
-            &machine,
-            &policy
-        ),
+        action_at(&row, 1, due + RANK_STEP, &machine, &policy),
         IssuanceAction::Renew
     );
 }
@@ -418,34 +356,32 @@ fn machines_holding_the_same_certificate_do_not_renew_together() {
         &first
     };
     assert_eq!(
-        issuance_action(
-            Some(&row),
-            0,
-            Duration::ZERO,
-            earlier,
-            later_machine,
-            &policy
-        ),
+        action_at(&row, 0, earlier, later_machine, &policy),
         IssuanceAction::Nothing
     );
 }
 
 #[test]
-fn poll_wait_follows_each_certificate_lifetime() {
+fn the_wait_follows_each_certificate_lifetime() {
     let day = Duration::from_secs(86_400);
     let machine = machine_id("a");
     let policy = default_policy();
     let long = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 90);
     let short = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 6);
+    let wait = |row, now| {
+        action_due(
+            held(Some(row), &machine, &policy),
+            0,
+            Duration::ZERO,
+            now,
+            &policy,
+        )
+        .1
+        .min(RETRY_INTERVAL)
+    };
     let now = UNIX_EPOCH + Duration::from_secs(60);
-    assert_eq!(
-        poll_wait(Some(&long), 0, Duration::ZERO, now, &machine, &policy),
-        Duration::from_secs(60)
-    );
-    assert_eq!(
-        poll_wait(Some(&short), 0, Duration::ZERO, now, &machine, &policy),
-        Duration::from_secs(60)
-    );
+    assert_eq!(wait(&long, now), Duration::from_secs(60));
+    assert_eq!(wait(&short, now), Duration::from_secs(60));
     let near_short = super::renew_at(
         short.material().unwrap(),
         &machine,
@@ -453,17 +389,7 @@ fn poll_wait_follows_each_certificate_lifetime() {
     )
     .unwrap()
         - Duration::from_secs(10);
-    assert_eq!(
-        poll_wait(
-            Some(&short),
-            0,
-            Duration::ZERO,
-            near_short,
-            &machine,
-            &policy
-        ),
-        Duration::from_secs(10)
-    );
+    assert_eq!(wait(&short, near_short), Duration::from_secs(10));
 }
 
 #[test]
@@ -606,7 +532,7 @@ async fn challenge_must_be_answerable_on_every_probe_address() {
             SocketAddr::from(([127, 0, 0, 1], second_port)),
         ],
         ployz_core::ClusterRoute::Direct,
-        CHALLENGE_WAIT,
+        HTTP01_WAIT,
     )
     .await
     .unwrap();
@@ -722,7 +648,7 @@ async fn empty_probe_addresses_fail_without_waiting() {
             &challenge,
             &[],
             ployz_core::ClusterRoute::ViaProxy,
-            CHALLENGE_WAIT,
+            HTTP01_WAIT,
         ),
     )
     .await
@@ -886,16 +812,37 @@ async fn order_fails_when_the_directory_is_unreachable() {
     let _ = std::fs::remove_dir_all(account_dir);
 }
 
-fn decide(row: Option<&CertificateRow>, rank: usize, elapsed: Duration) -> IssuanceAction {
+/// What the loop's scheduling answers for `row` as Machine "a" under the built-in policy.
+fn action(row: Option<&CertificateRow>, rank: usize, elapsed: Duration) -> IssuanceAction {
+    let policy = default_policy();
     issuance_action(
-        row,
+        held(row, &machine_id("a"), &policy),
         rank,
         elapsed,
         UNIX_EPOCH,
-        &machine_id("a"),
-        &default_policy(),
+        &policy,
     )
 }
+
+/// As `action` at `now`, with no rank delay run.
+fn action_at(
+    row: &CertificateRow,
+    rank: usize,
+    now: SystemTime,
+    machine: &MachineId,
+    policy: &CertificatePolicy,
+) -> IssuanceAction {
+    issuance_action(
+        held(Some(row), machine, policy),
+        rank,
+        Duration::ZERO,
+        now,
+        policy,
+    )
+}
+
+/// How long the tests give a challenge to be served.
+const HTTP01_WAIT: Duration = Duration::from_secs(30);
 
 fn machine_id(seed: &str) -> MachineId {
     MachineId::parse(seed.repeat(32)).unwrap()
@@ -1181,8 +1128,9 @@ async fn a_pass_that_stops_before_the_gate_ends_the_rank_delay() {
         let (store, task) = replica_under(Some(policy), &["a", "b"], UNREACHED).await;
         let mut kept = BTreeMap::from([(
             host(UNREACHED),
-            HostIssuance::Waiting {
-                orderable_since: tokio::time::Instant::now(),
+            Host {
+                issuance: Issuance::Waiting,
+                since: tokio::time::Instant::now(),
             },
         )]);
         let wait = issue_wanted(
@@ -1214,10 +1162,7 @@ async fn a_read_error_keeps_the_rank_delay_earned() {
     for pass in 1..=3_u32 {
         let now = start + RANK_STEP / 2 * pass;
         let prev = kept.get(&host(UNREACHED)).copied();
-        kept.insert(
-            host(UNREACHED),
-            stepped(prev, None, reaches(), 1, now, wall),
-        );
+        kept.insert(host(UNREACHED), stepped(prev, 1, now, wall));
         let before = kept.clone();
         issue_wanted(
             &store,
@@ -1232,253 +1177,74 @@ async fn a_read_error_keeps_the_rank_delay_earned() {
     }
     assert_eq!(
         kept.get(&host(UNREACHED)).copied(),
-        Some(HostIssuance::Order {
-            route: ployz_core::ClusterRoute::Direct,
-            orderable_since: start + RANK_STEP / 2,
+        Some(Host {
+            issuance: Issuance::Order(ployz_core::ClusterRoute::Direct),
+            since: start + RANK_STEP / 2,
         }),
         "rank 1 orders a step after its first open pass, though every other pass failed"
     );
 }
 
-fn reaches() -> HostnameVerdict {
-    HostnameVerdict::ReachesCluster(ployz_core::ClusterRoute::Direct)
-}
-
-fn does_not_resolve() -> HostnameVerdict {
-    HostnameVerdict::Refused(Refusal::DoesNotResolve)
-}
-
-/// A row with no material and a backoff clock of `last_failure` that passes at `next_attempt_at`.
-fn clocked(last_failure: IssuanceFailure, next_attempt_at: SystemTime) -> CertificateRow {
-    CertificateRow::default().with_backoff(
-        "an earlier attempt failed",
-        IssuanceClock::new(1, next_attempt_at, last_failure),
-    )
-}
-
-/// One pass's `step` for the Machine of `rank` under the built-in policy.
-fn stepped(
-    prev: Option<HostIssuance>,
-    row: Option<&CertificateRow>,
-    verdict: HostnameVerdict,
-    rank: usize,
-    now: tokio::time::Instant,
-    wall: SystemTime,
-) -> HostIssuance {
-    step(
+/// One open pass for the Machine of `rank` that holds no material, under the built-in policy.
+fn stepped(prev: Option<Host>, rank: usize, now: tokio::time::Instant, wall: SystemTime) -> Host {
+    let policy = default_policy();
+    advance(
         prev,
-        row,
-        verdict,
-        rank,
         now,
-        wall,
-        &machine_id("a"),
-        &default_policy(),
+        Pass {
+            gate: ployz_core::IssuanceGate::Order(ployz_core::ClusterRoute::Direct),
+            held: Held::Nothing,
+            rank,
+            wall,
+            policy: &policy,
+        },
     )
 }
 
+/// The loop's own clock: a rank delay that began a step ago has passed, and a hold between
+/// two passes starts it over.
 #[test]
-fn a_hold_or_a_refusal_starts_the_rank_delay_again_at_the_next_open_gate() {
-    let now = tokio::time::Instant::now();
-    let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
-    let long_ago = now.checked_sub(Duration::from_secs(600)).unwrap();
-    let passed = clocked(IssuanceFailure::Authority, wall - Duration::from_secs(1));
-    let held = IssuanceClock::new(1, wall, IssuanceFailure::Authority);
-    let refused = HostIssuance::Refused {
-        refusal: Refusal::DoesNotResolve,
-        clock: IssuanceClock::new(1, wall, IssuanceFailure::Refused(Refusal::DoesNotResolve)),
-    };
-    for prev in [None, Some(HostIssuance::Held(held)), Some(refused)] {
-        assert_eq!(
-            stepped(prev, Some(&passed), reaches(), 1, now, wall),
-            HostIssuance::Waiting {
-                orderable_since: now
-            },
-            "rank 1 after {prev:?}"
-        );
-        assert_eq!(
-            stepped(prev, Some(&passed), reaches(), 0, now, wall),
-            HostIssuance::Order {
-                route: ployz_core::ClusterRoute::Direct,
-                orderable_since: now
-            },
-            "rank 0 owes no delay after {prev:?}"
-        );
-    }
-    let waiting = Some(HostIssuance::Waiting {
-        orderable_since: long_ago,
-    });
-    assert_eq!(
-        stepped(waiting, Some(&passed), reaches(), 1, now, wall),
-        HostIssuance::Order {
-            route: ployz_core::ClusterRoute::Direct,
-            orderable_since: long_ago
-        },
-        "a Waiting state keeps its start while the gate stays open"
-    );
-}
-
-#[test]
-fn the_rank_delay_runs_from_the_first_open_pass() {
+fn the_rank_delay_runs_on_the_loops_instants() {
     let start = tokio::time::Instant::now();
     let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
-    let waiting = Some(HostIssuance::Waiting {
-        orderable_since: start,
-    });
+    let first = stepped(None, 1, start, wall);
     assert_eq!(
-        stepped(
-            waiting,
-            None,
-            reaches(),
-            1,
-            start + RANK_STEP - Duration::from_millis(1),
-            wall
-        ),
-        HostIssuance::Waiting {
-            orderable_since: start
+        first,
+        Host {
+            issuance: Issuance::Waiting,
+            since: start
         }
     );
-    let order = HostIssuance::Order {
-        route: ployz_core::ClusterRoute::Direct,
-        orderable_since: start,
+    let policy = default_policy();
+    assert_eq!(
+        wake(first.issuance, 1, first.orderable_for(start), wall, &policy),
+        RANK_STEP
+    );
+    let later = start + RANK_STEP;
+    assert_eq!(
+        stepped(Some(first), 1, later, wall),
+        Host {
+            issuance: Issuance::Order(ployz_core::ClusterRoute::Direct),
+            since: start
+        },
+        "an order keeps the start of its delay"
+    );
+    let held = Host {
+        issuance: Issuance::Held(IssuanceClock::new(1, wall, IssuanceFailure::Authority)),
+        since: later,
     };
     assert_eq!(
-        stepped(waiting, None, reaches(), 1, start + RANK_STEP, wall),
-        order
-    );
-    assert_eq!(
-        stepped(Some(order), None, reaches(), 1, start + RANK_STEP, wall),
-        order,
-        "an order whose failure left no clock is retried at once, its delay spent"
-    );
-}
-
-/// An order keeps the start of its rank delay, and each open pass checks it against the
-/// current rank, so a Machine whose rank rose waits out the longer delay.
-#[test]
-fn a_rank_that_rises_after_an_order_waits_its_new_delay() {
-    let start = tokio::time::Instant::now();
-    let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
-    let order = Some(HostIssuance::Order {
-        route: ployz_core::ClusterRoute::Direct,
-        orderable_since: start,
-    });
-    assert_eq!(
-        stepped(order, None, reaches(), 2, start + RANK_STEP, wall),
-        HostIssuance::Waiting {
-            orderable_since: start
+        stepped(Some(held), 1, later + RANK_STEP * 2, wall),
+        Host {
+            issuance: Issuance::Waiting,
+            since: later + RANK_STEP * 2
         },
-        "a lower-id Machine joined, so rank 1 became rank 2"
-    );
-    assert_eq!(
-        stepped(order, None, reaches(), 2, start + RANK_STEP * 2, wall),
-        HostIssuance::Order {
-            route: ployz_core::ClusterRoute::Direct,
-            orderable_since: start
-        }
-    );
-}
-
-/// A Waiting hostname asks to sleep no longer than one step, so it meets a hold of a step or more
-/// and starts the delay again while the loop keeps that sleep. A 60 s wait after a read Err, or a
-/// loop busy with another hostname's obtain, can miss the hold. Rank 2 first passes at 1 s. Rank
-/// 0's order fails at 2 s, and its clock holds until 60 s. Rank 2 wakes at 31 s, inside the hold,
-/// and then waits its two steps from 60 s, rather than ordering at 61 s beside rank 0.
-#[test]
-fn a_waiting_rank_meets_a_hold_of_one_step() {
-    let start = tokio::time::Instant::now();
-    let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
-    let machine = machine_id("a");
-    let policy = default_policy();
-    let at = |secs| {
-        (
-            start + Duration::from_secs(secs),
-            wall + Duration::from_secs(secs),
-        )
-    };
-    let held = clocked(IssuanceFailure::Authority, wall + Duration::from_secs(60));
-
-    let (now, then) = at(1);
-    let first = stepped(None, None, reaches(), 2, now, then);
-    let sleep = wake(first, 2, now, then, &machine, &policy);
-    assert_eq!(sleep, RANK_STEP, "rank 2 slept through the hold");
-
-    let (now, then) = at(1 + sleep.as_secs());
-    let second = stepped(Some(first), Some(&held), reaches(), 2, now, then);
-    assert_eq!(second, HostIssuance::Held(held.clock().unwrap()));
-    let sleep = wake(second, 2, now, then, &machine, &policy);
-    assert_eq!(sleep, Duration::from_secs(29));
-
-    let (now, then) = at(60);
-    assert_eq!(
-        stepped(Some(second), Some(&held), reaches(), 2, now, then),
-        HostIssuance::Waiting {
-            orderable_since: now
-        },
-        "rank 2 orders beside rank 0"
+        "the first open pass after a hold starts the delay again"
     );
 }
 
 #[test]
-fn a_clock_that_holds_ends_the_rank_delay() {
-    let now = tokio::time::Instant::now();
-    let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
-    let waiting = Some(HostIssuance::Waiting {
-        orderable_since: now.checked_sub(Duration::from_secs(600)).unwrap(),
-    });
-    let later = wall + Duration::from_secs(60);
-    let authority = clocked(IssuanceFailure::Authority, later);
-    let unresolved = clocked(IssuanceFailure::Refused(Refusal::DoesNotResolve), later);
-    for verdict in [reaches(), does_not_resolve()] {
-        assert_eq!(
-            stepped(waiting, Some(&authority), verdict, 1, now, wall),
-            HostIssuance::Held(authority.clock().unwrap()),
-            "{verdict:?}"
-        );
-    }
-    assert_eq!(
-        stepped(waiting, Some(&unresolved), does_not_resolve(), 1, now, wall),
-        HostIssuance::Held(unresolved.clock().unwrap())
-    );
-    assert_eq!(
-        stepped(
-            Some(HostIssuance::Held(unresolved.clock().unwrap())),
-            Some(&unresolved),
-            reaches(),
-            1,
-            now,
-            wall
-        ),
-        HostIssuance::Waiting {
-            orderable_since: now
-        },
-        "a changed verdict lifts a refusal's clock early, and the delay starts then"
-    );
-}
-
-#[test]
-fn a_refused_verdict_carries_the_clock_to_record() {
-    let now = tokio::time::Instant::now();
-    let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
-    let policy = default_policy();
-    for rank in [0, 1, 2] {
-        assert_eq!(
-            stepped(None, None, does_not_resolve(), rank, now, wall),
-            HostIssuance::Refused {
-                refusal: Refusal::DoesNotResolve,
-                clock: IssuanceClock::new(
-                    1,
-                    wall + policy.backoff_base(),
-                    IssuanceFailure::Refused(Refusal::DoesNotResolve)
-                ),
-            },
-            "rank {rank}"
-        );
-    }
-}
-
-#[test]
-fn material_is_issued_until_its_renewal_is_due_and_then_renewed_through_the_gate() {
+fn material_reaches_scheduling_with_this_machines_renewal() {
     let day = Duration::from_secs(86_400);
     let row = row_with_lifetime(UNIX_EPOCH, UNIX_EPOCH + day * 90);
     let machine = machine_id("a");
@@ -1489,109 +1255,25 @@ fn material_is_issued_until_its_renewal_is_due_and_then_renewed_through_the_gate
         policy.renew_at_lifetime_fraction(),
     )
     .unwrap();
-    let early = renew_at - Duration::from_secs(10);
+    assert_eq!(held(None, &machine, &policy), Held::Nothing);
     assert_eq!(
-        issued(Some(&row), 0, early, &machine, &policy),
-        Some(HostIssuance::Issued {
+        held(Some(&CertificateRow::default()), &machine, &policy),
+        Held::Nothing
+    );
+    let held = held(Some(&row), &machine, &policy);
+    assert_eq!(
+        held,
+        Held::Material {
+            renew_at: Some(renew_at)
+        }
+    );
+    assert_eq!(
+        issued(held, 0, renew_at - Duration::from_secs(10), &policy),
+        Some(Issuance::Issued {
             renew_due: renew_at
         })
     );
-    assert_eq!(issued(Some(&row), 0, renew_at, &machine, &policy), None);
-    assert_eq!(issued(None, 0, early, &machine, &policy), None);
-    let now = tokio::time::Instant::now();
-    assert_eq!(
-        stepped(None, Some(&row), reaches(), 0, now, renew_at),
-        HostIssuance::Renew(ployz_core::ClusterRoute::Direct)
-    );
-    let clock = IssuanceClock::new(
-        1,
-        renew_at + Duration::from_secs(60),
-        IssuanceFailure::Authority,
-    );
-    let backed_off = row.with_backoff("the renewal failed", clock);
-    assert_eq!(
-        stepped(None, Some(&backed_off), reaches(), 0, now, renew_at),
-        HostIssuance::Held(clock)
-    );
-}
-
-#[test]
-fn a_held_hostname_wakes_when_its_clock_passes_or_at_its_next_probe() {
-    let now = tokio::time::Instant::now();
-    let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
-    let machine = machine_id("a");
-    let policy = default_policy();
-    let wake_of = |state, rank| wake(state, rank, now, wall, &machine, &policy);
-    let authority = |left| {
-        HostIssuance::Held(IssuanceClock::new(
-            1,
-            wall + left,
-            IssuanceFailure::Authority,
-        ))
-    };
-    let unresolved = |left| {
-        IssuanceClock::new(
-            1,
-            wall + left,
-            IssuanceFailure::Refused(Refusal::DoesNotResolve),
-        )
-    };
-    assert_eq!(
-        wake_of(authority(Duration::from_secs(10)), 1),
-        Duration::from_secs(10)
-    );
-    assert_eq!(
-        wake_of(authority(Duration::from_secs(3600)), 1),
-        RETRY_INTERVAL
-    );
-    assert_eq!(wake_of(authority(Duration::ZERO), 1), Duration::ZERO);
-    assert_eq!(
-        wake_of(HostIssuance::Held(unresolved(Duration::from_secs(10))), 1),
-        Duration::from_secs(10)
-    );
-    assert_eq!(
-        wake_of(HostIssuance::Held(unresolved(Duration::from_secs(3600))), 2),
-        RANK_STEP,
-        "a changed verdict lifts a refusal's clock, so it is probed as often as before"
-    );
-    assert_eq!(
-        wake_of(
-            HostIssuance::Refused {
-                refusal: Refusal::DoesNotResolve,
-                clock: unresolved(Duration::from_secs(3600)),
-            },
-            2
-        ),
-        RANK_STEP
-    );
-    assert_eq!(
-        wake_of(
-            HostIssuance::Waiting {
-                orderable_since: now
-            },
-            2
-        ),
-        RANK_STEP
-    );
-    assert_eq!(
-        wake_of(
-            HostIssuance::Order {
-                route: ployz_core::ClusterRoute::Direct,
-                orderable_since: now
-            },
-            1
-        ),
-        RANK_STEP
-    );
-    assert_eq!(
-        wake_of(
-            HostIssuance::Issued {
-                renew_due: wall + Duration::from_secs(10)
-            },
-            0
-        ),
-        Duration::from_secs(10)
-    );
+    assert_eq!(issued(held, 0, renew_at, &policy), None);
 }
 
 #[test]

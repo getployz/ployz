@@ -19,11 +19,14 @@ use instant_acme::{
 };
 use ployz_core::{
     CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute, ContainerKind,
-    ContainerObservation, HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost,
-    IngressPorts, IngressWiring, IssuanceClock, IssuanceFailure, IssuanceGate, Machine, MachineId,
-    PortPublication, Refusal, TUNNEL_SERVES_CERTIFICATE, VerifyAnswer, hostname_verdict,
-    issuance_failure_clock, issuance_gate, refusal_reason, resolve_certificate_policy,
-    validate_ingress_service_spec,
+    ContainerObservation, HOSTNAME_VERIFY_PATH, HttpProtocol, IngressHost, IngressPorts,
+    IngressWiring, IssuanceFailure, Machine, MachineId, PortPublication, TUNNEL_SERVES_CERTIFICATE,
+    VerifyAnswer, hostname_verdict, issuance_failure_clock, issuance_gate, refusal_reason,
+    resolve_certificate_policy, validate_ingress_service_spec,
+};
+use ployz_decide::issuance::{
+    Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, issuance_action, issued,
+    machine_rank, step, wake,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -40,89 +43,8 @@ use crate::{
 
 pub(crate) const DIRECTORY_ENV: &str = "PLOYZ_ACME_DIRECTORY";
 const ACCOUNT_FILE: &str = "account.json";
-const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
-const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const RESUBSCRIBE_INTERVAL: Duration = Duration::from_secs(1);
-/// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
-pub(crate) const RANK_STEP: Duration = CHALLENGE_WAIT;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IssuanceAction {
-    Nothing,
-    Order,
-    Renew,
-}
-
-/// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
-#[must_use]
-pub(crate) fn machine_rank<'id>(
-    this: &MachineId,
-    machines: impl IntoIterator<Item = &'id MachineId>,
-) -> usize {
-    machines.into_iter().filter(|id| *id < this).count()
-}
-
-/// Whether this Machine should order or renew now.
-///
-/// Rank delay uses `RANK_STEP.max(policy.probe_timeout())` so a later rank
-/// cannot start a competing order while an earlier rank is still presenting.
-#[must_use]
-pub(crate) fn issuance_action(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> IssuanceAction {
-    action_due(row, rank, elapsed, now, machine_id, policy).0
-}
-
-fn rank_delay(rank: usize, step: Duration) -> Duration {
-    step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX))
-}
-
-fn issuance_step(policy: &CertificatePolicy) -> Duration {
-    RANK_STEP.max(policy.probe_timeout())
-}
-
-fn action_due(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> (IssuanceAction, Duration) {
-    let delay = rank_delay(rank, issuance_step(policy));
-    match row.and_then(CertificateRow::material) {
-        None => {
-            let wait = delay.saturating_sub(elapsed);
-            let action = if wait.is_zero() {
-                IssuanceAction::Order
-            } else {
-                IssuanceAction::Nothing
-            };
-            (action, wait)
-        }
-        Some(material) => match renew_at(material, machine_id, policy.renew_at_lifetime_fraction())
-        {
-            Some(renew_at) => {
-                let wait = saturating_add(renew_at, delay)
-                    .duration_since(now)
-                    .unwrap_or(Duration::ZERO);
-                let action = if wait.is_zero() {
-                    IssuanceAction::Renew
-                } else {
-                    IssuanceAction::Nothing
-                };
-                (action, wait)
-            }
-            None => (IssuanceAction::Nothing, RETRY_INTERVAL),
-        },
-    }
-}
 
 /// Instant `fraction` of the certificate's own lifetime has elapsed.
 #[must_use]
@@ -195,165 +117,48 @@ fn saturating_add(time: SystemTime, duration: Duration) -> SystemTime {
     time.checked_add(duration).unwrap_or(time)
 }
 
-fn poll_wait(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> Duration {
-    match action_due(row, rank, elapsed, now, machine_id, policy) {
-        (IssuanceAction::Order | IssuanceAction::Renew, _) => RANK_STEP,
-        (IssuanceAction::Nothing, due_in) => due_in.min(RETRY_INTERVAL),
-    }
-}
-
-/// This Machine's view of one wanted Ingress Hostname after a pass of its certificate loop.
-/// It lives only in the loop's memory: each Machine keeps its own, from its own row, verdict
-/// and rank.
+/// A hostname's `Issuance` and the instant its rank delay started, which a hold or a refusal
+/// ends. The loop keeps one per wanted hostname.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HostIssuance {
-    /// The row holds Certificate Material whose renewal is not due before `renew_due`.
-    Issued { renew_due: SystemTime },
-    /// The gate let the pass through, and the rank delay runs from `orderable_since`: this
-    /// Machine's first pass through the gate since its state was anything but `Waiting` or
-    /// `Order`, or since it had none.
-    Waiting { orderable_since: Instant },
-    /// The shared backoff clock holds the hostname.
-    Held(IssuanceClock),
-    /// This Machine's Hostname Verdict refuses the hostname, and `clock` is the backoff it
-    /// records.
-    Refused {
-        refusal: Refusal,
-        clock: IssuanceClock,
-    },
-    /// Order a first certificate along the route, the rank delay from `orderable_since` passed.
-    Order {
-        route: ClusterRoute,
-        orderable_since: Instant,
-    },
-    /// Renew along the route.
-    Renew(ClusterRoute),
+struct Host {
+    issuance: Issuance,
+    since: Instant,
 }
 
-/// `Issued` when the row holds material whose renewal is not due, so the pass needs no probe.
-fn issued(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    wall: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> Option<HostIssuance> {
-    row.and_then(CertificateRow::material)?;
-    match action_due(row, rank, Duration::ZERO, wall, machine_id, policy) {
-        (IssuanceAction::Nothing, wait) => Some(HostIssuance::Issued {
-            renew_due: saturating_add(wall, wait),
-        }),
-        (IssuanceAction::Order | IssuanceAction::Renew, _) => None,
+impl Host {
+    /// How long the rank delay has run.
+    fn orderable_for(self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.since)
     }
 }
 
-/// The next state of a hostname this pass probed: `prev` is its state after this Machine's
-/// last pass, and `row` the row this pass read. A hold or a refusal ends the rank delay, so
-/// the first pass the gate lets through after one starts it again.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "every input of one transition, each a value the pass read"
-)]
-fn step(
-    prev: Option<HostIssuance>,
-    row: Option<&CertificateRow>,
-    verdict: HostnameVerdict,
-    rank: usize,
-    now: Instant,
-    wall: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> HostIssuance {
-    let route = match issuance_gate(
-        row.and_then(CertificateRow::clock),
-        verdict,
-        wall,
-        policy.backoff_base(),
-        policy.backoff_cap(),
-    ) {
-        IssuanceGate::Hold(clock) => return HostIssuance::Held(clock),
-        IssuanceGate::Refuse { refusal, clock } => {
-            return HostIssuance::Refused { refusal, clock };
-        }
-        IssuanceGate::Order(route) => route,
-    };
-    if row.and_then(CertificateRow::material).is_some() {
-        return HostIssuance::Renew(route);
-    }
-    // An order keeps its start, so a rank or a policy that changed since asks for its own
-    // delay.
-    let orderable_since = match prev {
-        Some(
-            HostIssuance::Waiting { orderable_since }
-            | HostIssuance::Order {
-                orderable_since, ..
-            },
-        ) => orderable_since,
-        Some(
-            HostIssuance::Issued { .. }
-            | HostIssuance::Held(_)
-            | HostIssuance::Refused { .. }
-            | HostIssuance::Renew(_),
-        )
-        | None => now,
-    };
-    let elapsed = now.saturating_duration_since(orderable_since);
-    match issuance_action(row, rank, elapsed, wall, machine_id, policy) {
-        IssuanceAction::Order | IssuanceAction::Renew => HostIssuance::Order {
-            route,
-            orderable_since,
+/// What the row holds that scheduling reads: material, and when this Machine renews it.
+fn held(row: Option<&CertificateRow>, machine_id: &MachineId, policy: &CertificatePolicy) -> Held {
+    match row.and_then(CertificateRow::material) {
+        None => Held::Nothing,
+        Some(material) => Held::Material {
+            renew_at: renew_at(material, machine_id, policy.renew_at_lifetime_fraction()),
         },
-        IssuanceAction::Nothing => HostIssuance::Waiting { orderable_since },
     }
 }
 
-/// How long the loop may sleep before `state` wants another pass. A clock that holds wakes
-/// the loop when it passes, and no later than its next probe: `RANK_STEP` after a refusal,
-/// which a changed verdict lifts early, and `RETRY_INTERVAL` after an authority failure, which
-/// only time lifts.
-fn wake(
-    state: HostIssuance,
-    rank: usize,
-    now: Instant,
-    wall: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> Duration {
-    match state {
-        HostIssuance::Issued { renew_due } => renew_due
-            .duration_since(wall)
-            .unwrap_or(Duration::ZERO)
-            .min(RETRY_INTERVAL),
-        // Asks to sleep at most one step, so it meets a hold of a step or more while the loop keeps
-        // that sleep. A read Err's 60 s wait, or another hostname's obtain, can miss the hold.
-        HostIssuance::Waiting { orderable_since } => poll_wait(
-            None,
-            rank,
-            now.saturating_duration_since(orderable_since),
-            wall,
-            machine_id,
-            policy,
-        )
-        .min(RANK_STEP),
-        HostIssuance::Held(clock) | HostIssuance::Refused { clock, .. } => {
-            let probe = match clock.last_failure() {
-                IssuanceFailure::Refused(_) => RANK_STEP,
-                IssuanceFailure::Authority => RETRY_INTERVAL,
-            };
-            clock
-                .next_attempt_at()
-                .duration_since(wall)
-                .unwrap_or(Duration::ZERO)
-                .min(probe)
-        }
-        HostIssuance::Order { .. } | HostIssuance::Renew(_) => RANK_STEP,
+/// The next state of a hostname this pass probed. `prev` is its state after this Machine's
+/// last pass.
+fn advance(prev: Option<Host>, now: Instant, pass: Pass<'_>) -> Host {
+    let stepped = step(
+        prev.map(|host| Prev {
+            issuance: host.issuance,
+            orderable_for: host.orderable_for(now),
+        }),
+        pass,
+    );
+    let since = match prev {
+        Some(host) if stepped.keeps_since => host.since,
+        Some(_) | None => now,
+    };
+    Host {
+        issuance: stepped.issuance,
+        since,
     }
 }
 
@@ -711,7 +516,7 @@ async fn issue_wanted(
     directory_default: &Option<String>,
     account_dir: &Path,
     machine_id: &MachineId,
-    hosts: &mut BTreeMap<IngressHost, HostIssuance>,
+    hosts: &mut BTreeMap<IngressHost, Host>,
 ) -> Result<Duration, Error> {
     // A read Err returns with `hosts` as it was, so an error does not cost a delay already
     // earned. A pass the policy or a missing directory stops is a blocked pass, as a hold is.
@@ -735,8 +540,12 @@ async fn issue_wanted(
     let mut to_order = Vec::new();
     for hostname in &wanted {
         let row = rows.get(hostname.as_str());
-        let state = match issued(row, rank, wall, machine_id, &policy) {
-            Some(state) => state,
+        let held = held(row, machine_id, &policy);
+        let host = match issued(held, rank, wall, &policy) {
+            Some(issuance) => Host {
+                issuance,
+                since: now,
+            },
             None => {
                 let addresses = resolve_host(hostname)
                     .await
@@ -745,13 +554,30 @@ async fn issue_wanted(
                     .collect::<Vec<_>>();
                 let answers = verify_answers(&verify_client, hostname, &addresses).await;
                 let verdict = hostname_verdict(&answers, &machine_ids, &cluster);
+                let gate = issuance_gate(
+                    row.and_then(CertificateRow::clock),
+                    verdict,
+                    wall,
+                    policy.backoff_base(),
+                    policy.backoff_cap(),
+                );
                 let prev = hosts.get(hostname).copied();
-                step(prev, row, verdict, rank, now, wall, machine_id, &policy)
+                advance(
+                    prev,
+                    now,
+                    Pass {
+                        gate,
+                        held,
+                        rank,
+                        wall,
+                        policy: &policy,
+                    },
+                )
             }
         };
-        hosts.insert(hostname.clone(), state);
-        match state {
-            HostIssuance::Refused { refusal, clock } if rank == 0 => {
+        hosts.insert(hostname.clone(), host);
+        match host.issuance {
+            Issuance::Refused { refusal, clock } if rank == 0 => {
                 let reason = refusal_reason(hostname, refusal, &cluster);
                 let tried = row.and_then(CertificateRow::material);
                 match store
@@ -771,13 +597,13 @@ async fn issue_wanted(
                     ),
                 }
             }
-            HostIssuance::Order { route, .. } | HostIssuance::Renew(route) => {
+            Issuance::Order(route) | Issuance::Renew(route) => {
                 to_order.push((hostname, route));
             }
-            HostIssuance::Issued { .. }
-            | HostIssuance::Waiting { .. }
-            | HostIssuance::Held(_)
-            | HostIssuance::Refused { .. } => {}
+            Issuance::Issued { .. }
+            | Issuance::Waiting
+            | Issuance::Held(_)
+            | Issuance::Refused { .. } => {}
         }
     }
     if !to_order.is_empty() {
@@ -837,7 +663,7 @@ async fn issue_wanted(
     let wall = SystemTime::now();
     Ok(hosts
         .values()
-        .map(|state| wake(*state, rank, now, wall, machine_id, &policy))
+        .map(|host| wake(host.issuance, rank, host.orderable_for(now), wall, &policy))
         .min()
         .unwrap_or(RETRY_INTERVAL))
 }
@@ -861,15 +687,10 @@ async fn obtain(
     machine_id: &MachineId,
 ) -> Result<(), Error> {
     let row = store.certificate_row(hostname).await?;
-    if row.material().is_some()
-        && issuance_action(
-            Some(&row),
-            rank,
-            Duration::ZERO,
-            SystemTime::now(),
-            machine_id,
-            policy,
-        ) == IssuanceAction::Nothing
+    let held = held(Some(&row), machine_id, policy);
+    if held != Held::Nothing
+        && issuance_action(held, rank, Duration::ZERO, SystemTime::now(), policy)
+            == IssuanceAction::Nothing
     {
         return Ok(());
     }
