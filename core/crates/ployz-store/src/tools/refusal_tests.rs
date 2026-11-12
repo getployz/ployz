@@ -218,10 +218,13 @@ fn a_claim_refusal_carries_the_claim_url() {
 
 #[test]
 fn a_domain_key_is_no_setting() {
-    assert_eq!(not_setting("managedHostnames"), Some("domain_add"));
-    assert_eq!(not_setting("volumes"), Some("volume_add"));
+    assert_eq!(
+        not_setting("managedHostnames").map(ToolId::name),
+        Some("domain_add")
+    );
+    assert_eq!(not_setting("volumes").map(ToolId::name), Some("volume_add"));
     assert_eq!(not_setting("image"), None);
-    assert!(not_setting_sentence("domain_add").contains("domain_update"));
+    assert!(not_setting_sentence(ToolId::DomainAdd).contains("domain_update"));
 }
 
 #[test]

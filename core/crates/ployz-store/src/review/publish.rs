@@ -188,7 +188,11 @@ pub(crate) fn publish(
         // Nothing staged: Head already is Working State. Proposals ending still
         // moves the revision, so a review of them is stale.
         if consumed {
-            scope::persist_working(tx, &mut environment)?;
+            scope::write_working(
+                tx,
+                &mut environment,
+                scope::WorkingWrite::Trusted(scope::Reason::Publish),
+            )?;
         }
         return Ok(Published {
             environment: environment.summary,
@@ -251,7 +255,11 @@ pub(crate) fn publish(
     let mut summary = environment.summary;
     if consumed && !created {
         let mut whole = scope::load_by_id(tx, &summary.id)?;
-        scope::persist_working(tx, &mut whole)?;
+        scope::write_working(
+            tx,
+            &mut whole,
+            scope::WorkingWrite::Trusted(scope::Reason::Publish),
+        )?;
         summary = whole.summary;
     }
     Ok(Published {
@@ -283,7 +291,11 @@ pub(crate) fn discard(
     if discard.path.is_none() && crate::branch::end_included(tx, &environment.id, None)? && !changed
     {
         let mut whole = scope::load_by_id(tx, &environment.id)?;
-        scope::persist_working(tx, &mut whole)?;
+        scope::write_working(
+            tx,
+            &mut whole,
+            scope::WorkingWrite::Trusted(scope::Reason::Publish),
+        )?;
         environment = whole.summary;
     }
     let before = reviewed.view.review_changes();

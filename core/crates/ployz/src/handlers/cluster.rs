@@ -8,12 +8,13 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::{Error, leaf_matches, runtime, server};
-use crate::approval::{self, Verb};
+use crate::approval;
 use crate::cli::{base, positional};
 use crate::cloud_account::{Credential, Via};
 use crate::cluster::Client;
 use crate::published;
 use crate::ui;
+use ployz_store::OperationVerb;
 
 pub(crate) fn group(command: Command) -> Command {
     command.about("Name the Cluster")
@@ -84,7 +85,7 @@ fn through_cloud(
     let ran = approval::approved(
         runtime,
         credential,
-        Verb::SetClusterName,
+        OperationVerb::SetClusterName,
         leaf.get_one::<String>("approval").cloned(),
         |id| server::approved_rerun(leaf, &["cluster", "name", name.as_str()], id),
         async |approval| {

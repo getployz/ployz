@@ -185,6 +185,7 @@ fn canonical_doors(
 /// # Errors
 ///
 /// Returns [`IngressProxyServiceSpecError`] when the spec matches no canonical wiring.
+#[cfg(test)]
 pub fn validate_requested_ingress_service_spec(
     spec: &RequestedServiceSpec,
 ) -> Result<IngressWiring, IngressProxyServiceSpecError> {

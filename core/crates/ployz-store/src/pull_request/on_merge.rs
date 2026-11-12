@@ -503,7 +503,7 @@ pub(crate) fn set_merge_value(
                 &label,
                 value,
                 &landing.into,
-                crate::old_cli::Guard::from(trusted),
+                trusted.sealer(who),
             )?),
             (SecretValue::ClientSealed(_), false) => {
                 return Err(error::invalid(
@@ -1101,9 +1101,13 @@ fn land_one(
             trusted,
         )?;
     } else if consumed {
-        scope::persist_working(tx, &mut destination)?;
+        scope::write_working(
+            tx,
+            &mut destination,
+            scope::WorkingWrite::Trusted(scope::Reason::Landing),
+        )?;
     } else {
-        scope::persist_removed(tx, &mut destination)?;
+        scope::write_working(tx, &mut destination, scope::WorkingWrite::Removed)?;
     }
 
     // The pair shares the PR Environment's values: an Edit is the Destination's own

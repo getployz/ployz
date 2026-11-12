@@ -43,14 +43,25 @@ pub(crate) const PLAINTEXT_REFUSED: &str = "secrets are sealed on your device";
 pub(crate) const NO_SERVER: &str = "Add a server to set sealed values.";
 
 /// What the Store seals to when it holds a plaintext itself, such as a generated
-/// secret: the Cluster's key, which only its Machines open.
+/// secret: the Cluster's key, which only its Machines open. It also knows whether a
+/// plain-text secret came from a CLI that should have sealed it.
 #[derive(Clone, Copy)]
 pub(crate) struct Sealer<'a> {
     pub(crate) organization: &'a OrganizationId,
     pub(crate) recipient: Option<&'a SealingRecipient>,
+    pub(crate) from_cli: bool,
 }
 
 impl Sealer<'_> {
+    /// The refusal a plain-text secret for variable `key` gets: `otherwise`, or
+    /// `unsupported` naming the update when it came from the CLI.
+    pub(crate) fn refuse(self, key: &str, otherwise: RpcError) -> RpcError {
+        if self.from_cli {
+            return crate::old_cli::told_to_update(key);
+        }
+        otherwise
+    }
+
     /// `plaintext` sealed as variable `key` of the Service with ID `service` in
     /// `environment`, as the browser would seal it there.
     ///

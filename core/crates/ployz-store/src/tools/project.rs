@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::ToolId;
 use super::machine::{Cx, Effect, Stop, Tool, at};
 use super::refusal::Call;
 use super::step::RequestKey;
@@ -47,7 +48,7 @@ impl Tool for ProjectCreate {
             "at": at(&created.environment),
             "project": created.project.name,
             "environment": created.environment.name,
-            "next": Call::new("environment_show", json!({ "project": created.project.name })),
+            "next": Call::to(ToolId::EnvironmentShow, json!({ "project": created.project.name })),
         }))
     }
 }

@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::ToolId;
 use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::{Call, Refusal};
 use super::step::{AcceptedLoss, Gate, RequestKey};
@@ -353,7 +354,7 @@ impl Tool for DeployInput {
             "saved_revision": deployment.saved.0,
             "services": deployment.services,
             "prunes": deployment.prune,
-            "next": Call::new("deployment_show", next.into()),
+            "next": Call::to(ToolId::DeploymentShow, next.into()),
         }))
     }
 }

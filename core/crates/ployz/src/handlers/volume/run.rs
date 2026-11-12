@@ -11,8 +11,8 @@ use ployz_core::{
     Hint, MachineName, ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode,
 };
 use ployz_store::{
-    EnvironmentId, EnvironmentName, EnvironmentSummary, ProjectName, VolumeId, VolumeName,
-    VolumeQuery, VolumeView, VolumesQuery,
+    EnvironmentId, EnvironmentName, EnvironmentSummary, OperationVerb, ProjectName, VolumeId,
+    VolumeName, VolumeQuery, VolumeView, VolumesQuery,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::super::store::{self, Backend, Next};
 use super::super::{Error, leaf_matches};
 use super::approve::MirrorOn;
-use crate::approval::{self, Asked, Verb};
+use crate::approval::{self, Asked};
 use crate::cli::{approval as approval_arg, positional, switch, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::ui::{Cell, Fields, Table, Tone};
@@ -928,7 +928,7 @@ fn approved(
 ) -> Result<Result<VolumeRun, StoreCallError>, Error> {
     let (verb, mut words) = if let Some((slot, confirm, if_old_copy)) = asked.ask.removal() {
         (
-            Verb::RemoveMirror,
+            OperationVerb::RemoveMirror,
             removal_words(volume, slot, if_old_copy, confirm),
         )
     } else {
@@ -941,13 +941,14 @@ fn approved(
                 .collect::<Vec<_>>()
         };
         match &asked.ask {
-            RunAsk::Release => (Verb::Release, words("release", &[])),
-            RunAsk::Move { to, .. } => (Verb::Move, words("move", &["--to", to.as_str()])),
-            RunAsk::Restore { from, .. } => {
-                (Verb::Restore, words("restore", &["--from", from.as_str()]))
-            }
+            RunAsk::Release => (OperationVerb::Release, words("release", &[])),
+            RunAsk::Move { to, .. } => (OperationVerb::Move, words("move", &["--to", to.as_str()])),
+            RunAsk::Restore { from, .. } => (
+                OperationVerb::Restore,
+                words("restore", &["--from", from.as_str()]),
+            ),
             RunAsk::Resize { maximum_bytes, .. } => (
-                Verb::Resize,
+                OperationVerb::Resize,
                 words("set", &["--size", size_word(*maximum_bytes).as_str()]),
             ),
             RunAsk::Mirror { .. }

@@ -11,13 +11,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::target;
-use crate::approval::{self, Verb};
+use crate::approval;
 use crate::cloud_account::{self, Credential};
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
     Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
 };
 use crate::handlers::{Error, leaf_matches, runtime, store, with_client};
+use ployz_store::OperationVerb;
 
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
 
@@ -64,7 +65,7 @@ fn through_cloud(
     let id = approval::approved(
         runtime,
         credential,
-        Verb::Drain,
+        OperationVerb::Drain,
         matches.get_one::<String>("approval").cloned(),
         |id| super::approved_rerun(matches, &["server", "drain", selector], id),
         async |approval| {
