@@ -3,6 +3,7 @@ import { Option, Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
+import type { PlacementApproval } from "./placement-approvals";
 import { epochOf, planFromCopies, planSeed } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -57,8 +58,11 @@ export type Placement = {
   readonly seed?: Seed;
 };
 
-/** The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark. */
-export type StoredPlacement = Placement & { readonly unreached?: true };
+/**
+ * The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark.
+ * `approvals` are the person's passkey answers for the Deploy that runs it, which staging again drops.
+ */
+export type StoredPlacement = Placement & { readonly unreached?: true; readonly approvals?: readonly PlacementApproval[] };
 
 /**
  * The dashboard's record of a Volume's placement. Which copies are mirrors is each Server's to say. `mirrors` is only

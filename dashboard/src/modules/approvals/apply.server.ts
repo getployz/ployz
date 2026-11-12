@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { ConfigCommand, DiffView, Signed } from "@ployz/sdk";
 import { Cause, Effect, Predicate } from "effect";
 import { toErrorMessage } from "#/lib/error-message";
-import type { ApprovalDecision, ServiceApply, VolumeApply } from "#/modules/approvals/approvals";
+import type { ApprovalDecision, KeptVolumeApproval, ServiceApply, VolumeApply } from "#/modules/approvals/approvals";
 import { type ApprovalView, type Decider, decideApproval, onceFor, type OperationDigest, readAsker, undoApproval } from "#/modules/approvals/approvals.server";
 import { callStore, writePermission } from "#/modules/config-store/config-store.server";
 import { findService } from "#/modules/config-store/store-lookup.server";
@@ -103,7 +103,8 @@ const applyApproved = Effect.fn("Approvals.applyApproved")(function* (organizati
 
 /**
  * `decideApproval`, and once this decision approves a dashboard ask into a Protected Environment, what it waited on
- * runs, with the `approvals` the approver's browser made for a restart on Servers that enforce. When it doesn't run, the
+ * runs, with the `approvals` the approver's browser made for a restart on Servers that enforce. `volume` is the
+ * approver's passkey answer to a Volume run's workflow, kept with the approval for the run its asker asks again. When it doesn't run, the
  * approval is handed back, to pending or superseded when its plan moved, and the decider is told which. Only the decision that approved the row runs it, so approving again never runs it twice.
  */
 export const decideAndApply = <R = never>(
@@ -112,8 +113,9 @@ export const decideAndApply = <R = never>(
   decision: ApprovalDecision,
   operationDigest?: OperationDigest<R>,
   approvals?: Approvals,
+  volume?: KeptVolumeApproval,
 ) => Effect.gen(function* () {
-  const decided = yield* decideApproval(decider, id, decision, operationDigest);
+  const decided = yield* decideApproval(decider, id, decision, operationDigest, volume);
   if (!decided.ok || decided.decided !== true || !("approve" in decision)) return decided;
   const failed = yield* applyApproved(decider.organization.id, decided.approval, approvals).pipe(
     Effect.catchCause((cause) => {

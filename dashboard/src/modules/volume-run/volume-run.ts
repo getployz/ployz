@@ -25,8 +25,9 @@ type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 /**
  * The Device-signed approval the CLI sends. A Mirror run sends it with every snapshot and pull, and the Mirror keeps it
  * for the syncs after. A Move sends it with every step, and its release with the resume or the start that ends it. A
- * resize sends it with each Server's new size. A Restore sends it with the promotion, and a Mirror removal with the
- * slot's Forget. An enforcing Server refuses those steps without one; others ignore it.
+ * resize sends it with each Server's new size. A Restore sends it with the promotion, a Mirror removal with the slot's
+ * Forget, and a seed with the copy. A Device signs it, or in the dashboard a passkey answers its own prompt for it. An
+ * enforcing Server refuses those steps without one; others ignore it.
  */
 type Approved = { readonly approval?: Signed };
 
@@ -68,7 +69,7 @@ export type VolumeRunArgs = {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
     readonly guid: string;
     readonly name: string;
-  };
+  } & Approved;
   /**
    * The size every copy is asked to hold, in whole bytes, as `SetVolumeSizeRequest` names it. The size it moves from
    * is the row's `recordedBytes`, read from the Store when the run was requested.
@@ -94,9 +95,48 @@ export type VolumeRunInput = {
 }[VolumeRunRequestKind];
 export type VolumeLaneInput = VolumeRunInput | { readonly kind: "deploy"; readonly args: VolumeRunArgs["deploy"] };
 
+/**
+ * `input` carrying `approval`, and for a Move or its release `service`, the spec its target starts. A deploy's lane
+ * carries none of its own.
+ */
+export function carrying(input: VolumeRunInput, approval: Signed, service?: ResolvedServiceSpec): VolumeRunInput {
+  switch (input.kind) {
+    case "move":
+      return { kind: "move", args: { ...input.args, approval, ...(service !== undefined && { service }) } };
+    case "release":
+      return { kind: "release", args: { ...input.args, approval, ...(service !== undefined && { service }) } };
+    case "mirror":
+      return { kind: "mirror", args: { ...input.args, approval } };
+    case "sync":
+      return { kind: "sync", args: { ...input.args, approval } };
+    case "delete_mirror":
+      return { kind: "delete_mirror", args: { ...input.args, approval } };
+    case "restore":
+      return { kind: "restore", args: { ...input.args, approval } };
+    case "seed":
+      return { kind: "seed", args: { ...input.args, approval } };
+    case "resize":
+      return { kind: "resize", args: { ...input.args, approval } };
+  }
+}
+
 export const VOLUME_RUN_UNCLAIMED_LIMIT_MS = 10 * 60_000;
 export const VOLUME_RUN_RUNNING_CHECK_MS = 15 * 60_000;
 export const VOLUME_RUN_MESSAGE_LIMIT = 1024;
+
+/**
+ * One Server's answer to a step a run asked under an approval: whether it took the step, as it said. Cloud records what
+ * each Server answered; it neither makes nor checks one.
+ */
+export type StepAnswer = {
+  readonly machine: MachineId;
+  readonly name: string;
+  /** The step as the run asked it: `writer`, `mirror`, `none`, `size` or `seed`. */
+  readonly step: string;
+  readonly accepted: boolean;
+  /** ISO time Cloud heard it. */
+  readonly at: string;
+};
 
 export type VolumeRunView = {
   readonly id: string;
@@ -111,6 +151,8 @@ export type VolumeRunView = {
   readonly created_at: string;
   readonly updated_at: string;
   readonly finished_at: string | null;
+  /** What each Server answered to the steps the run asked under its approval, oldest first. */
+  readonly answers: StepAnswer[];
 };
 
 export type Member =
@@ -127,6 +169,8 @@ export type Member =
       readonly enforces?: boolean;
       /** The Server signs a handoff receipt as a Move's source, and as its target needs one to become the writer. */
       readonly handoff?: boolean;
+      /** The Server takes a passkey's own answer to a Volume workflow, so the dashboard can approve one it enforces. */
+      readonly passkey?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

@@ -472,11 +472,13 @@ describe("plan a run on Servers that enforce device approval", () => {
     expect(outcome(input, members)).toBe(expected);
   });
 
-  it("names the Server and the command that turns enforcement off", () => {
-    expect(planFromCopies(seed, [writer, member("b", "mirror")])).toMatchObject({
+  it("asks for the person's passkey for a seed that carries no approval, and plans one that does", () => {
+    expect(planFromCopies(seed, [writer, member("b", "mirror")])).toEqual({
       ok: false,
-      refusal: { code: "enforced", message: expect.stringContaining("a enforces device approval, so Ployz Cloud can't restore data into a new volume until a later release.") },
+      refusal: { code: "enforced", message: "a enforces device approval, so restoring data into a new volume needs your passkey. Restore it again from the volume's Copies tab." },
     });
+    const carried = { ...seed, args: { ...seed.args, approval: { body: "{}", signatures: [] } } };
+    expect(planFromCopies(carried, [writer, member("b", "mirror")])).toMatchObject({ ok: true, phase: { kind: "seed" } });
   });
 
   it("names the command that restores or deletes a copy from an approved device", () => {
@@ -776,7 +778,7 @@ describe("follow every next step a refusal names", () => {
   // twin sets it, and `tied` then sees it.
   type Complete<T> = T extends string | number | bigint | boolean | null | undefined ? T : { [K in keyof T]-?: Complete<T[K]> };
   const twin = (id: string, floorless: boolean, copy: Complete<VolumeCopy>): AnsweredMember => ({
-    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null, enforces: false, handoff: false,
+    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null, enforces: false, handoff: false, passkey: false,
   } satisfies Required<AnsweredMember>);
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;
@@ -802,9 +804,10 @@ describe("follow every next step a refusal names", () => {
   it("pairs twins that tie only where they must", () => {
     // A leaf may tie only if it makes the member a slot or a cut, if the settled rule ranks it ahead of the name, or if
     // only orphan deletes read it, which follow never plans. `machine.name` is the placeholder each row replaces.
-    // `enforces` refuses a run and never picks a Server, and `handoff` only says how a Move's source decides.
-    expect(tied(slotA, slotB)).toEqual(["answered", "enforces", "handoff", "machine.name", "view.copy.kind", "view.copy.readonly"]);
-    const cut = ["answered", "enforces", "handoff", "machine.name", "view.copy.epoch", "view.copy.kind", "view.copy.newest", "view.copy.readonly", "view.copy.seed"];
+    // `enforces` refuses a run and never picks a Server, `handoff` only says how a Move's source decides, and `passkey`
+    // only says whether the dashboard can approve a run there.
+    expect(tied(slotA, slotB)).toEqual(["answered", "enforces", "handoff", "machine.name", "passkey", "view.copy.kind", "view.copy.readonly"]);
+    const cut = ["answered", "enforces", "handoff", "machine.name", "passkey", "view.copy.epoch", "view.copy.kind", "view.copy.newest", "view.copy.readonly", "view.copy.seed"];
     expect(tied(bareA, bareB)).toEqual(cut);
     expect(tied(heldA, heldB)).toEqual(cut.filter((leaf) => leaf !== "view.copy.newest"));
   });

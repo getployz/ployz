@@ -26,11 +26,12 @@ import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.place
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
-  appliedMirrors, editPlacement, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
+  appliedMirrors, editPlacement, lossMoment, lossTime, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
   placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
+import { type ApprovalProgress, approvalProgress, serverLine } from "#/modules/volume-run/approval-progress";
 import { holdersOf } from "#/modules/volume-run/resize-check";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers, useVolumeOwed } from "#/modules/volume-run/volume-run.queries";
@@ -130,7 +131,10 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
   if (members === undefined) return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
   const recovered = recovery(volume, members, row, accepting, owed, floorless);
-  const alert = recovered === null ? null : <RecoveryAlert {...props} recovery={recovered} now={now} />;
+  const progress = props.running === null ? null
+    : approvalProgress(props.running, now.getTime(), (id) => members.find((member) => member.machine.id === id)?.machine.name);
+  const approved = progress === null ? null : <RunApprovalAlert progress={progress} />;
+  const alert = recovered === null ? approved : <>{approved}<RecoveryAlert {...props} recovery={recovered} now={now} /></>;
   const target = targetPlacement(observePlacement(members), row);
   const seed = seedOffer(volume, members, props.restorable, floorless);
   const needs = props.upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {props.upgrade.join(", ")} to a newer Ployz</p> : null;
@@ -153,6 +157,16 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
   const resolved = { ...props, members, row, copies, now, seeds: seed.offered, seedRefused: seed.refused };
   if (mirror !== undefined) return <CopyView {...resolved} copy={mirror} alert={alert} onBack={() => onOpen(null)} />;
   return <CopiesView {...resolved} target={target} alert={alert} needs={needs} />;
+}
+
+/** A run asked under the person's passkey approval: until when it holds, then whether the run finishes, and each Server's answer. */
+function RunApprovalAlert({ progress }: { progress: ApprovalProgress }) {
+  return <Alert>
+    <AlertTitle>{progress.note ?? `Approved until ${lossTime(new Date(progress.expiresAt))}`}</AlertTitle>
+    <AlertDescription>
+      <ul aria-label="Server answers">{progress.servers.map((server) => <li key={server.machine}>{serverLine(server)}</li>)}</ul>
+    </AlertDescription>
+  </Alert>;
 }
 
 function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deploying, upgrade, stage, recovery: recovered, now }:

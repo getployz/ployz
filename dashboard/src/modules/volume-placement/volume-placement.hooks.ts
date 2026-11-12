@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { ConfigWritten, EnvironmentRef, MachineId, MachineName, VolumeListing } from "@ployz/sdk";
 import { useMinute } from "#/hooks/use-minute";
@@ -9,10 +9,14 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
-  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, placementLoss, type PlacementLoss, type PlacementVolume, type RestorePoint,
+  appliedMirrors, observePlacement, type Placement, type PlacementChange, placementChanges, placementGroup, placementLoss, type PlacementLoss, type PlacementRow,
+  type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
 } from "./volume-placement";
-import { deleteCopyServerFn, discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
+import { approveVolume, VolumeNotApproved, type VolumeScope } from "#/modules/approval-session/volume-approval";
+import { readVolumeScope } from "#/modules/volume-run/volume-approval-scope";
+import { type PlacementApproval, type PlacementAsk, placementAsks, seedAsk } from "./placement-approvals";
+import { deleteCopyServerFn, discardPlacementServerFn, keepPlacementApprovalsServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
 type PlacementResult = { readonly ok: true } | { readonly ok: false; readonly refusal: { readonly message: string } };
@@ -75,6 +79,11 @@ export type StagedPlacements = {
   readonly undo: (volumeId: string, path: string) => void;
   /** Discards every staged row after `discardStore`, which takes the Store's half, including each staged restore's Volume. */
   readonly discardAll: (discardStore: () => Promise<ConfigWritten | undefined>) => void;
+  /**
+   * Asks the person's passkey once for each Volume workflow the next Deploy runs on a Server that enforces device approval,
+   * and keeps the answers on the staged rows. False when they cancel one; throws `VolumeNotApproved` or a refusal.
+   */
+  readonly approve: () => Promise<boolean>;
 };
 
 /**
@@ -96,6 +105,7 @@ export function useStagedPlacements(
     const changes = placementChanges(volume, answered, row);
     return changes.length === 0 ? [] : [{ volume, row, members: answered, changes }];
   });
+  const queryClient = useQueryClient();
   const now = useMinute() ?? new Date();
   const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.unreached));
   const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId, environment } });
@@ -115,6 +125,22 @@ export function useStagedPlacements(
         organizationSlug, volumeId, environment, staged: undoPlacement(entry.volume, entry.members, entry.row, change), mirrors: [...mirrors],
       } })]);
     },
+    approve: async () => {
+      const kept: (PlacementApproval & { readonly volumeId: string })[] = [];
+      for (const { volume, row, changes } of staged) {
+        const asked = await placementApprovalAsks(queryClient, organizationSlug, environment, volume, row, changes);
+        for (const { scope, ask } of asked) {
+          const approved = await approveVolume(scope, ask.change);
+          if (approved === null) return false;
+          if (approved === undefined) continue;
+          kept.push({ volumeId: volume.id, run: ask.run, machine: ask.machine, approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) });
+        }
+      }
+      if (kept.length === 0) return true;
+      const result = await keepPlacementApprovalsServerFn({ data: { organizationSlug, environment, approvals: kept } });
+      if (!result.ok) throw new VolumeNotApproved(result.refusal.message);
+      return true;
+    },
     // Every staged row, not just the groups shown: a restore whose Volume the Store discard takes may not have answered yet.
     discardAll: (discardStore) => {
       // One after another: a restore's discard takes the Environment alone, so a sibling sent alongside finds it held.
@@ -124,6 +150,31 @@ export function useStagedPlacements(
       }, [])), () => undefined);
     },
   };
+}
+
+/**
+ * The Volume workflows `volume`'s staged changes run, each drafted over its Servers' answers read afresh, with the
+ * scope its approval names. A Move reads the spec its Service runs on the Server it leaves; a restore into a new Volume
+ * is drafted on its source's Servers.
+ */
+async function placementApprovalAsks(
+  queryClient: QueryClient, organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume, row: PlacementRow,
+  changes: readonly PlacementChange[],
+): Promise<{ readonly scope: VolumeScope; readonly ask: PlacementAsk }[]> {
+  const seed = changes.find((change) => change.kind === "seed");
+  if (seed !== undefined) {
+    const source = await readVolumeScope(queryClient, organizationSlug, environment, seed.source.id);
+    const primary = observePlacement(source.members).primary;
+    if (primary === null) return [];
+    const scope: VolumeScope = { ...source, dockerVolume: seed.dockerVolume, name: seed.volume.name };
+    return [{ scope, ask: seedAsk(seed, source.dockerVolume, primary.id) }];
+  }
+  const moving = changes.find((change) => change.kind === "move" && change.how !== "restore");
+  const from = moving?.kind === "move" ? moving.from?.id ?? null : null;
+  const read = await readVolumeScope(queryClient, organizationSlug, environment, volume.id, from);
+  const fresh = placementChanges(volume, read.members, row);
+  const removing = fresh.flatMap((change) => (change.kind === "remove_mirror" ? [change.server.id] : []));
+  return fresh.flatMap((change) => placementAsks(volume.name, change, read.members, read, removing).map((ask) => ({ scope: read, ask })));
 }
 
 export function usePlacementStaged(organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume) {

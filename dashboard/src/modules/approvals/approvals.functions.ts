@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import type { Signed } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
+import { MoveService, VolumeApproval } from "#/modules/operations/cli-wire";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { askerNames, type ApprovalView, readAsker } from "#/modules/approvals/approvals.server";
 import { ApprovalsInput } from "#/modules/approval-session/approvals-input";
@@ -54,12 +55,14 @@ export const decideApprovalServerFn = createServerFn({ method: "POST" })
     decision: ApprovalDecision,
     /** For a restart or stop on Servers that enforce: one approval per container, from the approver's passkey session. */
     approvals: Schema.optional(ApprovalsInput),
+    /** For a Volume run on Servers that enforce: the approver's passkey answer to its workflow, and a Move's spec. */
+    volume: Schema.optional(Schema.Struct({ approval: VolumeApproval, service: Schema.optional(MoveService) })),
   })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "approvals:answer");
     // SAFETY: the schema bounds each field's shape; Servers parse and verify the rest.
     const approvals = data.approvals as Readonly<Record<string, Signed>> | undefined;
-    const decided = yield* decideAndApply({ ...access, via: "dashboard" }, data.id, data.decision, freshOperationDigest, approvals).pipe(
+    const decided = yield* decideAndApply({ ...access, via: "dashboard" }, data.id, data.decision, freshOperationDigest, approvals, data.volume).pipe(
       Effect.catchTag("NotFound", (missing) => Effect.succeed({ ok: false as const, refusal: { message: missing.message } })),
     );
     return decided.ok

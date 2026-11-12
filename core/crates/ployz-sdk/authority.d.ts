@@ -9,6 +9,7 @@ export type {
   BuildPolicy,
   DeployApproval,
   DeployTerms,
+  DraftWorkflow,
   GrantBody,
   PayloadDigest,
   PrivateAccessApproval,

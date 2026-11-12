@@ -19,7 +19,7 @@ import { landAnswer } from "#/modules/private-access/private-access.queries";
 import { toast } from "sonner";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
-import { approvalOptions, approverApprovals, decideApproval, landDecision, refetchApprovals, runsServiceAct, type ApprovalView } from "./approvals.queries";
+import { approvalOptions, approverApprovals, approverVolumeApproval, askedVolumeRun, decideApproval, landDecision, refetchApprovals, runsServiceAct, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 
 /**
@@ -85,7 +85,15 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
       return null;
     }) : undefined;
     if (approvals === null) return setSending(false);
-    const answer = await decideApproval(organizationSlug, approval.id, decision, approvals);
+    // A Volume run on Servers that enforce runs with this approver's passkey answer to its workflow.
+    const volume = "approve" in decision && askedVolumeRun(approval) !== null
+      ? await approverVolumeApproval(queryClient, organizationSlug, approval).catch((error: Error) => {
+        setRefused(error.message || "Your passkey didn't answer. Try again.");
+        return null;
+      })
+      : undefined;
+    if (volume === null) return setSending(false);
+    const answer = await decideApproval(organizationSlug, approval.id, decision, approvals, volume);
     setSending(false);
     if (answer.ok) return landDecision(queryClient, organizationSlug, approval.id, answer.decided);
     setRefused(answer.message);

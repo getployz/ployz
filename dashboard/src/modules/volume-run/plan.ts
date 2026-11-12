@@ -115,17 +115,16 @@ const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =
 const refuse = (code: RefusalCode, message: string, next?: string): Planned => ({ ok: false, refusal: { code, message, ...(next !== undefined && { next }) } });
 
 /**
- * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A seed a
- * Server it writes on would refuse, since that Server enforces device approval, is refused here, before anything
- * stops. So is a Move, a Mirror, a full Sync, a Restore or a Mirror removal that carries no approval: a Move would
- * otherwise stop the Service before its start met the refusal, and a full Sync forget the Mirror's copy before its pull
- * did.
+ * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A Move, a
+ * Mirror, a full Sync, a Restore, a Mirror removal or a seed that carries no approval, through a Server that enforces
+ * device approval, is refused here, before anything stops: a Move would otherwise stop the Service before its start met
+ * the refusal, and a full Sync forget the Mirror's copy before its pull did.
  */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const planned = planCopies(input, observed);
   if (!planned.ok) return planned;
-  const unapproved = (input.kind === "mirror" || input.kind === "sync" || input.kind === "move" || input.kind === "restore" || input.kind === "delete_mirror")
-    && input.args.approval === undefined;
+  const unapproved = (input.kind === "mirror" || input.kind === "sync" || input.kind === "move" || input.kind === "restore" || input.kind === "delete_mirror"
+    || input.kind === "seed") && input.args.approval === undefined;
   const enforcing = gatedOn(planned.phase, unapproved).find((member) => member.enforces === true);
   return enforcing === undefined ? planned : enforcedRefusal(planned.phase, input.volumeName, enforcing.machine.name);
 }
@@ -133,9 +132,9 @@ export function planFromCopies(input: PlanInput, observed: readonly Member[]): P
 type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
 
 /**
- * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud: a seed, and an `unapproved` Move's
- * start on B and release back to A's stopped Container, Mirror's snapshot and pull, Restore's promotion, or removal of
- * a slot that holds a snapshot. A slot with none holds no data, so its Server deletes it unasked.
+ * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud without an approval: an `unapproved`
+ * seed's copy, Move's start on B and release back to A's stopped Container, Mirror's snapshot and pull, Restore's
+ * promotion, or removal of a slot that holds a snapshot. A slot with none holds no data, so its Server deletes it unasked.
  */
 function gatedOn(phase: PlannedPhase, unapproved: boolean): readonly AnsweredMember[] {
   switch (phase.kind) {
@@ -144,7 +143,7 @@ function gatedOn(phase: PlannedPhase, unapproved: boolean): readonly AnsweredMem
     case "landed":
       return unapproved ? [phase.target, ...phase.behind] : [];
     case "seed":
-      return [phase.source];
+      return unapproved ? [phase.source] : [];
     case "mirror":
       return unapproved ? [phase.writer, phase.target] : [];
     case "sync":
@@ -175,7 +174,7 @@ function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Pla
       return refuse("enforced", `${own} delete ${slot} on its own. Run ployz volume mirror rm ${slot}${ifOldCopy(phase.role ?? undefined)} from an approved device.`);
     }
     default:
-      return refuse("enforced", enforcedMessage(phase.kind === "seed", name, server), ENFORCEMENT_OFF);
+      return refuse("enforced", enforcedMessage(phase.kind === "seed", name, server));
   }
 }
 
@@ -279,16 +278,21 @@ export const otherApprovalMessage = (name: string, server: string) =>
   `The approval from your device is for another change, not mirroring ${name} to ${server}.`;
 
 /** Why `server` refused a step under the Mirror approval a run or a sync sent it. */
+export const approvalExpiredMessage = (name: string, server: string) =>
+  `Approval expired. Nothing new can start. ${server} didn't take the next step for ${name}. Approve the change again.`;
+
 export const approvalRefusedMessage = (name: string, server: string) =>
-  `${server} didn't accept the approval from your device for ${name}. Approve the change again from an approved device.`;
+  `${server} didn't accept the approval for ${name}. It may have expired, or be for another change. Approve the change again.`;
 
-export const ENFORCEMENT_OFF = "ployz device enforce --off";
 
-/** Why Ployz Cloud can't run a Move, or with `seed` a restore into a new volume, through `server`, which enforces device approval. */
+/**
+ * Why `server`, which enforces device approval, refused a Move's step, or with `seed` a restore into a new volume, that
+ * came with no approval.
+ */
 export function enforcedMessage(seed: boolean, name: string, server: string) {
   return seed
-    ? `${server} enforces device approval, so Ployz Cloud can't restore ${name} into a new volume until a later release. To restore it now, turn enforcement off from an approved device.`
-    : `${server} enforces device approval, so Ployz Cloud can't move ${name} until a later release. To move it now, turn enforcement off from an approved device.`;
+    ? `${server} enforces device approval, so restoring ${name} into a new volume needs your passkey. Restore it again from the volume's Copies tab.`
+    : `${server} enforces device approval, so moving ${name} needs your passkey. Deploy the move again from the dashboard, or run ployz volume move from an approved device.`;
 }
 
 function planCopies(input: PlanInput, observed: readonly Member[]): Planned {

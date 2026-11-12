@@ -1,11 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import { runVolume } from "#/modules/operations/operations.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { ResizeVolumeInput } from "#/modules/volume-run/resize-check";
-import { getVolumeRun, inspectVolumeCopies, isVolumeOwed, listActiveVolumeRuns } from "#/modules/volume-run/volume-run.server";
+import { getVolumeRun, inspectVolumeCopies, isVolumeOwed, listActiveVolumeRuns, volumeApprovalTerms } from "#/modules/volume-run/volume-run.server";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
@@ -21,6 +22,14 @@ export const inspectVolumeCopiesServerFn = createServerFn({ method: "GET" })
   .validator(strictValidator(VolumeCopiesInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:read").pipe(
     Effect.flatMap(({ organization }) => inspectVolumeCopies(organization.id, data.environment, data.volumeId)),
+  )));
+
+/** What the browser drafts a Volume approval from; `from` asks for the spec a Move off that Server would start. */
+export const volumeApprovalTermsServerFn = createServerFn({ method: "GET" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(Schema.Struct({ ...VolumeCopiesInput.fields, from: Schema.NullOr(rustMachineIdSchema) })))
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:read").pipe(
+    Effect.flatMap(({ organization }) => volumeApprovalTerms(organization.id, data.environment, data.volumeId, data.from)),
   )));
 
 export const isVolumeOwedServerFn = createServerFn({ method: "GET" })
@@ -51,7 +60,7 @@ export const resizeVolumeServerFn = createServerFn({ method: "POST" })
     const caller = yield* dashboardCaller(getRequest().headers, data.organizationSlug);
     const admission = yield* runVolume(
       caller,
-      { volumeId: data.volumeId, environment: data.environment, kind: "resize", args: { maximum_bytes: data.maximumBytes } },
+      { volumeId: data.volumeId, environment: data.environment, kind: "resize", args: { maximum_bytes: data.maximumBytes, ...(data.approval && { approval: data.approval }) } },
       { key: data.requestId, approvalId: null },
     );
     // A grow in a Protected Environment its asker can't protect waits for someone who can.

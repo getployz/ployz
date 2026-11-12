@@ -1,4 +1,4 @@
-import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange } from "@ployz/sdk";
+import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange, ResolvedServiceSpec, Signed } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord, asString } from "#/lib/json";
 import type { Caller } from "#/modules/identity/actor";
@@ -9,13 +9,16 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name" | "set_ingress_doors" | "set_private_access";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "mirror" | "sync" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name" | "set_ingress_doors" | "set_private_access";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue; subject?: string };
 
 /** A stop or restart the dashboard asked for, run as its asker once a protector approves it. */
 export type ServiceApply = { environmentId: string; service: string; verb: "stop" | "restart" };
+
+/** An approver's passkey answer to a Volume run's workflow, and for a Move the spec its target starts. */
+export type KeptVolumeApproval = { readonly approval: Signed; readonly service?: ResolvedServiceSpec };
 
 /** A Volume resize the dashboard asked for, run as its asker once a protector approves it. */
 export type VolumeApply = { volumeId: string; environment: EnvironmentRef; maximum_bytes: number };

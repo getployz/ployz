@@ -141,8 +141,8 @@ it.each([
 const GB = 1_000_000_000;
 const SIZE = ["ployz.volume.size.set.v1"];
 const holders = (fsn2: readonly string[] = SIZE): Holder[] => [
-  { name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 40 * GB, boundBytes: 10 * GB },
-  { name: "fsn-2", role: "mirror", capabilities: fsn2, committableBytes: null, boundBytes: 10 * GB },
+  { id: "1".repeat(32) as MachineId, name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 40 * GB, boundBytes: 10 * GB, enforces: false, passkey: false },
+  { id: "2".repeat(32) as MachineId, name: "fsn-2", role: "mirror", capabilities: fsn2, committableBytes: null, boundBytes: 10 * GB, enforces: false, passkey: false },
 ];
 const deployed = (maximumBytes = 10 * GB): Partial<VolumeListing> =>
   ({ deployed: true, storage_locked: true, storage: { kind: "provisioned", maximumBytes }, recorded_storage: 10 * GB });

@@ -24,10 +24,24 @@ const Destination = Schema.String.check(Schema.isNonEmpty());
 
 const hexOf = (digits: number) => Schema.String.check(Schema.isPattern(new RegExp(`^[0-9a-f]{${digits}}$`)));
 
-/** A Device's `Signed<VolumeApproval>` as the CLI sends it. Servers check every byte; Cloud only bounds its size. */
-const VolumeApproval = Schema.Struct({
+const Base64Url = (most: number) => Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]*$/), Schema.isMaxLength(most));
+
+/** A passkey's answer to its own prompt for a Volume workflow, which a dashboard approval carries in place of a signature. */
+const PasskeyAssertion = Schema.Struct({
+  credential_id: Base64Url(1366),
+  authenticator_data: Base64Url(1024),
+  client_data_json: Base64Url(4096),
+  signature: Base64Url(256),
+});
+
+/**
+ * A `Signed<VolumeApproval>`: a Device's as the CLI sends it, or a passkey's as the dashboard does. Servers check every
+ * byte; Cloud only bounds its size.
+ */
+export const VolumeApproval = Schema.Struct({
   body: Schema.String.check(Schema.isMaxLength(4096)),
   signatures: Schema.mutable(Schema.Array(Schema.Struct({ key: hexOf(64), signature: hexOf(128) }))).check(Schema.isMaxLength(4)),
+  assertions: Schema.optional(Schema.mutable(Schema.Array(PasskeyAssertion)).check(Schema.isMaxLength(1))),
 });
 
 const NamedSpec = Schema.Struct({ name: Schema.String, container: Schema.Struct({ image: Schema.String }) });
@@ -36,7 +50,7 @@ const NamedSpec = Schema.Struct({ name: Schema.String, container: Schema.Struct(
  * The spec a Move's approval names for the Service's start on its target, kept whole. Cloud reads only its name and
  * size; the target checks the rest against the approval before it starts anything.
  */
-const MoveService = Schema.declare<ResolvedServiceSpec>((value): value is ResolvedServiceSpec => Schema.is(NamedSpec)(value));
+export const MoveService = Schema.declare<ResolvedServiceSpec>((value): value is ResolvedServiceSpec => Schema.is(NamedSpec)(value));
 
 /** A byte count the CLI sends: a positive whole number JSON carries exactly. */
 export const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER));

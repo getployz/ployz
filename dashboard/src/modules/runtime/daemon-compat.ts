@@ -10,6 +10,7 @@ export const requirements = {
   volumeMove: { capability: "ployz.volume.copy.set.v1", feature: "Volume move" },
   volumeFloor: { capability: "ployz.volume.copy.floor.v1", feature: "Volume move" },
   volumeHandoff: { capability: "ployz.volume.copy.handoff.v1", feature: "Volume move" },
+  volumePasskey: { capability: "ployz.volume.passkey.v1", feature: "Approving a volume change with a passkey" },
   volumeSize: { capability: "ployz.volume.size.set.v1", feature: "Volume resize" },
   volumeShrink: { capability: "ployz.volume.size.shrink.v1", feature: "Volume shrink" },
   pruneImages: { capability: "ployz.image.prune.v1", feature: "Image cleanup" },
