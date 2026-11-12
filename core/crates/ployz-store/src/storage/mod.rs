@@ -515,11 +515,6 @@ pub(crate) trait Tx {
     fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError>;
     /// Run a script of parameterless statements, as the driver splits it.
     fn batch(&mut self, sql: &str) -> Result<(), RpcError>;
-    /// The evidence of the caller this transaction acts for. The Store's own work acts
-    /// for nobody. Read only by [`admit_protect`].
-    fn acting_for(&self) -> Option<&crate::Trusted> {
-        None
-    }
     /// Wait at most `at_most` for a row lock from here on in this transaction, or as
     /// long as any other statement when None. A savepoint rolled back drops it. SQLite
     /// never waits for a row: its writer holds the whole database from BEGIN.
@@ -532,16 +527,14 @@ pub(crate) trait Tx {
 /// The one Protected Environment fence: a caller without
 /// [`EnvironmentsProtect`](crate::Permission::EnvironmentsProtect) is refused when
 /// `touches` says this write reaches into a Protected Environment, and the refusal's
-/// details name what it reaches. It runs in the write's own transaction, so a protect
-/// that lands first still fences the write.
+/// details name what it reaches. `evidence` says whose permissions it checks. It runs in
+/// the write's own transaction, so a protect that lands first still fences the write.
 pub(crate) fn admit_protect(
     tx: &mut dyn Tx,
+    evidence: crate::trusted::Evidence<'_>,
     touches: impl FnOnce(&mut dyn Tx) -> Result<Option<serde_json::Value>, RpcError>,
 ) -> Result<(), RpcError> {
-    let Some(Err(mut refused)) = tx
-        .acting_for()
-        .map(|trusted| trusted.admit(crate::Permission::EnvironmentsProtect))
-    else {
+    let Err(mut refused) = evidence.admit(crate::Permission::EnvironmentsProtect) else {
         return Ok(());
     };
     let Some(reached) = touches(tx)? else {
@@ -553,30 +546,6 @@ pub(crate) fn admit_protect(
         details.extend(reached);
     }
     Err(refused)
-}
-
-/// A transaction acting for the caller `trusted` describes: see [`admit_protect`].
-pub(crate) struct Acting<'tx, 'trusted> {
-    pub(crate) tx: &'tx mut dyn Tx,
-    pub(crate) trusted: &'trusted crate::Trusted,
-}
-
-impl Tx for Acting<'_, '_> {
-    fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
-        self.tx.execute(sql, params)
-    }
-    fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError> {
-        self.tx.query(sql, params)
-    }
-    fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
-        self.tx.batch(sql)
-    }
-    fn acting_for(&self) -> Option<&crate::Trusted> {
-        Some(self.trusted)
-    }
-    fn wait_for_locks(&mut self, at_most: Option<std::time::Duration>) -> Result<(), RpcError> {
-        self.tx.wait_for_locks(at_most)
-    }
 }
 
 /// A bound parameter. Only the column types the schema uses exist.

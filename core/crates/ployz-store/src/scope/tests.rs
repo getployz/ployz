@@ -28,11 +28,22 @@ enum Edit {
     Reserved,
 }
 
-fn write(tx: &mut dyn Tx, environment: &mut Environment, mode: Mode) -> Result<(), RpcError> {
+fn write(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+    mode: Mode,
+    caller: &Trusted,
+) -> Result<(), RpcError> {
+    let evidence = Evidence::Caller(caller);
     match mode {
-        Mode::Validated => save_working(tx, environment, &Trusted::default()),
-        Mode::Trusted => write_working(tx, environment, WorkingWrite::Trusted(Reason::Publish)),
-        Mode::Removed => write_working(tx, environment, WorkingWrite::Removed),
+        Mode::Validated => save_working(tx, environment, caller),
+        Mode::Trusted => write_working(
+            tx,
+            evidence,
+            environment,
+            WorkingWrite::Trusted(Reason::Publish),
+        ),
+        Mode::Removed => write_working(tx, evidence, environment, WorkingWrite::Removed),
     }
 }
 
@@ -126,7 +137,8 @@ fn attempt(protected: bool, mode: Mode, edit: Edit) -> (Observed, Observed) {
         ..Trusted::default()
     };
     store
-        .acting(&nobody, |tx| {
+        .storage
+        .write(|tx| {
             let mut environment = load_by_id(tx, &id)?;
             let before = observe(tx, &id, None)?;
             match (mode, edit) {
@@ -142,7 +154,7 @@ fn attempt(protected: bool, mode: Mode, edit: Edit) -> (Observed, Observed) {
                     environment.working.services.first_mut().unwrap().slug = "setup".into();
                 }
             }
-            let result = write(tx, &mut environment, mode);
+            let result = write(tx, &mut environment, mode, &nobody);
             Ok((before, observe(tx, &id, result.err())?))
         })
         .unwrap()

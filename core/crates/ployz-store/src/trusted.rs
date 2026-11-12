@@ -139,6 +139,25 @@ pub enum Asks {
     EveryDeploy,
 }
 
+/// Whose permissions the Protected Environment fence checks a write against: the
+/// Store's own work meets none, a caller's write meets what Cloud says the caller holds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Evidence<'trusted> {
+    /// The Store acting for nobody, such as a Follow or an automated landing.
+    Store,
+    /// The caller `Trusted` describes.
+    Caller(&'trusted Trusted),
+}
+
+impl Evidence<'_> {
+    pub(crate) fn admit(self, permission: Permission) -> Result<(), RpcError> {
+        match self {
+            Self::Store => Ok(()),
+            Self::Caller(trusted) => trusted.admit(permission),
+        }
+    }
+}
+
 impl Trusted {
     /// The Cluster Domain Cloud knows now: what generated domains expand under.
     pub(crate) fn cluster_domain(&self) -> Option<&Hostname> {

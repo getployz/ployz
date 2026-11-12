@@ -41,7 +41,7 @@ use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::teardown::{EnvironmentRemoval, RemovedBecause};
 use crate::tools::Call;
-use crate::trusted::Approval;
+use crate::trusted::{Approval, Evidence};
 use crate::{Actor, Trusted};
 
 /// Take an Environment, or a whole Project, off the Servers and out of the Store.
@@ -320,7 +320,7 @@ pub(crate) fn remove(
             for member in scope::members(tx, &project.id)? {
                 members.push(scope::lock_id(tx, who, &member.id)?);
             }
-            guard_project(tx, &project.id)?;
+            guard_project(tx, Evidence::Caller(trusted), &project.id)?;
             (
                 Target::Project(project.id.clone()),
                 project.name.to_string(),
@@ -1082,8 +1082,12 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
 
 /// Refuse a caller who may not protect from removing a Project that holds a
 /// Protected Environment: removing the Project removes it too.
-fn guard_project(tx: &mut dyn Tx, project: &ProjectId) -> Result<(), RpcError> {
-    crate::storage::admit_protect(tx, |tx| protected_in(tx, project))
+fn guard_project(
+    tx: &mut dyn Tx,
+    evidence: Evidence<'_>,
+    project: &ProjectId,
+) -> Result<(), RpcError> {
+    crate::storage::admit_protect(tx, evidence, |tx| protected_in(tx, project))
 }
 
 /// The Protected Environments in `project`, if it holds any.
