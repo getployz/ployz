@@ -272,6 +272,51 @@ struct Check {
     unchecked_down: bool,
     unseen: Vec<Unseen>,
     names: HashMap<MachineId, MachineName>,
+    services: Names,
+}
+
+/// Each deployed Service by its authored name and the name its containers carry, and every
+/// Service in Working State, when the Store says.
+struct Names {
+    deployed: Vec<(ServiceName, ServiceName)>,
+    authored: Option<BTreeSet<ServiceName>>,
+}
+
+impl Names {
+    fn new(
+        deployed: &BTreeMap<ServiceName, ServiceName>,
+        authored: Option<&BTreeSet<ServiceName>>,
+    ) -> Self {
+        Self {
+            deployed: deployed
+                .iter()
+                .map(|(name, runtime)| (name.clone(), runtime.clone()))
+                .collect(),
+            authored: authored.cloned(),
+        }
+    }
+
+    /// The authored name of the Service whose containers carry `runtime`.
+    fn authored_of<'a>(&'a self, runtime: &'a ServiceName) -> &'a ServiceName {
+        self.deployed
+            .iter()
+            .find(|(_, deployed)| deployed == runtime)
+            .map_or(runtime, |(name, _)| name)
+    }
+
+    /// The deploy that settles the Service `name`. A Service gone from Working State deploys
+    /// only as part of a whole deploy.
+    fn deploy_hint(&self, name: &ServiceName, next: impl Fn(&[&str]) -> String) -> String {
+        if self
+            .authored
+            .as_ref()
+            .is_some_and(|authored| !authored.contains(name))
+        {
+            next(&["deploy"])
+        } else {
+            next(&["deploy", name.as_str()])
+        }
+    }
 }
 
 enum Unseen {
@@ -336,6 +381,7 @@ fn judge(
             .iter()
             .map(|observed| (observed.machine.id, observed.machine.name.clone()))
             .collect(),
+        services: Names::new(deployed, authored),
     };
     let (live, reads, routed) = match copies {
         Copies::RollingOut(deployment) => {
@@ -373,26 +419,23 @@ fn judge(
         .collect();
     // Only a listing from every Machine shows that no copy runs anywhere.
     if complete && down.is_empty() {
-        for (name, runtime) in deployed {
+        for (name, runtime) in &check.services.deployed {
             if !services
                 .iter()
                 .any(|service| service.identity.name == *runtime && !service.containers.is_empty())
             {
-                // A Service gone from Working State deploys only as part of a whole deploy.
-                let removed = authored.is_some_and(|authored| !authored.contains(name));
                 check.attention.push(no_copies(
                     QualifiedService {
                         namespace: namespace.clone(),
                         name: name.clone(),
                     },
-                    removed,
-                    &next,
+                    check.services.deploy_hint(name, &next),
                 ));
             }
         }
     }
     for service in services {
-        let left = check.left_pending(&service, &down, deployed, authored, &next);
+        let left = check.left_pending(&service, &down, &next);
         if let Some(short) = check.not_serving(service, &down, complete, now, &next) {
             check.attention.push(short);
         }
@@ -641,22 +684,13 @@ fn down_attention(observed: &MachineObservation) -> Attention {
 
 /// Status can't tell a global Service from a replicated one with no copy to read, so the
 /// message also covers a global one whose placement no Server matches.
-fn no_copies(
-    service: QualifiedService,
-    removed: bool,
-    next: impl Fn(&[&str]) -> String,
-) -> Attention {
-    let next = if removed {
-        next(&["deploy"])
-    } else {
-        next(&["deploy", service.name.as_str()])
-    };
+fn no_copies(service: QualifiedService, hint: String) -> Attention {
     Attention::new(
         Some(Subject::NoCopies { service }),
         "no_copies",
         "No copies running. For a global Service, no Server matches its placement.",
     )
-    .next(next)
+    .next(hint)
 }
 
 fn not_picked_up(service: QualifiedService, machines: Vec<String>) -> Attention {
@@ -834,8 +868,6 @@ impl Check {
         &self,
         service: &ServiceObservation,
         down: &BTreeSet<MachineId>,
-        deployed: &BTreeMap<ServiceName, ServiceName>,
-        authored: Option<&BTreeSet<ServiceName>>,
         next: impl Fn(&[&str]) -> String,
     ) -> Option<Attention> {
         let mut left: Vec<&ContainerObservation> = service
@@ -865,17 +897,8 @@ impl Check {
             1 => ("copy", "takes"),
             _ => ("copies", "take"),
         };
-        let runtime = &service.identity.name;
-        let name = deployed
-            .iter()
-            .find(|(_, deployed)| *deployed == runtime)
-            .map_or(runtime, |(name, _)| name);
-        // A Service gone from Working State deploys only as part of a whole deploy.
-        let hint = if authored.is_some_and(|authored| !authored.contains(name)) {
-            next(&["deploy"])
-        } else {
-            next(&["deploy", name.as_str()])
-        };
+        let name = self.services.authored_of(&service.identity.name);
+        let hint = self.services.deploy_hint(name, next);
         let message = format!(
             "{} {copies} no deploy brought into routing {take} no traffic. {}.",
             left.len(),

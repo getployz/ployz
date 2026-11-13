@@ -679,6 +679,41 @@ fn a_left_pending_copy_of_a_removed_service_points_at_a_whole_deploy() {
 }
 
 #[test]
+fn a_left_pending_copy_when_the_store_does_not_say_what_is_authored_names_the_service() {
+    let [one, two, three] = machines();
+    let deployed: BTreeMap<ServiceName, ServiceName> = [(
+        ServiceName::parse("site").unwrap(),
+        ServiceName::parse("web").unwrap(),
+    )]
+    .into();
+    let check = judge(
+        Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listed_copies(vec![
+                    web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
+                    web_copy(&one, '2', CopyRotation::Pending, healthy(), 1, 2),
+                ]),
+                reads: Vec::new(),
+                routed: BTreeMap::new(),
+            },
+        },
+        &qualified("app", "web").namespace,
+        now(),
+        &deployed,
+        None,
+        |words| format!("ployz {}", words.join(" ")),
+    );
+    let hints: Vec<_> = check
+        .attention
+        .iter()
+        .filter(|attention| attention.reason() == "copies_left_pending")
+        .map(|attention| attention.command().map(str::to_owned))
+        .collect();
+    assert_eq!(hints, [Some("ployz deploy site".to_owned())]);
+}
+
+#[test]
 fn a_copy_with_no_recorded_rotation_is_not_named_left_pending() {
     let [one, ..] = machines();
     let check = judged_copies(vec![edited(
@@ -2441,7 +2476,7 @@ fn one_of_each_attention() -> Vec<Attention> {
             "disk_full",
             "Its disk is nearly full.",
         ),
-        no_copies(qualified("app", "web"), false, |words| words.join(" ")),
+        no_copies(qualified("app", "web"), "deploy web".to_owned()),
         not_picked_up(
             qualified("app", "web"),
             vec!["machine-1".to_owned(), "machine-2".to_owned()],
