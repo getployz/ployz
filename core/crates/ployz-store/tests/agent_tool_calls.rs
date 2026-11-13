@@ -706,6 +706,32 @@ fn domain_check_reads_one_domain_and_refuses_an_unknown_one() {
     assert_eq!(missing.code.as_str(), "not_found", "{missing:?}");
 }
 
+/// An element of a list that does not decode is refused at its own position,
+/// and what fits there is the element's schema, not the whole list's.
+#[test]
+fn a_bad_list_element_is_refused_at_its_position_with_the_elements_schema() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let refused = call(
+        &store,
+        "service_update",
+        json!({ "service": "web", "unset": ["env.A", 7] }),
+        "update-1",
+    )
+    .refused();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert_eq!(refused.field.as_deref(), Some("unset[1]"), "{refused:?}");
+    // The element is one of the three kinds of text `unset` takes.
+    let expected = refused.expected.as_ref().unwrap();
+    assert_eq!(
+        expected["anyOf"].as_array().map(Vec::len),
+        Some(3),
+        "{refused:?}"
+    );
+    assert!(expected.get("items").is_none(), "{refused:?}");
+}
+
 #[test]
 fn a_service_goes_from_staged_to_deployed() {
     let store = shop();
