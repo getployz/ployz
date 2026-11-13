@@ -19,7 +19,7 @@ use tokio::{
 };
 
 use super::{
-    harvest::now_nanos,
+    clock::now_nanos,
     layout::{RetainedEnv, StoreRoot},
     metrics::history,
     query::{self, Bounds, Query},
@@ -258,7 +258,7 @@ mod tests {
     use crate::{
         observe::{
             ObserveClient,
-            harvest::now_nanos,
+            clock::now_nanos,
             layout::{RetainedEnv, StoreRoot},
             metrics::history::tests::{SEC, host, near, write},
             query::tests::{Store, T0, line},
