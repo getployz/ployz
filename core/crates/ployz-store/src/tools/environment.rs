@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ToolId;
-use super::cloud::GithubAnswer;
+use super::cloud::{GithubAnswer, ServersAnswer};
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Reach, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
@@ -261,11 +261,12 @@ tool_input! {
     }
 }
 
-/// Cloud's answer about Servers. Provisional: the Cloud adapter fixes it.
+/// Cloud's answer about Servers, with the Cluster Domain a Cloud that knows it names
+/// beside them.
 #[derive(Deserialize)]
-struct ServersAnswer {
-    #[serde(default)]
-    servers: Vec<Value>,
+struct SetupServers {
+    #[serde(flatten)]
+    answer: ServersAnswer,
     #[serde(default)]
     cluster_domain: Option<String>,
 }
@@ -291,7 +292,7 @@ impl Tool for EnvironmentSetup {
                 store(&ServicesQuery { environment })?,
             ])?
             .into_iter();
-        let servers = cx.cloud::<ServersAnswer>(answers.next())?;
+        let servers = cx.cloud::<SetupServers>(answers.next())?;
         let github_unless_unclaimed = cx.cloud::<GithubAnswer>(answers.next());
         let services = cx.view::<ServicesQuery>(answers.next())?;
         let builds = services
@@ -301,7 +302,7 @@ impl Tool for EnvironmentSetup {
         let unconnected = builds && !github_unless_unclaimed?.connected;
         let needs = [
             (
-                servers.servers.is_empty(),
+                servers.answer.servers.is_empty(),
                 "servers",
                 DashboardPage::Servers,
             ),

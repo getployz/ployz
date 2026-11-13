@@ -203,6 +203,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_store::tools::Fix>();
     declarations.add::<ployz_store::tools::Answer>();
     declarations.add::<ployz_store::tools::cloud::ServersAnswer>();
+    declarations.add::<ployz_store::tools::cloud::GithubAnswer>();
     declarations.add::<ployz_store::tools::cloud::ContainersAnswer>();
     declarations.add::<ployz_store::tools::cloud::LogsAnswer>();
     declarations.add::<ployz_store::tools::cloud::MetricsAnswer>();

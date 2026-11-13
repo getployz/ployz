@@ -275,13 +275,16 @@ pub struct Kept {
     pub why: String,
 }
 
-/// Cloud's answer about GitHub. Provisional: the Cloud adapter fixes it.
-#[derive(Deserialize)]
-pub(crate) struct GithubAnswer {
+/// The answer to `CloudQuery::GithubConnection`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct GithubAnswer {
+    /// Whether GitHub is connected.
     #[serde(default)]
-    pub(crate) connected: bool,
+    pub connected: bool,
+    /// The repositories Ployz may read, as `owner/name`.
     #[serde(default)]
-    pub(crate) repositories: Vec<String>,
+    pub repositories: Vec<String>,
+    /// The page that connects more.
     #[serde(default)]
-    pub(crate) connect_at: Option<String>,
+    pub connect_at: Option<String>,
 }
