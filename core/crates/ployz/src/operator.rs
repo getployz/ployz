@@ -1,14 +1,12 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, HashMap, HashSet},
+    collections::{BinaryHeap, HashMap, HashSet},
     future::Future,
     pin::Pin,
-    str::FromStr,
     time::Duration,
 };
 
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
@@ -25,6 +23,7 @@ use tonic::Streaming;
 
 use crate::connect::{Client, ConnectError, TransportError};
 use history::HistorySelector;
+use input::{ExecMode, InputError, ServiceArg};
 use ployz_core::EnvironmentValues;
 
 pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
@@ -54,61 +53,6 @@ impl From<tonic::Status> for LogError {
 
 pub type LogSource = Pin<Box<dyn Stream<Item = Result<LogEntry, LogError>> + Send>>;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServiceArg {
-    pub service: ServiceSelector,
-    pub containers: Vec<ContainerSelector>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProxyPorts {
-    pub local: u16,
-    pub remote: u16,
-}
-
-/// Detached exec, or attached exec with an optional TTY.
-///
-/// Detach cannot request a TTY; resolve CLI `--detach`/`-T` through
-/// [`ExecMode::resolve`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExecMode {
-    Detached,
-    Attached { tty: bool },
-}
-
-impl ExecMode {
-    /// Collapse CLI `--detach`/`-T` and terminal probes into a mode that cannot
-    /// request a TTY while detached.
-    ///
-    /// `-T` is ignored when `detach` is set. Attached TTY still requires
-    /// terminal stdin.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OperatorError::TtyRequiresStdin`] when an attached TTY is
-    /// requested without terminal stdin.
-    #[expect(
-        clippy::fn_params_excessive_bools,
-        reason = "CLI detach/-T plus stdin/stdout terminal probes collapse into ExecMode"
-    )]
-    pub fn resolve(
-        detach: bool,
-        no_tty: bool,
-        stdout_terminal: bool,
-        stdin_terminal: bool,
-    ) -> Result<Self, OperatorError> {
-        if detach {
-            return Ok(Self::Detached);
-        }
-        // TODO: preserve the Compose-style stdout-driven TTY rule.
-        let tty = stdout_terminal && !no_tty;
-        if tty && !stdin_terminal {
-            return Err(OperatorError::TtyRequiresStdin);
-        }
-        Ok(Self::Attached { tty })
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum OperatorError {
     #[error(transparent)]
@@ -130,7 +74,7 @@ pub enum OperatorError {
         service: String,
         /// The Servers that did not answer, and why. It holds no successes.
         gaps: PartialResult<(), RpcError>,
-        names: BTreeMap<MachineId, MachineName>,
+        names: MachineNames,
     },
     #[error(transparent)]
     MachineSelector(#[from] ployz_core::MachineSelectorError),
@@ -148,22 +92,8 @@ pub enum OperatorError {
     Codec(#[from] ployz_core::CodecError),
     #[error("exec request stream closed")]
     StreamClosed,
-    #[error("cannot attach a terminal exec to non-terminal stdin; use -T")]
-    TtyRequiresStdin,
-    #[error("invalid Service log selector {0:?}")]
-    InvalidServiceSelector(String),
-    #[error("invalid log tail {0:?}: expected a non-negative integer or all")]
-    InvalidTail(String),
-    #[error(
-        "invalid time {value:?} for --{flag}: expected a relative duration, RFC 3339 date, or Unix timestamp"
-    )]
-    InvalidTime { flag: &'static str, value: String },
-    #[error("invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT")]
-    InvalidProxyPort,
-    #[error("invalid local port {0:?}: expected 0-65535")]
-    InvalidLocalPort(String),
-    #[error("invalid remote port {0:?}: expected 1-65535")]
-    InvalidRemotePort(String),
+    #[error(transparent)]
+    Input(#[from] InputError),
     #[error("no regular container of the Service may serve")]
     NoServableContainer,
     #[error("no containers for Service \"{service}\" found on the selected Machines")]
@@ -226,21 +156,46 @@ impl OperatorError {
     }
 }
 
-fn unanswered_names(
-    gaps: &PartialResult<(), RpcError>,
-    names: &BTreeMap<MachineId, MachineName>,
-) -> String {
+fn unanswered_names(gaps: &PartialResult<(), RpcError>, names: &MachineNames) -> String {
     gaps.failures
         .iter()
         .map(|failure| &failure.machine_id)
         .chain(&gaps.omissions)
-        .map(|id| {
-            names
-                .get(id)
-                .map_or_else(|| id.to_string(), ToString::to_string)
-        })
+        .map(|id| names.name_of(*id))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Every Server's name by id, for the sentences that name a Server the way its
+/// person does. It keeps the Server listing's order: `LogScope::answered` and the
+/// history tie-break read it.
+#[derive(Clone, Debug, Default)]
+pub struct MachineNames(Vec<(MachineId, MachineName)>);
+
+impl MachineNames {
+    #[must_use]
+    pub fn of(machines: &[MachineObservation]) -> Self {
+        Self(
+            machines
+                .iter()
+                .map(|machine| (machine.machine.id, machine.machine.name.clone()))
+                .collect(),
+        )
+    }
+
+    /// The name of `id`, or the id's own text when no Server of that id was listed.
+    #[must_use]
+    pub fn name_of(&self, id: MachineId) -> String {
+        self.0
+            .iter()
+            .find(|(listed, _)| *listed == id)
+            .map_or_else(|| id.to_string(), |(_, name)| name.to_string())
+    }
+
+    /// The Servers in the order they were listed.
+    pub fn iter(&self) -> impl Iterator<Item = (MachineId, &MachineName)> {
+        self.0.iter().map(|(id, name)| (*id, name))
+    }
 }
 
 impl From<tonic::Status> for OperatorError {
@@ -316,147 +271,6 @@ fn is_running(container: &ServiceContainer) -> bool {
 /// The Service Name as the person typed it, not the Namespace the CLI scoped it to.
 fn typed_name(selector: &ServiceSelector) -> &str {
     selector.as_str().rsplit('/').next().unwrap_or_default()
-}
-
-pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, OperatorError> {
-    let mut parsed: Vec<ServiceArg> = Vec::new();
-    for value in values {
-        let value = value.trim();
-        let (service, container) = value
-            .split_once(':')
-            .map_or((value, None), |(service, container)| {
-                (service, Some(container))
-            });
-        if service.is_empty() || container.is_some_and(str::is_empty) {
-            return Err(OperatorError::InvalidServiceSelector(value.to_owned()));
-        }
-        let service = ServiceSelector::parse(service)?;
-        let container = container.map(ContainerSelector::parse).transpose()?;
-        if let Some(existing) = parsed.iter_mut().find(|arg| arg.service == service) {
-            match container {
-                None => existing.containers.clear(),
-                Some(container) if !existing.containers.is_empty() => {
-                    if !existing.containers.iter().any(|value| value == &container) {
-                        existing.containers.push(container);
-                    }
-                }
-                Some(_) => {}
-            }
-        } else {
-            parsed.push(ServiceArg {
-                service,
-                containers: container.into_iter().collect(),
-            });
-        }
-    }
-    Ok(parsed)
-}
-
-pub fn parse_tail(value: &str) -> Result<i32, OperatorError> {
-    if value == "all" {
-        return Ok(-1);
-    }
-    value
-        .parse::<i32>()
-        .ok()
-        .filter(|tail| *tail >= 0)
-        .ok_or_else(|| OperatorError::InvalidTail(value.to_owned()))
-}
-
-/// Parse a `--since` / `--until` value into absolute Unix seconds.
-///
-/// Empty means no bound. A non-empty value must be a relative duration, RFC 3339
-/// date/time, local date or date-time, or Unix timestamp.
-///
-/// # Errors
-///
-/// Returns [`OperatorError::InvalidTime`], naming `flag`, when the value is not one
-/// of those forms.
-pub fn parse_log_time(
-    flag: &'static str,
-    value: &str,
-    now_unix_seconds: i64,
-) -> Result<Option<i64>, OperatorError> {
-    if value.is_empty() {
-        return Ok(None);
-    }
-    let timestamp = value
-        .parse::<i64>()
-        .ok()
-        .or_else(|| {
-            DateTime::parse_from_rfc3339(value)
-                .ok()
-                .map(|time| time.timestamp())
-        })
-        .or_else(|| {
-            NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
-                .ok()
-                .and_then(|time| Local.from_local_datetime(&time).single())
-                .map(|time| time.timestamp())
-        })
-        .or_else(|| {
-            NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                .ok()
-                .and_then(|date| date.and_hms_opt(0, 0, 0))
-                .and_then(|time| Local.from_local_datetime(&time).single())
-                .map(|time| time.timestamp())
-        })
-        .or_else(|| {
-            go_duration(value)
-                .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-                .map(|seconds| now_unix_seconds - seconds)
-        });
-    timestamp
-        .map(Some)
-        .ok_or_else(|| OperatorError::InvalidTime {
-            flag,
-            value: value.to_owned(),
-        })
-}
-
-/// Go duration syntax plus days, such as `1m30s`, `500ms` or `30d`.
-pub(crate) fn go_duration(value: &str) -> Option<std::time::Duration> {
-    let mut remaining = value;
-    let mut seconds = 0_f64;
-    while !remaining.is_empty() {
-        let number_end =
-            remaining.find(|character: char| !character.is_ascii_digit() && character != '.')?;
-        let number = f64::from_str(&remaining[..number_end]).ok()?;
-        remaining = &remaining[number_end..];
-        let unit_end = remaining
-            .find(|character: char| character.is_ascii_digit() || character == '.')
-            .unwrap_or(remaining.len());
-        let (unit, rest) = remaining.split_at(unit_end);
-        let multiplier = match unit {
-            "d" => 86_400_f64,
-            "h" => 3_600_f64,
-            "m" => 60_f64,
-            "s" => 1_f64,
-            "ms" => 0.001_f64,
-            "us" | "µs" => 0.000_001_f64,
-            "ns" => 0.000_000_001_f64,
-            _ => return None,
-        };
-        seconds += number * multiplier;
-        remaining = rest;
-    }
-    std::time::Duration::try_from_secs_f64(seconds).ok()
-}
-
-pub fn parse_proxy_ports(value: &str) -> Result<ProxyPorts, OperatorError> {
-    let (local, remote) = value.split_once(':').map_or(("0", value), |parts| parts);
-    if remote.contains(':') {
-        return Err(OperatorError::InvalidProxyPort);
-    }
-    let local = local
-        .parse::<u16>()
-        .map_err(|_| OperatorError::InvalidLocalPort(local.to_owned()))?;
-    let remote = remote
-        .parse::<u16>()
-        .ok()
-        .filter(|port| *port > 0)
-        .ok_or_else(|| OperatorError::InvalidRemotePort(remote.to_owned()))?;
-    Ok(ProxyPorts { local, remote })
 }
 
 pub fn select_proxy_container(
@@ -564,6 +378,7 @@ pub async fn open_exec(
     let selected = select_service(&services, service_selector)
         .map_err(OperatorError::from)
         .and_then(|service| Ok((service, select_exec_container(service, container_selector)?)));
+    let names = MachineNames::of(&machines);
     let gaps = &live.containers;
     // A named container gets its own error: "no running container of the Service"
     // would contradict a Server that answered with one.
@@ -582,10 +397,7 @@ pub async fn open_exec(
                     failures: live.containers.failures,
                     omissions: live.containers.omissions,
                 },
-                names: machines
-                    .iter()
-                    .map(|machine| (machine.machine.id, machine.machine.name.clone()))
-                    .collect(),
+                names,
             });
         }
     };
@@ -600,13 +412,7 @@ pub async fn open_exec(
         .send(config)
         .await
         .map_err(|_| OperatorError::StreamClosed)?;
-    let server = machines
-        .iter()
-        .find(|machine| machine.machine.id == machine_id)
-        .map_or_else(
-            || machine_id.to_string(),
-            |machine| machine.machine.name.to_string(),
-        );
+    let server = names.name_of(machine_id);
     let frames = client
         .open_stream::<op::Exec>(
             Some(&MachineTarget::from(&machine_id)),
@@ -706,10 +512,7 @@ pub async fn observe_service_logs(
             .filter(|machine_id| asked.contains(machine_id))
             .copied()
             .collect(),
-        names: machines
-            .iter()
-            .map(|machine| (machine.machine.id, machine.machine.name.clone()))
-            .collect(),
+        names: MachineNames::of(&machines),
     };
     Ok(LogScope {
         asked,
@@ -778,12 +581,11 @@ fn qualified_history_selectors(
                 return None;
             }
             let service = QualifiedService::parse(arg.service.as_str()).ok()?;
-            Some(HistorySelector {
-                namespace: Some(service.namespace.to_string()),
-                service: Some(service.name.to_string()),
-                deployment: deployment.map(str::to_owned),
-                container_id: None,
-            })
+            Some(HistorySelector::service(
+                service.namespace.as_str(),
+                service.name.as_str(),
+                deployment,
+            ))
         })
         .collect()
 }
@@ -849,15 +651,7 @@ pub async fn open_service_logs(
             })
             .await
             {
-                let server = scope
-                    .unanswered
-                    .names
-                    .iter()
-                    .find(|(id, _)| *id == observation.machine_id)
-                    .map_or_else(
-                        || observation.machine_id.to_string(),
-                        |(_, name)| name.to_string(),
-                    );
+                let server = scope.unanswered.names.name_of(observation.machine_id);
                 return Err(OperatorError::OpenContainerLogs {
                     container: observation.display_name.clone(),
                     source: Box::new(error.addressed_as(&server).into()),
@@ -981,7 +775,7 @@ impl LogScope {
                         .iter()
                         .any(|failure| failure.machine_id == *machine_id)
             })
-            .cloned()
+            .map(|(machine_id, name)| (machine_id, name.clone()))
             .collect()
     }
 
@@ -1018,7 +812,6 @@ pub fn history_selectors(
     deployment: Option<&str>,
 ) -> Result<Vec<HistorySelector>, OperatorError> {
     let services = scope.live.services();
-    let deployment = deployment.map(str::to_owned);
     if args.is_empty() {
         let mut namespaces = namespace.map_or_else(
             || {
@@ -1036,11 +829,7 @@ pub fn history_selectors(
         }
         return Ok(namespaces
             .into_iter()
-            .map(|namespace| HistorySelector {
-                namespace: Some(namespace.to_string()),
-                deployment: deployment.clone(),
-                ..HistorySelector::default()
-            })
+            .map(|namespace| HistorySelector::namespace(namespace.as_str(), deployment))
             .collect());
     }
     let mut selectors = Vec::new();
@@ -1052,31 +841,28 @@ pub fn history_selectors(
                     && QualifiedService::parse(arg.service.as_str()).is_ok() =>
             {
                 let removed = QualifiedService::parse(arg.service.as_str())?;
-                selectors.push(HistorySelector {
-                    namespace: Some(removed.namespace.to_string()),
-                    service: Some(removed.name.to_string()),
-                    deployment: deployment.clone(),
-                    container_id: None,
-                });
+                selectors.push(HistorySelector::service(
+                    removed.namespace.as_str(),
+                    removed.name.as_str(),
+                    deployment,
+                ));
                 continue;
             }
             Err(error) => return Err(not_running(&services, namespace, error)),
         };
         if arg.containers.is_empty() {
-            selectors.push(HistorySelector {
-                namespace: Some(service.identity.namespace.to_string()),
-                service: Some(service.identity.name.to_string()),
-                deployment: deployment.clone(),
-                container_id: None,
-            });
+            selectors.push(HistorySelector::service(
+                service.identity.namespace.as_str(),
+                service.identity.name.as_str(),
+                deployment,
+            ));
             continue;
         }
         for container in select_log_containers(service, &arg.containers)? {
-            selectors.push(HistorySelector {
-                deployment: deployment.clone(),
-                container_id: Some(container.as_observation().container_id),
-                ..HistorySelector::default()
-            });
+            selectors.push(HistorySelector::container(
+                container.as_observation().container_id,
+                deployment,
+            ));
         }
     }
     Ok(selectors)
@@ -1087,7 +873,7 @@ pub fn history_selectors(
 pub struct Unanswered {
     pub failures: Vec<ployz_core::MachineFailure<ployz_core::RpcError>>,
     pub omissions: Vec<ployz_core::MachineId>,
-    pub names: Vec<(ployz_core::MachineId, ployz_core::MachineName)>,
+    pub names: MachineNames,
 }
 
 pub async fn open_machine_logs(
@@ -1435,6 +1221,7 @@ async fn flush_ready(
 }
 
 pub mod history;
+pub mod input;
 
 #[cfg(test)]
 #[path = "operator_tests.rs"]

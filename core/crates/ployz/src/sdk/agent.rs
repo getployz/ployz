@@ -44,6 +44,18 @@ impl Readable {
             Self::Only(namespaces) => namespaces.contains(namespace),
         }
     }
+
+    /// Refuses a Namespace outside the set as one no Server runs, which does not
+    /// confirm that it exists.
+    fn require(&self, namespace: &Namespace) -> Result<(), RpcError> {
+        if self.admits(namespace) {
+            Ok(())
+        } else {
+            Err(RpcError::not_found(format!(
+                "No Server runs Namespace {namespace}"
+            )))
+        }
+    }
 }
 
 /// Answer `query` from the Servers behind `session`, describing only the Services
@@ -64,9 +76,13 @@ pub async fn ask(
     match query {
         CloudQuery::Servers { only } => encode(&servers(session, only.as_ref(), readable).await?),
         CloudQuery::Containers { namespace, service } => {
+            readable.require(&namespace)?;
             encode(&containers(session, &namespace, service.as_ref()).await?)
         }
-        CloudQuery::Logs(query) => encode(&logs(session, query, sealed).await?),
+        CloudQuery::Logs(query) => {
+            readable.require(&query.namespace)?;
+            encode(&logs(session, query, sealed).await?)
+        }
         CloudQuery::ServerLogs(query) => encode(&server_logs(session, query).await?),
         CloudQuery::Metrics(query) => encode(&metrics(session, query, readable).await?),
         CloudQuery::Copies { .. } => Err(RpcError::unsupported(
@@ -404,8 +420,8 @@ fn summarize(
             .get(&machine_id)
             .map_or_else(|| machine_id.to_string(), ToString::to_string)
     };
-    let mut notes = crate::cli::metrics::gap_notes(history);
-    notes.extend(crate::cli::metrics::behind_notes(
+    let mut notes = super::metrics_rows::gap_notes(history);
+    notes.extend(super::metrics_rows::behind_notes(
         history,
         until_nanos,
         name,
@@ -425,7 +441,7 @@ fn summarize(
     MetricsAnswer {
         since,
         until: Timestamp(until_nanos / NANOS_PER_SECOND),
-        metrics: crate::cli::metrics::rows(history, until_nanos),
+        metrics: super::metrics_rows::rows(history, until_nanos),
         oom_kills: count(|kind| matches!(kind, MarkerKind::Oom)),
         exits: count(|kind| matches!(kind, MarkerKind::Exit { .. })),
         restarts: count(|kind| matches!(kind, MarkerKind::Restart)),

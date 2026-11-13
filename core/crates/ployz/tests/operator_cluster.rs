@@ -4,8 +4,10 @@ use std::{collections::BTreeSet, path::Path, process, time::Duration};
 mod containers;
 
 use ployz::operator::{
-    ExecMode, LogInput, ServiceArg, exec_options, merge_logs, observe_service_logs, open_exec,
-    open_machine_logs, open_service_logs, select_exec_container,
+    LogInput, exec_options,
+    input::{ExecMode, ServiceArg},
+    merge_logs, observe_service_logs, open_exec, open_machine_logs, open_service_logs,
+    select_exec_container,
 };
 use ployz_core::{
     ContainerAction, ContainerKind, ContainerSelector, ExecRequestFrame, ExecResponseFrame,

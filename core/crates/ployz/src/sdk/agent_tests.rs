@@ -14,10 +14,12 @@ use ployz_core::{
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
-use ployz_store::tools::{LineCap, LogText, LogsQuery, ServerName, ServerRef, Timestamp, Withheld};
+use ployz_store::tools::{
+    CloudQuery, LineCap, LogText, LogsQuery, ServerName, ServerRef, Timestamp, Withheld,
+};
 
 use super::{
-    NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, remove_one, report,
+    NANOS_PER_SECOND, Readable, ServiceCopy, Started, ask, copies_of, logs, remove_one, report,
     start_one, stop_one, summarize,
 };
 use crate::global_fixtures::{container_id, machine, running_on};
@@ -418,6 +420,40 @@ async fn acted<T, F: std::future::Future<Output = Result<T, RpcError>>>(
     session.close().await;
     server.abort();
     acted
+}
+
+fn logs_in(namespace: &str) -> LogsQuery {
+    LogsQuery {
+        namespace: Namespace::parse(namespace).unwrap(),
+        service: ServiceName::parse("api").unwrap(),
+        deployment: None,
+        server: None,
+        lines: LineCap::default(),
+        since: None,
+    }
+}
+
+#[tokio::test]
+async fn a_namespace_outside_readable_looks_absent_for_containers_and_logs() {
+    let readable = Readable::Only([Namespace::parse("a").unwrap()].into());
+    let asked = |query: CloudQuery| {
+        let readable = readable.clone();
+        acted(
+            support::DeployService::new(support::machine('a', "one")),
+            |session, _| async move { ask(&session, query, &readable, None).await },
+        )
+    };
+    let containers = |namespace: &str| CloudQuery::Containers {
+        namespace: Namespace::parse(namespace).unwrap(),
+        service: None,
+    };
+    for query in [containers("b"), CloudQuery::Logs(logs_in("b"))] {
+        let refusal = asked(query).await.unwrap_err();
+        assert_eq!(refusal.code, RpcErrorCode::NotFound, "{refusal:?}");
+        assert_eq!(refusal.message, "No Server runs Namespace b");
+    }
+    asked(containers("a")).await.unwrap();
+    asked(CloudQuery::Logs(logs_in("a"))).await.unwrap();
 }
 
 async fn started(service: support::DeployService) -> Started {
