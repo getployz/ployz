@@ -222,7 +222,8 @@ fn docker_root_total_bytes(docker: &Docker<'_>) -> Option<u64> {
 /// Completed Docker images and unrelated Docker data are preserved.
 ///
 /// # Errors
-/// Refuses active or quarantined ownership, invalid host configuration, and
+/// Refuses a running Build or a quarantined slot whose processes still run,
+/// invalid host configuration, and
 /// reports upstream launch/prune errors or unconfirmed cleanup.
 pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
     // Every build slot keeps its own cache; stop at the first refusal.
@@ -239,6 +240,7 @@ fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> 
         .join(format!("cache-clear-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&directory)
         .map_err(|error| BuildError::Prerequisite(format!("stage cache clearing: {error}")))?;
+    let recorder = admission.lock.recorder();
     let docker = Docker {
         program: &policy.docker,
         environment: &environment,
@@ -246,6 +248,7 @@ fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> 
         deadline: admission.deadline,
         cancellation: Some(&admission.cancellation),
         progress: None,
+        recorder: Some(&recorder),
     };
     let result = (|| {
         docker.require_local()?;

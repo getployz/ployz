@@ -17,6 +17,7 @@ mod fence;
 pub use fence::{CgroupPath, Fence, FenceInstaller};
 mod image_contexts;
 mod index;
+mod owner;
 mod policy;
 pub use policy::clear_cache;
 mod received_recipe;
@@ -400,9 +401,11 @@ fn execute_rendered(
     cancellation: &Cancellation,
     sinks: Sinks<'_>,
 ) -> Result<Vec<BuiltImage>, BuildError> {
-    let built = Admission::wait(cancellation).and_then(|admission| {
-        execute_produce(request, produce, admission, &|event| sinks.emit(event))
-    });
+    let built = Admission::wait(
+        request.docker.unwrap_or_else(|| Path::new("docker")),
+        cancellation,
+    )
+    .and_then(|admission| execute_produce(request, produce, admission, &|event| sinks.emit(event)));
     sinks.finish();
     built.map_err(|error| sinks.error(error))
 }
@@ -503,6 +506,7 @@ fn execute_produce(
         return Ok(Vec::new());
     }
     admission.check()?;
+    let recorder = admission.lock.recorder();
     let docker = Docker {
         program: request.docker.unwrap_or_else(|| Path::new("docker")),
         environment: request.environment,
@@ -510,6 +514,7 @@ fn execute_produce(
         deadline: admission.deadline,
         cancellation: Some(&admission.cancellation),
         progress: Some(progress),
+        recorder: Some(&recorder),
     };
     progress(Progress::Stage(Stage::Preparation));
     // Preflight processes also use private inputs. Persist ownership before
@@ -933,6 +938,7 @@ pub(crate) struct Docker<'a> {
     deadline: Deadline,
     cancellation: Option<&'a Cancellation>,
     progress: Option<&'a (dyn Fn(Progress) + Sync)>,
+    recorder: Option<&'a builder::Recorder>,
 }
 
 impl<'a> Docker<'a> {
@@ -941,7 +947,7 @@ impl<'a> Docker<'a> {
             .get("DOCKER_HOST")
             .filter(|host| !host.is_empty())
             .cloned()
-            .unwrap_or_else(|| "unix:///var/run/docker.sock".into())
+            .unwrap_or_else(|| owner::DEFAULT_ENDPOINT.into())
     }
 
     /// Host policy and builder ownership apply only to this Machine's Docker.
@@ -991,6 +997,7 @@ impl<'a> Docker<'a> {
             }),
             cancellation: None,
             progress: self.progress,
+            recorder: self.recorder,
         }
     }
 
@@ -1062,13 +1069,18 @@ impl<'a> Docker<'a> {
         if self.deadline.remaining().is_zero() {
             return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
         }
-        let mut command = Command::new(self.program);
+        let mut command = match self.recorder {
+            Some(_) => builder::gated(self.program),
+            None => Command::new(self.program),
+        };
         command
             .env_clear()
             .envs(self.environment)
             .current_dir(self.working_dir)
-            .args(arguments)
-            .stdin(Stdio::null());
+            .args(arguments);
+        if self.recorder.is_none() {
+            command.stdin(Stdio::null());
+        }
         // Captured output goes to files rather than pipes: nothing reads a
         // pipe until the child exits, so a chatty command would fill one and
         // block until its deadline.
@@ -1125,6 +1137,12 @@ impl<'a> Docker<'a> {
             diagnostic: error.to_string(),
         })?;
         drop(command);
+        if let Some(recorder) = self.recorder
+            && let Err(error) = recorder.record(&mut child, &self.location())
+        {
+            let _ = child.wait();
+            return Err(error);
+        }
         started();
         let status = wait_controlled(&mut child, self.deadline, self.cancellation, &mut drain);
         if !status.as_ref().is_err_and(|error| error.is_unknown()) {
