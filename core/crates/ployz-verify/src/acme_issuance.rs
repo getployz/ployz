@@ -1483,8 +1483,12 @@ fn runs_from_words(before: Machine) -> String {
 
 fn verdict_words(verdict: Verdict) -> &'static str {
     match verdict {
-        Verdict::Direct => "its probe sees the hostname reach the Cluster directly (verify_answers and hostname_verdict)",
-        Verdict::DoesNotResolve => "its probe finds the hostname does not resolve (verify_answers and hostname_verdict)",
+        Verdict::Direct => {
+            "its probe sees the hostname reach the Cluster directly (verify_answers and hostname_verdict)"
+        }
+        Verdict::DoesNotResolve => {
+            "its probe finds the hostname does not resolve (verify_answers and hostname_verdict)"
+        }
     }
 }
 
