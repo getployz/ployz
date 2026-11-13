@@ -40,12 +40,13 @@ use {
         observe_liveness, pass_from, preparation, read_prep_state,
     },
     ployz_core::{MachineLayout, host_preparation::PrepSteps, probe_document::ProbeDocument},
-    probe::Probes,
+    probe::{Binder, Probes, Sockets},
     run::{Said, stop},
     status::Refusal,
     std::{
         io,
         path::{Path, PathBuf},
+        sync::Arc,
     },
     wire::PrepRecord,
 };

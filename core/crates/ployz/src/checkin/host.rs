@@ -4,11 +4,13 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
 use ployz_core::probe_document::ProbeDocument;
 
+use super::probe::{Binder, Sockets};
 use super::{Committed, EnrollInstruction, enroll, unit};
 use crate::cluster::Call;
 
@@ -23,6 +25,10 @@ pub(crate) trait Host {
     /// Whether a preparation run marks ployzd's preparation `lock`.
     fn preparation_marked(&self, lock: &Path) -> io::Result<bool> {
         preparation_marked(lock)
+    }
+    /// The sockets a probe window opens.
+    fn binder(&self) -> Arc<dyn Binder> {
+        Arc::new(Sockets)
     }
     async fn start_prepare(&self) -> Result<(), String>;
     async fn disable_loop(&self) -> Result<(), String>;

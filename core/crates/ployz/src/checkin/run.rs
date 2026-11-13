@@ -23,7 +23,7 @@ pub(crate) async fn run<H: Host>(
     paths: &Paths,
 ) -> CheckinEnd {
     let mut said = Said::default();
-    let mut probes = Probes::load(paths.probe());
+    let mut probes = Probes::load(paths.probe(), host.binder());
     loop {
         match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
             Next::Wait { after } => {

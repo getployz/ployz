@@ -68,7 +68,7 @@ pub(crate) async fn pass<H: Host>(
         paths,
         now,
         false,
-        &mut Probes::load(paths.probe()),
+        &mut Probes::load(paths.probe(), host.binder()),
     )
     .await
 }
@@ -113,7 +113,7 @@ pub(crate) async fn install_pass<H: Host>(
         paths,
         now,
         true,
-        &mut Probes::load(paths.probe()),
+        &mut Probes::load(paths.probe(), host.binder()),
     )
     .await;
     InstallPass { next, seen }

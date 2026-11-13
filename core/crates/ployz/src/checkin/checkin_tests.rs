@@ -11,6 +11,7 @@ use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::client::{self, Reply};
+use super::probe::tests::Faults;
 use super::wire::{self, Answer};
 use super::*;
 
@@ -78,9 +79,15 @@ struct FakeHost {
     stale: Option<String>,
     member_of_cluster_as: Option<String>,
     wireguard_port_holder: Option<String>,
+    /// The sockets a probe window opens, in place of the host's.
+    binder: Option<Arc<dyn Binder>>,
 }
 
 impl Host for FakeHost {
+    fn binder(&self) -> Arc<dyn Binder> {
+        self.binder.clone().unwrap_or_else(|| Arc::new(Sockets))
+    }
+
     async fn probe(&self) -> Result<ProbeDocument, String> {
         if self.probe_hangs {
             std::future::pending::<()>().await;
@@ -1003,7 +1010,6 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
 #[tokio::test(start_paused = true)]
 async fn a_check_in_reports_a_window_only_once_it_has_ended() {
     let _ticker = tick_through_io();
-    probe::tests::LEAD.set(Some(Duration::from_millis(300)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -1015,7 +1021,7 @@ async fn a_check_in_reports_a_window_only_once_it_has_ended() {
         r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"h","windowMs":1000,"listen":["tcp:{port}"],"send":[]}}}}"#
     );
     let (url, server) = answering_cloud("200 OK".to_owned(), body, 3).await;
-    let (host, mut client, mut probes) = (FakeHost::default(), client(&url), Probes::default());
+    let (host, mut client, mut probes) = (FakeHost::default(), client(&url), handing());
 
     for pass in 0..3 {
         if pass == 2 {
@@ -1062,7 +1068,6 @@ async fn a_check_in_reports_a_window_only_once_it_has_ended() {
 #[tokio::test(start_paused = true)]
 async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_reports_it() {
     let _ticker = tick_through_io();
-    probe::tests::LEAD.set(Some(Duration::from_millis(450)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -1074,7 +1079,10 @@ async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_repor
         r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"h","windowMs":1500,"listen":["tcp:{port}"],"send":[]}}}}"#
     );
     let (url, server) = answering_cloud("200 OK".to_owned(), body, 2).await;
-    let host = FakeHost::default();
+    let host = FakeHost {
+        binder: Some(compressed()),
+        ..FakeHost::default()
+    };
     let greeted = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
@@ -1095,7 +1103,7 @@ async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_repor
         .record(&paths);
     assert_eq!(greeted.await.unwrap(), 22);
 
-    let mut restarted = Probes::load(paths.probe());
+    let mut restarted = Probes::load(paths.probe(), compressed());
     pass_from(
         &host,
         &mut client(&url),
@@ -1116,6 +1124,19 @@ async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_repor
     );
 }
 
+/// Windows shrunk to three tenths of their length for a bind budget, so a short window binds.
+fn compressed() -> Arc<dyn Binder> {
+    Arc::new(Faults::default().compress_every_window())
+}
+
+fn handing() -> Probes {
+    Probes::new(compressed())
+}
+
+fn handing_at(saved: PathBuf) -> Probes {
+    Probes::load(saved, compressed())
+}
+
 fn udp_port() -> u16 {
     std::net::UdpSocket::bind("0.0.0.0:0")
         .unwrap()
@@ -1131,7 +1152,6 @@ fn handing_out(handout: &str, port: u16, window_ms: u64) -> String {
 }
 
 async fn handed(paths: &Paths, probes: &mut Probes, handout: &str, port: u16, window_ms: u64) {
-    probe::tests::LEAD.set(Some(Duration::from_millis(window_ms * 3 / 10)));
     let (url, server) = answering_cloud(
         "200 OK".to_owned(),
         handing_out(handout, port, window_ms),
@@ -1161,7 +1181,9 @@ async fn send_nonce(port: u16) {
 }
 
 async fn saved(paths: &Paths) -> Option<probe::Report> {
-    Probes::load(paths.probe()).report().await
+    Probes::load(paths.probe(), Arc::new(Sockets))
+        .report()
+        .await
 }
 
 fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
@@ -1174,10 +1196,9 @@ fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
 #[tokio::test(start_paused = true)]
 async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_next_check_in() {
     let _ticker = tick_through_io();
-    probe::tests::LEAD.set(Some(Duration::from_millis(90)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let mut probes = Probes::load(paths.probe());
+    let mut probes = handing_at(paths.probe());
     let (held, holding) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let disk = std::thread::spawn(move || {
@@ -1256,7 +1277,7 @@ async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_n
 async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let mut probes = Probes::default();
+    let mut probes = handing();
     handed(&paths, &mut probes, "h", udp_port(), 300).await;
     probes.finish().await;
     let failing = FakeHost {
@@ -1274,7 +1295,7 @@ async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle
         10,
     );
     retries_after(
-        &pass(&failing, &mut unreachable(), &mut Probes::default()).await,
+        &pass(&failing, &mut unreachable(), &mut handing()).await,
         client::BACKOFF.as_secs(),
     );
     let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
@@ -1306,7 +1327,7 @@ fn the_loop_logs_a_line_repeated_pass_after_pass_once() {
 async fn a_429_from_in_front_of_cloud_waits_what_it_asked_even_with_a_report_owed() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let mut probes = Probes::default();
+    let mut probes = handing();
     handed(&paths, &mut probes, "h", udp_port(), 300).await;
     probes.finish().await;
     let (url, server) = answering_cloud(
@@ -1333,7 +1354,7 @@ async fn a_429_from_in_front_of_cloud_waits_what_it_asked_even_with_a_report_owe
 async fn a_429_without_retry_after_from_in_front_of_cloud_still_retries_a_report_soon() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let mut probes = Probes::default();
+    let mut probes = handing();
     handed(&paths, &mut probes, "h", udp_port(), 300).await;
     probes.finish().await;
     let (url, server) = answering_cloud(
@@ -1391,7 +1412,7 @@ async fn a_rate_limited_report_keeps_its_retry_grace() {
     let _ticker = tick_through_io();
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let mut probes = Probes::default();
+    let mut probes = handing();
     handed(&paths, &mut probes, "h", udp_port(), 300).await;
     probes.finish().await;
     let (url, server) = answering_cloud(
@@ -1438,7 +1459,7 @@ async fn a_rate_limited_report_keeps_its_retry_grace() {
 async fn a_failed_pass_after_a_restart_still_retries_inside_cloud_s_settle() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let mut probes = Probes::load(paths.probe());
+    let mut probes = handing_at(paths.probe());
     handed(&paths, &mut probes, "h", udp_port(), 300).await;
     probes.finish().await;
     let failing = FakeHost {
@@ -1458,7 +1479,7 @@ async fn a_failed_pass_after_a_restart_still_retries_inside_cloud_s_settle() {
         .await
     };
 
-    retries_after(&pass(&mut Probes::load(paths.probe())).await, 10);
+    retries_after(&pass(&mut handing_at(paths.probe())).await, 10);
     std::fs::File::options()
         .write(true)
         .open(paths.probe())
@@ -1466,7 +1487,7 @@ async fn a_failed_pass_after_a_restart_still_retries_inside_cloud_s_settle() {
         .set_modified(std::time::SystemTime::now() - Duration::from_secs(31))
         .unwrap();
     retries_after(
-        &pass(&mut Probes::load(paths.probe())).await,
+        &pass(&mut handing_at(paths.probe())).await,
         client::BACKOFF.as_secs(),
     );
 }
@@ -1477,7 +1498,7 @@ async fn what_a_window_heard_outlives_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = udp_port();
-    let mut probes = Probes::load(paths.probe());
+    let mut probes = handing_at(paths.probe());
     handed(&paths, &mut probes, "h", port, 1_000).await;
     send_nonce(port).await;
     probes.finish().await;
@@ -1495,7 +1516,7 @@ async fn a_restart_mid_window_resumes_no_report_rather_than_a_partial_or_older_o
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = udp_port();
-    let mut probes = Probes::load(paths.probe());
+    let mut probes = handing_at(paths.probe());
     handed(&paths, &mut probes, "first", port, 300).await;
     probes.finish().await;
     assert_eq!(saved(&paths).await, Some(window_report("first", &[])));
@@ -1565,7 +1586,7 @@ async fn a_confirmed_refusal_closes_the_open_window() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = udp_port();
-    let mut probes = Probes::load(paths.probe());
+    let mut probes = handing_at(paths.probe());
     handed(&paths, &mut probes, "h", port, 10_000).await;
     refused_once(&paths, OLD, TimeDelta::seconds(90));
     let (url, _server) = answering_cloud(
