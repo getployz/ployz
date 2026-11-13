@@ -1638,16 +1638,9 @@ fn plan_one_service<'snapshot>(
                 .can_update_in_place(current, requested, options),
             budget,
             |budget, limits| place_service(&target, None, budget, options, limits),
-            |operations| operations.iter().any(starts_copy),
+            |operations| operations.iter().any(creates_container),
         ),
     }
-}
-
-fn starts_copy(operation: &DeployOperation) -> bool {
-    matches!(
-        operation,
-        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_)
-    )
 }
 
 /// Place one Service under one way of landing its limits change.
