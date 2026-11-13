@@ -126,6 +126,17 @@ impl Machine {
             RowStanding::Registered
         }
     }
+
+    /// Whether this Machine takes part in the ingress, door and access sets: its row is
+    /// not marked leaving. Placement of a Service Container keeps its own rule for a
+    /// departing Machine.
+    #[must_use]
+    pub fn takes_part(&self) -> bool {
+        match self.standing() {
+            RowStanding::Registered | RowStanding::Versioned => true,
+            RowStanding::Leaving { .. } => false,
+        }
+    }
 }
 
 /// Where a Machine's row stands in this observer's copy of it. It is neither the
@@ -1211,6 +1222,25 @@ mod placement_tests {
             *wire.get_mut("runtime").unwrap() = runtime.clone();
             let row: Machine = serde_json::from_value(wire).unwrap();
             assert_eq!(row.standing(), expected, "runtime {runtime}");
+        }
+    }
+
+    #[test]
+    fn a_machine_takes_part_unless_its_row_is_marked_leaving() {
+        for (version, leaving, takes_part) in [
+            ("", false, true),
+            ("0.3.0", false, true),
+            ("", true, false),
+            ("0.3.0", true, false),
+        ] {
+            let mut row = machine('a', "row");
+            row.runtime.daemon_version = version.into();
+            row.runtime.leaving = leaving;
+            assert_eq!(
+                row.takes_part(),
+                takes_part,
+                "daemon version {version:?}, leaving {leaving}"
+            );
         }
     }
 

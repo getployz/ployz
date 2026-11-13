@@ -4,10 +4,10 @@ use ployz_core::{
     BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
     HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
     ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal, QualifiedService,
-    RequestedServiceSpec, RowStanding, RpcError, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
-    machine_matches_placement, same_service_mode_kind,
+    RequestedServiceSpec, RpcError, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason, UpdateOrder,
+    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
+    same_service_mode_kind,
 };
 
 use super::{
@@ -591,11 +591,7 @@ pub fn without_departed(
         .filter(|repair| {
             !matches!(repair.action, SlotAction::Unchecked(_))
                 || reread.iter().any(|machine| {
-                    machine.machine.id == repair.machine_id
-                        && match machine.machine.standing() {
-                            RowStanding::Registered | RowStanding::Versioned => true,
-                            RowStanding::Leaving { .. } => false,
-                        }
+                    machine.machine.id == repair.machine_id && machine.machine.takes_part()
                 })
         })
         .collect()
