@@ -75,6 +75,25 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_file_name_is_written_and_then_its_empty_directory_cannot_be_synced() {
+        let name = format!("atomic-write-bare-{}.json", std::process::id());
+        let path = std::path::Path::new(&name);
+        let error = atomic_write(path, b"bare", 0o600).unwrap_err();
+        let written = fs::read(path);
+        let _ = fs::remove_file(path);
+        assert_eq!(written.unwrap(), b"bare");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "No such file or directory (os error 2)");
+    }
+
+    #[test]
+    fn a_path_with_no_parent_is_an_io_error() {
+        for path in ["", "/"] {
+            atomic_write(std::path::Path::new(path), b"x", 0o600).unwrap_err();
+        }
+    }
+
+    #[test]
     fn an_atomic_write_that_fails_returns_the_io_error() {
         let directory = tempfile::tempdir().unwrap();
         let error =
