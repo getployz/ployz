@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { useLoaderData } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { getServerUpgradeSettingsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { PasskeyRefused, signWithPasskey } from "#/modules/approval-session/passkey-statement";
 import { useServerList } from "#/modules/machines/use-servers";
+import { passkeysQueryOptions } from "#/modules/passkeys/passkeys.queries";
+import { useActivation } from "./activation.queries";
 import {
   channelApprovalBody,
   channelScope,
@@ -42,18 +45,23 @@ function usePendingUpgrade(newestAttemptId: string | null) {
 
 /**
  * Upgrade one Server, or every Server behind when `server` is null: reads as Upgrading at once, asks Cloud in the
- * background, and toasts if Cloud refuses. `newestAttemptId` is the newest attempt the view shows.
+ * background, and toasts if Cloud refuses. `newestAttemptId` is the newest attempt the view shows, and `reaches` the
+ * Servers the upgrade moves, of which only those that check a Release Channel approval make it ask a passkey.
  */
 export function useRequestUpgrade(
   organizationSlug: string,
   newestAttemptId: string | null,
   server: { readonly id: string; readonly name: string } | null,
+  reaches: readonly string[],
 ) {
   const pending = usePendingUpgrade(newestAttemptId);
-  const { channel, ensureApproved } = useServerUpgradeSettings(organizationSlug);
+  const { channel, approval, ensureApproved } = useServerUpgradeSettings(organizationSlug);
+  const machines = useServerList(organizationSlug).servers.map(({ machine }) => machine);
+  const activation = useActivation(organizationSlug, needsApproval(channelScope(machines), channel, approval));
+  const awaiting = new Set((activation.data ?? []).flatMap((each) => each.activation?.state === "awaiting" ? [each.id] : []));
   const upgrade = () => {
     pending.start();
-    ensureApproved(channel)
+    ensureApproved(channel, channelScope(machines, { reaches: new Set(reaches), awaiting }))
       .then((approved) => {
         if (!approved) {
           pending.cancel();
@@ -93,17 +101,28 @@ export function useServerUpgradeSettings(organizationSlug: string) {
   const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
   const settings = serverUpgradeSettings(rows);
   const scope = channelScope(useServerList(organizationSlug).servers.map(({ machine }) => machine));
+  const own = useQuery({ ...passkeysQueryOptions(organizationSlug), enabled: scope.checked });
+  const navigate = useNavigate();
+  const addPasskey = {
+    label: "Add passkey",
+    onClick: () => void navigate({ to: "/cloud/$organizationSlug/~/account", params: { organizationSlug }, hash: "settings-passkeys" }),
+  };
   /**
-   * Ask the passkey for `channel` and keep its answer, when the Servers enforce and nobody approved it. False when the
-   * person dismissed the prompt, which a toast says; throws when Cloud refused the answer.
+   * Ask the passkey for `channel` and keep its answer, when a Server in `reach` checks it and nobody approved it. False
+   * when the person has no passkey or dismissed the prompt, which a toast says; throws when Cloud refused the answer.
    */
-  const ensureApproved = async (channel: ReleaseChannel) => {
-    if (!needsApproval(scope, channel, settings.approval) || scope.cluster === null) return true;
+  const ensureApproved = async (channel: ReleaseChannel, reach = scope) => {
+    if (!needsApproval(reach, channel, settings.approval) || reach.cluster === null) return true;
+    if (own.data?.passkeys.length === 0) {
+      toast.error("Add a passkey under Account to approve this.", { action: addPasskey });
+      return false;
+    }
     let approval;
     try {
-      approval = await signWithPasskey(channelApprovalBody(scope.cluster, channel, settings.approval), "rule");
+      approval = await signWithPasskey(channelApprovalBody(reach.cluster, channel, settings.approval), "rule");
     } catch (error) {
-      toast.error(error instanceof PasskeyRefused ? error.message : "Your passkey didn't answer. Try again.");
+      if (error instanceof PasskeyRefused) toast.error(error.message);
+      else toast.error("No passkey answered. Nothing changed.", { action: addPasskey });
       return false;
     }
     const row = await approveUpgradeChannelServerFn({ data: { organizationSlug, approval } });

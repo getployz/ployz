@@ -5,6 +5,7 @@ import { buttonVariants } from "#/components/ui/button-variants";
 import type { ServerListItem } from "#/modules/machines/use-servers";
 import { type RoleGate, useRoleGate } from "#/modules/organization/members.queries";
 import {
+  isBehind,
   NEWEST_RELEASE,
   newestAttempt,
   newMajorLine,
@@ -27,10 +28,11 @@ export function useServersUpgrade(organizationSlug: string, list: readonly Serve
   const release = useChannelRelease(serversLine === null ? null : { channel, line: serversLine });
   const newest = useChannelRelease(NEWEST_RELEASE);
   const latest = Object.values(upgrades.servers);
-  const { pendingFrom, upgrade } = useRequestUpgrade(organizationSlug, newestAttempt(latest)?.attemptId ?? null, null);
-  const now = useNow(latest.some((row) => row.outcome === "running"));
   // Until the release is read, or when it can't be, nothing new is offered; attempts still show on their rows.
   const known = release.isSuccess ? release.data : null;
+  const behind = servers.filter(({ version }) => isBehind(version, known)).map(({ id }) => id);
+  const { pendingFrom, upgrade } = useRequestUpgrade(organizationSlug, newestAttempt(latest)?.attemptId ?? null, null, behind);
+  const now = useNow(latest.some((row) => row.outcome === "running"));
 
   return {
     line: serversUpgradeLine({ servers, release: known, latest, pendingFrom, now, automatic }),

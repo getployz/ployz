@@ -464,6 +464,11 @@ without changing anything when it can't reach your servers to check whether they
 Over `--connect ssh://` you can still upgrade to any release.
 A server before this release ignores the approval and upgrades as before.
 
+**Upgrade** in the dashboard asks for your passkey only when a server it upgrades checks the
+approval and none is kept for your channel. A server on Ployz 0.3, or one
+[awaiting activation](upgrade-to-0-4.md), takes the upgrade without one. If you have no passkey,
+the dashboard says so and upgrades nothing: add one under **Account**, then press **Upgrade** again.
+
 With enforcement on, `ployz server rm` and `ployz server forget <server>` work only from an
 approved device or over SSH on a server. Elsewhere they stop before changing anything and name the
 server that needs an approved device. The dashboard's **Remove server** and **Forget server** ask

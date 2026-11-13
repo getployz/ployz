@@ -188,15 +188,23 @@ export function approvedChannel(approval: Pick<Signed, "body"> | null): typeof A
   }
 }
 
-/**
- * Whether a Server checks a Release Channel approval, and the Cluster key the Servers hold. Every Server past Ployz 0.3
- * takes an upgrade through Cloud only along a channel a person approved; one on 0.3 checks none.
- */
-export function channelScope(machines: ReadonlyArray<{
+type ScopeMachine = {
+  readonly id: string;
   readonly sealing: { readonly kind: string; readonly public_key?: string } | null;
   readonly capabilities: readonly string[];
-}>) {
-  const checked = machines.some((machine) => !runsOlderPloyz(machine));
+};
+
+/**
+ * Whether a Server an upgrade `reaches` checks a Release Channel approval, and the Cluster key the Servers hold. A
+ * Server past Ployz 0.3 takes an upgrade through Cloud only along a channel a person approved. One on 0.3 checks none,
+ * and neither does one in `awaiting`, which awaits its Cluster's activation and takes an upgrade that carries none.
+ */
+export function channelScope(machines: readonly ScopeMachine[], { reaches, awaiting }: {
+  readonly reaches?: ReadonlySet<string>;
+  readonly awaiting?: ReadonlySet<string>;
+} = {}) {
+  const checked = machines.some((machine) =>
+    (reaches?.has(machine.id) ?? true) && awaiting?.has(machine.id) !== true && !runsOlderPloyz(machine));
   const cluster = machines.map((machine) => machine.sealing?.kind === "held" ? machine.sealing.public_key : undefined)
     .find((key) => key !== undefined) ?? null;
   return { checked, cluster };

@@ -22,7 +22,7 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
   const { automatic, channel } = useServerUpgradeSettings(organizationSlug);
   const serverLine = releaseLine(version);
   const release = useChannelRelease(serverLine === null ? null : { channel, line: serverLine });
-  const { pendingFrom, upgrade } = useRequestUpgrade(organizationSlug, latest?.attemptId ?? null, machine);
+  const { pendingFrom, upgrade } = useRequestUpgrade(organizationSlug, latest?.attemptId ?? null, machine, [machine.id]);
   const now = useNow(everyLatest.some((row) => row.outcome === "running"));
   const gate = useRoleGate(organizationSlug, "servers:operate", UPGRADE_REFUSED);
 
