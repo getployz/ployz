@@ -206,7 +206,7 @@ enum Why {
     /// `revoke`'s `DELETE` failed (:263, :148-154).
     DeleteFailed,
     /// `revoke`'s `DELETE` got a 404, which the CLI reads as `UnknownCredential`
-    /// (core/crates/ployz/src/cloud_account.rs:535-537, :148-154).
+    /// (`remove_token` in core/crates/ployz/src/cloud_account/token.rs, :148-154).
     NotFound,
 }
 
@@ -1354,7 +1354,7 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             before.previous(who)
         ),
         Branch::DeleteNotFound => format!(
-            "revoke: DELETE /api/cli/tokens/{} finds no row, since another login's DELETE removed it; with no Server Clear pending Cloud answers 404 (dashboard/src/modules/identity/organization-token.server.ts:174-177, :192; dashboard/src/routes/api/cli/-cli.handler.ts:229-230, :572-577), the CLI reads it as UnknownCredential (core/crates/ployz/src/cloud_account.rs:535-537), and login leaves it to name as still live (:148-154)",
+            "revoke: DELETE /api/cli/tokens/{} finds no row, since another login's DELETE removed it; with no Server Clear pending Cloud answers 404 (dashboard/src/modules/identity/organization-token.server.ts:174-177, :192; dashboard/src/routes/api/cli/-cli.handler.ts:229-230, :572-577), the CLI reads it as UnknownCredential (`remove_token` in core/crates/ployz/src/cloud_account/token.rs), and login leaves it to name as still live (:148-154)",
             before.previous(who)
         ),
         Branch::Noted { left, .. } => {

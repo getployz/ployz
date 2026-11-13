@@ -330,7 +330,7 @@ impl Setup {
     ) -> Result<Published, PublishError> {
         let cached = self.cached();
         let url = format!("{}/api/cli/manifest", self.cloud);
-        let client = cloud_login::http()?;
+        let client = crate::cloud_account::client()?;
         let send = |credential: Option<&Credential>| {
             let mut request = client.get(&url);
             if let Some(credential) = credential {

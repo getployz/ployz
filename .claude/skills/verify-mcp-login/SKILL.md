@@ -1,6 +1,6 @@
 ---
 name: verify-mcp-login
-description: Model-check `ployz mcp login`, which mints the agent token `ployz mcp` acts with and keeps it in mcp.json beside the config, against a second login stepping between any two of its reads, Cloud calls and writes, Cloud answering a token of kind cli, a save that fails before or after its rename, and a list or DELETE that fails, from six start files, with the Stateright model in core/crates/ployz-verify/src/mcp_login.rs. Use when a change touches core/crates/ployz/src/handlers/mcp/login.rs (login, stored, save, Saved, fate, revoke, warnings, Left, Stored, path, LIFETIME_DAYS), core/crates/ployz-decide/src/fate.rs (fate, Previous, Durability, Why, Fate), the callers of login::stored in core/crates/ployz/src/handlers/mcp.rs (publishing_setup, agent), in_cloud in core/crates/ployz/src/handlers/account.rs, new_token, credentials or remove_token in core/crates/ployz/src/cloud_account.rs, or Cloud's /api/cli/tokens routes (POST tokens, GET tokens, DELETE tokens/:id and pendingRevocation in dashboard/src/routes/api/cli/-cli.handler.ts; createOrganizationToken, mintOrganizationTokenUnchecked, listCredentials and revokeCredential in dashboard/src/modules/identity/organization-token.server.ts).
+description: Model-check `ployz mcp login`, which mints the agent token `ployz mcp` acts with and keeps it in mcp.json beside the config, against a second login stepping between any two of its reads, Cloud calls and writes, Cloud answering a token of kind cli, a save that fails before or after its rename, and a list or DELETE that fails, from six start files, with the Stateright model in core/crates/ployz-verify/src/mcp_login.rs. Use when a change touches core/crates/ployz/src/handlers/mcp/login.rs (login, stored, save, Saved, fate, revoke, warnings, Left, Stored, path, LIFETIME_DAYS), core/crates/ployz-decide/src/fate.rs (fate, Previous, Durability, Why, Fate), the callers of login::stored in core/crates/ployz/src/handlers/mcp.rs (publishing_setup, agent), in_cloud in core/crates/ployz/src/handlers/account.rs, new_token, credentials or remove_token in core/crates/ployz/src/cloud_account/token.rs, or Cloud's /api/cli/tokens routes (POST tokens, GET tokens, DELETE tokens/:id and pendingRevocation in dashboard/src/routes/api/cli/-cli.handler.ts; createOrganizationToken, mintOrganizationTokenUnchecked, listCredentials and revokeCredential in dashboard/src/modules/identity/organization-token.server.ts).
 ---
 
 # Verify the MCP login token
@@ -125,7 +125,7 @@ How far this departs from the docs (`docs/user/cli/overview.md:116`): a login th
 
 **The revoke-side misreport.** When both logins read `P`, the second to act on `P` misreports it, in one of two ways, by its condition:
 - its list lands after the first `DELETE`: it finds no `P` and says nothing (`Ok(false)`, `:147`). The finding's replay takes this way;
-- its list lands before the first `DELETE`, and its `DELETE` after: Cloud has no row, and with no Server Clear pending for `P`, `pendingRevocation` re-raises the `NotFound` (`dashboard/src/routes/api/cli/-cli.handler.ts:572-577`). The CLI reads the 404 as `UnknownCredential` (`core/crates/ployz/src/cloud_account.rs:535-537`), and the login warns that `P` "is still live" though its row is gone (`:148-154`).
+- its list lands before the first `DELETE`, and its `DELETE` after: Cloud has no row, and with no Server Clear pending for `P`, `pendingRevocation` re-raises the `NotFound` (`dashboard/src/routes/api/cli/-cli.handler.ts:572-577`). The CLI reads the 404 as `UnknownCredential` (`remove_token` in `core/crates/ployz/src/cloud_account/token.rs`), and the login warns that `P` "is still live" though its row is gone (`:148-154`).
 
 Both are `Reach::AsIs` rows, and no property covers them: `P` is revoked either way.
 
@@ -202,7 +202,7 @@ The model has no liveness property, so a lock that is never released shows only 
 
 **E-142 also names a re-read before persist.** With every writer taking the lock, that re-read never sees another token in this model: no modelled step writes `mcp.json` but a login's `save` (`:110`), and a hand edit during a login is not modelled. It matters only against a writer that takes no lock, an older `ployz` or a hand edit. So the model leaves the re-read out, and E-142 must argue it.
 
-**What it costs.** A second login waits on the first's Cloud calls, each up to `REQUEST_TIMEOUT`, 15 s (`core/crates/ployz/src/cloud_login.rs:23`).
+**What it costs.** A second login waits on the first's Cloud calls, each up to `REQUEST_TIMEOUT`, 15 s (`core/crates/ployz/src/cloud_account/http.rs`).
 
 **What it doesn't change.** A kill, a power loss or a lost reply still leaves a token unnamed (Bounds). After an Unflushed save, a crash may bring the token before back into `mcp.json` (`:62`); the new token is then live and held by no file, and the Unflushed warning names `mcp.json`'s path, not that token's id (`:185-191`).
 
@@ -461,7 +461,7 @@ cd core && cargo nextest run -p ployz-verify -E 'test(=mcp_login::tests::scratch
 It printed `as is: 363558 states` and `fixed: 15615 states`, the same two `always` breaking as is, none on the fix, and no row unreached; it took 4.1 s of nextest time and 9.3 s of wall time with the release build warm. In the `mcp_login` suite at 3, `two_first_logins_orphan_the_first_rename` and `two_logins_that_read_the_same_token_orphan_the_first_rename` go red: their replays leave Login C unstarted, so `every_token_accounted` holds at their end. What the third login adds, as a scratch search showed: three overlapping first logins leave two tokens unaccounted (TA and TB, each replaced by the next rename), and no path leaves three.
 
 **Left out, and argued.**
-- **Kills, power loss and lost replies (risk 2).** A kill between `new_token` and the rename, or between the rename and the warnings, leaves a token unnamed. A reply lost after Cloud minted is an Err to the CLI (`call` and `send` retry nothing, `core/crates/ployz/src/cloud_account.rs:1271-1292`, `:1405-1415`; `REQUEST_TIMEOUT`, `core/crates/ployz/src/cloud_login.rs:23`), and the login returns at `:108` naming nothing. Each leaves a token unnamed on the fix too, so it is not this finding. A scratch lift added a kill action that ends any started login and releases its lock, and counted a killed login as returned: on `fixed()`, 3168 states, `EVERY_TOKEN_ACCOUNTED` broke, the other four `always` held, and a search that rejected every state with a killed login found no break of any of the five.
+- **Kills, power loss and lost replies (risk 2).** A kill between `new_token` and the rename, or between the rename and the warnings, leaves a token unnamed. A reply lost after Cloud minted is an Err to the CLI (`call` and `exchange` retry nothing, `core/crates/ployz/src/cloud_account/calls.rs` and `core/crates/ployz/src/cloud_account/http.rs`; `REQUEST_TIMEOUT`, `core/crates/ployz/src/cloud_account/http.rs`), and the login returns at `:108` naming nothing. Each leaves a token unnamed on the fix too, so it is not this finding. A scratch lift added a kill action that ends any started login and releases its lock, and counted a killed login as returned: on `fixed()`, 3168 states, `EVERY_TOKEN_ACCOUNTED` broke, the other four `always` held, and a search that rejected every state with a killed login found no break of any of the five.
 - **The unreadable file's token (risk 3).** `login` replaces a `Corrupt` file without revoking or naming the token it held (`:94-97`). Nobody can know that token, so the property counts none (`counts`).
 - **A token Cloud refuses while `mcp.json` still holds it, and no `ployz mcp logout` (risk 5).** Expiry, `ployz token rm` and a member leaving are not steps; nor is any way back to no file.
 - **The other writers of a token row** (What the model copies).
@@ -494,7 +494,7 @@ When a change touches a function the description names, reread the step that cop
 | `core/crates/ployz-decide/src/fate.rs` | `fate`, `Previous`, `Durability`, `Why`, `Fate` |
 | `core/crates/ployz/src/handlers/account.rs` | `in_cloud` |
 | `core/crates/ployz/src/handlers/mod.rs` | `runtime` |
-| `core/crates/ployz/src/cloud_account.rs` | `new_token`, `credentials`, `remove_token` |
+| `core/crates/ployz/src/cloud_account/token.rs` | `new_token`, `credentials`, `remove_token` |
 | `core/crates/ployz/src/handlers/mcp.rs` | `publishing_setup`, `agent` (readers, left out) |
 | `dashboard/src/routes/api/cli/-cli.handler.ts` | `GET tokens`, `POST tokens`, `DELETE tokens/:id`, `pendingRevocation` |
 | `dashboard/src/modules/identity/organization-token.server.ts` | `createOrganizationToken`, `mintOrganizationTokenUnchecked`, `listCredentials`, `revokeCredential` |

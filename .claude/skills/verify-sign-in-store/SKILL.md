@@ -1,6 +1,6 @@
 ---
 name: verify-sign-in-store
-description: Model-check this device's Cloud sign-in file, cloud.json, against two `ployz login` processes, another Cloud command's `signed_in`, `ployz logout` and the browser approving, denying or letting a code lapse, each stepping between any two of the others' reads and writes, with the Stateright model in core/crates/ployz-verify/src/sign_in_store.rs. Use when a change touches core/crates/ployz/src/cloud_login.rs (CredentialStore's load, replaceable, save, clear and set_organization; signed_in, start, wait, logout, request_code, poll_once, poll, finish, session, forget), core/crates/ployz/src/handlers/login.rs (login and logout), the callers of signed_in in core/crates/ployz/src/cloud_account.rs and core/crates/ployz/src/handlers/mcp.rs, or the device authorization wiring in dashboard/src/server/auth.server.ts.
+description: Model-check this device's Cloud sign-in file, cloud.json, against two `ployz login` processes, another Cloud command's `signed_in`, `ployz logout` and the browser approving, denying or letting a code lapse, each stepping between any two of the others' reads and writes, with the Stateright model in core/crates/ployz-verify/src/sign_in_store.rs. Use when a change touches core/crates/ployz/src/cloud_login.rs (CredentialStore's load, replaceable, save, clear and set_organization; signed_in, start, wait, logout, request_code, poll_once, poll, finish, session, forget), core/crates/ployz/src/handlers/login.rs (login and logout), the callers of signed_in in core/crates/ployz/src/cloud_account/credential.rs (credential) and core/crates/ployz/src/handlers/mcp.rs, or the device authorization wiring in dashboard/src/server/auth.server.ts.
 ---
 
 # Verify the Cloud sign-in store
@@ -11,7 +11,7 @@ The model in `core/crates/ployz-verify/src/sign_in_store.rs` explores every inte
 
 **The processes.** Each one is its own `ployz` process, so one can step between any two of another's file operations. No lock covers them.
 - **Two `ployz login` processes**, slots Login A and Login B. Without `--json`, `ployz login` waits (`core/crates/ployz/src/handlers/login.rs:83`). It runs `start` (`:304-341`), called at `core/crates/ployz/src/handlers/login.rs:85`, then `wait` (`:348-364`), called at `core/crates/ployz/src/handlers/login.rs:99`.
-- **One other Cloud command**, slot Command. With no pasted token, `credential` calls `signed_in` (`core/crates/ployz/src/cloud_account.rs:84-91`); `core/crates/ployz/src/handlers/mcp.rs:719` calls it too. `signed_in` (`:276-287`) loads the file, returns a SignedIn, and polls a Pending once with `poll_once` (`:282`), which can finish or forget it.
+- **One other Cloud command**, slot Command. With no pasted token, `credential` in `core/crates/ployz/src/cloud_account/credential.rs` calls `signed_in`; `core/crates/ployz/src/handlers/mcp.rs:719` calls it too. `signed_in` (`:276-287`) loads the file, returns a SignedIn, and polls a Pending once with `poll_once` (`:282`), which can finish or forget it.
 - **One `ployz logout`**, slot Logout (`:387-446`).
 - **The browser**, a signed-in member at `/device`, approves or denies a code. **The clock** lets a code lapse.
 
@@ -24,7 +24,7 @@ Each process runs once and ends. Running the same command again is a new process
 | `request_code`'s save of a Pending | `:513` | `start`'s fall-through (`:340`) and its resume branch on Denied or Expired (`:332-334`) | `Pc::Requesting`, one step with its POST |
 | `start`'s refresh of a stored SignedIn | `:321` | `start`, after get-session honours the token (`:314-323`) | `Pc::Refreshing` |
 | `finish`'s save of a SignedIn | `:583` | `wait` (`:357`), and `poll_once` (`:521-532`) from `start`'s resume branch (`:326`) and from `signed_in` (`:282`) | `Pc::Finishing` |
-| `set_organization`'s save of a SignedIn | `:248` | `ployz org use` and `ployz org new` (`core/crates/ployz/src/cloud_account.rs:425`, `:464`) | left out (Bounds) |
+| `set_organization`'s save of a SignedIn | `:248` | `ployz org use` and `ployz org new` (`use_organization` and `new_organization` in `core/crates/ployz/src/cloud_account/org.rs`) | left out (Bounds) |
 | `logout`'s `clear` of no or an unreadable file | `:398-400` | `logout` | `Pc::Clearing(File::Absent)` and `Pc::Clearing(File::Unreadable)` |
 | `logout`'s `clear` after a Pending or a SignedIn | `:444` | `logout` | `Pc::Clearing` |
 | `forget`'s `clear` | `:617-620` | `wait` on Denied or Expired (`:360-361`), `poll_once` on either (`:529-530`) | `Pc::Forgetting` |
@@ -292,9 +292,9 @@ The other processes can step between any two of a process's file operations. Eac
 - **`logout`'s read and its POST to `/api/cli/logout`** (`:397`, `:409-414`) are one step, and its `clear` (`:444`) is another. The POST ends only the session of the token logout read, and every other process reads that session only through a get-session; a read between the two orders the same way before the logout's step.
 
 Left out:
-- **`set_organization`** (`:239-250`) saves the SignedIn its caller got from `signed_in` moments before, with a new Organization (`:248`), for `ployz org use` and `ployz org new` (`core/crates/ployz/src/cloud_account.rs:425`, `:464`). It always leaves a SignedIn, so it cannot remove one. But it is a stale write: it can put an older SignedIn over a newer one, or over a Pending a login just saved, which the model does not explore.
+- **`set_organization`** (`:239-250`) saves the SignedIn its caller got from `signed_in` moments before, with a new Organization (`:248`), for `ployz org use` and `ployz org new` (`use_organization` and `new_organization` in `core/crates/ployz/src/cloud_account/org.rs`). It always leaves a SignedIn, so it cannot remove one. But it is a stale write: it can put an older SignedIn over a newer one, or over a Pending a login just saved, which the model does not explore.
 - `OtherCloud` (`:308-313`), and a Pending of another Cloud, which `start` treats as no file (`:338`). The model has one Cloud.
-- A pasted token, with which `credential` never reads the file (`core/crates/ployz/src/cloud_account.rs:89-100`).
+- A pasted token, with which `credential` never reads the file (`credential` in `core/crates/ployz/src/cloud_account/credential.rs`).
 - `ployz login --json` without `--wait`, which returns after `start` (`core/crates/ployz/src/handlers/login.rs:89-97`). It is a login that never takes its wait step, which the model reaches.
 - `logout`'s unreachable, 401 and 403 replies (`:415-430`). Each still clears the file (`:444`); the model's logout always ends a SignedIn's session.
 - Errors: `finish`'s get-session failing, or answering 401, which `finish` returns as Ended (`:574-576`, `:599-600`), Io from `save` or `clear`, and a reply `poll` cannot read (`:563`).
@@ -333,7 +333,7 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 
 - `core/crates/ployz/src/cloud_login.rs`: `CredentialStore`'s `load`, `replaceable`, `save`, `clear` and `set_organization`; `signed_in`, `start`, `wait`, `logout`, `request_code`, `poll_once`, `poll`, `finish`, `session` and `forget`; and `LoginError`'s messages.
 - `core/crates/ployz/src/handlers/login.rs`: `login`, `announce`, `report` and `logout`.
-- `core/crates/ployz/src/cloud_account.rs`: `credential`, and the `set_organization` callers.
+- `core/crates/ployz/src/cloud_account/credential.rs`: `credential`; and `core/crates/ployz/src/cloud_account/org.rs`: the `set_organization` callers, `use_organization` and `new_organization`.
 - `core/crates/ployz/src/handlers/mcp.rs`: its `signed_in` call.
 - `core/crates/ployz/src/failure.rs`: the `next` for `SignedOut`, `Expired`, `Denied` and `Ended`.
 - `dashboard/src/server/auth.server.ts`: `cliSignInPlugins` and its `deviceAuthorization` options, and the `session` options.
