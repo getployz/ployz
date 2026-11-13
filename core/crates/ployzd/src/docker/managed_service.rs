@@ -102,37 +102,68 @@ fn decide(existing: Option<&Existing>, desired: &SpecDigest) -> Ensure {
     }
 }
 
+/// The Docker a service lives on, and how that Docker makes and starts its container.
+pub(crate) trait ServiceRuntime: Send + Sync {
+    /// What failing to make the container reports as: the host's Docker answers with
+    /// Docker's own error, the local endpoint with the daemon's.
+    type Error: From<DockerError> + Send;
+
+    fn client(&self) -> &Docker;
+
+    fn create(
+        &self,
+        name: &str,
+        config: ContainerCreateBody,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+}
+
+impl ServiceRuntime for Docker {
+    type Error = DockerError;
+
+    fn client(&self) -> &Docker {
+        self
+    }
+
+    async fn create(&self, name: &str, config: ContainerCreateBody) -> Result<(), DockerError> {
+        self.create_container(
+            Some(CreateContainerOptionsBuilder::default().name(name).build()),
+            config,
+        )
+        .await?;
+        self.start_container(name, None).await
+    }
+}
+
+impl ServiceRuntime for LocalDocker {
+    type Error = Error;
+
+    fn client(&self) -> &Docker {
+        &self.client
+    }
+
+    async fn create(&self, name: &str, config: ContainerCreateBody) -> Result<(), Error> {
+        self.create_container(
+            Some(CreateContainerOptionsBuilder::default().name(name).build()),
+            config,
+        )
+        .await?;
+        self.client.start_container(name, None).await?;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
-pub(crate) struct ManagedService {
-    engine: Engine,
+pub(crate) struct ManagedService<R> {
+    runtime: R,
     name: String,
     image: &'static str,
     stop_grace_seconds: Option<i32>,
 }
 
-#[derive(Clone)]
-enum Engine {
-    Host(Docker),
-    Endpoint(LocalDocker),
-}
-
-impl ManagedService {
-    pub(crate) fn host(docker: Docker, name: impl Into<String>, image: &'static str) -> Self {
+impl<R: ServiceRuntime> ManagedService<R> {
+    pub(crate) fn new(runtime: R, name: impl Into<String>, image: &'static str) -> Self {
         Self {
-            engine: Engine::Host(docker),
-            name: name.into(),
-            image,
-            stop_grace_seconds: None,
-        }
-    }
-
-    pub(crate) fn endpoint(
-        docker: LocalDocker,
-        name: impl Into<String>,
-        image: &'static str,
-    ) -> Self {
-        Self {
-            engine: Engine::Endpoint(docker),
+            runtime,
             name: name.into(),
             image,
             stop_grace_seconds: None,
@@ -146,41 +177,8 @@ impl ManagedService {
         self
     }
 
-    pub(crate) async fn ensure_host(
-        &self,
-        desired: DesiredContainer,
-    ) -> Result<Ensure, DockerError> {
-        let Engine::Host(docker) = &self.engine else {
-            unreachable!("endpoint service uses ensure_endpoint")
-        };
-        self.ensure(docker, desired, |config| async move {
-            self.create_host(config).await
-        })
-        .await
-    }
-
-    pub(crate) async fn ensure_endpoint(&self, desired: DesiredContainer) -> Result<(), Error> {
-        let Engine::Endpoint(docker) = &self.engine else {
-            unreachable!("host service uses ensure_host")
-        };
-        self.ensure(&docker.client, desired, |config| async move {
-            self.create_endpoint(config).await
-        })
-        .await?;
-        Ok(())
-    }
-
-    async fn ensure<E, F, Fut>(
-        &self,
-        docker: &Docker,
-        desired: DesiredContainer,
-        create: F,
-    ) -> Result<Ensure, E>
-    where
-        E: From<DockerError>,
-        F: FnOnce(ContainerCreateBody) -> Fut,
-        Fut: std::future::Future<Output = Result<(), E>>,
-    {
+    pub(crate) async fn ensure(&self, desired: DesiredContainer) -> Result<Ensure, R::Error> {
+        let docker = self.runtime.client();
         let existing = match docker.inspect_container(&self.name, None).await {
             Ok(container) => Some(Existing::of(&container)),
             Err(error) if is_not_found(&error) => None,
@@ -190,57 +188,26 @@ impl ManagedService {
         match ensure {
             Ensure::Keep => {}
             Ensure::Start => docker.start_container(&self.name, None).await?,
-            Ensure::Create => create(desired.body).await?,
+            Ensure::Create => self.create(desired.body).await?,
             Ensure::Replace => {
                 // A registry outage must leave the old container serving, not none at all.
                 prepare_image(docker, self.image, PullPolicy::Missing, None).await?;
                 self.remove().await?;
-                create(desired.body).await?;
+                self.create(desired.body).await?;
             }
         }
         Ok(ensure)
     }
 
-    async fn create_host(&self, config: ContainerCreateBody) -> Result<(), DockerError> {
-        let Engine::Host(docker) = &self.engine else {
-            unreachable!()
-        };
-        prepare_image(docker, self.image, PullPolicy::Missing, None).await?;
-        docker
-            .create_container(
-                Some(
-                    CreateContainerOptionsBuilder::default()
-                        .name(&self.name)
-                        .build(),
-                ),
-                config,
-            )
-            .await?;
-        docker.start_container(&self.name, None).await
-    }
-
-    async fn create_endpoint(&self, config: ContainerCreateBody) -> Result<(), Error> {
-        let Engine::Endpoint(docker) = &self.engine else {
-            unreachable!()
-        };
-        prepare_image(&docker.client, self.image, PullPolicy::Missing, None).await?;
-        docker
-            .create_container(
-                Some(
-                    CreateContainerOptionsBuilder::default()
-                        .name(&self.name)
-                        .build(),
-                ),
-                config,
-            )
-            .await?;
-        docker.client.start_container(&self.name, None).await?;
-        Ok(())
+    async fn create(&self, config: ContainerCreateBody) -> Result<(), R::Error> {
+        prepare_image(self.runtime.client(), self.image, PullPolicy::Missing, None).await?;
+        self.runtime.create(&self.name, config).await
     }
 
     async fn stop(&self) -> Result<(), DockerError> {
         match self
-            .docker()
+            .runtime
+            .client()
             .stop_container(&self.name, self.stop_options())
             .await
         {
@@ -258,7 +225,8 @@ impl ManagedService {
     pub(crate) async fn remove(&self) -> Result<(), DockerError> {
         self.stop().await?;
         match self
-            .docker()
+            .runtime
+            .client()
             .remove_container(
                 &self.name,
                 Some(RemoveContainerOptionsBuilder::default().v(true).build()),
@@ -270,14 +238,10 @@ impl ManagedService {
             Err(error) => Err(error),
         }
     }
-
-    fn docker(&self) -> &Docker {
-        match &self.engine {
-            Engine::Host(docker) => docker,
-            Engine::Endpoint(docker) => &docker.client,
-        }
-    }
 }
+
+#[cfg(test)]
+mod ensure_tests;
 
 #[cfg(test)]
 mod tests {

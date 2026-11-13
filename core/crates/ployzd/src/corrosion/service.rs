@@ -235,11 +235,11 @@ pub async fn remove_retained(run_dir: &Path) -> Result<(), Error> {
 /// those through sync, as after a crash.
 const STOP_GRACE_SECONDS: i32 = 1;
 
-fn managed(docker: Docker, name: impl Into<String>) -> ManagedService {
-    ManagedService::host(docker, name, IMAGE).with_stop_grace(STOP_GRACE_SECONDS)
+fn managed(docker: Docker, name: impl Into<String>) -> ManagedService<Docker> {
+    ManagedService::new(docker, name, IMAGE).with_stop_grace(STOP_GRACE_SECONDS)
 }
 
-async fn remove(service: &ManagedService, run_dir: &Path) -> Result<(), Error> {
+async fn remove(service: &ManagedService<Docker>, run_dir: &Path) -> Result<(), Error> {
     service.remove().await?;
     match fs::remove_dir_all(run_dir) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
@@ -334,7 +334,7 @@ impl RunningCorrosion {
 
 #[derive(Clone)]
 struct DockerService {
-    service: ManagedService,
+    service: ManagedService<Docker>,
     data_dir: PathBuf,
     run_dir: PathBuf,
 }
@@ -348,7 +348,7 @@ impl DockerService {
             format!("{}:{}", owner.uid(), owner.gid()),
         );
         self.service
-            .ensure_host(DesiredContainer::new(
+            .ensure(DesiredContainer::new(
                 config,
                 &[&files.config, SCHEMA.as_bytes()],
             ))
