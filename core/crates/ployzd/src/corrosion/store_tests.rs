@@ -3175,3 +3175,198 @@ async fn a_certificate_renewal_failure_lands_over_its_tried_material_and_moves_a
     assert_eq!(stored_certificate_body(&store, &hostname).await, renewed);
     task.abort();
 }
+
+async fn cluster_rows(store: &ReplicatedStore) -> Vec<(String, String)> {
+    store
+        .api()
+        .query(Statement::new(
+            "SELECT key AS k, value AS v FROM cluster ORDER BY key",
+            [],
+        ))
+        .await
+        .unwrap()
+        .rows(["k", "v"])
+        .unwrap()
+        .into_iter()
+        .map(|[key, value]| {
+            (
+                key.as_str().unwrap().to_owned(),
+                value.as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_forget_writes_the_tombstone_rows_the_fence_and_the_guards_read() {
+    let (machine, local) = participating_record();
+    let identity = local.management_secret().public_key();
+    let id = machine.id.to_string();
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    let publication = store.machine_publication().await;
+    let published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&published).await.unwrap();
+    drop(publication);
+    store.forget_machine(&machine.id).await.unwrap();
+    assert_eq!(
+        cluster_rows(&store).await,
+        vec![(format!("forgotten:{}", identity.to_hex()), id.clone())]
+    );
+    store
+        .machine_publication()
+        .await
+        .register(machine.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        cluster_rows(&store).await,
+        vec![(format!("forgotten:{}", identity.to_hex()), id.clone())],
+        "a Register keeps a tombstone keyed by a Management Identity"
+    );
+    task.abort();
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    store.publish_local_machine(&machine).await.unwrap();
+    store.forget_machine(&machine.id).await.unwrap();
+    assert_eq!(
+        cluster_rows(&store).await,
+        vec![(format!("forgotten-id:{id}"), id.clone())]
+    );
+    store
+        .machine_publication()
+        .await
+        .register(machine.clone())
+        .await
+        .unwrap();
+    assert_eq!(cluster_rows(&store).await, vec![]);
+    task.abort();
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    store.forget_machine(&machine.id).await.unwrap();
+    assert_eq!(cluster_rows(&store).await, vec![]);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_tombstone_key_of_any_letter_case_under_the_identity_prefix_keeps_an_id_off() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, _local) = participating_record();
+    store
+        .api()
+        .execute([Statement::new(
+            "INSERT INTO cluster (key, value) VALUES ('FORGOTTEN:abc', ?)",
+            [json!(machine.id)],
+        )])
+        .await
+        .unwrap();
+    store.publish_local_machine(&machine).await.unwrap();
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    store
+        .machine_publication()
+        .await
+        .register(machine.clone())
+        .await
+        .unwrap();
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    task.abort();
+}
+
+#[tokio::test]
+async fn certificate_reads_name_an_incomplete_body_and_skip_what_will_not_decode() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let refused = IngressHost::parse("refused.example.com").unwrap();
+    store
+        .record_certificate_error(&refused, "policy refused")
+        .await
+        .unwrap();
+    store
+        .api()
+        .execute([
+            Statement::new(
+                "INSERT INTO certificates (hostname, body) VALUES ('empty.example.com', '{}')",
+                [],
+            ),
+            Statement::new(
+                r#"INSERT INTO certificates (hostname, body) VALUES ('wrong-shape.example.com', '{"published": "yes"}')"#,
+                [],
+            ),
+            Statement::new(
+                "INSERT INTO certificates (hostname, body) VALUES ('not a host', '{}')",
+                [],
+            ),
+        ])
+        .await
+        .unwrap();
+    let refused = CertificateHost::from(refused);
+    let empty = CertificateHost::parse("empty.example.com").unwrap();
+
+    let rows = store.certificate_rows().await.unwrap();
+    assert_eq!(
+        rows.observations
+            .iter()
+            .map(|(host, _)| host.clone())
+            .collect::<Vec<_>>(),
+        vec![refused.clone()]
+    );
+    assert_eq!(rows.incomplete_ids, vec![empty.clone()]);
+
+    let state = store.certificate_state().await.unwrap();
+    assert_eq!(
+        state.keys().cloned().collect::<Vec<_>>(),
+        vec![empty.clone(), refused.clone()]
+    );
+    assert_eq!(state[&empty], super::CertificateRow::decode("{}").unwrap());
+    assert_eq!(state[&refused].last_error(), Some("policy refused"));
+    task.abort();
+}
+
+#[tokio::test]
+async fn ingress_route_reads_name_a_partial_row_and_drop_one_with_a_bad_key() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let container = ContainerId::parse("c".repeat(64)).unwrap();
+    store
+        .api()
+        .execute([
+            Statement::new(
+                "INSERT INTO ingress_routes (machine_id, service_id, containers) VALUES (?, 'app/api', ?)",
+                [json!(machine), json!(format!("[\"{container}\"]"))],
+            ),
+            Statement::new(
+                "INSERT INTO ingress_routes (machine_id, service_id, containers) VALUES (?, 'app/web', '\"partial\"')",
+                [json!(machine)],
+            ),
+            Statement::new(
+                "INSERT INTO ingress_routes (machine_id, service_id, containers) VALUES ('not-an-id', 'app/gone', '[]')",
+                [],
+            ),
+            Statement::new(
+                "INSERT INTO ingress_routes (machine_id, service_id, containers) VALUES (?, 'bad service', '[]')",
+                [json!(machine)],
+            ),
+        ])
+        .await
+        .unwrap();
+    let expected = BTreeMap::from([
+        (
+            (machine, QualifiedService::parse("app/api").unwrap()),
+            IngressRouteRow::Acked(IngressRouteAck {
+                containers: [container].into(),
+            }),
+        ),
+        (
+            (machine, QualifiedService::parse("app/web").unwrap()),
+            IngressRouteRow::UnknownContainers,
+        ),
+    ]);
+    assert_eq!(store.ingress_routes().await.unwrap(), expected);
+    let web = QualifiedService::parse("app/web").unwrap();
+    assert_eq!(
+        store.service_ingress_routes(&web).await.unwrap(),
+        BTreeMap::from([((machine, web), IngressRouteRow::UnknownContainers,)])
+    );
+    task.abort();
+}
