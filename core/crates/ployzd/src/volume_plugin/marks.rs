@@ -26,7 +26,7 @@ use std::fmt;
 
 use ployz_core::{SlotRole, SnapshotName, WriterEpoch};
 
-use super::{Result, VolumeError, VolumeStorage};
+use super::{PluginError, Result, VolumeStorage};
 
 /// A ZFS property the plugin reads or writes on a Volume's dataset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,7 +181,7 @@ impl Marks<'_> {
         match self.get(Mark::Epoch).await? {
             None => Ok(WriterEpoch::default()),
             Some(value) => value.parse().map(WriterEpoch::new).map_err(|error| {
-                VolumeError::from(format!(
+                PluginError::from(format!(
                     "{} carries an unreadable {} {value:?}: {error}",
                     self.dataset,
                     Mark::Epoch
@@ -195,7 +195,7 @@ impl Marks<'_> {
         match self.get(Mark::Role).await? {
             None => Ok(SlotRole::default()),
             Some(value) => value.parse().map_err(|error| {
-                VolumeError::from(format!(
+                PluginError::from(format!(
                     "{} carries an unreadable {} {value:?}: {error}",
                     self.dataset,
                     Mark::Role
@@ -210,7 +210,7 @@ impl Marks<'_> {
             return Ok(None);
         };
         target.parse().map(Some).map_err(|error| {
-            VolumeError::from(format!(
+            PluginError::from(format!(
                 "{} carries an unreadable {} {target:?}: {error}",
                 self.dataset,
                 Mark::Pull

@@ -90,14 +90,11 @@ use ployz_core::{Namespace, ServiceId};
 /// still publishes the ports itself and keeps that endpoint.
 #[must_use]
 pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
-    let door = |door: QualifiedService| {
-        labels.get(labels::NAMESPACE) == Some(&door.namespace.to_string())
-            && labels.get(labels::SERVICE_NAME) == Some(&door.name.to_string())
-    };
     labels.get(labels::BRIDGE_IPV6).map(String::as_str) == Some("true")
-        || (door(QualifiedService::system_ingress())
-            || door(QualifiedService::system_ingress_holder()))
-            && !labels.contains_key(labels::HOOK)
+        || matches!(
+            doors::Door::of_labels(labels),
+            Some(doors::Door::Proxy | doors::Door::Holder)
+        ) && !labels.contains_key(labels::HOOK)
 }
 
 /// The ployz bridge endpoint for a container that does or does not take IPv6.

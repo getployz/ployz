@@ -36,6 +36,17 @@ impl Door {
             .find(|door| door.identity() == *identity)
     }
 
+    /// The door a Container's labels name, read as they are: a Container whose labels
+    /// do not parse as a Service's still names its door.
+    #[must_use]
+    pub(crate) fn of_labels(labels: &std::collections::HashMap<String, String>) -> Option<Self> {
+        Self::ALL.into_iter().find(|door| {
+            let identity = door.identity();
+            labels.get(labels::NAMESPACE) == Some(&identity.namespace.to_string())
+                && labels.get(labels::SERVICE_NAME) == Some(&identity.name.to_string())
+        })
+    }
+
     #[must_use]
     pub(crate) fn identity(self) -> QualifiedService {
         match self {
@@ -318,5 +329,24 @@ mod tests {
             "an unreadable namespace is unknown, not equal"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn labels_name_their_door_by_namespace_and_service_alone() {
+        let labelled = |identity: QualifiedService| {
+            std::collections::HashMap::from([
+                (labels::NAMESPACE.to_owned(), identity.namespace.to_string()),
+                (labels::SERVICE_NAME.to_owned(), identity.name.to_string()),
+            ])
+        };
+        for door in Door::ALL {
+            assert_eq!(Door::of_labels(&labelled(door.identity())), Some(door));
+        }
+        let app = QualifiedService::new(
+            ployz_core::Namespace::parse("app").unwrap(),
+            QualifiedService::system_ingress().name,
+        );
+        assert_eq!(Door::of_labels(&labelled(app)), None);
+        assert_eq!(Door::of_labels(&std::collections::HashMap::new()), None);
     }
 }

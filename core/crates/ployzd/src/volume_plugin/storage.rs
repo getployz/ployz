@@ -20,7 +20,7 @@ use tokio::{
 };
 
 use super::{
-    DockerVolumeName, Result, VolumeError,
+    DockerVolumeName, PluginError, Result,
     pool::PoolStorage,
     transfer::{RECEIVE_STALL, STOP_DEADLINE},
 };
@@ -119,7 +119,7 @@ impl VolumeStorage {
         let installation = self
             .installation
             .try_mutation()
-            .map_err(|error| VolumeError::from(ployz_core::error_chain::inline(&error)))?;
+            .map_err(|error| PluginError::from(ployz_core::error_chain::inline(&error)))?;
         Ok((local, installation))
     }
 
@@ -147,7 +147,7 @@ impl VolumeStorage {
 
         let slot = layout.slot_parent(name);
         if datasets.iter().any(|dataset| dataset.name == slot) {
-            return Err(VolumeError::from(format!(
+            return Err(PluginError::from(format!(
                 "Volume {name} is held in slot {slot}; promote or restore it before creating it again"
             )));
         }
@@ -176,7 +176,7 @@ impl VolumeStorage {
             .clone()
             .map(|dataset| committed_bytes(dataset, pool.name()))
             .try_fold(requested, u64::checked_add)
-            .ok_or_else(|| VolumeError::from("Provisioned Volume commitments overflowed u64"))?;
+            .ok_or_else(|| PluginError::from("Provisioned Volume commitments overflowed u64"))?;
         let managed_used = committed
             .map(|dataset| dataset.active_used_bytes)
             .try_fold(0u64, u64::checked_add)
@@ -511,11 +511,10 @@ impl Dataset {
         if !self.switching() {
             return Ok(());
         }
-        Err(format!(
-            "VolumeSwitching: Volume {name} is mid-run on this Machine (ZFS dataset {} is read-only); wait for the run to finish",
-            self.name
-        )
-        .into())
+        Err(PluginError::MidRun {
+            name: name.to_string(),
+            dataset: self.name.clone(),
+        })
     }
 
     /// The Provisioned Volume bound the dataset carries; a `refquota` of 0 is none.
@@ -525,11 +524,9 @@ impl Dataset {
 
     pub(super) fn require_provisioned(&self, name: &DockerVolumeName) -> Result<()> {
         if self.bound().is_none() {
-            return Err(format!(
-                "ZFS dataset {} has no Provisioned Volume bound; refusing to use it",
-                self.name
-            )
-            .into());
+            return Err(PluginError::NotProvisioned {
+                dataset: self.name.clone(),
+            });
         }
         self.require_mountpoint(&name.mountpoint())
     }
@@ -553,7 +550,7 @@ fn parse_zfs_bytes(value: &str) -> Result<u64> {
         "none" | "-" => Ok(0),
         _ => value
             .parse()
-            .map_err(|_| VolumeError::from(format!("invalid byte count from ZFS: {value}"))),
+            .map_err(|_| PluginError::from(format!("invalid byte count from ZFS: {value}"))),
     }
 }
 

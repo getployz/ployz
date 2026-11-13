@@ -9,7 +9,7 @@ use tokio::{
     process::Command,
 };
 
-use super::{Error, images::retention_tag};
+use super::{Error, LocalDocker, images::retention_tag};
 
 /// Pull an image from a peer Machine's ingest TCP destination into local Docker.
 ///
@@ -23,6 +23,7 @@ use super::{Error, images::retention_tag};
 ///
 /// Returns when the localhost proxy cannot listen or Docker cannot pull or tag.
 pub(crate) async fn pull_from_ingest(
+    docker: &LocalDocker,
     pull: &PeerImagePull,
     source: ImageIngestDestination,
     platform: &str,
@@ -31,10 +32,7 @@ pub(crate) async fn pull_from_ingest(
     let retained = if image.contains('@') {
         ImageDigestReference::parse(image)
             .map_err(|error| Error::PeerPull(ployz_core::error_chain::inline(&error)))?;
-        if !super::LocalDocker::connect()?
-            .uses_containerd_store()
-            .await?
-        {
+        if !docker.uses_containerd_store().await? {
             return Err(Error::UnsupportedImageStore);
         }
         retention_tag(image)
@@ -167,12 +165,32 @@ mod tests {
             let pull = PeerImagePull::Reference {
                 image: image.into(),
             };
-            let error = pull_from_ingest(&pull, source, "linux/amd64")
+            let (runtime, _fake) = crate::docker::test_support::fake_runtime().await;
+            let error = pull_from_ingest(&runtime.local_docker(), &pull, source, "linux/amd64")
                 .await
                 .unwrap_err();
             assert!(matches!(&error, Error::PeerPull(_)), "{error}");
             assert!(error.to_string().contains("digest"), "{error}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_digest_pull_is_refused_when_docker_has_no_containerd_image_store() {
+        let source = ImageIngestDestination {
+            management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
+            port: UNREGISTRY_PORT,
+        };
+        let pull = PeerImagePull::Reference {
+            image: format!("api@sha256:{}", "a".repeat(64)),
+        };
+        let (runtime, fake) = crate::docker::test_support::fake_runtime().await;
+
+        let error = pull_from_ingest(&runtime.local_docker(), &pull, source, "linux/amd64")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::UnsupportedImageStore), "{error}");
+        assert_eq!(fake.requests.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

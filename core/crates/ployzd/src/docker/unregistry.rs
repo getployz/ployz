@@ -121,7 +121,7 @@ impl ImageIngest {
             return Ok(());
         };
         let _reconciliation = self.reconciliation.lock().await;
-        ManagedService::endpoint(docker.clone(), NAME, IMAGE)
+        ManagedService::new(docker.clone(), NAME, IMAGE)
             .remove()
             .await
             .map_err(Into::into)
@@ -173,12 +173,13 @@ impl LocalDocker {
         management_address: Ipv6Addr,
         socket: &Path,
     ) -> Result<(), Error> {
-        ManagedService::endpoint(self.clone(), NAME, IMAGE)
-            .ensure_endpoint(DesiredContainer::new(
+        ManagedService::new(self.clone(), NAME, IMAGE)
+            .ensure(DesiredContainer::new(
                 unregistry_config(socket, management_address),
                 &[],
             ))
-            .await
+            .await?;
+        Ok(())
     }
 }
 

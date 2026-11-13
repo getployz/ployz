@@ -434,7 +434,7 @@ impl ContainerRuntime {
         };
         let committable = match sink
             .plugin
-            .call::<ployz_core::StorageCapacity>("Storage.Inspect", &())
+            .call::<ployz_core::StorageCapacity>(crate::volume_copy::STORAGE_INSPECT_ROUTE, &())
             .await
         {
             Ok(capacity) => {

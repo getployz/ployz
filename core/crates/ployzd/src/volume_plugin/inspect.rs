@@ -8,7 +8,7 @@ use ployz_core::{
 use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
 use super::{
-    Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage, marks::Mark, transfer::Status,
+    Dataset, DockerVolumeName, PluginError, Result, VolumeStorage, marks::Mark, transfer::Status,
 };
 
 /// The `ployz:*` marks [`RootCopy::parse`] reads off a root. They narrow which steps can
@@ -100,10 +100,10 @@ pub(super) fn answering(mut copy: Option<VolumeCopy>, failure: String) -> Option
     copy
 }
 
-pub(super) fn internal(error: VolumeError) -> RpcError {
-    match error {
-        VolumeError::Capacity(error) => error.into_rpc_error(),
-        VolumeError::Message(message) => RpcError::internal(message),
+pub(super) fn internal(error: PluginError) -> RpcError {
+    match error.into_capacity() {
+        Ok(error) => error.into_rpc_error(),
+        Err(error) => RpcError::internal(error.to_string()),
     }
 }
 
@@ -177,7 +177,7 @@ impl VolumeStorage {
         let output = self.list_snapshots(dataset).await?;
         let mut snapshots = Vec::new();
         for line in output.lines() {
-            let invalid = || VolumeError::from(format!("invalid ZFS snapshot output: {line}"));
+            let invalid = || PluginError::from(format!("invalid ZFS snapshot output: {line}"));
             let mut fields = line.split('\t');
             let (Some(full_name), Some(guid), Some(created), None) =
                 (fields.next(), fields.next(), fields.next(), fields.next())
@@ -206,7 +206,7 @@ impl VolumeStorage {
     async fn slot_id(&self, parent: &str) -> Result<SlotId> {
         let value = self.property(parent, "guid").await?.unwrap_or_default();
         value.parse().map(SlotId::new).map_err(|error| {
-            VolumeError::from(format!(
+            PluginError::from(format!(
                 "{parent} carries an unreadable guid {value:?}: {error}"
             ))
         })

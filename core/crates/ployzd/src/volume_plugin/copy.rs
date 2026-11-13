@@ -19,7 +19,7 @@ use ployzd::{
 };
 
 use super::{
-    Dataset, DockerVolumeName, VolumeError, VolumeStorage,
+    Dataset, DockerVolumeName, PluginError, VolumeStorage,
     inspect::{answering, internal},
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
@@ -189,7 +189,7 @@ impl VolumeStorage {
         }
         match self.pool.create(bound).await {
             Ok(_) => self.one_pool().await.map_err(internal),
-            Err(VolumeError::Capacity(_)) => Err(no_room(bound, name)),
+            Err(PluginError::Capacity(_)) => Err(no_room(bound, name)),
             Err(error) => Err(internal(error)),
         }
     }
@@ -580,9 +580,10 @@ impl VolumeStorage {
                     .ensure_commitment(&scope.pool, &scope.datasets, bound)
                     .await
                 {
-                    return Err(match error {
-                        VolumeError::Capacity(_) => no_room(bound, name),
-                        error => internal(error),
+                    return Err(if error.is_capacity() {
+                        no_room(bound, name)
+                    } else {
+                        internal(error)
                     });
                 }
                 self.ensure_mirror_root(&scope.pool, &scope.datasets)
@@ -603,7 +604,7 @@ impl VolumeStorage {
             }
         };
         if bound == 0 {
-            return Err(internal(VolumeError::from(format!(
+            return Err(internal(PluginError::from(format!(
                 "slot {parent} carries no bound"
             ))));
         }
@@ -800,7 +801,7 @@ impl VolumeStorage {
             .await
         {
             Ok(()) => Ok(writer),
-            Err(VolumeError::Capacity(_)) => Err(self
+            Err(PluginError::Capacity(_)) => Err(self
                 .refuse_found(
                     scope,
                     CopyRefusal::NoCapacity,

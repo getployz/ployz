@@ -670,7 +670,7 @@ impl MachineRpc for MachineService {
         match self
             .local
             .plugin()
-            .call::<ployz_core::StorageCapacity>("Storage.Inspect", &())
+            .call::<ployz_core::StorageCapacity>(crate::volume_copy::STORAGE_INSPECT_ROUTE, &())
             .await
         {
             Ok(capacity) => respond(capacity),
@@ -733,7 +733,7 @@ impl MachineRpc for MachineService {
         let request = expect::<op::InspectVolumeCopy>(request)?;
         self.volume_verb::<ployz_core::VolumeCopyView>(
             "InspectVolumeCopy",
-            "Volume.Inspect",
+            crate::volume_copy::VOLUME_INSPECT_ROUTE,
             &request,
         )
         .await
@@ -783,7 +783,7 @@ impl MachineRpc for MachineService {
             return self
                 .volume_verb::<ployz_core::VolumeCopyView>(
                     "InspectVolumeCopy",
-                    "Volume.Inspect",
+                    crate::volume_copy::VOLUME_INSPECT_ROUTE,
                     &landed,
                 )
                 .await;
@@ -798,7 +798,7 @@ impl MachineRpc for MachineService {
         }
         // A seed lands once `into` answers as a root.
         self.landing_verb::<ployz_core::VolumeCopyView>(
-            ("SeedVolume", "Volume.Seed"),
+            ("SeedVolume", crate::volume_copy::VOLUME_SEED_ROUTE),
             &request,
             operation,
             |view| matches!(view.copy, Some(ployz_core::VolumeCopy::Root { .. })),
@@ -831,7 +831,7 @@ impl MachineRpc for MachineService {
             });
         };
         self.landing_verb::<ployz_core::SetVolumeSizeReply>(
-            ("SetVolumeSize", "Volume.Size.Set"),
+            ("SetVolumeSize", crate::volume_copy::VOLUME_SIZE_SET_ROUTE),
             &request,
             operation,
             |reply| reply.bound_bytes == request.maximum_bytes,

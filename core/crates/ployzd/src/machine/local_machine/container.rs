@@ -142,8 +142,10 @@ impl LocalMachine {
             for name in requested.keys() {
                 local.admit_plain_mount(&machine.id, name).await?;
             }
-            let names: Vec<ployz_core::DockerVolumeName> =
-                local.plugin().call("Storage.Prepare", &requested).await?;
+            let names: Vec<ployz_core::DockerVolumeName> = local
+                .plugin()
+                .call(crate::volume_copy::STORAGE_PREPARE_ROUTE, &requested)
+                .await?;
             containers
                 .ensure_provisioned_volumes(&machine.id, &specs)
                 .await?;
@@ -163,7 +165,7 @@ impl LocalMachine {
         let held: ployz_core::VolumeCopyView = self
             .plugin()
             .call(
-                "Volume.Inspect",
+                crate::volume_copy::VOLUME_INSPECT_ROUTE,
                 &ployz_core::InspectVolumeCopyRequest { name: name.clone() },
             )
             .await?;
@@ -759,9 +761,13 @@ impl LocalMachine {
         let shared = self.owner.admission_lock().read_owned().await;
         self.finish_admitted(shared, async move {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            if let Err(error) =
-                crate::docker::pull_from_ingest(&request.pull, request.source, &request.platform)
-                    .await
+            if let Err(error) = crate::docker::pull_from_ingest(
+                &containers.local_docker(),
+                &request.pull,
+                request.source,
+                &request.platform,
+            )
+            .await
             {
                 return Err(containers.pull_failure(error).await.into());
             }

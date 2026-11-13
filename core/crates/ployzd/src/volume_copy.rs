@@ -1,4 +1,5 @@
-//! The internal routes SetVolumeCopy drives on the volume plugin, one per ZFS effect.
+//! The internal routes the daemon drives on the volume plugin, and the request types
+//! SetVolumeCopy sends on its own, one route per ZFS effect.
 //!
 //! The daemon owns the transition table and the Container half; the plugin owns ZFS. Each
 //! route is check-then-act over the datasets it finds, so a resend after a crash at any
@@ -10,6 +11,20 @@ use ployz_core::{
 };
 use serde::{Deserialize, Serialize};
 
+/// The Pool's capacity and commitments, with no effect.
+pub const STORAGE_INSPECT_ROUTE: &str = "Storage.Inspect";
+/// The Pool made ready for Volumes.
+pub const STORAGE_PREPARE_ROUTE: &str = "Storage.Prepare";
+/// The Pool's roots parked read-only for a departing Machine.
+pub const STORAGE_DEMOTE_ROUTE: &str = "Storage.Demote";
+/// The departure snapshots taken.
+pub const STORAGE_SEAL_ROUTE: &str = "Storage.Seal";
+/// One Volume as the plugin finds it.
+pub const VOLUME_INSPECT_ROUTE: &str = "Volume.Inspect";
+/// A Volume created from a seed.
+pub const VOLUME_SEED_ROUTE: &str = "Volume.Seed";
+/// A Volume's bound set to a new size.
+pub const VOLUME_SIZE_SET_ROUTE: &str = "Volume.Size.Set";
 /// The copy as it is now, with no effect.
 pub const INSPECT_ROUTE: &str = "Volume.Copy.Inspect";
 /// The cut: the writer root becomes the slot's read-only copy at `target`.

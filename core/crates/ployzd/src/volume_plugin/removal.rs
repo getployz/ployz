@@ -12,8 +12,8 @@ use ployzd::{
 use serde::Serialize;
 
 use super::{
-    DockerVolumeName, ErrorResponse, HangUp, Result, VolumeRequest, VolumeStorage, error_response,
-    marks::Mark,
+    DockerVolumeName, ErrorResponse, HangUp, PluginError, Result, VolumeRequest, VolumeStorage,
+    error_response, marks::Mark,
 };
 
 impl VolumeStorage {
@@ -31,7 +31,7 @@ impl VolumeStorage {
             .admit(super::pool::UnlabeledBacking::Preserve)
             .await?;
         if pool.is_none() && self.pool.has_held_a_pool()? {
-            return Err("this Machine has held a Pool that is not imported".into());
+            return Err(PluginError::HeldPoolNotImported);
         }
         Ok((guard, pool))
     }
@@ -51,11 +51,10 @@ impl VolumeStorage {
             .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
         if self.marks(&dataset.name).unregistered().await? {
-            return Err(format!(
-                "VolumeSwitching: Volume {name} is a promoted root Docker has not registered yet; refusing to remove {}",
-                dataset.name
-            )
-            .into());
+            return Err(PluginError::UnregisteredRoot {
+                name: name.to_string(),
+                dataset: dataset.name.clone(),
+            });
         }
         self.zfs(&["destroy", "-r", &dataset.name]).await?;
         Ok(())

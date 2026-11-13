@@ -26,6 +26,7 @@ use tower_service::Service;
 mod capacity;
 mod copy;
 mod departure;
+mod error;
 mod inspect;
 mod marks;
 mod pool;
@@ -36,32 +37,18 @@ mod slot;
 mod storage;
 mod transfer;
 
+use error::PluginError;
+use ployzd::volume_copy::{
+    CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SNAPSHOT_ROUTE,
+    STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE, STORAGE_PREPARE_ROUTE, STORAGE_SEAL_ROUTE,
+    VOLUME_INSPECT_ROUTE, VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE,
+};
 use storage::{
     CapacityAdmission, Dataset, VolumeStorage, checked_command, checked_output, parse_size,
     run_command,
 };
 
-type Result<T> = std::result::Result<T, VolumeError>;
-
-#[derive(Debug, thiserror::Error)]
-enum VolumeError {
-    #[error("{0}")]
-    Message(String),
-    #[error(transparent)]
-    Capacity(#[from] ployz_core::StorageCapacityError),
-}
-
-impl From<String> for VolumeError {
-    fn from(message: String) -> Self {
-        Self::Message(message)
-    }
-}
-
-impl From<&str> for VolumeError {
-    fn from(message: &str) -> Self {
-        Self::Message(message.to_owned())
-    }
-}
+type Result<T> = std::result::Result<T, PluginError>;
 
 /// Why the plugin closes a connection instead of answering the request.
 ///
@@ -82,7 +69,7 @@ impl IntoResponse for HangUp {
 struct DockerVolumeName(String);
 
 impl FromStr for DockerVolumeName {
-    type Err = VolumeError;
+    type Err = PluginError;
 
     fn from_str(name: &str) -> Result<Self> {
         let mut bytes = name.bytes();
@@ -191,23 +178,28 @@ pub(super) async fn run(
     .await
 }
 
+/// The path the router serves a route the daemon calls by name.
+fn at(route: &str) -> String {
+    format!("/{route}")
+}
+
 async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()> {
     let router = Router::new()
         .route("/Plugin.Activate", post(activate))
-        .route("/Storage.Inspect", post(capacity::inspect))
-        .route("/Storage.Prepare", post(capacity::prepare))
-        .route("/Storage.Demote", post(departure::demote))
-        .route("/Storage.Seal", post(departure::seal))
-        .route("/Volume.Inspect", post(inspect::inspect))
-        .route("/Volume.Seed", post(seed::seed_volume))
-        .route("/Volume.Size.Set", post(size::set_volume_size))
-        .route("/Volume.Copy.Inspect", post(copy::inspect))
-        .route("/Volume.Copy.Cut", post(copy::cut))
-        .route("/Volume.Copy.Snapshot", post(copy::snapshot))
-        .route("/Volume.Copy.Forget", post(copy::forget))
-        .route("/Volume.Copy.Writer", post(copy::writer))
-        .route("/Volume.Copy.Pull", post(copy::pull))
-        .route("/Volume.Copy.Destroy", post(copy::destroy))
+        .route(&at(STORAGE_INSPECT_ROUTE), post(capacity::inspect))
+        .route(&at(STORAGE_PREPARE_ROUTE), post(capacity::prepare))
+        .route(&at(STORAGE_DEMOTE_ROUTE), post(departure::demote))
+        .route(&at(STORAGE_SEAL_ROUTE), post(departure::seal))
+        .route(&at(VOLUME_INSPECT_ROUTE), post(inspect::inspect))
+        .route(&at(VOLUME_SEED_ROUTE), post(seed::seed_volume))
+        .route(&at(VOLUME_SIZE_SET_ROUTE), post(size::set_volume_size))
+        .route(&at(INSPECT_ROUTE), post(copy::inspect))
+        .route(&at(CUT_ROUTE), post(copy::cut))
+        .route(&at(SNAPSHOT_ROUTE), post(copy::snapshot))
+        .route(&at(FORGET_ROUTE), post(copy::forget))
+        .route(&at(WRITER_ROUTE), post(copy::writer))
+        .route(&at(PULL_ROUTE), post(copy::pull))
+        .route(&at(DESTROY_ROUTE), post(copy::destroy))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))

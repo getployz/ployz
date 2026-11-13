@@ -6,20 +6,22 @@ use std::{
 };
 
 use bollard::models::{
-    ContainerCreateBody, DeviceMapping as DockerDeviceMapping, DeviceRequest, HealthConfig,
-    HostConfig, HostConfigLogConfig, Mount, MountBindOptions, MountBindOptionsPropagationEnum,
+    ContainerCreateBody, DeviceMapping as DockerDeviceMapping, DeviceRequest, HostConfig,
+    HostConfigLogConfig, Mount, MountBindOptions, MountBindOptionsPropagationEnum,
     MountTmpfsOptions, MountType, MountVolumeOptions, MountVolumeOptionsDriverConfig,
     NetworkingConfig, PortBinding, PortMap, ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
-    BindPropagation, BindRecursive, ContainerId, ContainerKind, EnvValue,
-    HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec, HostBind, MachineGateway, MachineId, Namespace,
-    PortPublication, QualifiedService, ResolvedServiceSpec, ResolvedServiceVolumeGraph,
-    TransportProtocol,
+    BindPropagation, BindRecursive, ContainerId, ContainerKind, EnvValue, HostBind, MachineGateway,
+    MachineId, Namespace, PortPublication, QualifiedService, ResolvedServiceSpec,
+    ResolvedServiceVolumeGraph, TransportProtocol,
 };
 
-use super::Error;
+use super::{Error, doors::Door};
+
+mod healthcheck;
 use crate::sealed_env;
+pub(super) use healthcheck::docker_healthcheck;
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
 
@@ -52,8 +54,7 @@ pub(super) fn ingress_sysctls(
 ) {
     // The holder owns the Ingress Proxy's netns, so the sysctls go on it. A Caddy that
     // joins it inherits them, and Docker refuses netns sysctls in `container:` mode.
-    if QualifiedService::new(namespace.clone(), spec.name.clone())
-        != QualifiedService::system_ingress_holder()
+    if Door::of(&QualifiedService::new(namespace.clone(), spec.name.clone())) != Some(Door::Holder)
     {
         return;
     }
@@ -225,10 +226,7 @@ pub(super) fn container_create_body(
             |hook| hook.command.as_slice().to_vec(),
         )),
         healthcheck: if hook.is_some() {
-            Some(HealthConfig {
-                test: Some(vec![HEALTHCHECK_DISABLE_SENTINEL.into()]),
-                ..Default::default()
-            })
+            Some(healthcheck::disabled())
         } else {
             container
                 .healthcheck
@@ -281,34 +279,6 @@ fn docker_restart(policy: ployz_core::RestartPolicy) -> RestartPolicy {
         name: Some(name),
         maximum_retry_count,
     }
-}
-
-pub(super) fn docker_healthcheck(spec: &HealthcheckSpec) -> Result<HealthConfig, Error> {
-    match spec {
-        HealthcheckSpec::Disabled | HealthcheckSpec::Http(_) => Ok(HealthConfig {
-            test: Some(vec![HEALTHCHECK_DISABLE_SENTINEL.into()]),
-            ..Default::default()
-        }),
-        HealthcheckSpec::Configured(configured) => Ok(HealthConfig {
-            test: Some(configured.test.as_slice().to_vec()),
-            interval: millis_to_nanos(configured.interval_millis)?,
-            timeout: millis_to_nanos(configured.timeout_millis)?,
-            retries: configured.retries.map(i64::from),
-            start_period: millis_to_nanos(configured.start_period_millis)?,
-            start_interval: millis_to_nanos(configured.start_interval_millis)?,
-        }),
-    }
-}
-
-fn millis_to_nanos(value: Option<u64>) -> Result<Option<i64>, Error> {
-    value
-        .map(|value| {
-            value
-                .checked_mul(1_000_000)
-                .and_then(|value| i64::try_from(value).ok())
-                .ok_or(Error::DurationOverflow)
-        })
-        .transpose()
 }
 
 pub(super) fn docker_ports(
