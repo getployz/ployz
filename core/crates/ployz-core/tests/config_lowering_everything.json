@@ -1,0 +1,182 @@
+{
+  "dependencies": {},
+  "deployed_volumes": [
+    "production_vol-parent"
+  ],
+  "namespace": "production",
+  "options": {
+    "force_recreate": false,
+    "placement_seed": 0,
+    "selected": [
+      {
+        "name": "api"
+      }
+    ],
+    "skip_health_monitor": false
+  },
+  "target": [
+    {
+      "configs": [
+        {
+          "content": [
+            120,
+            61,
+            49
+          ],
+          "name": "app/app.conf"
+        }
+      ],
+      "container": {
+        "cap_add": [],
+        "cap_drop": [],
+        "command": [],
+        "config_mounts": [
+          {
+            "config_name": "app/app.conf",
+            "gid": 0,
+            "mode": 292,
+            "target": "/etc/app/app.conf",
+            "uid": 0
+          }
+        ],
+        "entrypoint": [
+          "serve",
+          "--port",
+          "80"
+        ],
+        "environment": {
+          "PORT": "8080",
+          "TOKEN": "t"
+        },
+        "extra_hosts": [],
+        "healthcheck": {
+          "deadline_millis": 90000,
+          "interval_millis": 10000,
+          "retries": 3,
+          "start_interval_millis": 1000,
+          "start_period_millis": 90000,
+          "state": "configured",
+          "test": [
+            "CMD-SHELL",
+            "pg_isready"
+          ],
+          "timeout_millis": 5000
+        },
+        "hostname": null,
+        "image": "registry.test/api:1",
+        "init": null,
+        "labels": {
+          "cloud.ployz.service.id": "11111111-1111-4111-8111-111111111111"
+        },
+        "open_stdin": false,
+        "pid_mode": null,
+        "privileged": false,
+        "pull_policy": "missing",
+        "resources": {
+          "cpu_nanos": 500000000,
+          "device_reservations": [],
+          "devices": [],
+          "memory_bytes": 2000000000,
+          "memory_reservation_bytes": null,
+          "shared_memory_bytes": null,
+          "ulimits": {}
+        },
+        "restart": {
+          "maximum_retry_count": 4,
+          "name": "on-failure"
+        },
+        "stop_timeout_secs": null,
+        "sysctls": {},
+        "tty": false,
+        "user": null,
+        "working_directory": null
+      },
+      "mode": {
+        "mode": "replicated",
+        "replicas": 3
+      },
+      "mounts": [
+        {
+          "no_copy": false,
+          "read_only": false,
+          "subpath": null,
+          "target": "/cache",
+          "volume": "vol-parent"
+        },
+        {
+          "no_copy": false,
+          "read_only": false,
+          "subpath": null,
+          "target": "/data",
+          "volume": "vol-00000000-0000-4000-8000-000000000003"
+        }
+      ],
+      "name": "api",
+      "placement": {
+        "constraints": []
+      },
+      "ports": [
+        {
+          "container_port": 8080,
+          "hostname": "app.example.com",
+          "http_protocol": "https",
+          "load_balancer_port": 443,
+          "mode": "ingress"
+        },
+        {
+          "container_port": 8080,
+          "hostname": "www.example.com",
+          "http_protocol": "https",
+          "load_balancer_port": 443,
+          "mode": "ingress"
+        }
+      ],
+      "pre_deploy": {
+        "command": [
+          "/bin/sh",
+          "-c",
+          "for c do /bin/sh -c \"$c\" || exit; done",
+          "sh",
+          "migrate",
+          "seed",
+          "warm"
+        ],
+        "environment": {},
+        "privileged": null,
+        "timeout_millis": null,
+        "user": null
+      },
+      "update": {
+        "monitor_millis": null,
+        "order": "start_first"
+      },
+      "volumes": [
+        {
+          "reference": "vol-parent",
+          "source": {
+            "driver": {
+              "name": "local",
+              "options": {}
+            },
+            "kind": "ordinary",
+            "labels": {},
+            "name": "vol-parent"
+          }
+        },
+        {
+          "reference": "vol-00000000-0000-4000-8000-000000000003",
+          "source": {
+            "kind": "provisioned",
+            "labels": {},
+            "maximum_bytes": 1073741824,
+            "name": "vol-00000000-0000-4000-8000-000000000003"
+          }
+        }
+      ]
+    }
+  ],
+  "volume_names": {
+    "production_vol-00000000-0000-4000-8000-000000000003": "data",
+    "production_vol-parent": "Cache"
+  }
+}

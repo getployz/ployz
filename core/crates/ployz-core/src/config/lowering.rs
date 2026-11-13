@@ -213,298 +213,23 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         .map(|mut snapshot| Ok((parse_service_config(snapshot.config.take())?, snapshot)))
         .collect::<Result<Vec<_>, ConfigError>>()?;
     let dependencies = deployment_dependencies(&snapshots, &input.lineages, &config_sources);
+    let namespace = &input.namespace;
+    let sources = Sources {
+        namespace,
+        sealed_for: input.sealed_for.as_ref(),
+        volumes: &volume_sources,
+        configs: &config_sources,
+    };
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
     let mut volume_names = BTreeMap::new();
     let mut deployed_volumes = BTreeSet::new();
     for (parsed, snapshot) in snapshots {
-        let ServiceConfig {
-            settings: config,
-            mounts: configured_mounts,
-            configs: configured_configs,
-            ..
-        } = parsed;
-        let image = match &config.source {
-            ServiceSource::Empty { .. } => continue,
-            ServiceSource::Git { .. } => {
-                return Err(ConfigError::at(
-                    "source",
-                    "Git service is missing a pullable image",
-                ));
-            }
-            ServiceSource::Image { image, .. } => image,
+        let Some(lowered) = lower_snapshot(&sources, parsed, snapshot)? else {
+            continue;
         };
-        let mut environment = snapshot.resolved_env;
-        environment
-            .entry("PORT".into())
-            .or_insert_with(|| EnvValue::Text(DEFAULT_SERVICE_PORT.to_string()));
-        let sealed_identity = environment
-            .values()
-            .any(EnvValue::is_sealed)
-            .then(|| sealed_identity(input.sealed_for.as_ref(), snapshot.service_id.as_deref()))
-            .transpose()?;
-        let route_ports = config
-            .routes
-            .iter()
-            .map(|route| target_port(route.target_port, &environment, "routes"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let healthcheck = match &config.healthcheck {
-            ServiceHealthcheck::None => Some(HealthcheckSpec::Disabled),
-            ServiceHealthcheck::Http {
-                path,
-                timeout_seconds,
-            } => {
-                // Cloud always sets PORT, so a shared domain target better says where the app listens.
-                let port = match route_ports.split_first() {
-                    Some((first, rest)) if rest.iter().all(|port| port == first) => *first,
-                    _ => target_port(None, &environment, "healthcheck")?,
-                };
-                Some(HealthcheckSpec::Http(HttpHealthcheck {
-                    path: path.clone(),
-                    port,
-                    timeout_seconds: *timeout_seconds,
-                }))
-            }
-            ServiceHealthcheck::Command {
-                command,
-                timeout_seconds,
-            } => Some(command_healthcheck(command, *timeout_seconds)),
-        };
-        let replicas = snapshot.replicas.unwrap_or(config.replicas);
-        if replicas == 0 || replicas > 50 {
-            return Err(ConfigError::at(
-                "replicas",
-                "Runtime deployment requires 1–50 replicas",
-            ));
-        }
-        let cpu_nanos = config
-            .cpu_limit
-            .map(CpuNanos::from_cpus)
-            .transpose()
-            .map_err(|_| ConfigError::at("cpuLimit", "Invalid CPU limit"))?;
-        if cpu_nanos.is_some_and(|n| n.get() == 0) {
-            return Err(ConfigError::at(
-                "cpuLimit",
-                "CPU limit is below one nanocpu",
-            ));
-        }
-        // Whole bytes: 1GiB is stored as 1.073741824 GB, a hair under in floating point.
-        let memory_bytes = config
-            .mem_limit
-            .map(|gb| (gb * 1_000_000_000.0).round() as i64);
-        if memory_bytes == Some(0) {
-            return Err(ConfigError::at(
-                "memLimit",
-                "Memory limit is below one byte",
-            ));
-        }
-        let restart = match config.restart_policy.0 {
-            RestartPolicy::OnFailure { .. } => RestartPolicy::OnFailure {
-                maximum_retry_count: Some(i64::from(config.max_retries)),
-            },
-            policy @ (RestartPolicy::No | RestartPolicy::Always | RestartPolicy::UnlessStopped) => {
-                policy
-            }
-        };
-        let mut volumes = Vec::new();
-        let mut mounts = Vec::new();
-        for mount in configured_mounts {
-            let Some((storage, deployed, named)) =
-                volume_sources.get(mount.volume_resource_id.as_str())
-            else {
-                continue;
-            };
-            let name = crate::DockerVolumeName::for_resource(named).map_err(lowering_error)?;
-            let reference: crate::ServiceVolumeReference = name
-                .as_str()
-                .to_owned()
-                .try_into()
-                .map_err(lowering_error)?;
-            volume_names.insert(
-                input.namespace.volume_name(&name),
-                mount.volume_name.clone(),
-            );
-            if *deployed {
-                deployed_volumes.insert(input.namespace.volume_name(&name));
-            }
-            let source = match storage {
-                VolumeKind::Docker {} => RawVolumeSource::Ordinary {
-                    name,
-                    driver: VolumeDriver::parse("local", BTreeMap::new())
-                        .map_err(lowering_error)?,
-                    labels: BTreeMap::new(),
-                },
-                VolumeKind::Provisioned { maximum_bytes } => RawVolumeSource::Provisioned {
-                    name,
-                    maximum_bytes: *maximum_bytes,
-                    labels: BTreeMap::new(),
-                },
-            };
-            volumes.push(ServiceVolume {
-                reference: reference.clone(),
-                source: source.try_into().map_err(lowering_error)?,
-            });
-            mounts.push(ServiceMount {
-                volume: reference,
-                target: mount
-                    .mount_path
-                    .clone()
-                    .try_into()
-                    .map_err(lowering_error)?,
-                read_only: false,
-                no_copy: false,
-                subpath: None,
-            });
-        }
-        let mut configs: Vec<ConfigSpec> = Vec::new();
-        let mut config_mounts = Vec::new();
-        for mount in configured_configs {
-            let Some(config) = config_sources.get(mount.config_resource_id.as_str()) else {
-                continue;
-            };
-            for (file, resolved) in &config.files {
-                let name = format!("{}/{file}", config.name);
-                if !configs.iter().any(|spec| spec.name == name) {
-                    configs.push(ConfigSpec {
-                        name: name.clone(),
-                        content: resolved.content.clone().into_bytes(),
-                    });
-                }
-                config_mounts.push(ConfigMount {
-                    config_name: name,
-                    target: Some(
-                        format!("{}/{file}", mount.mount_dir)
-                            .try_into()
-                            .map_err(lowering_error)?,
-                    ),
-                    uid: Some(u64::from(resolved.uid)),
-                    gid: Some(u64::from(resolved.gid)),
-                    mode: Some(resolved.mode.bits()),
-                });
-            }
-        }
-        let mut ports = Vec::new();
-        for (route, container_port) in config.routes.iter().zip(route_ports) {
-            ports.push(PortPublication::Ingress {
-                hostname: IngressHost::parse(route.hostname.clone()).map_err(lowering_error)?,
-                load_balancer_port: std::num::NonZeroU16::new(443).expect("HTTPS port is nonzero"),
-                container_port,
-                http_protocol: HttpProtocol::Https,
-            });
-        }
-        // Managed hostnames are Cloud's authored shorthand; Cloud expands them into
-        // explicit routes before lowering because only it knows the Cluster Domain.
-        if !config.managed_hostnames.is_empty() {
-            return Err(ConfigError::at(
-                "managedHostnames",
-                "Expand managed hostnames into explicit routes before deploying",
-            ));
-        }
-        let command = |command: &str| vec!["/bin/sh".into(), "-c".into(), command.into()];
-        let mut hook_commands: Vec<String> = config.pre_deploy_command.into_iter().collect();
-        for mut setup in snapshot.setup_commands {
-            super::validation::trimmed(&mut setup, "setupCommands", 2000)?;
-            hook_commands.push(setup);
-        }
-        // Each command is its own positional argument run by its own shell, so a
-        // trailing comment or quote in one can never swallow or change the next.
-        let hook_command = match hook_commands.as_slice() {
-            [] => None,
-            [only] => Some(command(only)),
-            _ => Some(
-                [
-                    "/bin/sh",
-                    "-c",
-                    r#"for c do /bin/sh -c "$c" || exit; done"#,
-                    "sh",
-                ]
-                .into_iter()
-                .map(String::from)
-                .chain(hook_commands)
-                .collect(),
-            ),
-        };
-        let pre_deploy = hook_command
-            .map(|value| {
-                Ok::<_, ConfigError>(PreDeployHook {
-                    command: PreDeployCommand::parse(value).map_err(lowering_error)?,
-                    environment: BTreeMap::new(),
-                    privileged: None,
-                    timeout_millis: None,
-                    user: None,
-                })
-            })
-            .transpose()?;
-        // Railway's start command rules: Railpack's `/bin/bash -c` ENTRYPOINT runs the
-        // command as one shell string; any other image has it replace ENTRYPOINT and
-        // CMD, split into argv without a shell. An empty split keeps the image's own.
-        let (entrypoint, command) = match config.start_command.as_deref() {
-            None => (Vec::new(), Vec::new()),
-            Some(start) if snapshot.built_with == Some(BuildMethod::Railpack) => {
-                (Vec::new(), vec![start.to_owned()])
-            }
-            Some(start) => (super::split_start_command(start)?, Vec::new()),
-        };
-        let mut spec = RequestedServiceSpec {
-            name: config.private_dns,
-            mode: ServiceMode::Replicated {
-                replicas: u32::from(replicas).try_into().map_err(lowering_error)?,
-            },
-            container: ServiceContainerSpec {
-                image: image.clone(),
-                command,
-                environment,
-                sealed_identity,
-                pull_policy: PullPolicy::Missing,
-                restart,
-                healthcheck,
-                resources: ContainerResources {
-                    cpu_nanos,
-                    memory_bytes: memory_bytes
-                        .map(ByteQuantity::try_from)
-                        .transpose()
-                        .map_err(lowering_error)?,
-                    ..Default::default()
-                },
-                entrypoint,
-                labels: crate::ContainerLabels::parse(
-                    snapshot
-                        .service_id
-                        .map(|id| (crate::labels::CLOUD_SERVICE_ID.into(), id))
-                        .into_iter()
-                        .collect(),
-                )
-                .map_err(lowering_error)?,
-                hostname: None,
-                extra_hosts: Vec::new(),
-                cap_add: Vec::new(),
-                cap_drop: Vec::new(),
-                init: None,
-                user: None,
-                working_directory: None,
-                tty: false,
-                open_stdin: false,
-                privileged: false,
-                pid_mode: None,
-                stop_timeout_secs: None,
-                sysctls: BTreeMap::new(),
-                network: None,
-            },
-            placement: Default::default(),
-            ports,
-            mount_graph: Default::default(),
-            pre_deploy,
-            update: UpdateConfig {
-                order: config.update_order.map(Into::into),
-                monitor_millis: None,
-            },
-        };
-        spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
-            .map_err(mount_error)?;
-        spec.set_config_graph(
-            ServiceConfigGraph::parse(configs, config_mounts).map_err(lowering_error)?,
-        )
-        .map_err(mount_error)?;
-        target.push(spec);
+        volume_names.extend(lowered.volume_names);
+        deployed_volumes.extend(lowered.deployed_volumes);
+        target.push(lowered.spec);
     }
     let selected = input.selected.unwrap_or_else(|| {
         target
@@ -535,6 +260,436 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     .with_cluster_domain(input.cluster_domain))
 }
 
+/// What the Namespace holds and the Deploy is for, as every Service's lowering reads it.
+struct Sources<'a> {
+    namespace: &'a Namespace,
+    sealed_for: Option<&'a SealedFor>,
+    /// Storage, whether a Deploy applied it, and the ID its Docker Volume is named for.
+    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool, &'a str)>,
+    configs: &'a BTreeMap<&'a str, &'a LowerDeploymentConfig>,
+}
+
+struct LoweredService {
+    spec: RequestedServiceSpec,
+    /// The declared name a physical Docker Volume was mounted under.
+    volume_names: BTreeMap<crate::DockerVolumeName, String>,
+    deployed_volumes: BTreeSet<crate::DockerVolumeName>,
+}
+
+/// A Service's mounted Volumes, and what the Deploy Intent records about them by physical name.
+struct LoweredVolumes {
+    volumes: Vec<ServiceVolume>,
+    mounts: Vec<ServiceMount>,
+    names: BTreeMap<crate::DockerVolumeName, String>,
+    deployed: BTreeSet<crate::DockerVolumeName>,
+}
+
+struct LoweredConfigs {
+    configs: Vec<ConfigSpec>,
+    mounts: Vec<ConfigMount>,
+}
+
+struct Limits {
+    replicas: u8,
+    cpu_nanos: Option<CpuNanos>,
+    memory_bytes: Option<i64>,
+    restart: RestartPolicy,
+}
+
+/// One Service's lowering, part by part in the order a refusal is raised; `None` when it
+/// has no source yet.
+fn lower_snapshot(
+    sources: &Sources<'_>,
+    parsed: ServiceConfig,
+    snapshot: LowerDeploymentSnapshot,
+) -> Result<Option<LoweredService>, ConfigError> {
+    let ServiceConfig {
+        settings: config,
+        mounts: configured_mounts,
+        configs: configured_configs,
+        ..
+    } = parsed;
+    let image = match &config.source {
+        ServiceSource::Empty { .. } => return Ok(None),
+        ServiceSource::Git { .. } => {
+            return Err(ConfigError::at(
+                "source",
+                "Git service is missing a pullable image",
+            ));
+        }
+        ServiceSource::Image { image, .. } => image,
+    };
+    let (environment, sealed_identity) = lower_environment(
+        snapshot.resolved_env,
+        sources.sealed_for,
+        snapshot.service_id.as_deref(),
+    )?;
+    let route_ports = config
+        .routes
+        .iter()
+        .map(|route| target_port(route.target_port, &environment, "routes"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let healthcheck = lower_healthcheck(&config.healthcheck, &route_ports, &environment)?;
+    let limits = lower_limits(&config, snapshot.replicas)?;
+    let LoweredVolumes {
+        volumes,
+        mounts,
+        names: volume_names,
+        deployed: deployed_volumes,
+    } = lower_volumes(sources, configured_mounts)?;
+    let configs = lower_configs(sources, configured_configs)?;
+    let ports = lower_ports(&config.routes, route_ports)?;
+    // Managed hostnames are Cloud's authored shorthand; Cloud expands them into
+    // explicit routes before lowering because only it knows the Cluster Domain.
+    if !config.managed_hostnames.is_empty() {
+        return Err(ConfigError::at(
+            "managedHostnames",
+            "Expand managed hostnames into explicit routes before deploying",
+        ));
+    }
+    let pre_deploy = lower_hook(config.pre_deploy_command, snapshot.setup_commands)?;
+    let (entrypoint, command) =
+        lower_start_command(config.start_command.as_deref(), snapshot.built_with)?;
+    let mut spec = RequestedServiceSpec {
+        name: config.private_dns,
+        mode: ServiceMode::Replicated {
+            replicas: u32::from(limits.replicas)
+                .try_into()
+                .map_err(lowering_error)?,
+        },
+        container: ServiceContainerSpec {
+            image: image.clone(),
+            command,
+            environment,
+            sealed_identity,
+            pull_policy: PullPolicy::Missing,
+            restart: limits.restart,
+            healthcheck,
+            resources: ContainerResources {
+                cpu_nanos: limits.cpu_nanos,
+                memory_bytes: limits
+                    .memory_bytes
+                    .map(ByteQuantity::try_from)
+                    .transpose()
+                    .map_err(lowering_error)?,
+                ..Default::default()
+            },
+            entrypoint,
+            labels: crate::ContainerLabels::parse(
+                snapshot
+                    .service_id
+                    .map(|id| (crate::labels::CLOUD_SERVICE_ID.into(), id))
+                    .into_iter()
+                    .collect(),
+            )
+            .map_err(lowering_error)?,
+            hostname: None,
+            extra_hosts: Vec::new(),
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            init: None,
+            user: None,
+            working_directory: None,
+            tty: false,
+            open_stdin: false,
+            privileged: false,
+            pid_mode: None,
+            stop_timeout_secs: None,
+            sysctls: BTreeMap::new(),
+            network: None,
+        },
+        placement: Default::default(),
+        ports,
+        mount_graph: Default::default(),
+        pre_deploy,
+        update: UpdateConfig {
+            order: config.update_order.map(Into::into),
+            monitor_millis: None,
+        },
+    };
+    spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
+        .map_err(mount_error)?;
+    spec.set_config_graph(
+        ServiceConfigGraph::parse(configs.configs, configs.mounts).map_err(lowering_error)?,
+    )
+    .map_err(mount_error)?;
+    Ok(Some(LoweredService {
+        spec,
+        volume_names,
+        deployed_volumes,
+    }))
+}
+
+/// The authored variables with the PORT default, and who a Sealed value opens for when any is.
+fn lower_environment(
+    mut environment: BTreeMap<String, EnvValue>,
+    sealed_for: Option<&SealedFor>,
+    service_id: Option<&str>,
+) -> Result<(BTreeMap<String, EnvValue>, Option<SealedIdentity>), ConfigError> {
+    environment
+        .entry("PORT".into())
+        .or_insert_with(|| EnvValue::Text(DEFAULT_SERVICE_PORT.to_string()));
+    let sealed_identity = environment
+        .values()
+        .any(EnvValue::is_sealed)
+        .then(|| sealed_identity(sealed_for, service_id))
+        .transpose()?;
+    Ok((environment, sealed_identity))
+}
+
+fn lower_healthcheck(
+    healthcheck: &ServiceHealthcheck,
+    route_ports: &[std::num::NonZeroU16],
+    environment: &BTreeMap<String, EnvValue>,
+) -> Result<Option<HealthcheckSpec>, ConfigError> {
+    Ok(match healthcheck {
+        ServiceHealthcheck::None => Some(HealthcheckSpec::Disabled),
+        ServiceHealthcheck::Http {
+            path,
+            timeout_seconds,
+        } => {
+            // Cloud always sets PORT, so a shared domain target better says where the app listens.
+            let port = match route_ports.split_first() {
+                Some((first, rest)) if rest.iter().all(|port| port == first) => *first,
+                _ => target_port(None, environment, "healthcheck")?,
+            };
+            Some(HealthcheckSpec::Http(HttpHealthcheck {
+                path: path.clone(),
+                port,
+                timeout_seconds: *timeout_seconds,
+            }))
+        }
+        ServiceHealthcheck::Command {
+            command,
+            timeout_seconds,
+        } => Some(command_healthcheck(command, *timeout_seconds)),
+    })
+}
+
+fn lower_limits(
+    config: &super::AuthoredServiceConfig,
+    replicas_override: Option<u8>,
+) -> Result<Limits, ConfigError> {
+    let replicas = replicas_override.unwrap_or(config.replicas);
+    if replicas == 0 || replicas > 50 {
+        return Err(ConfigError::at(
+            "replicas",
+            "Runtime deployment requires 1–50 replicas",
+        ));
+    }
+    let cpu_nanos = config
+        .cpu_limit
+        .map(CpuNanos::from_cpus)
+        .transpose()
+        .map_err(|_| ConfigError::at("cpuLimit", "Invalid CPU limit"))?;
+    if cpu_nanos.is_some_and(|n| n.get() == 0) {
+        return Err(ConfigError::at(
+            "cpuLimit",
+            "CPU limit is below one nanocpu",
+        ));
+    }
+    // Whole bytes: 1GiB is stored as 1.073741824 GB, a hair under in floating point.
+    let memory_bytes = config
+        .mem_limit
+        .map(|gb| (gb * 1_000_000_000.0).round() as i64);
+    if memory_bytes == Some(0) {
+        return Err(ConfigError::at(
+            "memLimit",
+            "Memory limit is below one byte",
+        ));
+    }
+    let restart = match config.restart_policy.0 {
+        RestartPolicy::OnFailure { .. } => RestartPolicy::OnFailure {
+            maximum_retry_count: Some(i64::from(config.max_retries)),
+        },
+        policy @ (RestartPolicy::No | RestartPolicy::Always | RestartPolicy::UnlessStopped) => {
+            policy
+        }
+    };
+    Ok(Limits {
+        replicas,
+        cpu_nanos,
+        memory_bytes,
+        restart,
+    })
+}
+
+/// The Volumes a Service mounts, leaving out those the Namespace does not hold.
+fn lower_volumes(
+    sources: &Sources<'_>,
+    configured_mounts: Vec<super::ServiceDeployMount>,
+) -> Result<LoweredVolumes, ConfigError> {
+    let mut lowered = LoweredVolumes {
+        volumes: Vec::new(),
+        mounts: Vec::new(),
+        names: BTreeMap::new(),
+        deployed: BTreeSet::new(),
+    };
+    for mount in configured_mounts {
+        let Some((storage, deployed, named)) =
+            sources.volumes.get(mount.volume_resource_id.as_str())
+        else {
+            continue;
+        };
+        let name = crate::DockerVolumeName::for_resource(named).map_err(lowering_error)?;
+        let reference: crate::ServiceVolumeReference = name
+            .as_str()
+            .to_owned()
+            .try_into()
+            .map_err(lowering_error)?;
+        lowered.names.insert(
+            sources.namespace.volume_name(&name),
+            mount.volume_name.clone(),
+        );
+        if *deployed {
+            lowered
+                .deployed
+                .insert(sources.namespace.volume_name(&name));
+        }
+        let source = match storage {
+            VolumeKind::Docker {} => RawVolumeSource::Ordinary {
+                name,
+                driver: VolumeDriver::parse("local", BTreeMap::new()).map_err(lowering_error)?,
+                labels: BTreeMap::new(),
+            },
+            VolumeKind::Provisioned { maximum_bytes } => RawVolumeSource::Provisioned {
+                name,
+                maximum_bytes: *maximum_bytes,
+                labels: BTreeMap::new(),
+            },
+        };
+        lowered.volumes.push(ServiceVolume {
+            reference: reference.clone(),
+            source: source.try_into().map_err(lowering_error)?,
+        });
+        lowered.mounts.push(ServiceMount {
+            volume: reference,
+            target: mount
+                .mount_path
+                .clone()
+                .try_into()
+                .map_err(lowering_error)?,
+            read_only: false,
+            no_copy: false,
+            subpath: None,
+        });
+    }
+    Ok(lowered)
+}
+
+/// The Configs a Service mounts, one file at a time, leaving out those the Namespace does not hold.
+fn lower_configs(
+    sources: &Sources<'_>,
+    configured_configs: Vec<super::ServiceDeployConfig>,
+) -> Result<LoweredConfigs, ConfigError> {
+    let mut lowered = LoweredConfigs {
+        configs: Vec::new(),
+        mounts: Vec::new(),
+    };
+    for mount in configured_configs {
+        let Some(config) = sources.configs.get(mount.config_resource_id.as_str()) else {
+            continue;
+        };
+        for (file, resolved) in &config.files {
+            let name = format!("{}/{file}", config.name);
+            if !lowered.configs.iter().any(|spec| spec.name == name) {
+                lowered.configs.push(ConfigSpec {
+                    name: name.clone(),
+                    content: resolved.content.clone().into_bytes(),
+                });
+            }
+            lowered.mounts.push(ConfigMount {
+                config_name: name,
+                target: Some(
+                    format!("{}/{file}", mount.mount_dir)
+                        .try_into()
+                        .map_err(lowering_error)?,
+                ),
+                uid: Some(u64::from(resolved.uid)),
+                gid: Some(u64::from(resolved.gid)),
+                mode: Some(resolved.mode.bits()),
+            });
+        }
+    }
+    Ok(lowered)
+}
+
+fn lower_ports(
+    routes: &[super::ServiceRoute],
+    route_ports: Vec<std::num::NonZeroU16>,
+) -> Result<Vec<PortPublication>, ConfigError> {
+    let mut ports = Vec::new();
+    for (route, container_port) in routes.iter().zip(route_ports) {
+        ports.push(PortPublication::Ingress {
+            hostname: IngressHost::parse(route.hostname.clone()).map_err(lowering_error)?,
+            load_balancer_port: std::num::NonZeroU16::new(443).expect("HTTPS port is nonzero"),
+            container_port,
+            http_protocol: HttpProtocol::Https,
+        });
+    }
+    Ok(ports)
+}
+
+/// The pre-deploy hook: the Service's own command, then each setup command.
+fn lower_hook(
+    pre_deploy_command: Option<String>,
+    setup_commands: Vec<String>,
+) -> Result<Option<PreDeployHook>, ConfigError> {
+    let command = |command: &str| vec!["/bin/sh".into(), "-c".into(), command.into()];
+    let mut hook_commands: Vec<String> = pre_deploy_command.into_iter().collect();
+    for mut setup in setup_commands {
+        super::validation::trimmed(&mut setup, "setupCommands", 2000)?;
+        hook_commands.push(setup);
+    }
+    // Each command is its own positional argument run by its own shell, so a
+    // trailing comment or quote in one can never swallow or change the next.
+    let hook_command = match hook_commands.as_slice() {
+        [] => None,
+        [only] => Some(command(only)),
+        _ => Some(
+            [
+                "/bin/sh",
+                "-c",
+                r#"for c do /bin/sh -c "$c" || exit; done"#,
+                "sh",
+            ]
+            .into_iter()
+            .map(String::from)
+            .chain(hook_commands)
+            .collect(),
+        ),
+    };
+    hook_command
+        .map(|value| {
+            Ok::<_, ConfigError>(PreDeployHook {
+                command: PreDeployCommand::parse(value).map_err(lowering_error)?,
+                environment: BTreeMap::new(),
+                privileged: None,
+                timeout_millis: None,
+                user: None,
+            })
+        })
+        .transpose()
+}
+
+/// The entrypoint and command a start command sets.
+///
+/// Railway's start command rules: Railpack's `/bin/bash -c` ENTRYPOINT runs the
+/// command as one shell string; any other image has it replace ENTRYPOINT and
+/// CMD, split into argv without a shell. An empty split keeps the image's own.
+fn lower_start_command(
+    start_command: Option<&str>,
+    built_with: Option<BuildMethod>,
+) -> Result<(Vec<String>, Vec<String>), ConfigError> {
+    Ok(match start_command {
+        None => (Vec::new(), Vec::new()),
+        Some(start) if built_with == Some(BuildMethod::Railpack) => {
+            (Vec::new(), vec![start.to_owned()])
+        }
+        Some(start) => (super::split_start_command(start)?, Vec::new()),
+    })
+}
+
 fn mount_error(error: crate::ServiceSpecGraphError) -> ConfigError {
     match error {
         crate::ServiceSpecGraphError::RootMountTarget => {
@@ -548,16 +703,21 @@ fn mount_error(error: crate::ServiceSpecGraphError) -> ConfigError {
     }
 }
 
+const HEALTHCHECK_INTERVAL_MILLIS: u64 = 10_000;
+const HEALTHCHECK_TIMEOUT_MILLIS: u64 = 5_000;
+const HEALTHCHECK_START_INTERVAL_MILLIS: u64 = 1_000;
+const HEALTHCHECK_RETRIES: u32 = 3;
+
 fn command_healthcheck(command: &str, timeout_seconds: u16) -> HealthcheckSpec {
     let timeout = u64::from(timeout_seconds) * 1_000;
     HealthcheckSpec::Configured(ConfiguredHealthcheck {
         test: HealthcheckCommand::parse(["CMD-SHELL", command])
             .expect("a CMD-SHELL test never begins with NONE"),
-        interval_millis: Some(10_000),
-        timeout_millis: Some(5_000),
+        interval_millis: Some(HEALTHCHECK_INTERVAL_MILLIS),
+        timeout_millis: Some(HEALTHCHECK_TIMEOUT_MILLIS),
         start_period_millis: Some(timeout),
-        start_interval_millis: Some(1_000),
-        retries: Some(3),
+        start_interval_millis: Some(HEALTHCHECK_START_INTERVAL_MILLIS),
+        retries: Some(HEALTHCHECK_RETRIES),
         deadline_millis: Some(timeout),
     })
 }

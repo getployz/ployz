@@ -201,49 +201,14 @@ pub fn plan_branch(
     })
 }
 
+/// Who uses whom, as pairs. A node reading itself uses nothing.
 fn links(parent: &SavedEnvironmentIntent) -> Vec<(&str, &str)> {
-    let mut links = Vec::new();
-    for service in &parent.services {
-        let user = service.lineage_id.as_str();
-        for variable in &service.variables {
-            links.extend(
-                variable
-                    .value
-                    .referenced_lineages()
-                    .filter(|used| *used != user)
-                    .map(|used| (user, used)),
-            );
-        }
-        for attachment in &service.volume_attachments {
-            if let Some(volume) = parent
-                .volumes
-                .iter()
-                .find(|v| v.resource_id == attachment.volume_resource_id)
-            {
-                links.push((user, volume.resource_lineage_id.as_str()));
-            }
-        }
-        for attachment in &service.config_attachments {
-            if let Some(config) = parent
-                .configs
-                .iter()
-                .find(|c| c.resource_id == attachment.config_resource_id)
-            {
-                links.push((user, config.resource_lineage_id.as_str()));
-            }
-        }
-    }
-    for config in &parent.configs {
-        let user = config.resource_lineage_id.as_str();
-        links.extend(
-            config
-                .files
-                .values()
-                .flat_map(|file| file.referenced_lineages())
-                .map(|used| (user, used)),
-        );
-    }
-    links
+    parent
+        .edges()
+        .into_iter()
+        .filter(|edge| edge.user != edge.used)
+        .map(|edge| (edge.user, edge.used))
+        .collect()
 }
 
 /// Apply `step` to every link until a full pass changes nothing.

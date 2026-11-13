@@ -676,3 +676,146 @@ fn lowering_lists_every_kind_of_volume_an_earlier_deploy_applied() {
         json!(["app_vol-docker", "app_vol-managed"])
     );
 }
+
+/// One service that uses every part of lowering, whole, so a split of the function cannot
+/// change what any part contributes.
+fn everything() -> Value {
+    let volume = "00000000-0000-4000-8000-000000000002";
+    let managed = "00000000-0000-4000-8000-000000000003";
+    let config = json!({"version":2,"privateDns":"api",
+        "source":{"version":1,"type":"image","image":"registry.test/api:1","credentials":{"type":"none"}},
+        "startCommand":"serve --port 80","preDeployCommand":"migrate",
+        "healthcheck":{"type":"command","command":"pg_isready","timeoutSeconds":90},
+        "restartPolicy":"on-failure","maxRetries":4,"cpuLimit":0.5,"memLimit":2,"replicas":3,
+        "updateOrder":"start-first",
+        "routes":[
+            {"id":"00000000-0000-4000-8000-000000000001","hostname":"app.example.com","targetPort":8080},
+            {"id":"00000000-0000-4000-8000-000000000004","hostname":"www.example.com","targetPort":null}
+        ],
+        "mounts":[
+            {"volumeResourceId":volume,"volumeName":"Cache","mountPath":"/cache"},
+            {"volumeResourceId":managed,"volumeName":"data","mountPath":"/data"},
+            {"volumeResourceId":"00000000-0000-4000-8000-000000000005","volumeName":"gone","mountPath":"/gone"}
+        ],
+        "configs":[{"configResourceId":"cfg-app","configName":"app","mountDir":"/etc/app"}]
+    });
+    json!({
+        "namespace":"production",
+        "snapshots":[
+            {"serviceId":"11111111-1111-4111-8111-111111111111","config":config,
+             "resolvedEnv":{"TOKEN":"t","PORT":"8080"},"setupCommands":["seed","warm"]},
+            {"config":{"version":2,"privateDns":"idle","source":{"version":1,"type":"empty","rootDir":"/"},
+                "healthcheck":{"type":"none"},"restartPolicy":"on-failure"}}
+        ],
+        "volumes":[
+            {"volumeResourceId":volume,"storage":{"kind":"docker"},"deployed":true,"namedFor":"parent"},
+            {"volumeResourceId":managed,"storage":{"kind":"provisioned","maximumBytes":1_073_741_824}}
+        ],
+        "configs":[{"configResourceId":"cfg-app","name":"app","references":[],
+            "files":{"app.conf":{"content":"x=1","mode":"0444","uid":0,"gid":0}}}]
+    })
+}
+
+#[test]
+fn lowering_one_service_with_every_part_keeps_its_whole_intent() {
+    let intent = lowered(everything()).unwrap();
+    assert_eq!(
+        intent,
+        serde_json::from_str::<Value>(include_str!("config_lowering_everything.json")).unwrap()
+    );
+}
+
+/// A service with a fault in each part: the first part in lowering order is the one named,
+/// and with each fault removed the next one is.
+#[test]
+fn lowering_names_the_first_faulty_part_in_lowering_order() {
+    type Fault = (&'static str, &'static str, fn(&mut Value));
+    let faults: [Fault; 9] = [
+        (
+            "env",
+            "A sealed value needs the Deploy's Environment",
+            |v| {
+                v["snapshots"][0]["resolvedEnv"]["S"] = json!({
+                "sealed":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==",
+                "scope":"shared","key":"S"});
+            },
+        ),
+        (
+            "routes",
+            "Expected a target port or PORT variable from 1–65535",
+            |v| {
+                v["snapshots"][0]["resolvedEnv"]["PORT"] = json!("bad");
+                v["snapshots"][0]["config"]["routes"][1]["targetPort"] = Value::Null;
+            },
+        ),
+        (
+            "replicas",
+            "Runtime deployment requires 1–50 replicas",
+            |v| {
+                v["snapshots"][0]["replicas"] = json!(0);
+            },
+        ),
+        ("cpuLimit", "CPU limit is below one nanocpu", |v| {
+            v["snapshots"][0]["config"]["cpuLimit"] = json!(1e-12);
+        }),
+        ("memLimit", "Memory limit is below one byte", |v| {
+            v["snapshots"][0]["config"]["memLimit"] = json!(1e-12);
+        }),
+        (
+            "managedHostnames",
+            "Expand managed hostnames into explicit routes before deploying",
+            |v| {
+                v["snapshots"][0]["config"]["managedHostnames"] =
+                    json!([{"prefix":"api-production","targetPort":null}]);
+            },
+        ),
+        (
+            "setupCommands",
+            "Expected a non-empty value within the length limit",
+            |v| {
+                v["snapshots"][0]["setupCommands"] = json!(["x".repeat(2001)]);
+            },
+        ),
+        (
+            "startCommand",
+            "Start command has an unclosed quote or a stray parenthesis",
+            |v| {
+                v["snapshots"][0]["config"]["startCommand"] = json!("serve 'unclosed");
+            },
+        ),
+        (
+            "mounts",
+            "A volume cannot mount at the container root /",
+            |v| {
+                v["snapshots"][0]["config"]["mounts"][0]["mountPath"] = json!("/");
+            },
+        ),
+    ];
+    for first in 0..faults.len() {
+        let mut input = everything();
+        for (_, _, fault) in &faults[first..] {
+            fault(&mut input);
+        }
+        let error = lowered(input).unwrap_err();
+        let (path, message, _) = faults[first];
+        assert_eq!(
+            (error.path.as_str(), error.message.as_str()),
+            (path, message)
+        );
+    }
+
+    let mut input = everything();
+    input["snapshots"][0]["config"]["routes"] = json!([]);
+    input["snapshots"][0]["config"]["healthcheck"] =
+        json!({"type":"http","path":"/health","timeoutSeconds":10});
+    input["snapshots"][0]["resolvedEnv"]["PORT"] = json!("bad");
+    input["snapshots"][0]["replicas"] = json!(0);
+    let error = lowered(input).unwrap_err();
+    assert_eq!(
+        (error.path.as_str(), error.message.as_str()),
+        (
+            "healthcheck",
+            "Expected a target port or PORT variable from 1–65535"
+        )
+    );
+}
