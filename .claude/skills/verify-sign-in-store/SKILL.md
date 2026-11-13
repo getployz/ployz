@@ -74,8 +74,8 @@ The same broken state has four more routes, each with its own test:
 
 **What a user sees when the finding happens.**
 - **Terminal A** prints "Open <url> and confirm the code <code>." and "Waiting for approval... " (`core/crates/ployz/src/handlers/login.rs:98`, `:104-114`), then "Signed in to <cloud> as <email> in Organization <slug>." (`core/crates/ployz/src/handlers/login.rs:99-100`, `:116-123`).
-- **Terminal B** prints the same code with no browser opened, since it resumed (`core/crates/ployz/src/handlers/login.rs:110-111`). It then fails with "the sign-in code expired before it was approved" (`:67`), with `next: ployz login` (`core/crates/ployz/src/failure.rs:1030-1033`).
-- **The next Cloud command** with no `cloud.json` and no pasted token gets `SignedOut`, "Not signed in to Cloud." (`:65`, `:278`), with `next: ployz login` (`core/crates/ployz/src/failure.rs:1030-1033`).
+- **Terminal B** prints the same code with no browser opened, since it resumed (`core/crates/ployz/src/handlers/login.rs:110-111`). It then fails with "the sign-in code expired before it was approved" (`:67`), with `next: ployz login` (`impl From<LoginError> for Failure` in `core/crates/ployz/src/failure.rs`).
+- **The next Cloud command** with no `cloud.json` and no pasted token gets `SignedOut`, "Not signed in to Cloud." (`:65`, `:278`), with `next: ployz login` (`impl From<LoginError> for Failure` in `core/crates/ployz/src/failure.rs`).
 - **Cloud still holds the winner's session.** The token's `createSession` (`better-auth@1.7.16/dist/plugins/device-authorization/routes.mjs:456`) opened it, and no step ended it. The token was only in the file the loser removed. `ployz logout` then finds no file, clears nothing and prints "Not signed in." (`:397-400`, `core/crates/ployz/src/handlers/login.rs:156`), so it cannot revoke the session. The session ends in one of two ways:
   - **It lapses 7 days after it opened**, since nobody holds the token to use it (`better-auth@1.7.16/dist/db/internal-adapter.mjs:23`, `dashboard/src/server/auth.server.ts:392-394`).
   - **`ployz token rm <id>` from a new sign-in**, the same computer's included. `ployz token ls` lists the caller's unexpired device sessions (`dashboard/src/modules/identity/organization-token.server.ts:137-145`). Every device is named "ployz login <date>", so an orphan is told apart from the current device only by its expiry and the `current` mark.
@@ -150,7 +150,7 @@ These are the last two rows of `current_code_lets_a_losing_waiter_forget_an_appr
 ```
  8. Login B: wait: after its sleep, poll: Cloud answers invalid_grant, because c0 is spent, and poll reads it as Expired (:562); forget is next (:360-361)
     cloud.json: SignedIn(c0) | Cloud: c0 Spent { ended: false } | Login A: Done(SignedIn) | Login B: Forgetting { code: c0, answer: Spent, then: Return } | Command: Idle | Logout: Idle
- 9. Login B: forget: clear removes cloud.json, which held SignedIn(c0) (:617-618, :224-229); ployz login fails, "the sign-in code expired before it was approved", next: ployz login (:619, :67, core/crates/ployz/src/failure.rs:1030-1033)
+ 9. Login B: forget: clear removes cloud.json, which held SignedIn(c0) (:617-618, :224-229); ployz login fails, "the sign-in code expired before it was approved", next: ployz login (:619, :67, `impl From<LoginError> for Failure` in core/crates/ployz/src/failure.rs)
     cloud.json: none | Cloud: c0 Spent { ended: false } | Login A: Done(SignedIn) | Login B: Done(Expired) | Command: Idle | Logout: Idle
 ```
 
@@ -335,7 +335,7 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployz/src/handlers/login.rs`: `login`, `announce`, `report` and `logout`.
 - `core/crates/ployz/src/cloud_account.rs`: `credential`, and the `set_organization` callers.
 - `core/crates/ployz/src/handlers/mcp.rs`: its `signed_in` call.
-- `core/crates/ployz/src/failure.rs`: the `next` for `SignedOut`, `Expired`, `Denied` and `Ended`.
+- `core/crates/ployz/src/failure.rs`: `impl From<LoginError> for Failure`, which sets the `next` for `SignedOut`, `Expired`, `Denied` and `Ended`.
 - `dashboard/src/server/auth.server.ts`: `cliSignInPlugins` and its `deviceAuthorization` options, and the `session` options.
 - `dashboard/pnpm-lock.yaml`: the `better-auth` version, and with it `redeemDeviceCode`'s answers and the session expiry.
 

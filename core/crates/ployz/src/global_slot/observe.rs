@@ -1,7 +1,9 @@
 //! What every Server runs, with each Server's name, and when that answer is whole enough
 //! to act on.
 
-use ployz_core::{LiveServices, MachineId, MachineName, MachineObservation, RpcError};
+use ployz_core::{
+    LiveServices, MachineId, MachineName, MachineObservation, PartialResult, RpcError,
+};
 
 /// Each Server's name, by id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -69,10 +71,31 @@ impl Live {
     /// acts on this observation refuses when it is Some, each with its own sentence around
     /// it.
     pub(crate) fn partial(&self) -> Option<String> {
-        (!self.services.containers.all_targets_succeeded()).then(|| {
-            crate::failure::partial_failure_details(&self.services.containers, |id| {
-                self.names.name(id)
-            })
-        })
+        (!self.services.containers.all_targets_succeeded())
+            .then(|| partial_failure_details(&self.services.containers, |id| self.names.name(id)))
     }
+}
+
+fn partial_failure_details<T>(
+    result: &PartialResult<T, RpcError>,
+    server: impl Fn(&ployz_core::MachineId) -> String,
+) -> String {
+    result
+        .failures
+        .iter()
+        .map(|failure| {
+            format!(
+                "{}: {}",
+                server(&failure.machine_id),
+                ployz_core::error_chain::row(&failure.error)
+            )
+        })
+        .chain(
+            result
+                .omissions
+                .iter()
+                .map(|machine_id| format!("{}: no terminal response", server(machine_id))),
+        )
+        .collect::<Vec<_>>()
+        .join("; ")
 }

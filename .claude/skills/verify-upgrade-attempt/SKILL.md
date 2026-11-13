@@ -117,7 +117,7 @@ A daemon start that loses the lock needs a second rare event after the daemon's 
 - **`ployz server set` on this Machine.**
   - The CLI sends UpdateMachine (`core/crates/ployz/src/handlers/server.rs:1017-1024`). A label or policy edit reaches the fast path's `try_mutation` (`machine/local_machine.rs:851`), and other edits reach `finish_mutation`.
   - The daemon maps Busy to Conflict (`machine_api/local.rs:1069-1074`).
-  - The CLI returns the `RpcError` (`core/crates/ployz/src/handlers/server.rs:1057`) as `Failure::command` (`core/crates/ployz/src/failure.rs:74-85`, `:925-961`), which prints its message (`:870-876`).
+  - The CLI returns the `RpcError` (`core/crates/ployz/src/handlers/server.rs:1057`) as `Failure::command` (`core/crates/ployz/src/failure.rs`, its `Display` impl prints the message, and `report` builds the `--json` error).
   - `ployz server set --accepts-ingress=true` sends Inspect first (`ingress_off`, `core/crates/ployz/src/handlers/server.rs:1178-1190`), and that clears the marker before the update.
 - **Enroll, register, forget and Leave.** Leave runs its own `settle` first, which clears the marker unless its `try_installation` loses to another lock holder.
 - **Builds and Deploys.** A Build on the Machine fails at its Admission stage (`build.rs:196-201`). A Deploy to this Machine fails its container step (`machine/local_machine/container.rs:1108`, `:1143`). Image ingest (`:690`) and volume copy cuts (`:581`) fail too.
