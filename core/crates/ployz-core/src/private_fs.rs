@@ -42,10 +42,10 @@ pub struct Replace {
 #[derive(Debug, Error)]
 pub enum ReplaceError {
     /// `path` still holds what it did before.
-    #[error("write {}: {source}", path.display())]
+    #[error("write {}", path.display())]
     Write { path: PathBuf, source: io::Error },
     /// `path` holds the new contents but its directory entry is not known to be on disk.
-    #[error("sync the directory of {}: {source}", path.display())]
+    #[error("sync the directory of {}", path.display())]
     Unsynced { path: PathBuf, source: io::Error },
 }
 
@@ -173,7 +173,7 @@ pub enum Existing {
 }
 
 #[derive(Debug, Error)]
-#[error("create private directory {}: {source}", path.display())]
+#[error("create private directory {}", path.display())]
 pub struct DirectoryError {
     pub path: PathBuf,
     pub source: io::Error,
