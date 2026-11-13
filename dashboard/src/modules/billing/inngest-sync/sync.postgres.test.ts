@@ -243,11 +243,11 @@ it.live(
   "keeps the subscription's units at the Server count, and says nothing when they already match",
   () =>
     Effect.gen(function* () {
-      const polar = makePolar({ units: 1 });
+      const polar = makePolar({ units: 2 });
       const { syncOnce, enrollServers } = yield* harness(polar.service);
 
       yield* syncOnce();
-      assert.deepStrictEqual(polar.calls, [], "no Servers stay at the one unit Polar requires");
+      assert.deepStrictEqual(polar.calls, [], "no Servers stay at the product's minimum of two units");
 
       yield* enrollServers(4);
       yield* syncOnce();

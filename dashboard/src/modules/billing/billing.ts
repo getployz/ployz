@@ -8,8 +8,8 @@ export const BASE_PRICE_USD = 10;
 export const INCLUDED_SERVERS = 2;
 export const EXTRA_SERVER_USD = 5;
 
-/** The units a Production subscription carries: one per Server, at least the one Polar requires. */
-export const billedUnits = (servers: number) => Math.max(1, servers);
+/** The units a Production subscription carries: one per Server, at least the product's minimum of two. */
+export const billedUnits = (servers: number) => Math.max(INCLUDED_SERVERS, servers);
 
 export const monthlyPriceUsd = (servers: number) =>
   BASE_PRICE_USD + Math.max(0, servers - INCLUDED_SERVERS) * EXTRA_SERVER_USD;
