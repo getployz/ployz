@@ -26,13 +26,23 @@ else
 fi
 
 pinned() {
-    sed -n "s/^ *$1: *\([^ ]*\) *\$/\1/p" "$work/build.yml"
+    sed -n "s/^      $1: \([^ ]*\)\$/\1/p" "$work/build.yml"
 }
 release=$(pinned PLOYZ_RELEASE)
 digest=$(pinned PLOYZ_ARCHIVE_SHA256)
-[[ $release =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] ||
+# Rule builds need 0.4: no 0.3 release refuses a Service in two snapshots or scopes the cache.
+[[ $release =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]] ||
     fail "build.yml pins no getployz/ployz release in PLOYZ_RELEASE"
+((BASH_REMATCH[1] > 0 || BASH_REMATCH[2] >= 4)) || fail "$release predates rule builds; pin 0.4 or later"
 [[ $digest =~ ^[0-9a-f]{64}$ ]] || fail "build.yml pins no archive digest in PLOYZ_ARCHIVE_SHA256"
+
+# The rest of the file, the install step included, must be the builder Ployz reviewed. A builder
+# change updates this digest: of build.yml with the two values above as RELEASE-PENDING and DIGEST-PENDING.
+reviewed=6da1cc9ed0b7e0ac488434ede9c4b4cbe0f34c6e4183e4d0b95169dd3cd22e8b
+masked=$(sed -e "s/^      PLOYZ_RELEASE: $release\$/      PLOYZ_RELEASE: RELEASE-PENDING/" \
+    -e "s/^      PLOYZ_ARCHIVE_SHA256: $digest\$/      PLOYZ_ARCHIVE_SHA256: DIGEST-PENDING/" "$work/build.yml" |
+    sha256sum | cut -d' ' -f1)
+[ "$masked" = "$reviewed" ] || fail "build.yml differs from the builder Ployz reviewed (digest $masked)"
 
 for file in checksums.txt checksums.txt.minisig; do
     curl -fsSL --proto '=https' --retry 3 -o "$work/$file" \

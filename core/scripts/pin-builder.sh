@@ -21,7 +21,13 @@ old=$(sed -n 's/^pub const BUILDER_SHA: &str = "\([0-9a-f]\{40\}\)";$/\1/p' core
     exit 1
 }
 
-git grep -lz "$old" -- . ':!docs/agents/plans' | xargs -0 -r sed -i "s/$old/$new/g"
+rule=core/crates/ployz-core/src/authority/rule.rs
+sed -i "s/^pub const BUILDER_SHA: &str = \"$old\";\$/pub const BUILDER_SHA: \&str = \"$new\";/" "$rule"
+git grep -lz "$old" -- . ':!docs/agents/plans' ":!$rule" ':!core/crates/ployz-core/src/authority/rule_tests.rs' |
+    xargs -0 -r sed -i "s/$old/$new/g"
+grep -qF "\"$old\"," "$rule" || {
+    echo "add $old to RETIRED_BUILDERS in $rule if its workflow installs no Ployz release" >&2
+}
 node --input-type=module <<'JS'
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
