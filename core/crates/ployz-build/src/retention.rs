@@ -87,6 +87,7 @@ impl Drop for ImageRetention {
             deadline: Deadline::starting_now(Duration::from_secs(10)),
             cancellation: None,
             progress: None,
+            recorder: None,
         };
         let arguments: Vec<_> = ["image", "rm"]
             .into_iter()
