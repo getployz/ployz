@@ -454,7 +454,7 @@ fn zfs_debian_contract() {
         let case = DEBIAN_CASES.iter().find(|case| case.name == name).unwrap();
         let root = contract_root();
         let paths = InstallPaths::at(&root);
-        let os = OsRelease::read(&paths.os_release).unwrap();
+        let os = crate::installer::os_release::read(&paths.os_release).unwrap();
         let ZfsRoute::Debian { codename, keyring } = ZfsRoute::for_os(&os).unwrap() else {
             panic!("{name} is not on the Debian route");
         };
@@ -571,18 +571,16 @@ esac"#,
 
 #[test]
 fn zfs_install_takes_over_a_prepared_build_contract() {
-    use crate::installer::prepare::{PrepState, ZfsBuild, discard_at};
+    use crate::installer::prepare::discard_at;
+    use ployz_core::host_preparation::{PrepState, ZfsBuild};
 
     const CASE: &str = "PLOYZ_ZFS_TAKEOVER_CONTRACT";
     const KERNEL: &str = "6.12.43+deb13-cloud-amd64";
     if let Ok(name) = env::var(CASE) {
         let root = contract_root();
         let paths = InstallPaths::at(&root);
-        let os = OsRelease::read(&paths.os_release).unwrap();
-        ZfsRoute::for_os(&os)
-            .unwrap()
-            .install(&paths, &os, KERNEL)
-            .unwrap();
+        let os = crate::installer::os_release::read(&paths.os_release).unwrap();
+        install_route(ZfsRoute::for_os(&os).unwrap(), &paths, &os, KERNEL).unwrap();
         if name == "no-build" {
             discard_at(&paths).unwrap();
         }
@@ -821,7 +819,7 @@ fn zfs_amazon_linux_contract() {
         let result = if case.via_storage {
             prepare_storage(&StoragePreparation::Zfs { device: None }, &paths)
         } else {
-            let os = OsRelease::read(&paths.os_release).unwrap();
+            let os = crate::installer::os_release::read(&paths.os_release).unwrap();
             let tarball = if name == "checksum-mismatch" {
                 b"a different tarball".to_vec()
             } else {

@@ -4,6 +4,7 @@ use axum::{Json, extract::State};
 use ployz_core::{
     CopyRole, ProvisionedCopy, ProvisionedVolumeMaximumBytes, StorageCapacity, StorageCapacityError,
 };
+use ployzd::dataset_layout::{DatasetLayout, Place, SlotAt};
 use std::collections::BTreeMap;
 
 use super::{DockerVolumeName, VolumeStorage};
@@ -20,14 +21,13 @@ fn unknown(error: impl std::fmt::Display) -> ployz_core::RpcError {
 fn storage_error(error: super::VolumeError) -> ployz_core::RpcError {
     match error {
         super::VolumeError::Capacity(error) => error.into_rpc_error(),
-        error => ployz_core::RpcError {
-            code: ployz_core::RpcErrorCode::Internal,
-            message: "Storage preparation failed".into(),
-            details: serde_json::json!({"code": "storage_preparation_failed"}),
-            cause: std::iter::once(error.to_string())
-                .chain(ployz_core::error_chain::causes(&error))
-                .collect(),
-        },
+        error => ployz_core::RpcError::internal("Storage preparation failed")
+            .with_details(serde_json::json!({"code": "storage_preparation_failed"}))
+            .with_causes(
+                std::iter::once(error.to_string())
+                    .chain(ployz_core::error_chain::causes(&error))
+                    .collect(),
+            ),
     }
 }
 
@@ -44,20 +44,20 @@ impl VolumeStorage {
         if let Some(pool) = &pool {
             let datasets = self.datasets(pool).await?;
             for dataset in &datasets {
-                let place = super::Place::of(&dataset.name, pool.name());
+                let place = DatasetLayout::of(pool).place(&dataset.name);
                 if !place.commits() {
                     continue;
                 }
                 managed_used_bytes = managed_used_bytes
                     .checked_add(dataset.active_used_bytes)
                     .ok_or("Dataset occupancy overflows u64")?;
-                let (super::Place::Root(name) | super::Place::Slot(name)) = place else {
+                let Some(name) = place.volume() else {
                     continue;
                 };
                 let name = ployz_core::DockerVolumeName::parse(name)
                     .map_err(|error| ployz_core::error_chain::inline(&error))?;
                 let (role, maximum_bytes, used_bytes, slot_role) = match place {
-                    super::Place::Root(_) => (
+                    Place::Root(_) => (
                         if dataset.switching() {
                             CopyRole::Switching
                         } else {
@@ -67,11 +67,10 @@ impl VolumeStorage {
                         dataset.referenced_bytes,
                         None,
                     ),
-                    super::Place::Slot(_) => {
+                    Place::Slot { at, .. } => {
                         let bound = super::storage::committed_bytes(dataset, pool.name());
                         if bound == 0 {
-                            if dataset.name
-                                == format!("{}/{}/{name}/fs", pool.name(), super::MIRROR_ROOT)
+                            if at == SlotAt::Fs
                                 && let Some(copy) = copies.get_mut(&name)
                             {
                                 copy.used_bytes = dataset.referenced_bytes;
@@ -85,10 +84,10 @@ impl VolumeStorage {
                             CopyRole::Slot,
                             bound,
                             0,
-                            Some(self.slot_role(&dataset.name).await?),
+                            Some(self.marks(&dataset.name).role().await?),
                         )
                     }
-                    super::Place::Outside => continue,
+                    Place::Outside => continue,
                 };
                 let maximum = ProvisionedVolumeMaximumBytes::new(
                     std::num::NonZeroU64::new(maximum_bytes).ok_or("Volume has no finite bound")?,

@@ -74,6 +74,12 @@ That lasts until the web server is created again. To do that now, open the serve
 **Takes web traffic** off, then on again. While it's off, that server doesn't answer on ports 80
 and 443, so do one server at a time.
 
+A replica gets 60 seconds to start its response. If it hasn't by then, a `GET` goes to another
+replica and anything else gets `504 · NO_RESPONSE`, and a replica that hangs like this stops
+getting requests for a while. Server-sent events and websockets are fine as long as they answer
+straight away. For work that takes longer, like a big export, start it in the background and
+have the page check back for the result.
+
 ## This app isn't running
 
 You'll see `503 · NOT_RUNNING`. The service has no healthy replica, so there's nothing to send
@@ -108,6 +114,9 @@ answers for it there.
   [below](#my-domain-is-behind-cloudflare).
 - **On `https://`?** The domain isn't live yet. If its row says
   **Live after your next deploy**, click **Deploy**.
+- **Removed the service?** While your servers still hold a valid certificate for its domain,
+  `https://` shows this page too, just like `http://`. Nothing renews that certificate, so once it
+  expires, browsers show a certificate error instead.
 
 ## My custom domain is waiting for DNS
 
@@ -134,10 +143,11 @@ certificate**, a DNS status, or **Certificate failed; retrying at …**. Fix any
   it**, Cloudflare's redirect is blocking your certificate. Set the DNS record to **DNS only**,
   or turn off **Always Use HTTPS** and add a redirect rule that sends http to https for every
   path except `/.well-known/acme-challenge/*`.
-- Your app sees the visitor's address, not Cloudflare's, in `X-Forwarded-For`. Your servers take
-  it from Cloudflare's `CF-Connecting-IP` header, and only from requests that come from
-  [Cloudflare's addresses](https://www.cloudflare.com/ips/). The header still reaches your app from
-  anyone who sends it, so read `X-Forwarded-For`, not `CF-Connecting-IP`.
+- Your app sees the visitor's address, not Cloudflare's, in `X-Forwarded-For`, `X-Real-IP` and
+  `CF-Connecting-IP`. Your servers take it from Cloudflare's `CF-Connecting-IP` header, and only
+  from requests that come from [Cloudflare's addresses](https://www.cloudflare.com/ips/). They
+  replace all three headers before a request reaches your app, so a visitor can't fake their
+  address in any of them.
 
 ## Port 80 is closed
 
@@ -167,7 +177,8 @@ sudo ss -ltnp '( sport = :80 or sport = :443 )'
 ```
 
 Stop that web server, or move it to another server. To keep Ployz Cloud on the same server,
-publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server starts its
+publish it through a Cloudflare Tunnel instead, or serve your apps through one with
+[`ployz ingress use tunnel`](../services/cloudflare-tunnel.md). Once port 80 is free, the server starts its
 web server on its own within a minute. You don't need to remove and re-add the server. Then click
 **Check again** under **Domain** in **Organization → General**.
 
@@ -189,6 +200,42 @@ Ployz can't confirm such a server takes traffic, so check it yourself from a net
 `curl -I http://web.<your domain>`. Open TCP port 80 and TCP and UDP port 443 for IPv6 in every
 firewall, as in [Port 80 is closed](#port-80-is-closed). To reach your apps from an IPv4-only
 network, give a server an IPv4 address too.
+
+## My apps go through a Cloudflare Tunnel and don't answer
+
+Run `ployz ingress`. Every server that takes web traffic should list `tunnel`. One that lists
+**closed** has no web server running; see [Ingress isn't running](#ingress-isnt-running). One
+that still lists `public` never switched; run `ployz ingress use tunnel` again and read its row.
+
+When every server lists `tunnel` and the domain still doesn't answer, check the tunnel in
+Cloudflare under **Zero Trust → Networks → Tunnels**. It should show one connector per server,
+and a public hostname for the domain with service `http://localhost:8480`. A tunnel whose token
+you rotated needs the new token: `ployz ingress use tunnel --token-stdin`.
+
+A domain behind the tunnel never shows **Issuing certificate**; Cloudflare serves it. If the
+browser says "too many redirects", set **SSL/TLS** to **Full** or **Flexible** in Cloudflare.
+
+## My custom domain isn't reaching my Cloudflare Tunnel
+
+You'll see **Not reaching your tunnel** when Ployz asked the domain for a page only your servers
+answer and something else answered, or DNS sends the name nowhere. You'll see **No answer over
+HTTPS** when nothing answered at all: the connection was refused, its certificate failed, or it
+timed out, as with a name still pointing at an old server.
+
+1. Click **Show DNS records** and create that CNAME at your DNS provider. In Cloudflare, turn
+   **Proxied** on.
+2. Delete any other A, AAAA or CNAME record for the same name.
+3. A name in your Cloudflare zone needs no record of its own, unless one exists: a record for
+   the exact name overrides the zone's `*` CNAME. Replace it with the CNAME shown, or delete it
+   and check that the `*` CNAME to the tunnel still exists under **DNS → Records**.
+4. With the record right, check that the tunnel has a connector for each server, as
+   [above](#my-apps-go-through-a-cloudflare-tunnel-and-dont-answer).
+
+Ployz asks the name again each time you open the page. **Check** asks now.
+
+A name two levels under your zone, like `a.shop.example.com`, shows **The free certificate covers
+one level under example.com**. Cloudflare's free certificate doesn't cover it, so browsers warn.
+Use a name one level down, like `shop-a.example.com`.
 
 ## Ingress isn't running
 

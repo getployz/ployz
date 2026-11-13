@@ -239,6 +239,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -251,6 +255,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -263,6 +271,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -275,6 +287,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -287,6 +303,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -299,6 +319,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -450,6 +474,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -462,6 +490,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -474,6 +506,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -486,6 +522,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -498,6 +538,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -510,6 +554,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -3361,6 +3409,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -3438,6 +3490,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -4028,6 +4084,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -4109,6 +4169,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -4190,6 +4254,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -4265,6 +4336,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -4341,6 +4419,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -4416,6 +4501,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -4491,6 +4583,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -4564,6 +4663,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -4638,6 +4744,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -4711,6 +4824,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -5185,6 +5305,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -5877,6 +6001,7 @@
                 "revision": 1
               },
               "namespace": "shop-production",
+              "routes": [],
               "services": {},
               "view": "namespace"
             }
@@ -6029,6 +6154,7 @@
                 "revision": 1
               },
               "namespace": "shop-production",
+              "routes": [],
               "services": {},
               "view": "namespace"
             }
@@ -6038,6 +6164,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -6192,6 +6325,7 @@
                 "revision": 1
               },
               "namespace": "shop-production",
+              "routes": [],
               "services": {},
               "view": "namespace"
             }
@@ -6216,6 +6350,13 @@
               "code": "not_found",
               "message": "shop/production has no Deployment #12",
               "details": {
+                "follow_up": {
+                  "kind": "deployment_list",
+                  "place": {
+                    "environment": "production",
+                    "project": "shop"
+                  }
+                },
                 "next": "ployz deployment ls --project shop --env production"
               }
             }
@@ -6363,6 +6504,7 @@
                 "revision": 1
               },
               "namespace": "shop-production",
+              "routes": [],
               "services": {},
               "view": "namespace"
             }
@@ -6480,6 +6622,7 @@
                 "revision": 1
               },
               "namespace": "shop-production",
+              "routes": [],
               "services": {},
               "view": "namespace"
             }
@@ -6608,6 +6751,7 @@
                 "revision": 1
               },
               "namespace": "shop-production",
+              "routes": [],
               "services": {},
               "view": "namespace"
             }
@@ -6736,6 +6880,7 @@
                 "revision": 1
               },
               "namespace": "shop-production",
+              "routes": [],
               "services": {},
               "view": "namespace"
             }
@@ -7316,6 +7461,7 @@
                 "revision": 1
               },
               "namespace": "shop-production",
+              "routes": [],
               "services": {},
               "view": "namespace"
             }
@@ -7936,6 +8082,10 @@
               "code": "not_found",
               "message": "No Environment named preview in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -8014,6 +8164,10 @@
               "code": "not_found",
               "message": "No Environment named preview in Project shop",
               "details": {
+                "follow_up": {
+                  "kind": "environment_list",
+                  "project": "shop"
+                },
                 "next": "ployz env ls --project shop",
                 "valid_children": [
                   "production"
@@ -8092,7 +8246,12 @@
             "error": {
               "code": "not_found",
               "message": "No Project named trial",
-              "details": {}
+              "details": {
+                "follow_up": {
+                  "kind": "project_list"
+                },
+                "next": "ployz project ls"
+              }
             }
           }
         ]
@@ -8113,7 +8272,12 @@
                 }
               },
               "writes": "none",
-              "next": []
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {}
+                }
+              ]
             }
           }
         }
@@ -8155,7 +8319,12 @@
             "error": {
               "code": "not_found",
               "message": "No Project named trial",
-              "details": {}
+              "details": {
+                "follow_up": {
+                  "kind": "project_list"
+                },
+                "next": "ployz project ls"
+              }
             }
           }
         ]
@@ -8176,7 +8345,12 @@
                 }
               },
               "writes": "none",
-              "next": []
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {}
+                }
+              ]
             }
           }
         }

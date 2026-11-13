@@ -1,5 +1,6 @@
-import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange } from "@ployz/sdk";
+import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange, ResolvedServiceSpec, Signed } from "@ployz/sdk";
 import { Schema } from "effect";
+import { asRecord, asString } from "#/lib/json";
 import type { Caller } from "#/modules/identity/actor";
 import { rollbackConfirm } from "#/modules/config-store/store-deployments";
 import { holds } from "#/modules/support-access/support-view";
@@ -8,13 +9,16 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "mirror" | "sync" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name" | "set_ingress_doors" | "set_private_access";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue; subject?: string };
 
 /** A stop or restart the dashboard asked for, run as its asker once a protector approves it. */
 export type ServiceApply = { environmentId: string; service: string; verb: "stop" | "restart" };
+
+/** An approver's passkey answer to a Volume run's workflow, and for a Move the spec its target starts. */
+export type KeptVolumeApproval = { readonly approval: Signed; readonly service?: ResolvedServiceSpec };
 
 /** A Volume resize the dashboard asked for, run as its asker once a protector approves it. */
 export type VolumeApply = { volumeId: string; environment: EnvironmentRef; maximum_bytes: number };
@@ -65,10 +69,33 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
  * write also names its Project, which the card shows and a denial leaves out.
  */
 export function approvalSubject(command: string, review: ApprovalReview) {
-  if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
+  if ("operation" in review) {
+    const verb = review.operation.verb === "set_cluster_name" ? "Rename cluster"
+      : review.operation.verb === "set_ingress_doors" ? "Switch web traffic"
+      : review.operation.verb === "set_private_access" ? "Turn private access" : capitalized(review.operation.verb);
+    return { verb, name: review.operation.name, project: null };
+  }
   const verb = command === "publish" ? "Save" : command === "retry" ? (shutsDownAgain(review) ? "Shut down" : rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
     : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : command === "cancel" ? "Cancel" : "Deploy";
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
+}
+
+/**
+ * The restart or stop an approval card shows, as Servers know it: the verb, the Environment and Service from the ask, and
+ * the Namespace and runtime name its approvals carry. Null for anything else, or an ask made before its preview named them.
+ */
+export function shownServiceAct(review: ApprovalReview) {
+  if (!("operation" in review)) return null;
+  const verb = review.operation.verb;
+  if (verb !== "restart" && verb !== "stop") return null;
+  const preview = asRecord(review.operation.preview);
+  const environment = asString(preview?.["environment"]);
+  const service = asString(preview?.["service"]);
+  const namespace = asString(preview?.["namespace"]);
+  const runtime = asString(preview?.["runtime"]);
+  const only = asString(asRecord(preview?.["only"])?.["machine"]);
+  if (environment === null || service === null || namespace === null || runtime === null) return null;
+  return { verb, environment, service, namespace, runtime, only: only === null ? null : { machine: only } };
 }
 
 /** An approval's verb and name for a list, a Store write's Environment under its Project: "Deploy" "shop/production". */
@@ -113,6 +140,36 @@ export function destroyedLines(command: string, review: ApprovalReview) {
   return [...lines, `Also removes any other service running in this environment${dropped === null ? "" : `. ${dropped}`}`];
 }
 
+const RenamePreview = Schema.Struct({ from: Schema.NullOr(Schema.String), to: Schema.String });
+
+/** The private addresses a Cluster rename moves, as the card shows them; null for anything else. */
+export function renamedAddresses(review: ApprovalReview) {
+  if (!("operation" in review) || review.operation.verb !== "set_cluster_name") return null;
+  const preview = Schema.decodeUnknownOption(RenamePreview)(review.operation.preview);
+  if (preview._tag === "None") return null;
+  const { from, to } = preview.value;
+  return { from: from === null ? null : `*.${from}.ployz.internal`, to: `*.${to}.ployz.internal` };
+}
+
+const SwitchPreview = Schema.Struct({
+  to: Schema.Literals(["tunnel", "public"]),
+  zone: Schema.NullOr(Schema.String),
+  hostedName: Schema.NullOr(Schema.String),
+});
+
+/** The addresses a switch of web traffic moves Services between, as the card shows them; null for anything else. */
+export function switchedAddresses(review: ApprovalReview) {
+  if (!("operation" in review) || review.operation.verb !== "set_ingress_doors") return null;
+  const preview = Schema.decodeUnknownOption(SwitchPreview)(review.operation.preview);
+  if (preview._tag === "None") return null;
+  const { to, zone, hostedName } = preview.value;
+  const [from, onto] = to === "tunnel" ? [hostedName, zone] : [zone, hostedName];
+  return from === null || onto === null ? null : { from: `*.${from}`, to: `*.${onto}` };
+}
+
+export const asksForAuthKey = (review: ApprovalReview) => "operation" in review
+  && review.operation.verb === "set_private_access" && review.operation.name === "on";
+
 /** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
 export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
   && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
@@ -132,6 +189,9 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "move") return "Moves volume";
   if (command === "restore") return "Restores volume";
   if (command === "resize") return "Resizes volume";
+  if (command === "set_cluster_name") return "Renames cluster";
+  if (command === "set_private_access") return asksForAuthKey(review) ? "Joins a tailnet" : "Removes routers";
+  if (command === "set_ingress_doors") return effects.length === 0 ? "Switches web traffic" : `Moves ${effects.length} ${effects.length === 1 ? "address" : "addresses"}`;
   if (command === "release" && effects.length === 0) return "Releases volume";
   if (effects.length === 0) return prunes(review) ? "Removes other services" : "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {
@@ -193,6 +253,7 @@ const destroys = {
   restarts_service: { verb: "Restarts", noun: "service", after: "" },
   unprotects_environment: { verb: "Unprotects", noun: "environment", after: "" },
   removes_organization: { verb: "Removes", noun: "organization", after: ". Not recoverable." },
+  restores_volume: { verb: "Restores", noun: "volume", after: "" },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
 /**

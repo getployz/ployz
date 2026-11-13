@@ -33,6 +33,7 @@ fn holder(hex: char) -> Machine {
             architecture: "x86_64".into(),
             ..Default::default()
         },
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -80,6 +81,7 @@ async fn destination_and_holder(
         )]
         let response = match rpc.into_inner().decode_request().unwrap().body {
             RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                attest: None,
                 machine_id: machine('1'),
                 protocol_major: PROTOCOL_MAJOR,
                 daemon_version: "fixture".into(),
@@ -173,7 +175,7 @@ async fn a_destination_silent_during_its_registry_pull_is_named() {
     let mut service = spec(None, None, None);
     service.container.pull_policy = ployz_core::PullPolicy::Always;
 
-    let error = MachineOperations::ensure_image(&client, &machine('1'), &service)
+    let error = DeployOperations::ensure_image(&client, &machine('1'), &service)
         .await
         .unwrap_err();
 
@@ -188,7 +190,7 @@ async fn a_destination_that_answers_unavailable_keeps_its_words() {
     let mut service = spec(None, None, None);
     service.container.pull_policy = ployz_core::PullPolicy::Always;
 
-    let error = MachineOperations::ensure_image(&client, &machine('1'), &service)
+    let error = DeployOperations::ensure_image(&client, &machine('1'), &service)
         .await
         .unwrap_err();
 
@@ -201,7 +203,7 @@ async fn a_destination_that_answers_unavailable_keeps_its_words() {
 async fn a_machine_that_never_settles_a_container_is_named() {
     let (client, server) = destination_and_holder("alpine:3.23.3", Silent::NeverSettles).await;
 
-    let error = MachineOperations::ensure_container(
+    let error = CopyLifecycle::ensure_container(
         &client,
         &machine('1'),
         ContainerWant::Running {
@@ -226,7 +228,7 @@ async fn a_machine_silent_while_a_global_start_checks_its_slot_is_named() {
     let mut global = spec(None, None, None);
     global.mode = ServiceMode::Global;
 
-    let error = MachineOperations::ensure_container(
+    let error = CopyLifecycle::ensure_container(
         &client,
         &machine('1'),
         ContainerWant::Running {
@@ -335,6 +337,7 @@ async fn live_and_second(
             )]
             let response = match rpc.into_inner().decode_request().unwrap().body {
                 RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                    attest: None,
                     machine_id: machine('1'),
                     protocol_major: PROTOCOL_MAJOR,
                     daemon_version: "fixture".into(),
@@ -414,6 +417,7 @@ async fn live_and_second(
                         volumes: Vec::new(),
                         certificates: Vec::new(),
                         incomplete_ids: Default::default(),
+                        unanswered: Vec::new(),
                         observed_at: String::new(),
                     };
                     return Ok(Response::new(
@@ -897,12 +901,10 @@ async fn a_dependency_check_fails_by_name_on_an_up_machine_that_never_lists() {
 async fn a_full_listing_names_a_suspect_machine_that_never_answers() {
     let (client, server) = live_and_second(std::sync::Arc::default(), Pair::suspect_silent()).await;
 
-    let error = MachineOperations::service_containers(
-        &client,
-        &QualifiedService::parse("app/web").unwrap(),
-    )
-    .await
-    .expect_err("a silent Machine leaves the full listing incomplete");
+    let error =
+        CopyLifecycle::service_containers(&client, &QualifiedService::parse("app/web").unwrap())
+            .await
+            .expect_err("a silent Machine leaves the full listing incomplete");
 
     names_the_second(&error);
     server.abort();

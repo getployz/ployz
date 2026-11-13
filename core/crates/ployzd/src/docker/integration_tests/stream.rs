@@ -1,3 +1,5 @@
+use ployz_core::labels;
+use ployz_core::{ServiceId, ServiceName};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -24,10 +26,10 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     let managed = serde_json::json!({
         "Id": container_id.as_str(),
         "Config": {"Labels": {
-            LABEL_MANAGED: "",
-            LABEL_NAMESPACE: "app",
-            LABEL_SERVICE_ID: spec.service_id.to_string(),
-            LABEL_SERVICE_NAME: spec.name.to_string(),
+            labels::MANAGED: "",
+            labels::NAMESPACE: "app",
+            labels::SERVICE_ID: spec.service_id.to_string(),
+            labels::SERVICE_NAME: spec.name.to_string(),
         }},
     })
     .to_string();
@@ -164,10 +166,10 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
         "Id": container_id.as_str(),
         "State": {"Pid": std::process::id()},
         "Config": {"Labels": {
-            LABEL_MANAGED: "",
-            LABEL_NAMESPACE: "app",
-            LABEL_SERVICE_ID: spec.service_id.to_string(),
-            LABEL_SERVICE_NAME: spec.name.to_string(),
+            labels::MANAGED: "",
+            labels::NAMESPACE: "app",
+            labels::SERVICE_ID: spec.service_id.to_string(),
+            labels::SERVICE_NAME: spec.name.to_string(),
         }},
     })
     .to_string();

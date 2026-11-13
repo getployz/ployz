@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::domain::DomainEvidence;
+use crate::followup::FollowUp;
 use crate::git::AuthorizedRepository;
-use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId};
+use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId, Hostname};
 use crate::permission::Permission;
 use crate::storage::Tx;
 
@@ -138,14 +139,41 @@ pub enum Asks {
     EveryDeploy,
 }
 
+/// Whose permissions the Protected Environment fence checks a write against: the
+/// Store's own work meets none, a caller's write meets what Cloud says the caller holds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Evidence<'trusted> {
+    /// The Store acting for nobody, such as a Follow or an automated landing.
+    Store,
+    /// The caller `Trusted` describes.
+    Caller(&'trusted Trusted),
+}
+
+impl Evidence<'_> {
+    pub(crate) fn admit(self, permission: Permission) -> Result<(), RpcError> {
+        match self {
+            Self::Store => Ok(()),
+            Self::Caller(trusted) => trusted.admit(permission),
+        }
+    }
+}
+
 impl Trusted {
+    /// The Cluster Domain Cloud knows now: what generated domains expand under.
+    pub(crate) fn cluster_domain(&self) -> Option<&Hostname> {
+        self.domains
+            .cluster_domain
+            .as_ref()
+            .map(|cluster| &cluster.name)
+    }
+
     /// Refuse to admit a Deployment no Server could run: `conflict`, as the
     /// Organization's state refuses it, naming `ployz server add`.
     pub(crate) fn runnable(&self) -> Result<(), RpcError> {
         if self.no_servers() {
             return Err(crate::error::conflict(
                 NO_SERVERS,
-                serde_json::json!({ "next": "ployz server add" }),
+                FollowUp::ServerAdd.details(),
             ));
         }
         Ok(())
@@ -186,6 +214,15 @@ impl Trusted {
             failure.servers = servers;
         }
         Ok(Cow::Owned(trusted))
+    }
+
+    /// What seals and refuses secrets for `who` under this evidence.
+    pub(crate) fn sealer<'a>(&'a self, who: &'a crate::Actor) -> crate::client_sealed::Sealer<'a> {
+        crate::client_sealed::Sealer {
+            organization: &who.organization,
+            recipient: self.sealing.as_ref(),
+            from_cli: self.from_cli,
+        }
     }
 
     /// Cloud counted no Server: nothing runs, and nothing is left on one.

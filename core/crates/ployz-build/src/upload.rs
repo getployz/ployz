@@ -121,7 +121,7 @@ impl AdmittedUpload {
     /// # Errors
     /// Reports a file that exists but cannot be read.
     pub fn private_file(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
-        match fs::read(self.upload.root.join("private").join(name)) {
+        match fs::read(crate::capture::private_file(&self.upload.root, name)) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
@@ -234,10 +234,10 @@ impl Upload {
                     .filter(|bytes| *bytes <= PRIVATE_LIMIT as usize)
                     .ok_or("Build entry metadata exceeds byte limit")?;
                 let relative = received_path(path)?;
-                let source = relative.starts_with("source");
+                let source = relative.starts_with(crate::capture::SOURCE);
                 if !source
-                    && !relative.starts_with("private")
-                    && relative != Path::new("compose.yaml")
+                    && !relative.starts_with(crate::capture::PRIVATE)
+                    && relative != Path::new(crate::capture::COMPOSE)
                 {
                     return Err("Build entry is outside source and private material".into());
                 }
@@ -383,6 +383,7 @@ impl CompletedUpload {
                 no_cache: definition.no_cache,
                 pull: definition.pull,
                 sealed: !opened.is_empty(),
+                cache_scope: None,
             },
             admission,
             progress,

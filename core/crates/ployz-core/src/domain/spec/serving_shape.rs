@@ -16,10 +16,6 @@ use crate::{RawVolumeSource, ServiceMount, ServiceName, ServiceVolume, VolumeSou
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ServingShape(u64);
 
-/// Serving Shape of a published observation, whose Config content is redacted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PublishedServingShape(ServingShape);
-
 impl ServingShape {
     /// Shape of one observed Resolved Service Spec.
     #[must_use]
@@ -136,8 +132,9 @@ impl ServingShape {
             stop_timeout_secs,
             sysctls,
             restart,
+            network,
         } = container;
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "name": name,
             "mode": service_mode_kind(mode),
             "image": image,
@@ -168,6 +165,14 @@ impl ServingShape {
             "configs": configs,
             "config_mounts": sorted_json(config_mounts),
         });
+        // Only a joined Container carries the key, so every bridge spec keeps
+        // the token it had before the field existed.
+        if let (Some(network), serde_json::Value::Object(fields)) = (network, &mut payload) {
+            fields.insert(
+                "network".into(),
+                serde_json::to_value(network).expect("serving shape JSON is serializable"),
+            );
+        }
         payload
     }
 
@@ -177,21 +182,23 @@ impl ServingShape {
     }
 }
 
+/// The Creation Key of one Global revision on one target.
+///
+/// Namespace and kind are scoped by the Slot Key.
+#[must_use]
+pub fn global_creation_key(spec: &ResolvedServiceSpec) -> String {
+    format!(
+        "global:{}:{}",
+        spec.service_id,
+        spec.serving_shape().token()
+    )
+}
+
 impl ResolvedServiceSpec {
     /// Content identity of the fields whose change requires a new Container.
     #[must_use]
     pub fn serving_shape(&self) -> ServingShape {
         ServingShape::of_resolved(self)
-    }
-
-    /// Serving Shape of this spec as a daemon publishes it.
-    #[must_use]
-    pub fn published_serving_shape(&self) -> PublishedServingShape {
-        let names = self.mount_graph.config_graph().configs().iter();
-        let configs = sorted_json(names.map(|config| &config.name));
-        PublishedServingShape(ServingShape::from_fields(&ServingShape::resolved_fields(
-            self, configs,
-        )))
     }
 }
 
@@ -357,5 +364,22 @@ mod tests {
             "log_driver": { "name": "json-file" }
         }));
         assert_eq!(stored.serving_shape().token(), "1c6e8ff538d68038");
+    }
+
+    #[test]
+    fn joining_the_ingress_holder_changes_the_serving_shape() {
+        let bridge = web_spec(json!({
+            "image": "nginx:1.29-alpine",
+            "environment": { "PORT": "80" },
+            "pull_policy": "missing"
+        }));
+        let mut joined = bridge.clone();
+        joined.container.network = Some(crate::ServiceNetwork::IngressHolder);
+
+        assert_ne!(joined.serving_shape(), bridge.serving_shape());
+        assert_eq!(
+            joined.to_requested().serving_shape(),
+            joined.serving_shape()
+        );
     }
 }

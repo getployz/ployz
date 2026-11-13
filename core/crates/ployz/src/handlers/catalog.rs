@@ -4,6 +4,7 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
 use ployz_core::ServiceName;
+use ployz_core::error_chain;
 use ployz_store::catalog::{self, Explained};
 use ployz_store::{EnvironmentQuery, NodeName, SettingPath};
 use serde::Serialize;
@@ -41,7 +42,7 @@ pub(super) fn schema(root: &ArgMatches) -> Result<(), Error> {
     let path = leaf_matches(root).get_one::<String>("path");
     let mut schema = catalog::schema(path.map(String::as_str)).map_err(|mut error| {
         let service = path.and_then(|path| path.split('.').next()).unwrap_or("SERVICE");
-        error.message = crate::ui::then_sentence(
+        error.message = error_chain::then_sentence(
             &error.message,
             &format!(
                 "`ployz schema` takes SERVICE or SERVICE.SETTING; `ployz schema {service}` lists its Settings"
@@ -504,7 +505,7 @@ pub(crate) fn setting_paths() -> ArgValueCompleter {
 /// and the directory link.
 fn stored_paths() -> Vec<String> {
     let scope = || -> Option<Vec<String>> {
-        let config = std::env::var(crate::cli::env::CONFIG)
+        let config = std::env::var(crate::env::CONFIG)
             .unwrap_or_else(|_| crate::context::default_config_path());
         let config = crate::context::expand_home(std::path::Path::new(&config));
         let store = super::store::backend_at(&config).ok()??;

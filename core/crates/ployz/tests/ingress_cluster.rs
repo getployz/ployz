@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{
     process::{self, Command},
     time::Duration,
@@ -40,12 +41,37 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
 
     cli(&direct, &ingress_role(&machines[0]));
     let caddy_id = wait_service(&mut client, "ingress", 3).await;
-    assert!(
-        wait_running(&mut client, &caddy_id, 3)
-            .await
-            .iter()
-            .all(|container| container.resolved_spec.container.image == "caddy:2.10.2")
-    );
+    let holder_id = wait_service(&mut client, "ingress-holder", 3).await;
+    let caddys = wait_running(&mut client, &caddy_id, 3).await;
+    let holders = wait_running(&mut client, &holder_id, 3).await;
+    for (index, machine) in machines.iter().enumerate() {
+        let on = |containers: &[ployz_core::ContainerObservation]| {
+            let [container] = containers
+                .iter()
+                .filter(|container| container.machine_id == machine.id)
+                .collect::<Vec<_>>()[..]
+            else {
+                panic!(
+                    "one of each Ingress door on {}: {containers:?}",
+                    machine.name
+                );
+            };
+            container.container_id
+        };
+        let (caddy, holder) = (on(&caddys), on(&holders));
+        let mode = cluster
+            .machine_shell(
+                index,
+                &format!("docker inspect -f '{{{{.HostConfig.NetworkMode}}}}' {caddy}"),
+            )
+            .unwrap();
+        assert_eq!(
+            mode.trim(),
+            format!("container:{holder}"),
+            "Caddy on {} runs in its holder's network",
+            machine.name
+        );
+    }
 
     let api_id = ServiceId::random();
     let api: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
@@ -469,15 +495,13 @@ async fn assert_membership_blind(
     assert!(retained.contains(&format!("{}:8080", retained_address.0)));
 }
 
-/// Give `server` the ingress role; the Ingress Proxy follows it with the preloaded Caddy image.
-fn ingress_role(server: &Machine) -> [&str; 6] {
+/// Give `server` the ingress role; the Ingress Proxy follows it with the images its daemon pins.
+fn ingress_role(server: &Machine) -> [&str; 4] {
     [
         "server",
         "set",
         server.id.as_str(),
         "--accepts-ingress=true",
-        "--ingress-image",
-        "caddy:2.10.2",
     ]
 }
 
@@ -657,7 +681,7 @@ async fn deploy(
     requested: &RequestedServiceSpec,
 ) -> ServiceId {
     let machines = client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
         .unwrap()
         .machines;

@@ -1,6 +1,8 @@
 //! A Deployment's life: admitted, claimed, recorded, retried, started, cancelled.
 
 use super::*;
+use ployz_core::OperationId;
+use ployz_core::authority::{DeployApproval, Signed, TeardownApproval};
 
 /// Which Deployment an admission queues.
 #[derive(Clone, Copy)]
@@ -14,12 +16,15 @@ pub(crate) enum Admission<'a> {
     /// This one, waiting for CI, in place: same push, numbered next as it queues.
     /// It supersedes only the queued one.
     Promote(&'a DeploymentId),
+    /// A new one, numbered next, that ships only what already runs: it supersedes
+    /// only the queued one, and what waits for CI still waits.
+    Beside(&'a DeploymentId),
 }
 
 impl Admission<'_> {
     fn id(self) -> DeploymentId {
         match self {
-            Self::New { id, .. } | Self::Promote(id) => id.clone(),
+            Self::New { id, .. } | Self::Promote(id) | Self::Beside(id) => id.clone(),
         }
     }
 }
@@ -43,6 +48,7 @@ pub(crate) fn admit(
     let id = &admission.id();
     let (held, push) = match admission {
         Admission::New { push, .. } => (false, push.cloned()),
+        Admission::Beside(_) => (false, None),
         Admission::Promote(id) => {
             let hold = load(tx, id)?.summary;
             if hold.status != DeploymentStatus::WaitingForCi {
@@ -106,7 +112,8 @@ pub(crate) fn admit(
     );
     let upload_text = upload.as_ref().map(json_text);
     let service_uploads_text = service_uploads.as_ref().map(json_text);
-    let number = queue(tx, environment, held, |tx, number| {
+    let keeps_holds = held || matches!(admission, Admission::Beside(_));
+    let number = queue(tx, environment, keeps_holds, |tx, number| {
         let frozen_columns: [crate::storage::Param<'_>; 12] = [
             revision_param(saved)?.into(),
             targets_text.as_str().into(),
@@ -253,6 +260,214 @@ pub(crate) fn admitted_by_user(
     .map(drop)
 }
 
+/// Keep the deploy approval a Device signed for Deployment `id`, for its runner to
+/// hand each Server. One that names another operation is refused: every Server would.
+pub(crate) fn approved_by_device(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    approval: &Signed<DeployApproval>,
+) -> Result<(), RpcError> {
+    let named = approval.open().ok().map(|body| body.operation);
+    if named.is_none() || named != OperationId::from_uuid(id.as_str()).ok() {
+        return Err(error::invalid(
+            "The deploy approval names another Deployment: sign one for this Deployment's ID",
+            json!({ "deployment": id }),
+        ));
+    }
+    let approval =
+        serde_json::to_string(approval).map_err(|_| error::corrupt("Deploy approval"))?;
+    tx.execute(
+        "UPDATE config_deployment SET deploy_approval = ?2 WHERE id = ?1",
+        &[id.as_str().into(), approval.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// Keep the teardown a person signed for what Deployment `id` takes off the Servers, for
+/// its runner to hand each Server. Cloud keeps it unread; every Server checks it.
+pub(crate) fn torn_down_under(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    teardown: &TeardownApproval,
+) -> Result<(), RpcError> {
+    let teardown = serde_json::to_string(teardown).map_err(|_| error::corrupt("Teardown"))?;
+    tx.execute(
+        "UPDATE config_deployment SET teardown = ?2 WHERE id = ?1",
+        &[id.as_str().into(), teardown.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// The teardown a person signed for Deployment `id`, if any.
+fn teardown(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Option<TeardownApproval>, RpcError> {
+    let rows = tx.query(
+        "SELECT teardown FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    rows.first()
+        .map(|row| row.optional_text(0))
+        .transpose()?
+        .flatten()
+        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt("Teardown")))
+        .transpose()
+}
+
+/// Keep a person's fresh approvals of the commits of queued Deployment
+/// `approve.deployment`, which waited for them once its approved builds ended, and let it
+/// run. They replace every approval it holds, one for each Service.
+///
+/// # Errors
+/// `conflict` for a Deployment that doesn't wait for them, no longer queues, or whose
+/// approved builds haven't all ended with an image, and `invalid_argument` for an
+/// approval naming a Service or commit it doesn't build, or a set that leaves out or
+/// repeats a Service it holds an approval for.
+pub(crate) fn approve_commits(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    approve: &crate::ApproveDeployment,
+) -> Result<DeploymentSummary, RpcError> {
+    let id = &approve.deployment;
+    owned(tx, who, id)?;
+    let stored = locked(tx, id)?;
+    let refused = |why: String| Err(error::conflict(why, json!({ "deployment": id })));
+    let label = stored.summary.label();
+    if !awaits(tx, id)? {
+        return refused(format!("Deployment {label} doesn't wait for an approval"));
+    }
+    if stored.summary.status != DeploymentStatus::Queued {
+        return refused(format!("Deployment {label} already started or ended"));
+    }
+    if !build::approved_built(tx, id)? {
+        return refused(format!("Deployment {label} hasn't built every image yet"));
+    }
+    let held: BTreeSet<ServiceName> = build::commit_approvals(tx, id)?.into_keys().collect();
+    let mut named = BTreeSet::new();
+    for approval in &approve.approvals {
+        let service = approval
+            .open()
+            .map_err(|_| error::invalid("A commit approval can't be read", json!({})))?
+            .service;
+        if !named.insert(service.clone()) {
+            return Err(error::invalid(
+                format!("The approvals name {service} twice"),
+                json!({ "service": service }),
+            ));
+        }
+    }
+    if named != held {
+        return Err(error::invalid(
+            format!(
+                "Approve every service Deployment {label} builds under your approval: {}",
+                held.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            json!({ "services": held }),
+        ));
+    }
+    for approval in &approve.approvals {
+        build::approve_commit(tx, id, approval)?;
+    }
+    tx.execute(
+        "UPDATE config_deployment SET awaits_approval = 0 WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    Ok(stored.summary)
+}
+
+/// Whether queued Deployment `id` waits for a person to approve its commits again. One
+/// cancelled or replaced meanwhile waits for nothing.
+pub(crate) fn awaiting_approval(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
+    Ok(load(tx, id)?.summary.status == DeploymentStatus::Queued && awaits(tx, id)?)
+}
+
+fn awaits(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
+    let rows = tx.query(
+        "SELECT awaits_approval FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    rows.first()
+        .ok_or_else(|| missing(id))?
+        .int(0)
+        .map(|awaits| awaits != 0)
+}
+
+/// The deploy approval a Device signed for Deployment `id`, if any.
+fn device_approval(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<Option<Signed<DeployApproval>>, RpcError> {
+    let rows = tx.query(
+        "SELECT deploy_approval FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let Some(text) = rows
+        .first()
+        .map(|row| row.optional_text(0))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    serde_json::from_str(text)
+        .map(Some)
+        .map_err(|_| error::corrupt("Deploy approval"))
+}
+
+/// Keep `review`, a person's review of preview Deployment `id`'s commit, for its runner
+/// to relay. Cloud checks only that it is readable; every Server checks it.
+pub(crate) fn reviewed(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    review: &ployz_core::authority::Review,
+) -> Result<(), RpcError> {
+    let review = serde_json::to_string(review).map_err(|_| error::corrupt("Preview review"))?;
+    tx.execute(
+        "UPDATE config_deployment SET preview_review = ?2 WHERE id = ?1",
+        &[id.as_str().into(), review.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// Keep `review` on each of `environment`'s Deployments held for CI at `head`, so the
+/// build CI releases carries it.
+pub(crate) fn reviewed_held(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    head: &str,
+    review: &ployz_core::authority::Review,
+) -> Result<(), RpcError> {
+    let review = serde_json::to_string(review).map_err(|_| error::corrupt("Preview review"))?;
+    tx.execute(
+        "UPDATE config_deployment SET preview_review = ?3 WHERE environment_id = ?1 \
+         AND push_head = ?2 AND status = 'waiting_for_ci'",
+        &[
+            environment.as_str().into(),
+            head.into(),
+            review.as_str().into(),
+        ],
+    )
+    .map(drop)
+}
+
+/// The review a person signed for preview Deployment `id`'s commit, if any.
+pub(crate) fn preview_review(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<Option<ployz_core::authority::Review>, RpcError> {
+    let rows = tx.query(
+        "SELECT preview_review FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    rows.first()
+        .map(|row| row.optional_text(0))
+        .transpose()?
+        .flatten()
+        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt("Preview review")))
+        .transpose()
+}
+
 /// Who admitted Deployment `id`, by the immutable id Cloud authenticated: none for
 /// Cloud's own automation and for one an older Cloud admitted.
 pub(crate) fn admitter(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Option<String>, RpcError> {
@@ -275,7 +490,7 @@ pub(crate) fn forgettable(
     environment: &EnvironmentId,
     trusted: &crate::Trusted,
 ) -> Result<Option<Outcome>, RpcError> {
-    if crate::removal::ran(tx, environment)?.is_none() {
+    if ran(tx, environment)?.is_none() {
         return Ok(Some(Outcome::NeverRan));
     }
     Ok(trusted.no_servers().then_some(Outcome::Forgotten))
@@ -294,10 +509,7 @@ pub(crate) fn forget(
         .iter()
         .map(|node| (node.id().to_owned(), NodeStatus::Unknown))
         .collect();
-    tx.execute(
-        "DELETE FROM config_applied WHERE environment_id = ?1",
-        &[stored.summary.environment_id.as_str().into()],
-    )?;
+    applied::forget(tx, &stored.summary.environment_id)?;
     end(tx, stored, outcome, End::Applied)
 }
 
@@ -371,15 +583,15 @@ fn inherit(
     Ok(())
 }
 
-/// Queue a Deployment of `environment`, written by `insert` with the next number,
-/// superseding the queued one, if any. `held` queues the Deployment waiting for CI in
-/// place; otherwise a new one queues, superseding every one waiting for CI too. Each
-/// superseded one ends now. The superseded queued one leaves flight, so the sealed
-/// values only it kept in History go once the new one holds its revision.
+/// Queue a Deployment of `environment`, written by `insert` with the next number.
+/// It supersedes the queued one, if any, and every one waiting for CI unless
+/// `keeps_holds`. Each superseded one ends now. The superseded queued one leaves
+/// flight, so the sealed values only it kept in History go once the new one holds
+/// its revision.
 pub(super) fn queue(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    held: bool,
+    keeps_holds: bool,
     insert: impl FnOnce(&mut dyn Tx, u64) -> Result<(), RpcError>,
 ) -> Result<u64, RpcError> {
     let now = now();
@@ -388,7 +600,7 @@ pub(super) fn queue(
          WHERE environment_id = ?1 AND status = 'queued'",
         &[environment.as_str().into(), now.into()],
     )?;
-    if !held {
+    if !keeps_holds {
         tx.execute(
             "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
              WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
@@ -398,7 +610,7 @@ pub(super) fn queue(
     let number = next_number(tx, environment)?;
     insert(tx, number)?;
     if superseded > 0 {
-        crate::review::scrub_sealed(tx, environment)?;
+        crate::seal_scrub::history::scrub_sealed(tx, environment)?;
     }
     Ok(number)
 }
@@ -741,12 +953,11 @@ pub(crate) fn retry(
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
     let head = head(tx, &environment)?;
     let running = crate::review::approval::may_hold(&head);
-    let cluster_domains = match crate::domain::has_generated(&running) {
-        true => cluster_domains(tx, &stored.summary.environment_id, &head)?,
-        false => BTreeMap::new(),
-    };
-    let dropped =
-        crate::review::approval::destructive_effects(&running, &revision, &cluster_domains);
+    let dropped = crate::review::approval::effects_of(
+        tx,
+        (&stored.summary.environment_id, &head),
+        (&running, &revision),
+    )?;
     // A Service teardown it queues destroys nothing once an applied Deployment took
     // the Service off and Cloud saw every Server without it. A Volume delete always
     // counts: a failed Deployment may have left its data where Head can't see.
@@ -817,10 +1028,10 @@ pub(crate) fn retry(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, listed, service_uploads) \
+              message, listed, service_uploads, preview_review, awaits_approval) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              ?10 \
+              ?10, preview_review, ?11 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -840,17 +1051,24 @@ pub(crate) fn retry(
                 json_text(&nodes).as_str().into(),
                 listed.into(),
                 retried_uploads.as_deref().into(),
+                i64::from(retry.awaits_approval).into(),
             ],
         )?;
-        // A retry builds the commits its source pinned.
+        // A retry builds the commits its source pinned, and may reuse the image its
+        // source built, with that image's token.
         tx.execute(
             "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '' \
+             (deployment_id, service, organization_id, commit_sha, status, message, log, \
+              receipt, image_token) \
+             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
+              image_token \
              FROM config_build WHERE deployment_id = ?2",
             &[id.as_str().into(), source.as_str().into()],
-        )
-        .map(|_| ())
+        )?;
+        for approval in &retry.approvals {
+            build::approve_commit(tx, id, approval)?;
+        }
+        Ok(())
     })?;
     let summary = DeploymentSummary {
         id: id.clone(),
@@ -974,9 +1192,9 @@ pub(crate) fn rollback_removed(
     tx: &mut dyn Tx,
     stored: &Stored,
     applied: &SavedEnvironmentIntent,
-) -> Result<Vec<crate::removal::RemovedVolume>, RpcError> {
+) -> Result<Vec<loss::RemovedVolume>, RpcError> {
     let source = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
-    let mut removed = crate::removal::removed(applied, &source, &stored.namespace)?;
+    let mut removed = loss::removed(applied, &source, &stored.namespace)?;
     let number = i64::try_from(stored.summary.numbered()?)
         .map_err(|_| error::corrupt("Deployment number"))?;
     for row in &tx.query(
@@ -997,8 +1215,8 @@ pub(crate) fn rollback_removed(
             {
                 continue;
             }
-            removed.push(crate::removal::RemovedVolume {
-                docker_volume: crate::removal::docker_volume(&stored.namespace, id.as_str())?,
+            removed.push(loss::RemovedVolume {
+                docker_volume: loss::docker_volume(&stored.namespace, id.as_str())?,
                 id,
                 name,
             });
@@ -1270,6 +1488,25 @@ pub(crate) fn claim(
             true
         }
     };
+    if starting && awaits(tx, id)? {
+        let refused = error::conflict(
+            "Nobody approved this redeploy after its builds, so it didn't run. Run ployz \
+             deployment redeploy again.",
+            json!({ "deployment": id }),
+        );
+        finish(
+            tx,
+            stored,
+            Outcome::NotExecuted {
+                reason: refused.message.clone(),
+                cause: Vec::new(),
+                needs_upload: Vec::new(),
+                same_again: false,
+            },
+            End::Failed,
+        )?;
+        return Ok(Err(refused));
+    }
     let saved = held_revision(tx, &stored)?;
     // An earlier run may have fixed a Volume's storage since this one was admitted.
     if let Err(refused) = crate::volume::check_admitted(tx, &stored.summary.environment_id, &saved)
@@ -1364,6 +1601,50 @@ pub(crate) fn claim(
     let organization = build::organization(tx, id)?;
     let build_order = crate::builders::order(tx, organization.as_str())?;
     let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
+    let ended_runs = ended_runs(tx, &stored.summary)?;
+    let approval = device_approval(tx, id)?;
+    let preview = crate::preview_rule::of_deployment(tx, &stored)?;
+    // A preview's removal comes off under the rule that made it, when no person signed one.
+    let teardown = match teardown(tx, id)? {
+        Some(teardown) => Some(teardown),
+        None if stored.summary.remove => preview.clone().map(TeardownApproval::PreviewRule),
+        None => None,
+    };
+    let review = match preview {
+        Some(_) => preview_review(tx, id)?,
+        None => None,
+    };
+    // A person's approval of a commit stands in for the push automation answers to.
+    let approvals = match preview {
+        Some(_) => BTreeMap::new(),
+        None => build::commit_approvals(tx, id)?,
+    };
+    let rule = match (&stored.summary.admitted_by, &preview) {
+        (None, None) => crate::auto_rule::stored(tx, &stored.summary.environment_id)?,
+        (Some(_), None) if !approvals.is_empty() => {
+            crate::auto_rule::stored(tx, &stored.summary.environment_id)?
+        }
+        (Some(_), _) | (None, Some(_)) => None,
+    };
+    let generation = match (&rule, &preview) {
+        (Some(rule), _) => rule.open().ok().map(|rule| rule.generation),
+        (None, Some(preview)) => preview.open().ok().map(|preview| preview.generation),
+        (None, None) => None,
+    };
+    let image_tokens = match generation {
+        None => BTreeMap::new(),
+        // A build that ended before the Store kept its token's terms was built under
+        // the rule as it stands, for the push or the review.
+        Some(generation) => build::image_tokens(tx, id, |token| build::ImageToken {
+            token,
+            image: String::new(),
+            generation,
+            authority: match &review {
+                Some(review) => ployz_core::authority::CommitAuthority::Review(review.digest()),
+                None => ployz_core::authority::CommitAuthority::Head,
+            },
+        })?,
+    };
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
@@ -1374,7 +1655,35 @@ pub(crate) fn claim(
         deletes,
         uploads,
         build_order,
+        ended_runs,
+        approval,
+        rule,
+        preview,
+        review,
+        image_tokens,
+        approvals,
+        teardown,
     }))
+}
+
+/// The Deployments of `claimed`'s Environment, itself aside, that ran and ended.
+/// Claiming took over each one still running, so it ended Unknown. One queued or
+/// waiting for CI never ran and may yet, so it is not among them.
+fn ended_runs(
+    tx: &mut dyn Tx,
+    claimed: &DeploymentSummary,
+) -> Result<BTreeSet<DeploymentId>, RpcError> {
+    tx.query(
+        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND id <> ?2 \
+         AND status IN ('applied', 'failed', 'unknown', 'cancelled')",
+        &[
+            claimed.environment_id.as_str().into(),
+            claimed.id.as_str().into(),
+        ],
+    )?
+    .iter()
+    .map(|row| row.parse::<DeploymentId>(0, "Deployment"))
+    .collect()
 }
 
 /// Every build receipt of each Service of `environment`'s Project, by runtime name:
@@ -1598,7 +1907,7 @@ pub(crate) fn record(
         } => {
             // A replay must carry the same evidence: Applied State moved since, so
             // recomputing its Node Outcomes would not tell.
-            let executed = crate::removal::short_digest(
+            let executed = crate::digest::short_digest(
                 &serde_json::to_string(&(&outcome, &removed)).expect("evidence is JSON"),
             );
             if stored.run.outcome.is_some() {
@@ -2389,28 +2698,15 @@ fn advance(
                 deployed.insert(lineage.to_owned());
             }
             match applied {
-                Some(applied) => tx.execute(
-                    "INSERT INTO config_applied \
-                     (environment_id, node_id, organization_id, deployment_id, node, node_type) \
-                     SELECT environment_id, ?2, organization_id, id, ?3, ?4 \
-                     FROM config_deployment WHERE id = ?1 \
-                     ON CONFLICT (environment_id, node_id) \
-                     DO UPDATE SET deployment_id = excluded.deployment_id, node = excluded.node",
-                    &[
-                        stored.summary.id.as_str().into(),
-                        node.id().into(),
-                        applied.document().as_str().into(),
-                        name_of(applied.node_type()).as_str().into(),
-                    ],
+                Some(applied) => applied::confirm(
+                    tx,
+                    stored.summary.id.as_str(),
+                    node.id(),
+                    applied.document().as_str(),
+                    name_of(applied.node_type()).as_str(),
                 )?,
-                None => tx.execute(
-                    "DELETE FROM config_applied WHERE environment_id = ?1 AND node_id = ?2",
-                    &[
-                        stored.summary.environment_id.as_str().into(),
-                        node.id().into(),
-                    ],
-                )?,
-            };
+                None => applied::remove_node(tx, &stored.summary.environment_id, node.id())?,
+            }
         }
         crate::branch::deployed(tx, &stored.summary.environment_id, &saved, &deployed)?;
         crate::branch::follow(

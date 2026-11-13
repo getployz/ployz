@@ -4,24 +4,25 @@
 //! the step against the copy it holds, under its switch lock (DESIGN.md bet 6). Nothing is
 //! recorded: the next Deploy reads the new writer off the Servers.
 
+use crate::cluster::{Call, Deadline};
+use crate::ui::Next;
 use std::time::{Duration, Instant};
 
 use chrono::DateTime;
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    CopyRefusal, DockerVolumeName, ExpectedCopy, InspectVolumeCopyRequest, MachineId, MachineName,
-    MachineStorageObservation, MachineTarget, RpcErrorCode, SetVolumeCopyRefused,
-    SetVolumeCopyRequest, Snapshot, VOLUME_FLOOR_CAPABILITY, VolumeCopy, VolumeGen, WantedCopy,
-    WriterEpoch, op,
+    CopyRefusal, DockerVolumeName, ExpectedCopy, Hint, InspectVolumeCopyRequest, MachineId,
+    MachineName, MachineStorageObservation, MachineTarget, Namespace, RpcErrorCode,
+    SetVolumeCopyRefused, SetVolumeCopyRequest, Snapshot, VOLUME_FLOOR_CAPABILITY, VolumeCopy,
+    VolumeGen, WantedCopy, WriterEpoch, op,
 };
 use ployz_store::{EnvironmentSummary, NamespacesQuery, VolumeId, VolumeName};
 use serde::Serialize;
 
-use super::super::store::{self, Next};
+use super::super::store;
 use super::super::{Error, leaf_matches};
 use crate::connect::TARGET_RPC_TIMEOUT;
-use crate::ui::Hint;
 
 /// How long a Restore waits out a Machine that answers `busy`, as Cloud's does.
 const BUSY_PATIENCE: Duration = Duration::from_secs(60);
@@ -178,6 +179,8 @@ pub(super) fn plan(
                 start: None,
             },
             r#gen: VolumeGen::default(),
+            approval: None,
+            receipt: None,
         },
         lost_after,
     })
@@ -221,6 +224,97 @@ struct Restored<'a> {
     already_writer: bool,
 }
 
+/// The Namespace Volume `volume` was deployed under, and its Docker Volume name there.
+///
+/// # Errors
+/// Refuses `not_found` when its Environment has no deployed Namespace, and returns the
+/// Store's error when it can't be read.
+pub(super) fn docker_volume(
+    store: &store::Store<'_>,
+    volume: &VolumeName,
+    volume_id: &VolumeId,
+    environment: &EnvironmentSummary,
+) -> Result<(Namespace, DockerVolumeName), Error> {
+    let namespace = store
+        .read(&NamespacesQuery {})?
+        .namespaces
+        .into_iter()
+        .find(|owned| owned.project == environment.project && owned.environment == environment.name)
+        .map(|owned| owned.namespace)
+        .ok_or_else(|| {
+            Error::not_found(format!(
+                "{}/{} has no deployed Namespace, so no Server holds {volume}",
+                environment.project, environment.name
+            ))
+        })?;
+    let docker = ployz_store::docker_volume(&namespace, volume_id.as_str())?;
+    Ok((namespace, docker))
+}
+
+/// What every member Server reports for `docker`, sorted by name. A Server that can't say
+/// is [`Unseen`], with why.
+///
+/// # Errors
+/// Returns the error reading the Cluster's runtime frame.
+pub(super) async fn copies(
+    client: &crate::connect::Client,
+    docker: &DockerVolumeName,
+) -> Result<Vec<Seen>, Error> {
+    let frame = client.runtime_frame().await?;
+    let mut seen: Vec<Seen> = stream::iter(
+        frame
+            .machines
+            .iter()
+            .filter(|observed| observed.storage != Some(MachineStorageObservation::Stateless)),
+    )
+    .map(|observed| async move {
+        let copy = if observed.invites_rpc() {
+            let inspected = client
+                .call_shared::<op::InspectVolumeCopy>(
+                    InspectVolumeCopyRequest {
+                        name: docker.clone(),
+                    },
+                    Call::once()
+                        .to(&MachineTarget::from(&observed.machine.id))
+                        .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
+                )
+                .await
+                .map_err(crate::connect::rpc_error);
+            let capabilities = &observed.machine.runtime.capabilities;
+            // An empty list is a record that predates it, which claims nothing.
+            let unfenced =
+                !capabilities.is_empty() && !capabilities.contains(VOLUME_FLOOR_CAPABILITY);
+            match inspected {
+                Ok(view) if unfenced && view.copy.is_some() => Err(Unseen::Unfenced),
+                Ok(view) => Ok(view.copy),
+                Err(error) => Err(Unseen::Silent(format!(
+                    "did not answer ({})",
+                    error.message
+                ))),
+            }
+        } else {
+            Err(Unseen::Silent("is down or hasn't joined yet".to_owned()))
+        };
+        Seen {
+            id: observed.machine.id,
+            name: observed.machine.name.to_string(),
+            copy,
+        }
+    })
+    .buffer_unordered(INSPECTS_AT_ONCE)
+    .collect()
+    .await;
+    seen.extend(frame.incomplete_ids.machines.iter().map(|id| Seen {
+        id: *id,
+        name: id.to_string(),
+        copy: Err(Unseen::Silent(
+            "is still arriving at the Server this connects through".to_owned(),
+        )),
+    }));
+    seen.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(seen)
+}
+
 /// `ployz volume restore VOLUME --from SERVER` on a Cluster with no Cloud.
 pub(super) fn standalone(
     root: &ArgMatches,
@@ -236,82 +330,22 @@ pub(super) fn standalone(
         .ok()
         .flatten()
         .map(String::as_str);
-    let namespace = store
-        .read(&NamespacesQuery {})?
-        .namespaces
-        .into_iter()
-        .find(|owned| owned.project == environment.project && owned.environment == environment.name)
-        .map(|owned| owned.namespace)
-        .ok_or_else(|| {
-            Error::not_found(format!(
-                "{}/{} has no deployed Namespace, so no Server holds {volume}",
-                environment.project, environment.name
-            ))
-        })?;
-    let docker = ployz_store::docker_volume(&namespace, volume_id.as_str())?;
+    let (_, docker) = docker_volume(store, volume, volume_id, environment)?;
     let runtime = super::super::runtime()?;
-    let planned =
-        runtime.block_on(async {
-            let client = super::super::server::connect(matches, context).await?;
-            let frame = client.runtime_frame().await?;
-            let client = &client;
-            let docker = &docker;
-            let mut seen: Vec<Seen> =
-                stream::iter(frame.machines.iter().filter(|observed| {
-                    observed.storage != Some(MachineStorageObservation::Stateless)
-                }))
-                .map(|observed| async move {
-                    let copy = if observed.invites_rpc() {
-                        let inspected = client
-                            .invoke::<op::InspectVolumeCopy>(
-                                InspectVolumeCopyRequest {
-                                    name: docker.clone(),
-                                },
-                                &MachineTarget::from(&observed.machine.id),
-                                Some(TARGET_RPC_TIMEOUT),
-                            )
-                            .await;
-                        let capabilities = &observed.machine.runtime.capabilities;
-                        // An empty list is a record that predates it, which claims nothing.
-                        let unfenced = !capabilities.is_empty()
-                            && !capabilities.contains(VOLUME_FLOOR_CAPABILITY);
-                        match inspected {
-                            Ok(view) if unfenced && view.copy.is_some() => Err(Unseen::Unfenced),
-                            Ok(view) => Ok(view.copy),
-                            Err(error) => Err(Unseen::Silent(format!(
-                                "did not answer ({})",
-                                error.message
-                            ))),
-                        }
-                    } else {
-                        Err(Unseen::Silent("is down or hasn't joined yet".to_owned()))
-                    };
-                    Seen {
-                        id: observed.machine.id,
-                        name: observed.machine.name.to_string(),
-                        copy,
-                    }
-                })
-                .buffer_unordered(INSPECTS_AT_ONCE)
-                .collect()
-                .await;
-            seen.extend(frame.incomplete_ids.machines.iter().map(|id| Seen {
-                id: *id,
-                name: id.to_string(),
-                copy: Err(Unseen::Silent(
-                    "is still arriving at the Server this connects through".to_owned(),
-                )),
-            }));
-            seen.sort_by(|a, b| a.name.cmp(&b.name));
-            let planned = plan(volume, docker, from, &seen)?;
-            if let Planned::Restore {
-                machine, request, ..
-            } = &planned
-            {
-                set(client, machine, request.clone(), from).await?;
-            }
-            Ok::<_, Error>(planned)
-        })?;
+    let planned = runtime.block_on(async {
+        let client = super::super::route::connect(matches, context).await?;
+        let seen = copies(&client, &docker).await?;
+        let docker = &docker;
+        let client = &client;
+        let planned = plan(volume, docker, from, &seen)?;
+        if let Planned::Restore {
+            machine, request, ..
+        } = &planned
+        {
+            set(client, machine, request.clone(), from).await?;
+        }
+        Ok::<_, Error>(planned)
+    })?;
     let lost_after = match &planned {
         Planned::Restore { lost_after, .. } => lost_after.clone(),
         Planned::AlreadyWriter => None,
@@ -325,7 +359,8 @@ pub(super) fn standalone(
             .map(|newest| newest.created_unix_seconds),
         already_writer: matches!(planned, Planned::AlreadyWriter),
     };
-    crate::ui::finish(&Next::new(&restored, Some(deploy.clone())), || {
+    let followed = Next::new(&restored, Some(deploy));
+    crate::ui::finish(&followed, || {
         match (&planned, &lost_after) {
             (Planned::AlreadyWriter, _) => crate::ui::stream(format_args!(
                 "{volume}'s writer is already on {from}; nothing to restore."
@@ -342,7 +377,7 @@ pub(super) fn standalone(
             )),
         }
         crate::ui::note("Deploy to start the Services that use it.");
-        crate::ui::hint(&Hint::Next(deploy.clone()));
+        followed.say();
     })
 }
 
@@ -359,18 +394,20 @@ async fn set(
     let mut at_floor = false;
     loop {
         let error = match client
-            .invoke::<op::SetVolumeCopy>(
+            .call_shared::<op::SetVolumeCopy>(
                 request.clone(),
-                &MachineTarget::from(machine),
-                Some(TARGET_RPC_TIMEOUT),
+                Call::once()
+                    .to(&MachineTarget::from(machine))
+                    .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
             )
             .await
+            .map_err(crate::connect::rpc_error)
         {
             Ok(_) => return Ok(()),
             Err(error) => error,
         };
         let code = error.code.clone();
-        match SetVolumeCopyRefused::from_details(&error.details) {
+        match error.evidence::<SetVolumeCopyRefused>() {
             Some(SetVolumeCopyRefused {
                 reason: CopyRefusal::Busy,
                 ..

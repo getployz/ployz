@@ -27,6 +27,7 @@ export function runtimeWatchFrameFixture(
       volumes: [],
       certificates: [],
     },
+    unanswered: [],
     observed_at: "2026-08-18T00:00:00.000Z",
     ...overrides,
   };

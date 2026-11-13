@@ -93,6 +93,63 @@ In a [Protected environment](../environments/environments.md#protect-an-environm
 `environments:protect`, waits for an owner or admin to approve it. Adding a mirror and syncing
 don't ask.
 
+## Mirror on servers that enforce device approval
+
+With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a server copies a volume only to a server an approved device chose. Run
+`ployz volume mirror data --to web-2` on an approved device. It signs the mirror, prints what it
+approved and starts it without asking:
+
+```
+Approved: mirror data from web-1 to web-2. Later syncs run without asking until you remove the Mirror.
+```
+
+web-2 then pulls `data` only from web-1, and web-1 sends `data` only to web-2. Refreshes after a deploy, the 15-minute refresh, **Refresh now** and
+`ployz volume sync data` all run without another approval.
+
+`ployz volume sync data --full` deletes the mirror's copy and copies everything again, so it signs
+a new approval the same way. Removing the mirror ends its approval for good. To mirror to that
+server again, run `ployz volume mirror` again. A mirror takes up to 128 approvals. After that,
+remove it and mirror again.
+
+Adding or removing a mirror under **Copies** asks for your passkey when you deploy. See
+[Approve from Ployz Cloud](move-a-volume.md#approve-from-ployz-cloud). A mirror added before you
+turned enforcement on has no approval, so its refreshes fail. Run `ployz volume sync data --full`
+on an approved device to approve it.
+
+To delete a mirror, run `ployz volume mirror rm data-web-2` on an approved device. It signs the
+removal, prints it and asks first:
+
+```
+Approved: delete data's mirror on web-2. web-1 keeps writing data.
+Approve deleting data-web-2?
+```
+
+Add `--yes` to sign without asking. With no terminal to ask in and no `--yes`, it signs nothing
+and deletes nothing. When no server writes the volume, the copy may be its last, so it asks for
+`--confirm data` before it signs, and the line says so:
+
+```
+Approved: delete data's old copy on web-2. No Server writes data, so this may be its last copy, and its data is gone for good.
+```
+
+The run then says which servers recorded the removal, like
+`Deleted data-web-2; web-2 and web-1 recorded the removal`. If web-1 didn't answer, it says web-1
+has not yet. web-2 refuses the mirror's old approval either way, so it pulls nothing more. Until
+web-1 records the removal, it still sends data to web-2 if asked. To make it record the removal,
+mirror the volume to web-2 again and remove that mirror. A copy that holds no data yet,
+from a mirror whose first copy never finished, is deleted without an approval.
+
+Ployz Cloud can't delete a copy that holds data on these servers on its own. **Remove** under
+**Copies**, and a deploy that drops a mirror or an old copy, fail before they change anything and
+name the command to run from an approved device. When you delete a volume, Ployz Cloud leaves its
+mirrors' copies on servers that enforce. Turn enforcement off with `ployz device enforce --off` to
+let Ployz Cloud clean them up, then turn it back on.
+
+If `ployz volume mirror` can't reach your servers to ask whether they enforce, it warns and runs
+without signing, and servers that enforce refuse it. A server from before Ployz 0.4 ignores the
+approval and copies as before.
+
 ## Good to know
 
 - **A mirror isn't an offsite backup.** It holds the data as of its last refresh, on another of

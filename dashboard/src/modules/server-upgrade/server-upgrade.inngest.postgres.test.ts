@@ -1,8 +1,8 @@
-import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId, RuntimeWatchView } from "@ployz/sdk";
+import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId, RuntimeWatchView, Signed } from "@ployz/sdk";
 import { InngestTestEngine } from "@inngest/test";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -21,6 +21,7 @@ import {
   executeRollOutServerUpgrade,
 } from "#/modules/server-upgrade/server-upgrade.inngest";
 import {
+  approveUpgradeChannel,
   listLatestServerUpgrades,
   readCliServerUpgrade,
   planCliServerUpgrade,
@@ -45,8 +46,15 @@ const serverId = ids.machineId;
 /** The newest release the stable pointer names; the beta pointer names `publishedBeta`, or the same with none. */
 let published = "0.2.2";
 let publishedBeta: string | null = null;
-const release = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
-  new Response(`v${String(url).endsWith("/beta") ? publishedBeta ?? published : published}\n`));
+/** When GitHub says each release was published; a release missing here was published long ago. */
+const publishedAt = new Map<string, string>();
+/** The `AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS` the runner configures; unset is the 72-hour default. */
+let releaseAgeHours: string | undefined;
+const release = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+  const tag = /\/releases\/tags\/v(.+)$/u.exec(String(url));
+  if (tag !== null) return Response.json({ published_at: publishedAt.get(tag[1] ?? "") ?? "2020-01-01T00:00:00Z" });
+  return new Response(`v${String(url).endsWith("/beta") ? publishedBeta ?? published : published}\n`);
+});
 const inngest = new Inngest({ id: "server-upgrade-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
@@ -56,8 +64,11 @@ const running = (stage: string): Partial<Attempt> => ({ outcome: "running", stag
 describe("roll-out-server-upgrade", () => {
   let harness: PostgresTestHarness;
   let frame: RuntimeWatchView;
-  /** What the fake Server answers the request with; `busy` refuses it as Busy, `unreachable` never answers. */
-  let requestAnswer: Partial<Attempt> | "busy" | "unreachable";
+  /**
+   * What the fake Server answers the request with; `busy` refuses it as Busy, `refused` as a Server enforcing device
+   * approval refuses an unapproved channel, and `unreachable` never answers.
+   */
+  let requestAnswer: Partial<Attempt> | "busy" | "refused" | "unreachable";
   /** What each resend answers, in order; the last repeats. `unreadable` fails like a restarting daemon. */
   let pollAnswers: Array<Partial<Attempt> | "unreadable">;
   /** Per-Server answers, over the two above. */
@@ -68,6 +79,8 @@ describe("roll-out-server-upgrade", () => {
   let polls: number;
   let requests: Array<{ machine: string; attemptId: string; release: string }>;
   let resends: Array<{ machine: string; attemptId: string; release: string }>;
+  /** The channel approval each request and resend carried, in order. */
+  let carried: Array<Signed | null>;
   /** Each request and each terminal answer, in the order the Servers saw them. */
   let log: string[];
   let captured: Parameters<PostHogService["capture"]>[0][];
@@ -89,10 +102,14 @@ describe("roll-out-server-upgrade", () => {
     if (answer.outcome !== "running") log.push(`${answer.outcome} ${machine}`);
     return Effect.andThen(outlive, Effect.succeed(attempt(attemptId, answer)));
   };
+  const configEnvironment = () => {
+    const env = { ...testConfigEnvironment(), APP_URL: "https://cloud.example.com", DATABASE_URL: harness.databaseUrl };
+    return releaseAgeHours === undefined ? env : { ...env, AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS: releaseAgeHours };
+  };
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient | AppConfig>) =>
     harness.runEffect(operation.pipe(
       Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
-        env: { ...testConfigEnvironment(), APP_URL: "https://cloud.example.com", DATABASE_URL: harness.databaseUrl },
+        env: configEnvironment(),
       }))))),
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(PostHog, {
@@ -105,7 +122,8 @@ describe("roll-out-server-upgrade", () => {
         cancel: () => Effect.void,
         open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
           watchFirstFrame: () => Effect.succeed(frame),
-          requestMachineUpgrade: (machine: string, attemptId: string, release: string) => {
+          requestMachineUpgrade: (machine: string, attemptId: string, release: string, channel: Signed | null) => {
+            carried.push(channel);
             if (requests.some((sent) => sent.machine === machine && sent.attemptId === attemptId)) {
               resends.push({ machine, attemptId, release });
               return poll(machine, attemptId);
@@ -115,6 +133,12 @@ describe("roll-out-server-upgrade", () => {
             const answer = requestAnswerFor[machine] ?? requestAnswer;
             if (answer === "unreachable") {
               return Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "unavailable" } }));
+            }
+            if (answer === "refused") {
+              return Effect.fail(new PloyzProviderError({
+                operation: "request machine upgrade",
+                cause: { code: "forbidden", message: "ployz.machine.upgrade.channel.v1: no valid Release Channel approval for this Cluster" },
+              }));
             }
             return answer === "busy"
               ? Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "conflict", message: "busy" } }))
@@ -177,11 +201,14 @@ describe("roll-out-server-upgrade", () => {
     polls = 0;
     requests = [];
     resends = [];
+    carried = [];
     log = [];
     captured = [];
     identified = [];
     published = "0.2.2";
     publishedBeta = null;
+    publishedAt.clear();
+    releaseAgeHours = undefined;
     send.mockClear();
     await harness.pool.query(`
       truncate table organization, "user", operation_outbox cascade;
@@ -420,7 +447,7 @@ describe("roll-out-server-upgrade", () => {
       const requested = async () => (await schedule()).result;
 
       expect(await runEffect(setServerUpgradeSettings(organizationId, { automatic: false })))
-        .toEqual({ id: organizationId, automatic: false, channel: "stable" });
+        .toEqual({ id: organizationId, automatic: false, channel: "stable", approval: null });
       expect(await requested()).toMatchObject({ organizationCount: 0 });
       await runEffect(setServerUpgradeSettings(organizationId, { automatic: true }));
       expect(await requested()).toMatchObject({ organizationCount: 1 });
@@ -501,6 +528,55 @@ describe("roll-out-server-upgrade", () => {
       expect(requests.map(({ machine }) => machine)).toEqual([serverId("1"), serverId("2"), serverId("3")]);
     });
 
+    it("an automatic rollout waits 72 hours after a release is published; a manual Upgrade doesn't", async () => {
+      // Its own release line, so this pointer and release date stay out of the other tests' caches.
+      published = "5.0.1";
+      const now = Date.now();
+      publishedAt.set("5.0.1", new Date(now).toISOString());
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "5.0.0"), server("2", "web-2", "5.0.0")] });
+
+      await rollOut(null, "automatic");
+      expect(requests).toEqual([]);
+      expect(release).toHaveBeenCalledWith("https://api.github.com/repos/getployz/ployz/releases/tags/v5.0.1", expect.anything());
+
+      await rollOut(serverId("1"));
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("1")]);
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "5.0.1"), server("2", "web-2", "5.0.0")] });
+      requests = [];
+
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 71 * 60 * 60_000);
+      onTestFinished(() => clock.mockRestore());
+      await rollOut(null, "automatic");
+      expect(requests).toEqual([]);
+      clock.mockReturnValue(now + 72 * 60 * 60_000);
+      await rollOut(null, "automatic");
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("2")]);
+    });
+
+    it("AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS=0 takes a release as soon as it's out, without reading its date", async () => {
+      releaseAgeHours = "0";
+      published = "6.0.1";
+      publishedAt.set("6.0.1", new Date().toISOString());
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "6.0.0")] });
+      release.mockClear();
+
+      await rollOut(null, "automatic");
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("1")]);
+      expect(release.mock.calls.map(([url]) => String(url))).not.toContainEqual(expect.stringContaining("api.github.com"));
+    });
+
+    it("an automatic rollout upgrades nothing while the release's date can't be read", async () => {
+      published = "7.0.1";
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "7.0.0")] });
+      release.mockImplementationOnce(async () => new Response("v7.0.1\n")).mockImplementationOnce(async () => new Response(null, { status: 503 }));
+
+      await rollOut(null, "automatic");
+
+      expect(requests).toEqual([]);
+    });
+
     it("a successful manual Upgrade of the halted release lifts the halt", async () => {
       await halt();
       await rollOut(serverId("2"));
@@ -539,7 +615,7 @@ describe("roll-out-server-upgrade", () => {
       expect(captured.map(({ properties }) => properties?.["channel"])).toEqual(["beta", "beta"]);
 
       expect(await runEffect(setServerUpgradeSettings(organizationId, { channel: "stable" })))
-        .toEqual({ id: organizationId, automatic: false, channel: "stable" });
+        .toEqual({ id: organizationId, automatic: false, channel: "stable", approval: null });
       frame = runtimeWatchFrameFixture({ machines: [
         server("1", "web-1", publishedBeta), server("2", "web-2", publishedBeta), server("3", "web-3", "3.0.0-beta.2"),
       ] });
@@ -879,6 +955,91 @@ describe("roll-out-server-upgrade", () => {
       expect(send).toHaveBeenCalledTimes(1);
       expect(requests).toHaveLength(1);
       expect((await rows()).map((row) => row.attempt_id)).toEqual([id]);
+    });
+  });
+
+  describe("a Release Channel a person approved", () => {
+    const cluster = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
+    const approval = (channel: "stable" | "beta", generation: number): Signed => ({
+      body: JSON.stringify({ channel, cluster, generation, signer: "passkey" }),
+      signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }],
+    });
+    const approve = (signed: Signed) => runEffect(approveUpgradeChannel({ userId }, { organizationSlug: "acme", approval: signed }));
+
+    beforeEach(async () => {
+      await harness.pool.query(`update member set role = 'admin' where user_id = '${userId}'`);
+    });
+
+    it("follows the approved channel and sends its approval with the request and every resend", async () => {
+      const beta = approval("beta", 1);
+      expect(await approve(beta)).toEqual({ id: organizationId, automatic: false, channel: "beta", approval: beta });
+
+      await rollOut();
+
+      expect(requests.map(({ release }) => release)).toEqual(["beta"]);
+      expect(carried).toEqual([beta, beta, beta]);
+    });
+
+    it("sends no approval along a channel changed without one, and ends the attempt with the Server's refusal", async () => {
+      await approve(approval("beta", 1));
+      await runEffect(setServerUpgradeSettings(organizationId, { channel: "stable" }));
+      requestAnswer = "refused";
+
+      const output = await rollOut();
+
+      expect(output.error).toBeUndefined();
+      expect(requests.map(({ release }) => release)).toEqual(["stable"]);
+      expect(carried).toEqual([null]);
+      expect(await rows()).toMatchObject([{
+        outcome: "failed",
+        error: "ployz.machine.upgrade.channel.v1: no valid Release Channel approval for this Cluster",
+      }]);
+    });
+
+    it("sends no approval while none is kept", async () => {
+      await rollOut();
+
+      expect(carried).toEqual([null, null, null]);
+    });
+
+    it("refuses an approval no newer than the kept one, and keeps the newer", async () => {
+      const second = approval("stable", 2);
+      await approve(approval("beta", 1));
+      await approve(second);
+
+      await expect(approve(approval("beta", 2))).rejects.toThrow("Someone approved a Release Channel since");
+      await expect(approve(approval("beta", 1))).rejects.toThrow("Someone approved a Release Channel since");
+      expect(await runEffect(setServerUpgradeSettings(organizationId, {}))).toMatchObject({ channel: "stable", approval: second });
+    });
+
+    // Catches the second of two first approvals overwriting the first, which no settings row existed to lock against.
+    it("refuses a first approval while another first approval of the same generation commits", async () => {
+      const first = await harness.pool.connect();
+      onTestFinished(() => first.release());
+      const beta = approval("beta", 1);
+      await first.query("begin");
+      await first.query(
+        "insert into organization_server_upgrades (organization_id, channel, channel_approval) values ($1, 'beta', $2)",
+        [organizationId, beta],
+      );
+      const second = approve(approval("stable", 1));
+      await vi.waitFor(async () => {
+        const { rows } = await harness.pool.query(
+          "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'",
+        );
+        expect(rows).toHaveLength(1);
+      });
+      await first.query("commit");
+
+      await expect(second).rejects.toThrow("Someone approved a Release Channel since");
+      expect(await runEffect(setServerUpgradeSettings(organizationId, {}))).toMatchObject({ channel: "beta", approval: beta });
+    });
+
+    it("refuses a body that isn't a channel approval, and a member who can't operate Servers", async () => {
+      await expect(approve({ ...approval("beta", 1), body: JSON.stringify({ channel: "beta" }) }))
+        .rejects.toThrow("That isn't an approval of a Release Channel.");
+      await harness.pool.query(`update member set role = 'member' where user_id = '${userId}'`);
+      await expect(approve(approval("beta", 1))).rejects.toThrow();
     });
   });
 

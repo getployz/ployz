@@ -186,9 +186,25 @@ impl ConfigStore {
         self.run(move |store| store.sources(&deployment)).await
     }
 
+    /// Whether Deployment `deployment` waits, queued, for a person to approve its commits
+    /// again once its builds ended. Cloud holds it before it runs until one does.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub async fn awaiting_approval(&self, deployment: String) -> Result<serde_json::Value> {
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        self.run(move |store| store.awaiting_approval(&deployment))
+            .await
+    }
+
     /// Pin the commits Cloud resolved (`{runtime Service name: commit}`) for
     /// Deployment `deployment`'s Git Services; a pinned commit never changes. Resolves
-    /// to every source with its pin. Only Cloud's worker calls this.
+    /// to every source with its pin. `trusted` carries the Organization's members as
+    /// Cloud read them: without them, a Trusted pull request a person wrote pins
+    /// nothing, while a bot's from the repository itself still does. An approved head,
+    /// and a commit for any Environment but a PR Environment, pin without them. Only
+    /// Cloud's worker calls this.
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
@@ -198,10 +214,12 @@ impl ConfigStore {
         &self,
         deployment: String,
         #[napi(ts_arg_type = "Record<string, string>")] commits: serde_json::Value,
+        #[napi(ts_arg_type = "Pick<ConfigTrusted, 'members'>")] trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
         let commits = decode(commits, "Expected commits by Service name")?;
-        self.run(move |store| store.pin(&deployment, &commits))
+        let trusted = evidence(trusted)?;
+        self.run(move |store| store.pin(&deployment, &commits, &trusted))
             .await
     }
 
@@ -226,7 +244,7 @@ impl ConfigStore {
         runner: String,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
         #[napi(
-            ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string }"
+            ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string; reader?: string }"
         )]
         sources: Option<serde_json::Value>,
         #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
@@ -239,6 +257,7 @@ impl ConfigStore {
             checkouts: BTreeMap<ServiceName, std::path::PathBuf>,
             upload: Option<std::path::PathBuf>,
             failure: Option<String>,
+            reader: Option<String>,
         }
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
@@ -258,6 +277,7 @@ impl ConfigStore {
             None => Ok(ployz::sdk::Sources {
                 checkouts: sources.checkouts,
                 upload: sources.upload,
+                reader: sources.reader.map(ployz_core::GithubToken::new),
             }),
         };
         // Only a Deployment of this Organization runs here.
@@ -361,8 +381,11 @@ impl ConfigStore {
 
     /// Apply a `SystemEvent` Cloud observed of GitHub for the given Organization;
     /// resolves to what it did (`ConfigWritten`, `automated`). `trusted` carries how
-    /// many Servers the Organization has (`ConfigTrusted.servers`). Only Cloud's GitHub
-    /// workers call this.
+    /// many Servers the Organization has (`ConfigTrusted.servers`) and, for an event
+    /// that can deploy, its members (`ConfigTrusted.members`): without them, a Trusted
+    /// pull request a person wrote deploys nothing, while a bot's from the repository
+    /// itself still does. An approved head, and a push to any Environment but a PR
+    /// Environment, deploy without them. Only Cloud's GitHub workers call this.
     ///
     /// # Errors
     /// Returns `conflict` when a branch head's base is stale, or a storage error.
@@ -371,7 +394,7 @@ impl ConfigStore {
         &self,
         organization: String,
         #[napi(ts_arg_type = "SystemEvent")] event: serde_json::Value,
-        #[napi(ts_arg_type = "Pick<ConfigTrusted, 'servers' | 'domains' | 'volumes'>")]
+        #[napi(ts_arg_type = "Pick<ConfigTrusted, 'servers' | 'domains' | 'volumes' | 'members'>")]
         trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
@@ -512,7 +535,10 @@ impl ConfigStore {
 #[napi]
 impl ConfigStore {
     /// Start GitHub build `build` (`DEPLOYMENT.SERVICE`): `{kind: "reused"}`,
-    /// `{kind: "dispatch", runner}` or `{kind: "skipped", message}`. `expect` is as
+    /// `{kind: "dispatch", runner}`, `{kind: "skipped", message}`, or under an automatic
+    /// deploy rule `{kind: "follow", workflow, workflow_ref, commit}` for a push, and
+    /// `{kind: "approved", workflow, workflow_ref, branch, commit}` for a commit a person
+    /// reviewed or approved, which Cloud dispatches. `expect` is as
     /// `runDeployment`'s, here and in `githubCheckIn` and `githubFinish`; `foreign` is
     /// as `observeCopies`', here and in `githubCheckIn`.
     ///
@@ -610,6 +636,89 @@ impl ConfigStore {
         )
     }
 
+    /// The GitHub build run `runId` holds while it builds, or null.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi(ts_return_type = "Promise<string | null>")]
+    pub async fn github_by_run(&self, run_id: i64) -> Result<serde_json::Value> {
+        let run_id = u64::try_from(run_id).map_err(|_| invalid_argument("Expected a run id"))?;
+        self.run(move |store| {
+            store
+                .github_by_run(run_id)
+                .map(|build| build.map(|build| build.to_string()))
+        })
+        .await
+    }
+
+    /// A rule build's runner checks in on its push's run, with the OIDC `claims` Cloud
+    /// verified and the `commit` it checked out: the rule (`rule` for an automatic deploy
+    /// rule, `preview` for a preview rule), the Cluster's keys and the one-Service
+    /// deployment, Sealed values sealed. Changes nothing.
+    ///
+    /// # Errors
+    /// Returns `not_found` while no build holds the run, `unauthenticated` for another
+    /// repository, workflow or run, and `conflict` for another commit, a build that
+    /// checked in, or one under no rule.
+    #[napi(
+        ts_return_type = "Promise<{ build: string; rule?: unknown; preview?: unknown; cluster: string; attest: string; service: string; deployment: unknown; foreign: string[] }>"
+    )]
+    pub async fn github_rule_check_in(
+        &self,
+        #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
+        commit: String,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let claims = claims_of(claims)?;
+        let connections = crate::parse_connections(connections)?;
+        let expect = crate::parse_expect(expect)?;
+        to_json(
+            ployz::sdk::github_rule_check_in(
+                Arc::clone(&self.store),
+                claims,
+                commit,
+                connections,
+                expect,
+            )
+            .await,
+        )
+    }
+
+    /// Relay a rule build's grant ask to a Machine, with `reader` for its head read.
+    /// Resolves to the Machine's Management Identity in hex.
+    ///
+    /// # Errors
+    /// As `githubRuleCheckIn`, `invalid_argument` for an ask that is not one, and the
+    /// Machine's refusal.
+    #[napi(ts_return_type = "Promise<{ machine: string; foreign: string[] }>")]
+    pub async fn github_rule_grant(
+        &self,
+        #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
+        #[napi(ts_arg_type = "unknown")] ask: serde_json::Value,
+        #[napi(ts_arg_type = "string | null")] reader: Option<String>,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let claims = claims_of(claims)?;
+        let ask: ployz::sdk::RuleAsk = decode(ask, "Expected a rule build's grant ask")?;
+        let connections = crate::parse_connections(connections)?;
+        let expect = crate::parse_expect(expect)?;
+        to_json(
+            ployz::sdk::github_rule_grant(
+                Arc::clone(&self.store),
+                claims,
+                ask,
+                reader.map(ployz_core::GithubToken::new),
+                connections,
+                expect,
+            )
+            .await,
+        )
+    }
+
     /// A runner's report of its `ployz build --events` lines: `{received, ended}`.
     ///
     /// # Errors
@@ -637,9 +746,10 @@ impl ConfigStore {
         to_json(reported)
     }
 
-    /// End a build whose run reported its end, completed or ran out of time:
-    /// `"waiting"` while its Machine can't read the grant, else `{ended: status}`. A
-    /// grant Machine of another Cluster than `expect`'s fails it at once.
+    /// End a build at Cloud's `look`: the start limit, the run past its budget, or the
+    /// run ended. `"waiting"` while its Machine can't read the grant, or when the start
+    /// limit finds the run checked in, else `{ended: status}`. A grant Machine of
+    /// another Cluster than `expect`'s fails it at once.
     ///
     /// # Errors
     /// Returns a storage error, or `conflict` when it ended meanwhile.
@@ -647,22 +757,17 @@ impl ConfigStore {
     pub async fn github_finish(
         &self,
         build: String,
-        timed_out: bool,
+        #[napi(ts_arg_type = "\"start_limit\" | \"budget\" | \"ended\"")] look: serde_json::Value,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
         #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
         expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
+        let look = decode(look, "Expected a GitHub look")?;
         let expect = crate::parse_expect(expect)?;
         to_json(
-            ployz::sdk::github_finish(
-                Arc::clone(&self.store),
-                build,
-                timed_out,
-                connections,
-                expect,
-            )
-            .await,
+            ployz::sdk::github_finish(Arc::clone(&self.store), build, look, connections, expect)
+                .await,
         )
     }
 

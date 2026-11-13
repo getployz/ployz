@@ -57,6 +57,6 @@ export const forgetServerServerFn = createServerFn({
   .handler(({ context, data }) =>
     runActor(context, Effect.gen(function* () {
       const caller = yield* dashboardCaller(getRequest().headers, data.organizationSlug);
-      return yield* forgetServerFromDashboard(caller, data.machineId, data.requestId);
+      return yield* forgetServerFromDashboard(caller, data.machineId, data.requestId, data.teardown ?? null);
     })),
   );

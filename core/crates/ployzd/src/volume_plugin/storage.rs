@@ -10,7 +10,10 @@ use std::{
     time::Duration,
 };
 
-use ployzd::machine_pool::MachinePool;
+use ployzd::{
+    dataset_layout::{DatasetLayout, MOUNT_ROOT, Place, SlotAt},
+    machine_pool::MachinePool,
+};
 use tokio::{
     process::Command,
     sync::{Mutex, OwnedMutexGuard},
@@ -21,72 +24,6 @@ use super::{
     pool::PoolStorage,
     transfer::{RECEIVE_STALL, STOP_DEADLINE},
 };
-
-pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
-pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
-/// Set on a root renamed into place until Docker's Create registers it with its labels.
-/// Get and List hide a marked root, so Docker never records it without them.
-pub(super) const PROMOTE_PROPERTY: &str = "ployz:promote";
-/// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise.
-pub(super) const RESUME_TOKEN_PROPERTY: &str = "receive_resume_token";
-/// On a root: the SetVolumeCopy run of writes it belongs to. Missing reads as 0.
-pub(super) const EPOCH_PROPERTY: &str = "ployz:epoch";
-/// Set on a root the cut renames into its slot, so the rename carries it to the slot's
-/// `fs`. It means Docker on this Machine still holds a record for the Volume, and plugin
-/// Get keeps answering for it until a Writer want makes the root writable again.
-pub(super) const CUT_PROPERTY: &str = "ployz:cut";
-/// On a slot parent: the target of the SetVolumeCopy pull in flight, from its start until
-/// its prune is done.
-pub(super) const PULL_PROPERTY: &str = "ployz:pull";
-/// On a slot's `fs`: the guid of the snapshot a mirror pull received, set once the
-/// receive exits having made a snapshot newer than the slot held. That snapshot came from
-/// a writer elsewhere, so while it is still the newest the departure may destroy the slot.
-/// Read only where set locally: a value inherited from a parent proves nothing.
-pub(super) const PULLED_PROPERTY: &str = "ployz:pulled";
-/// On a slot parent: what this Machine holds the slot for, `mirror` once a pull starts
-/// and `old_copy` once a cut or a departure parks a root in it. Unset reads as a Mirror.
-pub(super) const ROLE_PROPERTY: &str = "ployz:role";
-
-pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/{MIRROR_ROOT}/{name}", pool.name())
-}
-
-pub(super) fn slot_fs(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/fs", slot_parent(pool, name))
-}
-
-pub(super) fn root_dataset(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/{DATASET_ROOT}/{name}", pool.name())
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub(super) enum Place<'name> {
-    Root(&'name str),
-    Slot(&'name str),
-    Outside,
-}
-
-impl<'name> Place<'name> {
-    pub(super) fn of(dataset: &'name str, pool: &str) -> Self {
-        let Some(rest) = dataset
-            .strip_prefix(pool)
-            .and_then(|rest| rest.strip_prefix('/'))
-        else {
-            return Self::Outside;
-        };
-        if let Some(name) = rest.strip_prefix(&format!("{DATASET_ROOT}/")) {
-            return Self::Root(name);
-        }
-        match rest.strip_prefix(&format!("{MIRROR_ROOT}/")) {
-            Some(slot) => Self::Slot(slot.split('/').next().unwrap_or(slot)),
-            None => Self::Outside,
-        }
-    }
-
-    pub(super) fn commits(&self) -> bool {
-        matches!(self, Self::Root(_) | Self::Slot(_))
-    }
-}
 
 #[derive(Clone)]
 pub(super) struct VolumeStorage {
@@ -106,12 +43,12 @@ pub(super) struct VolumeStorage {
 /// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
 /// slot's `fs` copy carries the same bound and is not counted again.
 pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
-    match Place::of(&dataset.name, pool) {
-        Place::Root(_) => dataset.refquota,
-        Place::Slot(name) if dataset.name == format!("{pool}/{MIRROR_ROOT}/{name}") => {
-            dataset.refquota
-        }
-        Place::Slot(_) | Place::Outside => 0,
+    match DatasetLayout::new(pool).place(&dataset.name) {
+        Place::Root(_)
+        | Place::Slot {
+            at: SlotAt::Parent, ..
+        } => dataset.refquota,
+        Place::Slot { .. } | Place::Outside => 0,
     }
 }
 
@@ -194,20 +131,21 @@ impl VolumeStorage {
         origin: CapacityAdmission,
     ) -> Result<()> {
         let datasets = self.datasets(pool).await?;
-        let root = format!("{}/{DATASET_ROOT}", pool.name());
-        let volume = format!("{root}/{name}");
+        let layout = DatasetLayout::of(pool);
+        let root = layout.root_parent();
+        let volume = layout.root(name);
 
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_requested(name, requested)?;
-            if self.unregistered(&existing.name).await? {
-                self.zfs(&["inherit", PROMOTE_PROPERTY, &existing.name])
-                    .await?;
+            let marks = self.marks(&existing.name);
+            if marks.unregistered().await? {
+                marks.clear_promote().await?;
                 ployzd::faults::kill_inside("Create", None);
             }
             return Ok(());
         }
 
-        let slot = slot_parent(pool, name);
+        let slot = layout.slot_parent(name);
         if datasets.iter().any(|dataset| dataset.name == slot) {
             return Err(VolumeError::from(format!(
                 "Volume {name} is held in slot {slot}; promote or restore it before creating it again"
@@ -218,9 +156,7 @@ impl VolumeStorage {
             self.ensure_commitment(pool, &datasets, requested).await?;
         }
 
-        if !datasets.iter().any(|dataset| dataset.name == root) {
-            self.create_root(&root).await?;
-        }
+        self.ensure_root(&datasets, &root).await?;
         self.zfs(&["create", "-o", &format!("refquota={requested}"), &volume])
             .await?;
         Ok(())
@@ -235,7 +171,7 @@ impl VolumeStorage {
     ) -> Result<()> {
         let committed = datasets
             .iter()
-            .filter(|dataset| Place::of(&dataset.name, pool.name()).commits());
+            .filter(|dataset| DatasetLayout::of(pool).place(&dataset.name).commits());
         let commitment = committed
             .clone()
             .map(|dataset| committed_bytes(dataset, pool.name()))
@@ -372,14 +308,15 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &DockerVolumeName,
     ) -> Result<Option<&'datasets Dataset>> {
-        let root_name = format!("{}/{DATASET_ROOT}", pool.name());
+        let layout = DatasetLayout::of(pool);
+        let root_name = layout.root_parent();
         let root = datasets.iter().find(|dataset| dataset.name == root_name);
         if let Some(root) = root {
             root.require_mountpoint(MOUNT_ROOT)?;
             root.require_writable()?;
         }
 
-        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
+        let requested = layout.root(name);
         let descendant_prefix = format!("{requested}/");
         if let Some(dataset) = datasets
             .iter()

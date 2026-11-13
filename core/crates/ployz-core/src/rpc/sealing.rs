@@ -6,10 +6,10 @@
 //! recipient installs what it opens. No Machine elects itself; the operator chooses.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::{MachineId, RpcError, SealedSealingKey, SealingPublicKey, WireGuardPublicKey};
+use super::evidence::Evidence;
+use crate::{MachineId, SealedSealingKey, SealingPublicKey, WireGuardPublicKey};
 
 /// Ask a Participating Machine without a Sealing Key to generate one and publish its
 /// public half. A Machine that already holds the key answers with that key.
@@ -19,6 +19,9 @@ pub struct GenerateSealingKeyRequest {}
 /// Ask a Machine that holds the Sealing Key to seal it to another Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ShareSealingKeyRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub join_approval: Option<crate::authority::Signed<crate::authority::JoinApproval>>,
     /// The Machine that will install the key.
     pub machine: MachineId,
     /// The recipient's WireGuard key as the caller observed it; the holder refuses
@@ -48,7 +51,7 @@ pub struct SealingKeyShared {
     pub sealed: SealedSealingKey,
 }
 
-/// Why a Machine refused a Sealing Key backfill route. Carried in [`RpcError::details`]
+/// Why a Machine refused a Sealing Key backfill route. Carried in [`RpcError::details`](crate::RpcError)
 /// as `{"sealing": ...}` so an operator can tell the refusals apart without reading
 /// messages; the code alone says only Conflict.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -74,18 +77,6 @@ pub enum SealingRefusal {
     SealedAnother,
 }
 
-impl SealingRefusal {
-    /// The [`RpcError::details`] value naming this refusal.
-    #[must_use]
-    pub fn details(self) -> Value {
-        json!({ "sealing": self })
-    }
-}
-
-impl RpcError {
-    /// The Sealing Key backfill refusal this error names, if it is one.
-    #[must_use]
-    pub fn sealing_refusal(&self) -> Option<SealingRefusal> {
-        serde_json::from_value(self.details.get("sealing")?.clone()).ok()
-    }
+impl Evidence for SealingRefusal {
+    const KEY: Option<&'static str> = Some("sealing");
 }

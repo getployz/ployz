@@ -11,8 +11,9 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname, VolumeName};
-use crate::review::{DiffView, Head, Review, Shipping};
+use crate::review::{ApprovalRequired, ApprovalSubject, DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, Approval, Asks, Permission, RunningObservation, Trusted};
@@ -76,6 +77,8 @@ pub enum DestructiveKind {
     UnprotectsEnvironment,
     /// An Organization is deleted, with its tokens, settings and Servers' pairing.
     RemovesOrganization,
+    /// A Volume goes back to a snapshot, and the writes after it are lost.
+    RestoresVolume,
 }
 
 impl DestructiveEffect {
@@ -97,6 +100,7 @@ impl DestructiveEffect {
             DestructiveKind::RestartsService => format!("restart Service {name}"),
             DestructiveKind::UnprotectsEnvironment => format!("unprotect Environment {name}"),
             DestructiveKind::RemovesOrganization => format!("remove Organization {name}"),
+            DestructiveKind::RestoresVolume => format!("restore Volume {name}"),
         }
     }
 }
@@ -197,9 +201,24 @@ pub(crate) fn detached<'a>(
         })
 }
 
+/// What publishing `target` destroys of what is `running` in `environment`, whose
+/// `head` it reads the Cluster Domains of generated domains from.
+pub(crate) fn effects_of(
+    tx: &mut dyn Tx,
+    (environment, head): (&EnvironmentId, &Head),
+    (running, target): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
+) -> Result<BTreeSet<DestructiveEffect>, RpcError> {
+    let cluster_domains = if crate::domain::has_generated(running) {
+        crate::deployment::cluster_domains(tx, environment, head)?
+    } else {
+        BTreeMap::new()
+    };
+    Ok(destructive_effects(running, target, &cluster_domains))
+}
+
 /// What publishing `target` destroys of what is `running`, naming each generated domain
 /// under its Cluster Domain in `cluster_domains`, by node ID and prefix.
-pub(crate) fn destructive_effects(
+fn destructive_effects(
     running: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
     cluster_domains: &BTreeMap<(String, String), Hostname>,
@@ -269,7 +288,10 @@ pub(crate) fn destructive_effects(
                 let prefix = &managed.prefix;
                 let hostname = cluster_domains
                     .get(&(deployed.id.clone(), prefix.clone()))
-                    .map_or_else(|| prefix.clone(), |cluster| format!("{prefix}.{cluster}"));
+                    .map_or_else(
+                        || prefix.clone(),
+                        |cluster| crate::domain::generated_hostname(prefix, cluster),
+                    );
                 let path = format!("{slug}.managedHostnames");
                 effects.insert(effect(DestructiveKind::RemovesDomain, &hostname, path));
             }
@@ -312,7 +334,7 @@ pub(crate) fn approval_digest(
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
-    digest(version, &bound(who, command, environment, effects))
+    ApprovalDigest::bind(version, &bound(who, command, environment, effects))
 }
 
 /// What every approval binds: who asks, the command it runs, where, and what it destroys.
@@ -330,10 +352,13 @@ fn bound(
     })
 }
 
-fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
-    let digest = crate::removal::short_digest(&bound.to_string());
-    ApprovalDigest::parse(format!("{version}:{digest}"))
-        .expect("a version and a 16-digit hex digest form an approval")
+impl ApprovalDigest {
+    /// The approval of `version` over `bound`: what a human sees and signs for.
+    pub(crate) fn bind(version: &str, bound: &serde_json::Value) -> Self {
+        let digest = crate::digest::short_digest(&bound.to_string());
+        Self::parse(format!("{version}:{digest}"))
+            .expect("a version and a short digest form an approval")
+    }
 }
 
 /// What a write into one Environment must clear. Cloud says who asks; in a Protected
@@ -398,28 +423,43 @@ impl<'a> Gate<'a> {
     /// that too, so an approval given before protection doesn't carry over.
     fn require(
         &self,
+        bound: serde_json::Value,
+        message: String,
+        review: (&BTreeSet<DestructiveEffect>, &DiffView),
+    ) -> Result<(), RpcError> {
+        self.ask(bound, message, review).map_err(Asking::refusal)
+    }
+
+    /// [`Self::require`], before it is made a refusal.
+    fn ask<'d>(
+        &self,
         mut bound: serde_json::Value,
         message: String,
-        (effects, diff): (&BTreeSet<DestructiveEffect>, &DiffView),
-    ) -> Result<(), RpcError> {
+        (effects, diff): (&BTreeSet<DestructiveEffect>, &'d DiffView),
+    ) -> Result<(), Asking<'d>> {
         if self.protected
             && let Some(bound) = bound.as_object_mut()
         {
             bound.insert("protected".to_owned(), json!(true));
         }
-        let digest = digest(&diff.version, &bound);
+        let digest = ApprovalDigest::bind(&diff.version, &bound);
         match &self.trusted.approval {
             Approval::NotRequired if !self.protected => Ok(()),
             Approval::Approved(approved) if *approved == digest => Ok(()),
-            Approval::NotRequired | Approval::Required | Approval::Approved(_) => {
-                let mut details = json!({"effects": effects, "approval": digest, "diff": diff});
-                if self.protected
-                    && let Some(details) = details.as_object_mut()
-                {
-                    details.insert("protected".to_owned(), json!(true));
-                }
-                Err(error::approval_required(message, details))
-            }
+            Approval::NotRequired | Approval::Required | Approval::Approved(_) => Err(Asking {
+                message,
+                required: Box::new(ApprovalRequired {
+                    id: None,
+                    digest: digest.to_string(),
+                    effects: effects.iter().cloned().collect(),
+                    subject: ApprovalSubject::Diff(diff),
+                    organization: None,
+                    protected: self.protected.then_some(json!(true)),
+                    prunes: false,
+                    dropped: Vec::new(),
+                    redeploy: None,
+                }),
+            }),
         }
     }
 
@@ -539,8 +579,20 @@ pub(crate) fn approve(
             format!("A human must approve this first: {asked}")
         }
     });
-    gate.require(bound, message, (effects, diff))
-        .map_err(|asked| pruning.unnamed(asked))
+    gate.ask(bound, message, (effects, diff))
+        .map_err(|asking| pruning.unnamed(asking).refusal())
+}
+
+/// A refusal to write until a human approves: what the card says and the details it carries.
+struct Asking<'d> {
+    message: String,
+    required: Box<ApprovalRequired<&'d DiffView>>,
+}
+
+impl Asking<'_> {
+    fn refusal(self) -> RpcError {
+        error::approval_required(self.message, &self.required)
+    }
 }
 
 /// What a full Deploy's prune removes besides what its Environment dropped: each
@@ -609,24 +661,20 @@ impl Pruning {
         matches!(self, Self::On { unseen: true, .. })
     }
 
-    /// `asked` saying, when it may remove a Service nothing names, that the Deploy
+    /// `asking` saying, when it may remove a Service nothing names, that the Deploy
     /// prunes, and which Servers didn't answer because large packets to them are
     /// dropped: the card then says so. Neither is bound into the digest.
-    pub(crate) fn unnamed(&self, mut asked: RpcError) -> RpcError {
+    fn unnamed<'d>(&self, mut asking: Asking<'d>) -> Asking<'d> {
         if let Self::On {
             unseen: true,
             dropped,
             ..
         } = self
-            && asked.code.as_str() == "approval_required"
-            && let Some(details) = asked.details.as_object_mut()
         {
-            details.insert("prunes".to_owned(), json!(true));
-            if !dropped.is_empty() {
-                details.insert("dropped".to_owned(), json!(dropped));
-            }
+            asking.required.prunes = true;
+            asking.required.dropped = dropped.iter().map(ToString::to_string).collect();
         }
-        asked
+        asking
     }
 
     /// Refuse a caller who can't destroy a prune that removes a Service, or might.
@@ -676,7 +724,7 @@ impl Pruning {
         let Some(number) = redeploy else {
             return Err(error::forbidden(
                 format!("Needs {destroy}: {removes}. Deploy with --no-prune to keep them."),
-                json!({ "permission": destroy, "next": "ployz deploy --no-prune" }),
+                FollowUp::Deploy { no_prune: true }.within(json!({ "permission": destroy })),
             ));
         };
         // A redeploy ships what its Deployment froze, prune and all: only waiting
@@ -910,8 +958,8 @@ pub(crate) fn approve_retry(
         ),
         None => "A human must approve this redeploy first.".to_owned(),
     });
-    gate.require(bound, message, (&effects, &diff))
-        .map_err(|refused| pruning.unnamed(refused))
+    gate.ask(bound, message, (&effects, &diff))
+        .map_err(|asking| pruning.unnamed(asking).refusal())
         .map_err(|mut refused| {
             if let Some(details) = refused.details.as_object_mut() {
                 details.insert(
@@ -991,3 +1039,7 @@ pub(crate) fn approve_move(
     let message = gate.message(&diff, what, String::new);
     gate.require(bound, message, (&diff.effects, &diff))
 }
+
+#[cfg(test)]
+#[path = "approval_tests.rs"]
+mod approval_tests;

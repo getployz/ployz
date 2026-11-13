@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { type NeedsProduction, needsProduction } from "#/modules/billing/billing";
 import { addDays, dayStart, HOUR_MS, hourStart, localDay } from "../local-time";
 import type { Filter, Interval, Range } from "../model";
 import type { RouteRow } from "../postgres/routes";
@@ -118,15 +119,16 @@ export function partialDays(days: ReadonlyArray<string>, evidence: DayEvidence):
 }
 
 export type AnalyticsPlan = "cloud" | "self-host-on" | "self-host-off";
-export type ClosedGate = "self-host-off" | "site-off";
+export type ClosedGate = "self-host-off" | NeedsProduction["gate"] | "site-off";
 
 /**
- * What the page can show. Cloud gives analytics to everyone, a self-hosted Cloud runs it when its operator
- * turns it on, and an Environment counts nothing until someone turns it on there.
+ * What the page can show. A self-hosted Cloud runs analytics when its operator turns it on, Ployz-hosted Cloud shows
+ * it to Organizations with Production, and an Environment counts nothing until someone turns it on there.
  */
-export function analyticsGate<S extends { readonly enabled: boolean }>(plan: AnalyticsPlan, site: S | undefined):
+export function analyticsGate<S extends { readonly enabled: boolean }>(plan: AnalyticsPlan, entitled: boolean, site: S | undefined):
   { readonly gate: "on"; readonly site: S } | { readonly gate: ClosedGate } {
   if (plan === "self-host-off") return { gate: plan };
+  if (!entitled) return needsProduction;
   return site?.enabled ? { gate: "on", site } : { gate: "site-off" };
 }
 

@@ -3,18 +3,18 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ployz_core::{
     BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
     HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
-    ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
-    RowStanding, RpcError, RpcErrorCode, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason, UpdateOrder,
-    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
-    same_service_mode_kind,
+    ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal, QualifiedService,
+    RequestedServiceSpec, RowStanding, RpcError, ServiceContainer, ServiceId, ServiceMode,
+    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
+    machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
     EliminatingConstraint, HeldIngress, HostnameRefusal, PlanError, PlanOptions,
     ReplacementOperation,
-    schedule::{ServiceGroup, Step, TaskKind, starts_container},
+    schedule::{ServiceGroup, Stage, TaskKind, creates_container},
 };
 
 pub(super) mod capacity;
@@ -68,6 +68,7 @@ struct Planned {
     prune_refusal: Option<PruneRefusal>,
     warnings: Vec<DeployWarning>,
     blocked: Vec<BlockedService>,
+    strays: BTreeMap<usize, ServiceName>,
 }
 
 /// An admitted, immutable sequence of Deploy operations and its informational preview.
@@ -100,6 +101,10 @@ pub struct DeployPlan {
     /// Machines whose Container listing went unanswered while the entry's path probes
     /// found large packets to them dropped, so a notice can give that cause.
     dropped_large_packets: BTreeSet<MachineId>,
+    /// The removals of copies ended runs left Pending, by operation, with each copy's
+    /// Service. Each removes its copy only while it is still Pending or Out, and one
+    /// that fails fails nothing else.
+    strays: BTreeMap<usize, ServiceName>,
 }
 
 impl DeployPlan {
@@ -135,6 +140,10 @@ impl DeployPlan {
 
     pub(super) const fn retiring(&self) -> &BTreeSet<QualifiedService> {
         &self.retiring
+    }
+
+    pub(super) const fn strays(&self) -> &BTreeMap<usize, ServiceName> {
+        &self.strays
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -182,6 +191,7 @@ impl DeployPlan {
             machine_names: BTreeMap::new(),
             retiring: BTreeSet::new(),
             dropped_large_packets: BTreeSet::new(),
+            strays: BTreeMap::new(),
         }
     }
 
@@ -300,18 +310,18 @@ fn service_group(
         |operation: &DeployOperation| TaskKind::of(operation) == TaskKind::Unroute;
     let publish = service.is_some()
         && indexed()
-            .any(|(_, operation)| starts_container(operation) || rollout_removal(operation));
+            .any(|(_, operation)| creates_container(operation) || rollout_removal(operation));
     let rolling = indexed().any(|(_, operation)| {
         operation
             .spec()
             .is_some_and(|spec| spec.update.order == UpdateOrder::Rolling)
     });
-    let mut steps: Vec<Step> = Vec::new();
+    let mut steps: Vec<Stage> = Vec::new();
     let mut starts: Vec<usize> = Vec::new();
-    let flush = |steps: &mut Vec<Step>, starts: &mut Vec<usize>| {
+    let flush = |steps: &mut Vec<Stage>, starts: &mut Vec<usize>| {
         if !rolling {
             if !starts.is_empty() {
-                steps.push(Step::Parallel(std::mem::take(starts)));
+                steps.push(Stage::Parallel(std::mem::take(starts)));
             }
             return;
         }
@@ -329,18 +339,18 @@ fn service_group(
         steps.extend(
             machines
                 .into_iter()
-                .map(|(_, indices)| Step::Parallel(indices)),
+                .map(|(_, indices)| Stage::Parallel(indices)),
         );
     };
     let mut removals = Vec::new();
     for (index, operation) in indexed() {
         if publish && rollout_removal(operation) {
-            removals.push(Step::Serial(index));
-        } else if starts_container(operation) {
+            removals.push(Stage::Serial(index));
+        } else if creates_container(operation) {
             starts.push(index);
         } else {
             flush(&mut steps, &mut starts);
-            steps.push(Step::Serial(index));
+            steps.push(Stage::Serial(index));
         }
     }
     flush(&mut steps, &mut starts);
@@ -407,7 +417,7 @@ pub(super) fn prepare_namespace_removal(
         let range = first..planned.operations.len();
         match planned.groups.last_mut() {
             Some(tail) if tail.service.is_none() && !range.is_empty() => {
-                tail.steps.extend(range.map(Step::Serial));
+                tail.steps.extend(range.map(Stage::Serial));
             }
             _ if !range.is_empty() => {
                 let every_service = planned
@@ -513,16 +523,12 @@ fn admit(intent: &DeployIntent, snapshot: &DeploySnapshot, mut planned: Planned)
 }
 
 /// What brings back one ingress Server's Ingress Proxy.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SlotAction {
-    /// No Ingress Proxy is observed there, so one is created. Admission trouble here
-    /// fails only this Server's repair.
-    Create(Result<Box<DeployPlan>, PlanError>),
+    /// No Ingress Proxy Docker can start is observed there, so its daemon creates one.
+    Create,
     /// The newest Ingress Proxy at rest there starts again as it is.
     Start(ContainerId),
-    /// Only dead Ingress Proxy containers are there, the newest given. Docker starts
-    /// none, so the Server's repair fails until they are removed.
-    Dead(ContainerId),
     /// Its Ingress Proxy keeps restarting, the newest given. Starting or recreating it
     /// would crash the same way, so the Server's repair fails with no work.
     Restarting(ContainerId),
@@ -538,13 +544,10 @@ pub struct SlotRepair {
 }
 
 /// Plan each ingress Server of `snapshot` on its own: start the newest Ingress Proxy at
-/// rest there, create one from `intent` where none is observed, and list the Servers
-/// that went unobserved.
+/// rest there, create one where none Docker can start is observed, and list the Servers
+/// that went unobserved. Each Server's daemon chooses what it creates.
 #[must_use]
-pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
-    let service_id = snapshot
-        .system_ingress()
-        .map_or_else(ServiceId::random, |service| service.service_id);
+pub fn plan_ingress_repairs(snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
     let unchecked = snapshot
         .unobserved_ingress()
         .into_iter()
@@ -559,13 +562,10 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
             machine_id: empty.machine.machine.id,
             action: match empty.held {
                 HeldIngress::Stopped(stopped) => SlotAction::Start(stopped.container_id),
-                HeldIngress::Dead(dead) => SlotAction::Dead(dead.container_id),
                 HeldIngress::Restarting(restarting) => {
                     SlotAction::Restarting(restarting.container_id)
                 }
-                HeldIngress::None => SlotAction::Create(
-                    plan_create(intent, &snapshot.only(empty.machine), service_id).map(Box::new),
-                ),
+                HeldIngress::Dead(_) | HeldIngress::None => SlotAction::Create,
             },
         });
     let mut all: Vec<_> = repairs.chain(unchecked).collect();
@@ -599,23 +599,6 @@ pub fn without_departed(
                 })
         })
         .collect()
-}
-
-/// Plan the Ingress Proxy on the one Machine of `only` as the Service `service_id`, which
-/// its siblings run or are created as in the same check and `only` cannot see: they share
-/// its creation key.
-fn plan_create(
-    intent: &DeployIntent,
-    only: &DeploySnapshot,
-    service_id: ServiceId,
-) -> Result<DeployPlan, PlanError> {
-    let mut planned = plan_operations(intent, only)?;
-    for operation in &mut planned.operations {
-        if let DeployOperation::RunContainer { spec, .. } = operation {
-            spec.service_id = service_id;
-        }
-    }
-    Ok(admit(intent, only, planned))
 }
 
 /// The Servers each deployed Service has a copy on once every operation completes.
@@ -722,12 +705,83 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
             })
             .map(|failure| failure.machine_id)
             .collect(),
+        strays: planned.strays,
     }
 }
 
 fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<Planned, PlanError> {
     let bound = bind(intent, snapshot)?;
-    assemble_plan(intent, bound, snapshot)
+    let left = left_pending(intent, &bound.requested, snapshot);
+    if left.is_empty() {
+        return assemble_plan(intent, bound, snapshot);
+    }
+    // Placement plans as if these are gone, and each goes before any copy starts.
+    // One its removal leaves running still holds its bridge endpoint, which the
+    // Machine's free count never gave back, and its host ports, so a copy placed on
+    // them fails to start rather than oversubscribing the Machine.
+    let mut rest = snapshot.clone();
+    rest.containers
+        .retain(|container| !left.contains(&container.container_id));
+    let mut planned = assemble_plan(intent, bound, &rest)?;
+    let first = planned.operations.len();
+    for container in snapshot
+        .containers
+        .iter()
+        .filter(|container| left.contains(&container.container_id))
+    {
+        planned
+            .strays
+            .insert(planned.operations.len(), container.service_name().clone());
+        planned.operations.push(DeployOperation::RemoveContainer {
+            machine_id: container.machine_id,
+            container_id: container.container_id,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        });
+    }
+    planned.groups.insert(
+        0,
+        ServiceGroup {
+            service: None,
+            dependencies: Vec::new(),
+            steps: vec![Stage::Parallel((first..planned.operations.len()).collect())],
+            publish: false,
+        },
+    );
+    Ok(planned)
+}
+
+/// The copies that runs in a runner's `ended_runs` left Pending of a Service this
+/// Deploy places. They were never routed and no run can bring them In, so the Deploy
+/// removes them before it starts anything, and a failing Deploy repeated leaves only
+/// its own. Only a copy in a slot its own run keyed counts: a Replica Move's copy
+/// carries the label of the Deploy it moved, and a Global copy's key names no run.
+fn left_pending(
+    intent: &DeployIntent,
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> BTreeSet<ContainerId> {
+    let PlanMode::Runner { ended_runs, .. } = intent.options.mode() else {
+        return BTreeSet::new();
+    };
+    if ended_runs.is_empty() || intent.namespace.is_system() {
+        return BTreeSet::new();
+    }
+    snapshot
+        .containers
+        .iter()
+        .filter(|container| {
+            container.namespace == intent.namespace
+                && container.kind == ployz_core::ContainerKind::ServiceContainer
+                && container.rotation == Some(CopyRotation::Pending)
+                && requested
+                    .iter()
+                    .any(|spec| spec.name == *container.service_name())
+                && container
+                    .deploy_label()
+                    .is_some_and(|run| ended_runs.contains(&run) && container.made_under(&run))
+        })
+        .map(|container| container.container_id)
+        .collect()
 }
 
 fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent, PlanError> {
@@ -1030,9 +1084,10 @@ fn assemble_plan(
         &intent.deployed_volumes,
         &target,
         &requested,
-        intent.options.operator,
+        intent.options.mode().operator(),
     )?;
     let name_errors_with_service = requested.len() > 1;
+    let blocks_unmountable = intent.options.mode().blocks_unmountable();
     let mut reservations = PlacementReservations::new(snapshot);
     let mut blocked =
         volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
@@ -1079,7 +1134,7 @@ fn assemble_plan(
         let first = service_operations.len();
         // Placement spends capacity and host ports as it goes, so a Service blocked once
         // it is placed puts back the budget it found.
-        let before = intent.options.block_unmountable.then(|| budget.clone());
+        let before = blocks_unmountable.then(|| budget.clone());
         let operations = match plan_one_service(
             spec,
             &intent.namespace,
@@ -1096,7 +1151,7 @@ fn assemble_plan(
                 | PlanError::CopiesUnknown { .. }
                 | PlanError::VolumeHolderUnknown { .. }
                 | PlanError::VolumeServerTakesNoServices { .. }),
-            ) if intent.options.block_unmountable => {
+            ) if blocks_unmountable => {
                 blocked.push(BlockedService {
                     service: spec.name.clone(),
                     error: error.into_rpc_error(),
@@ -1104,10 +1159,7 @@ fn assemble_plan(
                 budget.release(&spec.name);
                 continue;
             }
-            Err(error)
-                if intent.options.block_unmountable
-                    && volume_server_away(&error, snapshot, spec) =>
-            {
+            Err(error) if blocks_unmountable && volume_server_away(&error, snapshot, spec) => {
                 blocked.push(BlockedService {
                     service: spec.name.clone(),
                     error: error.into_rpc_error(),
@@ -1125,9 +1177,7 @@ fn assemble_plan(
         };
         // A Volume on a Server that didn't return its storage can't be budgeted there, so
         // only the Service mounting it waits; the rest of the Deploy goes ahead (bet 4).
-        if intent.options.block_unmountable
-            && let Some(error) = silent_volume_server(&operations, snapshot)
-        {
+        if blocks_unmountable && let Some(error) = silent_volume_server(&operations, snapshot) {
             blocked.push(BlockedService {
                 service: spec.name.clone(),
                 error: error.into_rpc_error(),
@@ -1230,35 +1280,29 @@ fn assemble_plan(
         prune_refusal,
         warnings,
         blocked,
+        strays: BTreeMap::new(),
     })
 }
 
 /// Why a Service that depends on a blocked one is blocked too.
 fn dependency_blocked(dependency: &ServiceName) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!("depends on {dependency}, which was not attempted"),
-        details: serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
-        cause: Vec::new(),
-    }
+    RpcError::conflict(format!("depends on {dependency}, which was not attempted")).with_details(
+        serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
+    )
 }
 
 /// Why a Service handing a hostname to a blocked one is blocked too: replacing its copies
 /// would take the hostname from the only copies that answer.
 fn handover_blocked(handover: &HostnameHandover) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "hands hostname {} to {}, which was not attempted",
-            handover.hostname, handover.to
-        ),
-        details: serde_json::json!({
-            "reason": "dependency_blocked",
-            "dependency": handover.to,
-            "hostname": handover.hostname,
-        }),
-        cause: Vec::new(),
-    }
+    RpcError::conflict(format!(
+        "hands hostname {} to {}, which was not attempted",
+        handover.hostname, handover.to
+    ))
+    .with_details(serde_json::json!({
+        "reason": "dependency_blocked",
+        "dependency": handover.to,
+        "hostname": handover.hostname,
+    }))
 }
 
 fn reject_hostname_conflicts(
@@ -1322,7 +1366,7 @@ fn obsolete_services(
     intent: &DeployIntent,
     services: &[ServiceObservation],
 ) -> Vec<QualifiedService> {
-    if intent.namespace.is_reserved() {
+    if intent.namespace.is_system() {
         return Vec::new();
     }
     let declared = intent
@@ -1343,7 +1387,7 @@ fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
     if intent.options.removals.is_empty() {
         return Ok(());
     }
-    if intent.namespace.is_reserved() {
+    if intent.namespace.is_system() {
         return Err(PlanError::RemovalInReservedNamespace {
             namespace: intent.namespace.clone(),
         });
@@ -1378,7 +1422,7 @@ fn removal_operations(
     services: &[ServiceObservation],
     obsolete: &[QualifiedService],
     first: usize,
-) -> (Vec<DeployOperation>, Vec<Step>) {
+) -> (Vec<DeployOperation>, Vec<Stage>) {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
     let (pending, rest): (Vec<_>, Vec<_>) = services
         .iter()
@@ -1387,9 +1431,9 @@ fn removal_operations(
         .partition(|container| *container.as_observation().rotation() == CopyRotation::Pending);
     let serial = first..first + pending.len();
     let at_once = serial.end..serial.end + rest.len();
-    let mut steps: Vec<Step> = serial.map(Step::Serial).collect();
+    let mut steps: Vec<Stage> = serial.map(Stage::Serial).collect();
     if !at_once.is_empty() {
-        steps.push(Step::Parallel(at_once.collect()));
+        steps.push(Stage::Parallel(at_once.collect()));
     }
     let operations = pending
         .into_iter()
@@ -1730,7 +1774,7 @@ fn eligible_machines<'snapshot>(
 
 /// The Machine for one more Container of a running replicated Service: eligible, with a
 /// free bridge endpoint and its host ports, holding the fewest of this Service's Containers.
-pub(super) fn place_one(
+pub(crate) fn place_one(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &DeploySnapshot,

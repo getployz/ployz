@@ -196,7 +196,7 @@ fn a_git_service_round_trips_get_edit_publish() {
     assert_eq!(after["dockerfilePath"], "web.Dockerfile");
     let again = Change::Patch {
         path: SettingPath::parse("web").unwrap(),
-        value: after.clone(),
+        value: after,
     };
     let Written::Edited(edited) = store
         .write_trusted(&who, &edit(vec![again]), &Trusted::default())
@@ -412,6 +412,7 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -424,6 +425,7 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -487,15 +489,15 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     let a = backend::sha(&"a".repeat(40));
     let b = backend::sha(&"b".repeat(40));
     assert_eq!(
-        store.pin(&first, &pins(&a)).unwrap()[0].commit,
+        store.pin(&first, &pins(&a), &backend::members()).unwrap()[0].commit,
         Some(a.clone())
     );
     assert_eq!(
-        store.pin(&first, &pins(&b)).unwrap()[0].commit,
+        store.pin(&first, &pins(&b), &backend::members()).unwrap()[0].commit,
         Some(a.clone())
     );
     let other = BTreeMap::from([(ServiceName::parse("api").unwrap(), a.clone())]);
-    let error = store.pin(&first, &other).unwrap_err();
+    let error = store.pin(&first, &other, &backend::members()).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 
     // Its runner gets the pin, and reports the build as it goes.
@@ -579,7 +581,10 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         )
         .unwrap();
     assert_eq!(
-        store.pin(&first, &pins(&b)).unwrap_err().code,
+        store
+            .pin(&first, &pins(&b), &backend::members())
+            .unwrap_err()
+            .code,
         RpcErrorCode::Conflict
     );
 
@@ -589,21 +594,25 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: again.clone(),
-                deployment: first.clone(),
+                deployment: first,
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                approvals: Vec::new(),
+                awaits_approval: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();
-    assert_eq!(store.sources(&again).unwrap()[0].commit, Some(a.clone()));
+    assert_eq!(store.sources(&again).unwrap()[0].commit, Some(a));
 
     // A new Deployment pins afresh and gets the receipt as a hint.
     let retry = admit(&store, &who, 2, &[]);
     assert_eq!(store.sources(&retry).unwrap()[0].commit, None);
-    store.pin(&retry, &pins(&b)).unwrap();
+    store.pin(&retry, &pins(&b), &backend::members()).unwrap();
     let claimed = store.claim(&retry, &runner).unwrap();
     assert_eq!(
         claimed.receipts[&ServiceName::parse("web").unwrap()],
@@ -653,10 +662,10 @@ fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
     let a = backend::sha(&"a".repeat(40));
     let b = backend::sha(&"b".repeat(40));
     let first = admit(&store, &who, 1, &[]);
-    store.pin(&first, &pins(&a)).unwrap();
+    store.pin(&first, &pins(&a), &backend::members()).unwrap();
     applied(&store, &first, &runner);
     let second = admit(&store, &who, 2, &[]);
-    store.pin(&second, &pins(&b)).unwrap();
+    store.pin(&second, &pins(&b), &backend::members()).unwrap();
     applied(&store, &second, &runner);
 
     // The branch is at b now; redeploying #1 builds a, which #1 pinned.
@@ -665,11 +674,15 @@ fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: back.clone(),
-                deployment: first.clone(),
+                deployment: first,
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                approvals: Vec::new(),
+                awaits_approval: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -815,6 +828,7 @@ fn lines(from: u64, lines: &[&str], platforms: Option<&[&str]>) -> GithubReport 
             [] => ployz_store::RunEnd::Failed,
             platforms => ployz_store::RunEnd::Built {
                 platforms: platforms.iter().map(|p| (*p).to_owned()).collect(),
+                image_token: None,
             },
         }),
     }
@@ -834,7 +848,11 @@ fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
         .unwrap();
     let deployment = admit(store, who, 1, &[]);
     store
-        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
@@ -865,7 +883,7 @@ fn a_github_check_in_must_come_from_the_dispatched_repository_workflow_and_run()
         ),
         (
             GithubClaims {
-                job_workflow_ref: WORKFLOW.replace("main", "evil").clone(),
+                job_workflow_ref: WORKFLOW.replace("main", "evil"),
                 ..claims()
             },
             "another workflow",
@@ -977,19 +995,14 @@ fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_repor
     assert_eq!(
         held(&store, &id).ended,
         Some(ployz_store::RunEnd::Built {
-            platforms: vec!["linux/amd64".to_owned()]
+            platforms: vec!["linux/amd64".to_owned()],
+            image_token: None,
         })
     );
 
     let receipt = json!({ "fingerprint": "f".repeat(64), "machine_id": grant().machine });
     let ended = store
-        .github_end(
-            &id,
-            Some(RUN),
-            &GithubEnd::Built {
-                receipt: receipt.clone(),
-            },
-        )
+        .github_end(&id, Some(RUN), &GithubEnd::Built { receipt })
         .unwrap();
     assert_eq!(ended, BuildStatus::Built);
     // Ending again, or the run failing afterwards, changes nothing.
@@ -1216,6 +1229,157 @@ fn a_late_old_mint_skip_leaves_a_run_that_checked_in_building() {
 }
 
 #[test]
+fn a_server_cannot_report_on_a_build_a_github_run_still_holds() {
+    for checked_in in [false, true] {
+        let (store, who) = shop();
+        let id = dispatched(&store, &who);
+        if checked_in {
+            store.github_check_in(&id, RUN, &grant()).unwrap();
+        }
+        let runner = RunnerId::parse("cloud-1").unwrap();
+        store.claim(&id.deployment, &runner).unwrap();
+        for status in [
+            BuildStatus::Building,
+            BuildStatus::Built,
+            BuildStatus::Failed,
+        ] {
+            let report = RunEvidence::Build(BuildReport {
+                service: ServiceName::parse("web").unwrap(),
+                status,
+                message: None,
+                log: "built on fsn-1\n".into(),
+                server: Some("fsn-1".into()),
+            });
+            let error = store
+                .record(&id.deployment, &runner, report)
+                .expect_err("GitHub's run still holds the build");
+            assert_eq!(
+                error.code,
+                RpcErrorCode::Conflict,
+                "{status:?} (checked in: {checked_in})"
+            );
+        }
+
+        let build = held(&store, &id);
+        assert_eq!(build.status, BuildStatus::Building);
+        assert_eq!(build.grant, checked_in.then(grant));
+        assert_eq!(store.github_outstanding(&id.deployment).unwrap().len(), 1);
+        let query = BuildLogQuery {
+            deployment: id.deployment.clone(),
+            service: id.service.clone(),
+        };
+        let shown = store.read(&who, &query).unwrap();
+        assert_eq!(shown.build.server, None, "no Server holds it");
+        assert!(!shown.log.contains("fsn-1"), "{}", shown.log);
+        // The run's own report still lands once it checked in.
+        if checked_in {
+            assert_eq!(
+                store
+                    .github_report(&id, RUN, &lines(0, &["step\n"], None))
+                    .unwrap(),
+                1
+            );
+            continue;
+        }
+        // Once the start limit passes it on, the Server's report lands.
+        let unstarted = GithubEnd::Unstarted {
+            message: "no runner started the build in time".into(),
+        };
+        assert_eq!(
+            store.github_end(&id, Some(RUN), &unstarted).unwrap(),
+            BuildStatus::Pending
+        );
+        let building = RunEvidence::Build(BuildReport {
+            service: ServiceName::parse("web").unwrap(),
+            status: BuildStatus::Building,
+            message: None,
+            log: String::new(),
+            server: Some("fsn-1".into()),
+        });
+        store.record(&id.deployment, &runner, building).unwrap();
+        let shown = store.read(&who, &query).unwrap();
+        assert_eq!(shown.build.status, BuildStatus::Building);
+        assert_eq!(shown.build.server.as_deref(), Some("fsn-1"));
+    }
+}
+
+/// A Pending report from before `record` refused a GitHub-held build left the run's
+/// `github` on a pending row. It reads as waiting, and the Servers build it to the end.
+#[test]
+fn a_pending_row_an_old_record_left_with_a_run_reads_as_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    let id = dispatched(&store, &who);
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    store.claim(&id.deployment, &runner).unwrap();
+    // The UPDATE `record` ran before its GitHub guard, for a Pending report.
+    backend::execute(
+        &url,
+        &format!(
+            "UPDATE config_build SET status = 'pending', message = NULL, log = log, \
+             server = COALESCE('fsn-1', server) \
+             WHERE deployment_id = '{}' AND service = 'web'",
+            id.deployment
+        ),
+    );
+
+    let query = BuildLogQuery {
+        deployment: id.deployment.clone(),
+        service: id.service.clone(),
+    };
+    assert_eq!(
+        store.read(&who, &query).unwrap().build.status,
+        BuildStatus::Pending
+    );
+    // The run held only a building build, so it holds this one no more.
+    let error = store.github_check_in(&id, RUN, &grant()).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    for status in [BuildStatus::Building, BuildStatus::Built] {
+        store
+            .record(&id.deployment, &runner, report(status, None, ""))
+            .unwrap();
+        assert_eq!(store.read(&who, &query).unwrap().build.status, status);
+    }
+    let error = store.github_build(&id).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_server_cannot_report_on_a_build_a_github_run_ended() {
+    for (end, status) in [
+        (
+            GithubEnd::Built {
+                receipt: json!({ "fingerprint": "f".repeat(64) }),
+            },
+            BuildStatus::Built,
+        ),
+        (
+            GithubEnd::Failed {
+                message: "a build step failed".into(),
+            },
+            BuildStatus::Failed,
+        ),
+    ] {
+        let (store, who) = shop();
+        let id = dispatched(&store, &who);
+        store.github_check_in(&id, RUN, &grant()).unwrap();
+        assert_eq!(store.github_end(&id, Some(RUN), &end).unwrap(), status);
+        let runner = RunnerId::parse("cloud-1").unwrap();
+        store.claim(&id.deployment, &runner).unwrap();
+        let error = store
+            .record(
+                &id.deployment,
+                &runner,
+                report(BuildStatus::Building, None, ""),
+            )
+            .expect_err("GitHub's run ended the build");
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{status:?}");
+        assert_eq!(held(&store, &id).status, status, "GitHub's end stands");
+    }
+}
+
+#[test]
 fn a_build_clock_starts_at_building_clears_when_skipped_and_reopens_for_a_later_builder() {
     let (store, who) = shop();
     let id = dispatched(&store, &who);
@@ -1283,7 +1447,11 @@ fn a_build_names_the_server_that_built_it_and_why_github_passed_it_on() {
         .unwrap();
     let deployment = admit(&store, &who, 1, &[]);
     store
-        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     let why = "acme/web has no .github/workflows/ployz-build.yml on its default branch";
@@ -1933,7 +2101,11 @@ fn github_gets_only_its_own_sealed_values() {
     let id = {
         let deployment = admit(&store, &who, 1, &[]);
         store
-            .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+            .pin(
+                &deployment,
+                &pins(&backend::sha(&"a".repeat(40))),
+                &backend::members(),
+            )
             .unwrap();
         GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
     };
@@ -1980,7 +2152,11 @@ fn github_gets_only_its_own_sealed_values() {
         .unwrap();
     let deployment = admit(&store, &who, 2, &[]);
     let sources = store
-        .pin(&deployment, &pins(&backend::sha(&"b".repeat(40))))
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"b".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     assert_eq!(sources[0].builders, [Builder::Github, Builder::Servers]);
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
@@ -2015,7 +2191,11 @@ fn a_build_s_input_and_routing_need_no_key_to_open_a_secret() {
     let source = &store.sources(&deployment).unwrap()[0];
     assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
     let pinned = store
-        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     assert_eq!(pinned[0].commit, Some(backend::sha(&"a".repeat(40))));
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
@@ -2045,7 +2225,11 @@ fn own_git_shop() -> (ConfigStore, Actor, String, tempfile::TempDir) {
 fn building(store: &ConfigStore, who: &Actor) -> (DeploymentId, RunnerId) {
     let first = admit(store, who, 1, &[]);
     store
-        .pin(&first, &pins(&backend::sha(&"a".repeat(40))))
+        .pin(
+            &first,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     let runner = RunnerId::parse("cloud-1").unwrap();
     store.claim(&first, &runner).unwrap();
@@ -2239,7 +2423,11 @@ fn a_build_its_deployment_ended_under_does_not_read_building() {
     case("C3 never started", &|store, who, _| {
         let first = admit(store, who, 1, &[]);
         store
-            .pin(&first, &pins(&backend::sha(&"a".repeat(40))))
+            .pin(
+                &first,
+                &pins(&backend::sha(&"a".repeat(40))),
+                &backend::members(),
+            )
             .unwrap();
         let runner = RunnerId::parse("cloud-1").unwrap();
         store.claim(&first, &runner).unwrap();

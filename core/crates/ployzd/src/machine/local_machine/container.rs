@@ -14,9 +14,9 @@ use ployz_core::{
     ContainerRuntimeObservation, ContainerWant, CopyRotation, DockerVolumeName, Drain,
     EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled, ImagesRemoved,
     LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer, PruneImagesRequest,
-    PullImageFromMachineRequest, PullImageRequest, ResolvedServiceSpec, RotationEdge,
-    RotationRefusal, RotationTarget, RunRotation, RunTarget, Start, StopOptions, VolumeGen,
-    VolumeRemoved,
+    PullImageFromMachineRequest, PullImageRequest, QualifiedService, ResolvedServiceSpec,
+    RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget, Start, StopOptions,
+    VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
@@ -24,13 +24,14 @@ use ployz_core::{
 };
 
 use self::rotation::RotationWant;
-use super::super::ingress::admit_ingress_service;
+use super::super::ingress::{admit_reserved_door, is_private_access_router};
 use super::{Error, LocalMachine};
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
     same_creation,
 };
 use crate::docker_image::ImagePull;
+use crate::images::DoorSpecs;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 /// A settle inspects local Docker, so a short poll costs little and sets how late a
@@ -490,7 +491,7 @@ impl LocalMachine {
         if let Err(refused) = drained().await? {
             return Ok(Err(refused));
         }
-        let turn = self.owner.admission_lock().write_owned().await;
+        let turn = self.exclusive_turn().await?;
         let held = match check().await? {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
@@ -564,16 +565,21 @@ impl LocalMachine {
     /// writer and stops no holder after the raise, since the raiser may have kept that
     /// holder or started it.
     ///
+    /// `record` gets the holders Docker runs, and returns before any of them stops, so a
+    /// cut under a Volume approval names exactly the Containers it stops.
+    ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
-    pub(crate) async fn cut_volume_copy<Z, Fut>(
+    pub(crate) async fn cut_volume_copy<R, Z, Fut>(
         &self,
         name: DockerVolumeName,
         r#gen: VolumeGen,
         drain: Drain,
+        record: R,
         zfs: Z,
     ) -> Result<Result<(), CutRefusal>, Error>
     where
+        R: FnOnce(&[ContainerId]) -> Result<(), Error> + Send + 'static,
         Z: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
     {
@@ -581,7 +587,18 @@ impl LocalMachine {
         self.finish_installed(move |installation| async move {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
             let stop = StopOptions::default();
-            for holder in containers.volume_holder_ids(&name).await? {
+            let holders = containers.volume_holder_ids(&name).await?;
+            let machine_id = local.record().id();
+            let mut running = Vec::new();
+            for holder in &holders {
+                match containers.inspect_managed(holder, &machine_id).await {
+                    Ok(observed) if is_running(&observed.runtime) => running.push(*holder),
+                    Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            record(&running)?;
+            for holder in holders {
                 if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
                     return Ok(Err(CutRefusal::Stale(floor)));
                 }
@@ -596,7 +613,7 @@ impl LocalMachine {
                     return Ok(Err(CutRefusal::Busy));
                 }
             }
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await?;
             if local.volume_holder_running(&name).await? {
                 return Ok(Err(CutRefusal::Busy));
             }
@@ -805,6 +822,18 @@ impl LocalMachine {
         #[cfg(test)]
         self.pause_for_test(EnsurePausePoint::BeforeWork).await;
         let ensured = match want {
+            // An older CLI deploys the Caddy spec itself. The doors route places it.
+            ContainerWant::Running {
+                container: RunTarget::New(new),
+                ..
+            } if QualifiedService::new(
+                new.slot.namespace.clone(),
+                new.resolved_spec.name.clone(),
+            )
+            .is_ingress_door() =>
+            {
+                self.translate_legacy_door(new).await
+            }
             ContainerWant::Out {
                 container,
                 allow_empty,
@@ -878,8 +907,126 @@ impl LocalMachine {
         }
     }
 
+    /// A legacy Deploy of the Ingress Proxy, answered by placing the daemon's own doors.
+    /// The CLI's Caddy spec never reaches Docker: only the daemon's Caddy does, in the
+    /// holder's network, under the slot the CLI asked for.
+    async fn translate_legacy_door(&self, new: NewContainer) -> Result<EnsuredContainer, Error> {
+        let capability = Some(ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned());
+        let locator = ContainerLocator::Key(new.slot.clone());
+        let legacy_caddy = new.slot.namespace == Namespace::system()
+            && ployz_core::validate_ingress_service_spec(&new.resolved_spec).ok()
+                == Some(ployz_core::IngressWiring::LegacyProxy);
+        if !legacy_caddy {
+            return Ok(EnsuredContainer::Refused {
+                now: self.container_now(&locator).await?,
+                refusal: ContainerRefusal {
+                    reason: ContainerRefusalReason::InvalidIngress,
+                    message: "upgrade the ployz CLI to change this Server's Ingress Proxy".into(),
+                    capability,
+                },
+            });
+        }
+        let record = self.record();
+        let participating = matches!(
+            record.phase(),
+            LocalMachinePhase::Joining | LocalMachinePhase::Participating
+        );
+        let Some(machine) = record.machine().filter(|_| participating) else {
+            return Ok(EnsuredContainer::Refused {
+                now: self.container_now(&locator).await?,
+                refusal: refuse(
+                    ContainerRefusalReason::NotParticipating,
+                    "Machine is not participating",
+                ),
+            });
+        };
+        if !machine.accepts_ingress {
+            return Ok(EnsuredContainer::Refused {
+                now: self.container_now(&locator).await?,
+                refusal: refuse(
+                    ContainerRefusalReason::NotEligible,
+                    "this Server does not accept ingress",
+                ),
+            });
+        }
+        let set = self
+            .converge_doors(
+                &DoorSpecs::public(new.resolved_spec.service_id),
+                super::ingress_doors::Legacy::Caddy,
+                None,
+            )
+            .await?;
+        match (set.proxy, set.failure) {
+            (Some(proxy), None) => Ok(EnsuredContainer::Ensured {
+                now: ContainerNow::Present(proxy.now),
+                health: None,
+            }),
+            (_, failure) => {
+                let message = failure.map_or_else(
+                    || "the Ingress Proxy was not placed".to_owned(),
+                    |failure| {
+                        let mut message = format!(
+                            "{:?} stage failed: {}",
+                            failure.stage, failure.error.message
+                        );
+                        for cause in &failure.error.cause {
+                            message.push_str(": ");
+                            message.push_str(cause);
+                        }
+                        message
+                    },
+                );
+                Ok(EnsuredContainer::Refused {
+                    now: self.container_now(&locator).await?,
+                    refusal: ContainerRefusal {
+                        reason: ContainerRefusalReason::InvalidIngress,
+                        message: format!(
+                            "{message}; upgrade the ployz CLI to change this Server's Ingress Proxy"
+                        ),
+                        capability,
+                    },
+                })
+            }
+        }
+    }
+
+    /// Whether `want` names a reserved Ingress door, which the doors route may be
+    /// replacing at the same time.
+    async fn wants_door(&self, want: &ContainerWant) -> Result<bool, Error> {
+        let identity = match want_locator(want) {
+            ContainerLocator::Key(slot) => QualifiedService::new(slot.namespace, slot.service),
+            ContainerLocator::Id(id) => {
+                let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                match containers.inspect_managed(&id, &self.record().id()).await {
+                    Ok(observed) => observed.identity(),
+                    Err(_) => return Ok(false),
+                }
+            }
+        };
+        Ok(identity.is_ingress_door())
+    }
+
     /// Moves no rotation. An In want only re-checks itself before a start.
     async fn ensure_docker(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+        if !self.wants_door(&want).await? {
+            // Boxed so the door check keeps every ensure's future the size it was.
+            return Box::pin(self.ensure_unlocked(want)).await;
+        }
+        // A stop or remove of a door waits for a doors route under way, so the route
+        // never finds the Container it just started gone under it. The work is detached
+        // with the lock, so a caller that stops waiting cannot free the lock while a
+        // stop it began still runs.
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let doors = containers.door_lifecycle().await;
+        let local = self.clone();
+        tokio::spawn(async move {
+            let _doors = doors;
+            local.ensure_unlocked(want).await
+        })
+        .await?
+    }
+
+    async fn ensure_unlocked(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         let settled_spec = if let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
@@ -1156,7 +1303,7 @@ impl LocalMachine {
                         Ok(Err(refusal)) => return Ok(Some(refusal)),
                         Err(error) => return Err(error),
                     }
-                    let _turn = local.owner.admission_lock().write_owned().await;
+                    let _turn = local.exclusive_turn().await?;
                     let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
                     removed(
                         remove_out_of_rotation(
@@ -1196,7 +1343,10 @@ impl LocalMachine {
         drop(self.owner.admission_lock().write_owned().await);
     }
 
-    async fn container_now(&self, locator: &ContainerLocator) -> Result<ContainerNow, Error> {
+    pub(super) async fn container_now(
+        &self,
+        locator: &ContainerLocator,
+    ) -> Result<ContainerNow, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
         let observed = match locator {
@@ -1253,6 +1403,11 @@ impl LocalMachine {
                     if !never_started(&adopted) {
                         return Ok(None);
                     }
+                    if local.record().device_enforcement() {
+                        local
+                            .approvals
+                            .mark_hook_made(new.slot.creation_key.as_str())?;
+                    }
                 }
                 if let Some((run, expect)) = fence {
                     return rotation::start_fenced(
@@ -1274,7 +1429,7 @@ impl LocalMachine {
         clippy::too_many_arguments,
         reason = "A NewContainer's creation facts, also reached from Volume holders that have no NewContainer."
     )]
-    async fn create_container_admitted(
+    pub(super) async fn create_container_admitted(
         &self,
         kind: ContainerKind,
         namespace: &Namespace,
@@ -1293,6 +1448,7 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let enforced = record.device_enforcement();
         containers
             .create_with_admission(
                 machine,
@@ -1304,7 +1460,33 @@ impl LocalMachine {
                     kind,
                     namespace,
                     spec,
-                    admission: async { admit_ingress_service(namespace, spec) },
+                    admission: async {
+                        let network = if is_private_access_router(namespace, spec) {
+                            Some(Box::pin(self.cluster_network()).await?)
+                        } else {
+                            None
+                        };
+                        admit_reserved_door(namespace, spec, network)?;
+                        // A deploy's hook runs once: a slot whose hook was made and
+                        // is now gone is never made again, so it never reruns.
+                        if enforced
+                            && kind == ContainerKind::PreDeployHook
+                            && let Some(key) = creation_key.as_deref()
+                            && self.approvals.hook_made(key)?
+                        {
+                            return Err(Error::DeployRefused(
+                                ployz_core::authority::AuthorityRefusal::Mismatch {
+                                    field: "a hook run",
+                                },
+                            ));
+                        }
+                        if enforced {
+                            // Boxed: its Volume inspections would otherwise grow every
+                            // create's future, enforced or not.
+                            Box::pin(containers.refuse_managed_external(&machine.id, spec)).await?;
+                        }
+                        Ok(())
+                    },
                     storage: self.observe_storage(),
                 },
             )
@@ -1575,6 +1757,7 @@ fn refuse(reason: ContainerRefusalReason, message: impl Into<String>) -> Contain
     ContainerRefusal {
         reason,
         message: message.into(),
+        capability: None,
     }
 }
 
@@ -1612,6 +1795,13 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     let reason = match &error {
         Error::NotParticipating => ContainerRefusalReason::NotParticipating,
         Error::IngressProxyServiceSpec(_) => ContainerRefusalReason::InvalidIngress,
+        Error::Docker(Docker::IngressHolderNotRunning | Docker::UnrecognizedNetwork) => {
+            return Ok(ContainerRefusal {
+                reason: ContainerRefusalReason::InvalidIngress,
+                message: ployz_core::error_chain::inline(&error),
+                capability: Some(ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned()),
+            });
+        }
         Error::Docker(
             Docker::WorkNotAccepted
             | Docker::ServicePlacementMismatch
@@ -1633,6 +1823,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::BadName(_)
             | OpenError::Unbound(_)
             | OpenError::Unopenable(_)
+            | OpenError::TunnelToken
+            | OpenError::PrivateAccessKey
             | OpenError::ShortLine(_) => ContainerRefusalReason::SealedValueUnopenable,
         },
         _ => return Err(error),

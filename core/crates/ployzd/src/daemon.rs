@@ -3,13 +3,15 @@
 use std::{
     fs::File,
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
-use ployz_core::{CORROSION_API_PORT, LocalMachinePhase, MACHINE_START_WAIT, VOLUME_SEND_PORT};
+use ployz_core::{
+    CORROSION_API_ADDRESS, LocalMachinePhase, MACHINE_START_WAIT, MachineLayout, VOLUME_SEND_PORT,
+};
 use sd_notify::NotifyState;
 use thiserror::Error;
 use tokio::{
@@ -178,11 +180,7 @@ impl Daemon {
         let started: Result<Self, Error> = async {
             crate::faults::check()?;
             let socket = MachineApiSocket::claim(&config.socket)?;
-            let run_dir = config
-                .socket
-                .parent()
-                .unwrap_or_else(|| Path::new("/run/ployz"))
-                .to_owned();
+            let run_dir = MachineLayout::run_dir_of(&config.socket);
             crate::installer::upgrade::reconcile(&config.data_dir, &run_dir)
                 .await
                 .map_err(io::Error::other)?;
@@ -231,7 +229,7 @@ impl Daemon {
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
-        let observe_socket = run_dir.join(crate::observe::SOCKET_FILE);
+        let observe_socket = MachineLayout::observe_socket_in(&run_dir);
         let store = match LocalMachineStore::open_with_admission(&config.data_dir, &run_dir)? {
             Opened::Ready(store) => store,
             Opened::Resetting(interrupted) => {
@@ -307,7 +305,9 @@ impl Daemon {
                 }
             }
         };
-        let corrosion = start_corrosion(&config, &local).await?;
+        let corrosion = start_corrosion(&config, &local)
+            .await?
+            .map(|running| running.with_authority(local.clone()));
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let plugin = config
             .volume_plugin_socket
@@ -333,11 +333,7 @@ impl Daemon {
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
         let ingress_data_dir = config.data_dir.clone();
-        let ingress_runtime_dir = config
-            .socket
-            .parent()
-            .unwrap_or_else(|| Path::new("/run/ployz"))
-            .join("ingress");
+        let ingress_runtime_dir = MachineLayout::run_dir_of(&config.socket).join("ingress");
         let grants = Arc::new(management::BuildGrants::default());
         let builds = crate::build::Runner::new(build_policy, shutdown.clone())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -406,6 +402,7 @@ impl Daemon {
         let management_cluster = corrosion
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client()));
+        let send_cluster = management_cluster.clone();
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -414,7 +411,11 @@ impl Daemon {
             let network_rpc = async {
                 tokio::try_join!(
                     serve_machine_api(machine_api_listener, machine_api.clone(), shutdown.clone()),
-                    serve_volume_send(volume_send_listener, shutdown.clone()),
+                    serve_volume_send(
+                        volume_send_listener,
+                        crate::machine::LocalMachine::new(local.clone()).with_cluster(send_cluster),
+                        shutdown.clone(),
+                    ),
                     async {
                         management::serve(
                             management_endpoint,
@@ -527,6 +528,23 @@ impl Daemon {
                     .with_containers(Some(runtime))
                     .with_plugin(plugin.clone())
                     .with_cluster(Some((replicated.clone(), admin.clone())));
+                if let Err(error) = machine.restore_private_access().await {
+                    tracing::warn!(
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not place the Private Access router this Machine held again; it stays as it is until the next `ployz private-access on`"
+                    );
+                }
+                let unplaced = match machine.restore_doors().await {
+                    Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
+                    Ok(None) => None,
+                    Err(error) => Some(ployz_core::error_chain::inline(&error)),
+                };
+                if let Some(error) = unplaced {
+                    tracing::warn!(
+                        %error,
+                        "could not place the Ingress doors this Machine held again; they stay as they are until the next `ployz ingress use`"
+                    );
+                }
                 let boot = crate::boot_pass::DaemonHost {
                     machine_id: local_id,
                     machine: machine.clone(),
@@ -588,11 +606,12 @@ impl Daemon {
     }
 
     /// Ask a running daemon to exit. [`wait`](Self::wait) still has to be called.
+    #[cfg(test)]
     pub fn request_stop(&self) {
         self.stop.cancel();
     }
 
-    /// Wait until a signal, [`request_stop`](Self::request_stop), or restart-request
+    /// Wait until a signal, `request_stop`, or restart-request
     /// finishes shutdown or reset.
     ///
     /// systemd READY is advertised only after SIGINT/SIGTERM are catchable, so a
@@ -805,16 +824,19 @@ async fn serve_machine_api(
     }
 }
 
+/// The send stream asks `recipients`, this Machine's own record and accepted rows, whom
+/// it may serve.
 async fn serve_volume_send(
     listener: Option<TcpListener>,
+    recipients: crate::machine::LocalMachine,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     match listener {
         Some(listener) => {
             crate::volume_send::serve(
                 listener,
-                PathBuf::from("zfs"),
-                PathBuf::from("zpool"),
+                (PathBuf::from("zfs"), PathBuf::from("zpool")),
+                recipients,
                 shutdown,
             )
             .await
@@ -863,7 +885,7 @@ async fn start_corrosion(
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
     let paths = CorrosionPaths::under(&config.data_dir, run_dir);
-    let bootstrap = record.bootstrap().iter().map(|machine| {
+    let bootstrap = record.bootstrap().into_iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address().0),
             CORROSION_GOSSIP_PORT,
@@ -875,7 +897,7 @@ async fn start_corrosion(
         CorrosionConfig::new(
             paths.data_dir,
             paths.run_dir,
-            SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
+            CORROSION_API_ADDRESS,
             SocketAddr::new(
                 IpAddr::V6(machine.management_address().0),
                 CORROSION_GOSSIP_PORT,
@@ -1040,7 +1062,6 @@ mod tests {
             .unwrap()
             .decode::<op::DescribeContract>()
             .unwrap()
-            .clone()
     }
 
     async fn leave(path: &Path) -> ployz_core::Left {
@@ -1321,7 +1342,7 @@ mod tests {
         };
         let daemon = Daemon::start(config).await.unwrap();
         let client = iroh::SecretKey::generate();
-        let pending = *client.public().as_bytes();
+        let pending = ployz_core::ClientKey::from_bytes(*client.public().as_bytes());
         let machine = daemon
             .local
             .mutate(move |store| {

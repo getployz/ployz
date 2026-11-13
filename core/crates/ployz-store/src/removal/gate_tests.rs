@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 
 use serde_json::json;
 
-use super::{Target, gate, short_digest};
-use crate::id::{ApprovalDigest, EnvironmentId, OrganizationId};
+use super::{Target, gate};
+use crate::digest::short_digest;
+use crate::id::{ApprovalDigest, EnvironmentId, OrganizationId, ProjectId};
 use crate::review::DestructiveEffect;
 use crate::{Actor, Approval};
 
@@ -68,4 +69,38 @@ fn an_approval_from_before_the_command_was_bound_asks_again() {
     let fresh = digest_of(asked("remove", &Approval::Approved(before.clone())).unwrap_err());
     assert_ne!(fresh, before);
     asked("remove", &Approval::Approved(fresh)).unwrap();
+}
+
+/// Cloud holds a digest between ask and approve, so what a digest is over, and its
+/// text, are frozen: any drift refuses every approval waiting on a human.
+#[test]
+fn the_digests_a_human_is_asked_to_approve_keep_their_text() {
+    assert_eq!(short_digest("{}"), "44136fa355b3678a");
+
+    let environment = digest_of(asked("remove", &Approval::Required).unwrap_err());
+    assert_eq!(environment.as_str(), "7:1:0.2:f205f84b319fe5b1");
+
+    let project = ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap();
+    let refused = gate(
+        &who(),
+        "remove",
+        &Target::Project(project),
+        VERSION,
+        effects(),
+        &Approval::Required,
+        || json!({}),
+    )
+    .unwrap_err();
+    assert_eq!(digest_of(refused).as_str(), "7:1:0.2:a0a17c2d0b878d7a");
+}
+
+/// Cloud and the CLI read these keys back from the refusal as sent.
+#[test]
+fn a_removal_ask_keeps_its_details() {
+    let refused = asked("remove", &Approval::Required).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(
+        refused.details.to_string(),
+        r#"{"approval":"7:1:0.2:f205f84b319fe5b1","diff":{},"effects":[{"kind":"removes_service","name":"web","node":"00000000-0000-4000-8000-000000000003","path":"web"}]}"#
+    );
 }

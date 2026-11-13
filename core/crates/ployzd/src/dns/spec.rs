@@ -12,7 +12,7 @@ use std::{
 };
 
 use ipnet::Ipv4Net;
-use ployz_core::{CORROSION_API_PORT, MachineId};
+use ployz_core::{CORROSION_API_ADDRESS, MachineId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -61,7 +61,7 @@ impl DnsSpec {
             local_subnet: machine.subnet.into(),
             upstreams: upstreams.to_vec(),
             corrosion: CorrosionEndpoint {
-                api: SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
+                api: CORROSION_API_ADDRESS,
                 admin_socket: paths.admin_socket(),
                 token_file: paths.token_file(),
             },

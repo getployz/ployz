@@ -12,7 +12,8 @@ use serde_json::json;
 use super::waiting::{self, Enrolling, Rejection, Stopped, Waiting};
 use crate::cli::{base, positional};
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
-use crate::ui::{self, Cell, Hint, Table, printable};
+use crate::ui::{self, Cell, Table, printable};
+use ployz_core::Hint;
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Reject servers waiting to join")
@@ -291,12 +292,12 @@ fn ambiguous(started: &Matched<'_>, pattern: &str) -> Error {
     let ids = started
         .waiting
         .iter()
-        .map(|host| printable(&host.row.id).to_string())
+        .map(|host| printable(&host.row.id))
         .chain(
             started
                 .attempts
                 .iter()
-                .map(|attempt| printable(&attempt.waiting_server_id).to_string()),
+                .map(|attempt| printable(&attempt.waiting_server_id)),
         )
         .collect::<Vec<_>>()
         .join(", ");
@@ -389,7 +390,7 @@ fn attempts_json(attempts: &[&Enrolling]) -> Vec<serde_json::Value> {
 fn names(joining: &[Left<'_>]) -> String {
     joining
         .iter()
-        .map(|left| printable(left.name).to_string())
+        .map(|left| printable(left.name))
         .collect::<Vec<_>>()
         .join(", ")
 }

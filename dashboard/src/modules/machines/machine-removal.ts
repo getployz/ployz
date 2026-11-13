@@ -1,4 +1,5 @@
-import type { MachineId } from "@ployz/sdk";
+import type { Departed, MachineId, TeardownApproval } from "@ployz/sdk";
+import { TeardownInput } from "#/modules/approval-session/approvals-input";
 import { Schema } from "effect";
 import {
   dataLossIdentitySchema,
@@ -32,6 +33,8 @@ export const EnqueueMachineRemoveInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   machineId: rustMachineIdSchema,
   confirmDataLoss: Schema.Array(dataLossIdentitySchema),
+  /** The person's teardown of the Server, which a Server that enforces Device approval needs. */
+  teardown: Schema.optionalKey(TeardownInput),
 });
 
 export type EnqueueMachineRemoveInput = typeof EnqueueMachineRemoveInput.Type;
@@ -41,6 +44,8 @@ export const ForgetServerInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   machineId: rustMachineIdSchema,
   requestId: Schema.String.check(Schema.isUUID()),
+  /** As `EnqueueMachineRemoveInput.teardown`. */
+  teardown: Schema.optionalKey(TeardownInput),
 });
 export type ForgetServerInput = typeof ForgetServerInput.Type;
 
@@ -61,8 +66,11 @@ export type ServerRelease =
   /** Cloud kept its hold, for `reason`. */
   | { kind: "kept"; reason: string };
 
-/** A settled removal: why the reset didn't finish, if it didn't, and what became of Cloud's hold. */
-export type MachineRemoveResult = { resetWarning: string | null; release: ServerRelease };
+/**
+ * A settled removal: how the Server departed, and what became of Cloud's hold. `resetWarning` is `departed` as prose,
+ * all a result older than `departed` holds. A removal without a reset has no `departed`.
+ */
+export type MachineRemoveResult = { resetWarning: string | null; departed?: Departed; release: ServerRelease };
 
 export type MachineRemoveAttemptView =
   | {
@@ -173,6 +181,8 @@ export type MachineRemoveAttemptContext = {
   confirmDataLoss: DataLossIdentity[];
   /** Take the Server out without resetting it: it keeps its state, and Cloud never lets go of the Cluster for it. */
   noReset: boolean;
+  /** The person's teardown of the departure, handed to every Server it reaches. */
+  teardown: TeardownApproval | null;
 };
 
 export type MachineRemoveCompletion =
@@ -185,10 +195,10 @@ export type MachineRemoveCompletion =
   | { state: "missing_identities"; identities: DataLossIdentity[] };
 
 export type RemoveMachineOutcome =
-  | { kind: "removed"; resetWarning: string | null }
+  | { kind: "removed"; resetWarning: string | null; departed?: Departed }
   /** The Server reset, and its row is still listed: Forget alone finishes the removal, with the Leave's warning. */
   | { kind: "left"; resetWarning: string | null }
-  | { kind: "refused"; failureCode: "conflict" | "server_lacks"; message: string }
+  | { kind: "refused"; failureCode: "conflict" | "forbidden" | "server_lacks"; message: string }
   | { kind: "missing_identities"; identities: DataLossIdentity[] };
 
 type RemovalServer = { readonly id: string; readonly capabilities: readonly string[] };

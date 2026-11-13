@@ -99,6 +99,106 @@ A volume deletion you confirmed when you saved goes out with the push without as
 the data changed since, the push keeps it and your next deploy asks; see
 [Confirm a deploy that deletes data](deployments.md#confirm-a-deploy-that-deletes-data).
 
+### Deploy on push to servers that enforce device approval
+
+Servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on deploy a push only under an automatic deploy rule you approve with your passkey or an approved
+device. A browser session can't approve one: the rule stands for every future push, so each
+approval is its own passkey prompt.
+
+In the dashboard, open the environment's **Settings** and turn on **Deploy every push** under
+**Automatic deploys**. The dialog shows the repository and branch, the builder, the servers and
+each service's settings. **Approve with passkey** asks your passkey once. The rule covers every
+service that builds from GitHub. If they build from different branches, it keeps the services on
+the branch the rule already covers.
+
+From the CLI, approve it for the services that build from one branch:
+
+```bash
+ployz github rule approve web worker
+```
+
+It prints what you approve, then signs it with your device key:
+
+```text
+Approving automatic deploys for production:
+  repository  acme/web on main
+  workflow    .github/workflows/ployz-build.yml, on push and on rebuilds you approve
+  builder     getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+  servers     2 in the cluster
+  web
+    builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
+    variables DATABASE_URL (sealed), LOG_LEVEL=info
+    command ["node server.js"]
+Approved. Every push to main now deploys web, worker with these settings.
+```
+
+It lists every setting the rule pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
+
+To pin your own fork of the builder, add `--builder <owner>/build/.github/workflows/build.yml@<sha>`
+and `--builder-sha <sha>`.
+
+From then on every push to that branch deploys with no prompt, force pushes included. GitHub
+Actions builds it with Ployz's pinned builder, and each server checks that the image is the one
+built for the branch's current head, under these settings. The repository needs Ployz's rule
+workflow as `.github/workflows/ployz-build.yml` on the rule's branch. **Organization → Builds**
+offers it for each repository a rule builds from: **Add workflow** and **Update workflow** show
+the file and open GitHub to commit it. It builds on every push to a branch, and on a dispatch with
+a `commit` for a
+[rollback that builds again](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
+Commit it exactly as Ployz gives it:
+
+```yaml
+name: Ployz build
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+    inputs:
+      cloud: { required: false, type: string }
+      commit: { required: false, type: string }
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    if: github.event_name != 'push' || vars.PLOYZ_BRANCH == '' || github.ref_name == vars.PLOYZ_BRANCH
+    uses: getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+    with:
+      cloud: ${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}
+      commit: ${{ inputs.commit }}
+```
+
+Nothing in it names your branch or your Ployz Cloud, so commit it unchanged: hosted Ployz Cloud
+dispatches a rebuild only with this exact file, and **Builds** reads any other as **Uses an older
+workflow**. Each server checks that a push was to the rule's branch. To skip pushes to other
+branches, set the repository variable `PLOYZ_BRANCH` to the rule's branch, such as `main`, as the
+dialog names it, in the repository's **Settings → Secrets and variables → Actions → Variables**.
+Leave it unset if the repository also has a [preview rule](../environments/preview-environments.md).
+A self-hosted Ployz Cloud sets `PLOYZ_CLOUD` there to its own address, such as
+`https://ployz.example.com`. A repository with this file builds on GitHub only under its rules: a
+deploy of another environment from it builds on your servers.
+
+- **A saved change waits for you.** After you save a change to a service the rule covers, its
+  settings or how it builds, or add a service that builds from the rule's branch, pushes don't
+  deploy it until you approve the rule again. Settings
+  shows **Pushes to main are on hold** with what changed; **Review and approve** names each
+  changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`
+  names what changed, as `changed     web since the last approval`. A push that changes only
+  the code deploys as before, and so does a new replica count.
+- **A new server waits too.** The rule names the servers it was approved for. Approve it again
+  after you [add a server](../servers/add-a-server.md).
+- **Stop it** by turning off **Deploy every push**, or with `ployz github rule end`. Pushes no
+  longer deploy on those servers.
+- **Roll back from your device.** A rule deploys only the branch's head. To ship an older
+  commit, redeploy it with `ployz deployment redeploy`; see
+  [Roll back on servers that enforce device approval](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
+  A rule approved before Ployz 0.4 runs only on push. Approve it again before a rollback that
+  needs a rebuild.
+- **Someone who can push to the branch can deploy.** Ployz Cloud can't swap the commit, the
+  image or the settings, but its GitHub App can push a commit to the branch itself. Add a branch
+  ruleset on GitHub that blocks direct pushes to the branch.
+
 ## Wait for CI
 
 Turn on **Wait for CI** under **Settings → Source** to hold a push's deploy until its GitHub
@@ -213,6 +313,9 @@ instead of printing it. Pass `--ref` to read a branch, tag or commit other than 
 
 - **Every deploy ships the newest commit.** Clicking **Deploy** to apply a setting also picks up
   whatever is on the service's Git branch now.
+- **Servers that enforce device approval deploy a push only under a rule.** Without one, the
+  deployment fails at its build and nothing changes. See
+  [Deploy on push to servers that enforce device approval](#deploy-on-push-to-servers-that-enforce-device-approval).
 - **Changing a variable rebuilds your app.** See [How builds work](../builds/overview.md#good-to-know).
 - **Only the service's Git branch deploys.** Pull requests can get their own
   [preview environments](../environments/preview-environments.md) instead.

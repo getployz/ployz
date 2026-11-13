@@ -11,7 +11,8 @@ use crate::review::{self, NodeChange};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
 
 use crate::storage::Tx;
-use crate::{Actor, error};
+use crate::trusted::Evidence;
+use crate::{Actor, Trusted, error};
 
 /// Saved revisions of one Environment, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -135,7 +136,7 @@ pub(crate) fn history(
     query: &HistoryQuery,
 ) -> Result<HistoryView, RpcError> {
     let mut environment = scope::environment(tx, who, &query.environment)?;
-    let scrub = review::Scrub::load(tx, &environment.summary.id)?;
+    let scrub = crate::seal_scrub::history::Scrub::load(tx, &environment.summary.id)?;
     // What an Environment above sealed since reads as Sealed here too, as in a review
     // (#3756). The loop below reuses `environment` for each revision.
     let (id, working) = (environment.summary.id.clone(), environment.working.clone());
@@ -249,6 +250,7 @@ pub(crate) fn preview(
     tx: &mut dyn Tx,
     who: &Actor,
     query: &HistoryPreviewQuery,
+    trusted: &Trusted,
 ) -> Result<HistoryPreview, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let reviewed = review::review(tx, &environment)?;
@@ -259,6 +261,7 @@ pub(crate) fn preview(
         query.revision,
         query.action,
         query.change.as_deref(),
+        trusted,
     )?;
     Ok(preview_of(&environment, &reviewed, &prepared, query))
 }
@@ -267,6 +270,7 @@ pub(crate) fn stage(
     tx: &mut dyn Tx,
     who: &Actor,
     command: &StageHistory,
+    trusted: &Trusted,
 ) -> Result<HistoryStaged, RpcError> {
     let environment = scope::lock(tx, who, &command.environment)?;
     let reviewed = review::review(tx, &environment)?;
@@ -283,6 +287,7 @@ pub(crate) fn stage(
         command.revision,
         command.action,
         command.change.as_deref(),
+        trusted,
     )?;
     if !prepared.overwritten().is_empty() && !command.accept_overwrite {
         let query = HistoryPreviewQuery {
@@ -301,7 +306,7 @@ pub(crate) fn stage(
         ));
     }
     let not_set = prepared.not_set().to_vec();
-    let (environment, changed) = prepared.persist(tx)?;
+    let (environment, changed) = prepared.persist(tx, Evidence::Caller(trusted))?;
     Ok(HistoryStaged {
         environment,
         saved: reviewed.view.saved,
@@ -314,25 +319,16 @@ pub(crate) fn stage(
 fn snapshot(
     tx: &mut dyn Tx,
     environment: &Environment,
-    scrub: &review::Scrub,
+    scrub: &crate::seal_scrub::history::Scrub,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
-    let rows = tx.query(
-        "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
-        &[
-            environment.summary.id.as_str().into(),
-            revision_param(revision)?.into(),
-        ],
-    )?;
-    let mut intent = rows
-        .first()
-        .ok_or_else(|| {
+    let mut intent =
+        review::saved::intent_at(tx, &environment.summary.id, revision)?.ok_or_else(|| {
             error::not_found(
                 format!("No saved version has revision {revision}"),
                 json!({ "revision": revision }),
             )
-        })?
-        .intent(0, "Saved State")?;
+        })?;
     scrub.apply(revision, &mut intent);
     // A value an Environment above sealed since reads Sealed, as History shows it
     // (#3756). Its fingerprint stays, so Undo still sees each change to it, and
@@ -349,6 +345,7 @@ fn prepare(
     revision: Revision,
     action: HistoryAction,
     change: Option<&str>,
+    trusted: &Trusted,
 ) -> Result<super::authored::Prepared, RpcError> {
     if action == HistoryAction::Restore && change.is_some() {
         return Err(error::invalid(
@@ -356,7 +353,7 @@ fn prepare(
             json!({ "revision": revision }),
         ));
     }
-    let scrub = review::Scrub::load(tx, &environment.summary.id)?;
+    let scrub = crate::seal_scrub::history::Scrub::load(tx, &environment.summary.id)?;
     let selected = snapshot(tx, environment, &scrub, revision)?;
     let previous = match action {
         HistoryAction::Restore => None,
@@ -381,9 +378,9 @@ fn prepare(
         environment,
         scrub.ledger(),
         reviewed.saved.as_ref().map(|saved| &saved.intent),
-        &selected,
-        previous.as_ref(),
+        (&selected, previous.as_ref()),
         change,
+        trusted,
     ) {
         Err(error) if error.details.get("removed").is_some() => {
             Err(deleted_since(tx, environment, revision, &selected, error)?)

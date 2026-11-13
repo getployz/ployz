@@ -2,13 +2,13 @@ import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { Cause, ConfigProvider, Effect, Fiber, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
-import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
+import { Auth, AuthLive, CLI_CLIENT_ID, signedSessionToken, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { deviceCode, member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
+import { account as accountTable, deviceCode, member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
 import { organization as organizationTable } from "#/modules/organization/tables";
 import { hashClaimSecret } from "#/modules/identity/claim-required.server";
-import { eq, like, sql } from "drizzle-orm";
+import { desc, eq, like, sql } from "drizzle-orm";
 import { expect, vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -233,6 +233,13 @@ it.live(
         assert.strictEqual(granted.status, 200);
         const token = granted.json?.access_token ?? assert.fail("no access token");
 
+        const [copied] = yield* drizzle.select({ token: sessionTable.token }).from(sessionTable)
+          .orderBy(desc(sessionTable.createdAt)).limit(1);
+        const bare = copied?.token ?? assert.fail("no device session");
+        assert.strictEqual(token, signedSessionToken(bare, testConfigEnvironment().BETTER_AUTH_SECRET));
+        assert.isNull((yield* call("/get-session", { bearer: bare })).json);
+        assert.isNull(yield* (yield* Auth).getSession(new Headers({ authorization: `Bearer ${bare}` }), { bearer: true }));
+
         const session = yield* call("/get-session", { bearer: token });
         assert.strictEqual(session.json?.user?.email, "owner@example.test");
         assert.isString(session.json?.session?.activeOrganizationId);
@@ -251,7 +258,7 @@ it.live(
         const moved = yield* call("/organization/set-active", { bearer: token, body: { organizationSlug: slug } });
         assert.strictEqual(moved.status, 200);
         assert.deepStrictEqual([moved.cookie, moved.authToken], [undefined, null]);
-        yield* drizzle.update(sessionTable).set({ expiresAt: new Date(Date.now() + 60_000) }).where(eq(sessionTable.token, token));
+        yield* drizzle.update(sessionTable).set({ expiresAt: new Date(Date.now() + 60_000) }).where(eq(sessionTable.token, bare));
         const refreshed = yield* call("/get-session", { bearer: token });
         assert.strictEqual(refreshed.json?.user?.email, "owner@example.test");
         assert.deepStrictEqual([refreshed.cookie, refreshed.authToken], [undefined, null]);
@@ -441,6 +448,60 @@ const fakeGithub = (login: string, githubId: number) => {
     return real(input, init);
   });
 };
+
+it.live(
+  "keeps none of the tokens GitHub returns, on sign-up or on a later sign-in",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const real = globalThis.fetch;
+        const github = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+          const url = input instanceof Request ? input.url : String(input);
+          if (url.startsWith("https://github.com/login/oauth/access_token")) {
+            return Promise.resolve(Response.json({
+              access_token: "ghu_access", refresh_token: "ghr_refresh", id_token: "github-id-token",
+              expires_in: 28_800, refresh_token_expires_in: 15_897_600, token_type: "bearer", scope: "read:user,user:email",
+            }));
+          }
+          if (url === "https://api.github.com/user") {
+            return Promise.resolve(Response.json({ id: 3001, login: "keeper", name: "keeper", email: "keeper@example.test", avatar_url: null }));
+          }
+          if (url === "https://api.github.com/user/emails") {
+            return Promise.resolve(Response.json([{ email: "keeper@example.test", primary: true, verified: true }]));
+          }
+          return real(input, init);
+        });
+        const signInWithGithub = Effect.gen(function* () {
+          const started = yield* auth.signInGithub(new Headers({ origin }), "/cloud");
+          const state = new URL(String((yield* Effect.promise(() => started.json() as Promise<{ url: string }>)).url)).searchParams.get("state");
+          const cookie = started.headers.getSetCookie().map((line) => line.split(";", 1)[0]).join("; ");
+          const back = yield* auth.handler(new Request(`${origin}/api/auth/callback/github?code=code&state=${state}`, { headers: { cookie } }));
+          assert.strictEqual(back.status, 302, back.headers.get("location") ?? "");
+        });
+        const kept = drizzle.select({
+          accountId: accountTable.accountId,
+          accessToken: accountTable.accessToken,
+          refreshToken: accountTable.refreshToken,
+          idToken: accountTable.idToken,
+          accessTokenExpiresAt: accountTable.accessTokenExpiresAt,
+          refreshTokenExpiresAt: accountTable.refreshTokenExpiresAt,
+        }).from(accountTable).where(eq(accountTable.providerId, "github"));
+        const none = [{ accountId: "3001", accessToken: null, refreshToken: null, idToken: null, accessTokenExpiresAt: null, refreshTokenExpiresAt: null }];
+        try {
+          yield* signInWithGithub;
+          assert.deepStrictEqual(yield* kept, none);
+          yield* signInWithGithub;
+          assert.deepStrictEqual(yield* kept, none);
+        } finally {
+          github.mockRestore();
+        }
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
 
 it.live(
   "binds the Organization a claim page's GitHub sign-up made to that claim, and nothing for any other sign-up",

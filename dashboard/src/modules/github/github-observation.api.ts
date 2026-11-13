@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { Context, Data, Effect, Layer, Redacted, Result, Schema } from "effect";
+import { Context, Data, Effect, Layer, Result, Schema } from "effect";
 import type { GithubAccess, GithubDisconnected } from "#/modules/github/github-access";
 import {
   GITHUB_COMPARE_STATUSES,
@@ -25,7 +25,8 @@ import {
   type GithubCompareStatus,
   type GithubResolvedRepository,
 } from "#/modules/github/github-ingestion.contracts";
-import { GITHUB_API_VERSION, GithubTokens, githubAppJwt } from "#/modules/github/github-token.server";
+import { GITHUB_API_VERSION, GithubAuthority } from "#/modules/github/github-authority.server";
+import { GithubTokens } from "#/modules/github/github-token.server";
 import { AppConfig } from "#/server/config.server";
 
 type GithubRequestHeaders = { "X-GitHub-Api-Version": string; Accept?: string; Authorization?: string };
@@ -42,6 +43,7 @@ export type GithubApiCheckSuiteConclusion = GithubCheckSuiteConclusion;
 
 export type GithubObservationOperation =
   | "resolve_repository"
+  | "list_push_runs"
   | "resolve_branch_head"
   | "compare_commits"
   | "fetch_check_suite"
@@ -55,6 +57,7 @@ export type GithubObservationOperation =
   | "fetch_workflow"
   | "dispatch_workflow"
   | "cancel_run"
+  | "rerun_run"
   | "fetch_run"
   | "fetch_installation"
   | "fetch_pull_request"
@@ -70,7 +73,8 @@ export type GithubObservationErrorCode =
   | "request_failed"
   | "not_found"
   | "invalid_response"
-  | "identity_mismatch";
+  | "identity_mismatch"
+  | "refused";
 
 export class GithubObservationError extends Data.TaggedError(
   "GithubObservationError",
@@ -102,9 +106,13 @@ export function isGithubObservationNotFound(
   return cause instanceof GithubObservationError && cause.code === "not_found";
 }
 
-/** A missing permission is a 403 GitHub won't lift by waiting; rate limits are retriable 403s. */
+/**
+ * A missing permission is a 403 GitHub won't lift by waiting, or a token mint GitHub refused with 422 for naming a
+ * permission the installation never accepted. Rate limits are retriable 403s.
+ */
 export function githubLacksPermission(cause: unknown): cause is GithubObservationError {
-  return cause instanceof GithubObservationError && cause.status === 403 && !cause.retriable;
+  return cause instanceof GithubObservationError
+    && ((cause.status === 403 && !cause.retriable) || (cause.operation === "installation_token" && cause.status === 422));
 }
 
 function resolvedRepositoryPath(
@@ -182,29 +190,12 @@ const installationRepositoriesSchema = Schema.Struct({
   total_count: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
 });
 export type GithubInstallationRepositoriesResponse = typeof installationRepositoriesSchema.Type;
-const userAccessTokenSchema = Schema.Struct({ access_token: nonEmptyString });
 export const GITHUB_REPOSITORIES_PAGE_SIZE = 100;
 
+/** A read. Every write, and every Actions call, goes through `GithubAuthority`. */
 export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   access: GithubAccess;
   path: `/${string}`;
-  operation: GithubObservationOperation;
-  schema: S;
-  /** A POST or PATCH sends `body` as JSON; an empty response reads as `{}`. */
-  method?: "POST" | "PATCH";
-  body?: unknown;
-};
-
-export type GithubAppRequest<S extends Schema.ConstraintDecoder<unknown>> = {
-  path: `/app/${string}`;
-  operation: GithubObservationOperation;
-  schema: S;
-};
-
-/** A read as the person who authorized the App, with the token their OAuth code exchanged for. */
-export type GithubUserRequest<S extends Schema.ConstraintDecoder<unknown>> = {
-  token: Redacted.Redacted<string>;
-  path: `/user${string}`;
   operation: GithubObservationOperation;
   schema: S;
 };
@@ -216,17 +207,12 @@ export interface GithubApiService {
   readonly json: <S extends Schema.ConstraintDecoder<unknown>>(
     input: GithubJsonRequest<S>,
   ) => Effect.Effect<S["Type"], GithubReadError>;
-  readonly app: <S extends Schema.ConstraintDecoder<unknown>>(
-    input: GithubAppRequest<S>,
-  ) => Effect.Effect<S["Type"], GithubObservationError>;
+  /** The installation `access` reads through, once Cloud checked it may: linked to the Organization and not suspended. */
+  readonly installationOf: (access: GithubAccess) => Effect.Effect<number, GithubReadError>;
   /** One page of what an installation grants, read as Cloud for the repository cache. Never repository contents. */
   readonly installationRepositories: (
     input: { installationId: number; page: number },
   ) => Effect.Effect<GithubInstallationRepositoriesResponse, GithubObservationError>;
-  readonly exchangeUserCode: (code: string) => Effect.Effect<Redacted.Redacted<string>, GithubObservationError>;
-  readonly userJson: <S extends Schema.ConstraintDecoder<unknown>>(
-    input: GithubUserRequest<S>,
-  ) => Effect.Effect<S["Type"], GithubObservationError>;
 }
 
 export class GithubApi extends Context.Service<GithubApi, GithubApiService>()(
@@ -247,6 +233,17 @@ function isRetriableGithubResponse(response: Response): boolean {
     response.headers.get("x-ratelimit-remaining") === "0" ||
     retryAfterSeconds(response) !== undefined
   );
+}
+
+/** What a GitHub response that failed means: not found, or failed, retriable when waiting can lift it. */
+export function githubResponseError(response: Response, operation: GithubObservationOperation): GithubObservationError {
+  return githubObservationError({
+    code: response.status === 404 ? "not_found" : "request_failed",
+    operation,
+    status: response.status,
+    retryAfterSeconds: retryAfterSeconds(response),
+    retriable: isRetriableGithubResponse(response),
+  });
 }
 
 export const resolveGithubRepository = Effect.fn(
@@ -469,27 +466,11 @@ export const fetchInstallationPullRequest = Effect.fn(
   };
 });
 
-const installationSchema = Schema.Struct({
-  html_url: Schema.String,
-  permissions: Schema.Record(Schema.String, Schema.String),
-});
-
 /** The permissions an installation of the GitHub App has granted, and where its owner manages them. */
 export const fetchAppInstallationPermissions = Effect.fn(
   "Github.fetchAppInstallationPermissions",
 )(function* (installationId: number) {
-  const api = yield* GithubApi;
-  const installation = yield* api.app({
-    path: `/app/installations/${installationId}`,
-    operation: "fetch_installation",
-    schema: installationSchema,
-  });
-  return { url: installation.html_url, permissions: installation.permissions };
-});
-
-const checkRunSchema = Schema.Struct({ id: githubIdSchema });
-const checkRunsResponseSchema = Schema.Struct({
-  check_runs: Schema.Array(Schema.Struct({ id: githubIdSchema, external_id: Schema.optional(Schema.NullOr(Schema.String)) })),
+  return yield* (yield* GithubAuthority).installation(installationId);
 });
 
 /**
@@ -505,27 +486,8 @@ export const postInstallationCheckRun = Effect.fn(
   if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(input.headSha)) {
     return yield* githubObservationError({ code: "invalid_argument", operation: "create_check_run", retriable: false });
   }
-  const api = yield* GithubApi;
-  const repository: `/${string}` = `/repositories/${repositoryId}`;
-  // Every run of that name, not only the latest one GitHub shows by default, page by page until it's found.
-  let existing: { id: number } | undefined;
-  for (let page = 1; !existing; page++) {
-    const { check_runs: runs } = yield* api.json({
-      access,
-      path: `${repository}/commits/${input.headSha}/check-runs?check_name=${encodeURIComponent(input.name)}&filter=all&per_page=100&page=${page}`,
-      operation: "list_check_runs",
-      schema: checkRunsResponseSchema,
-    });
-    existing = runs.find((run) => run.external_id === input.externalId);
-    if (runs.length < 100) break;
-  }
-  const body = {
-    name: input.name, external_id: input.externalId, status: "completed", conclusion: input.conclusion, details_url: input.detailsUrl,
-    output: { title: input.title, summary: input.summary },
-  };
-  return yield* api.json(existing
-    ? { access, path: `${repository}/check-runs/${existing.id}`, operation: "update_check_run", schema: checkRunSchema, method: "PATCH", body }
-    : { access, path: `${repository}/check-runs`, operation: "create_check_run", schema: checkRunSchema, method: "POST", body: { ...body, head_sha: input.headSha } });
+  const installationId = yield* (yield* GithubApi).installationOf(access);
+  return yield* (yield* GithubAuthority).postCheck({ installationId, repositoryId, ...input });
 });
 
 export const GithubApiLive = Layer.effect(
@@ -546,15 +508,11 @@ export const GithubApiLive = Layer.effect(
         path: `/${string}`;
         operation: GithubObservationOperation;
         schema: S;
-        method?: "POST" | "PATCH";
-        body?: unknown;
       }) {
         const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
         if (input.token !== null) headers.Authorization = `Bearer ${input.token}`;
         const response = yield* Effect.tryPromise({
-          try: (signal) => fetch(`${config.github.origins.api}${input.path}`, input.method
-            ? { signal, method: input.method, headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
-            : { signal, headers }),
+          try: (signal) => fetch(`${config.github.origins.api}${input.path}`, { signal, headers }),
           catch: () =>
             githubObservationError({
               code: "request_failed",
@@ -562,15 +520,7 @@ export const GithubApiLive = Layer.effect(
               retriable: true,
             }),
         });
-        if (!response.ok) {
-          return yield* githubObservationError({
-            code: response.status === 404 ? "not_found" : "request_failed",
-            operation: input.operation,
-            status: response.status,
-            retryAfterSeconds: retryAfterSeconds(response),
-            retriable: isRetriableGithubResponse(response),
-          });
-        }
+        if (!response.ok) return yield* githubResponseError(response, input.operation);
         const parsedJson = yield* Effect.tryPromise({
           try: async () => {
             const text = await response.text();
@@ -608,12 +558,9 @@ export const GithubApiLive = Layer.effect(
       },
     );
 
-    const app: GithubApiService["app"] = Effect.fn("GithubApi.app")(
-      function* <S extends Schema.ConstraintDecoder<unknown>>(input: GithubAppRequest<S>) {
-        const token = yield* githubAppJwt().pipe(Effect.provideService(AppConfig, config));
-        return yield* request({ ...input, token });
-      },
-    );
+    const installationOf: GithubApiService["installationOf"] = (access) => access.type === "public"
+      ? Effect.fail(githubObservationError({ code: "invalid_argument", operation: "installation_token", retriable: false }))
+      : tokens.usable(access);
 
     const installationRepositories: GithubApiService["installationRepositories"] = Effect.fn("GithubApi.installationRepositories")(
       function* (input) {
@@ -656,31 +603,6 @@ export const GithubApiLive = Layer.effect(
         catch: () => githubObservationError({ code: "request_failed", operation: "download_source", retriable: false }),
       });
     });
-    const exchangeUserCode: GithubApiService["exchangeUserCode"] = Effect.fn("GithubApi.exchangeUserCode")(function* (code) {
-      const failed = (status?: number) =>
-        githubObservationError({ code: "request_failed", operation: "exchange_user_code", status, retriable: false });
-      const exchanged = yield* Effect.tryPromise({
-        try: async (signal) => {
-          const response = await fetch(`${config.github.origins.web}/login/oauth/access_token`, {
-            signal,
-            method: "POST",
-            headers: { Accept: "application/json", "Content-Type": "application/json" },
-            body: JSON.stringify({ client_id: config.github.appClientId, client_secret: Redacted.value(config.github.appClientSecret), code }),
-          });
-          if (!response.ok) throw failed(response.status);
-          const body: unknown = await response.json();
-          return body;
-        },
-        catch: (error) => error instanceof GithubObservationError ? error : failed(),
-      });
-      const { access_token: token } = yield* Schema.decodeUnknownEffect(userAccessTokenSchema)(exchanged).pipe(Effect.mapError(() => failed()));
-      return Redacted.make(token);
-    });
-    const userJson: GithubApiService["userJson"] = Effect.fn("GithubApi.userJson")(
-      function* <S extends Schema.ConstraintDecoder<unknown>>({ token, ...input }: GithubUserRequest<S>) {
-        return yield* request({ ...input, token: Redacted.value(token) });
-      },
-    );
-    return { json, app, installationRepositories, archive, exchangeUserCode, userJson };
+    return { json, installationOf, installationRepositories, archive };
   }),
 );

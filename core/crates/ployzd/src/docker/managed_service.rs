@@ -12,14 +12,12 @@ use bollard::{
         StopContainerOptionsBuilder,
     },
 };
-use ployz_core::PullPolicy;
+use ployz_core::{PullPolicy, labels};
 use sha2::{Digest as _, Sha256};
 
 use crate::docker_image::{is_not_found, prepare_image};
 
-use super::{Error, LocalDocker};
-
-const SPEC_LABEL: &str = "ployzd.spec";
+use super::{Error, LocalDocker, Status, classify};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SpecDigest(String);
@@ -36,7 +34,7 @@ impl DesiredContainer {
     /// caller-fixed order.
     pub(crate) fn new(mut body: ContainerCreateBody, files: &[&[u8]]) -> Self {
         if let Some(labels) = body.labels.as_mut() {
-            labels.remove(SPEC_LABEL);
+            labels.remove(labels::SPEC);
         }
         let mut canonical =
             serde_json::to_value(&body).expect("a container create body serializes to JSON");
@@ -50,7 +48,7 @@ impl DesiredContainer {
         let digest = SpecDigest(hex::encode(hasher.finalize()));
         body.labels
             .get_or_insert_default()
-            .insert(SPEC_LABEL.to_owned(), digest.0.clone());
+            .insert(labels::SPEC.to_owned(), digest.0.clone());
         Self { body, digest }
     }
 }
@@ -67,7 +65,7 @@ impl Existing {
                 .config
                 .as_ref()
                 .and_then(|config| config.labels.as_ref())
-                .and_then(|labels| labels.get(SPEC_LABEL))
+                .and_then(|labels| labels.get(labels::SPEC))
                 .cloned()
                 .map(SpecDigest),
             running: container
@@ -247,7 +245,7 @@ impl ManagedService {
             .await
         {
             Ok(()) => Ok(()),
-            Err(error) if is_already_stopped(&error) || is_not_found(&error) => Ok(()),
+            Err(error) if matches!(classify(&error), Status::Unchanged | Status::Absent) => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -281,16 +279,6 @@ impl ManagedService {
     }
 }
 
-fn is_already_stopped(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 304,
-            ..
-        }
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -298,18 +286,6 @@ mod tests {
     use bollard::models::HostConfig;
 
     use super::*;
-
-    #[test]
-    fn stopped_and_missing_services_are_idempotent_stop_outcomes() {
-        let response = |status_code| DockerError::DockerResponseServerError {
-            status_code,
-            message: String::new(),
-        };
-        assert!(is_already_stopped(&response(304)));
-        assert!(is_not_found(&response(404)));
-        assert!(!is_already_stopped(&response(500)));
-        assert!(!is_not_found(&response(500)));
-    }
 
     fn body(image: &str) -> ContainerCreateBody {
         ContainerCreateBody {
@@ -414,12 +390,12 @@ mod tests {
                 &[b"config"],
             )
         };
-        let honest = labelled(&[("ployzd.managed", "")]);
-        let forged = labelled(&[("ployzd.managed", ""), (SPEC_LABEL, "x")]);
+        let honest = labelled(&[(labels::SYSTEM_MANAGED, "")]);
+        let forged = labelled(&[(labels::SYSTEM_MANAGED, ""), (labels::SPEC, "x")]);
         assert_eq!(forged.digest, honest.digest);
         for desired in [honest, forged] {
             assert_eq!(
-                desired.body.labels.unwrap().get(SPEC_LABEL),
+                desired.body.labels.unwrap().get(labels::SPEC),
                 Some(&desired.digest.0)
             );
         }

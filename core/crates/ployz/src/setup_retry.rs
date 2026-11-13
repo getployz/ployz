@@ -39,22 +39,42 @@ impl<E: Into<Failure> + std::error::Error + Send + Sync + 'static> From<Error<E>
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Expected(pub(crate) &'static str);
 
+/// What a wait says on its first failure, for whoever supplies the [`Observer`] to show.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Notice<'a> {
+    /// The caller anticipated the outage, such as a daemon restart.
+    Expected(Expected),
+    /// The outage was not anticipated: the connectivity warning.
+    Retrying {
+        operation: &'a str,
+        error: &'a (dyn std::error::Error + 'static),
+        seconds_left: u64,
+    },
+}
+
+/// Where a wait's notice goes. The wait loop owns when to speak; the observer owns how.
+pub(crate) trait Observer {
+    fn waiting(&self, notice: &Notice<'_>);
+}
+
 /// Only pass reads or operations known to be safe to repeat. The deadline also
 /// bounds any retries inside the operation; it must not wrap a whole setup flow.
 pub(crate) async fn run<C, T, E: std::error::Error + 'static>(
     context: &mut C,
+    observer: &dyn Observer,
     operation: &str,
     wait: Duration,
     retryable: impl Fn(&E) -> bool,
     attempt: impl AsyncFnMut(&mut C) -> Result<T, E>,
 ) -> Result<T, Error<E>> {
-    run_expecting(context, operation, None, wait, retryable, attempt).await
+    run_expecting(context, observer, operation, None, wait, retryable, attempt).await
 }
 
 /// [`run`], announcing an anticipated outage, such as a daemon restart, in
 /// place of the connectivity warning.
 pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
     context: &mut C,
+    observer: &dyn Observer,
     operation: &str,
     expected: Option<Expected>,
     wait: Duration,
@@ -71,14 +91,16 @@ pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
             }
             Ok(Err(error)) => {
                 if last.is_none() {
-                    match expected {
-                        Some(Expected(notice)) => crate::ui::note(format_args!("{notice}")),
-                        None => crate::ui::retrying(
+                    observer.waiting(&match expected {
+                        Some(expected) => Notice::Expected(expected),
+                        None => Notice::Retrying {
                             operation,
-                            &error,
-                            deadline.saturating_duration_since(Instant::now()).as_secs(),
-                        ),
-                    }
+                            error: &error,
+                            seconds_left: deadline
+                                .saturating_duration_since(Instant::now())
+                                .as_secs(),
+                        },
+                    });
                 }
                 last = Some(error);
             }
@@ -171,12 +193,7 @@ mod tests {
                 .send()
                 .await
                 .unwrap_err();
-            assert_eq!(
-                transient_http(&error),
-                retry,
-                "{}",
-                crate::ui::chain_text(&error)
-            );
+            assert_eq!(transient_http(&error), retry, "{error:?}");
         }
     }
 
@@ -208,12 +225,7 @@ mod tests {
                 Ok(response) => response.bytes().await.unwrap_err(),
                 Err(error) => error,
             };
-            assert_eq!(
-                transient_http(&error),
-                retry,
-                "{}",
-                crate::ui::chain_text(&error)
-            );
+            assert_eq!(transient_http(&error), retry, "{error:?}");
             server.await.unwrap();
         }
     }
@@ -221,6 +233,109 @@ mod tests {
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
     struct Probe(&'static str);
+
+    struct Silent;
+
+    impl Observer for Silent {
+        fn waiting(&self, _: &Notice<'_>) {}
+    }
+
+    #[derive(Default)]
+    struct Recorder(std::cell::RefCell<Vec<String>>);
+
+    impl Observer for Recorder {
+        fn waiting(&self, notice: &Notice<'_>) {
+            self.0.borrow_mut().push(match notice {
+                Notice::Expected(Expected(text)) => format!("expected: {text}"),
+                Notice::Retrying {
+                    operation,
+                    error,
+                    seconds_left,
+                } => format!("retrying: {operation}: {error}: {seconds_left}s"),
+            });
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_first_failure_tells_the_observer_once_with_the_time_left() {
+        let recorder = Recorder::default();
+        let mut calls = 0;
+        run(
+            &mut calls,
+            &recorder,
+            "probe",
+            WAIT,
+            |_| true,
+            async |calls| {
+                *calls += 1;
+                if *calls < 4 {
+                    Err(Probe("connection refused"))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *recorder.0.borrow(),
+            ["retrying: probe: connection refused: 60s"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_anticipated_outage_says_so_in_place_of_the_connectivity_warning() {
+        let recorder = Recorder::default();
+        let mut calls = 0;
+        run_expecting(
+            &mut calls,
+            &recorder,
+            "probe",
+            Some(Expected("Waiting for the daemon to start…")),
+            WAIT,
+            |_| true,
+            async |calls| {
+                *calls += 1;
+                if *calls < 4 {
+                    Err(Probe("connection refused"))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *recorder.0.borrow(),
+            ["expected: Waiting for the daemon to start…"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_permanent_error_or_a_first_success_says_nothing() {
+        let recorder = Recorder::default();
+        run(
+            &mut (),
+            &recorder,
+            "probe",
+            WAIT,
+            |_| true,
+            async |()| Ok::<_, Probe>(()),
+        )
+        .await
+        .unwrap();
+        run(
+            &mut (),
+            &recorder,
+            "probe",
+            WAIT,
+            |_| false,
+            async |()| Err::<(), _>(Probe("wrong identity")),
+        )
+        .await
+        .unwrap_err();
+        assert!(recorder.0.borrow().is_empty());
+    }
 
     #[test]
     fn a_timeout_is_unavailable_and_a_refusal_keeps_its_own_code() {
@@ -247,6 +362,7 @@ mod tests {
         let mut calls = 0;
         let result = run(
             &mut calls,
+            &Silent,
             "probe",
             WAIT,
             |_| true,
@@ -266,6 +382,7 @@ mod tests {
         calls = 0;
         let error = run(
             &mut calls,
+            &Silent,
             "probe",
             WAIT,
             |_| false,
@@ -282,6 +399,7 @@ mod tests {
         let started = Instant::now();
         let error = run(
             &mut (),
+            &Silent,
             "probe",
             WAIT,
             |_| true,
@@ -291,11 +409,15 @@ mod tests {
         .unwrap_err();
         assert_eq!(Instant::now() - started, WAIT);
         assert_eq!(error.to_string(), "probe did not recover within 60s.");
-        assert_eq!(crate::ui::causes(&error), ["connection refused"]);
+        assert_eq!(
+            ployz_core::error_chain::causes(&error),
+            ["connection refused"]
+        );
 
         let started = Instant::now();
         let error = run(
             &mut (),
+            &Silent,
             "probe",
             WAIT,
             |_| true,
@@ -304,7 +426,28 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(Instant::now() - started, WAIT);
-        assert!(crate::ui::causes(&error).is_empty());
+        assert!(ployz_core::error_chain::causes(&error).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attempts_are_one_second_apart_and_one_more_starts_at_the_deadline() {
+        let started = Instant::now();
+        let mut starts = Vec::new();
+        run(
+            &mut starts,
+            &Silent,
+            "probe",
+            WAIT,
+            |_| true,
+            async |starts| {
+                starts.push(Instant::now() - started);
+                Err::<(), _>(Probe("connection refused"))
+            },
+        )
+        .await
+        .unwrap_err();
+        let expected: Vec<_> = (0..=60).map(Duration::from_secs).collect();
+        assert_eq!(starts, expected);
     }
 
     #[tokio::test(start_paused = true)]
@@ -313,6 +456,7 @@ mod tests {
             let mut calls = 0;
             let error = run(
                 &mut calls,
+                &Silent,
                 "probe",
                 WAIT,
                 |_| true,
@@ -331,7 +475,10 @@ mod tests {
             };
             assert_eq!(*in_flight, cut);
             assert_eq!(error.to_string(), "probe did not recover within 60s.");
-            assert_eq!(crate::ui::causes(&error), ["connection refused"]);
+            assert_eq!(
+                ployz_core::error_chain::causes(&error),
+                ["connection refused"]
+            );
         }
     }
 }

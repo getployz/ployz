@@ -110,12 +110,103 @@ The private name starts as the service's name, and renaming the service keeps it
 References follow the new name. Services that typed the old one stop reaching it, so update
 them in the same deploy.
 
+## Name your cluster
+
+A cluster's name gives every service a second private name that says which cluster it lives
+in, `NAME.NAMESPACE.CLUSTER.ployz.internal`, such as `postgres.shop-production.acme.ployz.internal`.
+The namespace is the project and environment, joined by a hyphen. It answers the same addresses as
+`postgres.internal`, so the long name still works when a lookup reaches the cluster from outside it.
+
+A cluster you add through Ployz Cloud is named after your organization's slug, cut to 63
+characters. To rename it, owners and admins open **Organization → Network**, click **Edit**
+beside **Cluster name**, and click **Save**. The name shows **Pending** until a server is online
+to take it. `ployz cluster name acme` and the [Ployz agent](../account/agent-sidebar.md) ask
+for an [approval](../account/organizations.md#destructive-actions-ask-first) first, since every
+service's long address changes. The approval names the addresses your servers answer now, even
+while another rename is still pending.
+
+Without Ployz Cloud, name the cluster when you add its first server with `--cluster-name`. Rename
+it at any time, with no approval, with:
+
+```sh
+ployz cluster name acme
+```
+
+`ployz cluster name` alone prints the current name. A name is up to 63 lowercase letters, digits
+and hyphens, and starts and ends with a letter or digit. Renaming takes up to 30 seconds to reach
+each server, and then the old name stops resolving. Until a cluster has a name, the long names
+don't resolve.
+
 ## Connect from your laptop
 
 Domains carry http and https only, so to reach a service like a database from your own
 computer, forward a port with the CLI, as in
 [Connect from your laptop](databases.md#connect-from-your-laptop). The [CLI](../cli/overview.md)
 page shows how to point it at your project and environment.
+
+### Reach the private network from Tailscale
+
+Every server can join your tailnet as a subnet router. Any device on the tailnet then reaches
+your services at their private addresses, on any port and protocol.
+
+1. In the Tailscale admin console, open **Settings → Keys** and create a reusable auth key
+   tagged `tag:ployz`.
+2. In Ployz Cloud, open **Organization → Integrations**, click **Connect** under **Tailscale**
+   and paste the key. Or run `ployz private-access on` and paste the key, or pipe it:
+
+   ```sh
+   ployz private-access on --auth-key-stdin < auth-key.txt
+   ```
+
+   The key is sealed to your cluster before it leaves your browser or device, and it's never
+   printed. Sealing in the browser trusts the dashboard: a compromised Ployz Cloud could change
+   the page or the key it seals to, and read your auth key. `ployz private-access on` doesn't
+   trust Ployz Cloud for the key. It seals only to your cluster's key as
+   [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
+   `ployz device pin` once first.
+3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
+   and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
+   A server keeps its router's identity across restarts and reboots, so the route stays
+   approved and the key isn't needed again.
+4. On a Linux device, run `tailscale up --accept-routes`. Other systems accept the route on
+   their own.
+
+**Integrations** lists each server's router. **Approve routes** links to the Tailscale admin
+console, and the Linux command is there to copy. If you ask an agent, or run `ployz cluster private-access on`, it
+waits for an owner or admin to approve. The approver pastes the key in the approval card, so
+the agent never sees it. The card seals it in the browser, as **Connect** does. **Connect**
+approves it before the key goes out, so it can't be denied afterwards. If Tailscale refuses the key, the approval stays approved: try another key, or turn
+Private Access off, in **Integrations**.
+
+`ployz private-access` shows which servers run a router, meaning one whose node joined your
+tailnet. A router Tailscale refused the key for isn't one, though its container keeps
+restarting. A router placed before this check existed counts while its container runs, until
+you run `on` again. A server added later runs one too,
+and joins with the key, so keep the key reusable. If Tailscale refuses the key,
+`ployz private-access on` names the server. Run it again with a new key. **Integrations**
+marks that server **Key refused** and offers **Try another key**. A router that stopped
+shows as **Stopped** until you try another key or turn Private Access off. A server that
+didn't answer shows **No router**, and the card reads **Partly connected**. Click **Connect**
+once it's back; the routers already running stay on. A server whose router
+already joined keeps its identity when you run `on` again with another key; to join another
+tailnet, turn Private Access off first.
+
+With [enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a server runs a router only for a key your passkey or an approved device approved, so
+**Connect** and the approval card ask for your passkey. `ployz private-access on` from a device
+that isn't approved is refused. Turning Private Access off needs no approval.
+
+If the router a device uses stops, the device moves to another in about 16 seconds. It stays
+there when the first one returns. Services see the router's private address as the client.
+
+Ployz doesn't set up Tailscale DNS, so use a service's private address.
+
+To remove the routers and the key, click **Turn off** in **Integrations**, or run
+`ployz private-access off`. Each server forgets its
+router's identity too, so a later `on` registers new routers whose routes need approving
+again. Remove the old routers from the Tailscale admin console. If a server couldn't remove
+its router, the command names it and exits with a failure; that server starts no router again,
+and running `off` again finishes the removal.
 
 ## Good to know
 

@@ -5,7 +5,7 @@ import type { InngestClient } from "#/modules/inngest/client";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { callStore, cancelStoreGithubBuilds, deployDialOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
+import { callStore, cancelStoreGithubBuilds, deployDialOf, githubMembers, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUploads, uploadOwner } from "#/modules/config-store/upload.server";
@@ -13,13 +13,14 @@ import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import { GithubDisconnected } from "#/modules/github/github-access";
 import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 /** What Cloud's Store workers need from Cloud. */
-export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | CloudStore | InngestClient | OrganizationRuntime | Polar;
+export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | GithubAuthority | CloudStore | InngestClient | OrganizationRuntime | Polar;
 
 /** Runs one of the Store workers' Effects for an Inngest step. */
 export type StoreEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, StoreServices>) => Promise<A>;
@@ -41,7 +42,8 @@ const identity = (organizationId: string, source: GitSource) => ({
 
 /**
  * Pin each Git Service of the Deployment to its branch's head, unless it is pinned already (a pin never moves, so a
- * retried run reads the same commit). Resolves to every source with its pin.
+ * retried run reads the same commit). Resolves to every source with its pin. A trusted pull request's head pins only
+ * while its author is still among the members sent with it, unless a bot opened it from the repository itself.
  */
 export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
@@ -56,8 +58,9 @@ export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function*
     heads[source.service] = yield* fromGithub(resolveGithubSourceSha({ ...identity(organizationId, source), branch: source.branch }));
   }
   if (Object.keys(heads).length === 0) return sources;
+  const members = yield* githubMembers(organizationId);
   // A head it can never build, such as one its pull request hasn't approved, is why it failed.
-  return yield* storeTry(() => store.pinSources(deploymentId, heads)).pipe(
+  return yield* storeTry(() => store.pinSources(deploymentId, heads, { members })).pipe(
     Effect.catchIf(refusedWith("invalid_argument"), (refused) => new SourceUnreadable({ message: refused.message })),
   );
 });
@@ -75,6 +78,23 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
     checkouts[source.service] = (yield* fromGithub(materializeGithubSource(capture))).repositoryDirectory;
   }
   return checkouts;
+});
+
+/**
+ * A token that only reads the contents of the Deployment's GitHub repository, for each Server to read the branch head an
+ * automatic deploy rule builds from before it creates under the rule. None for a public repository, and none when
+ * GitHub can't mint one: a Server then reads a public head or refuses.
+ */
+const headReader = Effect.fn("StoreDeployment.headReader")(function* (store: ConfigStore, deploymentId: string) {
+  const sources = yield* storeTry(() => store.deploymentSources(deploymentId)).pipe(Effect.orElseSucceed(() => []));
+  for (const source of sources) {
+    if (source.access.type === "public") continue;
+    const authority = yield* GithubAuthority;
+    return yield* authority.readToken(source.access.installationId, { repositoryIds: [source.repository_id], permissions: { contents: "read" } }).pipe(
+      Effect.catch((error) => Effect.logWarning("Could not mint a head reader for a Deployment.", error).pipe(Effect.as(null))),
+    );
+  }
+  return null;
 });
 
 /**
@@ -98,8 +118,10 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
         Effect.flatMap((owner) => owner === undefined ? Effect.succeed(undefined) : fromGithub(extractUpload(data.organizationId, owner))),
       ),
     }).pipe(Effect.catchTag("SourceUnreadable", (error) => Effect.succeed({ failure: error.message })));
+    const reader = yield* headReader(store, data.deploymentId);
+    const withReader = "failure" in sources || reader === null ? sources : { ...sources, reader };
     return yield* storeTry(async () => ({
-      ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections, sources, expect),
+      ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections, withReader, expect),
     }));
   }).pipe(
     Effect.scoped,
@@ -154,6 +176,12 @@ export const failStoreDeploymentUnrun = Effect.fn("StoreDeployment.failUnrun")(f
   yield* releasePlacementClaims(organizationId, deploymentId);
   yield* forgetStoreDeploymentRun(runId);
   return failed;
+});
+
+/** Whether the queued Deployment waits for a person to approve its commits again once its builds ended. */
+export const storeDeploymentAwaitsApproval = Effect.fn("StoreDeployment.awaitsApproval")(function* (deploymentId: string) {
+  const store = yield* cloudStore;
+  return yield* storeTry(() => store.awaitingApproval(deploymentId));
 });
 
 /** A run is one durable runner: its retried steps claim as the same runner, and a duplicate delivery is another. */
@@ -242,15 +270,16 @@ export const publishedEnvironments = Effect.fn("StoreDeployment.published")(func
 
 /**
  * Deploy `environment` to the Organization's first Server as Deployment `id`, as its Deploy button would; no member
- * admits it and nothing uploads. A refusal (a Deploy that would delete data asks first) leaves it for the user.
+ * admits it and nothing uploads. `services` narrows it to those Services, as the Deploy button's "only these" does;
+ * empty deploys the whole Environment. A refusal (a Deploy that would delete data asks first) leaves it for the user.
  */
 export const deployToFirstServer = Effect.fn("StoreDeployment.deployToFirstServer")(function* (
-  organizationId: string, environment: { project: string; environment: string }, id: string,
+  organizationId: string, environment: { project: string; environment: string }, id: string, services: readonly string[] = [],
 ) {
   const result = yield* callStore(organizationId, null, { operation: "write", command: {
-    command: "admit", admit: "deploy", id, environment, services: [], version: null, accept_volume_loss: [],
+    command: "admit", admit: "deploy", id, environment, services: [...services], version: null, accept_volume_loss: [],
   } });
   if (result.ok) return { admitted: true };
   yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);
-  return { refused: result.refusal.code };
+  return { refused: result.refusal.code, message: result.refusal.message };
 });

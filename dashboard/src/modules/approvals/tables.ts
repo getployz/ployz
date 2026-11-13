@@ -4,7 +4,7 @@ import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import type { Caller, CredentialKind } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus } from "#/modules/approvals/approvals";
+import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus, type KeptVolumeApproval } from "#/modules/approvals/approvals";
 
 /**
  * One destructive CLI write or Server operation a human must approve, by the digest of exactly what it destroys. Only
@@ -35,6 +35,11 @@ export const operationApprovals = pgTable(
     decidedAt: timestamp("decided_at", { mode: "date", withTimezone: true }),
     /** When the operation it approved ran: an approval runs once. A Store write's digest binds a version its write moves. */
     usedAt: timestamp("used_at", { mode: "date", withTimezone: true }),
+    /**
+     * For a Volume run on Servers that enforce device approval, the approver's passkey answer to its workflow, made in
+     * their browser as they approved, and for a Move the spec its target starts. The run its asker asks again carries it.
+     */
+    volumeApproval: jsonb("volume_approval").$type<KeptVolumeApproval>(),
     createdAt,
     updatedAt,
   },

@@ -1,4 +1,4 @@
-import type { MachineId } from "@ployz/sdk";
+import type { MachineId, MachineSigned, Signed } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -16,7 +16,7 @@ import {
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import type { ServiceSpec } from "#/modules/volume-run/volume-run";
+import type { ServiceSpec, StepAnswer } from "#/modules/volume-run/volume-run";
 import {
   type AnyVolumeRunArgs,
   VOLUME_RUN_KINDS,
@@ -56,6 +56,13 @@ export const volumeRun = pgTable(
     phase: text("phase").default("warm").notNull().$type<VolumeRunPhase>(),
     /** The Machine a committed Move made the writer. */
     current: text("current").$type<MachineId>(),
+    /**
+     * The receipt the Move's source signed when it handed the Volume to `current`, which that Server checks before it
+     * becomes the writer. Cloud carries it and cannot make one.
+     */
+    receipt: jsonb("receipt").$type<MachineSigned>(),
+    /** What each Server answered to the steps the run asked under its approval, oldest first. */
+    answers: jsonb("answers").$type<StepAnswer[]>(),
     /** The Service spec seen when the run started; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),
@@ -99,6 +106,11 @@ export const volumeMirrorStatus = pgTable(
     failedAt: timestamp("failed_at", { mode: "date", withTimezone: true }),
     failedSnapshot: text("failed_snapshot"),
     failure: text("failure"),
+    /**
+     * Every Device-signed Mirror approval Cloud has sent toward this Mirror, the one it last accepted or Cloud last offered
+     * first, so the one the Mirror holds open is always among them: see mirror-approvals.server.ts.
+     */
+    approvals: jsonb("approvals").$type<Signed[]>(),
     updatedAt,
   },
   (table) => [primaryKey({ columns: [table.volumeId, table.machineId] })],

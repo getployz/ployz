@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{
     collections::{BTreeMap, BTreeSet},
     process::{self, Command},
@@ -34,14 +35,7 @@ async fn drain_moves_containers_off_without_a_gap_or_a_deploy() {
     let mut client = connect(&direct).await;
     cli(
         &direct,
-        &[
-            "server",
-            "set",
-            web1.id.as_str(),
-            "--accepts-ingress=true",
-            "--ingress-image",
-            "caddy:2.10.2",
-        ],
+        &["server", "set", web1.id.as_str(), "--accepts-ingress=true"],
     );
 
     let web = serde_json::from_value::<RequestedServiceSpec>(serde_json::json!({
@@ -449,7 +443,7 @@ async fn deploy(
     requested: &RequestedServiceSpec,
 ) -> ServiceId {
     let machines = client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
         .unwrap()
         .machines;
@@ -585,7 +579,7 @@ async fn image_ids(
         let details = client
             .call::<op::InspectContainer>(
                 InspectContainerRequest { container_id: *id },
-                Some(&MachineTarget::from(&container.machine_id)),
+                Call::read().to(&MachineTarget::from(&container.machine_id)),
             )
             .await
             .unwrap();
@@ -629,7 +623,7 @@ async fn wait_accepts_services(client: &mut ployz::connect::Client, id: &Machine
         "Machine's accepts_services flag",
         async || {
             let machines = client
-                .call::<op::ListMachines>(ListMachinesRequest {}, None)
+                .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
                 .await
                 .unwrap()
                 .machines;

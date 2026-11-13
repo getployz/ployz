@@ -8,8 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ployz_core::{
-    ContainerId, DeployWarning, MachineId, Namespace, ObservationKind, QualifiedService,
-    ServiceName,
+    ContainerId, DeployWarning, MachineId, ObservationKind, QualifiedService, ServiceName,
 };
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
@@ -27,7 +26,6 @@ mod terminal;
 /// The execution whose rows replace the current frame.
 pub(crate) enum Run {
     Stored(DeploymentId),
-    Direct(Namespace),
     CatchUp(MachineId),
 }
 
@@ -42,12 +40,6 @@ pub(crate) enum Subject {
     Service(GraphService),
     /// A Service-wide row outside the Deploy graph, such as unchecked ingress.
     Unlocated(QualifiedService),
-    Operation {
-        index: u32,
-        machine: MachineId,
-        server: String,
-        name: String,
-    },
     Node {
         index: usize,
         name: String,
@@ -71,18 +63,6 @@ impl Subject {
             ) => a == b && am == bm,
             (Self::Service(a), Self::Service(b)) => a.service == b.service,
             (Self::Unlocated(a), Self::Unlocated(b)) => a == b,
-            (
-                Self::Operation {
-                    index: a,
-                    machine: am,
-                    ..
-                },
-                Self::Operation {
-                    index: b,
-                    machine: bm,
-                    ..
-                },
-            ) => a == b && am == bm,
             (Self::Node { index: a, .. }, Self::Node { index: b, .. }) => a == b,
             _ => false,
         }
@@ -667,7 +647,6 @@ fn label(subject: &Subject, frame: &Frame) -> String {
         }
         Subject::Service(graph) => service_label(&graph.service, frame),
         Subject::Unlocated(service) => service_label(service, frame),
-        Subject::Operation { name, server, .. } => format!("{name} on {server}"),
         Subject::Node { name, .. } => name.clone(),
     }
 }
@@ -679,7 +658,7 @@ fn service_label(service: &QualifiedService, frame: &Frame) -> String {
         .filter_map(|row| match &row.subject {
             Subject::ServiceOnServer { service, .. } | Subject::Unlocated(service) => Some(service),
             Subject::Service(graph) => Some(&graph.service),
-            Subject::Operation { .. } | Subject::Node { .. } => None,
+            Subject::Node { .. } => None,
         })
         .any(|other| other.name == service.name && other != service);
     if ambiguous {
@@ -722,10 +701,9 @@ fn word(row: &Row, frame: &Frame) -> String {
                 format!("{}, {} left running", graph.word(&row.state), left.len())
             }
         }
-        Subject::ServiceOnServer { .. }
-        | Subject::Unlocated(_)
-        | Subject::Operation { .. }
-        | Subject::Node { .. } => row.state.word().to_owned(),
+        Subject::ServiceOnServer { .. } | Subject::Unlocated(_) | Subject::Node { .. } => {
+            row.state.word().to_owned()
+        }
     }
 }
 
@@ -838,10 +816,7 @@ fn tone(row: &Row, frame: &Frame) -> Tone {
 fn row_text(row: &Row, frame: &Frame, tick: usize, width: usize) -> String {
     let mark = match &row.subject {
         Subject::Service(graph) => graph.mark(&row.state),
-        Subject::ServiceOnServer { .. }
-        | Subject::Unlocated(_)
-        | Subject::Operation { .. }
-        | Subject::Node { .. } => None,
+        Subject::ServiceOnServer { .. } | Subject::Unlocated(_) | Subject::Node { .. } => None,
     }
     .unwrap_or_else(|| {
         if !left_running(row, frame).is_empty() {
@@ -884,7 +859,6 @@ fn body<'a>(
             Subject::Service(_)
             | Subject::ServiceOnServer { .. }
             | Subject::Unlocated(_)
-            | Subject::Operation { .. }
             | Subject::Node { .. } => None,
         })
         .collect();
@@ -1068,10 +1042,9 @@ fn changes(
                     .depth
                     .map(|depth| format!(" (depth {depth})"))
                     .unwrap_or_default(),
-                Subject::ServiceOnServer { .. }
-                | Subject::Unlocated(_)
-                | Subject::Operation { .. }
-                | Subject::Node { .. } => String::new(),
+                Subject::ServiceOnServer { .. } | Subject::Unlocated(_) | Subject::Node { .. } => {
+                    String::new()
+                }
             };
             format!(
                 "  {}{depth}: {}{detail}",
@@ -1084,10 +1057,7 @@ fn changes(
         }
         let draining = |row: &Row| match &row.subject {
             Subject::Service(graph) => graph.draining_line(),
-            Subject::ServiceOnServer { .. }
-            | Subject::Unlocated(_)
-            | Subject::Operation { .. }
-            | Subject::Node { .. } => None,
+            Subject::ServiceOnServer { .. } | Subject::Unlocated(_) | Subject::Node { .. } => None,
         };
         if let Some(text) = draining(row)
             && old.is_none_or(|(old, _)| draining(old).as_ref() != Some(&text))
@@ -1399,9 +1369,7 @@ fn finish(
         .rows
         .iter()
         .flat_map(|row| match &row.subject {
-            Subject::ServiceOnServer { machine, .. } | Subject::Operation { machine, .. } => {
-                vec![machine]
-            }
+            Subject::ServiceOnServer { machine, .. } => vec![machine],
             Subject::Service(graph) => graph.machines.iter().collect(),
             Subject::Unlocated(_) | Subject::Node { .. } => Vec::new(),
         })
@@ -1523,10 +1491,11 @@ impl Diagnostic {
                     }
                 }
                 Some(LogText::Withheld {
-                    why: Withheld::NoSecretContext,
+                    why: why @ Withheld::NoSecretContext,
                 }) => writeln!(
                     writer,
-                    "Logs from {service} on {server} withheld: no secret context."
+                    "Logs from {service} on {server} withheld: {}.",
+                    why.reason()
                 )?,
                 Some(LogText::Withheld {
                     why: Withheld::Unanswered,

@@ -7,7 +7,8 @@ use hpke::{
     kdf::HkdfSha256, kem::X25519HkdfSha256,
 };
 use ployz_core::{
-    Ciphertext, SEALED_VALUE_INFO, SealedSealingKey, Sealing, SealingPublicKey, WireGuardPublicKey,
+    Ciphertext, PLATFORM_SEALED_INFO, PlatformPurpose, SEALED_VALUE_INFO, SealedSealingKey,
+    Sealing, SealingPublicKey, WireGuardPublicKey,
 };
 use rand_core::{OsRng, TryRngCore as _};
 use thiserror::Error;
@@ -19,6 +20,11 @@ use crate::network::WireGuardPrivateKey;
 const FILE_NAME: &str = "sealing.key";
 const INFO: &[u8] = b"ployz-sealing-key-v1";
 const SHARE_INFO: &[u8] = b"ployz-sealing-key-share-v1";
+/// Distinct from every other label this key is expanded or sealed under, such as the join
+/// confirmation's and the Sealed values' associated data.
+const ATTEST_INFO: &[u8] = b"ployz build-secrets attest v1";
+/// The Cluster's Volume handoff receipt key, distinct from the attest key and every label above.
+const RECEIPT_INFO: &[u8] = b"ployz volume handoff v1";
 const ENCAPPED_KEY_LEN: usize = 32;
 
 type Kem = X25519HkdfSha256;
@@ -110,6 +116,28 @@ impl SealingKey {
         SealingPublicKey::from_bytes(Kem::sk_to_pk(&self.private()).to_bytes().into())
     }
 
+    /// The Cluster's build attest key pair. Every Machine holding this Sealing Key derives
+    /// the same one, and nothing without the Sealing Key can. It seals build secrets to a
+    /// rule build, which writes its public half into the image token.
+    pub(crate) fn attest(&self) -> ployz_core::X25519Secret {
+        let mut key = Zeroizing::new([0; 32]);
+        hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
+            .expand(ATTEST_INFO, key.as_mut())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        ployz_core::X25519Secret::from_bytes(*key)
+    }
+
+    /// The Cluster's receipt key, which a Move's source signs its handoff receipt with and
+    /// its target checks. Every Machine holding this Sealing Key derives the same one, and
+    /// nothing without the Sealing Key can, so any Machine of the Cluster could sign one.
+    pub(crate) fn receipt_signer(&self) -> ployz_core::authority::Signer {
+        let mut seed = Zeroizing::new([0; 32]);
+        hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
+            .expand(RECEIPT_INFO, seed.as_mut())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        ployz_core::authority::Signer::from_seed(&seed)
+    }
+
     /// Classifies `<data_dir>/sealing.key`: 32 bytes are the key, no file is
     /// [`KeyFile::Absent`], and any other length is [`KeyFile::Unusable`].
     ///
@@ -175,6 +203,7 @@ impl SealingKey {
         self.seal(&OpModeS::Base, INFO, recipient)
     }
 
+    #[cfg(test)]
     pub(crate) fn open(
         sealed: &SealedSealingKey,
         wireguard: &WireGuardPrivateKey,
@@ -220,8 +249,86 @@ impl SealingKey {
         Self::open_with(&OpModeR::Auth(sender), SHARE_INFO, sealed, recipient)
     }
 
+    /// What a joiner that opened `approval`'s capsule with this key sends back.
+    pub(crate) fn confirm_join(
+        &self,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> ployz_core::authority::join::JoinConfirmation {
+        use hkdf::hmac::Mac as _;
+        ployz_core::authority::join::JoinConfirmation(
+            self.join_mac(approval).finalize().into_bytes().into(),
+        )
+    }
+
+    /// Whether `confirmation` proves its sender opened `approval`'s capsule with this key.
+    pub(crate) fn confirms_join(
+        &self,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+        confirmation: &ployz_core::authority::join::JoinConfirmation,
+    ) -> bool {
+        use hkdf::hmac::Mac as _;
+        self.join_mac(approval)
+            .verify_slice(&confirmation.0)
+            .is_ok()
+    }
+
+    fn join_mac(
+        &self,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> hkdf::hmac::Hmac<sha2_0_10::Sha256> {
+        use hkdf::hmac::Mac as _;
+        let mut key = Zeroizing::new([0; 32]);
+        hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
+            .expand(b"ployz-join-confirmation-v1", key.as_mut())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        let mut mac = hkdf::hmac::Hmac::<sha2_0_10::Sha256>::new_from_slice(key.as_ref())
+            .expect("HMAC takes a key of any length");
+        mac.update(&approval.signing_input());
+        mac
+    }
+
+    pub(crate) fn seal_join(
+        &self,
+        recipient: &WireGuardPublicKey,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> Result<SealedSealingKey, SealError> {
+        let mut payload = Zeroizing::new(self.0.to_vec());
+        payload.extend(serde_json::to_vec(approval).expect("signed join serializes"));
+        Self::seal_bytes(&payload, &OpModeS::Base, INFO, recipient)
+    }
+
+    pub(crate) fn open_join(
+        sealed: &SealedSealingKey,
+        recipient: &WireGuardPrivateKey,
+    ) -> Result<
+        (
+            Self,
+            Option<ployz_core::authority::Signed<ployz_core::authority::JoinApproval>>,
+        ),
+        OpenError,
+    > {
+        let payload = Self::open_bytes(&OpModeR::Base, INFO, sealed, recipient)?;
+        let (bytes, body) = payload.split_at_checked(32).ok_or(OpenError::Malformed)?;
+        let key = Self(bytes.try_into().map_err(|_| OpenError::Malformed)?);
+        let approval = if body.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_slice(body).map_err(|_| OpenError::Malformed)?)
+        };
+        Ok((key, approval))
+    }
+
     fn seal(
         &self,
+        mode: &OpModeS<Kem>,
+        info: &[u8],
+        recipient: &WireGuardPublicKey,
+    ) -> Result<SealedSealingKey, SealError> {
+        Self::seal_bytes(&self.0, mode, info, recipient)
+    }
+
+    fn seal_bytes(
+        plaintext: &[u8],
         mode: &OpModeS<Kem>,
         info: &[u8],
         recipient: &WireGuardPublicKey,
@@ -233,7 +340,7 @@ impl SealingKey {
                 mode,
                 &recipient,
                 info,
-                &self.0,
+                plaintext,
                 &[],
                 &mut OsRng.unwrap_err(),
             )
@@ -249,6 +356,18 @@ impl SealingKey {
         sealed: &SealedSealingKey,
         recipient: &WireGuardPrivateKey,
     ) -> Result<Self, OpenError> {
+        let opened = Self::open_bytes(mode, info, sealed, recipient)?;
+        <[u8; 32]>::try_from(opened.as_slice())
+            .map(Self)
+            .map_err(|_| OpenError::Malformed)
+    }
+
+    fn open_bytes(
+        mode: &OpModeR<Kem>,
+        info: &[u8],
+        sealed: &SealedSealingKey,
+        recipient: &WireGuardPrivateKey,
+    ) -> Result<Zeroizing<Vec<u8>>, OpenError> {
         let bytes = sealed.as_bytes();
         if bytes.len() < ENCAPPED_KEY_LEN {
             return Err(OpenError::Malformed);
@@ -269,21 +388,40 @@ impl SealingKey {
             )
             .map_err(|_| OpenError::Unopenable)?,
         );
-        <[u8; 32]>::try_from(opened.as_slice())
-            .map(Self)
-            .map_err(|_| OpenError::Malformed)
+        Ok(opened)
     }
 
     /// Opens one env value sealed to this key under `aad`, or `None` when it
     /// does not open.
     pub(crate) fn open_value(&self, aad: &[u8], sealed: &Ciphertext) -> Option<Zeroizing<Vec<u8>>> {
+        self.open_under(SEALED_VALUE_INFO, aad, sealed)
+    }
+
+    /// Opens a value the platform sealed to this Cluster for `purpose`, or `None`
+    /// when it does not open: sealed for another Cluster, another purpose, or as
+    /// an env value.
+    pub(crate) fn open_platform(
+        &self,
+        purpose: PlatformPurpose,
+        sealed: &Ciphertext,
+    ) -> Option<Zeroizing<Vec<u8>>> {
+        let aad = purpose.associated_data(&self.public_key());
+        self.open_under(PLATFORM_SEALED_INFO, &aad, sealed)
+    }
+
+    fn open_under(
+        &self,
+        info: &[u8],
+        aad: &[u8],
+        sealed: &Ciphertext,
+    ) -> Option<Zeroizing<Vec<u8>>> {
         let (encapped, ciphertext) = sealed.as_bytes().split_at_checked(ENCAPPED_KEY_LEN)?;
         let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
         hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
             &OpModeR::Base,
             &self.private(),
             &encapped,
-            SEALED_VALUE_INFO,
+            info,
             ciphertext,
             aad,
         )
@@ -579,6 +717,38 @@ mod tests {
     }
 
     #[test]
+    fn every_holder_of_a_sealing_key_derives_the_same_attest_key_and_no_other_key_does() {
+        let key = SealingKey([7; 32]);
+        let attest = key.attest().attest();
+        assert_eq!(SealingKey([7; 32]).attest().attest(), attest);
+        assert_ne!(SealingKey([8; 32]).attest().attest(), attest);
+        assert_ne!(attest.as_bytes(), key.public_key().as_bytes());
+        // Computed apart from this code, with Python's hmac and cryptography: HKDF-SHA256
+        // with no salt, then X25519. A change strands every image token minted before it.
+        assert_eq!(
+            attest.to_string(),
+            "f68dfa2222a3be1f41768b8b1e5ddc3baeaa6b05b4462501fa74f583068ee215"
+        );
+    }
+
+    #[test]
+    fn every_holder_of_a_sealing_key_derives_the_same_receipt_key_and_no_other_key_does() {
+        let key = SealingKey([7; 32]);
+        let receipt = key.receipt_signer().public();
+        assert_eq!(SealingKey([7; 32]).receipt_signer().public(), receipt);
+        assert_ne!(SealingKey([8; 32]).receipt_signer().public(), receipt);
+        assert_ne!(receipt.as_bytes(), key.public_key().as_bytes());
+        assert_ne!(receipt.as_bytes(), key.attest().attest().as_bytes());
+        // Computed apart from this code, with Python's hmac and cryptography: HKDF-SHA256
+        // with no salt, then the Ed25519 public key of that seed. A change strands every
+        // receipt a Move's target has not yet promoted on.
+        assert_eq!(
+            receipt.to_string(),
+            "4c3a67d63762ee395941475f4fa5fa832568187702269718832a590e4175a4ea"
+        );
+    }
+
+    #[test]
     fn sealing_key_uses_the_wireguard_public_key_as_the_hpke_recipient() {
         let wireguard = WireGuardPrivateKey::generate();
         let hpke = <Kem as hpke::Kem>::PrivateKey::from_bytes(wireguard.as_bytes()).unwrap();
@@ -678,6 +848,7 @@ mod tests {
         let service = Uuid::parse_str("7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6").unwrap();
         let aad = |organization: &str, environment: Uuid, service: Uuid, variable: &str| {
             SealedValue {
+                environment: None,
                 sealed: sealed.clone(),
                 scope: SealedScope::Service(service),
                 key: variable.into(),
@@ -718,6 +889,42 @@ mod tests {
         *flipped.last_mut().unwrap() ^= 0x01;
         assert!(
             key.open_value(&own, &Ciphertext::from_bytes(flipped))
+                .is_none()
+        );
+    }
+
+    /// The Private Access vector `dashboard/src/modules/variables/seal-value.test.ts`
+    /// seals in the browser with `sealPlatform`. Test keys only.
+    #[test]
+    fn an_auth_key_the_browser_sealed_opens_only_for_private_access() {
+        let key = SealingKey(
+            hex::decode("347ace27753bb0420141f071765286281c5fb4c450a9811d4ab13b67ac3da146")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let sealed = Ciphertext::try_from(
+            "aQ3JpLLRSRFxTny/uywru4DsdBNaz2ed/8puzj80FnVgGTBxgtUPPvJq60VaDYOLiLov+SoN+uqbTWZL7UG7g0lob9gVuQq8vl0PFXHHIyTb5VnuvCj0"
+                .to_owned(),
+        )
+        .unwrap();
+        assert_eq!(
+            hex::encode(PlatformPurpose::PrivateAccess.associated_data(&key.public_key())),
+            "00000018706c6f797a2d706c6174666f726d2d7365616c65642d76310000000e707269766174652d6163636573730000002035d895d5063d3f7672a02f36600fc5681b34ce55931bf097535b4b7dc4b40838"
+        );
+        assert_eq!(
+            key.open_platform(PlatformPurpose::PrivateAccess, &sealed)
+                .unwrap()
+                .as_slice(),
+            b"tskey-auth-kTEST1CNTRL-frozenVectorOnly"
+        );
+        assert!(
+            key.open_platform(PlatformPurpose::IngressTunnel, &sealed)
+                .is_none()
+        );
+        assert!(
+            SealingKey::generate()
+                .open_platform(PlatformPurpose::PrivateAccess, &sealed)
                 .is_none()
         );
     }

@@ -7,18 +7,20 @@ use std::time::Duration;
 
 use ployz_core::service::proxy_routes;
 use ployz_core::{
-    ContainerAddress, ContainerDetails, ContainerId, ContainerLimitsUpdated, ContainerLocator,
-    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
-    CopyRotation, DockerVolumeId, EnsuredContainer, HealthVerdict, ImagePulled, Machine, MachineId,
-    MachineName, Namespace, ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RoutesRead, RpcError, RpcErrorCode,
-    ServiceContainer, ServiceMode, ServiceName, ServiceObservation, SlotKey,
+    ContainerAddress, ContainerDetails, ContainerId, ContainerLocator, ContainerNow,
+    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
+    EnsuredContainer, HealthVerdict, LiveServices, Machine, MachineId, MachineName,
+    ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService, ResolvedUpdateConfig,
+    RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode, ServiceObservation,
 };
 
 use super::*;
+use crate::deploy::Session;
+use crate::deploy::cleanup::ACK_WAIT;
 use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
+use crate::global_slot::{Sentence, retire_copies, retire_ingress_proxy};
 
 struct Cluster {
     containers: Mutex<Vec<ContainerObservation>>,
@@ -28,6 +30,8 @@ struct Cluster {
     routes: Mutex<BTreeMap<MachineId, ProxyRoutes>>,
     wants: Mutex<Vec<(MachineId, ContainerWant)>>,
     cancel_on_read: Option<CancellationToken>,
+    /// Copies whose removal Docker refuses.
+    stuck: BTreeSet<ContainerId>,
 }
 
 impl Cluster {
@@ -40,6 +44,7 @@ impl Cluster {
             routes: Mutex::new(BTreeMap::new()),
             wants: Mutex::new(Vec::new()),
             cancel_on_read: None,
+            stuck: BTreeSet::new(),
         };
         for proxy in &cluster.proxies {
             cluster.route(proxy);
@@ -107,15 +112,9 @@ fn id_of(locator: &ContainerLocator) -> ContainerId {
     }
 }
 
-impl MachineOperations for Cluster {
-    async fn prepare_volumes(
-        &self,
-        _machine_id: &MachineId,
-        _specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        unreachable!("retirement prepares no volumes")
-    }
+impl Session for Cluster {}
 
+impl CopyLifecycle for Cluster {
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -140,44 +139,6 @@ impl MachineOperations for Cluster {
         want: ContainerWant,
     ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         unreachable!("retirement settles nothing: {want:?}")
-    }
-
-    async fn inspect_container(
-        &self,
-        _machine_id: &MachineId,
-        _container_id: &ContainerId,
-    ) -> Result<ContainerDetails, RpcError> {
-        unreachable!("retirement inspects nothing")
-    }
-
-    async fn remove_volume(&self, _id: &DockerVolumeId) -> Result<(), RpcError> {
-        unreachable!("retirement removes no volumes")
-    }
-
-    async fn update_container_limits(
-        &self,
-        _machine_id: &MachineId,
-        _container_id: &ContainerId,
-        _spec: &ResolvedServiceSpec,
-    ) -> Result<ContainerLimitsUpdated, RpcError> {
-        unreachable!("retirement changes no limits")
-    }
-
-    async fn runs_global(
-        &self,
-        _machine_id: &MachineId,
-        _slot: &SlotKey,
-        _spec: &ResolvedServiceSpec,
-    ) -> Result<bool, RpcError> {
-        unreachable!("retirement starts nothing")
-    }
-
-    async fn ensure_image(
-        &self,
-        _machine_id: &MachineId,
-        _spec: &ResolvedServiceSpec,
-    ) -> Result<ImagePulled, RpcError> {
-        unreachable!("retirement pulls nothing")
     }
 
     async fn ensure_unsettled(
@@ -216,6 +177,7 @@ impl MachineOperations for Cluster {
                         refusal: ContainerRefusal {
                             reason: ContainerRefusalReason::LastIn,
                             message: "it is the last copy in rotation".into(),
+                            capability: None,
                         },
                     });
                 }
@@ -228,6 +190,14 @@ impl MachineOperations for Cluster {
             }
             ContainerWant::Gone { container, .. } => {
                 let id = id_of(&container);
+                if self.stuck.contains(&id) {
+                    return Err(RpcError {
+                        code: RpcErrorCode::Internal,
+                        message: "Docker refused the removal".into(),
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    });
+                }
                 containers.retain(|observation| observation.container_id != id);
                 Ok(EnsuredContainer::Ensured {
                     now: ContainerNow::Absent { of: container },
@@ -240,6 +210,14 @@ impl MachineOperations for Cluster {
                 unreachable!("retirement sends Out and Gone only, not {other:?}")
             }
         }
+    }
+
+    async fn inspect_container(
+        &self,
+        _machine_id: &MachineId,
+        _container_id: &ContainerId,
+    ) -> Result<ContainerDetails, RpcError> {
+        unreachable!("retirement inspects nothing")
     }
 
     async fn read_routes(
@@ -295,11 +273,19 @@ fn copy_on(machine: &Machine, hex: char, rotation: CopyRotation) -> ContainerObs
 }
 
 fn ingress_on(machine: &Machine, hex: char) -> ContainerObservation {
+    door_on(machine, hex, QualifiedService::system_ingress())
+}
+
+fn holder_on(machine: &Machine, hex: char) -> ContainerObservation {
+    door_on(machine, hex, QualifiedService::system_ingress_holder())
+}
+
+fn door_on(machine: &Machine, hex: char, door: QualifiedService) -> ContainerObservation {
     let mut observation = running_on(machine, hex);
     observation
         .try_update(|parts| {
-            parts.namespace = Namespace::system();
-            parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+            parts.namespace = door.namespace;
+            parts.resolved_spec.name = door.name;
         })
         .unwrap();
     observation
@@ -353,8 +339,8 @@ async fn retire_copies_takes_an_in_copy_out_waits_it_unlisted_then_removes_it() 
         &cluster,
         &drained.id,
         &qualified("app", "api"),
-        &Names::new(),
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
     )
     .await
     .expect("another In copy lets the drained one go Out");
@@ -373,8 +359,8 @@ async fn retire_copies_refuses_the_last_in_copy_and_leaves_it_serving() {
         &cluster,
         &drained.id,
         &qualified("app", "api"),
-        &Names::new(),
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
     )
     .await
     .expect_err("the last copy In refuses to go Out");
@@ -399,8 +385,8 @@ async fn retire_copies_removes_pending_and_out_copies_with_a_plain_gone() {
         &cluster,
         &drained.id,
         &qualified("app", "api"),
-        &Names::new(),
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
     )
     .await
     .expect("no copy was routed");
@@ -427,8 +413,8 @@ async fn retire_copies_names_the_proxy_that_did_not_confirm_and_keeps_the_copy()
         &cluster,
         &drained.id,
         &qualified("app", "api"),
-        &vec![(stuck.id, stuck.name.clone())],
         &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::listing([(stuck.id, stuck.name.clone())])),
     )
     .await
     .expect_err("a proxy still listing the copy keeps it");
@@ -451,21 +437,103 @@ async fn retire_copies_names_the_proxy_that_did_not_confirm_and_keeps_the_copy()
     );
 }
 
+/// A retirement the owner refuses gives the owner's reason as the error; one the drain's
+/// cancel ends says so, and neither removes the copy.
+#[tokio::test(start_paused = true)]
+async fn retire_copies_gives_the_refusal_or_the_cancel_as_its_error() {
+    let (drained, other, stuck) = (
+        machine('1', "drained"),
+        machine('2', "other"),
+        machine('3', "stuck"),
+    );
+    let refused = Cluster::of(
+        &[&drained, &other],
+        vec![copy_on(&drained, 'a', CopyRotation::In)],
+    );
+    let error = retire_copies(
+        &refused,
+        &drained.id,
+        &qualified("app", "api"),
+        &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
+    )
+    .await
+    .expect_err("the last copy in rotation stays");
+    assert_eq!(error.message, "it is the last copy in rotation");
+    assert_eq!(
+        error,
+        ContainerRefusal {
+            reason: ContainerRefusalReason::LastIn,
+            message: "it is the last copy in rotation".into(),
+            capability: None,
+        }
+        .into_error()
+    );
+    assert_eq!(refused.wants(), [out('a', CopyRotation::In)]);
+
+    let cancellation = CancellationToken::new();
+    let mut cancelled = Cluster::of(
+        &[&drained, &other, &stuck],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::In),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    )
+    .frozen(&stuck);
+    cancelled.cancel_on_read = Some(cancellation.clone());
+    let error = retire_copies(
+        &cancelled,
+        &drained.id,
+        &qualified("app", "api"),
+        &cancellation,
+        &Sentence::Drain(&ServerNames::default()),
+    )
+    .await
+    .expect_err("a cancelled drain retires nothing more");
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(error.message, "the drain was cancelled while it retired");
+    assert_eq!(cancelled.wants(), [out('a', CopyRotation::In)]);
+}
+
 #[tokio::test]
-async fn the_ingress_proxy_goes_with_a_plain_gone() {
+async fn the_ingress_proxy_goes_caddy_first_then_its_holder() {
     let (drained, other) = (machine('1', "drained"), machine('2', "other"));
     let cluster = Cluster::of(
         &[&drained, &other],
-        vec![ingress_on(&drained, 'a'), ingress_on(&other, 'b')],
+        vec![
+            holder_on(&drained, 'c'),
+            ingress_on(&drained, 'a'),
+            ingress_on(&other, 'b'),
+        ],
     );
     retire_ingress_proxy(&cluster, &drained.id, &CancellationToken::new())
         .await
         .expect("a Pending-for-life copy needs no rotation step");
-    assert_eq!(cluster.wants(), [gone('a')]);
+    assert_eq!(
+        cluster.wants(),
+        [gone('a'), gone('c')],
+        "Docker removes no holder while a Caddy joined to it exists"
+    );
     assert_eq!(
         cluster.rotations(),
         [(container('b'), CopyRotation::Pending)]
     );
+}
+
+#[tokio::test]
+async fn a_caddy_that_stays_keeps_its_holder() {
+    let drained = machine('1', "drained");
+    let mut cluster = Cluster::of(
+        &[&drained],
+        vec![holder_on(&drained, 'c'), ingress_on(&drained, 'a')],
+    );
+    cluster.stuck.insert(container('a'));
+    let error = retire_ingress_proxy(&cluster, &drained.id, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("refused"), "{error:?}");
+    assert_eq!(cluster.wants(), [gone('a')], "the holder is never asked");
+    assert_eq!(cluster.rotations().len(), 2);
 }
 
 #[tokio::test]
@@ -583,8 +651,8 @@ struct FakeRetireClient {
 }
 
 impl RetireClient for FakeRetireClient {
-    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), ConnectError> {
-        let live = LiveServices {
+    async fn live_services(&mut self) -> Result<Live, ConnectError> {
+        let services = LiveServices {
             containers: ployz_core::PartialResult {
                 successes: vec![ployz_core::MachineSuccess {
                     machine_id: self.machine_id,
@@ -599,14 +667,17 @@ impl RetireClient for FakeRetireClient {
                 omissions: self.silent.iter().map(|(id, _)| *id).collect(),
             },
         };
-        Ok((live, self.silent.iter().cloned().collect()))
+        Ok(Live {
+            services,
+            names: ServerNames::listing(self.silent.iter().cloned()),
+        })
     }
 
     async fn retire_slot(
         &mut self,
         _machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
-        _names: &Names,
+        _names: &ServerNames,
         _cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
         self.retire_calls.push(slot.identity().clone());

@@ -1,6 +1,11 @@
 pub(crate) mod bridge_address;
 mod checks;
 mod create;
+mod doors;
+mod error;
+pub(crate) use doors::{Door, DoorEntry};
+#[cfg(test)]
+pub(crate) use doors::{DoorFacts, NetnsId};
 mod http_health;
 mod images;
 mod lifecycle;
@@ -10,9 +15,11 @@ mod observe;
 pub(crate) use observe::published_spec;
 mod peer_pull;
 pub(crate) use peer_pull::ImageProxy;
+mod private_access;
 mod spec_store;
 mod stream;
 mod telemetry;
+mod tunnel_token;
 mod unregistry;
 mod volume;
 
@@ -21,6 +28,7 @@ mod integration_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+use ployz_core::labels::{self, LabelError, LabelMap, ServiceLabels};
 use std::{
     collections::{BTreeMap, HashMap},
     net::{Ipv4Addr, SocketAddr},
@@ -38,10 +46,9 @@ use futures_util::StreamExt;
 use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
-    Gen, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
-    ImageSummary, LastHealthCheck, MachineId, MachineImages, MachineTelemetry, Namespace,
-    QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
-    healthcheck_deadline,
+    Evidence, Gen, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand,
+    HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineImages, MachineTelemetry,
+    QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -50,6 +57,8 @@ use tokio::sync::{Mutex, watch};
 
 use crate::sealed_compat::LogStore;
 use checks::CheckRecords;
+use error::docker_error;
+pub(crate) use error::{Status, classify};
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
@@ -57,6 +66,7 @@ pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
+pub(crate) use observe::IngressRecovery;
 pub(crate) use peer_pull::pull_from_ingest;
 use ployz_core::LimitsRefusal;
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
@@ -64,30 +74,30 @@ pub use unregistry::ImageIngest;
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
-
-pub const LABEL_MANAGED: &str = "ployz.managed";
-pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
-pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
-pub const LABEL_NAMESPACE: &str = "ployz.namespace";
-pub const LABEL_HOOK: &str = "ployz.service.hook";
-/// `true` on a container whose spec publishes no host port, else `false`. Written
-/// either way so a label the image carries can't decide it.
-pub const LABEL_BRIDGE_IPV6: &str = "ployz.network.ipv6";
+#[cfg(test)]
+use ployz_core::{Namespace, ServiceId};
 
 /// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
 /// reach it by DNAT with their own address (#2837). So does a container created
-/// with [`LABEL_BRIDGE_IPV6`] `true`, for IPv6 egress (#3372). A container that
+/// with [`labels::BRIDGE_IPV6`] `true`, for IPv6 egress (#3372). A container that
 /// publishes a host port stays IPv4-only, so its ports keep reaching an app that
 /// listens on IPv4 alone through docker-proxy. One created before the label stays
 /// IPv4-only until it is replaced. A labelled one follows the bridge, so it gains or
 /// loses IPv6 when the bridge does.
+///
+/// The holder owns the Ingress Proxy's netns, so it takes IPv6 though it publishes
+/// host ports, as the Caddy did before it (#2837). A Caddy from before the holder
+/// still publishes the ports itself and keeps that endpoint.
 #[must_use]
 pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
-    let ingress = QualifiedService::system_ingress();
-    labels.get(LABEL_BRIDGE_IPV6).map(String::as_str) == Some("true")
-        || labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
-            && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
-            && !labels.contains_key(LABEL_HOOK)
+    let door = |door: QualifiedService| {
+        labels.get(labels::NAMESPACE) == Some(&door.namespace.to_string())
+            && labels.get(labels::SERVICE_NAME) == Some(&door.name.to_string())
+    };
+    labels.get(labels::BRIDGE_IPV6).map(String::as_str) == Some("true")
+        || (door(QualifiedService::system_ingress())
+            || door(QualifiedService::system_ingress_holder()))
+            && !labels.contains_key(labels::HOOK)
 }
 
 /// The ployz bridge endpoint for a container that does or does not take IPv6.
@@ -101,11 +111,6 @@ pub(crate) fn bridge_endpoint(ipv6: bool) -> Option<bollard::models::EndpointSet
         ..Default::default()
     })
 }
-/// Deployment attempt that created a Service Container.
-pub const LABEL_DEPLOYMENT: &str = "ployz.deployment.id";
-pub const LABEL_GEN: &str = "ployz.gen";
-pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
-
 #[derive(Clone)]
 pub struct LocalDocker {
     client: Docker,
@@ -169,6 +174,22 @@ impl LocalDocker {
         )?))
     }
 
+    /// Docker's inspect of `container_id`, decoded to the fields this crate reads. A
+    /// response bollard's typed decode refuses is decoded from its raw JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ContainerNotFound` when Docker has no such Container, and another
+    /// error when Docker cannot answer or answers something undecodable.
+    async fn inspect(&self, container_id: &ContainerId) -> Result<RawContainerInspect, Error> {
+        decode_raw_inspect(
+            self.client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )
+    }
+
     async fn uses_containerd_store(&self) -> Result<bool, Error> {
         Ok(self
             .client
@@ -203,13 +224,13 @@ impl LocalDocker {
             .collect())
     }
 
-    async fn managed_containers(
+    pub(super) async fn managed_containers(
         &self,
     ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
         self.labelled(vec![
-            LABEL_MANAGED.to_owned(),
-            LABEL_NAMESPACE.to_owned(),
-            LABEL_SERVICE_ID.to_owned(),
+            labels::MANAGED.to_owned(),
+            labels::NAMESPACE.to_owned(),
+            labels::SERVICE_ID.to_owned(),
         ])
         .await
     }
@@ -219,15 +240,15 @@ impl LocalDocker {
         service: &QualifiedService,
     ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
         self.labelled(vec![
-            LABEL_MANAGED.to_owned(),
-            LABEL_SERVICE_ID.to_owned(),
-            format!("{LABEL_NAMESPACE}={}", service.namespace),
-            format!("{LABEL_SERVICE_NAME}={}", service.name),
+            labels::MANAGED.to_owned(),
+            labels::SERVICE_ID.to_owned(),
+            format!("{}={}", labels::NAMESPACE, service.namespace),
+            format!("{}={}", labels::SERVICE_NAME, service.name),
         ])
         .await
     }
 
-    async fn labelled(
+    pub(super) async fn labelled(
         &self,
         labels: Vec<String>,
     ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
@@ -258,7 +279,7 @@ pub struct ServiceCopy {
     pub container_id: ContainerId,
     pub r#gen: Gen,
     pub rotation: ployz_core::CopyRotation,
-    /// The Deploy run that created it, from its `LABEL_DEPLOYMENT`.
+    /// The Deploy run that created it, from its `ployz.deployment.id` label.
     pub deployment: Option<ployz_core::DeploymentLogId>,
 }
 
@@ -312,10 +333,17 @@ pub struct ContainerRuntime {
     specs: MachineSpecStore,
     sink: Option<ObservationSink>,
     stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
+    leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
     first_synced: watch::Sender<bool>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
+    /// Serializes every holder and Caddy lifecycle (a route, a legacy translation and
+    /// recovery), so no two of them place or retire the Ingress doors at once. Taken
+    /// before the admission turn and before any per-id gate.
+    doors: Arc<tokio::sync::Mutex<()>>,
     sealing_key_dir: Option<PathBuf>,
+    /// Where Machine paths such as the tunnel token's resolve. `/` outside tests.
+    machine_root: PathBuf,
     log_store: LogStore,
     /// Set when a Leave begins removing every managed Container, and cleared only when
     /// that Leave fails, so a committed Leave keeps it set.
@@ -330,13 +358,30 @@ impl ContainerRuntime {
             specs,
             sink: None,
             stopping: watch::Sender::new(BTreeMap::new()),
+            leaving: Arc::default(),
             first_synced: watch::Sender::new(false),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
+            doors: Arc::default(),
             sealing_key_dir: None,
+            machine_root: PathBuf::from("/"),
             log_store: LogStore::default(),
             departing: Arc::default(),
         }
+    }
+
+    /// Resolves Machine paths under `root` instead of `/`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_machine_root(mut self, root: PathBuf) -> Self {
+        self.machine_root = root;
+        self
+    }
+
+    /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so
+    /// work detached from its caller holds it until that work ends.
+    pub(crate) async fn door_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.doors).lock_owned().await
     }
 
     /// Opens Sealed env values with the Sealing Key kept in `data_dir`.
@@ -452,6 +497,27 @@ impl ContainerRuntime {
             stopping: self.stopping.clone(),
             container_id,
         }
+    }
+
+    /// Mark this Container leaving until the returned guard drops, so a peer's inspect
+    /// reports it. The caller holds the Machine's exclusive admission turn.
+    #[must_use]
+    pub fn leave(&self, container_id: ContainerId) -> Leaving {
+        self.leaving
+            .lock()
+            .expect("leaving marks lock")
+            .insert(container_id);
+        Leaving {
+            leaving: Arc::clone(&self.leaving),
+            container_id,
+        }
+    }
+
+    fn is_leaving(&self, container_id: &ContainerId) -> bool {
+        self.leaving
+            .lock()
+            .expect("leaving marks lock")
+            .contains(container_id)
     }
 
     fn is_withdrawn(&self, container_id: &ContainerId) -> bool {
@@ -625,10 +691,10 @@ impl ContainerRuntime {
         let unstamped = containers
             .iter()
             .filter(|(_, labels)| {
-                !labels.contains_key(LABEL_GEN)
-                    && ManagedLabels::parse(labels).is_ok_and(|managed| {
+                !labels.contains_key(labels::GEN)
+                    && ServiceLabels::parse(labels).is_ok_and(|managed| {
                         managed.kind == ContainerKind::ServiceContainer
-                            && managed.identity != QualifiedService::system_ingress()
+                            && !managed.identity.is_ingress_door()
                     })
             })
             .map(|(id, _)| *id)
@@ -662,10 +728,10 @@ impl ContainerRuntime {
         let unstamped = containers
             .iter()
             .filter(|(_, labels)| {
-                !labels.contains_key(LABEL_GEN)
-                    && ManagedLabels::parse(labels).is_ok_and(|managed| {
+                !labels.contains_key(labels::GEN)
+                    && ServiceLabels::parse(labels).is_ok_and(|managed| {
                         managed.kind == ContainerKind::ServiceContainer
-                            && !managed.identity.namespace.is_reserved()
+                            && !managed.identity.namespace.is_system()
                     })
             })
             .map(|(id, _)| *id)
@@ -678,13 +744,7 @@ impl ContainerRuntime {
         // Deploy replaces it, a cost only 0.2.4 copies of a HEALTHCHECK image pay.
         for container_id in self.specs.without_healthcheck(unstamped).await? {
             // A Container Docker cannot inspect now is left for the next sync.
-            let Ok(inspected) = decode_raw_inspect(
-                self.docker
-                    .client
-                    .inspect_container(container_id.as_str(), None)
-                    .await,
-                &container_id,
-            ) else {
+            let Ok(inspected) = self.docker.inspect(&container_id).await else {
                 continue;
             };
             if !matches!(
@@ -732,7 +792,7 @@ impl ContainerRuntime {
             .service_containers(service)
             .await?
             .into_iter()
-            .filter(|(_, labels)| !labels.contains_key(LABEL_HOOK))
+            .filter(|(_, labels)| !labels.contains_key(labels::HOOK))
             .collect::<Vec<_>>();
         let mut rotations = self
             .specs
@@ -742,10 +802,10 @@ impl ContainerRuntime {
             .into_iter()
             .map(|(container_id, labels)| ServiceCopy {
                 container_id,
-                r#gen: label_gen(&labels),
+                r#gen: labels::generation(&labels),
                 rotation: rotations.remove(&container_id).unwrap_or_default(),
                 deployment: labels
-                    .get(LABEL_DEPLOYMENT)
+                    .label(labels::DEPLOYMENT_ID)
                     .and_then(|label| ployz_core::DeploymentLogId::parse(label).ok()),
             })
             .collect())
@@ -778,13 +838,7 @@ impl ContainerRuntime {
         &self,
         container_id: &ContainerId,
     ) -> Result<ContainerRuntimeObservation, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         Ok(runtime_observation(inspected.state.as_ref()))
     }
 
@@ -800,13 +854,7 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<ployz_core::ContainerRun>, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         let ended = matches!(
             runtime_observation(inspected.state.as_ref()),
             ContainerRuntimeObservation::Exited { .. }
@@ -821,13 +869,7 @@ impl ContainerRuntime {
     ///
     /// Returns when Docker cannot inspect the Container.
     pub async fn pid(&self, container_id: &ContainerId) -> Result<Option<u32>, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         Ok(inspected
             .state
             .as_ref()
@@ -846,18 +888,12 @@ impl ContainerRuntime {
         &self,
         container_id: &ContainerId,
     ) -> Result<Option<crate::sealed_env::SealedRecord>, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        let inspected = self.docker.inspect(container_id).await?;
         let label = inspected
             .config
             .as_ref()
             .and_then(|config| config.labels.as_ref())
-            .and_then(|labels| labels.get(crate::sealed_env::LABEL_SEALED));
+            .and_then(|labels| labels.get(labels::SEALED_ENV));
         Ok(crate::sealed_env::record_from_label(
             label.map(String::as_str),
         )?)
@@ -903,26 +939,23 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         machine_id: &MachineId,
     ) -> Result<InspectedRun, Error> {
-        let inspected = decode_raw_inspect(
-            self.docker
-                .client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )?;
+        // Before the rotation: an Out clears its mark only after it wrote Out, so an
+        // answer that reads no mark then reads Out, never In from before the write.
+        let leaving = self.is_leaving(container_id);
+        let inspected = self.docker.inspect(container_id).await?;
         let labels = inspected
             .config
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::MissingField("container labels"))?;
-        let ManagedLabels { identity, kind } = ManagedLabels::parse(labels)?;
-        let resolved_spec = self
+        let ServiceLabels { identity, kind } = ServiceLabels::parse(labels)?;
+        let (resolved_spec, rotation) = self
             .specs
-            .get(container_id)
+            .spec_and_rotation(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
-        let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
-        let r#gen = label_gen(labels);
+        let rotation = rotation.unwrap_or_default();
+        let r#gen = labels::generation(labels);
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
         let address = container_address(&inspected);
@@ -933,9 +966,7 @@ impl ContainerRuntime {
             crate::sealed_env::Lines::new(
                 *container_id,
                 crate::sealed_env::record_from_label(
-                    labels
-                        .get(crate::sealed_env::LABEL_SEALED)
-                        .map(String::as_str),
+                    labels.get(labels::SEALED_ENV).map(String::as_str),
                 ),
                 self.sealing_key_dir(),
             )
@@ -1014,6 +1045,7 @@ impl ContainerRuntime {
                 image_id: inspected.image,
                 last_check,
                 run,
+                leaving,
             },
             oom_killed,
         })
@@ -1025,6 +1057,20 @@ pub struct InspectedRun {
     pub details: ployz_core::ContainerDetails,
     /// Docker OOM-killed a process of the run this inspect saw.
     pub oom_killed: bool,
+}
+
+/// An Out's hold on a Container's leaving mark.
+pub struct Leaving {
+    leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
+    container_id: ContainerId,
+}
+
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        if let Ok(mut leaving) = self.leaving.lock() {
+            leaving.remove(&self.container_id);
+        }
+    }
 }
 
 /// One operation's hold on a Container's `stopping` mark.
@@ -1093,16 +1139,6 @@ fn decode_raw_inspect(
             Ok(serde_json::from_str(&contents)?)
         }
         Err(error) => Err(docker_error(container_id, error)),
-    }
-}
-
-#[allow(clippy::wildcard_enum_match_arm)]
-fn docker_error(container_id: &ContainerId, error: bollard::errors::Error) -> Error {
-    match error {
-        bollard::errors::Error::DockerResponseServerError {
-            status_code: 404, ..
-        } => Error::ContainerNotFound(*container_id),
-        error => Error::Docker(error),
     }
 }
 
@@ -1257,68 +1293,24 @@ fn created_at_unix_nanos(created: Option<&str>) -> i64 {
         .unwrap_or_default()
 }
 
-struct ManagedLabels {
-    identity: QualifiedService,
-    kind: ContainerKind,
-}
-
-impl ManagedLabels {
-    fn parse(labels: &HashMap<String, String>) -> Result<Self, Error> {
-        if !labels.contains_key(LABEL_MANAGED) {
-            return Err(Error::NotManaged);
+impl From<LabelError> for Error {
+    fn from(error: LabelError) -> Self {
+        match error {
+            LabelError::NotManaged => Self::NotManaged,
+            LabelError::Missing(key) => Self::MissingLabel(key),
+            LabelError::Invalid { key, source } => Self::InvalidValue { field: key, source },
         }
-        let namespace = required_label(labels, LABEL_NAMESPACE)?;
-        let service_id = required_label(labels, LABEL_SERVICE_ID)?;
-        let service_name = required_label(labels, LABEL_SERVICE_NAME)?;
-        ServiceId::parse(service_id).map_err(|source| Error::InvalidValue {
-            field: LABEL_SERVICE_ID,
-            source,
-        })?;
-        Ok(Self {
-            identity: QualifiedService::new(
-                Namespace::parse(namespace).map_err(|source| Error::InvalidValue {
-                    field: LABEL_NAMESPACE,
-                    source,
-                })?,
-                ServiceName::parse(service_name).map_err(|source| Error::InvalidValue {
-                    field: LABEL_SERVICE_NAME,
-                    source,
-                })?,
-            ),
-            kind: match labels.get(LABEL_HOOK) {
-                None => ContainerKind::ServiceContainer,
-                Some(_) => ContainerKind::PreDeployHook,
-            },
-        })
     }
 }
 
 fn creation_slot(labels: &HashMap<String, String>) -> Option<spec_store::CreationSlot> {
-    let ManagedLabels { identity, kind } = ManagedLabels::parse(labels).ok()?;
-    let key = labels.get(ployz_core::labels::CREATION_KEY)?;
+    let ServiceLabels { identity, kind } = ServiceLabels::parse(labels).ok()?;
+    let key = labels.label(labels::CREATION_KEY)?;
     Some(spec_store::CreationSlot::new(
         &identity.namespace,
         kind,
         key,
     ))
-}
-
-fn label_gen(labels: &HashMap<String, String>) -> Gen {
-    labels
-        .get(LABEL_GEN)
-        .and_then(|label| label.parse().ok())
-        .map_or(Gen::FIRST, Gen::new)
-}
-
-fn required_label<'a>(
-    labels: &'a HashMap<String, String>,
-    name: &'static str,
-) -> Result<&'a str, Error> {
-    labels
-        .get(name)
-        .map(String::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or(Error::MissingLabel(name))
 }
 
 #[derive(Default, Deserialize)]
@@ -1590,6 +1582,10 @@ pub enum Error {
     ContainerNotFound(ContainerId),
     #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
     SlotNameOccupied(String),
+    #[error("no Ingress Proxy holder is running on this Server")]
+    IngressHolderNotRunning,
+    #[error("the spec names a network this Server's Ployz doesn't know")]
+    UnrecognizedNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
     /// A registry or peer pull failed while the Docker root had almost no free space.
@@ -1671,6 +1667,8 @@ impl Error {
             | Self::MissingLabel(_)
             | Self::InvalidValue { .. }
             | Self::NotAServiceContainer(_)
+            | Self::IngressHolderNotRunning
+            | Self::UnrecognizedNetwork
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
@@ -1704,10 +1702,10 @@ impl From<&Error> for RpcError {
             Error::VolumeInUse { services, .. } if !services.is_empty() => {
                 serde_json::json!({ "in_use_by": services })
             }
-            Error::DiskFull { full, .. } => full.details(),
-            Error::LimitsRefused { refusal, .. } => serde_json::json!({ "reason": refusal }),
+            Error::DiskFull { full, .. } => full.to_details(),
+            Error::LimitsRefused { refusal, .. } => refusal.to_details(),
             Error::SpecNotFound(_) => {
-                serde_json::json!({ "reason": ployz_core::ContainerNotFoundReason::NoResolvedSpec })
+                ployz_core::ContainerNotFoundReason::NoResolvedSpec.to_details()
             }
             _ => serde_json::Value::Null,
         };
@@ -1863,6 +1861,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &namespace,
             &spec,
+            &create::CreationNetwork::Bridge,
             None,
         )
         .unwrap();
@@ -1896,11 +1895,11 @@ mod tests {
         assert!(regular_host.port_bindings.is_some());
         let regular_labels = regular.labels.as_ref().unwrap();
         assert_eq!(
-            regular_labels.get(LABEL_NAMESPACE).map(String::as_str),
+            regular_labels.get(labels::NAMESPACE).map(String::as_str),
             Some("shop")
         );
         assert_eq!(
-            regular_labels.get(LABEL_SERVICE_NAME).map(String::as_str),
+            regular_labels.get(labels::SERVICE_NAME).map(String::as_str),
             Some("api")
         );
         assert_eq!(
@@ -1911,7 +1910,7 @@ mod tests {
             regular_labels.get("example.empty").map(String::as_str),
             Some("")
         );
-        assert!(!regular_labels.contains_key(LABEL_HOOK));
+        assert!(!regular_labels.contains_key(labels::HOOK));
 
         let hook = create::container_create_body(
             &machine_id,
@@ -1919,6 +1918,7 @@ mod tests {
             ContainerKind::PreDeployHook,
             &namespace,
             &spec,
+            &create::CreationNetwork::Bridge,
             None,
         )
         .unwrap();
@@ -1950,16 +1950,16 @@ mod tests {
         );
         let hook_labels = hook.labels.as_ref().unwrap();
         assert_eq!(
-            hook_labels.get(LABEL_NAMESPACE).map(String::as_str),
+            hook_labels.get(labels::NAMESPACE).map(String::as_str),
             Some("shop")
         );
         assert_eq!(
-            hook_labels.get(LABEL_SERVICE_NAME).map(String::as_str),
+            hook_labels.get(labels::SERVICE_NAME).map(String::as_str),
             Some("api")
         );
         assert_eq!(
-            hook_labels.get(LABEL_HOOK).map(String::as_str),
-            Some(LABEL_HOOK_PRE_DEPLOY)
+            hook_labels.get(labels::HOOK).map(String::as_str),
+            Some(labels::HOOK_PRE_DEPLOY)
         );
         assert_eq!(
             hook_labels.get("example.value").map(String::as_str),
@@ -1990,6 +1990,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
+            &create::CreationNetwork::Bridge,
             None,
         )
         .unwrap();
@@ -2005,10 +2006,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_system_ingress_gets_its_sysctls_at_create() {
+    fn only_the_ingress_holder_gets_its_sysctls_at_create() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
-        let ingress = ployz_core::QualifiedService::system_ingress();
+        let ingress = ployz_core::QualifiedService::system_ingress_holder();
         let sysctls = |namespace: &ployz_core::Namespace, name: &str, kernel_supports| {
             let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
                 "service_id": "a".repeat(32),
@@ -2023,6 +2024,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 namespace,
                 &spec,
+                &create::CreationNetwork::Bridge,
                 None,
             )
             .unwrap();
@@ -2054,6 +2056,66 @@ mod tests {
             ),
             None
         );
+        assert_eq!(
+            sysctls(
+                &ingress.namespace,
+                &ployz_core::QualifiedService::system_ingress()
+                    .name
+                    .to_string(),
+                true
+            ),
+            None,
+            "the Caddy inherits the holder's namespace and its sysctls"
+        );
+    }
+
+    #[test]
+    fn a_container_in_the_holders_network_carries_nothing_of_its_own() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let holder = ContainerId::parse("b".repeat(64)).unwrap();
+        let specs = crate::images::DoorSpecs::public(ServiceId::parse("c".repeat(32)).unwrap());
+        let mut spec = specs.proxy;
+        spec.container.hostname = Some("ingress".parse().unwrap());
+        spec.container.extra_hosts = vec!["peer:10.0.0.9".parse().unwrap()];
+        let body = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &Namespace::system(),
+            &spec,
+            &create::CreationNetwork::Holder(holder),
+            None,
+        )
+        .unwrap();
+        let host = body.host_config.unwrap();
+        assert_eq!(host.network_mode, Some(format!("container:{holder}")));
+        assert_eq!(host.dns, None);
+        assert_eq!(host.dns_search, None);
+        assert_eq!(host.dns_options, None);
+        assert_eq!(host.port_bindings, None);
+        assert_eq!(host.extra_hosts, None);
+        assert_eq!(body.hostname, None);
+        assert_eq!(body.exposed_ports, None);
+        assert!(body.networking_config.is_none());
+
+        let holder_body = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &Namespace::system(),
+            &specs.holder,
+            &create::CreationNetwork::Bridge,
+            None,
+        )
+        .unwrap();
+        let host = holder_body.host_config.unwrap();
+        assert_eq!(host.network_mode.as_deref(), Some("ployz"));
+        assert!(
+            host.port_bindings.is_some(),
+            "the holder publishes the ports"
+        );
+        assert!(host.dns.is_some());
     }
 
     #[test]
@@ -2061,7 +2123,7 @@ mod tests {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
         let ingress = ployz_core::QualifiedService::system_ingress();
-        let caddy = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
+        let caddy = crate::images::legacy_caddy_for_tests("caddy:test")
             .to_resolved(
                 ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
                 ployz_core::ResolvedUpdateConfig::default(),
@@ -2074,6 +2136,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 namespace,
                 &caddy,
+                &create::CreationNetwork::Bridge,
                 None,
             )
             .unwrap();
@@ -2094,6 +2157,24 @@ mod tests {
                 "com.docker.network.endpoint.sysctls".into(),
                 "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
             )]))
+        );
+
+        let holder =
+            crate::images::DoorSpecs::public(ServiceId::parse("c".repeat(32)).unwrap()).holder;
+        let body = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &ingress.namespace,
+            &holder,
+            &create::CreationNetwork::Bridge,
+            None,
+        )
+        .unwrap();
+        assert!(takes_bridge_ipv6(body.labels.as_ref().unwrap()));
+        assert!(
+            body.networking_config.is_none(),
+            "the holder takes IPv6 though it publishes the ports"
         );
     }
 
@@ -2143,6 +2224,7 @@ mod tests {
                     kind,
                     &namespace,
                     &spec(ports.clone()),
+                    &create::CreationNetwork::Bridge,
                     None,
                 )
                 .unwrap();
@@ -2157,7 +2239,7 @@ mod tests {
                     "{kind:?} publishing {ports}"
                 );
                 assert_eq!(
-                    body.labels.as_ref().unwrap().get(LABEL_BRIDGE_IPV6),
+                    body.labels.as_ref().unwrap().get(labels::BRIDGE_IPV6),
                     Some(&ipv6.to_string()),
                     "an explicit value overrides one the image carries"
                 );
@@ -2168,14 +2250,14 @@ mod tests {
     #[test]
     fn a_container_without_the_label_set_to_true_does_not_take_ipv6() {
         let labels = HashMap::from([
-            (LABEL_MANAGED.to_owned(), String::new()),
-            (LABEL_NAMESPACE.to_owned(), "app".to_owned()),
-            (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
-            (LABEL_SERVICE_NAME.to_owned(), "web".to_owned()),
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::NAMESPACE.to_owned(), "app".to_owned()),
+            (labels::SERVICE_ID.to_owned(), "a".repeat(32)),
+            (labels::SERVICE_NAME.to_owned(), "web".to_owned()),
         ]);
         assert!(!takes_bridge_ipv6(&labels));
         let mut opted_out = labels;
-        opted_out.insert(LABEL_BRIDGE_IPV6.to_owned(), "false".to_owned());
+        opted_out.insert(labels::BRIDGE_IPV6.to_owned(), "false".to_owned());
         assert!(!takes_bridge_ipv6(&opted_out));
     }
 
@@ -2207,6 +2289,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
+            &create::CreationNetwork::Bridge,
             None,
         )
         .unwrap();
@@ -2581,27 +2664,27 @@ mod tests {
     #[test]
     fn managed_labels_distinguish_service_and_hook_containers() {
         assert!(matches!(
-            ManagedLabels::parse(&HashMap::new()),
+            ServiceLabels::parse(&HashMap::new()).map_err(Error::from),
             Err(Error::NotManaged)
         ));
         let mut labels = HashMap::from([
-            (LABEL_MANAGED.to_owned(), String::new()),
-            (LABEL_NAMESPACE.to_owned(), "app".to_owned()),
-            (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
-            (LABEL_SERVICE_NAME.to_owned(), "api".to_owned()),
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::NAMESPACE.to_owned(), "app".to_owned()),
+            (labels::SERVICE_ID.to_owned(), "a".repeat(32)),
+            (labels::SERVICE_NAME.to_owned(), "api".to_owned()),
         ]);
-        let parsed = ManagedLabels::parse(&labels).unwrap();
+        let parsed = ServiceLabels::parse(&labels).unwrap();
         assert_eq!(parsed.kind, ContainerKind::ServiceContainer);
         assert_eq!(parsed.identity.namespace.as_str(), "app");
         assert_eq!(parsed.identity.name.as_str(), "api");
-        labels.insert(LABEL_HOOK.to_owned(), LABEL_HOOK_PRE_DEPLOY.to_owned());
+        labels.insert(labels::HOOK.to_owned(), labels::HOOK_PRE_DEPLOY.to_owned());
         assert_eq!(
-            ManagedLabels::parse(&labels).unwrap().kind,
+            ServiceLabels::parse(&labels).unwrap().kind,
             ContainerKind::PreDeployHook
         );
-        labels.insert(LABEL_HOOK.to_owned(), "future-hook".to_owned());
+        labels.insert(labels::HOOK.to_owned(), "future-hook".to_owned());
         assert_eq!(
-            ManagedLabels::parse(&labels).unwrap().kind,
+            ServiceLabels::parse(&labels).unwrap().kind,
             ContainerKind::PreDeployHook
         );
     }
@@ -2609,31 +2692,178 @@ mod tests {
     #[test]
     fn managed_labels_reject_missing_namespace() {
         let labels = HashMap::from([
-            (LABEL_MANAGED.to_owned(), String::new()),
-            (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
-            (LABEL_SERVICE_NAME.to_owned(), "api".to_owned()),
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::SERVICE_ID.to_owned(), "a".repeat(32)),
+            (labels::SERVICE_NAME.to_owned(), "api".to_owned()),
         ]);
         assert!(matches!(
-            ManagedLabels::parse(&labels),
-            Err(Error::MissingLabel(LABEL_NAMESPACE))
+            ServiceLabels::parse(&labels).map_err(Error::from),
+            Err(Error::MissingLabel(labels::NAMESPACE))
         ));
     }
 
     #[test]
     fn managed_labels_reject_invalid_namespace() {
         let labels = HashMap::from([
-            (LABEL_MANAGED.to_owned(), String::new()),
-            (LABEL_NAMESPACE.to_owned(), "Not_DNS".to_owned()),
-            (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
-            (LABEL_SERVICE_NAME.to_owned(), "api".to_owned()),
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::NAMESPACE.to_owned(), "Not_DNS".to_owned()),
+            (labels::SERVICE_ID.to_owned(), "a".repeat(32)),
+            (labels::SERVICE_NAME.to_owned(), "api".to_owned()),
         ]);
         assert!(matches!(
-            ManagedLabels::parse(&labels),
+            ServiceLabels::parse(&labels).map_err(Error::from),
             Err(Error::InvalidValue {
-                field: LABEL_NAMESPACE,
+                field: labels::NAMESPACE,
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn a_label_error_becomes_the_docker_error_with_its_source() {
+        use std::error::Error as _;
+
+        assert!(matches!(
+            Error::from(LabelError::NotManaged),
+            Error::NotManaged
+        ));
+        assert!(matches!(
+            Error::from(LabelError::Missing(labels::SERVICE_ID)),
+            Error::MissingLabel("ployz.service.id")
+        ));
+        let invalid = ServiceLabels::parse(&HashMap::from([
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::NAMESPACE.to_owned(), "Not_DNS".to_owned()),
+            (labels::SERVICE_ID.to_owned(), "a".repeat(32)),
+            (labels::SERVICE_NAME.to_owned(), "api".to_owned()),
+        ]))
+        .unwrap_err();
+        let error = Error::from(invalid);
+        assert!(matches!(
+            error,
+            Error::InvalidValue {
+                field: "ployz.namespace",
+                ..
+            }
+        ));
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn managed_labels_parse_outcomes_and_their_messages() {
+        let id = "a".repeat(32);
+        let outcome = |labels: &[(&str, &str)]| {
+            let labels: HashMap<String, String> = labels
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            match ServiceLabels::parse(&labels) {
+                Ok(parsed) => format!(
+                    "{:?} {}/{}",
+                    parsed.kind, parsed.identity.namespace, parsed.identity.name
+                ),
+                Err(error) => Error::from(error).to_string(),
+            }
+        };
+        let not_managed = "container is not managed by Ployz";
+        assert_eq!(outcome(&[]), not_managed);
+        assert_eq!(outcome(&[("ployzd.managed", "")]), not_managed);
+        assert_eq!(outcome(&[("ployz.namespace", "app")]), not_managed);
+        assert_eq!(
+            outcome(&[("ployz.managed", "")]),
+            "managed container is missing label ployz.namespace"
+        );
+        assert_eq!(
+            outcome(&[("ployz.managed", ""), ("ployz.namespace", "app")]),
+            "managed container is missing label ployz.service.id"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "app"),
+                ("ployz.service.id", &id)
+            ]),
+            "managed container is missing label ployz.service.name"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", ""),
+                ("ployz.service.id", &id),
+                ("ployz.service.name", "api")
+            ]),
+            "managed container is missing label ployz.namespace"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "app"),
+                ("ployz.service.id", ""),
+                ("ployz.service.name", "api")
+            ]),
+            "managed container is missing label ployz.service.id"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "Not_DNS"),
+                ("ployz.service.id", "short"),
+                ("ployz.service.name", "Bad_Name")
+            ]),
+            "managed container has invalid ployz.service.id",
+            "the Service ID is checked before the Namespace and the name"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "Not_DNS"),
+                ("ployz.service.id", &id),
+                ("ployz.service.name", "Bad_Name")
+            ]),
+            "managed container has invalid ployz.namespace"
+        );
+        assert_eq!(
+            outcome(&[
+                ("ployz.managed", ""),
+                ("ployz.namespace", "app"),
+                ("ployz.service.id", &id),
+                ("ployz.service.name", "Bad_Name")
+            ]),
+            "managed container has invalid ployz.service.name"
+        );
+        let valid = [
+            ("ployz.managed", "anything"),
+            ("ployz.namespace", "app"),
+            ("ployz.service.id", id.as_str()),
+            ("ployz.service.name", "api"),
+        ];
+        assert_eq!(outcome(&valid), "ServiceContainer app/api");
+        let mut hooked = valid.to_vec();
+        hooked.push(("ployz.service.hook", ""));
+        assert_eq!(outcome(&hooked), "PreDeployHook app/api");
+    }
+
+    #[test]
+    fn creation_slot_and_gen_read_their_labels() {
+        let id = "a".repeat(32);
+        let mut labels = HashMap::from([
+            ("ployz.managed".to_owned(), String::new()),
+            ("ployz.namespace".to_owned(), "app".to_owned()),
+            ("ployz.service.id".to_owned(), id),
+            ("ployz.service.name".to_owned(), "api".to_owned()),
+        ]);
+        assert!(creation_slot(&labels).is_none());
+        labels.insert("ployz.creation.key".to_owned(), "run:0".to_owned());
+        assert!(creation_slot(&labels).is_some());
+        labels.remove("ployz.managed");
+        assert!(creation_slot(&labels).is_none());
+
+        assert_eq!(labels::generation(&HashMap::new()), Gen::FIRST);
+        let gen_of = |value: &str| {
+            labels::generation(&HashMap::from([("ployz.gen".to_owned(), value.to_owned())]))
+        };
+        assert_eq!(gen_of("3"), Gen::new(3));
+        assert_eq!(gen_of("three"), Gen::FIRST);
     }
 
     #[test]
@@ -3410,6 +3640,7 @@ mod sealed_output_tests {
             volumes: Vec::new(),
             certificates: Vec::new(),
             incomplete_ids: Default::default(),
+            unanswered: Vec::new(),
             observed_at: chrono::Utc::now().to_rfc3339(),
         })
         .unwrap();

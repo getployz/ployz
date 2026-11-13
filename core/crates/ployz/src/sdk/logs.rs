@@ -1,10 +1,12 @@
 //! On-demand Container log transport for SDK readers.
+use crate::cluster::{Call, Deadline};
 use futures_util::future::join_all;
+use ployz_core::error_chain;
 use ployz_core::{
     ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LastRun,
-    LiveLogTarget, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata,
-    LogsOptions, MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError,
-    RpcErrorCode, TailLogsRequest, log_level, op,
+    LiveLogTarget, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogsOptions,
+    MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError, RpcErrorCode,
+    TailLogsRequest, log_level, op,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,7 +15,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
-use super::{Session, invalid_argument};
+use super::Session;
 use crate::connect::{Client, ConnectError};
 use ployz_core::{InspectContainerRequest, RetainedEnvRequest};
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
@@ -92,15 +94,6 @@ pub enum LogHistoryRecord {
     },
 }
 
-/// Decoded output preserving nanosecond precision across JavaScript.
-#[derive(Clone, Debug, Serialize, TS)]
-pub struct ContainerLogRecord {
-    pub source: LogMetadata,
-    pub timestamp_nanos: String,
-    pub channel: LogChannel,
-    pub message: String,
-}
-
 /// Output and source-local diagnostics share a stream without confusing their meaning.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -124,7 +117,7 @@ impl Session {
         input: ContainerLogInput,
     ) -> Result<ContainerLogStream, RpcError> {
         if !(-1..=1000).contains(&input.tail) {
-            return Err(invalid_argument("tail must be -1..1000".into()));
+            return Err(RpcError::invalid_argument("tail must be -1..1000"));
         }
         let client = self.client()?;
         let target = MachineTarget::from(&input.machine_id);
@@ -140,11 +133,11 @@ impl Session {
             },
         })
         .encode()
-        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+        .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let stream = self
             .until_closed(async {
                 client
-                    .tail_logs_stream(&target, request)
+                    .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
                     .await
                     .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
             })
@@ -169,16 +162,16 @@ impl Session {
             limit: input.limit,
             cursor: input.cursor,
         };
-        request.validate().map_err(invalid_argument)?;
+        request.validate().map_err(RpcError::invalid_argument)?;
         let payload = op::LogHistory::into_request(request)
             .encode()
-            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+            .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let client = self.client()?;
         let target = MachineTarget::from(&input.machine_id);
         let stream = self
             .until_closed(async {
                 client
-                    .log_history_stream(&target, payload)
+                    .open_stream::<op::LogHistory>(Some(&target), tokio_stream::once(payload))
                     .await
                     .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
             })
@@ -197,27 +190,17 @@ pub struct LogHistoryStream {
 }
 
 impl LogHistoryStream {
-    /// The next row, skipping heartbeats. `None` after `end`.
+    /// The next row as the store sent it, skipping heartbeats. `None` after `end`.
     /// # Errors
     /// Returns the store's error row, malformed frames, transport failures,
     /// and a timeout when the store sends no frame for ten seconds.
-    pub async fn next(&self) -> Result<Option<LogHistoryRecord>, RpcError> {
-        Ok(self.row().await?.map(history_record))
-    }
-
-    /// The next row as the store sent it, skipping heartbeats. `None` after `end`.
     pub(super) async fn row(&self) -> Result<Option<HistoryRow>, RpcError> {
         let mut stream = self.stream.lock().await;
         loop {
             let payload = tokio::select! {
                 () = self.cancel.cancelled() => return Ok(None),
                 payload = tokio::time::timeout(ROW_DEADLINE, stream.message()) => payload
-                    .map_err(|_| RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: "the Server's Log Store stopped answering".into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    })?
+                    .map_err(|_| RpcError::unavailable("the Server's Log Store stopped answering"))?
                     .map_err(|error| RpcError::from(ConnectError::from(error)))?,
             };
             let Some(payload) = payload else {
@@ -247,24 +230,19 @@ impl Drop for LogHistoryStream {
 fn nanos(value: Option<&str>, field: &str) -> Result<Option<i64>, RpcError> {
     value
         .map(|value| {
-            value
-                .parse()
-                .map_err(|_| invalid_argument(format!("{field} must be a decimal integer")))
+            value.parse().map_err(|_| {
+                RpcError::invalid_argument(format!("{field} must be a decimal integer"))
+            })
         })
         .transpose()
 }
 
 fn history_row(payload: &OpaquePayload) -> Result<Option<HistoryRow>, RpcError> {
     match HistoryRow::decode(payload)
-        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?
+        .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?
     {
         HistoryRow::Heartbeat => Ok(None),
-        HistoryRow::Error(message) => Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message,
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
+        HistoryRow::Error(message) => Err(RpcError::unavailable(message)),
         row @ (HistoryRow::Container(_)
         | HistoryRow::Line { .. }
         | HistoryRow::Gap { .. }
@@ -318,13 +296,6 @@ pub(super) fn history_record(row: HistoryRow) -> LogHistoryRecord {
     }
 }
 impl ContainerLogStream {
-    /// Read the next output record, skipping transport heartbeats.
-    /// # Errors
-    /// Returns malformed-frame and Machine transport failures.
-    pub async fn next(&self) -> Result<Option<ContainerLogRecord>, RpcError> {
-        Ok(self.entry().await?.map(decode_record))
-    }
-
     /// The next frame as the Machine sent it, skipping heartbeats.
     pub(super) async fn entry(&self) -> Result<Option<LogEntry>, RpcError> {
         let mut stream = self.stream.lock().await;
@@ -337,7 +308,7 @@ impl ContainerLogStream {
                 return Ok(None);
             };
             let entry = LogEntry::decode(&payload)
-                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+                .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
             if !matches!(entry.body, LogBody::Heartbeat) {
                 return Ok(Some(entry));
             }
@@ -354,28 +325,6 @@ impl Drop for ContainerLogStream {
     }
 }
 
-/// `entry` as a raw record. Heartbeats never get here: [`ContainerLogStream::entry`] took them.
-fn decode_record(entry: LogEntry) -> ContainerLogRecord {
-    let (channel, message) = match entry.body {
-        LogBody::Stdout(bytes) => (
-            LogChannel::Stdout,
-            String::from_utf8_lossy(&bytes).into_owned(),
-        ),
-        LogBody::Stderr(bytes) => (
-            LogChannel::Stderr,
-            String::from_utf8_lossy(&bytes).into_owned(),
-        ),
-        LogBody::Error(message) => (LogChannel::Error, message),
-        LogBody::Heartbeat => unreachable!("the reader skips heartbeats"),
-    };
-    ContainerLogRecord {
-        source: entry.metadata,
-        timestamp_nanos: entry.timestamp_unix_nanos.to_string(),
-        channel,
-        message,
-    }
-}
-
 /// How long reading a failed Container's tail may take.
 const TAIL_READ: Duration = Duration::from_secs(5);
 /// The lines read from the Log Store: more than are kept, so a secret spanning lines is
@@ -383,25 +332,6 @@ const TAIL_READ: Duration = Duration::from_secs(5);
 const TAIL_FETCH: u16 = 200;
 /// The lines a failed row keeps.
 const TAIL_KEEP: u16 = 10;
-
-/// The last lines of failed Container `container` on `machine`, scrubbed of
-/// `sealed`, and the last run they show. Unread, they are unanswered.
-pub(crate) async fn failed_tail(
-    client: &Client,
-    machine: MachineId,
-    container: ContainerId,
-    sealed: &SealedValues,
-) -> (LogText, LastRun) {
-    match tail_frames(client, machine, container).await {
-        Some(tail) => tail.scrubbed(sealed),
-        None => (
-            LogText::Withheld {
-                why: Withheld::Unanswered,
-            },
-            LastRun::default(),
-        ),
-    }
-}
 
 /// A failed Container's raw last lines, oldest first, and its newest stored exit.
 pub(crate) struct Tail {
@@ -605,10 +535,10 @@ pub(crate) async fn process_tail(
         },
     })
     .encode()
-    .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+    .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
     let read = async {
         let mut stream = client
-            .tail_logs_stream(&target, request)
+            .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
             .await
             .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
         let mut frames = Vec::new();
@@ -618,12 +548,12 @@ pub(crate) async fn process_tail(
             .map_err(|error| RpcError::from(ConnectError::from(error)))?
         {
             let entry = LogEntry::decode(&payload)
-                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+                .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
             match entry.body {
                 LogBody::Stdout(bytes) | LogBody::Stderr(bytes) => {
                     frames.push(String::from_utf8_lossy(&bytes).into_owned());
                 }
-                LogBody::Error(message) => return Err(unavailable(message)),
+                LogBody::Error(message) => return Err(RpcError::unavailable(message)),
                 LogBody::Heartbeat => {}
             }
         }
@@ -641,20 +571,11 @@ async fn in_time<T>(
     tokio::time::timeout(SERVICE_TAIL_READ, read)
         .await
         .map_err(|_| {
-            unavailable(format!(
+            RpcError::unavailable(format!(
                 "{what} did not answer within {}s",
                 SERVICE_TAIL_READ.as_secs()
             ))
         })?
-}
-
-fn unavailable(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
 }
 
 /// The env that scrubs a Container's lines: Docker's, or the one its Machine's
@@ -667,28 +588,28 @@ pub(crate) async fn container_env(
 ) -> Option<BTreeMap<String, String>> {
     let target = MachineTarget::from(&machine);
     let inspected = client
-        .invoke::<op::InspectContainer>(
+        .call_shared::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: container,
             },
-            &target,
-            Some(TAIL_READ),
+            Call::once().to(&target).within(Deadline::Target(TAIL_READ)),
         )
-        .await;
+        .await
+        .map_err(crate::connect::rpc_error);
     match inspected {
         Ok(details) => return details.environment,
         Err(error) if error.code == RpcErrorCode::NotFound => {}
         Err(_) => return None,
     }
     client
-        .invoke::<op::RetainedEnv>(
+        .call_shared::<op::RetainedEnv>(
             RetainedEnvRequest {
                 container_id: container,
             },
-            &target,
-            Some(TAIL_READ),
+            Call::once().to(&target).within(Deadline::Target(TAIL_READ)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .ok()
         .and_then(|reply| reply.environment)
 }
@@ -712,9 +633,9 @@ async fn newest_lines(
             ..selector.clone()
         })
         .encode()
-        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+        .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let mut stream = client
-            .log_history_stream(target, request)
+            .open_stream::<op::LogHistory>(Some(target), tokio_stream::once(request))
             .await
             .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
         while let Some(payload) = stream
@@ -723,19 +644,14 @@ async fn newest_lines(
             .map_err(|error| RpcError::from(ConnectError::from(error)))?
         {
             let row = HistoryRow::decode(&payload)
-                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+                .map_err(|error| error_chain::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
             match row {
                 HistoryRow::Line {
                     container_id, text, ..
                 } => newest.push((container_id, text)),
                 HistoryRow::End { next } => cursor = next,
                 HistoryRow::Error(message) => {
-                    return Err(RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message,
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    });
+                    return Err(RpcError::unavailable(message));
                 }
                 HistoryRow::Exit { exit_code, .. } => match &mut exit {
                     None => {
@@ -821,7 +737,7 @@ mod tests {
         let (session, _sender, server) = streaming_session().await;
         let reader = history_reader(&session).await;
         let started = tokio::time::Instant::now();
-        let error = tokio::time::timeout(Duration::from_secs(11), reader.next())
+        let error = tokio::time::timeout(Duration::from_secs(11), reader.row())
             .await
             .expect("silent history reader did not time out")
             .unwrap_err();
@@ -846,11 +762,11 @@ mod tests {
             }
         });
         let started = tokio::time::Instant::now();
-        let record = tokio::time::timeout(Duration::from_secs(30), reader.next())
+        let row = tokio::time::timeout(Duration::from_secs(30), reader.row())
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(record, Some(LogHistoryRecord::End { next: None })));
+        assert!(matches!(row, Some(HistoryRow::End { next: None })));
         assert_eq!(started.elapsed(), Duration::from_secs(27));
         writer.await.unwrap();
         server.abort();
@@ -860,7 +776,7 @@ mod tests {
     async fn cancelling_history_reader_stops_a_pending_read_only() {
         let (session, _sender, server) = streaming_session().await;
         let reader = history_reader(&session).await;
-        let next = reader.next();
+        let next = reader.row();
         tokio::pin!(next);
         tokio::select! {
             biased;
@@ -891,7 +807,7 @@ mod tests {
             drop(sender);
         });
         let started = tokio::time::Instant::now();
-        assert!(reader.next().await.unwrap().is_none());
+        assert!(reader.entry().await.unwrap().is_none());
         assert_eq!(started.elapsed(), Duration::from_secs(11));
         writer.await.unwrap();
         server.abort();

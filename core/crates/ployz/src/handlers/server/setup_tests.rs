@@ -1,5 +1,7 @@
 //! Real setup RPC deadlines and Enroll resends under virtual time.
 
+use crate::cluster::{Call, Deadline, Wait};
+use ployz_core::error_chain;
 use std::{
     sync::{
         Arc,
@@ -30,6 +32,7 @@ fn founder() -> Machine {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -45,6 +48,7 @@ fn departing() -> ployz_core::MachineDetails {
         machine: Some(machine),
         store_version: Default::default(),
         rtts: Vec::new(),
+        passkeys: Vec::new(),
         management_clients: Vec::new(),
         telemetry: None,
         storage: None,
@@ -77,6 +81,7 @@ async fn enrolling_machine(
             match request.into_inner().decode_request().unwrap().body {
                 RpcRequestBody::DescribeContract(_) => Ok(Response::new(
                     RpcResponse::from(ployz_core::ContractDescription {
+                        attest: None,
                         machine_id: MachineId::random(),
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "fixture".into(),
@@ -125,6 +130,7 @@ async fn enroll_resends_past_the_read_budget_until_the_machine_replies() {
     let machine = founder();
     let (mut client, enrolls, server) = enrolling_machine(Enrolled::Enrolled {
         machine: machine.clone(),
+        join_confirmation: None,
     })
     .await;
     let started = Instant::now();
@@ -168,27 +174,32 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
     let machine = founder();
     let (mut client, enrolls, server) = enrolling_machine(Enrolled::Enrolled {
         machine: machine.clone(),
+        join_confirmation: None,
     })
     .await;
     let started = Instant::now();
     let error = client
-        .call_unretried::<op::Enroll>(
+        .call_shared::<op::Enroll>(
             founder_request(&machine),
-            None,
-            crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+            Call::once().within(Deadline::MutationReply(
+                crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+            )),
         )
         .await
         .unwrap_err();
     assert_eq!(Instant::now() - started, Duration::from_secs(60));
-    assert!(crate::ui::chain_text(&error).contains("Machine setup mutation reply timed out"));
+    assert!(error_chain::row(&error).contains("Machine setup mutation reply timed out"));
     assert_eq!(enrolls.load(Ordering::SeqCst), 1);
     let started = Instant::now();
     let error = client
-        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::read().waiting(Wait::standard()),
+        )
         .await
         .unwrap_err();
     assert_eq!(Instant::now() - started, Duration::from_secs(60));
-    assert!(crate::ui::chain_text(&error).contains("Machine setup read timed out"));
+    assert!(error_chain::row(&error).contains("Machine setup read timed out"));
     server.abort();
 }
 
@@ -297,6 +308,7 @@ async fn restarting_cluster_store(
             let response = match request.into_inner().decode_request().unwrap().body {
                 RpcRequestBody::DescribeContract(_) => {
                     RpcResponse::from(ployz_core::ContractDescription {
+                        attest: None,
                         machine_id: machine.id,
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "fixture".into(),
@@ -312,6 +324,7 @@ async fn restarting_cluster_store(
                     advertised_endpoints: Vec::new(),
                     store_version: Default::default(),
                     rtts: Vec::new(),
+                    passkeys: Vec::new(),
                     management_clients: Vec::new(),
                     telemetry: None,
                     storage: None,
@@ -352,6 +365,7 @@ async fn readiness_waits_out_a_cluster_store_that_is_still_opening() {
     let (mut client, lists, server) = restarting_cluster_store(founder(), 3).await;
     crate::setup_retry::run(
         &mut client,
+        &crate::ui::WaitNotices,
         "Waiting for the participating phase",
         ployz_core::MACHINE_START_WAIT,
         crate::connect::ConnectError::is_setup_retryable,
@@ -394,6 +408,7 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
                         advertised_endpoints: Vec::new(),
                         store_version: Default::default(),
                         rtts: Vec::new(),
+                        passkeys: Vec::new(),
                         management_clients: Vec::new(),
                         telemetry: None,
                         storage: None,
@@ -481,7 +496,7 @@ async fn a_direct_readiness_wait_ends_at_a_startup_refusal() {
     .expect("a refusal ends the wait")
     .err()
     .expect("a refusing daemon is not ready");
-    let text = crate::ui::chain_text(&refused);
+    let text = error_chain::row(&refused);
     assert!(
         text.contains(
             "ployzd refused to start: refusing to change the retained WireGuard interface"

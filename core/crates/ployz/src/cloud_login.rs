@@ -11,13 +11,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use ployz_core::cloud_contract::AGENT_HEADER;
+use ployz_core::cloud_contract::CLIENT_ID;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// The Cloud a sign-in goes to when none is named or stored.
-pub(crate) const DEFAULT_CLOUD: &str = "ployz.dev";
-/// Cloud's device-authorization client id for this CLI.
-const CLIENT_ID: &str = "ployz-cli";
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -92,6 +90,8 @@ pub(crate) enum LoginError {
     UnknownOrganization(String),
     #[error("no token or signed-in device {0} in this Organization")]
     UnknownCredential(String),
+    #[error("Tokens named `{name}` here: {}. No changes made.", ids.join(", "))]
+    AmbiguousCredential { name: String, ids: Vec<String> },
 }
 
 /// A bearer that never prints.
@@ -181,7 +181,7 @@ pub(crate) struct CredentialStore {
 impl CredentialStore {
     pub(crate) fn beside(config: &Path) -> Self {
         Self {
-            path: config.with_file_name("cloud.json"),
+            path: crate::config_dir::ConfigDir::new(config).cloud(),
         }
     }
 
@@ -302,7 +302,7 @@ pub(crate) enum Start {
 ///
 /// Returns [`LoginError::OtherCloud`] when signed in elsewhere, or a Cloud or store failure.
 pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
-    let cloud = crate::cloud_enroll::cloud_origin(cloud);
+    let cloud = crate::cloud_origin::CloudOrigin::new(cloud).into_string();
     let http = http()?;
     match store.replaceable()? {
         Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {
@@ -706,7 +706,7 @@ pub(crate) fn http() -> Result<reqwest::Client, LoginError> {
     if let Some(agent) = agent(|name| std::env::var(name).ok())
         .and_then(|agent| reqwest::header::HeaderValue::from_str(&agent).ok())
     {
-        headers.insert("x-ployz-agent", agent);
+        headers.insert(AGENT_HEADER, agent);
     }
     reqwest::Client::builder()
         .user_agent(concat!("ployz-cli/", env!("CARGO_PKG_VERSION")))

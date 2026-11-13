@@ -22,7 +22,7 @@ it.each([
   render(
     <Dialog open>
       <DialogContent>
-        <ServerUpgradesForm automatic={false} setAutomatic={vi.fn()} channel="stable" setChannel={vi.fn()} gate={gate} />
+        <ServerUpgradesForm automatic={false} setAutomatic={vi.fn()} channel="stable" setChannel={vi.fn()} asksPasskey={false} gate={gate} />
       </DialogContent>
     </Dialog>,
   );
@@ -34,11 +34,22 @@ it.each([
 
 it.each(ROLE_STATES)("opens Server upgrades to the roles Cloud lets upgrade, support's included (%s)", async (state) => {
   const client = await clientWithRole("ada", state);
-  vi.spyOn(upgradeHooks, "useServerUpgradeSettings").mockReturnValue({ automatic: false, setAutomatic: vi.fn(), channel: "stable", setChannel: vi.fn() });
+  vi.spyOn(upgradeHooks, "useServerUpgradeSettings").mockReturnValue({ automatic: false, setAutomatic: vi.fn(), channel: "stable", setChannel: vi.fn(), approval: null, asksPasskey: false, ensureApproved: vi.fn() });
   render(<QueryClientProvider client={client}><ServerUpgradesDialog organizationSlug="ada" open onOpenChange={vi.fn()} /></QueryClientProvider>);
   const open = state === "owner" || state === "admin" || state === "support";
   expect(screen.getByRole("switch", { name: "Upgrade automatically" }).hasAttribute("data-disabled")).toBe(!open);
   const reason = gateReason(state, "servers:operate", "Only an owner or admin can change these.");
   if (reason === undefined) expect(screen.queryByText(/Only an owner|your role/)).toBeNull();
   else expect(await screen.findByRole("dialog", { description: reason })).toBeTruthy();
+});
+
+it.each([true, false])("says changing releases asks for a passkey only when the Servers enforce device approval (%s)", (asksPasskey) => {
+  render(
+    <Dialog open>
+      <DialogContent>
+        <ServerUpgradesForm automatic={false} setAutomatic={vi.fn()} channel="stable" setChannel={vi.fn()} asksPasskey={asksPasskey} gate={{ allowed: true, reason: undefined }} />
+      </DialogContent>
+    </Dialog>,
+  );
+  expect(screen.queryByText(/asks for your passkey/) !== null).toBe(asksPasskey);
 });

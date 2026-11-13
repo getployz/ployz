@@ -73,7 +73,7 @@ it("links a newer major line's release notes, and nothing for the Servers' own l
 
 it.each(ROLE_STATES)("opens Upgrade to the roles Cloud lets upgrade, support's included (%s)", async (state) => {
   const client = await clientWithRole("ada", state);
-  vi.spyOn(upgradeHooks, "useServerUpgradeSettings").mockReturnValue({ automatic: false, setAutomatic: vi.fn(), channel: "stable", setChannel: vi.fn() });
+  vi.spyOn(upgradeHooks, "useServerUpgradeSettings").mockReturnValue({ automatic: false, setAutomatic: vi.fn(), channel: "stable", setChannel: vi.fn(), approval: null, asksPasskey: false, ensureApproved: vi.fn() });
   const upgrade = { line: { kind: "behind", release: "0.2.3", canUpgrade: true } as const, rows: new Map(), major: null, upgrade: vi.fn() };
   render(<QueryClientProvider client={client}><ServersUpgradeBar organizationSlug="ada" upgrade={upgrade} /></QueryClientProvider>);
   await expectGate(screen.getByRole("button", { name: "Upgrade to 0.2.3" }), state, "servers:operate", UPGRADE_REFUSED);

@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{DockerVolumeName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode};
+use crate::{
+    CodedRefusal, DockerVolumeName, Evidence, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode,
+};
 
 /// Bytes in one GiB; Pool growth rounds up to a multiple of it.
 pub const STORAGE_GIB: u64 = 1024 * 1024 * 1024;
@@ -162,7 +164,15 @@ impl StorageCapacityError {
     /// A readable RPC failure with stable, machine-readable capacity details.
     #[must_use]
     pub fn into_rpc_error(self) -> RpcError {
-        let mut details = serde_json::to_value(&self).expect("storage error is JSON serializable");
+        RpcError::refused(&self, self.to_string())
+    }
+}
+
+impl Evidence for StorageCapacityError {
+    const KEY: Option<&'static str> = None;
+
+    fn to_details(&self) -> serde_json::Value {
+        let mut details = serde_json::to_value(self).expect("storage error is JSON serializable");
         if let Self::InsufficientStorage {
             required_growth_bytes,
             available_bytes,
@@ -175,9 +185,9 @@ impl StorageCapacityError {
             fields.insert(
                 "shortfall_bytes".into(),
                 serde_json::json!(
-                    (required_growth_bytes as u128 + reserve_bytes as u128)
-                        .saturating_sub(available_bytes as u128)
-                        .min(u64::MAX as u128) as u64
+                    (u128::from(*required_growth_bytes) + u128::from(*reserve_bytes))
+                        .saturating_sub(u128::from(*available_bytes))
+                        .min(u128::from(u64::MAX)) as u64
                 ),
             );
             fields.insert(
@@ -189,15 +199,16 @@ impl StorageCapacityError {
                 ]),
             );
         }
-        RpcError {
-            code: if matches!(self, Self::StorageCapacityUnknown { .. }) {
-                RpcErrorCode::Unavailable
-            } else {
-                RpcErrorCode::Conflict
-            },
-            message: self.to_string(),
-            details,
-            cause: Vec::new(),
+        details
+    }
+}
+
+impl CodedRefusal for StorageCapacityError {
+    fn code(&self) -> RpcErrorCode {
+        if matches!(self, Self::StorageCapacityUnknown { .. }) {
+            RpcErrorCode::Unavailable
+        } else {
+            RpcErrorCode::Conflict
         }
     }
 }

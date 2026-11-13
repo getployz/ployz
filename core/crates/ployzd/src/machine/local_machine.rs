@@ -10,13 +10,13 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerId, ContainerObservation, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
-    InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
-    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
-    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
-    PublicIpDiscovery, RecoverySeed, RegisterRequest, Registered, RpcError, RpcErrorCode,
-    RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
-    synthesize_membership,
+    ClientKey, ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest,
+    Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine,
+    MachineDetails, MachineId, MachineIdentity, MachineList, MachineName, MachineObservation,
+    MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
+    PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -28,11 +28,15 @@ use super::{
 
 use crate::{
     corrosion::{
-        AdminClient, ClusterSealing, MembershipState, ReplicatedStore, membership_states_by_address,
+        AdminClient, ClusterSealing, DeclaredDoors, MembershipState, ReplicatedStore,
+        membership_states_by_address,
     },
     docker::{ContainerRuntime, LocalDocker},
     host_capacity,
-    network::{Leftover, NetworkError, NetworkPlane, discover_network},
+    network::{
+        DOCKER_NETWORK_NAME, Leftover, NetworkError, NetworkPlane, WIREGUARD_INTERFACE_NAME,
+        discover_network,
+    },
     sealing_key::{KeyFile, SealingKey},
 };
 
@@ -43,13 +47,19 @@ const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 pub struct LocalMachine {
     owner: RecordOwner,
-    management_client: Option<[u8; 32]>,
+    management_client: Option<ClientKey>,
+    /// The Operator's teardown this call was admitted under, which each admitted turn
+    /// checks again before its effect.
+    teardown: Option<teardown::HeldTeardown>,
+    /// Whether this call came over this Server's local socket, rather than the mesh.
+    local_socket: bool,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
     zpool: PathBuf,
     proc_root: PathBuf,
     settled: container::SettledCreations,
+    approvals: Arc<restart_approval::ConsumptionLog>,
     #[cfg(test)]
     peers: Option<PeerInspect>,
     #[cfg(test)]
@@ -64,22 +74,37 @@ pub(crate) type PeerInspect = std::sync::Arc<
     dyn Fn(
             MachineId,
             ContainerId,
-        ) -> futures_util::future::BoxFuture<'static, Option<ContainerObservation>>
+        ) -> futures_util::future::BoxFuture<'static, Option<ContainerDetails>>
         + Send
         + Sync,
 >;
 
 mod container;
+mod deploy_approval;
+mod ingress_doors;
+mod private_access;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
+mod join_approval;
 mod management_client;
+pub(crate) mod preview_deploy;
+pub(crate) mod preview_grant;
 mod push_target;
+mod resize_seed_approval;
+pub(super) mod restart_approval;
+pub(crate) mod rule_deploy;
+pub(crate) mod rule_grant;
+pub(crate) use resize_seed_approval::Landing;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
+mod teardown;
 pub(crate) use sealing_recovery::Error as RecoveryError;
+pub(crate) use teardown::{HeldStep, HeldTeardown};
 mod upgrade;
+mod volume_approval;
+pub(crate) use volume_approval::{Admitted, CopyStep};
 
 #[derive(Clone)]
 struct ClusterContext {
@@ -143,6 +168,12 @@ pub enum Error {
     DeviceSlot,
     #[error("only an approved Device manages Devices")]
     NeedsFullScope,
+    #[error("passkey {0} has the same key as an approved Device")]
+    PasskeyIsDevice(DeviceCode),
+    #[error("device {0} has the same key as a trusted passkey")]
+    DeviceIsPasskey(DeviceCode),
+    #[error("passkey {held} already holds this passkey's credential ID")]
+    CredentialHeld { held: DeviceCode },
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -169,12 +200,119 @@ pub enum Error {
     EmptyUpdate,
     #[error("push target {0}")]
     InvalidPushTarget(&'static str),
+    /// Device enforcement refused an Operator's restart step.
+    #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
+    RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's creation, or its step under a deploy
+    /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
+    #[error("{}", deploy_approval::refusal_text(.0))]
+    DeployRefused(ployz_core::authority::AuthorityRefusal),
+    /// A rule build's grant failed a check before anything opened. The refusal names
+    /// [`ployz_core::BUILD_GRANT_RULE_CAPABILITY`] in its details.
+    #[error("This Server refused the rule build's grant: {0}")]
+    RuleGrantRefused(ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's Container change under an automatic
+    /// deploy rule. The refusal names [`ployz_core::DEPLOY_RULE_CAPABILITY`] in its
+    /// details.
+    #[error("{0}")]
+    RuleDeployRefused(rule_deploy::RuleDeployRefusal),
+    /// A preview build's grant failed a check before anything opened. The refusal names
+    /// [`ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY`] in its details.
+    #[error("This Server refused the preview build's grant: {0}")]
+    PreviewGrantRefused(preview_deploy::PreviewRefusal),
+    /// Device enforcement refused an Operator's Container change under a preview rule.
+    /// The refusal names [`ployz_core::DEPLOY_PREVIEW_CAPABILITY`] in its details.
+    #[error("{0}")]
+    PreviewDeployRefused(preview_deploy::PreviewRefusal),
+    /// GitHub did not prove a rule build: its token failed to verify or match the rule.
+    #[error("This Server refused the rule build's GitHub token: {0}")]
+    RuleProofRefused(crate::github::oidc::ProofRefusal),
+    /// This Server could not read the approved branch's head from GitHub.
+    #[error("This Server could not read the approved branch's head from GitHub")]
+    RuleHeadUnread(#[source] crate::github::head::HeadError),
+    /// Device enforcement refused an Operator's `Build` or `MintBuildGrant`. The refusal
+    /// names `capability` in its details.
+    #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
+    BuildRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's upgrade for want of a valid Release Channel
+    /// approval. The refusal names [`ployz_core::UPGRADE_CHANNEL_CAPABILITY`] in its
+    /// details.
+    #[error(
+        "{capability}: no valid Release Channel approval for this Cluster: {0}",
+        capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
+    )]
+    UpgradeChannelRefused(ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's `Leave` or `Forget` that no teardown names,
+    /// before any Container stopped. The refusal names `capability` in its details.
+    #[error("{}: {refusal}", departure_text(.capability))]
+    DepartureRefused {
+        capability: &'static str,
+        refusal: ployz_core::authority::AuthorityRefusal,
+    },
+    /// Device enforcement refused an Operator's Container step or Volume removal that no
+    /// teardown names.
+    #[error("This server takes this off only under your approval: {0}")]
+    TeardownRefused(ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's `SetPrivateAccess` turning Private Access on
+    /// without an approval of its auth key.
+    #[error("This Server joins a tailnet only with your approval: {0}")]
+    PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's `SeedVolume`, which no Volume approval
+    /// admits yet. The refusal names `capability` in its details.
+    #[error("{}", ployz_core::SEED_REFUSED_BY_ENFORCEMENT)]
+    VolumeRefused { capability: &'static str },
+    /// A Volume step that no Volume approval admits on this Machine.
+    #[error("This Server refused the Volume step: {0}")]
+    VolumeStepRefused(ployz_core::authority::AuthorityRefusal),
+    #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
+    JoinRefused(ployz_core::authority::AuthorityRefusal),
+    #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]
+    EnforcementRefused(ployz_core::authority::AuthorityRefusal),
+    #[error("could not keep the record of join approvals")]
+    JoinRecord(#[source] std::io::Error),
+    #[error("the join of Machine {0} has already been admitted")]
+    JoinConsumed(MachineId),
+    #[error("could not keep the record of restart approvals")]
+    ApprovalRecord(#[source] std::io::Error),
     #[error(transparent)]
     RecordOwner(#[from] RecordOwnerStopped),
     #[error(transparent)]
     Cluster(#[from] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
+    #[error("This isn't a router spec Ployz builds.")]
+    PrivateAccessRouterSpec,
+    #[error("Private Access needs a Tailscale auth key.")]
+    PrivateAccessKeyMissing,
+    #[error(transparent)]
+    PrivateAccessKey(crate::sealed_env::OpenError),
+    #[error("Could not write the Tailscale auth key for the router.")]
+    PrivateAccessKeyFile(#[source] std::io::Error),
+    #[error("Could not change the Private Access node state on this Server.")]
+    PrivateAccessState(#[source] std::io::Error),
+    #[error(
+        "Could not remove Private Access router {container_id}, so this Server is not off yet."
+    )]
+    PrivateAccessRouterStays {
+        container_id: ContainerId,
+        #[source]
+        source: Box<crate::docker::Error>,
+    },
+    #[error("this Server opens only the Public and Tunnel Doors")]
+    UnsupportedDoors,
+    #[error("the Tunnel Door needs a sealed tunnel token")]
+    TunnelTokenMissing,
+    #[error(transparent)]
+    TunnelToken(crate::sealed_env::OpenError),
+    #[error("could not write the tunnel token for the Tunnel Connector")]
+    TunnelTokenFile(#[source] std::io::Error),
+    #[error("could not record whether the Tunnel Door is closed")]
+    TunnelDoorMarker(#[source] std::io::Error),
+    #[error("Ingress Proxy container {container_id} is {runtime} right after starting")]
+    DoorNotRunning {
+        container_id: ContainerId,
+        runtime: ployz_core::ContainerRuntimeObservation,
+    },
     #[error(transparent)]
     Network(#[from] NetworkError),
     #[error(transparent)]
@@ -188,6 +326,15 @@ pub enum Error {
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
     MissingAssignment,
+    /// The Cluster declares Doors the client running this joiner's catch-up can't
+    /// follow, or a declaration this Machine can't read.
+    #[error(
+        "Server {joiner} needs a newer Ployz. It cannot serve {capability}.",
+        capability = ployz_core::SET_CLUSTER_DOORS_CAPABILITY
+    )]
+    JoinerCannotFollowDoors { joiner: MachineName },
+    #[error("could not read the Cluster's declared Doors")]
+    DeclaredDoorsUnread(#[source] crate::corrosion::Error),
     #[error(transparent)]
     Admission(#[from] crate::mutation::Error),
     #[error(transparent)]
@@ -205,8 +352,11 @@ impl LocalMachine {
     #[must_use]
     pub fn new(owner: RecordOwner) -> Self {
         Self {
+            approvals: owner.restart_approvals(),
             owner,
             management_client: None,
+            teardown: None,
+            local_socket: false,
             cluster: None,
             containers: None,
             plugin: crate::storage::Plugin::default(),
@@ -262,14 +412,32 @@ impl LocalMachine {
 
     /// Bind subsequent mutation admission to this authenticated management client.
     #[must_use]
-    pub(crate) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+    pub(crate) fn with_management_client(mut self, remote: ClientKey) -> Self {
         self.management_client = Some(remote);
+        self
+    }
+
+    /// Hold `teardown` for this call: each admitted turn checks it again under the turn,
+    /// so a key removed or enforcement turned on while the call waited stops it.
+    #[must_use]
+    pub(crate) fn with_teardown(mut self, teardown: teardown::HeldTeardown) -> Self {
+        self.teardown = Some(teardown);
+        self
+    }
+
+    /// Mark subsequent calls as from this Server's local socket: its terminal, or SSH.
+    #[must_use]
+    pub(crate) fn on_local_socket(mut self) -> Self {
+        self.local_socket = true;
         self
     }
 
     #[must_use]
     pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
-        self.cluster = cluster.map(|(replicated, admin)| ClusterContext { replicated, admin });
+        self.cluster = cluster.map(|(replicated, admin)| ClusterContext {
+            replicated: replicated.with_authority(self.owner.clone()),
+            admin,
+        });
         self
     }
 
@@ -311,14 +479,14 @@ impl LocalMachine {
     /// Refuse a slot change from any management client other than Cloud's.
     /// Local-socket callers carry no client key and keep full authority.
     pub(crate) fn require_slot_authority(
-        client: Option<[u8; 32]>,
+        client: Option<ClientKey>,
         record: &LocalMachineRecord,
     ) -> Result<(), Error> {
         let Some(remote) = client else {
             return Ok(());
         };
         let label = record.accepted_label(&remote);
-        if label.is_some_and(|label| label.as_str() == "cloud") {
+        if label.is_some_and(ManagementClientLabel::is_cloud) {
             return Ok(());
         }
         tracing::warn!(
@@ -355,11 +523,25 @@ impl LocalMachine {
         G: Send + 'static,
     {
         let installation = self.admit_installation()?;
+        // Under the turn: a trusted key removed or enforcement turned on while this waited
+        // has taken its own turn before this one.
+        self.recheck_teardown()?;
         tokio::spawn(async move {
             let _admission = (turn, installation);
             work.await
         })
         .await?
+    }
+
+    /// The exclusive admission turn, for work that takes it itself, with this call's held
+    /// teardown checked again under it.
+    ///
+    /// # Errors
+    /// As [`Self::recheck_teardown`].
+    async fn exclusive_turn(&self) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, Error> {
+        let turn = self.owner.admission_lock().write_owned().await;
+        self.recheck_teardown()?;
+        Ok(turn)
     }
 
     /// Run `work` holding the installation guard and no turn. `work` takes the turns it
@@ -410,17 +592,23 @@ impl LocalMachine {
         &self,
         machine: MachineId,
         container: ContainerId,
-    ) -> Option<ContainerObservation> {
+    ) -> Option<ContainerDetails> {
         #[cfg(test)]
         if let Some(peers) = &self.peers {
             return peers(machine, container).await;
         }
-        let machines = self.replicated().ok()?.machines().await.ok()?;
-        let peer = machines
-            .observations
-            .iter()
-            .find(|peer| peer.id == machine)?;
-        crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
+        let inspected = async {
+            let machines = self.replicated().ok()?.machines().await.ok()?;
+            let peer = machines
+                .observations
+                .iter()
+                .find(|peer| peer.id == machine)?;
+            crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
+        };
+        tokio::time::timeout(PEER_INSPECT_TIMEOUT, inspected)
+            .await
+            .ok()
+            .flatten()
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
@@ -428,6 +616,23 @@ impl LocalMachine {
             .as_ref()
             .map(|cluster| &cluster.replicated)
             .ok_or(Error::ClusterStoreUnavailable)
+    }
+
+    /// The Doors the Cluster declares on this Machine's own replica. `None` when it
+    /// declares none, the value is unreadable, or the replica can't be asked: the
+    /// Doors this Machine held then stay as they were.
+    pub(crate) async fn declared_doors(&self) -> Option<ployz_core::IngressDoors> {
+        let replicated = self.replicated().ok()?;
+        match replicated.cluster_doors().await {
+            Ok(declared) => declared.followed(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "could not read the Cluster's declared Doors"
+                );
+                None
+            }
+        }
     }
 
     /// Entry-local membership and Corrosion's RTT from the admin socket, with the mesh
@@ -529,6 +734,7 @@ impl LocalMachine {
             store_version,
             rtts,
             management_clients: record.management_clients().cloned().collect(),
+            passkeys: record.passkeys().to_vec(),
             founding: record.founding(),
             telemetry,
             storage,
@@ -551,6 +757,24 @@ impl LocalMachine {
         SealingKey::observe(self.owner.data_dir())
             .and_then(KeyFile::held)
             .map(|public_key| ployz_core::Sealing::Held { public_key })
+    }
+
+    /// The build attest key this Machine derives from the Sealing Key its file holds, on
+    /// the phases [`Self::held_sealing`] reports one.
+    pub(crate) fn held_attest(
+        &self,
+        phase: LocalMachinePhase,
+    ) -> Option<ployz_core::authority::AttestKey> {
+        if !matches!(
+            phase,
+            LocalMachinePhase::Joining | LocalMachinePhase::Participating
+        ) {
+            return None;
+        }
+        SealingKey::load(self.owner.data_dir())
+            .ok()
+            .flatten()
+            .map(|key| key.attest().attest())
     }
 
     /// The key this Machine's file holds, or, when it holds none, the key a recovery
@@ -689,6 +913,15 @@ impl LocalMachine {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<Enrolled, Error> {
+        if self.record().device_enforcement()
+            && matches!(&request.role, ployz_core::EnrollAs::Founder { .. })
+        {
+            return Err(Error::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Unsigned {
+                    purpose: ployz_core::authority::Purpose::Join,
+                },
+            ));
+        }
         let (plan, installation) = self
             .owner
             .mutate(move |store| store.plan_enrollment(request, recovery))
@@ -709,12 +942,7 @@ impl LocalMachine {
                 .await;
                 if !leftovers.is_empty() {
                     return Ok(Enrolled::Refused {
-                        error: RpcError {
-                            code: RpcErrorCode::Conflict,
-                            message: leftovers_refusal(&leftovers),
-                            details: serde_json::Value::Null,
-                            cause: Vec::new(),
-                        },
+                        error: RpcError::conflict(leftovers_refusal(&leftovers)),
                         now: self.record().now(),
                     });
                 }
@@ -725,12 +953,7 @@ impl LocalMachine {
             EnrollPlan::Replay(machine) => machine,
             EnrollPlan::Conflict(now) => {
                 return Ok(Enrolled::Refused {
-                    error: RpcError {
-                        code: RpcErrorCode::Conflict,
-                        message: enroll_conflict(&now.phase).into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    },
+                    error: RpcError::conflict(enroll_conflict(&now.phase)),
                     now,
                 });
             }
@@ -740,7 +963,18 @@ impl LocalMachine {
             id = machine.id.as_str(),
             "enrolled"
         );
-        Ok(Enrolled::Enrolled { machine })
+        let join_confirmation = match &machine.join_approval {
+            Some(approval) if self.record().device_enforcement() => {
+                SealingKey::load(self.owner.data_dir())
+                    .map_err(Error::JoinRecord)?
+                    .map(|key| key.confirm_join(approval))
+            }
+            _ => None,
+        };
+        Ok(Enrolled::Enrolled {
+            machine,
+            join_confirmation,
+        })
     }
 
     /// Publish a client-selected assignment from a participating Entry Machine.
@@ -764,34 +998,112 @@ impl LocalMachine {
 
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let replicated = self.replicated()?;
+        let declared = replicated
+            .cluster_doors()
+            .await
+            .map_err(Error::DeclaredDoorsUnread)?;
+        admit_joiner(&declared, &request)?;
         let publication = replicated.machine_publication().await;
-        // Other Machines' rows are not consulted: Cloud owns concurrency. A Register
-        // takes back its id's `forgotten-id:` forget and replaces its id's row, unless
-        // this Entry's copy carries the `self_published` mark and the same key
-        // (`registration_upsert`). It never writes a Management Identity. The reply is
-        // the row it sent, not read back: when the row is kept, the stored row differs
-        // from it, and `target_versions` may lack the version an overwrite would make.
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: published_network(&self.record(), replicated).await?,
-            machines: Vec::new(),
-            target_versions: BTreeMap::new(),
+            machines: replicated.machines().await?.observations,
+            target_versions: replicated.version().await?,
+            doors: declared.followed(),
         };
-        let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
-        let sealing_key = SealingKey::load(self.owner.data_dir())
-            .unwrap_or_else(|error| {
+        let mut assignment = ployz_core::allocate_enrollment(
+            &request,
+            &ployz_core::EnrollmentSnapshot {
+                machines: Vec::new(),
+                ..snapshot.clone()
+            },
+            &[],
+        )?;
+        if self.record().device_enforcement() {
+            if let Some(stored) = self.approvals.join_result(request.machine_id)? {
+                if ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
+                    != stored.approval.open().map_err(Error::JoinRefused)?.machine
+                    || request
+                        .join_approval
+                        .as_ref()
+                        .is_some_and(|approval| approval != &stored.approval)
+                {
+                    return Err(Error::JoinConsumed(request.machine_id));
+                }
+                let restart_approval::JoinReply::Register(registration) = stored.reply else {
+                    return Err(Error::JoinConsumed(request.machine_id));
+                };
+                if let Some(confirmation) = &request.join_confirmation {
+                    let confirmed = SealingKey::load(self.owner.data_dir())
+                        .map_err(Error::JoinRecord)?
+                        .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
+                    if !confirmed {
+                        return Err(Error::JoinRefused(
+                            ployz_core::authority::AuthorityRefusal::Mismatch {
+                                field: "a join confirmation",
+                            },
+                        ));
+                    }
+                    publication
+                        .register(registration.assigned_machine.clone())
+                        .await?;
+                }
+                return Ok(*registration);
+            }
+            let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
+            if snapshot.machines.iter().any(|peer| {
+                let other = ipnet::Ipv4Net::from(peer.subnet);
+                subnet.contains(&other.network()) || other.contains(&subnet.network())
+            }) {
+                return Err(Error::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Mismatch {
+                        field: "an unused subnet",
+                    },
+                ));
+            }
+        }
+        let approval = self.admit_join(
+            &assignment.machine,
+            snapshot.network,
+            request.join_approval,
+            &snapshot.machines,
+        )?;
+        assignment.machine.join_approval = approval.clone();
+        assignment.machine.runtime.management_identity = None;
+        let held = match SealingKey::load(self.owner.data_dir()) {
+            Ok(key) => key,
+            Err(error) if !self.record().device_enforcement() => {
                 tracing::warn!(%error, "could not read the Sealing Key; registering without it");
                 None
+            }
+            Err(error) => return Err(Error::JoinRecord(error)),
+        };
+        let sealing_key = held
+            .map(|key| match &approval {
+                Some(approval) => key.seal_join(&assignment.machine.public_key, approval),
+                None => key.seal_to(&assignment.machine.public_key),
             })
-            .map(|key| key.seal_to(&assignment.machine.public_key))
             .transpose()?;
-        let machine = publication.register(assignment.machine).await?;
-        Ok(registered(
-            machine,
-            replicated.machines().await?.observations,
-            replicated.version().await?,
+        let mut registration = registered(
+            assignment.machine,
+            snapshot.machines,
+            snapshot.target_versions,
             sealing_key,
             self.record().devices().collect(),
-        ))
+        );
+        if let Some(approval) = approval {
+            self.consume_join(restart_approval::JoinResult {
+                approval,
+                reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
+            })?;
+            return Ok(registration);
+        }
+        publication
+            .register(registration.assigned_machine.clone())
+            .await?;
+        if !self.record().device_enforcement() {
+            registration.target_versions = replicated.version().await?;
+        }
+        Ok(registration)
     }
 
     /// Membership Observation of Machines visible from this participating Machine.
@@ -814,11 +1126,23 @@ impl LocalMachine {
         let machines = replicated.machines().await?.observations;
         let states = self.membership_states().await?;
         let entry_id = local.id();
+        // A listing never fails for the declaration: without it, readers infer the Doors.
+        let doors = match replicated.cluster_doors().await {
+            Ok(declared) => declared.followed(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "could not read the Cluster's declared Doors; listing without them"
+                );
+                None
+            }
+        };
         Ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
                 network,
                 machines: machines.clone(),
                 target_versions: replicated.version().await?,
+                doors,
             }),
             machines: RuntimeWatchTelemetry {
                 states,
@@ -1151,6 +1475,29 @@ async fn published_network(
     Err(Error::ClusterNetworkUnpublished)
 }
 
+/// Refuse a joiner whose client can't follow the Cluster's declared Doors, judged on
+/// this Machine's own replica. Such a client would open the Public Door, so only an
+/// undeclared Cluster or one declared Public admits it.
+fn admit_joiner(declared: &DeclaredDoors, request: &RegisterRequest) -> Result<(), Error> {
+    let follows = request
+        .capabilities
+        .iter()
+        .any(|claimed| claimed == ployz_core::SET_CLUSTER_DOORS_CAPABILITY);
+    let admitted = follows
+        || match declared {
+            DeclaredDoors::Undeclared => true,
+            DeclaredDoors::Declared(doors) => doors.is_public_only(),
+            DeclaredDoors::Unreadable => false,
+        };
+    if admitted {
+        Ok(())
+    } else {
+        Err(Error::JoinerCannotFollowDoors {
+            joiner: request.name.clone(),
+        })
+    }
+}
+
 fn registered(
     assigned_machine: Machine,
     machines: Vec<Machine>,
@@ -1248,23 +1595,26 @@ fn leftovers_refusal(leftovers: &[Leftover]) -> String {
     for leftover in leftovers {
         match leftover {
             Leftover::WireGuardDevice(reason) => {
-                found.push(format!("WireGuard interface ployz-wg remains: {reason}"));
-                steps.push("run `ip link delete ployz-wg`".to_owned());
+                found.push(format!(
+                    "WireGuard interface {WIREGUARD_INTERFACE_NAME} remains: {reason}"
+                ));
+                steps.push(format!("run `ip link delete {WIREGUARD_INTERFACE_NAME}`"));
             }
             Leftover::AttachedNetwork(names) => {
                 found.push(format!(
-                    "Docker network ployz remains with containers {} attached; they belong to this Server's earlier enrollment, and removing them stops them while Volume data stays",
+                    "Docker network {DOCKER_NETWORK_NAME} remains with containers {} attached; they belong to this Server's earlier enrollment, and removing them stops them while Volume data stays",
                     names.join(", "),
                 ));
                 steps.push(format!("run `docker rm -f {}`", names.join(" ")));
-                steps.push("run `docker network rm ployz`".to_owned());
+                steps.push(format!("run `docker network rm {DOCKER_NETWORK_NAME}`"));
             }
             Leftover::UnownedNetwork => {
-                found.push(
-                    "Docker network ployz exists without the `ployzd.managed` label, so Ployz can't prove it made it"
-                        .to_owned(),
-                );
-                steps.push("once nothing else needs it, run `docker network rm ployz`".to_owned());
+                found.push(format!(
+                    "Docker network {DOCKER_NETWORK_NAME} exists without the `ployzd.managed` label, so Ployz can't prove it made it"
+                ));
+                steps.push(format!(
+                    "once nothing else needs it, run `docker network rm {DOCKER_NETWORK_NAME}`"
+                ));
             }
         }
     }
@@ -1293,6 +1643,14 @@ fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTree
     identities
 }
 
+fn departure_text(capability: &str) -> &'static str {
+    if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
+        ployz_core::FORGET_REFUSED_BY_ENFORCEMENT
+    } else {
+        ployz_core::LEAVE_REFUSED_BY_ENFORCEMENT
+    }
+}
+
 fn leave_response(owner: &RecordOwner, reset_warning: Option<String>) -> Left {
     owner.request_restart();
     Left::Left {
@@ -1302,12 +1660,7 @@ fn leave_response(owner: &RecordOwner, reset_warning: Option<String>) -> Left {
 }
 
 fn refusal(code: RpcErrorCode, message: &str) -> RpcError {
-    RpcError {
-        code,
-        message: message.into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::new(code, message)
 }
 
 #[cfg(test)]
@@ -1497,7 +1850,7 @@ mod tests {
             }],
             mesh_rtts: BTreeMap::new(),
         }
-        .overlay(vec![entry.clone(), peer.clone()], &entry.id);
+        .overlay(vec![entry.clone(), peer], &entry.id);
 
         let [entry_row, peer_row] = observations.as_slice() else {
             panic!("expected entry and peer observations");
@@ -1554,7 +1907,7 @@ mod tests {
         let entry = machine("edge", ENTRY_ID, 1);
         let peer = machine("peer", PEER_ID, 2);
         let observations =
-            RuntimeWatchTelemetry::default().overlay(vec![entry.clone(), peer.clone()], &entry.id);
+            RuntimeWatchTelemetry::default().overlay(vec![entry.clone(), peer], &entry.id);
 
         let [entry_row, peer_row] = observations.as_slice() else {
             panic!("expected entry and peer observations");
@@ -1585,6 +1938,7 @@ mod tests {
                 format!("203.0.113.{seed}:51820").parse().unwrap(),
             )],
             runtime: MachineRuntime::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }

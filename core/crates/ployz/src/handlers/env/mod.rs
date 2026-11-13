@@ -21,11 +21,13 @@ use serde_json::json;
 
 use super::config::expect;
 use super::deploy;
+use super::shared::confirm::confirm;
 use super::store::{self, mint, project, project_arg, store};
-use super::teardown::{self, Inventory, Removed, confirm, inventory};
+use super::teardown::{self, Inventory, Removed, inventory};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
-use crate::ui::{Hint, Tree};
+use crate::ui::Tree;
+use ployz_core::Hint;
 
 pub(super) fn group(command: Command) -> Command {
     command.about("Manage Environments and Branches")
@@ -508,14 +510,19 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     // command finishes it once the removal applied, or queues it again.
     let store = store.args(["--confirm", typed.as_str()]);
     let environment = inventory.environment.clone();
+    let target = (&environment.project, Some(&name));
+    let signing = teardown::drafted(matches, &store, target)?;
     let mut shown = None;
-    confirm(matches, &typed, "Environment", store.again(&[]), || {
+    let confirming = (typed.as_str(), signing.as_ref());
+    confirm(matches, confirming, "Environment", store.again(&[]), || {
         shown = Some(teardown::Shown::of([&inventory]));
         Ok(unconfirmed(inventory, &store.again(&[])))
     })?;
+    let signed = signing.map(teardown::Drafted::sign).transpose()?;
     let events = deploy::open_events(matches)?;
-    let target = (&environment.project, Some(&name));
-    let Some(removed) = teardown::remove(matches, &store, target, shown.as_ref(), events)? else {
+    let Some(removed) =
+        teardown::remove(matches, &store, target, (shown.as_ref(), signed), events)?
+    else {
         return Ok(());
     };
     crate::ui::finish(

@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schedule, Schema } from "effect";
+import { isNeedsProduction, type NeedsProduction } from "#/modules/billing/billing";
 import { defineCommand, refused } from "#/modules/commands/command.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -119,6 +120,9 @@ const shown = (name: string, uptime: ServiceUptime): typeof Shown.Type => ({
 const notChecked = (name: string) =>
   refused("not_checked", `${name} has no uptime check: it has no public address. Add a domain to check it.`);
 
+const needsProductionRefusal = () =>
+  refused("needs_production", "Uptime is part of Production. Ployz keeps checking. Add Production to this Organization to see it.");
+
 export const uptimeShow = defineCommand({
   name: "uptime_show",
   requires: "project:read",
@@ -145,9 +149,12 @@ export const uptimeShow = defineCommand({
       from: input.from ?? DEFAULT_RANGE.from,
       to: input.to ?? DEFAULT_RANGE.to,
     });
+    if (isNeedsProduction(uptime)) return needsProductionRefusal();
     return uptime === null ? notChecked(service.name) : { ok: true, output: shown(service.name, uptime) } as const;
   }),
 });
+
+const probeOf = (read: ServiceUptime | null | NeedsProduction) => read === null || isNeedsProduction(read) ? null : read.probe;
 
 /**
  * Repeats `read` each second while it shows the probe in flight, for at most 9 s, and answers with the last read. The
@@ -155,13 +162,13 @@ export const uptimeShow = defineCommand({
  * The checker can mark a round answered up to a second before it flushes the round's results, so an answered read is
  * read once more after 1.5 s.
  */
-export const whileChecking = <E, R>(read: Effect.Effect<ServiceUptime | null, E, R>) =>
+export const whileChecking = <A extends ServiceUptime | null | NeedsProduction, E, R>(read: Effect.Effect<A, E, R>) =>
   read.pipe(
     Effect.repeat({
       schedule: Schedule.spaced("1 second").pipe(Schedule.upTo({ duration: "9 seconds" })),
-      while: (current) => current?.probe?.answered === false,
+      while: (current) => probeOf(current)?.answered === false,
     }),
-    Effect.flatMap((last) => last?.probe?.answered ? read.pipe(Effect.delay("1500 millis")) : Effect.succeed(last)),
+    Effect.flatMap((last) => probeOf(last)?.answered ? read.pipe(Effect.delay("1500 millis")) : Effect.succeed(last)),
   );
 
 /** Asks for a probe the way Check now does, then waits for the checker to judge the round by `whileChecking`. */
@@ -183,6 +190,7 @@ export const uptimeCheck = defineCommand({
     const scope = { organizationSlug: caller.organization.slug, environmentId: service.environmentId, serviceId: service.serviceId };
     yield* requestUptimeProbe(caller, scope);
     const uptime = yield* whileChecking(readServiceUptime(caller, { ...scope, ...DEFAULT_RANGE }));
+    if (isNeedsProduction(uptime)) return needsProductionRefusal();
     if (uptime === null) return notChecked(service.name);
     const answered = uptime.probe?.answered ?? false;
     const requestedAt = uptime.probe?.requestedAt ?? null;

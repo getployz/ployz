@@ -12,15 +12,18 @@ use std::time::Duration;
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
-use ployz_core::{CloudEnrollToken, MachineId, RpcErrorCode, StoragePreparation};
+use ployz_core::{
+    CloudEnrollToken, ClusterName, Hint, MachineId, RpcErrorCode, StoragePreparation,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{base, env, positional, switch, value};
+use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{CredentialStore, DEFAULT_CLOUD, LoginError, Organization};
-use crate::ui::Hint;
+use crate::cloud_login::{CredentialStore, LoginError, Organization};
+use crate::cloud_origin::{CloudOrigin, DEFAULT_CLOUD};
+use crate::env;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
@@ -72,10 +75,14 @@ pub(crate) fn command(command: Command) -> Command {
             .help("Cluster network, when this Server founds the Cluster"),
     )
     .arg(
-        value("ingress-image", None)
-            .value_parser(crate::ingress::pinned_image)
-            .help("Caddy image to deploy when founding a Cluster"),
+        value("cluster-name", None)
+            .value_name("NAME")
+            .help("Name the new Cluster, when this Server starts one"),
     )
+    .arg(switch("ingress-closed", None).help(
+        "Start the new Cluster with ports 80 and 443 closed, when this Server starts one; \
+         open a Door after with ployz ingress use",
+    ))
     .arg(switch("reset", None).help("Reset an initialized Server before enrollment"))
     .arg(
         switch("show-recovery-code", None)
@@ -141,7 +148,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// `server add` switches and values that shape the Server, which a pasted line repeats.
-const SHAPING_SWITCHES: [&str; 2] = ["reset", "yes"];
+const SHAPING_SWITCHES: [&str; 3] = ["reset", "yes", "ingress-closed"];
 const SHAPING_VALUES: [&str; 12] = [
     "name",
     "storage",
@@ -153,7 +160,7 @@ const SHAPING_VALUES: [&str; 12] = [
     "accepts-services",
     "accepts-ingress",
     "network",
-    "ingress-image",
+    "cluster-name",
     "version",
 ];
 
@@ -163,6 +170,7 @@ fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
     super::enrollment_policy(matches)?;
     super::helpers::checked_token_request(matches)?;
     super::helpers::requested_name(matches)?;
+    founding_cluster_name(matches)?;
     let given = |id: &str| {
         matches!(
             matches.value_source(id),
@@ -368,7 +376,7 @@ async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(),
 /// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin, or reads
 /// an exported `PLOYZ_ENROLL_TOKEN`, which plain `sudo` would drop.
 fn pasted_command(cloud: &str, shape: &[String]) -> String {
-    let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
+    let cloud_flag = if cloud == CloudOrigin::default_cloud().as_str() {
         String::new()
     } else {
         format!(" --cloud-url '{cloud}'")
@@ -438,10 +446,37 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
         .and_then(|name| config.contexts.get(name))
         .is_some_and(|context| !context.connections.is_empty());
     if joins {
+        if founding_cluster_name(leaf_matches(root))?.is_some() {
+            joined_unnamed();
+        }
+        if leaf_matches(root).get_flag("ingress-closed") {
+            joined_open();
+        }
         super::add(root)
     } else {
         super::init(root)
     }
+}
+
+pub(in crate::handlers) fn founding_cluster_name(
+    matches: &ArgMatches,
+) -> Result<Option<ClusterName>, Error> {
+    matches
+        .get_one::<String>("cluster-name")
+        .map(|name| crate::handlers::cluster::parse(name))
+        .transpose()
+}
+
+pub(in crate::handlers) fn joined_open() {
+    crate::ui::warn(
+        "--ingress-closed is ignored when joining a Cluster. The Server opens the Cluster's Doors.",
+    );
+}
+
+pub(in crate::handlers) fn joined_unnamed() {
+    crate::ui::warn(
+        "--cluster-name is ignored when joining a Cluster. Rename it with ployz cluster name.",
+    );
 }
 
 /// Storage the Cloud path asks for; it never prompts.
@@ -539,12 +574,13 @@ mod tests {
             "false",
             "--network",
             "10.9.0.0/16",
-            "--ingress-image",
-            "caddy:2.10",
+            "--cluster-name",
+            "acme",
             "--version",
             "0.3.0",
             "--reset",
             "--yes",
+            "--ingress-closed",
         ];
         let original =
             add_matches(&[["ployz", "server", "add", "--command"].as_slice(), &given].concat());

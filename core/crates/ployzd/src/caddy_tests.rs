@@ -43,6 +43,7 @@ fn projection(
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     derive(&machine, containers, certificates)
@@ -141,13 +142,13 @@ fn automatic_sites_render_routes_and_health_endpoint() {
 }
 
 #[test]
-fn every_reverse_proxy_balances_by_load_and_dials_briefly() {
+fn every_reverse_proxy_balances_by_load_dials_briefly_and_bounds_the_wait_for_headers() {
     let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
 
     let common = automatic_site_block(&caddyfile, "(common_proxy)");
     assert!(common.contains("lb_policy least_conn"), "{common}");
     assert!(
-        common.contains("transport http { dial_timeout 500ms }"),
+        common.contains("transport http { dial_timeout 500ms response_header_timeout 60s }"),
         "{common}"
     );
     let proxies = caddyfile
@@ -157,8 +158,13 @@ fn every_reverse_proxy_balances_by_load_and_dials_briefly() {
         .collect::<Vec<_>>();
     assert!(proxies.len() >= 2, "{caddyfile}");
     for (proxy, body) in proxies {
-        assert_eq!(body.trim(), "import common_proxy", "{proxy}");
+        assert!(
+            ["import common_proxy", "import loopback_proxy"].contains(&body.trim()),
+            "{proxy}: {body}"
+        );
     }
+    let loopback = automatic_site_block(&caddyfile, "(loopback_proxy)");
+    assert!(loopback.starts_with("import common_proxy "), "{loopback}");
 }
 
 #[test]
@@ -210,26 +216,30 @@ fn only_cloudflare_peers_may_set_the_client_address() {
         .and_then(|(_, rest)| rest.split_once("\n}\n"))
         .expect("global options block")
         .0;
-    let trusted = global
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("trusted_proxies static "))
-        .expect("trusted_proxies line");
-    let mut ranges = trusted.split(' ').collect::<Vec<_>>();
-    ranges.sort_unstable();
     let mut expected = super::trace::CLOUDFLARE_RANGES.to_vec();
     expected.sort_unstable();
-    assert_eq!(ranges, expected, "every Cloudflare range, each once");
-    assert!(
-        global.contains("\n\t\tclient_ip_headers CF-Connecting-IP\n"),
-        "{global}"
-    );
-    assert_eq!(caddyfile.matches("servers {").count(), 1);
+    for address in [":80", ":443"] {
+        let block = automatic_site_block(global, address);
+        let trusted = block
+            .split_once("trusted_proxies static ")
+            .and_then(|(_, rest)| rest.split_once(" client_ip_headers CF-Connecting-IP"))
+            .expect("trusted_proxies line")
+            .0;
+        let mut ranges = trusted.split(' ').collect::<Vec<_>>();
+        ranges.sort_unstable();
+        assert_eq!(
+            ranges, expected,
+            "every Cloudflare range, each once, on {address}"
+        );
+    }
+    assert_eq!(caddyfile.matches("servers ").count(), 3);
 
     let proxy = automatic_site_block(&caddyfile, "(common_proxy)");
     assert!(
         proxy.contains(
-            "header_up X-Forwarded-For {client_ip} header_up X-Forwarded-Host {hostport} \
-             header_up X-Forwarded-Proto {scheme}"
+            "header_up X-Forwarded-For {client_ip} header_up CF-Connecting-IP {client_ip} \
+             header_up X-Real-IP {client_ip} \
+             header_up X-Forwarded-Host {hostport} header_up X-Forwarded-Proto {scheme}"
         ),
         "forwarded headers from a trusted peer never reach the app: {proxy}"
     );
@@ -454,7 +464,12 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
         "loser must not join the winner's upstream pool: {caddyfile}"
     );
     assert_eq!(
-        caddyfile.matches("http://api.example.com").count(),
+        caddyfile.matches("http://api.example.com {").count(),
+        1,
+        "{caddyfile}"
+    );
+    assert_eq!(
+        caddyfile.matches("http://api.example.com:8480 {").count(),
         1,
         "{caddyfile}"
     );
@@ -662,7 +677,7 @@ fn changing_material_changes_the_pin_paths() {
 }
 
 #[test]
-fn empty_or_absent_material_leaves_today_s_site_bytes() {
+fn absent_material_renders_no_https_site() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let observations = vec![observation(
         1,
@@ -673,25 +688,169 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
     )];
     let containers = service_containers(observations);
     let without = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new());
-    let unused = BTreeMap::from([(
+    let unrelated = BTreeMap::from([(
         CertificateHost::parse("other.example.com").unwrap(),
         CertificateRow::from_parts(
             Some((test_material(), ployz_core::ClusterRoute::Direct)),
             None,
         ),
     )]);
+    let with_unrelated = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &unrelated);
 
-    assert_eq!(
-        caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new(),),
-        without
-    );
-    assert_eq!(
-        caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &unused,),
-        without
-    );
     assert!(!without.contains("tls "));
     assert!(!without.contains("https://secure.example.com"));
     assert!(without.contains("auto_https off"));
+    // Another hostname's material adds its own site and nothing for this one.
+    assert!(!with_unrelated.contains("https://secure.example.com"));
+    assert!(pinned_tls_line(&with_unrelated, "other.example.com").is_some());
+    assert_eq!(
+        with_unrelated.matches("\ttls ").count(),
+        1,
+        "{with_unrelated}"
+    );
+}
+
+#[test]
+fn pinned_material_whose_last_route_is_gone_answers_https_like_http() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let certificates = BTreeMap::from([(
+        CertificateHost::parse("secure.example.com").unwrap(),
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            None,
+        ),
+    )]);
+    let routed = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let before = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(routed),
+        "TIMESTAMP",
+        &certificates,
+    );
+    let after = caddyfile_for(&local, "node-a", &[], "TIMESTAMP", &certificates);
+
+    let pin = pinned_tls_line(&after, "secure.example.com").expect("the material stays pinned");
+    assert_eq!(pinned_tls_line(&before, "secure.example.com"), Some(pin));
+    let https = automatic_site_block(&after, "https://secure.example.com");
+    assert!(https.contains("error NOT_DEPLOYED 404"), "{https}");
+    assert!(!https.contains("reverse_proxy"), "{https}");
+    assert!(!after.contains("http://secure.example.com"), "{after}");
+}
+
+#[test]
+fn a_covering_wildcard_replaces_the_own_material_of_a_hostname_whose_last_route_is_gone() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("api.apps.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let pair = rcgen::generate_simple_self_signed(["*.apps.example.com".to_owned()]).unwrap();
+    let wildcard = crate::corrosion::CertificateMaterial::parse(
+        pair.cert.pem(),
+        pair.signing_key.serialize_pem(),
+    )
+    .unwrap();
+    // web.apps' issued row predates the wildcard; nothing renews it once covered.
+    let certificates = BTreeMap::from([
+        (
+            CertificateHost::parse("*.apps.example.com").unwrap(),
+            CertificateRow::Published(wildcard.clone()),
+        ),
+        (
+            CertificateHost::parse("web.apps.example.com").unwrap(),
+            CertificateRow::issued(test_material(), ployz_core::ClusterRoute::Direct),
+        ),
+    ]);
+    let projection = projection(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        &certificates,
+    );
+    let web = projection
+        .sites
+        .iter()
+        .find(|site| site.hostname.as_str() == "web.apps.example.com")
+        .unwrap();
+    assert_eq!(web.pinned(), Some(&wildcard));
+
+    let caddyfile = render_caddyfile(&projection, "TIMESTAMP");
+    let stem = crate::ingress::certificate_file_stem(&web.hostname, &wildcard);
+    let pin = pinned_tls_line(&caddyfile, "web.apps.example.com").expect("web.apps is pinned");
+    assert!(pin.contains(&stem), "{pin}");
+    let https = automatic_site_block(&caddyfile, "https://web.apps.example.com");
+    assert!(https.contains("error NOT_DEPLOYED 404"), "{https}");
+}
+
+#[test]
+fn an_http_only_hostname_with_material_keeps_proxying_and_pins_nothing() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("plain.example.com", 80, HttpProtocol::Http)],
+    )];
+    let certificates = BTreeMap::from([(
+        CertificateHost::parse("plain.example.com").unwrap(),
+        CertificateRow::issued(test_material(), ployz_core::ClusterRoute::Direct),
+    )]);
+
+    let caddyfile = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &certificates,
+    );
+
+    assert!(
+        !caddyfile.contains("https://plain.example.com"),
+        "{caddyfile}"
+    );
+    assert!(!caddyfile.contains("\ttls "), "{caddyfile}");
+    let http = automatic_site_block(&caddyfile, "http://plain.example.com");
+    assert!(http.contains("reverse_proxy 10.210.1.2:80"), "{http}");
+}
+
+#[test]
+fn a_challenge_beside_material_with_no_route_is_answered_and_https_answers_not_deployed() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let challenge = CertificateChallenge::parse(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
+    let certificates = BTreeMap::from([(
+        CertificateHost::parse("secure.example.com").unwrap(),
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            Some(challenge),
+        ),
+    )]);
+
+    let caddyfile = caddyfile_for(&local, "node-a", &[], "TIMESTAMP", &certificates);
+
+    let http = automatic_site_block(&caddyfile, "http://secure.example.com");
+    assert!(
+        http.contains("/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"),
+        "{http}"
+    );
+    assert!(http.contains("error NOT_DEPLOYED 404"), "{http}");
+    assert!(pinned_tls_line(&caddyfile, "secure.example.com").is_some());
+    let https = automatic_site_block(&caddyfile, "https://secure.example.com");
+    assert!(https.contains("error NOT_DEPLOYED 404"), "{https}");
 }
 
 #[test]
@@ -1045,6 +1204,7 @@ async fn failed_load_preserves_the_last_caddyfile() {
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let admin = FakeAdmin {
@@ -1098,7 +1258,7 @@ fn certificate_error_text_cannot_add_caddyfile_lines() {
 }
 
 #[tokio::test]
-async fn reconcile_writes_only_pinned_material_and_tolerates_a_stray_directory() {
+async fn reconcile_writes_routed_and_unrouted_material_and_tolerates_a_stray_directory() {
     let directory = std::env::temp_dir().join(format!(
         "ployz-caddy-cert-pinned-test-{}",
         MachineId::random()
@@ -1120,6 +1280,7 @@ async fn reconcile_writes_only_pinned_material_and_tolerates_a_stray_directory()
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let observations = [observation(
@@ -1156,12 +1317,20 @@ async fn reconcile_writes_only_pinned_material_and_tolerates_a_stray_directory()
     let caddyfile = std::fs::read_to_string(&path).unwrap();
     let (cert_name, key_name) =
         pinned_file_names(pinned_tls_line(&caddyfile, "secure.example.com").unwrap());
+    let (removed_cert, removed_key) =
+        pinned_file_names(pinned_tls_line(&caddyfile, "removed.example.com").unwrap());
     let mut written: Vec<_> = std::fs::read_dir(&certs)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     written.sort();
-    let mut expected = vec![cert_name, key_name, "stray".to_owned()];
+    let mut expected = vec![
+        cert_name,
+        key_name,
+        removed_cert,
+        removed_key,
+        "stray".to_owned(),
+    ];
     expected.sort();
     assert_eq!(written, expected);
     std::fs::remove_dir_all(directory).unwrap();
@@ -1202,6 +1371,7 @@ async fn reconcile_writes_material_for(hostname: &str) {
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let observations = [observation(
@@ -1296,9 +1466,17 @@ fn an_empty_route_answers_the_same_503_as_no_healthy_replicas() {
     let site = |name: &str| {
         automatic_site_block(&caddyfile, &format!("http://{name}.example")).replace(name, "NAME")
     };
+    // The trace counts a copy rotated Out as gone; only what the request gets is compared.
+    let route = |name: &str| {
+        let block = site(name);
+        let (head, rest) = block.split_once("import ployz_trace").unwrap();
+        let (_, tail) = rest.split_once("import ployz_requests").unwrap();
+        format!("{head}{tail}")
+    };
     assert!(site("stopped").contains("error NOT_RUNNING 503"));
-    assert_eq!(site("out"), site("stopped"));
+    assert_eq!(route("out"), route("stopped"));
     assert_eq!(site("held"), site("stopped"));
+    assert!(site("out").contains(" \"\" \"\" NOT_RUNNING"));
 }
 
 // Only for automatic sites: their tokens contain no quoted braces or placeholders.
@@ -1437,4 +1615,97 @@ fn observation(
         run: None,
     })
     .unwrap()
+}
+
+#[test]
+fn only_the_loopback_peer_may_set_the_client_address_on_the_tunnel_port() {
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
+    let global = caddyfile
+        .split_once("\n{\n")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .expect("global options block")
+        .0;
+    let loopback = automatic_site_block(global, "127.0.0.1:8480");
+    assert_eq!(
+        loopback,
+        "trusted_proxies static 127.0.0.1/32 ::1/128 client_ip_headers CF-Connecting-IP X-Forwarded-For"
+    );
+    assert!(
+        !global.contains("servers :8480"),
+        "a bare port matches no server bound to an address: {global}"
+    );
+}
+
+#[test]
+fn every_routed_hostname_has_a_tunnel_site_that_keeps_the_visitors_scheme() {
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
+
+    let site = automatic_site_block(&caddyfile, "(loopback_site)");
+    assert!(site.starts_with("bind 127.0.0.1 ::1 "), "{site}");
+    assert!(
+        site.contains("@plain header X-Forwarded-Proto http redir @plain https://{host}{uri} 308"),
+        "{site}"
+    );
+    assert!(
+        site.contains(
+            "@noproto header !X-Forwarded-Proto request_header @noproto X-Forwarded-Proto https"
+        ),
+        "{site}"
+    );
+    let proxy = automatic_site_block(&caddyfile, "(loopback_proxy)");
+    assert_eq!(
+        proxy,
+        "import common_proxy header_up X-Forwarded-Proto {header.X-Forwarded-Proto}"
+    );
+
+    let secure = automatic_site_block(&caddyfile, "http://secure.example.com:8480");
+    assert!(
+        secure.contains("import loopback_site aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        "{secure}"
+    );
+    assert!(
+        secure.contains("reverse_proxy 10.210.1.3:8443 { import loopback_proxy }"),
+        "{secure}"
+    );
+    assert!(secure.contains("import ployz_requests app api"), "{secure}");
+    assert!(
+        !secure.contains("tls "),
+        "the door terminates TLS: {secure}"
+    );
+    let plain = automatic_site_block(&caddyfile, "http://example.com:8480");
+    assert!(
+        plain.contains("reverse_proxy 10.210.1.2:8080 10.210.2.2:8080 { import loopback_proxy }"),
+        "{plain}"
+    );
+    assert!(!plain.contains("acme-challenge/Loq"), "{plain}");
+    let empty = automatic_site_block(&caddyfile, "http://empty.example.com:8480");
+    assert!(empty.contains("error NOT_RUNNING 503"), "{empty}");
+    let unknown = automatic_site_block(&caddyfile, "http://:8480");
+    assert!(unknown.contains("error NOT_DEPLOYED 404"), "{unknown}");
+    assert!(unknown.contains("import loopback_site"), "{unknown}");
+
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("new.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let caddyfile = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &BTreeMap::new(),
+    );
+    assert!(
+        !caddyfile.contains("\nhttps://new.example.com {"),
+        "{caddyfile}"
+    );
+    let tunnel = automatic_site_block(&caddyfile, "http://new.example.com:8480");
+    assert!(
+        tunnel.contains("reverse_proxy 10.210.1.2:8443 { import loopback_proxy }"),
+        "{tunnel}"
+    );
 }

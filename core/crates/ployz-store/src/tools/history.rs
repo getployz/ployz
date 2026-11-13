@@ -2,39 +2,28 @@
 //! changed.
 
 use ployz_core::{RpcError, RpcErrorCode};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Effect, Stop, Tool, at};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::{Call, Refusal, Writes, from_store};
-use crate::catalog::NODE_NAME;
-use crate::{
-    EnvironmentName, HistoryAction, HistoryPreviewQuery, ProjectName, Revision, StageHistory,
-};
+use crate::{HistoryAction, HistoryPreviewQuery, Revision, StageHistory};
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct History {
-    /// Saved revision number.
-    revision: u64,
-    /// Reverse only what this revision changed, keeping later ones.
-    #[serde(default)]
-    undo: bool,
-    /// The Working State version a refusal names; required with accept_overwrite.
-    #[serde(default)]
-    version: Option<String>,
-    /// Replace the Staged changes a refusal named.
-    #[serde(default)]
-    accept_overwrite: bool,
-    /// Project name. Omit for the one you are in.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct History {
+        /// Saved revision number.
+        revision: u64,
+        /// Reverse only what this revision changed, keeping later ones.
+        #[serde(default)]
+        undo: bool,
+        /// The Working State version a refusal names; required with accept_overwrite.
+        #[serde(default)]
+        version: Option<String>,
+        /// Replace the Staged changes a refusal named.
+        #[serde(default)]
+        accept_overwrite: bool,
+        @place(here),
+    }
 }
 
 impl Tool for History {
@@ -65,7 +54,7 @@ fn stage(history: History, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         )
         .into());
     }
-    let environment = cx.scope(history.project.as_ref(), history.environment.as_ref());
+    let environment = cx.scope(&history);
     let revision = Revision(history.revision);
     let preview = cx.one(&HistoryPreviewQuery {
         environment: environment.clone(),
@@ -93,7 +82,7 @@ fn stage(history: History, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         .map(|variable| format!("{}.env.{}", variable.service, variable.key))
         .collect::<Vec<_>>();
     Ok(json!({
-        "at": at(&staged.environment),
+        "at": staged.environment.to_string(),
         "revision": revision.0,
         "changed": staged.changed,
         "not_set": not_set,

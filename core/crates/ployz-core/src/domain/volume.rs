@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MANAGED_LABEL,
-    MachinePath, NAMESPACE_LABEL, Namespace, ServiceVolumeReference, ValueError,
+    BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MachinePath,
+    Namespace, ServiceVolumeReference, ValueError, labels,
 };
 
 /// A storage source declared under a service-local reference.
@@ -113,7 +113,7 @@ impl TryFrom<RawVolumeSource> for VolumeSource {
         | RawVolumeSource::Provisioned { labels, .. } = &source
             && let Some(key) = labels
                 .keys()
-                .find(|key| key.as_str() == MANAGED_LABEL || key.as_str() == NAMESPACE_LABEL)
+                .find(|key| key.as_str() == labels::MANAGED || key.as_str() == labels::NAMESPACE)
         {
             return Err(ValueError::new(
                 "volume label",
@@ -205,8 +205,8 @@ impl VolumeSource {
             | RawVolumeSource::Tmpfs { .. } => return BTreeMap::new(),
         };
         if let Some(scope) = &self.scope {
-            labels.insert(MANAGED_LABEL.into(), String::new());
-            labels.insert(NAMESPACE_LABEL.into(), scope.namespace.to_string());
+            labels.insert(labels::MANAGED.into(), String::new());
+            labels.insert(labels::NAMESPACE.into(), scope.namespace.to_string());
         }
         labels
     }
@@ -239,6 +239,55 @@ impl VolumeSource {
                 ) => bound_bytes.get() >= maximum_bytes.get(),
                 _ => false,
             }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreateVolumeRequest {
+    pub name: DockerVolumeName,
+    pub driver: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+}
+
+impl VolumeSource {
+    /// Build the exact Docker creation request for a managed Volume source.
+    ///
+    /// External Volumes, Bind Mounts, and Tmpfs Mounts have no creation
+    /// request because Ployz does not create them as Docker Volumes. Managed
+    /// declarations have no creation request until Namespace scoping establishes ownership.
+    #[must_use]
+    pub fn to_create_volume_request(&self) -> Option<CreateVolumeRequest> {
+        if !self.is_resolved() {
+            return None;
+        }
+        match self.kind() {
+            crate::RawVolumeSource::Ordinary {
+                name,
+                driver,
+                labels: _,
+            } => Some(CreateVolumeRequest {
+                name: name.clone(),
+                driver: driver.name().into(),
+                options: driver.options().clone(),
+                labels: self.creation_labels(),
+            }),
+            crate::RawVolumeSource::Provisioned {
+                name,
+                maximum_bytes,
+                labels: _,
+            } => Some(CreateVolumeRequest {
+                name: name.clone(),
+                driver: PROVISIONED_VOLUME_DRIVER.into(),
+                options: BTreeMap::from([("size".into(), format!("{}b", maximum_bytes.get()))]),
+                labels: self.creation_labels(),
+            }),
+            crate::RawVolumeSource::External { .. }
+            | crate::RawVolumeSource::Bind { .. }
+            | crate::RawVolumeSource::Tmpfs { .. } => None,
+        }
     }
 }
 
@@ -464,6 +513,11 @@ pub struct RemoveVolumesRequest {
     /// Force-remove an in-use Docker Volume. Defaults to false.
     #[serde(default)]
     pub force: bool,
+    /// The teardown each Machine checks before it deletes its Volumes, as
+    /// [`crate::RemoveVolumeRequest::teardown`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
 }
 
 /// Wire source in a Resolved Service Spec. Import checks physical identity correspondence.

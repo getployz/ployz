@@ -430,6 +430,104 @@ async fn a_store_read_error_does_not_reload_an_unchanged_projection() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A Container that starts without taking a route changes only what the trace page shows,
+/// so Caddy keeps its load, and with it its passive health counts, until a route changes.
+#[tokio::test]
+async fn a_trace_only_change_does_not_reload_caddy() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    let first = timeout(Duration::from_millis(250), load_rx.recv())
+        .await
+        .expect("first load waited for debounce")
+        .unwrap();
+    assert!(
+        first.contains(&format!("import ployz_trace {} ", machine.id)),
+        "{first}"
+    );
+
+    let mut starting = observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    );
+    starting
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
+        .unwrap();
+    state.containers.lock().unwrap().push(starting.clone());
+    state.send(b"{\"change\":{}}\n");
+    state.wait_for_container_queries(2).await;
+    assert!(
+        timeout(Duration::from_millis(500), load_rx.recv())
+            .await
+            .is_err(),
+        "a Container that took no route reloaded Caddy"
+    );
+
+    state.set_rotation(starting.container_id, CopyRotation::In);
+    let routed = timeout(Duration::from_secs(5), load_rx.recv())
+        .await
+        .expect("a new route reloads Caddy")
+        .unwrap();
+    assert!(routed.contains("10.210.1.3:80"), "{routed}");
+    assert!(routed.contains(&format!("{}:2", machine.id)), "{routed}");
+
+    // The old copy leaving routing reloads with the count the deploy ends at, so its
+    // removal, which changes no route, leaves nothing stale.
+    // The fixture's first Container is the old `api` copy.
+    let old = state
+        .containers
+        .lock()
+        .unwrap()
+        .first()
+        .unwrap()
+        .container_id;
+    state.set_rotation(old, CopyRotation::Out);
+    let left = timeout(Duration::from_secs(5), load_rx.recv())
+        .await
+        .expect("a route leaving reloads Caddy")
+        .unwrap();
+    assert!(!left.contains("10.210.1.2:80"), "{left}");
+    assert!(left.contains(&format!("{}:1 ", machine.id)), "{left}");
+    state
+        .containers
+        .lock()
+        .unwrap()
+        .retain(|container| container.container_id != old);
+    let queried = state.container_queries();
+    state.send(b"{\"change\":{}}\n");
+    state.wait_for_container_queries(queried + 1).await;
+    assert!(
+        timeout(Duration::from_millis(500), load_rx.recv())
+            .await
+            .is_err(),
+        "removing an Out copy reloaded Caddy"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[tokio::test]
 async fn a_failed_admin_probe_on_a_loaded_input_neither_reloads_nor_holds_back_acks() {
     let WatcherFixture {
@@ -1431,7 +1529,19 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
     ));
 
     let loaded = next_load(&mut load_rx).await;
-    assert!(!loaded.contains("10.210.1.2:8443"), "{loaded}");
+    assert!(
+        !loaded.contains("\nhttps://secure.example.com {"),
+        "{loaded}"
+    );
+    let tunnel = loaded
+        .find("\nhttp://secure.example.com:8480 {\n")
+        .map(|start| {
+            let end = loaded[start + 1..].find("\n}\n").unwrap();
+            &loaded[start..=start + end]
+        })
+        .expect("the Tunnel door's site");
+    assert!(tunnel.contains("10.210.1.2:8443"), "{tunnel}");
+    assert_eq!(loaded.matches("10.210.1.2:8443").count(), 1, "{loaded}");
     timeout(
         Duration::from_secs(5),
         published.wait_for(|published| {
@@ -1443,7 +1553,7 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
         }),
     )
     .await
-    .expect("Caddy proxies only web.example.com until secure.example.com has a certificate")
+    .expect("Caddy publishes only web.example.com until secure.example.com has a certificate")
     .unwrap();
 
     shutdown.cancel();
@@ -2017,6 +2127,71 @@ async fn routed_addresses_stand_while_the_caddy_that_loaded_them_refuses_a_new_l
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 #[tokio::test]
+async fn caddy_refusing_an_unrouted_hostname_s_certificate_still_applies_every_route() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.mutate(|parts| {
+        parts.resolved_spec.ports = vec![ingress("good.example.com", 8443, HttpProtocol::Https)];
+    });
+    // No Service publishes gone.example.com any more; its row still holds material.
+    state.write_certificates(&[
+        ("gone.example.com", material_body("gone.example.com")),
+        ("good.example.com", material_body("good.example.com")),
+    ]);
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = RefusingAdmin {
+        refused: "https://gone.example.com {",
+        loads: load_tx,
+        running: Arc::default(),
+    };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    let loaded = timeout(Duration::from_secs(5), async {
+        loop {
+            let loaded = load_rx.recv().await.unwrap();
+            if loaded.contains("https://good.example.com {") {
+                return loaded;
+            }
+        }
+    })
+    .await
+    .expect("an unrouted hostname's refused certificate blocked every route");
+    assert!(!loaded.contains("https://gone.example.com {"), "{loaded}");
+    let caddyfile = wait_for_caddyfile(
+        &directory.join(CONFIG_FILE),
+        "# - gone.example.com: Caddy refused",
+    )
+    .await;
+    assert!(
+        caddyfile.contains("https://good.example.com {"),
+        "{caddyfile}"
+    );
+    assert!(
+        !caddyfile.contains("https://gone.example.com {"),
+        "{caddyfile}"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn caddy_refusing_one_certificate_still_applies_every_other_route() {
     let WatcherFixture {
         machine,
@@ -2157,11 +2332,12 @@ async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
         vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
     );
     state.containers.lock().unwrap().push(web);
-    state.write_certificates(&[
+    // new.example.com's row arrives only once the admin is down, so Caddy never loaded it.
+    let loaded_rows = [
         ("bad.example.com", material_body("bad.example.com")),
         ("good.example.com", material_body("good.example.com")),
-        ("new.example.com", material_body("new.example.com")),
-    ]);
+    ];
+    state.write_certificates(&loaded_rows);
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = RefusingAdmin {
         refused: "https://bad.example.com {",
@@ -2187,6 +2363,12 @@ async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
     while load_rx.try_recv().is_ok() {}
 
     admin_up.store(false, Ordering::SeqCst);
+    let [bad, good] = loaded_rows;
+    state.write_certificates(&[
+        bad,
+        good,
+        ("new.example.com", material_body("new.example.com")),
+    ]);
     state.containers.lock().unwrap().push(observation(
         5,
         &machine.id,
@@ -2606,6 +2788,7 @@ async fn watcher_fixture() -> WatcherFixture {
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let state = WatchState {

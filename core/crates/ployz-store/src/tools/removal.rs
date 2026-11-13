@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{RpcError, RpcErrorCode};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use super::ToolId;
 use super::act::{server_show, servers};
 use super::cloud::ServersAnswer;
+use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal, Writes, from_store};
 use super::step::{AcceptedLoss, DashboardPage, Fix, Gate, ServerName};
@@ -31,10 +31,10 @@ enum Target {
 }
 
 impl Target {
-    const fn tool(self) -> &'static str {
+    const fn tool(self) -> ToolId {
         match self {
-            Self::Environment => EnvironmentRemove::NAME,
-            Self::Project => ProjectRemove::NAME,
+            Self::Environment => ToolId::EnvironmentRemove,
+            Self::Project => ToolId::ProjectRemove,
         }
     }
 
@@ -157,7 +157,7 @@ fn refused(target: Target, error: RpcError, call: &Call, writes: Writes) -> Refu
             "version".into(),
             offer.get("version").cloned().unwrap_or(Value::Null),
         );
-        refusal = refusal.with_detail("every_copy", json!(Call::new(target.tool(), input.into())));
+        refusal = refusal.with_detail("every_copy", json!(Call::to(target.tool(), input.into())));
     }
     if let Some(waiting) = details.get("waiting_on") {
         refusal = refusal.with_detail("waiting_on", waiting.clone());
@@ -258,8 +258,8 @@ fn remove(
     if let Some(first) = left.first() {
         shown.insert(
             "next".into(),
-            json!(Call::new(
-                "deployment_show",
+            json!(Call::to(
+                ToolId::DeploymentShow,
                 json!({
                     "project": command.project,
                     "environment": first.environment.name,
@@ -273,30 +273,28 @@ fn remove(
 
 /// The Project a call names, else the one it is in.
 fn project(cx: &Cx<'_>, named: Option<&ProjectName>) -> Result<ProjectName, Stop> {
-    cx.scope(named, None)
+    cx.scope_in(named, None)
         .project
         .ok_or_else(|| Refusal::invalid("Name the Project", "project").into())
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvironmentRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    environment: EnvironmentName,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Vec<String>")]
-    accept_volume_loss: Vec<VolumeName>,
-    #[serde(default)]
-    #[schemars(with = "Vec<String>")]
-    every_copy: Vec<VolumeName>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
-    wait_seconds: u32,
+tool_input! {
+    pub(crate) struct EnvironmentRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        environment: EnvironmentName,
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        project: Option<ProjectName>,
+        #[serde(default)]
+        #[schemars(with = "Vec<String>")]
+        accept_volume_loss: Vec<VolumeName>,
+        #[serde(default)]
+        #[schemars(with = "Vec<String>")]
+        every_copy: Vec<VolumeName>,
+        #[serde(default)]
+        version: Option<String>,
+        @wait,
+    }
 }
 
 impl Tool for EnvironmentRemove {
@@ -323,6 +321,7 @@ impl Tool for EnvironmentRemove {
             false => Volumes::from([(self.environment.clone(), volumes)]),
         };
         let command = Remove {
+            teardown: None,
             project,
             environment: Some(self.environment.clone()),
             version: self.version,
@@ -338,20 +337,18 @@ impl Tool for EnvironmentRemove {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ProjectRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    project: ProjectName,
-    #[serde(default)]
-    accept_volume_loss: Vec<String>,
-    #[serde(default)]
-    every_copy: Vec<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
-    wait_seconds: u32,
+tool_input! {
+    pub(crate) struct ProjectRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        project: ProjectName,
+        #[serde(default)]
+        accept_volume_loss: Vec<String>,
+        #[serde(default)]
+        every_copy: Vec<String>,
+        #[serde(default)]
+        version: Option<String>,
+        @wait,
+    }
 }
 
 impl Tool for ProjectRemove {
@@ -367,6 +364,7 @@ impl Tool for ProjectRemove {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         AcceptedLoss::from_input(self.accept_volume_loss.clone(), self.version.clone())?;
         let command = Remove {
+            teardown: None,
             project: self.project,
             environment: None,
             version: self.version,

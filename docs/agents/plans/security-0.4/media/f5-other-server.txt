@@ -1,0 +1,16 @@
+### replay: leave on machine-2 under the teardown signed for machine-3 leaving
+error: This server leaves only when you approve it, with ployz server rm from an approved device or your passkey in the dashboard: the approval names this Server this request does not match
+next: ployz server rm from an approved device, or Remove server with your passkey in the dashboard
+exit=1
+### replay: forget machine-1 on machine-2 under the same teardown (it names machine-3 only)
+error: This server forgets another server only when you approve it, with ployz server forget from an approved device or your passkey in the dashboard: the approval names a Server to forget this request does not match
+next: ployz server forget from an approved device, or Forget server with your passkey in the dashboard
+exit=1
+### machine-2 journal:
+2026-11-12T08:22:48+00:00 machine-2 ployzd:  WARN teardown refused: the approval names this Server this request does not match step=Leave
+2026-11-12T08:22:49+00:00 machine-2 ployzd:  WARN teardown refused: the approval names a Server to forget this request does not match step=Forget(MachineId("e31b493b09704f6fb037b2f8ca39a19e"))
+### server ls after:
+SERVER	MEMBERSHIP	STORAGE	PUBLIC IP	SUBNET	DAEMON	OS
+machine-1	up	Managed volumes available	<address>	<address>	0.3.17	Ubuntu 24.04.4 LTS x86_64
+machine-2	up	Managed volumes available	<address>	<address>	0.3.17	Ubuntu 24.04.4 LTS x86_64
+machine-3	up	Managed volumes available	<address>	<address>	0.3.17	Ubuntu 24.04.4 LTS x86_64

@@ -1,5 +1,8 @@
 //! Cloud preparation: builder eligibility, Builds, planning, and image delivery.
+use crate::build::CapabilityCheckError;
+use crate::cluster::{Call, Deadline};
 use crate::connect::ConnectError;
+use ployz_core::error_chain;
 use ployz_core::{
     DescribeContractRequest, MachineId, MachineName, MachineObservation, MachineTarget, RpcError,
     RpcErrorCode, op,
@@ -143,12 +146,14 @@ pub async fn select_build_machine(
             ("does not accept Builds".into(), "builds are turned off")
         } else {
             match client
-                .invoke::<op::DescribeContract>(
+                .call_shared::<op::DescribeContract>(
                     DescribeContractRequest {},
-                    &MachineTarget::from(&machine.id),
-                    Some(Duration::from_secs(5)),
+                    Call::once()
+                        .to(&MachineTarget::from(&machine.id))
+                        .within(Deadline::Target(Duration::from_secs(5))),
                 )
                 .await
+                .map_err(crate::connect::rpc_error)
             {
                 Ok(contract) if contract.machine_id != machine.id => (
                     format!(
@@ -175,15 +180,22 @@ pub async fn select_build_machine(
                     Err(error) => (
                         format!(
                             "Build capability could not be verified: {}",
-                            crate::ui::row(&error)
+                            error_chain::row(&error)
                         ),
-                        "its build capability check failed",
+                        // A refusal by device enforcement is no failed check: it says what it is.
+                        if matches!(error, CapabilityCheckError::RefusedByEnforcement(_))
+                            || error.to_string() == ployz_core::BUILD_REFUSED_BY_ENFORCEMENT
+                        {
+                            ployz_core::BUILD_REFUSED_BY_ENFORCEMENT
+                        } else {
+                            "its build capability check failed"
+                        },
                     ),
                 },
                 Err(error) => (
                     format!(
                         "Build capability could not be verified: {}",
-                        crate::ui::row(&error)
+                        error_chain::row(&error)
                     ),
                     if error.code == RpcErrorCode::Unavailable {
                         "did not answer"
@@ -209,12 +221,9 @@ pub async fn select_build_machine(
     }
     let message = format!("no eligible Build Machine: {}", reasons.join("; "));
     let details = serde_json::json!({"rejections": rejected, "reasons": shown});
-    Err(ConnectError::Remote(RpcError {
-        code: RpcErrorCode::Unsupported,
-        message,
-        details,
-        cause: Vec::new(),
-    }))
+    Err(ConnectError::Remote(
+        RpcError::unsupported(message).with_details(details),
+    ))
 }
 
 use crate::{

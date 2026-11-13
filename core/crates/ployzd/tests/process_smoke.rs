@@ -318,7 +318,6 @@ fn describe(path: &Path) -> ployz_core::ContractDescription {
             .unwrap()
             .decode::<op::DescribeContract>()
             .unwrap()
-            .clone()
     })
 }
 
@@ -419,6 +418,7 @@ fn join(path: &Path) {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let peer = Machine {
@@ -433,6 +433,7 @@ fn join(path: &Path) {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     tokio::runtime::Runtime::new().unwrap().block_on(async {

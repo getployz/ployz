@@ -68,6 +68,8 @@ server more time, see [Build resources and cache](build-resources-and-cache.md#g
   ran. Changing replicas, domains, or CPU and memory limits doesn't.
 - **Git submodules, Git LFS and very large repositories don't build.** Keep large files out of
   the repository; see [Troubleshooting builds](../troubleshooting/builds.md#my-repository-is-too-big-or-uses-submodules).
+- **Servers that enforce device approval refuse a build Ployz Cloud starts.** See
+  [Builds on servers that enforce device approval](where-builds-run.md#builds-on-servers-that-enforce-device-approval).
 - **A build gets your service's variables, sealed values included,** on GitHub Actions too.
   See [Use variables at build time](railpack-and-dockerfiles.md#use-variables-at-build-time)
   and [Build on GitHub Actions](where-builds-run.md#build-on-github-actions).

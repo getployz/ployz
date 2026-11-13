@@ -41,7 +41,7 @@
 
 use std::fmt::Write as _;
 
-use stateright::{Checker, HasDiscoveries, Model, Property};
+use stateright::{Checker, Model, Property};
 
 /// `mark::State` (removal/mark.rs).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -51,7 +51,7 @@ enum MarkState {
     Removed,
 }
 
-/// The removal Deployment `remove()` admitted, as `on_servers` (removal/mod.rs)
+/// The removal Deployment `remove()` admitted, as `on_servers` (deployment/history.rs)
 /// reads it: in flight, or the last that ran. Only an applied removal takes the
 /// Environment off the Servers; a cancelled one leaves the Deploy before it there.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -724,10 +724,10 @@ fn reads_as(
             "finish moves the mark to `removed` only from `removing` (removal/due.rs, mark::finish's conditional UPDATE)"
         }
         Step::Purge if broken.finish_saves_unconditionally => {
-            "finish purges the Environment (removal/due.rs, removal::purge, under Broken)"
+            "finish purges the Environment (removal/due.rs, scope::purge, under Broken)"
         }
         Step::Purge => {
-            "finish purges the Environment if its UPDATE moved the mark (removal/due.rs, removal::purge)"
+            "finish purges the Environment if its UPDATE moved the mark (removal/due.rs, scope::purge)"
         }
         Step::CancelRemoval => match removal {
             Some(Removal::Running) => {
@@ -743,10 +743,7 @@ fn reads_as(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn check(model: RemovalMarks) -> impl Checker<RemovalMarks> {
-        model.checker().threads(4).spawn_bfs().join()
-    }
+    use crate::harness::{check, discoveries};
 
     fn as_is(finishers: Finishers) -> RemovalMarks {
         RemovalMarks {
@@ -758,12 +755,7 @@ mod tests {
 
     /// A path on which `property` fails under `model`, printed as a story.
     fn breaks(model: RemovalMarks, property: &'static str) -> State {
-        let checker = model
-            .checker()
-            .threads(4)
-            .finish_when(HasDiscoveries::AllOf([property].into()))
-            .spawn_bfs()
-            .join();
+        let checker = discoveries(model, &[property]);
         let path = checker.assert_any_discovery(property);
         let last = path.last_state().clone();
         println!("{property} fails under {model:?}:\n{}", story(&model, path));

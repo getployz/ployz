@@ -1,12 +1,15 @@
+use crate::cluster::{Call, Deadline};
 use clap::ArgMatches;
+use ployz_core::error_chain;
 use ployz_core::{
-    DescribeContractRequest, LiveServices, Machine, MachineId, MachineTarget, QualifiedService,
-    RpcError, RpcErrorCode, op,
+    DescribeContractRequest, Hint, LiveServices, Machine, MachineId, MachineTarget,
+    QualifiedService, RpcError, RpcErrorCode, op,
 };
 
+use super::super::route::Reached;
 use super::super::runtime;
-use super::{ConnectionOptions, Reached, target};
-use crate::approval::{self, Verb};
+use super::{ConnectionOptions, target};
+use crate::approval;
 use crate::cloud_account::{self, Credential, Release, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{
@@ -20,11 +23,10 @@ use crate::handlers::{
     data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
     leaf_matches, store, typed_with,
 };
-use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues};
+use ployz_core::{DataLoss, Departed, DockerVolumeName, EnvironmentValues};
+use ployz_store::OperationVerb;
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
-
-use crate::ui::Hint;
 
 /// How a Server leaves the Cluster.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,22 +42,66 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Reset)
 }
 
+fn enforces(observation: &ployz_core::MachineObservation) -> bool {
+    observation.machine.runtime.device_enforcement == Some(true)
+}
+
+/// Refuse, before anything is asked or sent, a removal an enforcing Server would refuse:
+/// the Leave goes to the leaving Server and the Forget to the entry, and each needs this
+/// CLI there as an approved Device, over SSH, or on the local socket.
+fn refuse_without_device(
+    client: &Client,
+    machines: &[ployz_core::MachineObservation],
+    selected: &Machine,
+    entry: MachineId,
+    removal: Removal,
+    matches: &ArgMatches,
+) -> Result<(), Error> {
+    let device = super::holds_device_key(matches)?;
+    let leave = (removal == Removal::Reset).then_some(selected.id);
+    let forget = (entry != selected.id).then_some(entry);
+    let Some(unreached) = leave
+        .into_iter()
+        .chain(forget)
+        .filter_map(|id| machines.iter().find(|observed| observed.machine.id == id))
+        .find(|observed| enforces(observed) && !client.reaches_full(&observed.machine.id, device))
+    else {
+        return Ok(());
+    };
+    let (capability, verb) = match removal {
+        Removal::Reset => (ployz_core::LEAVE_MACHINE_CAPABILITY, "Removing"),
+        Removal::Forget => (ployz_core::FORGET_MACHINE_CAPABILITY, "Forgetting"),
+    };
+    Err(Error::detailed(
+        RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        format!(
+            "{verb} Server {} needs an approved device: Server {} refuses it otherwise. Run it \
+             from an approved device, or over SSH on a Server. No changes made.",
+            selected.name, unreached.machine.name
+        ),
+        json!({
+            "capability": capability,
+            "server": { "id": selected.id, "name": selected.name },
+            "needs_device_on": unreached.machine.name,
+        }),
+    ))
+}
+
 /// A reset needs its Server to answer. Servers that didn't answer may be gone, and one that
 /// is gone is forgotten instead; a Cloud that couldn't hand out the connections is retried.
 /// A Server's own refusal says what is wrong with it.
 fn unanswered_reset(error: Error, matches: &ArgMatches, selector: &str) -> Error {
-    let report = error.report();
-    if report.details.get("refused").is_some() {
+    if super::super::route::refused(&error) {
         return error;
     }
-    if super::servers_unanswered(&report) {
+    if super::super::route::servers_unanswered(&error) {
         let forget = super::super::rerun(
             matches,
             &["server", "forget", selector, "--confirm", "dead"],
         );
         return error.hint(Hint::Next(forget));
     }
-    if report.code == RpcErrorCode::Unavailable {
+    if error.report().code == RpcErrorCode::Unavailable {
         return error.hint(Hint::Retry(typed_with(&[])));
     }
     error
@@ -74,8 +120,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let runtime = runtime()?;
     let reached = runtime.block_on(async {
         match removal {
-            Removal::Forget => super::connect_or_unanswered(matches, options.context()).await,
-            Removal::Reset => super::connect(matches, options.context())
+            Removal::Forget => {
+                super::super::route::connect_or_unanswered(matches, options.context()).await
+            }
+            Removal::Reset => super::super::route::connect(matches, options.context())
                 .await
                 .map(Reached::Client)
                 .map_err(|error| unanswered_reset(error, matches, &selector)),
@@ -88,18 +136,30 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         }
     };
     // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-    let (machines, selected, current, hold, held) = runtime.block_on(async {
+    let (machines, selected, current, hold, held, by_device) = runtime.block_on(async {
         let machines = client.machines().await?;
         let observation = crate::cluster::visible_machine(&machine_target, &machines)?;
         let selected = observation.machine.clone();
         let mut current = client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await?
             .machine_id;
-        let switched = selected.id == current && machines.len() > 1;
-        if switched {
+        // An enforcing Server leaves, and forgets another, only for a Full caller, so the
+        // CLI drives the removal itself as a Device. The last Server waits on teardown.
+        let by_device = machines.len() > 1 && machines.iter().any(enforces);
+        let mut switched = selected.id == current && machines.len() > 1;
+        if by_device {
+            (client, current, switched) = super::super::route::connect_full_avoiding(
+                matches,
+                options.context(),
+                Some(&selected),
+            )
+            .await?;
+            refuse_without_device(&client, &machines, &selected, current, removal, matches)?;
+        } else if switched {
             (client, current) =
-                super::connect_avoiding(matches, options.context(), &selected).await?;
+                super::super::route::connect_avoiding(matches, options.context(), &selected)
+                    .await?;
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let held = match removal {
@@ -111,7 +171,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             },
             Removal::Reset => None,
         };
-        Ok::<_, Error>((machines, selected, current, hold, held))
+        Ok::<_, Error>((machines, selected, current, hold, held, by_device))
     })?;
     if let Some(HeldCopies::Gone(_)) = &held {
         crate::ui::stream(format_args!(
@@ -149,7 +209,9 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 || current.to_string(),
                 |observed| observed.machine.name.to_string(),
             );
-        let cloud = if hold == CloudHold::Last || cloud_manages(&client, current, &entry).await? {
+        let cloud = if by_device {
+            None
+        } else if hold == CloudHold::Last || cloud_manages(&client, current, &entry).await? {
             Some(cloud_removal(matches, &selected, hold, removal).await?)
         } else {
             None
@@ -299,8 +361,8 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             &runtime,
             credential,
             match removal {
-                Removal::Reset => Verb::Remove,
-                Removal::Forget => Verb::Forget,
+                Removal::Reset => OperationVerb::Remove,
+                Removal::Forget => OperationVerb::Forget,
             },
             matches.get_one::<String>("approval").cloned(),
             |id| {
@@ -331,6 +393,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     };
     runtime.block_on(async {
         let mut reset_failure = None;
+        let mut departed = None;
         let mut cloud_released = None;
         let mut cloud_kept = None;
 
@@ -347,6 +410,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             )
             .await?;
             reset_failure = removed.reset_warning;
+            departed = removed.departed;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
             }
@@ -377,8 +441,15 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                     .remove_machine(&selected_target, &confirmation, Remover::Operator)
                     .await
                     .map_err(|error| reset_removal_refusal(error, selected.name.as_str()))?;
-            reset_failure = removed.reset_warning;
+            reset_failure = removed.reset_warning().map(str::to_owned);
+            departed = Some(removed.departed().clone());
         }
+        // A Server that reset leaves no doubt, though its own row removal failed after. An
+        // older Cloud doesn't say how it departed, so its warning still reads as doubt.
+        let reset_doubt = match &departed {
+            Some(Departed::Reset { .. }) => None,
+            _ => reset_failure.as_deref(),
+        };
         crate::ui::stream(format_args!(
             "{} Server {}.",
             match removal {
@@ -416,23 +487,35 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");
             crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
-        if let Some(reason) = &reset_failure
+        if let Some(reason) = reset_doubt
             && cloud_kept == Some(false)
         {
             // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
-            crate::ui::warn(crate::ui::then_sentence(
+            crate::ui::warn(error_chain::then_sentence(
                 &format!("Cloud let go of Server {}, but {reason}", selected.name),
                 "Reset does not erase volume data.",
             ));
-        } else if let Some(reason) = &reset_failure {
-            crate::ui::warn(crate::ui::then_sentence(
-                &crate::ui::with_reason(
+        } else if let Some(reason) = reset_doubt {
+            crate::ui::warn(error_chain::then_sentence(
+                &error_chain::with_reason(
                     format_args!("Server {} was not fully cleaned up or reset", selected.name),
                     reason,
                 ),
                 "Reset does not erase volume data.",
             ));
         } else if removal == Removal::Reset {
+            if let Some(Departed::Reset {
+                row_warning: Some(warning),
+            }) = &departed
+            {
+                crate::ui::warn(error_chain::sentence(error_chain::with_reason(
+                    format_args!(
+                        "Server {} reset, but its own row removal failed",
+                        selected.name
+                    ),
+                    warning,
+                )));
+            }
             for loss in &observed.data_loss {
                 crate::ui::stream(format_args!(
                     "Reset left the data of Volume {} on {}.",
@@ -444,7 +527,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 crate::ui::stream("Wipe or reinstall the Server's disk to erase that data; sudo ployz-uninstall keeps the data.");
             }
         }
-        let stopped = if removal == Removal::Reset && reset_failure.is_none() {
+        let stopped = if removal == Removal::Reset && reset_doubt.is_none() {
             Stopped::Yes
         } else {
             Stopped::Unproven
@@ -460,6 +543,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         crate::ui::emit(&json!({
             "server": super::server_json(&selected),
             "reset_warning": reset_failure,
+            "departed": departed,
             "data_loss": observed.data_loss,
             "under_replicated": short.under_replicated,
             "no_copies": short.no_copies,
@@ -480,7 +564,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 })
                 .map_err(|error| error.context("Server removed; local context cleanup failed."))?;
         }
-        if reset_failure.is_some() {
+        if reset_doubt.is_some() {
             return Err(Error::partial());
         }
         Ok::<_, Error>(())
@@ -570,12 +654,14 @@ async fn cloud_manages(
     name: &str,
 ) -> Result<bool, Error> {
     let details = client
-        .invoke::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             ployz_core::InspectRequest::default(),
-            &MachineTarget::from(&entry),
-            Some(crate::connect::TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&entry))
+                .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map_err(|error| {
             Error::caused(
                 RpcErrorCode::Unavailable,
@@ -586,7 +672,7 @@ async fn cloud_manages(
     Ok(details
         .management_clients
         .iter()
-        .any(|label| label.as_str() == "cloud"))
+        .any(ployz_core::ManagementClientLabel::is_cloud))
 }
 
 /// The warning that the Server runs Services a drain could move off it, with the drain
@@ -670,7 +756,7 @@ fn left_short(removed: &MachineId, live: &LiveServices<RpcError>, last: bool) ->
         .all(|machine| machine == removed);
     let services = live.services();
     for service in replicated_services_on(removed, live) {
-        if service.namespace.is_reserved() {
+        if service.namespace.is_system() {
             continue;
         }
         let elsewhere = services
@@ -813,7 +899,7 @@ mod tests {
         qualified_labels, replicated_services_on, reset_removal_refusal, running_services,
         services_on,
     };
-    use crate::ui::Hint;
+    use ployz_core::Hint;
 
     #[test]
     fn a_volume_name_two_environments_share_is_qualified_by_environment() {

@@ -114,25 +114,21 @@ impl<'spec> ReadyWait<'spec> {
         } else {
             &observed.runtime
         };
-        let health_deadline = health_deadline_for(self.healthcheck, observed);
-        let deadline = health_deadline.unwrap_or(self.monitor);
-        let monitor_deadline = if matches!(
-            self.healthcheck.or(observed.effective_healthcheck.as_ref()),
-            Some(HealthcheckSpec::Http(_))
-        ) {
-            deadline
-        } else {
-            self.monitor
-        };
+        let health_deadline =
+            health_deadline_for(self.healthcheck, observed, Unconfigured::Settled);
         let poll = classify_health(
             runtime,
             details.last_check.as_ref(),
             elapsed,
-            monitor_deadline,
+            monitor_deadline(
+                self.healthcheck.or(observed.effective_healthcheck.as_ref()),
+                health_deadline,
+                self.monitor,
+            ),
             health_deadline,
             HealthExpectation::ContainerReady,
         );
-        (poll, deadline)
+        (poll, health_deadline.unwrap_or(self.monitor))
     }
 }
 
@@ -234,27 +230,59 @@ pub fn observed_health(runtime: &ContainerRuntimeObservation) -> Option<HealthOb
     }
 }
 
+/// What a wait makes of a Container whose runtime reports no healthcheck.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unconfigured {
+    /// It has no check to wait for, so the wait settles it once the monitor ends.
+    Settled,
+    /// It waits the default healthcheck deadline for a check to appear.
+    UseDeadline,
+}
+
 /// The offset from the start a first passing check is waited for, if any check applies.
 #[must_use]
 pub fn health_deadline_for(
     spec: Option<&HealthcheckSpec>,
     observed: &ContainerObservation,
+    unconfigured: Unconfigured,
 ) -> Option<Duration> {
-    match spec {
-        Some(spec) => spec.deadline(),
-        None => observed
+    let default_deadline = || {
+        let waits = matches!(
+            &observed.runtime,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Starting | HealthObservation::Unrecognized(_),
+            }
+        ) || (unconfigured == Unconfigured::UseDeadline
+            && matches!(
+                &observed.runtime,
+                ContainerRuntimeObservation::Running {
+                    health: HealthObservation::NotConfigured,
+                }
+            ));
+        waits.then(|| healthcheck_deadline(None))
+    };
+    match (spec, unconfigured) {
+        (Some(spec), Unconfigured::Settled) => spec.deadline(),
+        (Some(spec), Unconfigured::UseDeadline) => spec.deadline().or_else(default_deadline),
+        (None, _) => observed
             .effective_healthcheck
             .as_ref()
             .and_then(HealthcheckSpec::deadline)
-            .or_else(|| {
-                matches!(
-                    &observed.runtime,
-                    ContainerRuntimeObservation::Running {
-                        health: HealthObservation::Starting | HealthObservation::Unrecognized(_),
-                    }
-                )
-                .then(|| healthcheck_deadline(None))
-            }),
+            .or_else(default_deadline),
+    }
+}
+
+/// How long a Container that is not running, or not ready, is given before a wait fails
+/// it. An Http healthcheck gives its own deadline; any other waits the `monitor` window.
+#[must_use]
+pub fn monitor_deadline(
+    healthcheck: Option<&HealthcheckSpec>,
+    health_deadline: Option<Duration>,
+    monitor: Duration,
+) -> Duration {
+    match healthcheck {
+        Some(HealthcheckSpec::Http(_)) => health_deadline.unwrap_or(monitor),
+        _ => monitor,
     }
 }
 
@@ -450,6 +478,7 @@ mod tests {
             image_id: None,
             last_check,
             run: None,
+            leaving: false,
         }
     }
 
@@ -604,6 +633,51 @@ mod tests {
             health_monitor(&service_spec(None, None)),
             DEFAULT_HEALTH_MONITOR
         );
+    }
+
+    #[test]
+    fn a_container_with_no_check_settles_or_waits_the_default_deadline_as_the_caller_asks() {
+        let looked = details(running(HealthObservation::NotConfigured), None, None);
+        assert_eq!(
+            health_deadline_for(None, &looked.container, Unconfigured::Settled),
+            None
+        );
+        assert_eq!(
+            health_deadline_for(None, &looked.container, Unconfigured::UseDeadline),
+            Some(healthcheck_deadline(None))
+        );
+        assert_eq!(
+            health_deadline_for(
+                Some(&HealthcheckSpec::Disabled),
+                &looked.container,
+                Unconfigured::UseDeadline
+            ),
+            Some(healthcheck_deadline(None))
+        );
+        let starting = details(running(HealthObservation::Starting), None, None);
+        for unconfigured in [Unconfigured::Settled, Unconfigured::UseDeadline] {
+            assert_eq!(
+                health_deadline_for(None, &starting.container, unconfigured),
+                Some(healthcheck_deadline(None))
+            );
+        }
+    }
+
+    #[test]
+    fn only_an_http_check_gives_the_monitor_its_own_deadline() {
+        let http = http_check(3);
+        let configured = configured_check(60_000);
+        let deadline = Some(Duration::from_secs(3));
+        assert_eq!(
+            monitor_deadline(Some(&http), deadline, MONITOR),
+            Duration::from_secs(3)
+        );
+        assert_eq!(monitor_deadline(Some(&http), None, MONITOR), MONITOR);
+        assert_eq!(
+            monitor_deadline(Some(&configured), deadline, MONITOR),
+            MONITOR
+        );
+        assert_eq!(monitor_deadline(None, deadline, MONITOR), MONITOR);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use clap::{ArgMatches, Command};
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{Hint, RpcError, RpcErrorCode};
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,9 @@ use super::super::account::in_cloud;
 use super::super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{DEFAULT_CLOUD, LoginError};
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::cloud_login::LoginError;
+use crate::cloud_origin::CloudOrigin;
+use crate::ui::{self, Cell, Table, Tone};
 
 const INSTALLER_URL: &str = "https://ployz.sh";
 
@@ -237,7 +238,7 @@ fn lasts(expires: &str) -> &str {
 /// The line a host runs to install this release of Ployz and ask to join. It carries no token:
 /// install.sh asks for it on the terminal, so it stays out of shell history and `ps`.
 fn install_line(cloud: &str) -> String {
-    let cloud_env = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
+    let cloud_env = if cloud == CloudOrigin::default_cloud().as_str() {
         String::new()
     } else {
         format!("PLOYZ_CLOUD_URL='{cloud}' ")

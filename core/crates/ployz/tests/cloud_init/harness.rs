@@ -9,7 +9,7 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, ContainerDetails, ContainerId, ContainerKind, ContainerList,
+    AdvertisedEndpoint, ClusterNamed, ContainerDetails, ContainerId, ContainerKind, ContainerList,
     ContainerLocator, ContainerNow, ContainerObservation, ContainerRuntimeObservation,
     ContainerWant, ContractDescription, CopyRotation, CreationKey, DESCRIBE_CONTRACT_CAPABILITY,
     ENROLL_FOR_RECOVERY_CAPABILITY, EnrollAs, EnrollRequest, Enrolled, EnsuredContainer,
@@ -17,8 +17,8 @@ use ployz_core::{
     MachineImages, MachineList, MachineName, MachineNow, MachineObservation, MachineToken,
     MembershipObservation, NewContainer, OpaquePayload, PROTOCOL_MAJOR, RecoverySeed, Registered,
     RoutesRead, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunRotation, RunTarget,
-    SealingKeyBackup, SealingKeyWrapped, SealingPublicKey, SetManagementClientResponse,
-    VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
+    SET_CLUSTER_NAME_CAPABILITY, SealingKeyBackup, SealingKeyWrapped, SealingPublicKey,
+    SetManagementClientResponse, VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
 };
 
 pub fn fake_wrapped() -> SealingKeyWrapped {
@@ -114,6 +114,7 @@ struct JoinInner {
     join_request: Mutex<Option<MemberEnroll>>,
     join_attempts: AtomicUsize,
     lose_lifecycle_reply: AtomicBool,
+    predates_confirmation: AtomicBool,
     initialize_requests: Mutex<Vec<FounderEnroll>>,
     register_request: Mutex<Option<ployz_core::RegisterRequest>>,
     lose_initialize_reply: AtomicBool,
@@ -129,6 +130,7 @@ struct JoinInner {
     create_attempts: AtomicUsize,
     transient_create_failures: AtomicUsize,
     ensure_requests: Mutex<Vec<NewContainer>>,
+    door_requests: Mutex<Vec<ployz_core::SetIngressDoorsRequest>>,
     keys: Mutex<BTreeMap<CreationKey, ContainerId>>,
     ensure_attempts: AtomicUsize,
     transient_ensure_failures: AtomicUsize,
@@ -160,6 +162,7 @@ impl JoinDaemon {
                 join_request: Mutex::new(None),
                 join_attempts: AtomicUsize::new(0),
                 lose_lifecycle_reply: AtomicBool::new(false),
+                predates_confirmation: AtomicBool::new(false),
                 initialize_requests: Mutex::new(Vec::new()),
                 register_request: Mutex::new(None),
                 lose_initialize_reply: AtomicBool::new(false),
@@ -175,6 +178,7 @@ impl JoinDaemon {
                 create_attempts: AtomicUsize::new(0),
                 transient_create_failures: AtomicUsize::new(0),
                 ensure_requests: Mutex::new(Vec::new()),
+                door_requests: Mutex::new(Vec::new()),
                 keys: Mutex::new(BTreeMap::new()),
                 ensure_attempts: AtomicUsize::new(0),
                 transient_ensure_failures: AtomicUsize::new(0),
@@ -313,6 +317,29 @@ impl JoinDaemon {
         self
     }
 
+    /// Answer an approved join as a daemon from before join confirmations: with none.
+    pub fn predating_confirmation(self) -> Self {
+        self.inner
+            .predates_confirmation
+            .store(true, Ordering::SeqCst);
+        self
+    }
+
+    fn confirmation(
+        &self,
+        enroll: &EnrollRequest,
+    ) -> Option<ployz_core::authority::join::JoinConfirmation> {
+        match &enroll.role {
+            EnrollAs::Member { registration }
+                if registration.assigned_machine.join_approval.is_some()
+                    && !self.inner.predates_confirmation.load(Ordering::SeqCst) =>
+            {
+                Some(JOIN_CONFIRMATION)
+            }
+            EnrollAs::Member { .. } | EnrollAs::Founder { .. } => None,
+        }
+    }
+
     pub fn join_attempts(&self) -> usize {
         self.inner.join_attempts.load(Ordering::SeqCst)
     }
@@ -378,6 +405,10 @@ impl JoinDaemon {
 
     pub fn ensure_requests(&self) -> Vec<NewContainer> {
         self.inner.ensure_requests.lock().unwrap().clone()
+    }
+
+    pub fn door_requests(&self) -> Vec<ployz_core::SetIngressDoorsRequest> {
+        self.inner.door_requests.lock().unwrap().clone()
     }
 
     pub fn ensure_attempts(&self) -> usize {
@@ -543,11 +574,12 @@ impl FakeMachine for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let mut capabilities = vec![DESCRIBE_CONTRACT_CAPABILITY];
+        let mut capabilities = vec![DESCRIBE_CONTRACT_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY];
         if self.inner.recovery_rpcs.load(Ordering::SeqCst) {
             capabilities.extend([ENROLL_FOR_RECOVERY_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY]);
         }
         rpc_ok(ContractDescription {
+            attest: None,
             machine_id: self.inner.registration.assigned_machine.id,
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: self.inner.daemon_version.lock().unwrap().clone(),
@@ -632,6 +664,7 @@ impl FakeMachine for JoinDaemon {
                 .clone(),
             store_version: Default::default(),
             rtts: Vec::new(),
+            passkeys: Vec::new(),
             management_clients: self
                 .inner
                 .cloud_managed
@@ -800,6 +833,7 @@ impl FakeMachine for JoinDaemon {
                 network: "10.210.0.0/16".parse().unwrap(),
                 machines: self.inner.registration.visible_peers.clone(),
                 target_versions: self.inner.registration.target_versions.clone(),
+                doors: None,
             },
             &[],
         )
@@ -833,6 +867,7 @@ impl FakeMachine for JoinDaemon {
                 network: "10.210.0.0/16".parse().unwrap(),
                 machines: self.inner.registration.visible_peers.clone(),
                 target_versions: self.inner.registration.target_versions.clone(),
+                doors: None,
             }),
             machines,
         })
@@ -890,6 +925,7 @@ impl FakeMachine for JoinDaemon {
             image_id: None,
             last_check: None,
             run: None,
+            leaving: false,
         })
     }
 
@@ -949,6 +985,120 @@ impl FakeMachine for JoinDaemon {
             | ContainerWant::Held { .. } => unused(),
         }
     }
+    /// Set the Ingress Proxy as a daemon does: the holder, then Caddy, each created
+    /// once. Attempts and failures count with ensures, as they replace the ingress ones.
+    async fn set_ingress_doors(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::SetIngressDoors(doors) = decoded.body else {
+            return Err(Status::invalid_argument("expected SetIngressDoors"));
+        };
+        self.inner.create_attempts.fetch_add(1, Ordering::SeqCst);
+        self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
+        if consume_transient_failure(&self.inner.transient_ensure_failures) {
+            return Err(Status::unavailable("transient ensure failure"));
+        }
+        if self.inner.fail_ensure.load(Ordering::SeqCst) {
+            return rpc_ok(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "ensure failed".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
+        }
+        let proxy = doors.proxy_service;
+        let mut changed = false;
+        self.inner.door_requests.lock().unwrap().push(doors);
+        let mut set = ployz_core::IngressDoorsSet::default();
+        for (identity, spec, service_id) in [
+            (
+                ployz_core::QualifiedService::system_ingress_holder(),
+                ployz_core::holder_service_spec("pause:test", ployz_core::IngressPorts::Public),
+                ployz_core::ServiceId::parse("d".repeat(32)).unwrap(),
+            ),
+            (
+                ployz_core::QualifiedService::system_ingress(),
+                ployz_core::caddy_service_spec("caddy:test"),
+                proxy,
+            ),
+        ] {
+            let machine_id = self.inner.registration.assigned_machine.id;
+            let mut containers = self.inner.containers.lock().unwrap();
+            let (now, change) = match containers.iter_mut().find(|container| {
+                container.machine_id == machine_id && container.identity() == identity
+            }) {
+                Some(container)
+                    if matches!(
+                        container.runtime,
+                        ContainerRuntimeObservation::Running { .. }
+                    ) =>
+                {
+                    (container.clone(), ployz_core::DoorChange::Unchanged)
+                }
+                Some(container) => {
+                    container
+                        .try_update(|parts| {
+                            parts.runtime = ContainerRuntimeObservation::Running {
+                                health: HealthObservation::Healthy,
+                            };
+                        })
+                        .unwrap();
+                    (container.clone(), ployz_core::DoorChange::Started)
+                }
+                None => {
+                    let n = containers.len() + 1;
+                    let container =
+                        ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                            rotation: None,
+                            r#gen: None,
+                            container_id: ContainerId::parse(format!("{n:064x}")).unwrap(),
+                            display_name: identity.name.to_string(),
+                            created_at_unix_nanos: n as i64,
+                            machine_id,
+                            namespace: identity.namespace.clone(),
+                            kind: ContainerKind::ServiceContainer,
+                            runtime: ContainerRuntimeObservation::Running {
+                                health: HealthObservation::Healthy,
+                            },
+                            effective_healthcheck: None,
+                            resolved_spec: spec
+                                .to_resolved(
+                                    service_id,
+                                    ployz_core::ResolvedUpdateConfig::default(),
+                                )
+                                .expect("door mounts are scoped"),
+                            address: None,
+                            labels: Default::default(),
+                            stopped: false,
+                            run: None,
+                        })
+                        .unwrap();
+                    containers.push(container.clone());
+                    (container, ployz_core::DoorChange::Created)
+                }
+            };
+            drop(containers);
+            changed |= change != ployz_core::DoorChange::Unchanged;
+            let outcome = Some(ployz_core::DoorOutcome { now, change });
+            if identity == ployz_core::QualifiedService::system_ingress() {
+                set.proxy = outcome;
+            } else {
+                set.holder = outcome;
+            }
+        }
+        if changed {
+            self.record("deploy_ingress");
+        }
+        if consume_transient_failure(&self.inner.transient_create_failures) {
+            return Err(Status::unavailable("lost Ingress container creation reply"));
+        }
+        rpc_ok(set)
+    }
     async fn list_images(
         &self,
         _request: Request<OpaquePayload>,
@@ -984,6 +1134,22 @@ impl FakeMachine for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(ployz_core::ImagePulled::default())
     }
+    async fn set_cluster_name(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::SetClusterName(set) = decoded.body else {
+            return Err(Status::invalid_argument("expected SetClusterName"));
+        };
+        rpc_ok(ClusterNamed {
+            name: Some(set.name),
+        })
+    }
+
     async fn leave(
         &self,
         _request: Request<OpaquePayload>,
@@ -1016,6 +1182,33 @@ impl FakeMachine for JoinDaemon {
     }
 }
 
+/// What the fake joiner answers an approved join with, as a real one does from its capsule.
+pub const JOIN_CONFIRMATION: ployz_core::authority::join::JoinConfirmation =
+    ployz_core::authority::join::JoinConfirmation([5; 32]);
+
+/// The registration an enforcing Machine hands back once a Device approved the join.
+pub fn approved_registration() -> Registered {
+    use ployz_core::authority::{JoinApproval, Signed, Signer, Timestamp, join::JoinAllocation};
+    let mut registration = registration();
+    let machine = &registration.assigned_machine;
+    let signer = Signer::from_seed(&[1; 32]);
+    let issued_at = Timestamp::now();
+    let body = JoinApproval {
+        cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        machine: JoinAllocation::from(machine),
+        network: "10.210.0.0/16".parse().unwrap(),
+        sealing_recipient: machine.public_key,
+        devices: vec![signer.public().into()],
+        admitting_machines: vec![founder_machine().id],
+        bootstrap: vec![JoinAllocation::from(&founder_machine())],
+        issued_at,
+        expires_at: issued_at.plus(60_000),
+        signer: signer.public().into(),
+    };
+    registration.assigned_machine.join_approval = Some(Signed::sign(&body, &signer).unwrap());
+    registration
+}
+
 pub fn registration() -> Registered {
     Registered {
         assigned_machine: joiner_machine(),
@@ -1027,7 +1220,7 @@ pub fn registration() -> Registered {
 }
 
 pub fn ingress_on(machine: &Machine) -> ContainerObservation {
-    let spec = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default());
+    let spec = ployz_core::caddy_service_spec("caddy:2.10.0");
     let spec = spec
         .to_resolved(
             ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
@@ -1073,6 +1266,7 @@ fn joiner_machine() -> Machine {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -1090,6 +1284,7 @@ pub fn founder_machine() -> Machine {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -1108,6 +1303,7 @@ impl JoinDaemon {
             if stored == Some((enroll.clone(), self.public_key())) {
                 return rpc_ok(Enrolled::Enrolled {
                     machine: self.inner.current_machine.lock().unwrap().clone(),
+                    join_confirmation: self.confirmation(&enroll),
                 });
             }
             let current = self.inner.current_machine.lock().unwrap().clone();
@@ -1220,6 +1416,10 @@ impl JoinDaemon {
                 }
             }
         }
-        rpc_ok(Enrolled::Enrolled { machine })
+        let join_confirmation = self.confirmation(&enroll);
+        rpc_ok(Enrolled::Enrolled {
+            machine,
+            join_confirmation,
+        })
     }
 }

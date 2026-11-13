@@ -509,7 +509,7 @@ impl Failure {
                 // A refusal comes before any Docker change, so the old limits hold.
                 // Anything else, such as a Docker error, an unapplied read-back or a
                 // lost answer, leaves the live limits unknown.
-                let outcome = match LimitsRefusal::from_details(&error.details) {
+                let outcome = match error.evidence::<LimitsRefusal>() {
                     Some(LimitsRefusal::NotRunning) => {
                         "found the Container not running, so the new limits do not apply"
                     }
@@ -674,13 +674,6 @@ impl Failure {
 
 type Key = (ServiceName, MachineId);
 
-/// Whether `operation` leaves a Service Container serving the new spec: a fresh
-/// start, or a running Container updated in place.
-#[must_use]
-pub const fn starts_container(operation: &DeployOperation) -> bool {
-    operation.serves_new_spec()
-}
-
 /// Turns a runner's Deploy Progress snapshots into the rows that changed, so it
 /// records only those.
 #[derive(Debug, Default)]
@@ -720,8 +713,8 @@ impl RowTracker {
             let (_, statuses, serving) = grouped
                 .entry(key)
                 .or_insert_with(|| (server, Vec::new(), None));
-            statuses.push((&row.status, starts_container(&row.operation)));
-            if starts_container(&row.operation) {
+            statuses.push((&row.status, row.operation.serves_new_spec()));
+            if row.operation.serves_new_spec() {
                 let serves = matches!(row.operation, DeployOperation::UpdateContainer(_))
                     || matches!(row.status, OperationStatus::Completed);
                 *serving = Some(serving.unwrap_or(true) && serves);

@@ -9,9 +9,9 @@ use serde::Serialize;
 #[cfg(feature = "verify-faults")]
 use super::debug;
 use super::{
-    Handler, account, build, catalog, cloud, completion, config, config_item, context, deploy,
-    device, docs, domain, env, github, link, login, mcp, metrics, operator, project, recovery,
-    review, server, service, up, volume,
+    Handler, account, build, catalog, cloud, cluster, completion, config, config_item, context,
+    deploy, device, docs, domain, env, github, github_preview, github_rule, ingress, link, login,
+    mcp, metrics, operator, private_access, project, recovery, review, server, service, up, volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -178,6 +178,13 @@ pub(crate) const BUILD: Verb =
     Verb::internal("build", Never, build::command, build::build).refuses_json();
 pub(crate) const CLOUD_RESET: Verb =
     Verb::cloud("cloud reset", Always, cloud::reset_command, cloud::reset);
+pub(crate) const CLUSTER_NAME: Verb = Verb::cloud(
+    "cluster name",
+    Depends,
+    cluster::name_command,
+    cluster::name,
+)
+.docs("services/private-networking.md");
 pub(crate) const COMPLETION: Verb =
     Verb::local("completion", Never, crate::cli::completion, completion).refuses_json();
 pub(crate) const CONFIG_ADD: Verb = Verb::cloud(
@@ -290,13 +297,23 @@ pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEVICE_APPROVE: Verb = Verb::local(
     "device approve",
-    Never,
+    Always,
     device::approve_command,
     device::approve,
 )
 .docs("servers/manage-servers.md");
+pub(crate) const DEVICE_ENFORCE: Verb = Verb::local(
+    "device enforce",
+    Never,
+    device::enforce_command,
+    device::enforce,
+)
+.docs("servers/manage-servers.md");
 pub(crate) const DEVICE_LS: Verb =
     Verb::local("device ls", Never, device::list_command, device::list)
+        .docs("servers/manage-servers.md");
+pub(crate) const DEVICE_PIN: Verb =
+    Verb::cloud("device pin", Never, device::pin_command, device::pin)
         .docs("servers/manage-servers.md");
 pub(crate) const DEVICE_RM: Verb =
     Verb::local("device rm", Always, device::remove_command, device::remove)
@@ -419,10 +436,71 @@ pub(crate) const GITHUB_DISCONNECT: Verb = Verb::cloud(
 .docs("deploy/github.md");
 pub(crate) const GITHUB_LS: Verb =
     Verb::cloud("github ls", Never, github::list_command, github::list).docs("deploy/github.md");
+pub(crate) const GITHUB_PREVIEW_APPROVE: Verb = Verb::cloud(
+    "github preview approve",
+    Never,
+    github_preview::approve_command,
+    github_preview::approve,
+)
+.docs("environments/preview-environments.md");
+pub(crate) const GITHUB_PREVIEW_END: Verb = Verb::cloud(
+    "github preview end",
+    Never,
+    github_preview::end_command,
+    github_preview::end,
+)
+.docs("environments/preview-environments.md");
+pub(crate) const GITHUB_RULE_APPROVE: Verb = Verb::cloud(
+    "github rule approve",
+    Never,
+    github_rule::approve_command,
+    github_rule::approve,
+)
+.docs("deploy/github.md");
+pub(crate) const GITHUB_RULE_END: Verb = Verb::cloud(
+    "github rule end",
+    Never,
+    github_rule::end_command,
+    github_rule::end,
+)
+.docs("deploy/github.md");
 pub(crate) const GITHUB_TREE: Verb =
     Verb::cloud("github tree", Never, github::tree_command, github::tree).docs("deploy/github.md");
 pub(crate) const HISTORY: Verb =
     Verb::cloud("history", Never, review::history_command, review::history).docs("cli/overview.md");
+pub(crate) const INGRESS: Verb =
+    Verb::cloud("ingress", Never, ingress::show_command, ingress::show)
+        .docs("services/cloudflare-tunnel.md");
+pub(crate) const INGRESS_USE: Verb = Verb::cloud(
+    "ingress use",
+    Never,
+    ingress::use_command,
+    ingress::use_doors_on,
+)
+.stdin(&[("--token-stdin", Stdin::Only)])
+.docs("services/cloudflare-tunnel.md");
+pub(crate) const PRIVATE_ACCESS: Verb = Verb::cloud(
+    "private-access",
+    Never,
+    private_access::show_command,
+    private_access::show,
+)
+.docs("services/private-networking.md");
+pub(crate) const PRIVATE_ACCESS_ON: Verb = Verb::cloud(
+    "private-access on",
+    Never,
+    private_access::on_command,
+    private_access::on,
+)
+.stdin(&[("--auth-key-stdin", Stdin::Only)])
+.docs("services/private-networking.md");
+pub(crate) const PRIVATE_ACCESS_OFF: Verb = Verb::cloud(
+    "private-access off",
+    Never,
+    private_access::off_command,
+    private_access::off,
+)
+.docs("services/private-networking.md");
 pub(crate) const HISTORY_RESTORE: Verb = Verb::cloud(
     "history restore",
     Never,
@@ -612,6 +690,13 @@ pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
 )
 .docs("servers/manage-servers.md")
 .tool(ToolId::ServerUpgrade);
+pub(crate) const SERVER_UPGRADE_POLICY_SET: Verb = Verb::cloud(
+    "server upgrade-policy set",
+    Never,
+    server::upgrade_policy::set_command,
+    server::upgrade_policy::set,
+)
+.docs("servers/manage-servers.md");
 pub(crate) const SERVER_TOKEN_CREATE: Verb = Verb::cloud(
     "server token create",
     Always,
@@ -758,7 +843,7 @@ pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
 .tool(ToolId::VolumeMirrorRemove);
 pub(crate) const VOLUME_MOVE: Verb = Verb::cloud(
     "volume move",
-    Never,
+    Depends,
     volume::run::move_command,
     volume::run::move_volume,
 )
@@ -800,7 +885,7 @@ pub(crate) const VOLUME_RUNS: Verb = Verb::cloud(
 )
 .docs("services/move-a-volume.md");
 pub(crate) const VOLUME_SET: Verb =
-    Verb::cloud("volume set", Never, volume::set_command, volume::set)
+    Verb::cloud("volume set", Depends, volume::set_command, volume::set)
         .keeps_running(KeepsRunning::With("--wait"))
         .docs("services/volumes.md");
 pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
@@ -816,6 +901,7 @@ pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
 pub(crate) const VERBS: &[Verb] = &[
     BUILD,
     CLOUD_RESET,
+    CLUSTER_NAME,
     COMPLETION,
     CONFIG_ADD,
     CONFIG_INSPECT,
@@ -841,7 +927,9 @@ pub(crate) const VERBS: &[Verb] = &[
     DEPLOYMENT_SHOW,
     DEPLOYMENT_START,
     DEVICE_APPROVE,
+    DEVICE_ENFORCE,
     DEVICE_LS,
+    DEVICE_PIN,
     DEVICE_RM,
     DEVICE_REQUEST,
     DIFF,
@@ -874,9 +962,15 @@ pub(crate) const VERBS: &[Verb] = &[
     GITHUB_CONNECT,
     GITHUB_DISCONNECT,
     GITHUB_LS,
+    GITHUB_PREVIEW_APPROVE,
+    GITHUB_PREVIEW_END,
+    GITHUB_RULE_APPROVE,
+    GITHUB_RULE_END,
     GITHUB_TREE,
     HISTORY,
     HISTORY_RESTORE,
+    INGRESS,
+    INGRESS_USE,
     HISTORY_UNDO,
     LINK,
     LOGIN,
@@ -891,6 +985,9 @@ pub(crate) const VERBS: &[Verb] = &[
     ORG_NEW,
     ORG_RM,
     ORG_USE,
+    PRIVATE_ACCESS,
+    PRIVATE_ACCESS_OFF,
+    PRIVATE_ACCESS_ON,
     PROJECT_LS,
     PROJECT_NEW,
     PROJECT_RENAME,
@@ -916,6 +1013,7 @@ pub(crate) const VERBS: &[Verb] = &[
     SERVER_TOKEN_LS,
     SERVER_TOKEN_REVOKE,
     SERVER_UPGRADE,
+    SERVER_UPGRADE_POLICY_SET,
     SERVICE_ADD,
     SERVICE_INSPECT,
     SERVICE_LS,
@@ -953,6 +1051,10 @@ const GROUPS: &[Group] = &[
         command: cloud::group,
     },
     Group {
+        path: "cluster",
+        command: cluster::group,
+    },
+    Group {
         path: "config",
         command: config_item::group,
     },
@@ -982,6 +1084,14 @@ const GROUPS: &[Group] = &[
         command: github::group,
     },
     Group {
+        path: "github preview",
+        command: github_preview::group,
+    },
+    Group {
+        path: "github rule",
+        command: github_rule::group,
+    },
+    Group {
         path: "org",
         command: account::org_group,
     },
@@ -996,6 +1106,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "server",
         command: server::group,
+    },
+    Group {
+        path: "server upgrade-policy",
+        command: server::upgrade_policy::group,
     },
     Group {
         path: "server token",

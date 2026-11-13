@@ -1,6 +1,7 @@
 //! PR plans: which Environment a repository's pull requests start from, and how.
 
 use super::*;
+use crate::followup::FollowUp;
 
 /// A repository no plan was saved for: off, removed on close.
 pub(super) fn off() -> Stored {
@@ -77,7 +78,11 @@ pub(crate) fn set_plan(
         else {
             return Err(error::invalid(
                 "Pick the Environment PR Environments start from first: copies and Setup Commands name its nodes",
-                json!({ "next": format!("ployz env pr {} --from ENV --project {}", set.repository, project.name) }),
+                FollowUp::EnvironmentPr {
+                    repository: set.repository.to_string(),
+                    project: project.name.clone(),
+                }
+                .details(),
             ));
         };
         if let Some(copy) = &set.copy {
@@ -229,4 +234,21 @@ pub(super) struct Repository {
     id: RepositoryId,
     name: RepositoryName,
     installation_id: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stored_plan_text_round_trips_with_its_setup() {
+        let text = concat!(
+            r#"{"enabled":true,"start_from":null,"copy":["lineage-2"],"#,
+            r#""setup":[{"lineage":"lineage-1","command":"pnpm db:seed"}],"#,
+            r#""remove_on_close":false,"include_bots":false}"#,
+        );
+        let stored: Stored = serde_json::from_str(text).unwrap();
+        assert_eq!(stored.setup.len(), 1);
+        assert_eq!(serde_json::to_string(&stored).unwrap(), text);
+    }
 }

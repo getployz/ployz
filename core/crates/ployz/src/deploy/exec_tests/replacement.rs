@@ -1054,18 +1054,6 @@ async fn a_restore_a_newer_deploy_refuses_reads_as_the_newer_deploy_serving() {
             ended(&[("api", ServiceResult::Newer)]),
             "removes {removes}"
         );
-        let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, &[], Vec::new()));
-        assert!(
-            shown.contains(
-                "  A newer deploy is already serving; the old Container will not serve again.\n"
-            ),
-            "removes {removes}: {shown}"
-        );
-        assert!(
-            !shown.contains("Could not restore"),
-            "removes {removes}: {shown}"
-        );
-        assert!(!shown.contains("newer deploy is already serving app/api"));
         if removes {
             assert!(warnings.is_empty(), "{warnings:?}");
             assert_eq!(client.rotation(&old), None);

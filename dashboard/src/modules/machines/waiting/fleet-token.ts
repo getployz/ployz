@@ -19,6 +19,8 @@ export const CreateFleetTokenInput = Schema.Struct({
   name: Schema.NullOr(FleetTokenName),
   expiresIn: Schema.Literals(FLEET_TOKEN_LIFETIMES),
   autoEnroll: Schema.NullOr(Schema.Struct({ maxServers: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1000 })) })),
+  /** The first Server this token enrolls founds the Cluster with ports 80 and 443 closed. */
+  foundsClosed: Schema.optionalKey(Schema.Boolean),
 });
 export type CreateFleetTokenInput = typeof CreateFleetTokenInput.Type;
 

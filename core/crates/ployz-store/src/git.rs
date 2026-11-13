@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::ServiceLineageId;
 use crate::scope::EnvironmentRef;
 use crate::settings::ServiceSetting;
@@ -102,6 +103,7 @@ pub(crate) fn create_git_service(
         &create.environment,
         &create.name,
         (source, None),
+        trusted,
     )
 }
 
@@ -442,11 +444,10 @@ fn not_git(setting: ServiceSetting) -> RpcError {
 fn no_branch(repository: &str, service: &str) -> RpcError {
     error::not_found(
         format!("Repository {repository} has no such branch that Ployz could check"),
-        json!({
-            "setting": "branch",
-            "service": service,
-            "next": format!("ployz github ls {repository}"),
-        }),
+        FollowUp::GithubList {
+            repository: repository.to_owned(),
+        }
+        .within(json!({ "setting": "branch", "service": service })),
     )
 }
 
@@ -461,7 +462,7 @@ fn authorized<'a>(
     trusted.repository(repository).ok_or_else(|| {
         error::not_found(
             "No repository by that name that this Organization can read: connect it through GitHub, or name a public one",
-            json!({ "setting": "repository", "next": "ployz github connect" }),
+            FollowUp::GithubConnect.within(json!({ "setting": "repository" })),
         )
     })
 }

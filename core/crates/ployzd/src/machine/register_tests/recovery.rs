@@ -274,6 +274,7 @@ async fn install_refuses_another_key_on_a_seeded_founder_before_its_awaits_marke
     let founder = local.owner().record().machine().unwrap().clone();
     let sealed = holder_local
         .share_sealing_key(ShareSealingKeyRequest {
+            join_approval: None,
             machine: founder.id,
             public_key: founder.public_key,
         })
@@ -341,6 +342,7 @@ async fn install_refuses_to_publish_a_held_key_on_a_seeded_founder_before_its_aw
     let founder = local.owner().record().machine().unwrap().clone();
     let sealed = local
         .share_sealing_key(ShareSealingKeyRequest {
+            join_approval: None,
             machine: founder.id,
             public_key: founder.public_key,
         })
@@ -527,7 +529,10 @@ async fn the_management_tunnel_never_carries_a_recovery_code() {
             panic!("a Cloud-routed recovery code was accepted");
         };
         assert_eq!(error.code, RpcErrorCode::Unsupported, "{error:?}");
-        assert_eq!(error.recovery_refusal(), Some(RecoveryRefusal::CloudRouted));
+        assert_eq!(
+            error.evidence::<RecoveryRefusal>(),
+            Some(RecoveryRefusal::CloudRouted)
+        );
     }
     let direct = service
         .wrap_sealing_key(routed(wrap(), false))

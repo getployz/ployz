@@ -869,6 +869,73 @@ fn a_stale_revision_is_refused_with_a_fresh_read() {
 }
 
 #[test]
+fn every_expect_revision_check_refuses_a_moved_environment_with_the_same_read() {
+    let store = shop();
+    call(
+        &store,
+        "service_add",
+        json!({ "name": "web", "image": "traefik/whoami" }),
+        "add-1",
+    )
+    .ok();
+    let environment_show = Call::new("environment_show", json!({ "project": "shop" }));
+    let service_inspect = Call::new(
+        "service_inspect",
+        json!({ "project": "shop", "service": "web" }),
+    );
+    for (tool, input, next) in [
+        (
+            "environment_pr",
+            json!({ "enabled": true, "repository": "acme/api" }),
+            &environment_show,
+        ),
+        (
+            "domain_add",
+            json!({ "service": "web", "hostname": "app.example.com" }),
+            &service_inspect,
+        ),
+        (
+            "domain_update",
+            json!({ "domain": "whoami-2", "prefix": "whoami" }),
+            &environment_show,
+        ),
+        (
+            "domain_remove",
+            json!({ "domain": "app.example.com" }),
+            &environment_show,
+        ),
+        (
+            "volume_remove",
+            json!({ "volume": "data" }),
+            &environment_show,
+        ),
+        (
+            "service_rename",
+            json!({ "service": "web", "to": "frontend" }),
+            &service_inspect,
+        ),
+        (
+            "service_remove",
+            json!({ "service": "web" }),
+            &service_inspect,
+        ),
+    ] {
+        let mut input = input;
+        input["project"] = json!("shop");
+        input["expect_revision"] = json!(0);
+        let stale = call(&store, tool, input, "stale-1").refused();
+        assert_eq!(stale.code, RpcErrorCode::Conflict, "{tool}");
+        assert_eq!(
+            stale.message,
+            "The Environment changed since you read it; read it again before writing",
+            "{tool}"
+        );
+        assert_eq!(stale.writes, Writes::None, "{tool}");
+        assert_eq!(stale.next, std::slice::from_ref(next), "{tool}");
+    }
+}
+
+#[test]
 fn config_write_sets_permissions_and_a_later_write_keeps_them() {
     let store = shop();
     let file = |store: &ConfigStore| {
@@ -1048,7 +1115,7 @@ fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
     let version = asked.retry.input["version"].as_str().unwrap().to_owned();
 
     image("v4", "update-3");
-    let stale = call(&store, "history", asked.retry.input.clone(), "history-3").refused();
+    let stale = call(&store, "history", asked.retry.input, "history-3").refused();
     assert_eq!(stale.code, RpcErrorCode::Conflict, "{stale:?}");
     assert_eq!(stale.writes, Writes::None);
     assert_eq!(stale.next, [Call::new("history", json!({ "revision": 1 }))]);
@@ -1968,6 +2035,7 @@ fn deploying() -> (ConfigStore, DeploymentId) {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -1977,6 +2045,7 @@ fn deploying() -> (ConfigStore, DeploymentId) {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -2032,6 +2101,7 @@ fn a_deployment_shows_what_it_left_out_and_what_its_servers_warned() {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -2041,6 +2111,7 @@ fn a_deployment_shows_what_it_left_out_and_what_its_servers_warned() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -2555,6 +2626,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: second.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -2564,6 +2636,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -2706,11 +2779,15 @@ fn store_retry(
         .write_trusted(
             &who(),
             &Admit::Retry(ployz_store::Retry {
+                teardown: None,
                 id: DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap(),
                 deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap(),
                 rolls_back: None,
                 version: confirmed["version"].as_str().map(str::to_owned),
                 accept_volume_loss: serde_json::from_value(accept.clone()).unwrap(),
+                approvals: Vec::new(),
+                awaits_approval: false,
+                approval: None,
             }),
             trusted,
         )
@@ -2846,6 +2923,7 @@ fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
             .write(
                 &who(),
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: id.clone(),
                     environment: EnvironmentRef::default(),
                     services: services
@@ -2858,6 +2936,7 @@ fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
                     message: None,
                     prune: false,
                     no_prune: false,
+                    approval: None,
                 }),
             )
             .unwrap();
@@ -3134,6 +3213,7 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -3143,6 +3223,7 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();

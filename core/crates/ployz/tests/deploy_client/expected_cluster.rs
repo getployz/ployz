@@ -6,14 +6,15 @@ use super::runner_cancellation::{CutCleanup, cut_cleanup};
 use super::support::*;
 use ployz::connect::ClusterExpectation;
 use ployz::context::Connection;
-use ployz::sdk::{GithubFinish, GithubKey, GithubStart};
+use ployz::sdk::{GithubFinish, GithubKey, GithubLook, GithubStart};
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{MachineId, MachineObservation, RpcError, SealingPublicKey, ServiceName};
 use ployz_store::{
     Actor, Admit, AuthorizedRepository, BranchName, BuildLogQuery, BuildStatus, CommitSha,
     ConfigStore, CreateGitService, CreateProject, Deploy, DeploymentId, EnvironmentId,
-    EnvironmentRef, GithubBuildId, GithubClaims, GithubGrant, GithubRun, OrganizationId, ProjectId,
-    ProjectName, RepositoryId, RepositoryName, SealingKey, ServiceLineageId, Trusted,
+    EnvironmentRef, GithubBuildId, GithubClaims, GithubGrant, GithubHandOff, GithubReport,
+    GithubRun, OrganizationId, ProjectId, ProjectName, RepositoryId, RepositoryName, RunEnd,
+    SealingKey, ServiceLineageId, Trusted,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -156,6 +157,7 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
     store.write_trusted(&who, &service, &evidence).unwrap();
     let deployment = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
     let deploy = Admit::Deploy(Deploy {
+        teardown: None,
         id: deployment.clone(),
         environment: EnvironmentRef::default(),
         services: Vec::new(),
@@ -165,13 +167,18 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     });
     store
         .write_trusted(&who, &deploy, &Trusted::default())
         .unwrap();
     let commit = CommitSha::parse("a".repeat(40)).unwrap();
     store
-        .pin(&deployment, &BTreeMap::from([(web, commit)]))
+        .pin(
+            &deployment,
+            &BTreeMap::from([(web, commit)]),
+            &Trusted::default(),
+        )
         .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     (store, who, id)
@@ -322,10 +329,15 @@ async fn a_github_finish_fails_at_once_on_a_grant_machine_of_another_cluster() {
             fingerprint: "f".repeat(64),
         };
         store.github_check_in(&id, RUN, &grant).unwrap();
-        let finished =
-            ployz::sdk::github_finish(Arc::clone(&store), id.clone(), false, connections, expect)
-                .await
-                .unwrap();
+        let finished = ployz::sdk::github_finish(
+            Arc::clone(&store),
+            id.clone(),
+            GithubLook::Ended,
+            connections,
+            expect,
+        )
+        .await
+        .unwrap();
         let query = BuildLogQuery {
             deployment: id.deployment.clone(),
             service: id.service.clone(),
@@ -354,5 +366,99 @@ async fn a_github_finish_fails_at_once_on_a_grant_machine_of_another_cluster() {
     );
 
     other_server.abort();
+    own_server.abort();
+}
+
+/// Cloud's start-limit look read the build with no grant, then the run's check-in
+/// committed before `github_finish` re-read it. The run started in time, so it keeps
+/// the build whatever its grant's Machine answers. Only a run with no grant yet is
+/// passed on.
+#[tokio::test]
+async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled() {
+    let (own, own_id, _, own_server) = serving('b', "own", 7).await;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let silent_id = builder('c', "silent").machine.id;
+    let silent = Connection::tcp(closed.local_addr().unwrap()).with_machine_id(silent_id);
+    drop(closed);
+    let connections = vec![own, silent];
+    let grant_on = |machine| GithubGrant {
+        id: "d".repeat(64),
+        machine,
+        fingerprint: "f".repeat(64),
+    };
+    let built = GithubReport {
+        from: 0,
+        lines: Vec::new(),
+        ended: Some(RunEnd::Built {
+            platforms: vec!["linux/amd64".into()],
+            image_token: None,
+        }),
+    };
+
+    let cases = [
+        (
+            own_id,
+            false,
+            "its Machine read the grant: nothing pushed yet",
+        ),
+        (silent_id, false, "its Machine doesn't answer"),
+        (
+            own_id,
+            true,
+            "it reported Built, and its Machine read nothing pushed",
+        ),
+    ];
+    let mut found = Vec::new();
+    for (machine, reported, case) in cases {
+        let (store, _, id) = dispatched();
+        store.github_check_in(&id, RUN, &grant_on(machine)).unwrap();
+        if reported {
+            store.github_report(&id, RUN, &built).unwrap();
+        }
+        let finished = ployz::sdk::github_finish(
+            Arc::clone(&store),
+            id.clone(),
+            GithubLook::StartLimit,
+            connections.clone(),
+            expecting(7),
+        )
+        .await
+        .unwrap();
+        let held = match store.github_build(&id).unwrap() {
+            GithubHandOff::Held(build) => Some((build.status, build.grant)),
+            GithubHandOff::PassedOn { .. } => None,
+        };
+        found.push((case, finished, held));
+    }
+    let kept = cases
+        .map(|(machine, _, case)| {
+            (
+                case,
+                GithubFinish::Waiting,
+                Some((BuildStatus::Building, Some(grant_on(machine)))),
+            )
+        })
+        .to_vec();
+    assert_eq!(found, kept, "each run that checked in keeps the build");
+
+    let (store, _, id) = dispatched();
+    let finished = ployz::sdk::github_finish(
+        Arc::clone(&store),
+        id.clone(),
+        GithubLook::StartLimit,
+        connections,
+        expecting(7),
+    )
+    .await
+    .unwrap();
+    assert_eq!(finished, GithubFinish::Ended(BuildStatus::Pending));
+    assert_eq!(
+        store.github_build(&id).unwrap(),
+        GithubHandOff::PassedOn {
+            why: "no runner started the build in time".into()
+        },
+        "a run that never checked in is passed on"
+    );
+
     own_server.abort();
 }

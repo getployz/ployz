@@ -1,0 +1,17 @@
+D2 lane 1. GitHub OIDC token lifetime, measured on GitHub-hosted runners in the lab repository
+(workflow .github/workflows/oidc-probe.yml, audience "ployz-d2-fixture-dummy"). Each run printed
+exp - iat, nbf - iat and the claim names of its own token, never a value but sha, ref and run_attempt.
+
+run 42597355451 attempt 1  push               lifetime_seconds 300  nbf_minus_iat -300
+run 42597370963 attempt 1  workflow_dispatch  lifetime_seconds 300  nbf_minus_iat -300  (the committed fixture)
+run 42597355451 attempt 2  push (re-run)      lifetime_seconds 300
+run 42601318796 attempt 1  push (force push)  lifetime_seconds 300  nbf_minus_iat -300
+
+alg RS256, kid present
+claim_names actor actor_id aud base_ref check_run_id event_name exp head_ref iat iss job_workflow_ref
+job_workflow_sha jti nbf ref ref_protected ref_type repository repository_id repository_owner
+repository_owner_id repository_visibility run_attempt run_id run_number runner_environment sha sub
+workflow workflow_ref workflow_sha
+
+Result: exp - iat is 300 seconds on every run. GitHub backdates nbf by 300 seconds, so the token's
+nbf..exp window is 10 minutes; the Machine checks iat as the issue time (thread A's 2-minute skew).

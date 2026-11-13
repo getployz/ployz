@@ -34,6 +34,7 @@ import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/clo
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAgentSignupRouteImport } from './routes/api/agent/signup'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiBuildsCheckInRouteImport } from './routes/api/builds/check-in'
 import { Route as ApiCheckinIndexRouteImport } from './routes/api/checkin/index'
 import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
 import { Route as ApiCliManifestRouteImport } from './routes/api/cli/manifest'
@@ -55,6 +56,7 @@ import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from '
 import { Route as ProtectedCloudAccountIndexRouteImport } from './routes/_protected/cloud/account/index'
 import { Route as ApiAgentOrganizationSlugChatRouteImport } from './routes/api/agent/$organizationSlug/chat'
 import { Route as ApiBuildsBuildCheckInRouteImport } from './routes/api/builds/$build/check-in'
+import { Route as ApiBuildsBuildGrantRouteImport } from './routes/api/builds/$build/grant'
 import { Route as ApiBuildsBuildStepsRouteImport } from './routes/api/builds/$build/steps'
 import { Route as ApiCliAgentActRouteImport } from './routes/api/cli/agent/act'
 import { Route as ApiCliAgentAskRouteImport } from './routes/api/cli/agent/ask'
@@ -70,6 +72,7 @@ import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './
 import { Route as ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/index'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126AccountRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/account'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/billing'
+import { Route as ProtectedCloudOrganizationSlugOrgChar126IntegrationsRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/integrations'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126SettingsRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/settings'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/index'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/route'
@@ -220,6 +223,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiBuildsCheckInRoute = ApiBuildsCheckInRouteImport.update({
+  id: '/api/builds/check-in',
+  path: '/api/builds/check-in',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiCheckinIndexRoute = ApiCheckinIndexRouteImport.update({
   id: '/api/checkin/',
   path: '/api/checkin/',
@@ -329,6 +337,11 @@ const ApiBuildsBuildCheckInRoute = ApiBuildsBuildCheckInRouteImport.update({
   path: '/api/builds/$build/check-in',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiBuildsBuildGrantRoute = ApiBuildsBuildGrantRouteImport.update({
+  id: '/api/builds/$build/grant',
+  path: '/api/builds/$build/grant',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiBuildsBuildStepsRoute = ApiBuildsBuildStepsRouteImport.update({
   id: '/api/builds/$build/steps',
   path: '/api/builds/$build/steps',
@@ -408,6 +421,12 @@ const ProtectedCloudOrganizationSlugOrgChar126BillingRoute =
   ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport.update({
     id: '/~/billing',
     path: '/~/billing',
+    getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
+  } as any)
+const ProtectedCloudOrganizationSlugOrgChar126IntegrationsRoute =
+  ProtectedCloudOrganizationSlugOrgChar126IntegrationsRouteImport.update({
+    id: '/~/integrations',
+    path: '/~/integrations',
     getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
   } as any)
 const ProtectedCloudOrganizationSlugOrgChar126SettingsRoute =
@@ -606,6 +625,7 @@ export interface FileRoutesByFullPath {
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
   '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/builds/check-in': typeof ApiBuildsCheckInRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
@@ -626,6 +646,7 @@ export interface FileRoutesByFullPath {
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
+  '/api/builds/$build/grant': typeof ApiBuildsBuildGrantRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/agent/act': typeof ApiCliAgentActRoute
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
@@ -643,6 +664,7 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
+  '/cloud/$organizationSlug/~/integrations': typeof ProtectedCloudOrganizationSlugOrgChar126IntegrationsRoute
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/cloud/$organizationSlug/$projectSlug/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
@@ -683,6 +705,7 @@ export interface FileRoutesByTo {
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
   '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/builds/check-in': typeof ApiBuildsCheckInRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
@@ -704,6 +727,7 @@ export interface FileRoutesByTo {
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
+  '/api/builds/$build/grant': typeof ApiBuildsBuildGrantRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/agent/act': typeof ApiCliAgentActRoute
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
@@ -719,6 +743,7 @@ export interface FileRoutesByTo {
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/cloud/$organizationSlug/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
+  '/cloud/$organizationSlug/~/integrations': typeof ProtectedCloudOrganizationSlugOrgChar126IntegrationsRoute
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
@@ -762,6 +787,7 @@ export interface FileRoutesById {
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
   '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/builds/check-in': typeof ApiBuildsCheckInRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
@@ -784,6 +810,7 @@ export interface FileRoutesById {
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
+  '/api/builds/$build/grant': typeof ApiBuildsBuildGrantRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/agent/act': typeof ApiCliAgentActRoute
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
@@ -801,6 +828,7 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_org/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/_protected/cloud/$organizationSlug/_org/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
+  '/_protected/cloud/$organizationSlug/_org/~/integrations': typeof ProtectedCloudOrganizationSlugOrgChar126IntegrationsRoute
   '/_protected/cloud/$organizationSlug/_org/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/_protected/cloud/$organizationSlug/_org/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
@@ -846,6 +874,7 @@ export interface FileRouteTypes {
     | '/.well-known/oauth-protected-resource/mcp'
     | '/api/agent/signup'
     | '/api/auth/$'
+    | '/api/builds/check-in'
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
@@ -866,6 +895,7 @@ export interface FileRouteTypes {
     | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
+    | '/api/builds/$build/grant'
     | '/api/builds/$build/steps'
     | '/api/cli/agent/act'
     | '/api/cli/agent/ask'
@@ -883,6 +913,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/account'
     | '/cloud/$organizationSlug/~/billing'
+    | '/cloud/$organizationSlug/~/integrations'
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~/'
     | '/cloud/$organizationSlug/$projectSlug/'
@@ -923,6 +954,7 @@ export interface FileRouteTypes {
     | '/.well-known/oauth-protected-resource/mcp'
     | '/api/agent/signup'
     | '/api/auth/$'
+    | '/api/builds/check-in'
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
@@ -944,6 +976,7 @@ export interface FileRouteTypes {
     | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
+    | '/api/builds/$build/grant'
     | '/api/builds/$build/steps'
     | '/api/cli/agent/act'
     | '/api/cli/agent/ask'
@@ -959,6 +992,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/account'
     | '/cloud/$organizationSlug/~/billing'
+    | '/cloud/$organizationSlug/~/integrations'
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~'
     | '/cloud/$organizationSlug/$projectSlug'
@@ -1001,6 +1035,7 @@ export interface FileRouteTypes {
     | '/.well-known/oauth-protected-resource/mcp'
     | '/api/agent/signup'
     | '/api/auth/$'
+    | '/api/builds/check-in'
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
@@ -1023,6 +1058,7 @@ export interface FileRouteTypes {
     | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
+    | '/api/builds/$build/grant'
     | '/api/builds/$build/steps'
     | '/api/cli/agent/act'
     | '/api/cli/agent/ask'
@@ -1040,6 +1076,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug'
     | '/_protected/cloud/$organizationSlug/_org/~/account'
     | '/_protected/cloud/$organizationSlug/_org/~/billing'
+    | '/_protected/cloud/$organizationSlug/_org/~/integrations'
     | '/_protected/cloud/$organizationSlug/_org/~/settings'
     | '/_protected/cloud/$organizationSlug/_org/~/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/'
@@ -1082,6 +1119,7 @@ export interface RootRouteChildren {
   DotwellKnownOauthProtectedResourceMcpRoute: typeof DotwellKnownOauthProtectedResourceMcpRoute
   ApiAgentSignupRoute: typeof ApiAgentSignupRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiBuildsCheckInRoute: typeof ApiBuildsCheckInRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
   ApiConfigSplatRoute: typeof ApiConfigSplatRoute
@@ -1101,6 +1139,7 @@ export interface RootRouteChildren {
   DotwellKnownOauthAuthorizationServerApiAuthRoute: typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   ApiAgentOrganizationSlugChatRoute: typeof ApiAgentOrganizationSlugChatRoute
   ApiBuildsBuildCheckInRoute: typeof ApiBuildsBuildCheckInRoute
+  ApiBuildsBuildGrantRoute: typeof ApiBuildsBuildGrantRoute
   ApiBuildsBuildStepsRoute: typeof ApiBuildsBuildStepsRoute
   ApiCliAgentActRoute: typeof ApiCliAgentActRoute
   ApiCliAgentAskRoute: typeof ApiCliAgentAskRoute
@@ -1290,6 +1329,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/builds/check-in': {
+      id: '/api/builds/check-in'
+      path: '/api/builds/check-in'
+      fullPath: '/api/builds/check-in'
+      preLoaderRoute: typeof ApiBuildsCheckInRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/checkin/': {
       id: '/api/checkin/'
       path: '/api/checkin'
@@ -1437,6 +1483,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBuildsBuildCheckInRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/builds/$build/grant': {
+      id: '/api/builds/$build/grant'
+      path: '/api/builds/$build/grant'
+      fullPath: '/api/builds/$build/grant'
+      preLoaderRoute: typeof ApiBuildsBuildGrantRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/builds/$build/steps': {
       id: '/api/builds/$build/steps'
       path: '/api/builds/$build/steps'
@@ -1540,6 +1593,13 @@ declare module '@tanstack/react-router' {
       path: '/~/billing'
       fullPath: '/cloud/$organizationSlug/~/billing'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport
+      parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
+    }
+    '/_protected/cloud/$organizationSlug/_org/~/integrations': {
+      id: '/_protected/cloud/$organizationSlug/_org/~/integrations'
+      path: '/~/integrations'
+      fullPath: '/cloud/$organizationSlug/~/integrations'
+      preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IntegrationsRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
     }
     '/_protected/cloud/$organizationSlug/_org/~/settings': {
@@ -1695,6 +1755,7 @@ declare module '@tanstack/react-router' {
 interface ProtectedCloudOrganizationSlugOrgRouteRouteChildren {
   ProtectedCloudOrganizationSlugOrgChar126AccountRoute: typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   ProtectedCloudOrganizationSlugOrgChar126BillingRoute: typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
+  ProtectedCloudOrganizationSlugOrgChar126IntegrationsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IntegrationsRoute
   ProtectedCloudOrganizationSlugOrgChar126SettingsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   ProtectedCloudOrganizationSlugOrgChar126IndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
@@ -1708,6 +1769,8 @@ const ProtectedCloudOrganizationSlugOrgRouteRouteChildren: ProtectedCloudOrganiz
       ProtectedCloudOrganizationSlugOrgChar126AccountRoute,
     ProtectedCloudOrganizationSlugOrgChar126BillingRoute:
       ProtectedCloudOrganizationSlugOrgChar126BillingRoute,
+    ProtectedCloudOrganizationSlugOrgChar126IntegrationsRoute:
+      ProtectedCloudOrganizationSlugOrgChar126IntegrationsRoute,
     ProtectedCloudOrganizationSlugOrgChar126SettingsRoute:
       ProtectedCloudOrganizationSlugOrgChar126SettingsRoute,
     ProtectedCloudOrganizationSlugOrgChar126IndexRoute:
@@ -1925,6 +1988,7 @@ const rootRouteChildren: RootRouteChildren = {
     DotwellKnownOauthProtectedResourceMcpRoute,
   ApiAgentSignupRoute: ApiAgentSignupRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiBuildsCheckInRoute: ApiBuildsCheckInRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,
   ApiConfigSplatRoute: ApiConfigSplatRoute,
@@ -1947,6 +2011,7 @@ const rootRouteChildren: RootRouteChildren = {
     DotwellKnownOauthAuthorizationServerApiAuthRoute,
   ApiAgentOrganizationSlugChatRoute: ApiAgentOrganizationSlugChatRoute,
   ApiBuildsBuildCheckInRoute: ApiBuildsBuildCheckInRoute,
+  ApiBuildsBuildGrantRoute: ApiBuildsBuildGrantRoute,
   ApiBuildsBuildStepsRoute: ApiBuildsBuildStepsRoute,
   ApiCliAgentActRoute: ApiCliAgentActRoute,
   ApiCliAgentAskRoute: ApiCliAgentAskRoute,

@@ -68,8 +68,11 @@ this first server from your terminal, so it joins and can take the deploy.
 The command installs Ployz and adds the server to your organization. If your provider puts a
 firewall in front of it, open [these ports](../servers/add-a-server.md#open-the-firewall).
 
-**Add servers** in the bottom bar makes a Fleet Token instead. A server that runs its install
-line shows up under **Waiting to join** on the **Servers** page. Select it and click **Enroll** to
+**Add servers** in the bottom bar opens the same card as the **Servers** page instead, with its
+Fleet Token install line. Under it, **Use Cloudflare Tunnel instead of public ports** names the
+Cluster and can start your first server with ports 80 and 443 closed; see
+[Choose a name and Cloudflare Tunnel first](../servers/add-a-server.md#choose-a-name-and-cloudflare-tunnel-first).
+A server that runs its install line shows up under **Waiting to join** on the **Servers** page. Select it and click **Enroll** to
 choose its storage and name. See [Add many servers](../servers/add-many-servers.md) for the full flow.
 
 Starting servers from a script or from cloud-init user data? Install them with a

@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use super::NameMatches;
 use crate::{
-    AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
-    MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement, Sealing,
-    SelectedEndpoint, ValueError, WireGuardPublicKey,
+    AdvertisedEndpoint, DeviceKey, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue,
+    MachineName, MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement,
+    Sealing, SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -72,6 +72,9 @@ impl Default for InitialMachinePolicy {
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub join_approval: Option<crate::authority::Signed<crate::authority::JoinApproval>>,
     /// Operator classifications used by placement constraints.
     pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
     /// Whether to admit new Builds; revocation preserves existing work.
@@ -143,13 +146,65 @@ pub enum RowStanding {
     },
 }
 
+/// A Management Client's public key, as a Machine's local record stores it in a slot and
+/// the management transport proves it. It is a distinct type from a Management Identity,
+/// a Build Grant key or any secret, so none of them passes for it. It serializes as its
+/// 32 bytes, the shape the local Machine record has always held.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ClientKey([u8; 32]);
+
+impl ClientKey {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Display for ClientKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0
+            .iter()
+            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
+    }
+}
+
+impl From<DeviceKey> for ClientKey {
+    fn from(key: DeviceKey) -> Self {
+        Self(*key.as_bytes())
+    }
+}
+
+/// The leading bytes of every Machine's management address: the mesh's `fdcc::/16`.
+pub const MESH_PREFIX_BYTES: [u8; 2] = [0xfd, 0xcc];
+
+/// How many leading bits of a management address are [`MESH_PREFIX_BYTES`].
+pub const MESH_PREFIX_BITS: u8 = 16;
+
+/// The mesh prefix as a firewall rule names it: `fdcc::/16`.
+#[must_use]
+pub fn mesh_cidr() -> String {
+    format!("{}/{MESH_PREFIX_BITS}", mesh_address(&[]))
+}
+
+/// The address with the mesh prefix, then `host` bytes, then zeros.
+fn mesh_address(host: &[u8]) -> std::net::Ipv6Addr {
+    let mut address = [0_u8; 16];
+    for (slot, byte) in address.iter_mut().zip(MESH_PREFIX_BYTES.iter().chain(host)) {
+        *slot = *byte;
+    }
+    std::net::Ipv6Addr::from(address)
+}
+
 /// Deterministic management-plane address for a WireGuard identity.
 #[must_use]
 pub fn management_address(public_key: WireGuardPublicKey) -> ManagementAddress {
-    let mut address = [0_u8; 16];
-    address[..2].copy_from_slice(&[0xfd, 0xcc]);
-    address[2..].copy_from_slice(&public_key.0[..14]);
-    ManagementAddress(std::net::Ipv6Addr::from(address))
+    ManagementAddress(mesh_address(&public_key.0[..14]))
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -191,6 +246,11 @@ pub struct MachineRuntime {
     /// record, so empty claims nothing.
     #[ts(as = "Option<BTreeSet<String>>", optional)]
     pub capabilities: BTreeSet<String>,
+    /// Whether this Machine requires a customer key's approval before an Operator caller
+    /// changes a Service. Live, never persisted. Absent when unobserved and from older
+    /// daemons, so absence claims nothing.
+    #[ts(optional = nullable)]
+    pub device_enforcement: Option<bool>,
     /// The daemon's Management Identity as 64 hex digits, so a member can tell a
     /// Machine that asks whether the Cluster forgot it. Absent from a record written
     /// by a daemon that predates the field, so absence claims nothing.
@@ -1013,6 +1073,7 @@ mod placement_tests {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }
@@ -1099,7 +1160,7 @@ mod placement_tests {
             "its row is marked leaving but names no daemon version"
         );
 
-        let mut leaving_versioned = versioned.clone();
+        let mut leaving_versioned = versioned;
         leaving_versioned.machine.runtime.leaving = true;
         assert!(
             !leaving_versioned.unarrived(),
@@ -1250,6 +1311,47 @@ mod machine_runtime_capabilities_tests {
         assert_eq!(
             runtime.capabilities.into_iter().collect::<Vec<_>>(),
             ["ployz.build.v1", "ployz.logs.tail.v1"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod client_key_tests {
+    use serde_json::json;
+
+    use super::{ClientKey, DeviceKey};
+
+    #[test]
+    fn a_client_key_serializes_as_its_bytes_and_displays_as_hex() {
+        let key = ClientKey::from_bytes([0xab; 32]);
+
+        assert_eq!(serde_json::to_value(key).unwrap(), json!(vec![0xab; 32]));
+        assert_eq!(
+            serde_json::from_value::<ClientKey>(json!(vec![0xab; 32])).unwrap(),
+            key
+        );
+        assert_eq!(key.to_string(), "ab".repeat(32));
+    }
+
+    #[test]
+    fn a_device_key_converts_to_the_client_key_of_the_same_bytes() {
+        let device = DeviceKey::from_bytes([5; 32]);
+
+        assert_eq!(ClientKey::from(device).as_bytes(), device.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod mesh_prefix_tests {
+    use super::{WireGuardPublicKey, management_address, mesh_cidr};
+
+    #[test]
+    fn the_mesh_prefix_is_fdcc_slash_16_in_every_management_address() {
+        assert_eq!(mesh_cidr(), "fdcc::/16");
+        let address = management_address(WireGuardPublicKey([0xab; 32]));
+        assert_eq!(
+            address.0.to_string(),
+            "fdcc:abab:abab:abab:abab:abab:abab:abab"
         );
     }
 }

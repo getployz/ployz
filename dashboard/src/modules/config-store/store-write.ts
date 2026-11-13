@@ -8,7 +8,7 @@ import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
 import { commandEnvironment, commandEnvironments, isProtectedAsk, StoreRefused } from "./store.contract";
-import { cachedRevision, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
+import { cachedRevision, dropHiddenRefusals, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
 import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
 
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
@@ -95,6 +95,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
     const result = await writeStoreServerFn({ data: { organizationSlug, command, shows } });
     if (!result.ok) throw new StoreRefused(result.refusal);
     await putAnswers(queryClient, organizationSlug, keys, result.answers ?? []);
+    if (command.command === "rename_project") dropHiddenRefusals(queryClient, organizationSlug);
     return result.value;
   }
 

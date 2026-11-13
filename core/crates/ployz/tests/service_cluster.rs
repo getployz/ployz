@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{process, time::Duration};
 
 #[path = "support/containers.rs"]
@@ -134,6 +135,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Start,
             None,
             None,
+            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -152,6 +154,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Stop,
             Some("SIGTERM".into()),
             Some(10),
+            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -173,6 +176,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Remove,
             None,
             Some(10),
+            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -192,6 +196,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Remove,
             None,
             Some(10),
+            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -207,6 +212,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Remove,
             None,
             Some(10),
+            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -375,7 +381,7 @@ async fn inspect_container(
     client
         .call::<op::InspectContainer>(
             InspectContainerRequest { container_id },
-            Some(&MachineTarget::from(&machine_id)),
+            Call::read().to(&MachineTarget::from(&machine_id)),
         )
         .await
         .unwrap()

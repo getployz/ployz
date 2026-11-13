@@ -14,6 +14,7 @@ use super::{
 
 fn storage_service(advertised: bool) -> DiscoveryService {
     DiscoveryService::new(ContractDescription {
+        attest: None,
         machine_id: MachineId::random(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),

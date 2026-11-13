@@ -5,9 +5,11 @@
 //! The Head that reviews compare against comes from here too.
 
 pub(crate) mod admit;
+pub(crate) mod applied;
 mod history;
 mod landing;
 mod lifecycle;
+pub(crate) mod loss;
 mod lowering;
 pub(crate) mod query;
 #[cfg(test)]
@@ -23,7 +25,7 @@ pub(crate) use lowering::*;
 pub(crate) use rows::servers;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
-    StoppedBy, starts_container,
+    StoppedBy,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,12 +57,13 @@ use crate::id::{
     Principal, RepositoryId, Revision, RunnerId, ServiceLineageId, VolumeId, VolumeName,
 };
 use crate::registry;
-use crate::removal::VolumeLoss;
 use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
 use crate::storage::{Row, Tx, name_of};
 use crate::variables;
+
+use self::loss::VolumeLoss;
 
 /// Where a Deployment is in its life.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -223,7 +226,7 @@ impl DeploymentSummary {
     pub fn label(&self) -> String {
         match (self.number, &self.push) {
             (Some(number), _) => format!("#{number}"),
-            (None, Some(push)) => push.head.as_str().get(..7).unwrap_or_default().to_owned(),
+            (None, Some(push)) => push.head.short().to_owned(),
             (None, None) => self.id.as_str().get(..8).unwrap_or_default().to_owned(),
         }
     }
@@ -593,6 +596,33 @@ pub struct Claimed {
     /// The Organization's Build Order as the build starts. Uploaded Services skip
     /// GitHub in it: GitHub can't build uploaded source, so they build on Servers.
     pub build_order: Vec<crate::Builder>,
+    /// Every other Deployment of the Environment that ran and can no longer act:
+    /// ended, or lost its runner to this claim or an earlier one. None but this
+    /// claim's runner may change the Environment, so a Pending copy one of these
+    /// left is no run's.
+    pub ended_runs: BTreeSet<DeploymentId>,
+    /// The approval a Device signed for this Deployment, which the runner hands to each
+    /// Server; none when a token or automation admitted it.
+    pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+    /// The automatic deploy rule a push's Deployment runs under, which the runner hands
+    /// each Server with each Service's image token; none for any other Deployment.
+    pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
+    /// The preview rule a preview Deployment runs under, which the runner
+    /// hands each Server like `rule`; none for any other Deployment.
+    pub preview: Option<ployz_core::authority::Signed<ployz_core::authority::PreviewRule>>,
+    /// The review a person signed for a reviewed preview's commit, which the runner hands
+    /// each Server beside `preview`; none for a trusted push's preview.
+    pub review: Option<ployz_core::authority::Review>,
+    /// The image token each Service's GitHub build under `rule` or `preview` reported,
+    /// or a redeploy copied with its source's image.
+    pub image_tokens: BTreeMap<ServiceName, crate::ImageToken>,
+    /// A person's approval of each Service's commit, which the runner hands each Server
+    /// with its image token in place of the branch head.
+    pub approvals:
+        BTreeMap<ServiceName, ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
+    /// The teardown the runner hands each Server for what this Deployment takes off it:
+    /// the one a person signed, or for a preview's removal the rule that made it.
+    pub teardown: Option<ployz_core::authority::TeardownApproval>,
 }
 
 /// One node a Deployment targets, as frozen at admission.
@@ -621,6 +651,11 @@ pub(crate) enum TargetNode {
         id: ConfigId,
         name: ConfigName,
     },
+}
+
+/// The `LIKE` pattern matching a Deployment's `nodes` text when it targets node `id`.
+pub(crate) fn node_pattern(id: &str) -> String {
+    format!("%\"{id}\"%")
 }
 
 /// The Services among `nodes`.
@@ -806,6 +841,9 @@ pub(crate) struct Frozen {
     pub(crate) cluster_domain: Option<Hostname>,
     /// Its target Services with no source of their own: they run only an upload.
     pub(crate) sourceless: Vec<String>,
+    /// By runtime name, every Service a narrowed one hands the runner: the named
+    /// ones and each they reference, changed or not. Empty for a full one.
+    pub(crate) shipped: BTreeSet<ServiceName>,
 }
 
 impl Frozen {
@@ -1524,6 +1562,37 @@ pub(crate) fn cluster_domain(
     .transpose()
 }
 
+/// Fix `namespace`, a preview's derived one, as Environment `id`'s. Refused when another
+/// Environment holds it: a preview of that branch is open already.
+pub(crate) fn reserve_namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &EnvironmentId,
+    namespace: &Namespace,
+) -> Result<(), RpcError> {
+    let taken = tx.query(
+        "SELECT environment_id FROM config_namespace \
+         WHERE organization_id = ?1 AND namespace = ?2",
+        &[who.organization.as_str().into(), namespace.as_str().into()],
+    )?;
+    if !taken.is_empty() {
+        return Err(error::conflict(
+            "A preview of this branch is open already",
+            json!({ "namespace": namespace }),
+        ));
+    }
+    tx.execute(
+        "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
+         VALUES (?1, ?2, ?3)",
+        &[
+            who.organization.as_str().into(),
+            namespace.as_str().into(),
+            id.as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
 /// The Namespace `environment` deploys into: fixed at its first admission, so renames
 /// never move it. `{project}-{environment}` unless another Environment of the
 /// Organization holds that, then suffixed with this Environment's ID. `reserve`
@@ -1562,7 +1631,11 @@ pub(crate) fn namespace(
                 &[who.organization.as_str().into(), namespace.as_str().into()],
             )?
             .is_empty();
-        if namespace.is_reserved() || taken {
+        // A preview's Namespace is only ever one its rule derives.
+        if namespace.is_reserved()
+            || ployz_core::authority::preview::is_preview_namespace(&namespace)
+            || taken
+        {
             continue;
         }
         if reserve {
@@ -1761,7 +1834,7 @@ impl Stored {
 ///
 /// Once the summary says the Deployment can't run any more, at each save:
 /// - History drops the sealed values only a Deployment in flight kept, rewriting
-///   only a revision that still holds one ([`crate::review::scrub_sealed`]).
+///   only a revision that still holds one ([`crate::seal_scrub::history::scrub_sealed`]).
 /// - When it shows an end, each build its Servers still hold Building is settled as
 ///   interrupted, finished at that end ([`crate::build::settle`]): its runner can't
 ///   report on it any more ([`running`]). One out of flight that shows no end,
@@ -1789,7 +1862,7 @@ fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
         ],
     )?;
     if !stored.summary.in_flight {
-        crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
+        crate::seal_scrub::history::scrub_sealed(tx, &stored.summary.environment_id)?;
         if let Some(ended) = stored.summary.ended_at {
             crate::build::settle(tx, &stored.summary.id, ended)?;
         }
@@ -1834,16 +1907,8 @@ pub(crate) fn saved_at(
         return scope::load_by_id(tx, environment)
             .map(|loaded| crate::scope::empty(&loaded.working.environment_slug));
     }
-    let rows = tx.query(
-        "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
-        &[
-            environment.as_str().into(),
-            revision_param(revision)?.into(),
-        ],
-    )?;
-    rows.first()
-        .ok_or_else(|| error::corrupt("Saved State"))?
-        .intent(0, "Saved State")
+    crate::review::saved::intent_at(tx, environment, revision)?
+        .ok_or_else(|| error::corrupt("Saved State"))
         .map(canonicalize_environment_intent)
 }
 
@@ -2065,5 +2130,27 @@ mod parity_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod node_pattern_tests {
+    use super::{TargetNode, node_pattern};
+
+    #[test]
+    fn a_nodes_pattern_is_the_quoted_id_a_targeted_node_serializes_with() {
+        let id = "6f1c2a9e-4d3b-4f7a-9c1e-0a5b7d8e2f31";
+        let nodes = vec![
+            serde_json::from_value::<TargetNode>(serde_json::json!({
+                "type": "service", "id": id, "name": "web", "runtime": "web-1",
+            }))
+            .expect("a Service node"),
+        ];
+        let text = serde_json::to_string(&nodes).expect("nodes are JSON");
+        assert_eq!(node_pattern(id), format!("%\"{id}\"%"));
+        assert!(text.contains(node_pattern(id).trim_matches('%')));
+        assert!(
+            !text.contains(node_pattern("0a5b7d8e-2f31-4f7a-9c1e-6f1c2a9e4d3b").trim_matches('%'))
+        );
     }
 }

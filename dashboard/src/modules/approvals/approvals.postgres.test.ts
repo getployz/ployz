@@ -16,10 +16,15 @@ import {
   redeemApproval,
   requestApproval,
 } from "#/modules/approvals/approvals.server";
-import { type ApprovalReview, destroyedLine, type OperationVerb } from "#/modules/approvals/approvals";
+import { type ApprovalReview, destroyedLine, type OperationVerb, shownServiceAct } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { operationApprovals } from "#/modules/approvals/tables";
+import { findService } from "#/modules/config-store/store-lookup.server";
+import { bodyDigest } from "#/modules/operations/keyed.server";
+import { actService } from "#/modules/operations/operations.server";
+import { START_APPROVAL_CAPABILITY } from "#/modules/service-act/service-act";
+import { serviceAct } from "#/modules/service-act/tables";
 import { permissionsOf } from "#/modules/organization/permissions";
 import { writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
@@ -460,6 +465,96 @@ it.live("an approved dashboard ask that fails to run waits again, unless its pla
     expect(yield* provided(decideAndApply(caller, opened.approval_id, approve)))
       .toMatchObject({ ok: false, refusal: { message: expect.stringContaining("it has to be asked again") } });
     expect(yield* provided(getApproval(ORGANIZATION, opened.approval_id))).toMatchObject({ status: "superseded" });
+  }));
+
+it.live("an owner's approval of a dashboard restart on Servers that enforce runs it with the approvals the owner's browser made", () =>
+  Effect.gen(function* () {
+    const { provided, write, caller } = yield* shopRemovingWeb(false);
+    yield* write({ command: "set_environment_protected", environment: here, protected: true });
+    const ada = yield* provided(dashboardMember);
+    const found = (yield* provided(findService(ORGANIZATION, ENVIRONMENT, "web"))) ?? expect.fail("no web");
+    const container = "c".repeat(64);
+    const machine = "b".repeat(32);
+    const frame = asTestDouble<RuntimeWatchView>()({
+      services: [{ identity: `${found.namespace}/${found.runtime}`, containers: [{ container_id: container, machine_id: machine }], hook_containers: [] }],
+      machines: [{ machine: { id: machine, runtime: { device_enforcement: true, capabilities: [] } } }],
+      containers: [],
+    });
+    const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) => provided(effect.pipe(Effect.provideService(
+      OrganizationRuntime,
+      asTestDouble<OrganizationRuntimeService>()({
+        open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({ watchFirstFrame: () => Effect.succeed(frame) }) }),
+      }),
+    )));
+    const body = { environmentId: ENVIRONMENT, service: "web", only: null };
+    const admission = yield* cluster(actService(ada, { ...body, ...found, verb: "restart", digest: bodyDigest("service_restart", body) }, { key: "ask-restart", approvalId: null }));
+    const ask = admission.ok ? expect.fail("a member's restart in a Protected Environment ran") : asked(admission.refusal);
+    const owner: Caller = { ...caller, credential: { kind: "session", id: "owner-browser" }, via: "dashboard" };
+    const approve = { approve: { digest: ask.approval } };
+    // The card shows, and the owner's browser approves, the name Servers know the Service by.
+    const pending = yield* provided(getApproval(ORGANIZATION, ask.approval_id));
+    expect(pending && shownServiceAct(pending.review)).toEqual({ verb: "restart", environment: ENVIRONMENT, service: "web", namespace: found.namespace, runtime: found.runtime, only: null });
+
+    // Approved without the owner's approvals, as from the CLI, it waits again: the Servers would refuse it.
+    expect(yield* cluster(decideAndApply(owner, ask.approval_id, approve)))
+      .toMatchObject({ ok: false, refusal: { message: expect.stringContaining("Approve it in Ployz Cloud with your passkey.") } });
+    expect(yield* provided(getApproval(ORGANIZATION, ask.approval_id))).toMatchObject({ status: "pending" });
+
+    const approvals = { [container]: { body: "{}", signatures: [{ key: "d".repeat(64), signature: "e".repeat(128) }] } };
+    expect(yield* cluster(decideAndApply(owner, ask.approval_id, approve, undefined, approvals))).toMatchObject({ ok: true });
+    const acts = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.select({ verb: serviceAct.verb, approvals: serviceAct.approvals, by: serviceAct.requestedByUserId }).from(serviceAct);
+    }));
+    expect(acts).toEqual([{ verb: "restart", approvals, by: ada.userId }]);
+  }));
+
+it.live("an owner's approval of a stop is refused, with nothing stopped, when a Server couldn't start the Service again", () =>
+  Effect.gen(function* () {
+    const { provided, write, caller } = yield* shopRemovingWeb(false);
+    yield* write({ command: "set_environment_protected", environment: here, protected: true });
+    const ada = yield* provided(dashboardMember);
+    const found = (yield* provided(findService(ORGANIZATION, ENVIRONMENT, "web"))) ?? expect.fail("no web");
+    const container = "c".repeat(64);
+    const machine = "b".repeat(32);
+    let capabilities: string[] = ["ployz.restart.session-grant.v2"];
+    let readable = false;
+    const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) => provided(effect.pipe(Effect.provideService(
+      OrganizationRuntime,
+      asTestDouble<OrganizationRuntimeService>()({
+        open: () => readable
+          ? Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({ watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+            services: [{ identity: `${found.namespace}/${found.runtime}`, containers: [{ container_id: container, machine_id: machine }], hook_containers: [] }],
+            machines: [{ machine: { id: machine, name: "machine-2", runtime: { device_enforcement: true, capabilities } } }],
+            containers: [],
+          })) }) })
+          : Effect.succeed({ status: "unreachable" as const }),
+      }),
+    )));
+    const body = { environmentId: ENVIRONMENT, service: "web", only: null };
+    const admission = yield* cluster(actService(ada, { ...body, ...found, verb: "stop", digest: bodyDigest("service_stop", body) }, { key: "ask-stop", approvalId: null }));
+    const ask = admission.ok ? expect.fail("a member's stop in a Protected Environment ran") : asked(admission.refusal);
+    const owner: Caller = { ...caller, credential: { kind: "session", id: "owner-browser" }, via: "dashboard" };
+    const approve = { approve: { digest: ask.approval } };
+    const approvals = { [container]: { body: "{}", signatures: [{ key: "d".repeat(64), signature: "e".repeat(128) }] } };
+    const acts = provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.select({ verb: serviceAct.verb }).from(serviceAct);
+    }));
+
+    // With approvals and no readable Servers, Cloud refuses rather than guess whether one could start it again.
+    expect(yield* cluster(decideAndApply(owner, ask.approval_id, approve, undefined, approvals)))
+      .toMatchObject({ ok: false, refusal: { message: expect.stringContaining("Cloud couldn't check the servers. Try again.") } });
+    expect(yield* acts).toEqual([]);
+
+    readable = true;
+    expect(yield* cluster(decideAndApply(owner, ask.approval_id, approve, undefined, approvals)))
+      .toMatchObject({ ok: false, refusal: { message: expect.stringContaining("machine-2 needs a newer Ployz to stop it.") } });
+    expect(yield* acts).toEqual([]);
+
+    capabilities = [...capabilities, START_APPROVAL_CAPABILITY];
+    expect(yield* cluster(decideAndApply(owner, ask.approval_id, approve, undefined, approvals))).toMatchObject({ ok: true });
+    expect(yield* acts).toEqual([{ verb: "stop" }]);
   }));
 
 it.live("each credential's protected ask is its own approval, and only the dashboard's runs what it asked once approved", () =>

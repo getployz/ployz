@@ -247,6 +247,7 @@ async fn refused_on_redial() -> (
                 panic!("only a redial's confirmation is asked")
             };
             let confirmed = RpcResponse::from(ployz_core::ContractDescription {
+                attest: None,
                 machine_id: machine_id('a'),
                 protocol_major: ployz_core::PROTOCOL_MAJOR,
                 daemon_version: "test".into(),
@@ -276,13 +277,13 @@ async fn refused_on_redial() -> (
         },
     )
     .await;
-    client.cluster = Some(Box::new(crate::connect::ExpectedCluster {
+    client.expect_cluster(crate::connect::ExpectedCluster {
         expect: crate::connect::ClusterExpectation {
             sealing_public_key: ployz_core::SealingPublicKey::from_bytes([7; 32]),
             allow_unverified: false,
         },
         check: crate::connect::ClusterCheck::default(),
-    }));
+    });
     (client, server, read, output)
 }
 
@@ -302,9 +303,13 @@ async fn a_build_or_exec_whose_client_is_refused_sends_no_more_input() {
         let target = MachineTarget::from(&machine_id('a'));
         let receiver = tokio_stream::wrappers::ReceiverStream::new(receiver);
         let _frames = if build {
-            client.build_stream(&target, receiver).await
+            client
+                .open_stream::<op::Build>(Some(&target), receiver)
+                .await
         } else {
-            client.exec_stream(&target, receiver).await
+            client
+                .open_stream::<op::Exec>(Some(&target), receiver)
+                .await
         }
         .unwrap();
         input.send(frame(1)).await.unwrap();
@@ -324,8 +329,8 @@ async fn exec_output_whose_client_is_refused_reads_no_more_frames() {
     let (client, _server, _read, output) = refused_on_redial().await;
     let (_input, receiver) = mpsc::channel(4);
     let frames = client
-        .exec_stream(
-            &MachineTarget::from(&machine_id('a')),
+        .open_stream::<op::Exec>(
+            Some(&MachineTarget::from(&machine_id('a'))),
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
         .await
@@ -1092,7 +1097,7 @@ fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
             omissions: Vec::new(),
             names: vec![
                 (up.machine.id, up.machine.name.clone()),
-                (down.machine.id, down.machine.name.clone()),
+                (down.machine.id, down.machine.name),
             ],
         },
     };
@@ -1218,6 +1223,7 @@ fn machine_observation(seed: u8, name: &str) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         MembershipObservation::Up,
@@ -1329,6 +1335,7 @@ fn container_on(
                 resources: Default::default(),
                 stop_timeout_secs: None,
                 sysctls: Default::default(),
+                network: None,
                 restart: RestartPolicy::default(),
             },
             placement: Default::default(),

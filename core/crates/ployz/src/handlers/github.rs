@@ -1,3 +1,4 @@
+use crate::ui::Next;
 use std::time::{Duration, Instant};
 
 use clap::{ArgMatches, Command};
@@ -12,12 +13,12 @@ use serde_json::json;
 
 use super::account::in_cloud;
 use super::login::open_browser;
-use super::store::Next;
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
-use crate::ui::{Cell, Hint, Table, Tone};
+use crate::ui::{Cell, Table, Tone};
+use ployz_core::Hint;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_secs(3);
@@ -169,10 +170,9 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let Some(repository) = leaf_matches(root).get_one::<String>("repository") else {
         let listed = in_cloud(root, async |_, credential| connection(credential).await)?;
         let next = (!listed.ready).then(|| "ployz github connect".to_owned());
-        repositories(&Next::new(&listed, next.clone()), &listed)?;
-        if let Some(next) = next {
-            crate::ui::hint(&Hint::Next(next));
-        }
+        let followed = Next::new(&listed, next);
+        repositories(&followed, &listed)?;
+        followed.say();
         return Ok(());
     };
     let repository = repository_name(repository)?;
@@ -281,7 +281,7 @@ fn repository_name(given: &str) -> Result<RepositoryName, Error> {
 
 /// `GET /api/cli/github/<route>` with `query`'s fields as its query string; Cloud's
 /// refusal, such as no readable repository by that name, as the error.
-fn read_repository<T: DeserializeOwned>(
+pub(super) fn read_repository<T: DeserializeOwned>(
     root: &ArgMatches,
     route: &str,
     query: &impl Serialize,

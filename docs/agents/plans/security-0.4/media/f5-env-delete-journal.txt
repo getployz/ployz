@@ -1,0 +1,17 @@
+== machine-1
+2026-11-12T08:17:15+00:00 machine-1 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:17:15+00:00 machine-1 ployzd:  INFO teardown step on shop-search/api admitted step=Out
+2026-11-12T08:17:16+00:00 machine-1 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:17:16+00:00 machine-1 ployzd:  INFO teardown step on shop-search/api admitted step=Remove
+== machine-2
+2026-11-12T08:17:15+00:00 machine-2 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:17:15+00:00 machine-2 ployzd:  INFO teardown step on shop-search/redis admitted step=Out
+2026-11-12T08:17:16+00:00 machine-2 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:17:16+00:00 machine-2 ployzd:  INFO teardown step on shop-search/redis admitted step=Remove
+2026-11-12T08:17:18+00:00 machine-2 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:17:18+00:00 machine-2 ployzd:  INFO teardown removal of Volume shop-search_vol-7c6a01d7-c4fe-4bf7-b358-5ab6a148dc04 admitted
+== machine-3
+2026-11-12T08:17:15+00:00 machine-3 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:17:15+00:00 machine-3 ployzd:  INFO teardown step on shop-search/worker admitted step=Out
+2026-11-12T08:17:16+00:00 machine-3 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:17:16+00:00 machine-3 ployzd:  INFO teardown step on shop-search/worker admitted step=Remove

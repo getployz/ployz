@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+use super::{counters::Counters, policy::RETENTION};
 use ployz_core::{
     ContainerId,
     metrics::{
@@ -22,7 +23,7 @@ use ployz_core::{
 const TARGET_BUCKETS: i64 = 300;
 /// The sampler's tick. A default bucket narrower than this would be empty
 /// between samples.
-const SAMPLE_NANOS: i64 = 10_000_000_000;
+const SAMPLE_NANOS: i64 = RETENTION.sample_nanos();
 /// Bounds the bucket table whatever step a caller asks for.
 const MAX_BUCKETS: i64 = 4_000;
 const NANOS_PER_SEC: f64 = 1e9;
@@ -171,19 +172,6 @@ impl Mean {
     }
 }
 
-/// The container counters that become rates, in `ServicePoint` order.
-const COUNTERS: usize = 5;
-
-fn counters(sample: &MetricSample) -> [Option<u64>; COUNTERS] {
-    [
-        sample.cpu_usec,
-        sample.rx,
-        sample.tx,
-        sample.io_r,
-        sample.io_w,
-    ]
-}
-
 /// Every container of a Service at one sampling tick, summed.
 #[derive(Clone, Copy, Debug)]
 struct Tick {
@@ -197,7 +185,7 @@ struct Tick {
 /// Memory sums the containers at each tick and averages those sums, so a
 /// replica replaced mid-bucket counts once, not twice.
 struct ServiceBucket {
-    rates: [Delta; COUNTERS],
+    rates: Counters<Delta>,
     tick: Option<Tick>,
     mem: Mean,
     /// `None` once a sample in the bucket reported no limit.
@@ -207,7 +195,7 @@ struct ServiceBucket {
 impl Default for ServiceBucket {
     fn default() -> Self {
         Self {
-            rates: [Delta::default(); COUNTERS],
+            rates: Counters::default(),
             tick: None,
             mem: Mean::default(),
             limit: Some(Mean::default()),
@@ -241,7 +229,7 @@ impl ServiceBucket {
             .rates
             .iter_mut()
             .zip(prev.counters)
-            .zip(counters(sample))
+            .zip(Counters::of_sample(sample))
         {
             delta.add(before, after, prev.ts, sample.ts);
         }
@@ -258,17 +246,11 @@ impl ServiceBucket {
 
     fn into_point(mut self, ts: i64) -> ServicePoint {
         self.close_tick();
-        let [cpu_usec, rx, tx, io_r, io_w] = self.rates.map(Delta::per_sec);
-        ServicePoint {
+        self.rates.map(Delta::per_sec).into_point(
             ts,
-            cpu_usec,
-            mem_bytes: self.mem.get(),
-            mem_limit: self.limit.and_then(Mean::get),
-            rx,
-            tx,
-            io_r,
-            io_w,
-        }
+            self.mem.get(),
+            self.limit.and_then(Mean::get),
+        )
     }
 }
 
@@ -276,14 +258,14 @@ impl ServiceBucket {
 #[derive(Clone, Copy)]
 struct Reading {
     ts: i64,
-    counters: [Option<u64>; COUNTERS],
+    counters: Counters<Option<u64>>,
 }
 
 impl Reading {
     fn of(sample: &MetricSample) -> Self {
         Self {
             ts: sample.ts,
-            counters: counters(sample),
+            counters: Counters::of_sample(sample),
         }
     }
 }
@@ -331,11 +313,22 @@ impl ServiceFold {
         }
     }
 
-    pub(crate) fn finish(self) -> MetricHistoryReply {
-        let Self { buckets, table, .. } = self;
-        let gaps = buckets.gaps(&table);
-        let points = table
-            .into_iter()
+    /// Empties the bucket table onto `buckets` for the next range, keeping
+    /// every container's last reading so its first rate there spans the time
+    /// since the range before.
+    pub(crate) fn start(&mut self, buckets: Buckets) {
+        self.buckets = buckets;
+        self.table.clear();
+        self.table.resize_with(buckets.len, || None);
+    }
+
+    /// Answers the range added since `new` or `start`.
+    pub(crate) fn finish(&mut self) -> MetricHistoryReply {
+        let buckets = self.buckets;
+        let gaps = buckets.gaps(&self.table);
+        let points = self
+            .table
+            .drain(..)
             .enumerate()
             .filter_map(|(index, bucket)| Some(bucket?.into_point(buckets.start(index))))
             .collect();
@@ -482,7 +475,7 @@ mod tests {
 
     use ployz_core::{ContainerId, MachineId, QualifiedService, ServiceId, metrics::CpuJiffies};
 
-    use super::*;
+    use super::{super::counters::COUNTERS, *};
 
     const SEC: i64 = 1_000_000_000;
 
@@ -540,7 +533,7 @@ mod tests {
     }
 
     fn rates(point: &ServicePoint) -> [Option<f64>; COUNTERS] {
-        [point.cpu_usec, point.rx, point.tx, point.io_r, point.io_w]
+        Counters::of_point(point).0
     }
 
     #[test]

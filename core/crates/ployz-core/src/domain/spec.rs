@@ -520,6 +520,22 @@ pub struct ServiceContainerSpec {
     pub sysctls: BTreeMap<String, String>,
     #[serde(default)]
     pub restart: RestartPolicy,
+    /// The network namespace the Container joins. Absent means the ployz
+    /// bridge. It never names a Container id, the daemon resolves the holder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub network: Option<ServiceNetwork>,
+}
+
+/// A network namespace a Container joins instead of the ployz bridge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceNetwork {
+    /// The running reserved Ingress holder on the same Machine.
+    IngressHolder,
+    /// A value this build does not know. Creation refuses it.
+    #[serde(other)]
+    Unrecognized,
 }
 
 /// One Service's placement constraints and scoped mounted storage requirements.
@@ -620,7 +636,7 @@ impl RequestedServiceSpec {
         &mut self,
         volumes: ServiceVolumeGraph,
     ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph = crate::ServiceMountGraph::parse(volumes, self.config_graph().clone())?;
+        self.mount_graph = self.mount_graph.with_volumes(volumes)?;
         Ok(())
     }
 
@@ -632,7 +648,7 @@ impl RequestedServiceSpec {
         &mut self,
         configs: ServiceConfigGraph,
     ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph = crate::ServiceMountGraph::parse(self.volume_graph().clone(), configs)?;
+        self.mount_graph = self.mount_graph.with_configs(configs)?;
         Ok(())
     }
 
@@ -704,9 +720,7 @@ impl ResolvedServiceSpec {
         &mut self,
         volumes: crate::ResolvedServiceVolumeGraph,
     ) -> Result<(), ServiceSpecGraphError> {
-        self.mount_graph =
-            crate::ServiceMountGraph::parse(volumes.into_requested(), self.config_graph().clone())?
-                .try_into()?;
+        self.mount_graph = self.mount_graph.with_volumes(volumes)?;
         Ok(())
     }
 
@@ -771,7 +785,7 @@ impl ResolvedServiceSpec {
 }
 
 mod serving_shape;
-pub use serving_shape::{PublishedServingShape, ServingShape};
+pub use serving_shape::{ServingShape, global_creation_key};
 
 mod comparison;
 pub use comparison::compare_specs;

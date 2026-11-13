@@ -29,6 +29,7 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
         .write(
             &owner,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: DeploymentId::parse(mint()).unwrap(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -38,6 +39,7 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -118,6 +120,7 @@ fn following_returns_when_the_owned_runner_ends_not_at_the_next_poll() {
         .write(
             &owner,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: DeploymentId::parse(mint()).unwrap(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -127,6 +130,7 @@ fn following_returns_when_the_owned_runner_ends_not_at_the_next_poll() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();

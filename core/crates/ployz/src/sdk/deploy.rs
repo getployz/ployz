@@ -1,8 +1,7 @@
 //! Prepared deployment execution and its owned progress stream.
-use super::{PreparedDeploy, RunningDeploy, Session, closed, invalid_argument};
+use super::{PreparedDeploy, RunningDeploy, Session, closed};
 use crate::deploy::DeployPreview;
-use ployz_core::{DeployEvent, DeployOutcome, ExecutionError, RpcError, RpcErrorCode};
-use serde_json::Value;
+use ployz_core::{DeployEvent, DeployOutcome, ExecutionError, RpcError};
 use std::{ops::Deref, sync::atomic::Ordering};
 use tokio::sync::{Mutex, mpsc};
 
@@ -23,7 +22,7 @@ impl std::str::FromStr for ImageCleanup {
         match value {
             "auto" => Ok(Self::Auto),
             "manual" => Ok(Self::Manual),
-            other => Err(invalid_argument(format!(
+            other => Err(RpcError::invalid_argument(format!(
                 "imageCleanup must be \"auto\" or \"manual\", not {other:?}"
             ))),
         }
@@ -100,6 +99,30 @@ impl PreparedDeploy {
         deployment_id: Option<ployz_core::DeploymentLogId>,
         cleanup: ImageCleanup,
     ) -> Result<RunningDeploy, RpcError> {
+        self.confirm_approved(
+            deployment_id,
+            cleanup,
+            None,
+            crate::cluster::RuleProofs::default(),
+            None,
+        )
+    }
+
+    /// As [`Self::confirm_with_log_id`], handing every Server the deploy approval a
+    /// Device signed for this Deploy, or each Service's proof under an automatic deploy
+    /// rule or a preview rule, and the teardown of what it takes off. A Server that
+    /// enforces Device approval creates nothing without one, and takes off nothing
+    /// that neither approves.
+    /// # Errors
+    /// Returns the same admission and session errors as confirm.
+    pub fn confirm_approved(
+        &self,
+        deployment_id: Option<ployz_core::DeploymentLogId>,
+        cleanup: ImageCleanup,
+        approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+        rules: crate::cluster::RuleProofs,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
+    ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
         };
@@ -108,14 +131,18 @@ impl PreparedDeploy {
         }
         let mut retained = self.retained.lock().expect("retained build lock");
         if self.confirmed.swap(true, Ordering::SeqCst) {
-            return Err(invalid_argument(
-                "this Deploy Preview already confirmed".into(),
+            return Err(RpcError::invalid_argument(
+                "this Deploy Preview already confirmed",
             ));
         }
         let cancel = session.inner.cancel.child_token();
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut client = session.client()?;
-        client.deployment_id = deployment_id;
+        let mut client = session
+            .client()?
+            .with_deploy_approval(approval)
+            .with_rule_proofs(rules)
+            .with_teardown(teardown);
+        client.deploy.id = deployment_id;
         let preview = self.preview.clone();
         let token = cancel.clone();
         let session_cancel = session.inner.cancel.clone();
@@ -129,11 +156,7 @@ impl PreparedDeploy {
             let events = tx.clone();
             let outcome = tokio::select! {
                 biased;
-                () = session_cancel.cancelled() => return Err(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "session closed; in-flight Deploy outcome may be uncertain".into(),
-                    details: Value::Null, cause: Vec::new(),
-                }),
+                () = session_cancel.cancelled() => return Err(RpcError::unavailable("session closed; in-flight Deploy outcome may be uncertain")),
                 outcome = client.confirm(&preview, &token, Some(tx)) => outcome,
             };
             if !token.is_cancelled() {
@@ -200,13 +223,10 @@ impl RunningDeploy {
             .lock()
             .await
             .take()
-            .ok_or_else(|| invalid_argument("Deploy outcome already awaited".into()))?;
-        let outcome = handle.await.map_err(|_| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Deploy task failed".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        })?;
+            .ok_or_else(|| RpcError::invalid_argument("Deploy outcome already awaited"))?;
+        let outcome = handle
+            .await
+            .map_err(|_| RpcError::internal("Deploy task failed"))?;
         while self.next().await.is_some() {}
         outcome
     }
@@ -215,6 +235,7 @@ impl RunningDeploy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::RpcErrorCode;
 
     #[tokio::test]
     async fn a_second_finished_is_a_typed_error() {

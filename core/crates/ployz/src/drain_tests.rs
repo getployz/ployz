@@ -18,7 +18,7 @@ use super::{
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
 };
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Converged, LastIn, Moving, OldCopyEnd, Unconfirmed};
+use crate::drain::placement::{Converged, LastIn, Moving, OldCopyEnd, Unconfirmed};
 use crate::drain::retirement::Retirement;
 use crate::global_fixtures::container_id;
 
@@ -67,6 +67,7 @@ fn an_empty_owned_scope_chooses_nothing_and_reserved_namespaces_never() {
     };
     assert!(shop.includes(&service("shop/web")) && !shop.includes(&service("blog/web")));
     assert!(DrainScope::EveryNamespace.includes(&service("blog/web")));
+    assert!(DrainScope::EveryNamespace.includes(&service("ployz/api")));
     let system = QualifiedService::system_ingress();
     assert!(!DrainScope::EveryNamespace.includes(&system));
     let web = DrainScope::Services {
@@ -242,6 +243,7 @@ fn drained() -> Machine {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -1023,4 +1025,105 @@ async fn an_old_copy_refused_out_keeps_its_move_and_stays() {
         ]
     );
     assert!(!report.complete());
+}
+
+/// What the CLI reads off each outcome: whether an old copy is still on the Server, and
+/// whether the Drain went wrong on the Service.
+#[test]
+fn an_outcome_says_whether_it_left_an_old_copy_or_failed() {
+    let left = |old| {
+        vec![Move {
+            old,
+            ..one_move().remove(0)
+        }]
+    };
+    let running = || OldCopyEnd::Running {
+        unconfirmed: Unconfirmed::Cancelled,
+    };
+    let in_rotation = || OldCopyEnd::In {
+        unconfirmed: Unconfirmed::Cancelled,
+    };
+    let failure = || MoveFailure::Refused {
+        reason: StayReason::LastIn,
+    };
+    let table = [
+        ("moved", moved(), (false, false)),
+        (
+            "moved, old copy running",
+            DrainOutcome::Moved {
+                moves: left(running()),
+            },
+            (true, false),
+        ),
+        (
+            "moved, old copy in",
+            DrainOutcome::Moved {
+                moves: left(in_rotation()),
+            },
+            (true, false),
+        ),
+        (
+            "nothing to move",
+            DrainOutcome::NothingToMove,
+            (false, false),
+        ),
+        (
+            "failed after a stopped move",
+            DrainOutcome::Failed {
+                moves: one_move(),
+                failure: failure(),
+            },
+            (false, true),
+        ),
+        (
+            "failed, old copy running",
+            DrainOutcome::Failed {
+                moves: left(running()),
+                failure: failure(),
+            },
+            (false, true),
+        ),
+        (
+            "stays",
+            DrainOutcome::Stays {
+                reason: StayReason::LastIn,
+            },
+            (false, false),
+        ),
+        ("held", DrainOutcome::Held, (false, false)),
+        (
+            "old copies stopped",
+            DrainOutcome::OldCopies {
+                ends: vec![OldCopyEnd::Stopped],
+            },
+            (false, false),
+        ),
+        (
+            "old copies, one running",
+            DrainOutcome::OldCopies {
+                ends: vec![OldCopyEnd::Stopped, running()],
+            },
+            (true, false),
+        ),
+        ("retired", DrainOutcome::Retired, (false, false)),
+        (
+            "not retired",
+            DrainOutcome::NotRetired {
+                error: "refused".into(),
+            },
+            (false, true),
+        ),
+        (
+            "interrupted",
+            DrainOutcome::Interrupted {
+                moves: left(running()),
+            },
+            (false, true),
+        ),
+        ("not attempted", DrainOutcome::NotAttempted, (false, false)),
+    ];
+    for (label, outcome, (left_old_copy, failed)) in table {
+        assert_eq!(outcome.left_old_copy(), left_old_copy, "{label}");
+        assert_eq!(outcome.failed(), failed, "{label}");
+    }
 }

@@ -35,7 +35,11 @@ pub enum ServicePlacementUnknownReason {
 }
 
 impl RequestedServiceSpec {
-    /// Assess role admission with the Namespace identity required for trusted Ingress.
+    /// Assess role admission for this spec under its qualified identity.
+    ///
+    /// Identity alone decides the role gate. The two Ingress door identities
+    /// need `accepts_ingress` whatever their shape, because the daemon is what
+    /// admits or refuses the shape.
     #[must_use]
     pub fn placement_eligibility_in_namespace(
         &self,
@@ -43,20 +47,20 @@ impl RequestedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        let ingress = *namespace == crate::QualifiedService::system_ingress().namespace
-            && crate::validate_requested_ingress_service_spec(self).is_ok();
-        placement_eligibility(
-            &self.placement,
-            self.volume_graph(),
-            machine,
-            storage,
-            ingress,
-        )
+        let gate = RoleGate::of(&crate::QualifiedService::new(
+            namespace.clone(),
+            self.name.clone(),
+        ));
+        placement_eligibility(&self.placement, self.volume_graph(), machine, storage, gate)
     }
 }
 
 impl ResolvedServiceSpec {
-    /// Assess role admission with the Namespace identity required for trusted Ingress.
+    /// Assess role admission for this spec under its qualified identity.
+    ///
+    /// Identity alone decides the role gate. The two Ingress door identities
+    /// need `accepts_ingress` whatever their shape, because the daemon is what
+    /// admits or refuses the shape.
     #[must_use]
     pub fn placement_eligibility_in_namespace(
         &self,
@@ -64,15 +68,11 @@ impl ResolvedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        let ingress = *namespace == crate::QualifiedService::system_ingress().namespace
-            && crate::validate_ingress_service_spec(self).is_ok();
-        placement_eligibility(
-            &self.placement,
-            self.volume_graph(),
-            machine,
-            storage,
-            ingress,
-        )
+        let gate = RoleGate::of(&crate::QualifiedService::new(
+            namespace.clone(),
+            self.name.clone(),
+        ));
+        placement_eligibility(&self.placement, self.volume_graph(), machine, storage, gate)
     }
 }
 
@@ -89,8 +89,39 @@ impl crate::ServiceStorageSpec {
             self.volume_graph(),
             machine,
             storage,
-            false,
+            RoleGate::Services,
         )
+    }
+}
+
+/// The role a Machine needs for work, decided by the work's identity alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RoleGate {
+    /// Any Service: the Machine accepts services.
+    Services,
+    /// The reserved Ingress doors: the Machine accepts ingress.
+    Ingress,
+    /// The reserved Private Access router: every Machine, whatever its roles.
+    Router,
+}
+
+impl RoleGate {
+    fn of(identity: &crate::QualifiedService) -> Self {
+        if identity.is_ingress_door() {
+            Self::Ingress
+        } else if identity.is_private_access_router() {
+            Self::Router
+        } else {
+            Self::Services
+        }
+    }
+
+    fn admits(self, machine: &Machine) -> bool {
+        match self {
+            Self::Services => machine.accepts_services,
+            Self::Ingress => machine.accepts_ingress,
+            Self::Router => true,
+        }
     }
 }
 
@@ -104,18 +135,14 @@ fn placement_eligibility(
     volumes: &ServiceVolumeGraph,
     machine: &Machine,
     storage: Option<&MachineStorageObservation>,
-    ingress: bool,
+    gate: RoleGate,
 ) -> ServicePlacementEligibility {
     if !machine_matches_placement(machine, placement) {
         return ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::PlacementMismatch,
         );
     }
-    if !(if ingress {
-        machine.accepts_ingress
-    } else {
-        machine.accepts_services
-    }) {
+    if !gate.admits(machine) {
         return ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::WorkNotAccepted,
         );
@@ -312,57 +339,91 @@ mod tests {
     }
 
     #[test]
-    fn role_admission_requires_reserved_caddy_identity_and_complete_wiring() {
+    fn role_admission_follows_the_door_identities_whatever_the_shape() {
         let mut machine = machine("edge");
         machine.accepts_services = false;
         machine.accepts_ingress = true;
-        machine.accepts_builds = true;
-        let reserved = crate::QualifiedService::system_ingress().namespace;
+        let reserved = crate::Namespace::system();
         let app = crate::Namespace::parse("app").unwrap();
-        let caddy = crate::caddy_service_spec("caddy:test".into(), Default::default());
         let denied = ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::WorkNotAccepted,
         );
+        let at = |name: &str| {
+            let mut spec = requested(Placement::default(), ServiceVolumeGraph::default());
+            spec.name = crate::ServiceName::parse(name).unwrap();
+            spec
+        };
+
+        for door in ["ingress", "ingress-holder"] {
+            let noncanonical = at(door);
+            let resolved = noncanonical
+                .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+                .unwrap();
+            assert_eq!(
+                noncanonical.placement_eligibility_in_namespace(&reserved, &machine, None),
+                ServicePlacementEligibility::Eligible,
+                "{door} is gated on accepts_ingress",
+            );
+            assert_eq!(
+                resolved.placement_eligibility_in_namespace(&reserved, &machine, None),
+                ServicePlacementEligibility::Eligible,
+                "{door} is gated on accepts_ingress",
+            );
+            assert_eq!(
+                noncanonical.placement_eligibility_in_namespace(&app, &machine, None),
+                denied,
+                "{door} outside ployz-system is an ordinary Service",
+            );
+        }
+        let ordinary = at("metrics");
         assert_eq!(
-            caddy.placement_eligibility_in_namespace(&reserved, &machine, None),
-            ServicePlacementEligibility::Eligible
-        );
-        assert_eq!(
-            caddy.placement_eligibility_in_namespace(&app, &machine, None),
+            ordinary.placement_eligibility_in_namespace(&reserved, &machine, None),
             denied
         );
-        let mut forged = caddy.clone();
-        forged.container.command = vec!["sh".into()];
-        assert_eq!(
-            forged.placement_eligibility_in_namespace(&reserved, &machine, None),
-            denied
-        );
-        let resolved = caddy
-            .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
-            .unwrap();
-        assert_eq!(
-            resolved.placement_eligibility_in_namespace(&reserved, &machine, None),
-            ServicePlacementEligibility::Eligible
-        );
-        assert_eq!(
-            resolved.placement_eligibility_in_namespace(&app, &machine, None),
-            denied
-        );
-        assert_eq!(
-            crate::ServiceStorageSpec::from(&resolved).placement_eligibility(&machine, None),
-            denied
-        );
+
         machine.accepts_ingress = false;
         machine.accepts_services = true;
+        for door in ["ingress", "ingress-holder"] {
+            assert_eq!(
+                at(door).placement_eligibility_in_namespace(&reserved, &machine, None),
+                denied,
+                "{door} needs accepts_ingress",
+            );
+        }
         assert_eq!(
-            resolved.placement_eligibility_in_namespace(&reserved, &machine, None),
-            denied
-        );
-        assert_eq!(
-            requested(Placement::default(), ServiceVolumeGraph::default())
-                .placement_eligibility_in_namespace(&app, &machine, None),
+            ordinary.placement_eligibility_in_namespace(&reserved, &machine, None),
             ServicePlacementEligibility::Eligible
         );
+    }
+
+    #[test]
+    fn the_private_access_router_is_eligible_on_every_machine_whatever_its_roles() {
+        let reserved = crate::Namespace::system();
+        let app = crate::Namespace::parse("app").unwrap();
+        let mut router = requested(Placement::default(), ServiceVolumeGraph::default());
+        router.name = crate::QualifiedService::system_tailscale().name;
+        let denied = ServicePlacementEligibility::Ineligible(
+            ServicePlacementIneligibleReason::WorkNotAccepted,
+        );
+        for (services, ingress) in [(false, true), (true, false), (false, false), (true, true)] {
+            let mut machine = machine("edge");
+            machine.accepts_services = services;
+            machine.accepts_ingress = ingress;
+            assert_eq!(
+                router.placement_eligibility_in_namespace(&reserved, &machine, None),
+                ServicePlacementEligibility::Eligible,
+                "services={services} ingress={ingress}",
+            );
+            assert_eq!(
+                router.placement_eligibility_in_namespace(&app, &machine, None),
+                if services {
+                    ServicePlacementEligibility::Eligible
+                } else {
+                    denied
+                },
+                "outside ployz-system it is an ordinary Service",
+            );
+        }
     }
 
     fn machine(name: &str) -> Machine {
@@ -378,6 +439,7 @@ mod tests {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }

@@ -58,9 +58,11 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
 
     let minted = session
         .mint_build_grant(MintBuildGrantRequest {
+            preview: None,
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/app").unwrap(),
             holder: None,
             sealed: None,
+            rule: None,
         })
         .await
         .unwrap();

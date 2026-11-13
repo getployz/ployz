@@ -11,20 +11,19 @@ use std::{
 use futures_util::StreamExt;
 use ployz_core::scrub::{self, Channel, FrameScrub, SealedForms, SealedValues};
 use ployz_core::{
-    ContainerId, EnvPart, EnvValue, HistoryRow, OpaquePayload, OpenedSealed, SealedIdentity,
-    SealedScope, SealedValue,
+    Ciphertext, ContainerId, EnvPart, EnvValue, HistoryRow, OpaquePayload, OpenedSealed,
+    PlatformPurpose, SealedIdentity, SealedScope, SealedValue,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
+use zeroize::Zeroizing;
 
 use crate::{
     logs::{LogLineStream, LogSource, RawLogEntry, RpcStream},
     sealing_key::SealingKey,
 };
-
-pub(crate) const LABEL_SEALED: &str = "ployz.env.sealed";
 
 pub use ployz_core::SealedRecord;
 
@@ -44,6 +43,10 @@ pub enum OpenError {
     Unbound(String),
     #[error("env {0} does not open with this Cluster's Sealing Key")]
     Unopenable(String),
+    #[error("the tunnel token does not open with this Cluster's Sealing Key")]
+    TunnelToken,
+    #[error("the Tailscale auth key does not open with this Cluster's Sealing Key")]
+    PrivateAccessKey,
     #[error("env {0} holds a multiline Sealed value with a line too short to scrub from logs")]
     ShortLine(String),
 }
@@ -160,8 +163,11 @@ fn check_bindings(record: &SealedRecord) -> Result<(), OpenError> {
             return Err(OpenError::BadName(name.clone()));
         }
         if let EnvValue::Sealed(sealed) = value {
+            // A parent's value a preview inherits keeps its parent Service's scope: its
+            // associated data binds that, and admission checked the preview rule names it.
             let scope_matches = match sealed.scope {
                 SealedScope::Shared => true,
+                SealedScope::Service(_) if sealed.environment.is_some() => true,
                 SealedScope::Service(service) => service == record.identity().service,
             };
             if sealed.key != *name || !scope_matches {
@@ -373,6 +379,46 @@ fn parts(value: &EnvValue) -> Box<dyn Iterator<Item = Part<'_>> + '_> {
     }
 }
 
+/// Open a tunnel token the platform sealed to this Cluster.
+///
+/// # Errors
+///
+/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] when this Machine
+/// holds no usable Sealing Key, and [`OpenError::TunnelToken`] when the token was
+/// sealed for another Cluster or another purpose.
+pub(crate) fn open_tunnel_token(
+    sealed: &Ciphertext,
+    key_dir: Option<&Path>,
+) -> Result<Zeroizing<Vec<u8>>, OpenError> {
+    load(key_dir)?
+        .open_platform(PlatformPurpose::IngressTunnel, sealed)
+        .ok_or(OpenError::TunnelToken)
+}
+
+/// Open a Tailscale auth key the platform sealed to this Cluster.
+///
+/// # Errors
+///
+/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] when this Machine
+/// holds no usable Sealing Key, and [`OpenError::PrivateAccessKey`] when the key was
+/// sealed for another Cluster or another purpose.
+pub(crate) fn open_private_access_key(
+    sealed: &Ciphertext,
+    key_dir: Option<&Path>,
+) -> Result<Zeroizing<Vec<u8>>, OpenError> {
+    load(key_dir)?
+        .open_platform(PlatformPurpose::PrivateAccess, sealed)
+        .ok_or(OpenError::PrivateAccessKey)
+}
+
+/// The Cluster's build attest key pair, derived from the Sealing Key in `key_dir`.
+///
+/// # Errors
+/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] as opening does.
+pub(crate) fn attest_key(key_dir: Option<&Path>) -> Result<ployz_core::X25519Secret, OpenError> {
+    Ok(load(key_dir)?.attest())
+}
+
 fn load(key_dir: Option<&Path>) -> Result<SealingKey, OpenError> {
     let dir = key_dir.ok_or(OpenError::KeyMissing)?;
     SealingKey::load(dir)
@@ -412,6 +458,7 @@ pub(crate) mod test_support {
 
         pub(crate) fn seal(&self, key: &str, scope: SealedScope, plaintext: &str) -> SealedValue {
             let mut value = SealedValue {
+                environment: None,
                 sealed: ployz_core::Ciphertext::from_bytes(vec![0; 48]),
                 scope,
                 key: key.into(),
@@ -422,8 +469,37 @@ pub(crate) mod test_support {
             value
         }
 
+        /// A value of `key` sealed for `environment` in place of this Cluster's own, as
+        /// a preview inherits its parent's.
+        pub(crate) fn seal_inherited(
+            &self,
+            key: &str,
+            environment: Uuid,
+            plaintext: &str,
+        ) -> SealedValue {
+            let mut value = SealedValue {
+                environment: Some(environment),
+                sealed: ployz_core::Ciphertext::from_bytes(vec![0; 48]),
+                scope: SealedScope::Shared,
+                key: key.into(),
+            };
+            value.sealed = self
+                .key
+                .seal_value(&value.associated_data(&self.identity), plaintext.as_bytes());
+            value
+        }
+
         pub(crate) fn open(&self, env: BTreeMap<String, EnvValue>) -> Result<OpenedEnv, OpenError> {
             open(env, Some(&self.identity), Some(&self.dir.0))
+        }
+
+        /// `plaintext` sealed to this Cluster for `purpose`, as a client seals it.
+        pub(crate) fn seal_platform(
+            &self,
+            purpose: PlatformPurpose,
+            plaintext: &[u8],
+        ) -> Ciphertext {
+            ployz_core::seal_platform(&self.key.public_key(), purpose, plaintext).unwrap()
         }
     }
 }

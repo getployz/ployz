@@ -1,3 +1,4 @@
+use ployz_core::labels::{self, ServiceLabels};
 use std::future::Future;
 
 use bollard::{
@@ -10,12 +11,11 @@ use bollard::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
 };
-use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
-    MachineStorageObservation, Namespace, ResolvedServiceSpec, ServiceName,
-    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
-    SlotKey,
+    MachineStorageObservation, Namespace, QualifiedService, ResolvedServiceSpec, ServiceName,
+    ServiceNetwork, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    ServicePlacementUnknownReason, SlotKey,
 };
 
 #[cfg(test)]
@@ -27,11 +27,22 @@ use crate::{
 };
 
 use super::{
-    ContainerRuntime, Error, LABEL_SERVICE_ID, ManagedLabels, create, docker_error,
+    ContainerRuntime, Error, IngressRecovery, create,
+    create::CreationNetwork,
+    doors,
+    error::{Status, classify, docker_error},
     spec_store::ConfigOperation,
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
+
+/// How a Container leaves through [`ContainerRuntime::retire`].
+pub(super) enum How {
+    /// A request to remove it, as asked.
+    Asked { remove_volumes: bool, force: bool },
+    /// The Machine is leaving: stopped, then removed with its anonymous volumes.
+    Departing,
+}
 
 /// The Container one creation landed on.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -175,12 +186,22 @@ impl ContainerRuntime {
         if create::holds_sealed(kind, spec) {
             self.log_store.admit_sealed().await?;
         }
+        let network = match spec.container.network {
+            None => CreationNetwork::Bridge,
+            Some(ServiceNetwork::IngressHolder) => CreationNetwork::Holder(
+                self.running_holder()
+                    .await?
+                    .ok_or(Error::IngressHolderNotRunning)?,
+            ),
+            Some(ServiceNetwork::Unrecognized) => return Err(Error::UnrecognizedNetwork),
+        };
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
             kind,
             namespace,
             spec,
+            &network,
             self.sealing_key_dir.as_deref(),
         )?;
         create::ingress_sysctls(
@@ -191,19 +212,12 @@ impl ContainerRuntime {
                 .join(create::TCP_MIGRATE_REQ.replace('.', "/"))
                 .exists(),
         );
-        if let Some(id) = deployment_id {
-            body.labels
-                .get_or_insert_default()
-                .insert(super::LABEL_DEPLOYMENT.into(), id.to_string());
-        }
-        if let Some(key) = creation_key {
-            body.labels
-                .get_or_insert_default()
-                .insert(CREATION_KEY.into(), key.into());
-        }
-        body.labels
-            .get_or_insert_default()
-            .insert(super::LABEL_GEN.into(), r#gen.to_string());
+        labels::stamp_run(
+            body.labels.get_or_insert_default(),
+            deployment_id,
+            creation_key,
+            r#gen,
+        );
         if let ImagePull::Policy(registry_auth) = image
             && let Err(error) = prepare_image(
                 &self.docker.client,
@@ -238,10 +252,7 @@ impl ContainerRuntime {
                         .build();
                     match self.docker.create_container(Some(options), body).await {
                         Ok(created) => (created, display_name),
-                        Err(Error::Docker(DockerError::DockerResponseServerError {
-                            status_code: 409,
-                            ..
-                        })) => {
+                        Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
                             if let Some(key) = creation_key {
                                 return self
                                     .matching_creation(
@@ -301,7 +312,7 @@ impl ContainerRuntime {
                 .put(&container_id, slot.as_ref(), spec)
                 .await
             {
-                self.force_remove_container(&container_id).await?;
+                self.remove_if_present(&container_id).await?;
                 return Err(error.into());
             }
             Ok(ContainerCreated {
@@ -349,17 +360,7 @@ impl ContainerRuntime {
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
         let name = &creation_name(&machine.id, namespace, &spec.name, kind, key);
-        let existing = match self.keyed_container(&machine.id, name, key).await {
-            Err(Error::SpecNotFound(container_id))
-                if self.half_made(operation, &container_id).await? =>
-            {
-                self.force_remove_container(&container_id).await?;
-                return Ok(None);
-            }
-            // A restore's Container now holds the records it took over.
-            Err(Error::SpecNotFound(_)) => self.keyed_container(&machine.id, name, key).await,
-            found => found,
-        }?;
+        let existing = self.resolve_slot(operation, &machine.id, name, key).await?;
         let Some(existing) = existing else {
             return Ok(None);
         };
@@ -383,7 +384,7 @@ impl ContainerRuntime {
         if !self.half_made(&mut operation, container_id).await? {
             return Ok(false);
         }
-        self.force_remove_container(container_id).await?;
+        self.remove_if_present(container_id).await?;
         Ok(true)
     }
 
@@ -421,10 +422,10 @@ impl ContainerRuntime {
             .and_then(|config| config.labels)
             .unwrap_or_default();
         let (true, Some(service_id)) = (
-            labels.contains_key(CREATION_KEY)
+            labels.contains_key(labels::CREATION_KEY)
                 && inspected.state.and_then(|state| state.status)
                     == Some(ContainerStateStatusEnum::CREATED),
-            labels.get(LABEL_SERVICE_ID),
+            labels.get(labels::SERVICE_ID),
         ) else {
             return Ok(false);
         };
@@ -452,20 +453,33 @@ impl ContainerRuntime {
         name: &str,
         key: &str,
     ) -> Result<Option<ContainerObservation>, Error> {
-        // Under the lock no create is between Docker's create and its spec's write. A
-        // create that ran while this waited may have replaced the Container, so the slot
-        // is read again.
+        // A create that ran while this waited may have replaced the Container, so the
+        // slot is read again under the lock.
         let mut operation = self.specs.config_operation().await;
+        self.resolve_slot(&mut operation, machine_id, name, key)
+            .await
+    }
+
+    /// The Container in the creation slot `name`, read under the config lock `operation`
+    /// holds, so no create is between Docker's create and its spec's write. A Container
+    /// with no spec is one of two things. A daemon killed before its spec's write left
+    /// it half made, and it is removed, so the slot reads empty and holds nothing that
+    /// keeps its Volumes in use; the create that follows makes it again. A restore
+    /// made it, and the records it took over are found now, so the slot is read again.
+    async fn resolve_slot(
+        &self,
+        operation: &mut ConfigOperation<'_>,
+        machine_id: &MachineId,
+        name: &str,
+        key: &str,
+    ) -> Result<Option<ContainerObservation>, Error> {
         match self.keyed_container(machine_id, name, key).await {
             Err(Error::SpecNotFound(container_id))
-                if self.half_made(&mut operation, &container_id).await? =>
+                if self.half_made(operation, &container_id).await? =>
             {
-                // Removed, so a slot read as empty holds nothing that keeps its Volumes in
-                // use. The create that follows makes it again.
-                self.force_remove_container(&container_id).await?;
+                self.remove_if_present(&container_id).await?;
                 Ok(None)
             }
-            // A restore's Container now holds the records it took over.
             Err(Error::SpecNotFound(_)) => self.keyed_container(machine_id, name, key).await,
             found => found,
         }
@@ -479,16 +493,14 @@ impl ContainerRuntime {
     ) -> Result<Option<ContainerObservation>, Error> {
         let inspected = match self.docker.client.inspect_container(name, None).await {
             Ok(inspected) => inspected,
-            Err(DockerError::DockerResponseServerError {
-                status_code: 404, ..
-            }) => return Ok(None),
+            Err(error) if classify(&error) == Status::Absent => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         if inspected
             .config
             .as_ref()
             .and_then(|config| config.labels.as_ref())
-            .and_then(|labels| labels.get(CREATION_KEY))
+            .and_then(|labels| labels.get(labels::CREATION_KEY))
             .map(String::as_str)
             != Some(key)
         {
@@ -562,43 +574,101 @@ impl ContainerRuntime {
         idempotent_lifecycle_result(container_id, result)
     }
 
-    /// Start an Ingress Proxy whose last start failed, unless a request stopped it
-    /// or is about to, or a container was created since `creates` was read or is
-    /// being created.
-    pub(super) async fn start_stranded(&self, container_id: &ContainerId, creates: u64) {
+    /// Carry out one Ingress door recovery, unless a request stopped its Container or
+    /// is about to, or a container was created since `creates` was read or is being
+    /// created. Recovery only starts what exists; it never creates.
+    pub(super) async fn start_stranded(&self, recovery: IngressRecovery, creates: u64) {
+        // Under the doors lock so a route placing the doors never races it.
+        let _doors = self.door_lifecycle().await;
+        let container_id = *recovery.target();
         let gate = self
             .stranded()
             .await
             .gates
-            .entry(*container_id)
+            .entry(container_id)
             .or_default()
             .clone();
         let Ok(_gate) = gate.try_lock() else {
             return;
         };
-        if self.stranded().await.held.contains(container_id) || self.is_withdrawn(container_id) {
+        if self.stranded().await.held.contains(&container_id) || self.is_withdrawn(&container_id) {
             return;
         }
-        let result = async {
-            let inspected = self.ensure_managed(container_id).await?;
-            // A newer Ingress Proxy may be about to take port 80; the next scan decides.
-            if !failed_start(&inspected) || !self.docker.created_nothing_since(creates) {
-                return Ok(());
-            }
-            self.start_inspected(container_id, &inspected).await
-        }
-        .await;
+        let result = self.recover_door(&recovery, creates).await;
         let mut stranded = self.stranded().await;
         match result {
-            Ok(()) => stranded.reported = None,
-            Err(error) if stranded.reported != Some(*container_id) => {
+            Ok(acted) => {
+                if acted {
+                    tracing::info!(?recovery, "{} an Ingress door", recovery.verb());
+                }
+                stranded.reported = None;
+            }
+            Err(error) if stranded.reported != Some(container_id) => {
                 eprintln!(
-                    "Ingress Proxy {container_id} is still not started: {error}",
+                    "Ingress door {container_id} is still not {}: {error}",
+                    recovery.verb(),
                     error = ployz_core::error_chain::inline(&error),
                 );
-                stranded.reported = Some(*container_id);
+                stranded.reported = Some(container_id);
             }
             Err(_) => {}
+        }
+    }
+
+    async fn recover_door(&self, recovery: &IngressRecovery, creates: u64) -> Result<bool, Error> {
+        match recovery {
+            IngressRecovery::StartHolder(container_id)
+            | IngressRecovery::StartCaddy {
+                holder: None,
+                caddy: container_id,
+            } => {
+                let inspected = self.ensure_managed(container_id).await?;
+                // A newer door may be about to take the ports; the next scan decides.
+                if !failed_start(&inspected) || !self.docker.created_nothing_since(creates) {
+                    return Ok(false);
+                }
+                self.start_inspected(container_id, &inspected).await?;
+                Ok(true)
+            }
+            IngressRecovery::StartCaddy {
+                holder: Some(holder),
+                caddy,
+            } => {
+                let inspected = self.ensure_managed(caddy).await?;
+                if !failed_start(&inspected)
+                    || !is_running(&self.ensure_managed(holder).await?)
+                    || !self.docker.created_nothing_since(creates)
+                {
+                    return Ok(false);
+                }
+                self.start_inspected(caddy, &inspected).await?;
+                Ok(true)
+            }
+            IngressRecovery::RejoinCaddy { holder, caddy } => {
+                let holder_now = self.ensure_managed(holder).await?;
+                let caddy_now = self.ensure_managed(caddy).await?;
+                let stale = match (doors::netns_of(&holder_now), doors::netns_of(&caddy_now)) {
+                    (Some(holder_ns), Some(caddy_ns)) => holder_ns != caddy_ns,
+                    _ => false,
+                };
+                if !stale
+                    || doors::joined_to(&caddy_now) != Some(*holder)
+                    || !self.docker.created_nothing_since(creates)
+                {
+                    return Ok(false);
+                }
+                // A stop here is no request's, so it holds nothing: the start that
+                // follows is the same repair.
+                let result = self
+                    .docker
+                    .client
+                    .stop_container(caddy.as_str(), None)
+                    .await;
+                idempotent_lifecycle_result(caddy, result)?;
+                let inspected = self.ensure_managed(caddy).await?;
+                self.start_inspected(caddy, &inspected).await?;
+                Ok(true)
+            }
         }
     }
 
@@ -687,25 +757,71 @@ impl ContainerRuntime {
         remove_volumes: bool,
         force: bool,
     ) -> Result<(), Error> {
-        match self.ensure_managed(container_id).await {
-            Ok(_) => {}
-            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
-                self.forget(container_id).await;
-                return Ok(());
-            }
-            Err(error) => return Err(error),
+        self.retire(
+            config_operation,
+            container_id,
+            How::Asked {
+                remove_volumes,
+                force,
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_all_managed(&self) -> Result<(), Error> {
+        self.departing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut config_operation = self.specs.config_operation().await;
+        // A Caddy in a holder's network goes before the holder, so no Container is ever
+        // left in a removed Container's network.
+        let mut managed = self.docker.managed_containers().await?;
+        managed.sort_by_key(|(_, labels)| {
+            ServiceLabels::parse(labels)
+                .is_ok_and(|managed| managed.identity == QualifiedService::system_ingress_holder())
+        });
+        for (container_id, _) in managed {
+            self.retire(&mut config_operation, &container_id, How::Departing)
+                .await?;
         }
-        let options = RemoveContainerOptionsBuilder::default()
-            .v(remove_volumes)
-            .force(force)
-            .build();
-        match self
-            .docker
-            .client
-            .remove_container(container_id.as_str(), Some(options))
-            .await
-            .map_err(|error| docker_error(container_id, error))
-        {
+        Ok(())
+    }
+
+    /// Takes a Container out of Docker, then out of the Machine's records, then out of
+    /// the daemon's memory, in that order. A crash after the first step leaves a record
+    /// with no Container, which the next inventory settles; the reverse order would
+    /// leave a Container no record describes. A Container Docker no longer has is
+    /// settled only if a record of it remained, so a name that was never ours still
+    /// answers not found.
+    async fn retire(
+        &self,
+        config_operation: &mut super::spec_store::ConfigOperation<'_>,
+        container_id: &ContainerId,
+        how: How,
+    ) -> Result<(), Error> {
+        let removed = match how {
+            How::Asked {
+                remove_volumes,
+                force,
+            } => match self.ensure_managed(container_id).await {
+                Ok(_) => {
+                    let options = RemoveContainerOptionsBuilder::default()
+                        .v(remove_volumes)
+                        .force(force)
+                        .build();
+                    self.docker
+                        .client
+                        .remove_container(container_id.as_str(), Some(options))
+                        .await
+                        .map_err(|error| docker_error(container_id, error))
+                }
+                Err(error) => Err(error),
+            },
+            How::Departing => {
+                self.stop_if_running(container_id).await?;
+                self.remove_if_present(container_id).await
+            }
+        };
+        match removed {
             Ok(()) => {
                 config_operation.remove(container_id).await?;
             }
@@ -713,31 +829,6 @@ impl ContainerRuntime {
             Err(error) => return Err(error),
         }
         self.forget(container_id).await;
-        Ok(())
-    }
-
-    pub async fn remove_all_managed(&self) -> Result<(), Error> {
-        self.departing
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        let mut config_operation = self.specs.config_operation().await;
-        for container_id in self.docker.managed_container_ids().await? {
-            match self
-                .docker
-                .client
-                .stop_container(container_id.as_str(), None)
-                .await
-            {
-                Ok(())
-                | Err(DockerError::DockerResponseServerError {
-                    status_code: 304 | 404,
-                    ..
-                }) => {}
-                Err(error) => return Err(error.into()),
-            }
-            self.force_remove_container(&container_id).await?;
-            config_operation.remove(&container_id).await?;
-            self.forget(&container_id).await;
-        }
         Ok(())
     }
 
@@ -756,7 +847,7 @@ impl ContainerRuntime {
             .as_ref()
             .and_then(|config| config.labels.as_ref())
             .ok_or(Error::NotManaged)?;
-        ManagedLabels::parse(labels)?;
+        ServiceLabels::parse(labels)?;
         self.specs
             .get(container_id)
             .await?
@@ -764,7 +855,25 @@ impl ContainerRuntime {
         Ok(inspected)
     }
 
-    async fn force_remove_container(&self, container_id: &ContainerId) -> Result<(), Error> {
+    /// Stops `container_id`. A Container already stopped or gone is success.
+    async fn stop_if_running(&self, container_id: &ContainerId) -> Result<(), Error> {
+        match self
+            .docker
+            .client
+            .stop_container(container_id.as_str(), None)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => match classify(&error) {
+                Status::Unchanged | Status::Absent => Ok(()),
+                Status::Conflict | Status::Other => Err(error.into()),
+            },
+        }
+    }
+
+    /// Removes `container_id` with its anonymous volumes, killing it if it runs. A
+    /// Container already gone is success.
+    async fn remove_if_present(&self, container_id: &ContainerId) -> Result<(), Error> {
         let options = RemoveContainerOptionsBuilder::default()
             .v(true)
             .force(true)
@@ -774,10 +883,12 @@ impl ContainerRuntime {
             .client
             .remove_container(container_id.as_str(), Some(options))
             .await
-            .map_err(|error| docker_error(container_id, error))
         {
-            Ok(()) | Err(Error::ContainerNotFound(_)) => Ok(()),
-            Err(error) => Err(error),
+            Ok(()) => Ok(()),
+            Err(error) => match classify(&error) {
+                Status::Absent => Ok(()),
+                Status::Conflict | Status::Unchanged | Status::Other => Err(error.into()),
+            },
         }
     }
 }
@@ -814,14 +925,15 @@ impl super::LocalDocker {
     ) -> Result<bollard::models::ContainerCreateResponse, Error> {
         let mut last = self.endpoint_creates.lock().await;
         let bridge = self.bridge().await?;
-        if bridge.capacity.free_endpoints() == 0 {
-            return Err(Error::EndpointCapacity);
-        }
         let on_bridge = body
             .host_config
             .as_ref()
             .and_then(|host| host.network_mode.as_deref())
             == Some(DOCKER_NETWORK_NAME);
+        // A Container in another's network takes no endpoint of its own.
+        if on_bridge && bridge.capacity.free_endpoints() == 0 {
+            return Err(Error::EndpointCapacity);
+        }
         if on_bridge && let Some(subnet) = bridge.subnet {
             let address = super::bridge_address::next(subnet, &bridge.taken, *last)
                 .ok_or(Error::EndpointCapacity)?;
@@ -872,23 +984,14 @@ fn idempotent_lifecycle_result(
     result: Result<(), bollard::errors::Error>,
 ) -> Result<(), Error> {
     match result {
-        Ok(())
-        | Err(bollard::errors::Error::DockerResponseServerError {
-            status_code: 304, ..
-        }) => Ok(()),
+        Ok(()) => Ok(()),
+        Err(error) if classify(&error) == Status::Unchanged => Ok(()),
         Err(error) => Err(docker_error(container_id, error)),
     }
 }
 
 fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
-    attempt < CONTAINER_NAME_ATTEMPTS
-        && matches!(
-            error,
-            bollard::errors::Error::DockerResponseServerError {
-                status_code: 409,
-                ..
-            }
-        )
+    attempt < CONTAINER_NAME_ATTEMPTS && classify(error) == Status::Conflict
 }
 
 pub(crate) fn same_creation(
@@ -956,6 +1059,7 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -964,7 +1068,7 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
 /// Docker clears `State.Error` when a start succeeds, so a container at rest with one
 /// recorded is one whose last start failed: its first, or the one at boot that
 /// leaves it exited with no retry.
-fn failed_start(inspected: &ContainerInspectResponse) -> bool {
+pub(super) fn failed_start(inspected: &ContainerInspectResponse) -> bool {
     inspected.state.as_ref().is_some_and(|state| {
         matches!(
             state.status,
@@ -976,8 +1080,14 @@ fn failed_start(inspected: &ContainerInspectResponse) -> bool {
     })
 }
 
+pub(super) fn is_running(inspected: &ContainerInspectResponse) -> bool {
+    inspected.state.as_ref().and_then(|state| state.status)
+        == Some(ContainerStateStatusEnum::RUNNING)
+}
+
 /// Docker 29 empties a container's networks when its start fails, and a later start
-/// then runs it with no network and no published ports.
+/// then runs it with no network and no published ports. A Container in another's
+/// network has none to lose.
 fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
     let created_on_ployz = inspected
         .host_config
@@ -1064,6 +1174,85 @@ mod tests {
         assert_eq!(
             body.pointer("/NetworkingConfig/EndpointsConfig/ployz/IPAMConfig/IPv4Address"),
             Some(&serde_json::json!("10.210.0.2")),
+        );
+    }
+
+    async fn stamped_labels(
+        kind: ContainerKind,
+        creation_key: Option<&str>,
+        deployment_id: Option<&ployz_core::DeploymentLogId>,
+        generation: Gen,
+    ) -> serde_json::Value {
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
+            ..FakeDocker::default()
+        })
+        .await;
+        runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                ContainerRequest {
+                    creation_key,
+                    deployment_id,
+                    r#gen: generation,
+                    ..container_request(kind, &namespace, &spec, std::future::ready(None))
+                },
+            )
+            .await
+            .unwrap();
+        let body = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap()
+            .1
+            .clone();
+        body.get("Labels").unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn a_created_container_carries_exactly_the_stamped_labels() {
+        let deployment = ployz_core::DeploymentLogId::parse("deploy-7").unwrap();
+        let without_service_id = |mut labels: serde_json::Value| {
+            let labels = labels.as_object_mut().unwrap();
+            let id = labels.remove("ployz.service.id").unwrap();
+            ployz_core::ServiceId::parse(id.as_str().unwrap()).unwrap();
+            serde_json::Value::Object(labels.clone())
+        };
+        let service = stamped_labels(
+            ContainerKind::ServiceContainer,
+            Some("plan:0"),
+            Some(&deployment),
+            Gen::new(3),
+        )
+        .await;
+        assert_eq!(
+            without_service_id(service),
+            serde_json::json!({
+                "ployz.managed": "",
+                "ployz.namespace": "app",
+                "ployz.service.name": "api",
+                "ployz.network.ipv6": "true",
+                "ployz.deployment.id": "deploy-7",
+                "ployz.creation.key": "plan:0",
+                "ployz.gen": "3",
+            })
+        );
+        let hook = stamped_labels(ContainerKind::PreDeployHook, None, None, Gen::FIRST).await;
+        assert_eq!(
+            without_service_id(hook),
+            serde_json::json!({
+                "ployz.managed": "",
+                "ployz.namespace": "app",
+                "ployz.service.name": "api",
+                "ployz.service.hook": "pre-deploy",
+                "ployz.network.ipv6": "true",
+                "ployz.gen": Gen::FIRST.to_string(),
+            })
         );
     }
 
@@ -1527,6 +1716,13 @@ mod tests {
         (runtime, fake, created.container_id)
     }
 
+    fn start_legacy_caddy(caddy: ContainerId) -> IngressRecovery {
+        IngressRecovery::StartCaddy {
+            holder: None,
+            caddy,
+        }
+    }
+
     fn started(fake: &FakeDocker) -> bool {
         fake.requests
             .lock()
@@ -1542,21 +1738,21 @@ mod tests {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a failed first start is retried");
 
         runtime.stop(&container_id, None, None).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "a stopped ingress stays stopped");
 
         runtime.start(&container_id).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a requested start lifts the stop");
     }
@@ -1673,7 +1869,7 @@ mod tests {
 
         let _withdrawal = runtime.withdraw(container_id);
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -1696,7 +1892,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(&container_id, runtime.docker.creates())
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1733,7 +1929,7 @@ mod tests {
         assert_eq!(lifecycle, ["start", "stop"]);
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "the stop holds");
     }
@@ -1755,7 +1951,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(&container_id, runtime.docker.creates())
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1801,15 +1997,19 @@ mod tests {
         let creating = super::super::Creating::new(&runtime.docker.creates);
         let creates = runtime.docker.creates();
 
-        runtime.start_stranded(&container_id, creates).await;
+        runtime
+            .start_stranded(start_legacy_caddy(container_id), creates)
+            .await;
         assert!(!started(&fake), "a newer ingress may be appearing");
 
         drop(creating);
-        runtime.start_stranded(&container_id, creates).await;
+        runtime
+            .start_stranded(start_legacy_caddy(container_id), creates)
+            .await;
         assert!(!started(&fake), "it appeared after the scan began");
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "the next scan decides");
     }
@@ -1834,7 +2034,9 @@ mod tests {
         *fake.existing_container.lock().unwrap() = stranded;
         fake.requests.lock().unwrap().clear();
 
-        runtime.start_stranded(&container_id, creates).await;
+        runtime
+            .start_stranded(start_legacy_caddy(container_id), creates)
+            .await;
 
         assert!(!started(&fake), "the next scan decides");
     }
@@ -1857,7 +2059,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(&container_id, runtime.docker.creates())
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1874,7 +2076,7 @@ mod tests {
         let (runtime, fake, container_id) = stranded("").await;
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -1888,7 +2090,7 @@ mod tests {
             stranded_with("exited", PORT_TAKEN, FakeDocker::default()).await;
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(started(&fake));
@@ -1900,7 +2102,7 @@ mod tests {
             stranded_with("exited", "", FakeDocker::default()).await;
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -1931,6 +2133,100 @@ mod tests {
         assert!(retry_name_conflict(1, &conflict));
         assert!(!retry_name_conflict(CONTAINER_NAME_ATTEMPTS, &conflict));
         assert!(!retry_name_conflict(1, &server_error));
+    }
+
+    #[tokio::test]
+    async fn removing_a_container_drops_its_record_after_docker_removed_it() {
+        let (runtime, fake, container_id) =
+            crate::docker::test_support::runtime_with_running_container().await;
+
+        runtime.remove(&container_id, false, true).await.unwrap();
+
+        assert!(
+            fake.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, path)| method == axum::http::Method::DELETE
+                    && path.contains(container_id.as_str())),
+            "Docker was asked to remove it"
+        );
+        assert!(runtime.specs.get(&container_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn removing_a_container_docker_lost_succeeds_only_when_a_record_remained() {
+        let (runtime, fake, container_id) =
+            crate::docker::test_support::runtime_with_running_container().await;
+        fake.existing_container.lock().unwrap().take();
+
+        runtime.remove(&container_id, false, true).await.unwrap();
+        assert!(runtime.specs.get(&container_id).await.unwrap().is_none());
+
+        assert!(matches!(
+            runtime.remove(&container_id, false, true).await,
+            Err(Error::ContainerNotFound(id)) if id == container_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn leaving_stops_then_removes_each_managed_container_and_its_record() {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            list_named: true,
+            ..Default::default()
+        })
+        .await;
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let created = runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                ContainerRequest {
+                    creation_key: Some("plan:0"),
+                    ..container_request(
+                        ContainerKind::ServiceContainer,
+                        &namespace,
+                        &spec,
+                        std::future::ready(None),
+                    )
+                },
+            )
+            .await
+            .unwrap();
+
+        runtime.remove_all_managed().await.unwrap();
+
+        assert!(containers.lock().unwrap().is_empty());
+        assert!(
+            runtime
+                .specs
+                .get(&created.container_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let calls = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| {
+                path.contains(created.container_id.as_str()) || path.contains(&created.display_name)
+            })
+            .filter(|(method, path)| {
+                *method == axum::http::Method::DELETE
+                    || (*method == axum::http::Method::POST && path.ends_with("/stop"))
+            })
+            .map(|(method, _)| method.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls,
+            [axum::http::Method::POST, axum::http::Method::DELETE],
+            "stop, then remove"
+        );
     }
 }
 

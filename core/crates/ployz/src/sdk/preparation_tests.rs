@@ -2,6 +2,7 @@
 //! transport, with sentinels for every application mutation. Docker execution
 //! is proved at rung 4.
 use ployz_build::{Stage, TargetEvidence, WorkEvidence, remote::Outcome};
+use ployz_core::error_chain;
 use ployz_core::{
     EnvValue, MachineImages, MembershipObservation, RpcError, RpcErrorCode, ServiceName,
 };
@@ -498,7 +499,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         failed.machine.id
     );
     assert!(
-        crate::ui::chain_text(&result.failures.first().unwrap().error)
+        error_chain::row(&result.failures.first().unwrap().error)
             .contains("containerd image store")
     );
     let unserved = result.failures.get(1).unwrap();
@@ -840,6 +841,42 @@ async fn failed_builder_selection_records_why_each_machine_was_rejected_without_
     ] {
         assert!(cause.contains(reason), "{cause}");
     }
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_machine_that_enforces_device_approval_is_rejected_by_saying_so() {
+    let (root, service, builds) = fixture();
+    let enforcing = machine('a', "enforcing");
+    builds.check_failures.lock().unwrap().insert(
+        enforcing.machine.id,
+        ployz_core::BUILD_REFUSED_BY_ENFORCEMENT.into(),
+    );
+    let (mut client, server) = connected(service.with_machines(vec![enforcing])).await;
+    let visible = client.machines().await.unwrap();
+    let selection = crate::sdk::prepare::select_build_machine(
+        &mut client,
+        &build_targets(&["linux/amd64"]),
+        &visible,
+        Default::default(),
+        &Default::default(),
+    )
+    .await
+    .err()
+    .unwrap();
+    let error = crate::sdk::preparation_error(
+        crate::sdk::prepare::PreparationError::Selection(selection),
+        false,
+    );
+    let recorded = ployz_store::Failure::from(&error);
+    let cause = recorded.cause.last().expect("a cause names the rejections");
+    assert!(
+        cause.contains("Server enforcing")
+            && cause.contains(ployz_core::BUILD_REFUSED_BY_ENFORCEMENT),
+        "{cause}"
+    );
+    assert!(!cause.contains("capability check failed"), "{cause}");
     server.abort();
     fs::remove_dir_all(root).unwrap();
 }

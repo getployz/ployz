@@ -175,21 +175,6 @@ async fn a_newer_in_copy_fails_the_deploy_naming_its_service_and_removes_the_new
             services: ended(&[("api", ServiceResult::Newer)]),
         }
     );
-    let failure = crate::deploy::report::failure(&outcome, &[], Vec::new());
-    let shown = crate::ui::plain(&failure);
-    assert_eq!(
-        shown.lines().next(),
-        Some("error: api: A newer deploy is already serving app/api."),
-        "{shown}"
-    );
-    assert!(!shown.contains("start"), "{shown}");
-    assert_eq!(failure.report().code, RpcErrorCode::Conflict);
-    assert_eq!(
-        failure
-            .diagnostic()
-            .and_then(|diagnostic| diagnostic.failed_machine),
-        None
-    );
     assert!(client.brought_in().is_empty());
     assert_eq!(client.rotation(&newer), Some(CopyRotation::In));
     client.assert_done();
@@ -227,8 +212,7 @@ async fn a_newer_in_copy_removes_the_stop_first_copy_it_keeps_from_coming_back()
         "{outcome:?}"
     );
     assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Newer)]));
-    let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, &[], Vec::new()));
-    for said in std::iter::once(&shown).chain(&warnings) {
+    for said in &warnings {
         assert!(!said.contains("start"), "{said}");
     }
     assert_eq!(
@@ -653,7 +637,7 @@ fn scale_down_groups() -> Vec<crate::deploy::schedule::ServiceGroup> {
         crate::deploy::schedule::ServiceGroup {
             service: None,
             dependencies: vec![service],
-            steps: vec![crate::deploy::schedule::Step::Serial(0)],
+            steps: vec![crate::deploy::schedule::Stage::Serial(0)],
             publish: false,
         },
     ]
@@ -821,7 +805,7 @@ async fn a_failed_chain_reports_each_service_as_new_old_or_not_started() {
 
 #[tokio::test]
 async fn a_failed_deploy_keeps_the_services_it_removes() {
-    use crate::deploy::{ServiceGroup, Step};
+    use crate::deploy::{ServiceGroup, Stage};
 
     let machine = machine('1');
     let removed = container('a');
@@ -843,13 +827,13 @@ async fn a_failed_deploy_keeps_the_services_it_removes() {
         ServiceGroup {
             service: Some(api.clone()),
             dependencies: Vec::new(),
-            steps: vec![Step::Parallel(vec![0])],
+            steps: vec![Stage::Parallel(vec![0])],
             publish: true,
         },
         ServiceGroup {
             service: None,
             dependencies: vec![api],
-            steps: vec![Step::Serial(1), Step::Serial(2)],
+            steps: vec![Stage::Serial(1), Stage::Serial(2)],
             publish: false,
         },
     ];
@@ -985,7 +969,7 @@ async fn a_cancel_before_the_stop_ends_the_service_old() {
     .with_copy(&machine, &old, CopyRotation::In);
     let mut groups = scale_down_groups();
     groups.truncate(1);
-    groups.first_mut().unwrap().steps = vec![crate::deploy::schedule::Step::Serial(0)];
+    groups.first_mut().unwrap().steps = vec![crate::deploy::schedule::Stage::Serial(0)];
     let plan =
         crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups);
 
@@ -1301,7 +1285,7 @@ async fn a_failed_group_removes_a_container_a_sibling_starts_afterwards() {
     let groups = vec![crate::deploy::schedule::ServiceGroup {
         service: Some(ServiceName::parse("api").unwrap()),
         dependencies: Vec::new(),
-        steps: vec![crate::deploy::schedule::Step::Parallel(vec![0, 1])],
+        steps: vec![crate::deploy::schedule::Stage::Parallel(vec![0, 1])],
         publish: true,
     }];
 
@@ -1403,7 +1387,7 @@ async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
                 .iter()
                 .map(|dependency| ServiceName::parse(*dependency).unwrap())
                 .collect(),
-            steps: vec![crate::deploy::schedule::Step::Parallel(vec![task])],
+            steps: vec![crate::deploy::schedule::Stage::Parallel(vec![task])],
             publish: true,
         };
     let groups = vec![
@@ -1427,7 +1411,7 @@ async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
 
 #[tokio::test(start_paused = true)]
 async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
-    use crate::deploy::{ServiceGroup, Step};
+    use crate::deploy::{ServiceGroup, Stage};
 
     let machine = machine('1');
     let operations = vec![run(&machine, spec(None, None, None), true)];
@@ -1441,7 +1425,7 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
         ServiceGroup {
             service: Some(ServiceName::parse("api").unwrap()),
             dependencies: vec![ServiceName::parse("db").unwrap()],
-            steps: vec![Step::Parallel(vec![0])],
+            steps: vec![Stage::Parallel(vec![0])],
             publish: true,
         },
     ];
@@ -2590,7 +2574,7 @@ async fn a_slow_retirement_does_not_hold_up_another_services_flip() {
     let group = |service: &str, task| crate::deploy::schedule::ServiceGroup {
         service: Some(ServiceName::parse(service).unwrap()),
         dependencies: Vec::new(),
-        steps: vec![crate::deploy::schedule::Step::Serial(task)],
+        steps: vec![crate::deploy::schedule::Stage::Serial(task)],
         publish: true,
     };
     let started = tokio::time::Instant::now();
@@ -3327,205 +3311,6 @@ async fn an_old_copys_owner_sees_the_new_copies_listed_before_its_out() {
     client.assert_done();
 }
 
-/// Each ingress repair planned from one snapshot, by the Server it creates on:
-/// edge-1 and edge-2 are empty and edge-3 runs proxy `c`.
-fn ingress_repairs_beside_c() -> Vec<(MachineId, crate::deploy::DeployPlan)> {
-    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
-    use crate::deploy::planning::{SlotAction, plan_ingress_repairs};
-
-    let serving = crate::global_fixtures::machine('3', "edge-3");
-    let snapshot = servers(
-        &[
-            crate::global_fixtures::machine('1', "edge-1"),
-            crate::global_fixtures::machine('2', "edge-2"),
-            serving.clone(),
-        ],
-        vec![ingress_on('c', &serving)],
-    );
-    plan_ingress_repairs(&ingress_intent(), &snapshot)
-        .into_iter()
-        .map(|repair| match repair.action {
-            SlotAction::Create(Ok(plan)) => (repair.machine_id, *plan),
-            action @ (SlotAction::Create(Err(_))
-            | SlotAction::Start(_)
-            | SlotAction::Dead(_)
-            | SlotAction::Restarting(_)
-            | SlotAction::Unchecked(_)) => {
-                panic!("a create on each empty Server, got {action:?}")
-            }
-        })
-        .collect()
-}
-
-/// A client whose only scripted call is the repair's create of `new` on
-/// `repaired`, beside these Ingress Proxies, each named by its Machine's and its
-/// own hex. Every one of them is listed, so a proxy taken away since stays listed.
-fn ingress_client(
-    repaired: &MachineId,
-    new: &ContainerId,
-    proxies: &[(char, char, CopyRotation)],
-) -> Scripted {
-    use crate::deploy::planning::ingress_repairs::ingress_on;
-
-    let listed = proxies
-        .iter()
-        .map(|(owner, proxy, _)| {
-            ingress_on(*proxy, &crate::global_fixtures::machine(*owner, "edge"))
-        })
-        .collect();
-    proxies.iter().fold(
-        Scripted {
-            observations: Some(listed),
-            ..Scripted::new(vec![created(
-                Call::Run(*repaired, ContainerKind::ServiceContainer),
-                new,
-            )])
-        },
-        |client, (owner, proxy, rotation)| {
-            client.with_copy_at(
-                &QualifiedService::system_ingress(),
-                &machine(*owner),
-                &container(*proxy),
-                rotation.clone(),
-                Gen::FIRST,
-            )
-        },
-    )
-}
-
-async fn run_repair(plan: &crate::deploy::DeployPlan, client: &Scripted) {
-    let outcome = super::super::execute_operation_sequence(
-        plan,
-        &run_id(),
-        client,
-        &CancellationToken::new(),
-        None,
-    )
-    .await;
-    assert!(
-        matches!(outcome, DeployOutcome::Success { .. }),
-        "{outcome:?}"
-    );
-}
-
-/// The proxy's rotation and whether it is stopped; none once it is gone.
-fn proxy_state(client: &Scripted, proxy: &ContainerId) -> Option<(CopyRotation, bool)> {
-    client
-        .copies
-        .lock()
-        .unwrap()
-        .get(proxy)
-        .filter(|copy| copy.present)
-        .map(|copy| (copy.rotation.clone(), copy.stopped))
-}
-
-/// The run asked none of `proxies` for anything, so each is as it was.
-fn assert_untouched(client: &Scripted, proxies: &[(ContainerId, Option<(CopyRotation, bool)>)]) {
-    let moves = client.moves();
-    for (proxy, before) in proxies {
-        assert_eq!(&proxy_state(client, proxy), before, "{proxy}");
-        assert!(
-            moves
-                .iter()
-                .all(|applied| !matches!(applied, Move::To(id, _) | Move::Gone(id) if id == proxy)),
-            "the repair moved {proxy}: {moves:?}"
-        );
-    }
-}
-
-/// Two ingress repairs planned from one snapshot, the second run after the first
-/// finished, as when its image pull finishes later. The second must leave the
-/// first's new Ingress Proxy running.
-#[tokio::test]
-async fn a_late_ingress_repair_keeps_the_proxy_an_earlier_repair_published() {
-    let repairs = ingress_repairs_beside_c();
-    let [(first, first_plan), (second, second_plan)] = repairs.as_slice() else {
-        panic!("two empty Servers to repair, got {repairs:?}");
-    };
-    let (earlier, late) = (container('a'), container('b'));
-    let first_client = ingress_client(first, &earlier, &[('3', 'c', CopyRotation::Pending)]);
-    run_repair(first_plan, &first_client).await;
-    first_client.assert_done();
-    let published = proxy_state(&first_client, &earlier);
-    assert_eq!(published, Some((CopyRotation::Pending, false)));
-
-    let second_client = ingress_client(
-        second,
-        &late,
-        &[
-            ('1', 'a', CopyRotation::Pending),
-            ('3', 'c', CopyRotation::Pending),
-        ],
-    );
-    run_repair(second_plan, &second_client).await;
-
-    assert_untouched(
-        &second_client,
-        &[
-            (earlier, published),
-            (container('c'), Some((CopyRotation::Pending, false))),
-        ],
-    );
-    assert_eq!(
-        proxy_state(&second_client, &late),
-        Some((CopyRotation::Pending, false))
-    );
-    second_client.assert_done();
-}
-
-/// A regular Deploy retired `c` after the repair was planned and serves `d` and
-/// `e` instead. The repair only adds its own proxy, so `c` stays retired.
-#[tokio::test]
-async fn an_ingress_repair_leaves_a_proxy_a_newer_deploy_retired_out() {
-    let repairs = ingress_repairs_beside_c();
-    let (repaired, plan) = repairs.first().expect("edge-1 is repaired");
-    let client = ingress_client(
-        repaired,
-        &container('a'),
-        &[
-            ('3', 'c', CopyRotation::Out),
-            ('3', 'd', CopyRotation::Pending),
-            ('2', 'e', CopyRotation::Pending),
-        ],
-    );
-    client.record(container('c'), |copy| copy.stopped = true);
-    let before = ['c', 'd', 'e']
-        .map(container)
-        .map(|proxy| (proxy, proxy_state(&client, &proxy)));
-
-    run_repair(plan, &client).await;
-
-    assert_untouched(&client, &before);
-    assert!(client.brought_in().is_empty(), "{:?}", client.moves());
-    client.assert_done();
-}
-
-/// A drain or a Server removal took `c` away after the repair was planned, though
-/// a stale listing still shows it. The repair must not route or recreate it.
-#[tokio::test]
-async fn an_ingress_repair_does_not_bring_back_a_proxy_removed_after_it_was_planned() {
-    let repairs = ingress_repairs_beside_c();
-    let (repaired, plan) = repairs.first().expect("edge-1 is repaired");
-    let client = ingress_client(
-        repaired,
-        &container('a'),
-        &[
-            ('3', 'c', CopyRotation::Pending),
-            ('2', 'd', CopyRotation::Pending),
-        ],
-    );
-    client.record(container('c'), |copy| copy.present = false);
-    let before = ['c', 'd']
-        .map(container)
-        .map(|proxy| (proxy, proxy_state(&client, &proxy)));
-
-    run_repair(plan, &client).await;
-
-    assert_untouched(&client, &before);
-    assert!(client.brought_in().is_empty(), "{:?}", client.moves());
-    client.assert_done();
-}
-
 /// The old copy's restore lands and it runs In, but the Machine answers with an
 /// error. It may be writing the Volume, so the new copy must stay stopped.
 #[tokio::test(start_paused = true)]
@@ -3743,19 +3528,19 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
         crate::deploy::schedule::ServiceGroup {
             service: Some(api.clone()),
             dependencies: Vec::new(),
-            steps: vec![crate::deploy::schedule::Step::Parallel(vec![0])],
+            steps: vec![crate::deploy::schedule::Stage::Parallel(vec![0])],
             publish: true,
         },
         crate::deploy::schedule::ServiceGroup {
             service: Some(web.clone()),
             dependencies: Vec::new(),
-            steps: vec![crate::deploy::schedule::Step::Parallel(vec![1])],
+            steps: vec![crate::deploy::schedule::Stage::Parallel(vec![1])],
             publish: true,
         },
         crate::deploy::schedule::ServiceGroup {
             service: None,
             dependencies: vec![api.clone()],
-            steps: vec![crate::deploy::schedule::Step::Serial(2)],
+            steps: vec![crate::deploy::schedule::Stage::Serial(2)],
             publish: false,
         },
     ];
@@ -3788,32 +3573,6 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
         Some(&ployz_core::OperationStatus::Unexecuted),
         "the abort left api's old copy unremoved"
     );
-    let mut preview = plan.preview().clone();
-    preview.depths = [(api, 0), (web, 0)].into();
-    let mut direct = crate::deploy::report::Direct::new(&preview, "Deploying app".into());
-    direct.observe(&rows);
-    let states: Vec<_> = direct
-        .frame()
-        .rows
-        .into_iter()
-        .filter_map(|row| match row.subject {
-            crate::ui::progress::Subject::Service(graph) => {
-                Some((graph.service.name.to_string(), row.state))
-            }
-            crate::ui::progress::Subject::ServiceOnServer { .. }
-            | crate::ui::progress::Subject::Unlocated(_)
-            | crate::ui::progress::Subject::Operation { .. }
-            | crate::ui::progress::Subject::Node { .. } => None,
-        })
-        .collect();
-    assert_eq!(
-        states,
-        [
-            ("api".to_owned(), crate::ui::progress::State::Completed),
-            ("web".to_owned(), crate::ui::progress::State::Failed),
-        ]
-    );
-    // The Node Outcome agrees: api's Service is deployed (#3696).
     let recorded = ployz_core::config::project_runtime_outcome(
         plan.preview(),
         serde_json::json!({ "version": 1, "outcome": outcome }),

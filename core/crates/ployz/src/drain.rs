@@ -12,6 +12,7 @@
 //! Callers: `ployz server drain` (streams a line per step through `progress`) and
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
+use ployz_core::error_chain;
 use std::collections::VecDeque;
 use std::pin::pin;
 
@@ -27,16 +28,18 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
-use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
+use crate::cluster::{Call, Deadline, RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Converged, LastIn, Moving, can_move, converge, named};
 
+pub(crate) mod placement;
 pub(crate) mod retirement;
 
-use retirement::{Retirement, copies_on, let_go, retire_globals};
+use crate::global_slot::copies_on;
+use placement::{Converged, LastIn, Moving, can_move, converge, named};
+use retirement::{Retirement, let_go, retire_globals};
 
-pub use crate::deploy::{
+pub use placement::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
 };
 
@@ -56,7 +59,7 @@ pub enum DrainScope {
 
 impl DrainScope {
     fn includes(&self, service: &QualifiedService) -> bool {
-        !service.namespace.is_reserved()
+        !service.namespace.is_system()
             && match self {
                 Self::EveryNamespace => true,
                 Self::Owned { namespaces } => namespaces.contains(&service.namespace),
@@ -222,10 +225,36 @@ pub enum DrainOutcome {
 }
 
 impl DrainOutcome {
+    /// Whether a move's old copy, or one an earlier move left Out, is still on the Server.
+    #[must_use]
+    pub fn left_old_copy(&self) -> bool {
+        match self {
+            Self::Moved { moves } => moves.iter().any(|step| step.old != OldCopyEnd::Stopped),
+            Self::OldCopies { ends } => ends.iter().any(|end| *end != OldCopyEnd::Stopped),
+            Self::NothingToMove
+            | Self::Failed { .. }
+            | Self::Stays { .. }
+            | Self::Held
+            | Self::Retired
+            | Self::NotRetired { .. }
+            | Self::Interrupted { .. }
+            | Self::NotAttempted => false,
+        }
+    }
+
+    /// Whether the Drain went wrong on this Service: a Global may still run, or a move
+    /// failed or was interrupted.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        matches!(
+            self,
+            Self::NotRetired { .. } | Self::Failed { .. } | Self::Interrupted { .. }
+        )
+    }
+
     fn complete(&self) -> bool {
         match self {
-            Self::Moved { moves } => moves.iter().all(|step| step.old == OldCopyEnd::Stopped),
-            Self::OldCopies { ends } => ends.iter().all(|end| *end == OldCopyEnd::Stopped),
+            Self::Moved { .. } | Self::OldCopies { .. } => !self.left_old_copy(),
             Self::NothingToMove | Self::Retired => true,
             Self::Failed { .. }
             | Self::Stays { .. }
@@ -381,20 +410,21 @@ async fn turn_services_off(
     cancellation: &CancellationToken,
 ) -> Result<(), DrainError> {
     let target = MachineTarget::from(id);
-    let update = client.invoke::<op::UpdateMachine>(
+    let update = client.call_shared::<op::UpdateMachine>(
         UpdateMachineRequest {
             update: MachineUpdate {
                 accepts_services: Some(false),
                 ..MachineUpdate::default()
             },
         },
-        &target,
-        Some(TARGET_RPC_TIMEOUT),
+        Call::once()
+            .to(&target)
+            .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
     );
     tokio::select! {
         biased;
         () = cancellation.cancelled() => return Err(DrainError::Cancelled),
-        updated = update => updated.map_err(DrainError::Refused)?,
+        updated = update => updated.map_err(|error| DrainError::Refused(crate::connect::rpc_error(error)))?,
     };
     wait_for_role(client, id, RoleSetting::ServicesOff, cancellation)
         .await
@@ -435,11 +465,11 @@ impl DrainClient for Client {
         let machines = self
             .machines()
             .await
-            .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
+            .map_err(|error| Lost::Entry(error_chain::row(&error)))?;
         let live = self
             .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
-            .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
+            .map_err(|error| Lost::Entry(error_chain::row(&error)))?;
         observed(&live, id).map_err(Lost::Server)?;
         Ok(services_on(id, &live))
     }
@@ -611,7 +641,7 @@ async fn execute<C: DrainClient>(
         Ok(services) => Remaining::Observed {
             unchosen: services
                 .iter()
-                .filter(|service| !service.namespace.is_reserved() && !scope.includes(service))
+                .filter(|service| !service.namespace.is_system() && !scope.includes(service))
                 .cloned()
                 .collect(),
             services,
@@ -850,7 +880,7 @@ fn observed(live: &LiveServices<RpcError>, id: &MachineId) -> Result<(), String>
         .iter()
         .find(|failure| failure.machine_id == *id)
     {
-        return Err(crate::ui::row(&failure.error));
+        return Err(error_chain::row(&failure.error));
     }
     if live.containers.omissions.contains(id) {
         return Err("no terminal response".into());

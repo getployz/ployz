@@ -6,6 +6,7 @@
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
 )]
 
+use ployz::connect::Call;
 use std::{path::Path, process::Command, sync::Arc, time::Duration};
 
 use ployz::{
@@ -263,7 +264,7 @@ async fn an_image_service_deploys_through_the_hidden_store() {
 /// Whether a Server holds Docker Volume `name`.
 async fn held(client: &mut ployz::connect::Client, name: &str) -> bool {
     let machines = client
-        .call::<ployz_core::op::ListMachines>(ployz_core::ListMachinesRequest {}, None)
+        .call::<ployz_core::op::ListMachines>(ployz_core::ListMachinesRequest {}, Call::read())
         .await
         .unwrap()
         .machines;
@@ -465,6 +466,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
+                        teardown: None,
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
@@ -474,6 +476,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                         message: None,
                         prune: false,
                         no_prune: false,
+                        approval: None,
                     }),
                     &ployz_store::Trusted::default(),
                 )
@@ -487,7 +490,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                     )
                 })
                 .collect();
-            store.pin(&id, &pins).unwrap();
+            store.pin(&id, &pins, &Trusted::default()).unwrap();
             ployz::sdk::run_deployment(
                 ployz_core::Operator::Cloud,
                 Arc::clone(&store),
@@ -497,6 +500,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 Ok(ployz::sdk::Sources {
                     checkouts,
                     upload: None,
+                    reader: None,
                 }),
             )
             .await
@@ -655,6 +659,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                 .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
+                        teardown: None,
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
@@ -668,6 +673,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                         message: None,
                         prune: false,
                         no_prune: false,
+                        approval: None,
                     }),
                     &ployz_store::Trusted::default(),
                 )
@@ -681,6 +687,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                 Ok(ployz::sdk::Sources {
                     checkouts: std::collections::BTreeMap::new(),
                     upload: dir,
+                    reader: None,
                 }),
             )
             .await

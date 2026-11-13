@@ -14,10 +14,10 @@ use std::{
 use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
-    IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
-    RecoverySeed, SealingPublicKey, forgotten_key,
+    IngressDoors, IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity,
+    QualifiedService, RecoverySeed, SealingPublicKey, forgotten_key,
 };
 use serde_json::json;
 
@@ -27,9 +27,39 @@ use super::{
 };
 use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner};
 
+/// The Cluster's declared Doors as this replica holds them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DeclaredDoors {
+    Undeclared,
+    Declared(IngressDoors),
+    /// Not JSON, not a set of Doors, or a Door this release doesn't know.
+    Unreadable,
+}
+
+impl DeclaredDoors {
+    fn parse(stored: Option<&str>) -> Self {
+        match stored {
+            None => Self::Undeclared,
+            Some(stored) => {
+                ployz_core::declared_doors(stored).map_or(Self::Unreadable, Self::Declared)
+            }
+        }
+    }
+
+    /// The declaration readers follow. An unreadable one reads as undeclared, so
+    /// readers infer the Doors from what runs, never Public from a bad value.
+    pub(crate) fn followed(&self) -> Option<IngressDoors> {
+        match self {
+            Self::Declared(doors) => Some(doors.clone()),
+            Self::Undeclared | Self::Unreadable => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ReplicatedStore {
     api: ApiClient,
+    authority: Option<RecordOwner>,
     machine_publication: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -81,6 +111,7 @@ impl MachinePublicationGuard<'_> {
                 machine.runtime.running_builds = overlay.running_builds;
                 machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
                 machine.runtime.sealing = overlay.sealing;
+                machine.runtime.device_enforcement = Some(local.device_enforcement());
                 machine.runtime.management_identity = Some(local.management_secret().public_key());
                 Some(machine)
             }
@@ -441,8 +472,24 @@ impl ReplicatedStore {
     pub(crate) fn new(api: ApiClient) -> Self {
         Self {
             api,
+            authority: None,
             machine_publication: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub(crate) fn authorize(&mut self, owner: RecordOwner) {
+        self.authority = Some(owner);
+    }
+
+    pub(crate) fn with_authority(mut self, owner: RecordOwner) -> Self {
+        self.authority = Some(owner);
+        self
+    }
+
+    fn accepts_machine(&self, machine: &Machine) -> bool {
+        self.authority
+            .as_ref()
+            .is_none_or(|owner| owner.record().accepts_machine(machine))
     }
 
     #[cfg(test)]
@@ -512,6 +559,32 @@ impl ReplicatedStore {
             .execute([Statement::new(
                 "INSERT INTO cluster (key, value) VALUES ('network', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 [json!(network.to_string())],
+            )])
+            .await?;
+        Ok(())
+    }
+
+    /// Name the Cluster. The last write wins, here and across replicas.
+    pub async fn publish_cluster_name(&self, name: &ClusterName) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES ('name', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [json!(name.as_str())],
+            )])
+            .await?;
+        Ok(())
+    }
+
+    /// Declare the Cluster's Doors. The last write wins, here and across replicas.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion write fails.
+    pub async fn publish_cluster_doors(&self, doors: &IngressDoors) -> Result<(), Error> {
+        let stored = serde_json::to_string(doors).expect("a set of Doors serializes");
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES ('doors', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [json!(stored)],
             )])
             .await?;
         Ok(())
@@ -643,6 +716,54 @@ impl ReplicatedStore {
             })
     }
 
+    /// The Cluster Name on this replica, or `None` when the Cluster has none or
+    /// its row has not replicated here yet.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails, or the stored value is
+    /// not a Cluster Name.
+    pub async fn cluster_name(&self) -> Result<Option<ClusterName>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = 'name'",
+                [],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Ok(None);
+        };
+        ClusterName::parse(text(value, "Cluster Name")?)
+            .map(Some)
+            .map_err(|error| {
+                Error::Protocol(format!(
+                    "invalid Cluster Name: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ))
+            })
+    }
+
+    /// The Cluster's declared Doors on this replica.
+    ///
+    /// # Errors
+    /// Only when the Corrosion query fails. A stored value that isn't a set of known
+    /// Doors is [`DeclaredDoors::Unreadable`], not an error.
+    pub(crate) async fn cluster_doors(&self) -> Result<DeclaredDoors, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = 'doors'",
+                [],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        Ok(DeclaredDoors::parse(
+            rows.first()
+                .map(|[value]| value.as_str().unwrap_or_default()),
+        ))
+    }
+
     pub async fn machine(&self, id: &str) -> Result<Option<Machine>, Error> {
         let query = self
             .api
@@ -655,7 +776,8 @@ impl ReplicatedStore {
         let Some([info]) = rows.first() else {
             return Ok(None);
         };
-        decode_machine(id, text(info, "machine info")?)
+        Ok(decode_machine(id, text(info, "machine info")?)?
+            .filter(|machine| self.accepts_machine(machine)))
     }
 
     pub async fn machines(&self) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
@@ -666,10 +788,30 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(
+        let mut snapshot = decode_observations(
             id_and_json(query.rows(["id", "info"])?, |id| Ok(MachineId::parse(id)?))?,
             |id, encoded| decode_machine(id.as_str(), encoded),
-        )
+        )?;
+        snapshot
+            .observations
+            .retain(|machine| self.accepts_machine(machine));
+        if let Some(owner) = &self.authority {
+            let record = owner.record();
+            if record.device_enforcement()
+                && snapshot
+                    .observations
+                    .iter()
+                    .any(|machine| !record.pins_machine(machine))
+            {
+                let accepted = snapshot.observations.clone();
+                owner
+                    .mutate(move |store| store.pin_machines(&accepted))
+                    .await
+                    .map_err(std::io::Error::other)?
+                    .map_err(std::io::Error::other)?;
+            }
+        }
+        Ok(snapshot)
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
@@ -1398,6 +1540,33 @@ impl ReplicatedStore {
             [[held]] if held.as_i64() == Some(1) => Ok(true),
             _ => Err(Error::Protocol("invalid held-another-Machine row".into())),
         }
+    }
+
+    /// Which of `ids` name a Machine whose row this store held and then deleted, as `server
+    /// rm` does: a deleted row keeps its cr-sqlite key.
+    pub(crate) async fn removed_machines(
+        &self,
+        ids: &[MachineId],
+    ) -> Result<BTreeSet<MachineId>, Error> {
+        if ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let query = self
+            .api
+            .query(Statement::new(
+                format!(
+                    "SELECT id FROM machines__crsql_pks WHERE id IN ({}) \
+                     AND NOT EXISTS (SELECT 1 FROM machines WHERE machines.id = machines__crsql_pks.id)",
+                    vec!["?"; ids.len()].join(", "),
+                ),
+                ids.iter().map(|id| json!(id)),
+            ))
+            .await?;
+        query
+            .rows(["id"])?
+            .into_iter()
+            .map(|[id]| Ok(MachineId::parse(text(&id, "removed Machine ID")?)?))
+            .collect()
     }
 
     /// Each actor's highest version this store holds with no hole below it: a catch-up

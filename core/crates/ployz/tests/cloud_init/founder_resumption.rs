@@ -2,6 +2,7 @@
 
 use super::*;
 use harness::CallbackReply;
+use ployz::connect::Call;
 
 #[tokio::test]
 async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
@@ -113,7 +114,7 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -194,7 +195,7 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -228,7 +229,7 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
 async fn resumed_founder_converges_before_pairing_and_final_completion() {
     let mut founder = founder_machine();
     founder.public_ip = Some("192.0.2.1".parse().unwrap());
-    let requested = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default());
+    let requested = ployz_core::caddy_service_spec("caddy:2.10.0");
     let ingress = container_on(
         &founder,
         requested
@@ -243,6 +244,17 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         ployz_core::Namespace::system(),
         'c',
     );
+    let holder = container_on(
+        &founder,
+        ployz_core::holder_service_spec("pause:test", ployz_core::IngressPorts::Public)
+            .to_resolved(
+                ployz_core::ServiceId::parse("d".repeat(32)).unwrap(),
+                ployz_core::ResolvedUpdateConfig::default(),
+            )
+            .expect("volume graph is scoped"),
+        ployz_core::Namespace::system(),
+        'd',
+    );
     let daemon = JoinDaemon::new(Registered {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
@@ -250,7 +262,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         sealing_key: None,
         devices: Vec::new(),
     })
-    .with_containers(vec![ingress]);
+    .with_containers(vec![holder, ingress]);
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
         .await
@@ -269,7 +281,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -302,8 +314,6 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
             &enroll.url,
             "--name",
             "founder",
-            "--ingress-image",
-            "caddy:2.10.0",
             "--yes",
         ])
         .env("HTTPS_PROXY", &proxy)
@@ -366,8 +376,6 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
             &enroll.url,
             "--name",
             "founder",
-            "--ingress-image",
-            "caddy:2.10.0",
             "--yes",
             "--reset",
         ])
@@ -394,13 +402,12 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     assert_eq!(daemon.founder_tail_attempts(), [2, 2]);
     let containers = daemon.containers();
     assert_eq!(
-        containers.len(),
-        1,
-        "a resent create must land on the same slot"
-    );
-    assert_eq!(
-        containers.first().unwrap().service_name().as_str(),
-        "ingress"
+        containers
+            .iter()
+            .map(|container| container.service_name().as_str())
+            .collect::<Vec<_>>(),
+        ["ingress-holder", "ingress"],
+        "a resent set must land on the same Containers"
     );
     assert_eq!(
         events.entries(),

@@ -16,7 +16,7 @@ use ployz_store::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::deploy::{Request, open_events, say_view, upload_and_ship};
+use super::deploy::{Request, open_events, say_unserved, say_view, upload_and_ship};
 use super::store::{mint, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::{base, value};
@@ -87,7 +87,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     let linked = super::link::record_unless_linked(&config, listed.environment.clone())?;
     let environment = EnvironmentRef {
         project: Some(listed.environment.project.clone()),
-        environment: Some(listed.environment.name.clone()),
+        environment: Some(listed.environment.name),
     };
     if let Some(name) = added {
         add_service(&store, &environment, name, &directory)?;
@@ -101,7 +101,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             services: Vec::new(),
             version: matches.get_one::<String>("expect-version").cloned(),
             source: Some(directory),
-            accept: super::teardown::accepted(matches)?,
+            accept: super::shared::accepted::accepted(matches)?,
             message: None,
             no_prune: matches.get_flag("no-prune"),
         },
@@ -144,7 +144,9 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         next: &shipped.hint,
     };
     crate::ui::finish(&up, || {
-        if !shipped.presented {
+        if shipped.presented {
+            say_unserved(view);
+        } else {
             say_view(view);
         }
         for url in opens(&up.urls, &shipped.ran) {

@@ -608,8 +608,8 @@ pub async fn open_exec(
             |machine| machine.machine.name.to_string(),
         );
     let frames = client
-        .exec_stream(
-            &MachineTarget::from(&machine_id),
+        .open_stream::<op::Exec>(
+            Some(&MachineTarget::from(&machine_id)),
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
         .await
@@ -678,9 +678,6 @@ pub async fn exec_container_stopped(
         });
     Ok(Some(ContainerStopped { another_runs }))
 }
-
-/// The label ployzd puts on each container a Deployment creates: its Deploy log ID.
-pub(crate) const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
 
 /// Ask the Servers `machine_selectors` names, every Server without one, which
 /// Service containers they run. A down Server is asked too, so it is a gap
@@ -846,7 +843,7 @@ pub async fn open_service_logs(
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
-                    .tail_logs_stream(&target, request)
+                    .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
                     .await
                     .map(|stream| stream_input(identity, observation.machine_id, stream))
             })
@@ -919,9 +916,7 @@ fn log_targets<'a>(
             .filter(|container| {
                 let observation = container.as_observation();
                 asked.contains(&observation.machine_id)
-                    && deployment.is_none_or(|id| {
-                        observation.labels.get(DEPLOYMENT_LABEL).map(String::as_str) == Some(id)
-                    })
+                    && deployment.is_none_or(|id| observation.deployment_label() == Some(id))
             })
             .collect::<Vec<_>>();
         if containers.is_empty() {
@@ -1000,9 +995,8 @@ impl LogScope {
             .filter_map(|container| {
                 let observation = container.as_observation();
                 observation
-                    .labels
-                    .get(DEPLOYMENT_LABEL)
-                    .map(|deployment| (observation.container_id, deployment.clone()))
+                    .deployment_label()
+                    .map(|deployment| (observation.container_id, deployment.to_owned()))
             })
             .collect()
     }
@@ -1134,7 +1128,7 @@ pub async fn open_machine_logs(
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
-                    .tail_logs_stream(&target, request)
+                    .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
                     .await
                     .map(|stream| stream_input(identity, machine.machine.id, stream))
             })

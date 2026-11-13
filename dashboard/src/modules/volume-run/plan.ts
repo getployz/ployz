@@ -1,4 +1,5 @@
-import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import type { ExpectedCopy, MachineId, MachineName, ResolvedServiceSpec, Signed, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 import { type DeploymentsSeen, planResize, planUnheld, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, copyName, heardFrom, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
@@ -21,7 +22,8 @@ export type RefusalCode =
   | "another_copy"
   | "confirm_required"
   | "role_changed"
-  | "deploying";
+  | "deploying"
+  | "enforced";
 
 /**
  * Where a Move continues from the copies it finds. `rounds` and `cut` start on A's root; `final` pulls the cut's
@@ -110,10 +112,197 @@ export function observedEpoch(members: readonly Member[]): number {
 const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =>
   machine === undefined ? member.machine.name === to : member.machine.id === machine;
 
-const refuse = (code: RefusalCode, message: string): Planned => ({ ok: false, refusal: { code, message } });
+const refuse = (code: RefusalCode, message: string, next?: string): Planned => ({ ok: false, refusal: { code, message, ...(next !== undefined && { next }) } });
 
-/** Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. */
+/**
+ * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A Move, a
+ * Mirror, a full Sync, a Restore, a Mirror removal or a seed that carries no approval, through a Server that enforces
+ * device approval, is refused here, before anything stops: a Move would otherwise stop the Service before its start met
+ * the refusal, and a full Sync forget the Mirror's copy before its pull did.
+ */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
+  const planned = planCopies(input, observed);
+  if (!planned.ok) return planned;
+  const unapproved = (input.kind === "mirror" || input.kind === "sync" || input.kind === "move" || input.kind === "restore" || input.kind === "delete_mirror"
+    || input.kind === "seed") && input.args.approval === undefined;
+  const enforcing = gatedOn(planned.phase, unapproved).find((member) => member.enforces === true);
+  return enforcing === undefined ? planned : enforcedRefusal(planned.phase, input.volumeName, enforcing.machine.name);
+}
+
+type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
+
+/**
+ * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud without an approval: an `unapproved`
+ * seed's copy, Move's start on B and release back to A's stopped Container, Mirror's snapshot and pull, Restore's
+ * promotion, or removal of a slot that holds a snapshot. A slot with none holds no data, so its Server deletes it unasked.
+ */
+function gatedOn(phase: PlannedPhase, unapproved: boolean): readonly AnsweredMember[] {
+  switch (phase.kind) {
+    case "move":
+      return unapproved ? [phase.writer, phase.target] : [];
+    case "landed":
+      return unapproved ? [phase.target, ...phase.behind] : [];
+    case "seed":
+      return unapproved ? [phase.source] : [];
+    case "mirror":
+      return unapproved ? [phase.writer, phase.target] : [];
+    case "sync":
+      return unapproved && phase.full ? [phase.writer, phase.mirror] : [];
+    case "restore":
+      return unapproved ? [phase.from] : [];
+    case "delete_mirror":
+      return unapproved ? phase.destroy.filter(holds) : [];
+    default:
+      return [];
+  }
+}
+
+function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Planned {
+  const own = `${server} enforces device approval, so Ployz Cloud can't`;
+  switch (phase.kind) {
+    case "mirror":
+      return refuse("enforced", `${own} mirror ${name} on its own. Run ployz volume mirror ${name} --to ${phase.target.machine.name} from an approved device.`);
+    case "sync":
+      return refuse("enforced", `${own} sync ${name} in full on its own. Run ployz volume sync ${name} --full from an approved device.`);
+    case "move":
+    case "landed":
+      return refuse("enforced", `${own} move ${name} on its own. Run ployz volume move ${name} --to ${phase.target.machine.name} from an approved device.`);
+    case "restore":
+      return refuse("enforced", `${own} restore ${name} on its own. Run ployz volume restore ${name} --from ${phase.from.machine.name} from an approved device.`);
+    case "delete_mirror": {
+      const slot = copyName(name, server);
+      return refuse("enforced", `${own} delete ${slot} on its own. Run ployz volume mirror rm ${slot}${ifOldCopy(phase.role ?? undefined)} from an approved device.`);
+    }
+    default:
+      return refuse("enforced", enforcedMessage(phase.kind === "seed", name, server));
+  }
+}
+
+const bytesOf = (value: Signed | ResolvedServiceSpec) => new TextEncoder().encode(JSON.stringify(value)).length;
+
+const MirrorApproval = Schema.fromJsonString(Schema.Struct({
+  volume: Schema.String,
+  workflow: Schema.Struct({ kind: Schema.Literal("mirror"), writer: Schema.String, mirror: Schema.String }),
+}));
+
+/** The most bytes a Mirror approval may take as JSON. A Device's takes well under a kilobyte. */
+export const MAX_APPROVAL_BYTES = 4096;
+
+/**
+ * Whether `approval` approves mirroring Docker Volume `volume` from `writer` to `mirror`, in at most
+ * `MAX_APPROVAL_BYTES`. Cloud reads it only to refuse a mistake before the run starts, and to keep only approvals
+ * shaped for this Mirror; the Servers check the signature.
+ */
+export function approvesMirror(approval: Signed, volume: string, writer: MachineId, mirror: MachineId) {
+  if (bytesOf(approval) > MAX_APPROVAL_BYTES) return false;
+  const body = Schema.decodeUnknownOption(MirrorApproval)(approval.body);
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.writer === writer && body.value.workflow.mirror === mirror;
+}
+
+const MoveApproval = Schema.fromJsonString(Schema.Struct({
+  volume: Schema.String,
+  workflow: Schema.Struct({ kind: Schema.Literal("move"), from: Schema.String, to: Schema.String, service: Schema.Struct({ name: Schema.String }) }),
+}));
+
+/** The most bytes the spec a Move's approval names may take as JSON. */
+export const MAX_SERVICE_BYTES = 65_536;
+
+
+/**
+ * Whether `approval` approves moving Docker Volume `volume` from `from` to `to` and starting `service` there, in at
+ * most `MAX_APPROVAL_BYTES` and `MAX_SERVICE_BYTES`. Cloud reads them only to refuse a mistake before anything stops;
+ * the Servers check the signature and the spec.
+ */
+export function approvesMove(approval: Signed, service: ResolvedServiceSpec | undefined, volume: string, from: MachineId, to: MachineId) {
+  if (service === undefined || bytesOf(approval) > MAX_APPROVAL_BYTES || bytesOf(service) > MAX_SERVICE_BYTES) return false;
+  const body = Schema.decodeUnknownOption(MoveApproval)(approval.body);
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.from === from
+    && body.value.workflow.to === to && body.value.workflow.service.name === service.name;
+}
+
+const RestoreApproval = Schema.fromJsonString(Schema.Struct({
+  volume: Schema.String,
+  workflow: Schema.Struct({ kind: Schema.Literal("restore"), machine: Schema.String }),
+}));
+
+/**
+ * Whether `approval` approves making `machine`'s copy of Docker Volume `volume` its writer, in at most
+ * `MAX_APPROVAL_BYTES`. Cloud reads it only to refuse a mistake before the run starts; the Server checks the signature
+ * and the snapshot.
+ */
+export function approvesRestore(approval: Signed, volume: string, machine: MachineId) {
+  if (bytesOf(approval) > MAX_APPROVAL_BYTES) return false;
+  const body = Schema.decodeUnknownOption(RestoreApproval)(approval.body);
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.machine === machine;
+}
+
+const RemovalApproval = Schema.fromJsonString(Schema.Struct({
+  volume: Schema.String,
+  workflow: Schema.Struct({ kind: Schema.Literal("mirror_removal"), mirror: Schema.String }),
+}));
+
+/** Whether `approval` approves deleting the copy of Docker Volume `volume` on `mirror`, in at most `MAX_APPROVAL_BYTES`. */
+export function approvesRemoval(approval: Signed, volume: string, mirror: MachineId) {
+  if (bytesOf(approval) > MAX_APPROVAL_BYTES) return false;
+  const body = Schema.decodeUnknownOption(RemovalApproval)(approval.body);
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.mirror === mirror;
+}
+
+export const otherRestoreApprovalMessage = (name: string, server: string) =>
+  `The approval from your device is for another change, not restoring ${name} from ${server}.`;
+
+export const otherRemovalApprovalMessage = (slot: string) =>
+  `The approval from your device is for another change, not deleting ${slot}.`;
+
+/**
+ * Which Servers recorded a Mirror removal: each deleted slot's own Server, then the Writer, or why the Writer has not
+ * yet. A slot's record already refuses its old approval; the Writer's stops it serving that Server.
+ */
+export function withdrawnMessage(name: string, slots: readonly string[], writer: string | undefined, behind: readonly string[]) {
+  const listed = (each: readonly string[]) => (each.length < 2 ? each.join("") : `${each.slice(0, -1).join(", ")} and ${each.at(-1)}`);
+  const deleted = `Deleted ${slots.map((slot) => copyName(name, slot)).join(", ")}`;
+  if (writer === undefined) return `${deleted}; ${listed(slots)} recorded the removal`;
+  if (behind.length === 0) return `${deleted}; ${listed([...slots, writer])} recorded the removal`;
+  return `${deleted}; ${listed(slots)} recorded the removal, but ${writer} has not yet (${behind.join("; ")}). `
+    + `${listed(slots)} ${slots.length === 1 ? "refuses" : "refuse"} the old approval either way`;
+}
+
+export const otherMoveApprovalMessage = (name: string, server: string) =>
+  `The approval from your device is for another change, not moving ${name} to ${server}.`;
+
+/** Why a run can't keep another approval for the Mirror of `name` on `server`. */
+export const fullApprovalsMessage = (name: string, server: string, most: number) =>
+  `Ployz Cloud keeps at most ${most} approvals for Mirror ${copyName(name, server)}. Remove it with ployz volume mirror rm ${copyName(name, server)}, then mirror ${name} to ${server} again.`;
+
+export const otherApprovalMessage = (name: string, server: string) =>
+  `The approval from your device is for another change, not mirroring ${name} to ${server}.`;
+
+/** Why `server` refused a step under the Mirror approval a run or a sync sent it. */
+/** What a refusal of a Volume approval asks of the person, after it says why. The reasons end without a full stop. */
+export const APPROVE_AGAIN = "Approve the change again.";
+
+export const approvalExpiredReason = (name: string, server: string) =>
+  `Approval expired. Nothing new can start. ${server} didn't take the next step for ${name}`;
+
+export const approvalRefusedReason = (name: string, server: string) =>
+  `${server} didn't accept the approval for ${name}. It may have expired, or be for another change`;
+
+export const approvalExpiredMessage = (name: string, server: string) => `${approvalExpiredReason(name, server)}. ${APPROVE_AGAIN}`;
+
+export const approvalRefusedMessage = (name: string, server: string) => `${approvalRefusedReason(name, server)}. ${APPROVE_AGAIN}`;
+
+
+/**
+ * Why `server`, which enforces device approval, refused a Move's step, or with `seed` a restore into a new volume, that
+ * came with no approval.
+ */
+export function enforcedMessage(seed: boolean, name: string, server: string) {
+  return seed
+    ? `${server} enforces device approval, so restoring ${name} into a new volume needs your passkey. Restore it again from the volume's Copies tab.`
+    : `${server} enforces device approval, so moving ${name} needs your passkey. Deploy the move again from the dashboard, or run ployz volume move from an approved device.`;
+}
+
+function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const name = input.volumeName;
   const members = observed.filter((member) => member.answered || member.stateless !== true);
   const hidden = observed.flatMap((member) => (!member.answered && member.stateless === true ? [member.machine.name] : []));
@@ -312,6 +501,19 @@ function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], 
   return { ok: true, phase: { kind: "restore", from: source, lostAfter: copy.kind === "slot" ? copy.newest : null } };
 }
 
+/**
+ * The slots that hold the newest snapshot among them, or all of them when none holds one. The newest snapshots of a
+ * run's slots all came from its latest Writer, so their times share one clock, unlike Containers made on different
+ * Servers.
+ */
+export function holdingNewest<M extends AnsweredMember>(slots: readonly M[]): readonly M[] {
+  const times = slots.map((slot) => slot.view.copy?.newest?.created_unix_seconds ?? null);
+  const known = times.filter((time): time is number => time !== null);
+  if (known.length === 0) return slots;
+  const newest = Math.max(...known);
+  return slots.filter((_, index) => times[index] === newest);
+}
+
 export function restoreSource(members: readonly Member[]): MachineName | undefined {
   const answered = members.filter((member): member is AnsweredMember => member.answered);
   if (answered.length < members.length) return undefined;
@@ -382,6 +584,23 @@ function unfinishedCutsBefore(volumeName: string, target: AnsweredMember, member
  * The copy a seed run restores from, or why it would refuse. Beside an old primary that came back, the run only makes
  * that copy a mirror and stops, so a restore waits for the mirror refresh that does the same.
  */
+/** The placeholder a preview plans under for a run a passkey will approve. No Server ever sees it. */
+const PREVIEW_APPROVAL: Signed = { body: "", signatures: [] };
+
+/**
+ * `input` as the dashboard runs it on `observed`: where every Server that enforces device approval takes a passkey's
+ * answer, the person approves the run before it starts, so a preview plans it as approved. Otherwise `input` as it is,
+ * which an enforcing Server refuses. Only previews and staging use it; a run plans with the approval it carries.
+ */
+export function asApproved<I extends PlanInput>(input: I, observed: readonly Member[]): I {
+  if (!APPROVED_KINDS.has(input.kind)) return input;
+  const passkeys = observed.every((member) => !member.answered || member.enforces !== true || member.passkey === true);
+  if (!passkeys || ("approval" in input.args && input.args.approval !== undefined)) return input;
+  return { ...input, args: { ...input.args, approval: PREVIEW_APPROVAL } };
+}
+
+const APPROVED_KINDS: ReadonlySet<PlanInput["kind"]> = new Set(["mirror", "sync", "move", "restore", "delete_mirror", "seed"]);
+
 export function planSeed(input: Extract<PlanInput, { kind: "seed" }>, members: readonly Member[]):
   { readonly ok: true; readonly source: AnsweredMember } | { readonly ok: false; readonly refusal: Refusal } {
   const planned = planFromCopies(input, members);

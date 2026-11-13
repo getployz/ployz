@@ -27,10 +27,10 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
     let reviewed_confirmation = confirmation(observed.data_loss);
 
     let removed = client
-        .remove_machine(worker.name.as_str(), &reviewed_confirmation)
+        .remove_machine(worker.name.as_str(), &reviewed_confirmation, None)
         .await
         .unwrap();
-    assert!(removed.reset_warning.is_none());
+    assert!(removed.reset_warning().is_none());
     assert_eq!(
         service.reset_machines.lock().unwrap().as_slice(),
         &[worker.id]
@@ -42,10 +42,10 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
 
     let empty_confirmation = confirmation(Vec::<DataLoss>::new());
     let none = client
-        .remove_machine(empty.name.as_str(), &empty_confirmation)
+        .remove_machine(empty.name.as_str(), &empty_confirmation, None)
         .await
         .unwrap();
-    assert!(none.reset_warning.is_none());
+    assert!(none.reset_warning().is_none());
 }
 
 #[tokio::test]
@@ -59,20 +59,20 @@ async fn sending_a_removal_again_skips_a_machine_already_forgotten_by_id() {
             .data_loss,
     );
     client
-        .remove_machine(worker.name.as_str(), &confirmed)
+        .remove_machine(worker.name.as_str(), &confirmed, None)
         .await
         .unwrap();
 
     let again = client
-        .remove_machine(worker.id.as_str(), &confirmed)
+        .remove_machine(worker.id.as_str(), &confirmed, None)
         .await
         .unwrap();
     assert_eq!(
-        again.reset_warning.as_deref(),
+        again.reset_warning(),
         Some("its reset couldn't be confirmed: it was already gone from the Cluster")
     );
     client
-        .remove_machine_membership(worker.id.as_str())
+        .remove_machine_membership(worker.id.as_str(), None)
         .await
         .unwrap();
     // Neither send reached the Machine: one Leave and one Forget, from the first removal.
@@ -85,7 +85,7 @@ async fn sending_a_removal_again_skips_a_machine_already_forgotten_by_id() {
         &[worker.id]
     );
     let error = client
-        .remove_machine(worker.name.as_str(), &confirmed)
+        .remove_machine(worker.name.as_str(), &confirmed, None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
@@ -183,8 +183,7 @@ async fn an_unreachable_leave_forgets_and_a_resend_still_cannot_confirm_the_rese
         .unwrap();
     assert!(
         first
-            .reset_warning
-            .as_deref()
+            .reset_warning()
             .is_some_and(|warning| warning.starts_with("target is unreachable")),
         "{first:?}"
     );
@@ -198,7 +197,7 @@ async fn an_unreachable_leave_forgets_and_a_resend_still_cannot_confirm_the_rese
         .await
         .unwrap();
     assert_eq!(
-        again.reset_warning.as_deref(),
+        again.reset_warning(),
         Some("its reset couldn't be confirmed: it was already gone from the Cluster")
     );
     assert!(service.reset_machines.lock().unwrap().is_empty());
@@ -233,7 +232,7 @@ async fn a_leave_the_entry_no_longer_routes_still_forgets_without_confirming_the
         .await
         .unwrap();
     assert_eq!(
-        removed.reset_warning.as_deref(),
+        removed.reset_warning(),
         Some("its reset couldn't be confirmed: it was already gone from the Cluster")
     );
     assert_eq!(
@@ -320,7 +319,7 @@ async fn remove_machine_fails_when_fresh_data_loss_is_unconfirmed() {
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .remove_machine(worker.name.as_str(), &confirmation)
+        .remove_machine(worker.name.as_str(), &confirmation, None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -345,7 +344,7 @@ async fn remove_machine_ignores_confirmed_names_that_no_longer_exist() {
     ]);
 
     client
-        .remove_machine(worker.id.as_str(), &confirmation)
+        .remove_machine(worker.id.as_str(), &confirmation, None)
         .await
         .unwrap();
     assert_eq!(
@@ -361,7 +360,7 @@ async fn remove_machine_refuses_the_current_entry_while_another_is_visible() {
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let error = client
-        .remove_machine(entry.as_str(), &confirmation)
+        .remove_machine(entry.as_str(), &confirmation, None)
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -395,13 +394,10 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
     ]);
 
     let removed = client
-        .remove_machine(worker.machine.name.as_str(), &confirmation)
+        .remove_machine(worker.machine.name.as_str(), &confirmation, None)
         .await
         .unwrap();
-    assert_eq!(
-        removed.reset_warning.as_deref(),
-        Some("replicated delete failed")
-    );
+    assert_eq!(removed.reset_warning(), Some("replicated delete failed"));
     assert_eq!(
         service.removed_machines.lock().unwrap().as_slice(),
         &[worker.machine.id]
@@ -428,10 +424,10 @@ async fn cloud_removes_the_last_machine_it_holds() {
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
     let removed = client
-        .remove_machine(entry.machine.name.as_str(), &confirmation)
+        .remove_machine(entry.machine.name.as_str(), &confirmation, None)
         .await
         .unwrap();
-    assert!(removed.reset_warning.is_none());
+    assert!(removed.reset_warning().is_none());
     assert_eq!(
         service.reset_machines.lock().unwrap().as_slice(),
         &[entry.machine.id]
@@ -589,7 +585,7 @@ async fn remove_machine_removes_the_final_unpaired_machine() {
         )
         .await
         .unwrap();
-    assert!(removed.reset_warning.is_none());
+    assert!(removed.reset_warning().is_none());
     assert_eq!(
         service.reset_machines.lock().unwrap().as_slice(),
         &[entry.machine.id]
@@ -811,4 +807,76 @@ fn volume(machine_id: MachineId, name: &str) -> DataLoss {
             name: DockerVolumeName::parse(name).unwrap(),
         },
     }
+}
+
+/// Each way a removal departs reads as its own tag. The daemon's own `reset_warning` comes
+/// only after its reset committed (its row removal failed), so it reads as a reset.
+#[tokio::test]
+async fn a_removal_says_how_its_machine_departed() {
+    async fn departed(service: DiscoveryService, target: &MachineId) -> Value {
+        let (mut client, server, _) = connected_client(service).await;
+        let confirmed = confirmation([volume(*target, "data"), volume(*target, "logs")]);
+        let target = ployz_core::MachineTarget::from(target);
+        let removed = client
+            .remove_machine(&target, &confirmed, Remover::Cloud)
+            .await
+            .unwrap();
+        server.abort();
+        serde_json::to_value(&removed)
+            .unwrap()
+            .get("departed")
+            .cloned()
+            .unwrap_or_default()
+    }
+    let (_description, worker, _empty, service) = removal_cluster();
+    let target = worker.machine.id;
+
+    assert_eq!(
+        departed(service.clone(), &target).await,
+        json!({ "kind": "reset", "row_warning": null })
+    );
+
+    let (_description, _worker, _empty, rowless) = removal_cluster();
+    *rowless.reset_warning.lock().unwrap() = Some("replicated delete failed".into());
+    assert_eq!(
+        departed(rowless, &target).await,
+        json!({ "kind": "reset", "row_warning": "replicated delete failed" })
+    );
+
+    let (_description, _worker, _empty, mut unreachable) = removal_cluster();
+    unreachable.leave_unavailable = true;
+    let unreachable = departed(unreachable, &target).await;
+    assert_eq!(
+        unreachable.get("kind"),
+        Some(&json!("unreachable")),
+        "{unreachable}"
+    );
+    assert!(
+        unreachable
+            .get("cause")
+            .and_then(Value::as_str)
+            .is_some_and(|cause| !cause.is_empty()),
+        "{unreachable}"
+    );
+
+    let (_description, _worker, _empty, mut unroutable) = removal_cluster();
+    unroutable.leave_error = Some(RpcError {
+        code: RpcErrorCode::NotFound,
+        message: "unknown Machine".into(),
+        details: Value::Null,
+        cause: Vec::new(),
+    });
+    assert_eq!(
+        departed(unroutable, &target).await,
+        json!({ "kind": "already_forgotten" })
+    );
+
+    let (_description, _worker, _empty, mut forgotten) = removal_cluster();
+    forgotten
+        .machines
+        .retain(|observed| observed.machine.id != target);
+    assert_eq!(
+        departed(forgotten, &target).await,
+        json!({ "kind": "already_forgotten" })
+    );
 }

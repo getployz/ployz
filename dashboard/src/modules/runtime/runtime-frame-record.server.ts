@@ -2,10 +2,13 @@ import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
 import { InngestClient } from "#/modules/inngest/client";
+import { runtimeMembershipDigest } from "#/modules/machines/departed-servers";
+import { recordDepartedServers } from "#/modules/machines/departed-servers.server";
 import { recordMachineNames } from "#/modules/machines/machine-names.server";
 import { requestSealingKeyEnsure } from "#/modules/machines/sealing-ensure.server";
 import type { FrameRecord } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const SEALING_ENSURE_TIMEOUT = "10 seconds";
 
@@ -15,10 +18,14 @@ export const runtimeNamesDigest = (frame: RuntimeWatchView) =>
 export const runtimeSealingDigest = (frame: RuntimeWatchView) =>
   JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.runtime.sealing?.kind ?? null]));
 
-/** The Machine names a frame reports, then the Sealing Key ensure its holders call for; each remembered apart. */
+/**
+ * The Machine names a frame reports, the Sealing Key ensure its holders call for, then the Servers it no longer lists;
+ * each remembered apart.
+ */
 export const runtimeFrameRecords = Effect.gen(function* () {
   const database = yield* Database;
   const inngest = yield* InngestClient;
+  const encryption = yield* SecretEncryption;
   const names: FrameRecord = {
     digest: runtimeNamesDigest,
     write: (organizationId, _generation, frame) => recordMachineNames(organizationId, frame).pipe(
@@ -41,5 +48,13 @@ export const runtimeFrameRecords = Effect.gen(function* () {
       Effect.provideService(InngestClient, inngest),
     ),
   };
-  return [names, sealing] as const;
+  const departed: FrameRecord = {
+    digest: runtimeMembershipDigest,
+    write: (organizationId, generation, frame) => recordDepartedServers(organizationId, generation, frame).pipe(
+      Effect.provideService(Database, database),
+      Effect.provideService(SecretEncryption, encryption),
+      Effect.provideService(InngestClient, inngest),
+    ),
+  };
+  return [names, sealing, departed] as const;
 });

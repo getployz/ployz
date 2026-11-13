@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use std::{fmt, time::Duration};
 
 use clap::ArgMatches;
@@ -9,7 +10,8 @@ use ployz_core::{
 };
 use serde_json::{Value, json};
 
-use super::{connect_or_none, has_no_servers, signed_in, waiting};
+use super::super::route::{connect_or_none, has_no_servers, signed_in};
+use super::waiting;
 use crate::{
     cluster::StorageGaps,
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
@@ -284,8 +286,8 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
         Err(Unshown::Failed(error)) => (error, false),
     };
     let report = error.report();
-    let missing = report.code == RpcErrorCode::NotFound || has_no_servers(&report);
-    let unreachable = super::servers_unanswered(&report);
+    let missing = report.code == RpcErrorCode::NotFound || has_no_servers(&error);
+    let unreachable = super::super::route::servers_unanswered(&error);
     // An inherited PLOYZ_CONNECT or PLOYZ_CONTEXT that reached no daemon was never asked.
     let unasked = unconnected && waiting::inherits_a_connection(leaf);
     if !(missing || unreachable || unasked) || waiting::points_elsewhere(leaf) {
@@ -323,7 +325,7 @@ fn server(root: &ArgMatches, selector: &str) -> Result<(), Unshown> {
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime().map_err(Unshown::Failed)?.block_on(async {
-        let (mut client, held) = super::connect_held(leaf, context)
+        let (mut client, held) = super::super::route::connect_held(leaf, context)
             .await
             .map_err(Unshown::of)?;
         let direct = Direct {
@@ -430,7 +432,7 @@ async fn read_details(
     let deadline = tokio::time::Instant::now() + TARGET_RPC_TIMEOUT;
     let routed = tokio::time::timeout_at(
         deadline,
-        client.invoke_answered::<op::Inspect>(inspect_request(), selector, None),
+        client.call_shared::<op::Inspect>(inspect_request(), Call::once().to(selector)),
     );
     tokio::pin!(routed);
     let routed_error = tokio::select! {
@@ -488,14 +490,16 @@ async fn read_direct(
         return None;
     }
     let name = target.name.clone();
-    let server = super::connect_only(direct.leaf, direct.context, direct.held, &target_id)
-        .await
-        .ok()??;
+    let server =
+        super::super::route::connect_only(direct.leaf, direct.context, direct.held, &target_id)
+            .await
+            .ok()??;
     // Untargeted, so the Server answers for itself rather than resolving the selector again
     // against its own view, where the name may lead elsewhere.
     let details = server
-        .invoke_entry::<op::Inspect>(inspect_request(), None)
+        .call_shared::<op::Inspect>(inspect_request(), Call::once())
         .await
+        .map_err(crate::connect::rpc_error)
         .ok()?;
     (details.id == target_id).then_some((details, name))
 }
@@ -870,6 +874,7 @@ mod tests {
                     store_filesystem: filesystem.map(str::to_owned),
                     ..Default::default()
                 },
+                join_approval: None,
                 build_concurrency: None,
             },
             MembershipObservation::Up,
@@ -1009,6 +1014,7 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             ployz_core::MembershipObservation::Up,

@@ -228,7 +228,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const { diff } = store;
   const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
   const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
-    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss);
+    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss, placements.prepare);
   const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0];
   const { noServers } = use(RuntimeLensContext);
   const storage = useStorageSteps(params.organizationSlug);

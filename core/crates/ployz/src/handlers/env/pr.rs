@@ -12,7 +12,7 @@ use super::super::deploy;
 use super::super::store::{self, project, store};
 use super::super::{Error, leaf_matches, required};
 use super::branch::setups;
-use crate::handlers::teardown::{accepted, take_off, unfinished, with_accepted};
+use crate::handlers::shared::accepted::{accepted, take_off, unfinished, with_accepted};
 
 /// Take an Environment off the Servers and keep everything else of it.
 pub(crate) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
@@ -234,13 +234,14 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         repository_id,
         number,
         head: head.clone(),
+        reviews: Vec::new(),
     })?;
     let approved = find(&store.read(&query)?)
         .into_iter()
         .map(|(_, open)| open)
         .next()
         .unwrap_or(open);
-    let short = &head.as_str()[..7];
+    let short = head.short();
     let sentence = match &approved.environment {
         Some(environment) => format!("Approved #{number} at {short}. {environment} deploys it."),
         None => format!("Approved #{number} at {short}."),
@@ -250,7 +251,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
 
 /// A pull request's standing as the PR plans list shows it.
 fn standing(open: &OpenPullRequest) -> String {
-    let short = |head: &ployz_store::CommitSha| head.as_str()[..7].to_owned();
+    let short = |head: &ployz_store::CommitSha| head.short().to_owned();
     match (&open.standing, &open.head) {
         (Standing::Trusted, _) => "deploys".to_owned(),
         (Standing::Approved(head), _) => format!("approved {}", short(head)),

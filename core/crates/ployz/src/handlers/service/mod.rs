@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use futures_util::future::join_all;
@@ -7,8 +8,10 @@ use crate::cli::{base, positional, value};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     CopyRotation, HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId,
-    MachineName, QualifiedService, RpcError, RpcErrorCode, ServiceContainer, ServiceObservation,
-    ServiceSelector, select_service,
+    MachineName, MachineObservation, OperationId, QualifiedService, RpcError, Sealing,
+    ServiceContainer, ServiceObservation, ServiceSelector,
+    authority::{RestartApproval, Signed, Signer, SignerKey, Timestamp, WorkflowKind},
+    select_service,
 };
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
@@ -357,6 +360,7 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
     let selectors = change_selectors(leaf, namespace.as_ref())?;
     let (signal, timeout) = stop_options(leaf, actions)?;
     let hint = super::store::next(leaf, &["ps"]);
+    let device_key = super::device::key::path(&super::config_path(leaf)?);
     with_client(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
@@ -404,14 +408,21 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
                     ContainerAction::Stop | ContainerAction::Restart => (signal.clone(), timeout),
                     ContainerAction::Start | ContainerAction::Remove => (None, None),
                 };
-                let (live, names, cancellation) = (&live, &names, &cancellation);
+                let (live, names, device_key, machines, cancellation) =
+                    (&live, &names, &device_key, &machines, &cancellation);
                 async move {
+                    let approvals = if action != ContainerAction::Remove {
+                        restart_approvals(device_key, machines, services, action)?
+                    } else {
+                        HashMap::new()
+                    };
                     apply_service_action(
                         client,
                         live,
                         names,
                         services,
                         (action, signal, timeout),
+                        &approvals,
                         cancellation,
                     )
                     .await
@@ -526,12 +537,67 @@ impl ServiceActionOutcome {
     }
 }
 
+fn restart_approvals(
+    device_key: &Path,
+    machines: &[MachineObservation],
+    services: &[&ServiceObservation],
+    action: ContainerAction,
+) -> Result<HashMap<ContainerId, Signed<RestartApproval>>, Error> {
+    let Ok(Some(secret)) = super::device::key::load(device_key) else {
+        return Ok(HashMap::new());
+    };
+    let Some(cluster) =
+        machines
+            .iter()
+            .find_map(|observed| match observed.machine.runtime.sealing {
+                Some(Sealing::Held { public_key }) => Some(public_key),
+                _ => None,
+            })
+    else {
+        return Ok(HashMap::new());
+    };
+    let signer = Signer::from_seed(&secret);
+    let issued_at = Timestamp::now();
+    services
+        .iter()
+        .flat_map(|service| {
+            service
+                .containers_for(action)
+                .map(move |container| (*service, container.as_observation()))
+        })
+        .map(|(service, container)| {
+            let approval = RestartApproval {
+                cluster,
+                operation: OperationId::random(),
+                kind: match action {
+                    ContainerAction::Stop => WorkflowKind::Stop,
+                    ContainerAction::Restart => WorkflowKind::Restart,
+                    ContainerAction::Start => WorkflowKind::Start,
+                    ContainerAction::Remove => unreachable!("a removal signs no approval"),
+                },
+                namespace: service.identity.namespace.clone(),
+                service: service.identity.name.clone(),
+                machines: vec![container.machine_id],
+                container: container.container_id,
+                issued_at,
+                expires_at: issued_at.plus(ployz_core::authority::restart::MAX_LIFETIME_MILLIS),
+                signer: SignerKey::Device(signer.public().into()),
+                proposal: None,
+            };
+            Signed::sign(&approval, &signer)
+                .map(|signed| (container.container_id, signed))
+                .map_err(Error::command)
+        })
+        .collect()
+}
+
 async fn apply_service_action(
     client: &crate::connect::Client,
     live: &LiveServices<RpcError>,
     names: &HashMap<MachineId, &MachineName>,
     services: &[&ServiceObservation],
     (action, signal, timeout): (ContainerAction, Option<String>, Option<u16>),
+    approvals: &HashMap<ContainerId, Signed<RestartApproval>>,
     cancellation: &CancellationToken,
 ) -> Result<ServiceActionOutcome, Error> {
     let service_container_ids = services
@@ -546,7 +612,15 @@ async fn apply_service_action(
     let mut partial = false;
     for service in services {
         let outcomes = client
-            .change_observed_service(service, action, signal.clone(), timeout, cancellation)
+            .clone()
+            .change_observed_service(
+                service,
+                action,
+                signal.clone(),
+                timeout,
+                approvals,
+                cancellation,
+            )
             .await;
         for success in outcomes.successes {
             crate::ui::stream(format_args!(
@@ -565,7 +639,29 @@ async fn apply_service_action(
                 changed.push((success.machine_id, success.value));
             }
         }
+        let mut noted_unsigned = false;
         for failure in outcomes.failures {
+            if !noted_unsigned
+                && !approvals.contains_key(&failure.error.container_id)
+                && failure
+                    .error
+                    .error
+                    .details
+                    .get("capability")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(ployz_core::RESTART_APPROVAL_CAPABILITY)
+                && failure
+                    .error
+                    .error
+                    .cause
+                    .iter()
+                    .any(|cause| cause.contains("carries no signature"))
+            {
+                crate::ui::note(
+                    "No Device approval was sent. Check this computer's Device key and approval.",
+                );
+                noted_unsigned = true;
+            }
             crate::ui::warn_cause(
                 format_args!(
                     "Could not {action} {} on {}",
@@ -623,12 +719,10 @@ async fn apply_service_action(
 }
 
 fn unhealthy(failure: &HealthFailure) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: format!("The Container's healthcheck did not pass: {failure}."),
-        details: serde_json::to_value(failure).unwrap_or_default(),
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(format!(
+        "The Container's healthcheck did not pass: {failure}."
+    ))
+    .with_details(serde_json::to_value(failure).unwrap_or_default())
 }
 
 fn change_selectors(

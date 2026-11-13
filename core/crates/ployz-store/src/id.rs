@@ -334,6 +334,17 @@ store_string!(
     /// A full lowercase Git commit, as GitHub names one.
     CommitSha, "a full lowercase Git commit", is_commit
 );
+impl CommitSha {
+    /// How many leading digits a person compares a commit by.
+    pub const SHORT_LEN: usize = 7;
+
+    /// The first [`Self::SHORT_LEN`] digits, for a person to read.
+    #[must_use]
+    pub fn short(&self) -> &str {
+        &self.0[..Self::SHORT_LEN]
+    }
+}
+
 store_string!(
     /// A GitHub repository, as `owner/name`.
     RepositoryName, "a GitHub repository as owner/name", is_repository
@@ -351,7 +362,9 @@ store_string!(
 
 fn is_approval(value: &str) -> bool {
     value.rsplit_once(':').is_some_and(|(version, digest)| {
-        !version.is_empty() && digest.len() == 16 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+        !version.is_empty()
+            && digest.len() == crate::digest::HEX_LEN
+            && digest.bytes().all(|b| b.is_ascii_hexdigit())
     })
 }
 
@@ -500,8 +513,9 @@ impl ConfigRef {
                 .collect();
             return Err(crate::error::ambiguous(
                 "More than one Config has this name.",
-                serde_json::json!({ "config": self, "valid_children": valid }),
-            ));
+                serde_json::json!({ "config": self }),
+            )
+            .with_hint(ployz_core::Hint::valid(valid)));
         }
         Ok(first)
     }
@@ -610,5 +624,17 @@ mod hostname_tests {
         assert_eq!(sent.as_str(), "app.example.com");
         assert!(Hostname::parse("acme..com").is_err());
         assert!(Hostname::parse("ACME").is_err());
+    }
+}
+
+#[cfg(test)]
+mod commit_sha_tests {
+    use super::CommitSha;
+
+    #[test]
+    fn a_commit_is_shown_by_its_first_seven_digits() {
+        let commit = CommitSha::parse("0123456789abcdef0123456789abcdef01234567").unwrap();
+        assert_eq!(commit.short(), "0123456");
+        assert_eq!(CommitSha::SHORT_LEN, 7);
     }
 }

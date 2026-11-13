@@ -1,22 +1,8 @@
 # Coding standards
 
-Apply to new and touched code. rustfmt and the workspace Clippy lints in `Cargo.toml` remain the source of truth for format and lint. New Clippy suppressions are `#[expect(clippy::lint)]` with a why, not `#[allow]`. Treat `redundant_clone` and `needless_collect` as bugs even when Clippy is quiet.
+Apply to new and touched code.
 
 Architecture and the current compatibility policy live in [DESIGN.md](DESIGN.md).
-
-Tests verify observable behavior or explicit contracts; reject change-detector assertions that merely mirror source text, incidental formatting, constants, or internal call counts.
-
-## Names
-
-Accessors omit `get_`: `name()`, `as_str()`.
-
-Conversion prefixes:
-
-- `as_` — cheap borrow
-- `to_` — allocates or copies
-- `into_` — consumes `self`
-
-Iterators are `iter()` / `iter_mut()` / `into_iter()`. Keep an iterator an iterator until a collection is the result.
 
 ## Types
 
@@ -24,27 +10,17 @@ A type cannot represent an illegal state. If two cases cannot both be true, they
 
 A `CONTEXT.md` term is a newtype, not `String` or a primitive. `MachineId` and `MachineName` are different types.
 
-Fallible construction is `parse` → `Result`. Cheap views are `as_str`. Shadow the binding across a transform: `let value = value.parse()?`.
-
-Name a lifetime for the borrow (`'store`, `'src`) when the role is known.
-
-Parameters borrow: `&str`, `&[T]`, `&T`. Clone only when the callee must own. A clone that exists to satisfy the borrow checker is a structure problem. Small `Copy` values pass by value.
-
 A method that is only legal in some states lives on a type that only exists in that state. Observer-relative phases in `CONTEXT.md` stay enums: they are runtime facts.
 
 ## Errors
 
 Library and daemon errors are `thiserror` types. The CLI maps those into `Failure`.
 
-Recoverable failures use `?`. Early return without the error value is `let Ok(x) = ... else { return ... }`. `expect("why this is a programmer bug")` is for invariants. `unwrap` belongs in tests.
-
-A fallible public function has an error-path test at its seam.
-
 ## CLI output
 
 Every command that produces a result takes `--json` and prints it through `crate::ui`: one JSON object on stdout, keyed by noun (`{"servers": […]}`). Streams print one object per line. Anything human output reports is also in the JSON result. A mutation emits its outcome even when nothing changed. A command that cannot produce one JSON result refuses `--json` in the handler table; it never ignores the flag. `--json` never prompts: a choice that would prompt takes its documented default or fails with `invalid_argument` naming the flag that settles it.
 
-The result goes to stdout and everything else to stderr. Finish with `ui::list` (a `Table`), `ui::fields` (a `Fields` record), `ui::done` (a sentence) or `ui::finish`; side text goes through `ui::note`, `ui::warn`, `ui::warn_cause` and `ui::hint`. A fan-out finishes with `ui::finish_fanout`, whose `Gaps` warns once per unanswered Server by name and exits 3. Human output names Servers and shows Deployments as `#N`; an ID appears only to tell apart rows that would otherwise read the same, or where the ID is what the next command takes. A success `next:` hint appears only when the next step isn't obvious. Clippy denies `print_stdout` in the CLI crate, so nothing prints around `ui`.
+The result goes to stdout and everything else to stderr. Finish with `ui::list` (a `Table`), `ui::fields` (a `Fields` record), `ui::done` (a sentence) or `ui::finish`; side text goes through `ui::note`, `ui::warn`, `ui::warn_cause` and `ui::hint`. A fan-out finishes with `ui::finish_fanout`, whose `Gaps` warns once per unanswered Server by name and exits 3. Human output names Servers and shows Deployments as `#N`; an ID appears only to tell apart rows that would otherwise read the same, or where the ID is what the next command takes. A success `next:` hint appears only when the next step isn't obvious.
 
 A fan-out result carries its per-Machine `failures` and `omitted`; a per-Machine `not_found` is not a failure. A fan-out answers `not_found` only when every Machine answered; otherwise it prints the partial result (a null value plus `failures`/`omitted`). A printed result with a part missing exits 3; a printed result that is itself a failure, such as a failed Deployment, exits by its code (`Failure::outcome`). A failure before any result prints `{"error": {code, message, details, cause}}` in the RPC error vocabulary. Give a `Failure` its real code (`not_found`, `ambiguous`, `conflict`, `unavailable`); `usage` means the input was wrong.
 
@@ -56,20 +32,10 @@ The command that fixes or follows a failure is a typed hint, `Failure::hint(Hint
 
 JSON fields are only added, never renamed or repurposed; before 0.3.0 a field may be renamed or reshaped outright, with no compatibility alias. A short flag has one meaning across the whole tree.
 
-## Async
+## Decisions
 
-Async is for I/O. CPU-bound work stays sync.
-
-Drop a `std::sync` lock before `.await`. Use `tokio::sync::Mutex` when the guard must live across an await.
-
-## Dispatch
-
-Generics (`T: Trait` / `impl Trait`) until a mixed collection or object-safe trait needs `dyn`. Prefer `&dyn Trait` when the callee does not need ownership. Own the `Box`/`Arc` at that boundary, not inside the module.
-
-## Macros
-
-Reuse the existing newtype and RPC macros for repeated mechanical shapes. A one-off stays a function or generic.
+A decision a model checks lives in `ployz-decide` as a pure function; the model calls it, never re-states it. Statement order across processes (the upgrade receipt and marker, the credential temp file and rename, pool ownership, removal marks, volume marks, Cloud's TypeScript walks) stays a model and links to the code by symbol path.
 
 ## Docs
 
-`//!` on crate and module files. `///` on public items: what it does, and `# Errors` when it returns `Result`. A field or variant whose name and type already say what it holds takes no doc; when one has a doc, it says what the type cannot, such as units, who sets it, or what `None` means. `//` explains why (workaround, design), not what the next line does. Open work is `// TODO:` plus why. Optional GitHub issue: `// TODO(#123):`.
+A field or variant whose name and type already say what it holds takes no doc; when one has a doc, it says what the type cannot, such as units, who sets it, or what `None` means. `//` explains why (workaround, design), not what the next line does.

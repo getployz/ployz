@@ -372,7 +372,7 @@ fn receive_and_execute(
             break;
         }
     }
-    let sealed = match upload.private_file(sealed::RECORD) {
+    let sealed = match upload.private_file(ployz_build::capture::SEALED_RECORD) {
         Ok(None) => None,
         Ok(Some(record)) => match sealed::open(&record, sealing_key_dir) {
             Ok(opened) => {

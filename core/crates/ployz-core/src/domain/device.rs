@@ -90,9 +90,9 @@ impl From<DeviceKey> for String {
     }
 }
 
-/// A Device's name: the first 10 base32 characters of the SHA-256 of its key. The
-/// approver checks a key fetched through Cloud against the code the Device printed,
-/// so Cloud can't substitute a key without finding a 50-bit collision.
+/// A Device's or passkey's name: the first 10 base32 characters of the SHA-256 of its
+/// key. The approver checks a key fetched through Cloud against the code its holder
+/// read out, so Cloud can't substitute a key without finding a 50-bit collision.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(type = "string")]
@@ -101,7 +101,13 @@ pub struct DeviceCode([u8; CODE_LEN]);
 impl DeviceCode {
     #[must_use]
     pub fn of(key: &DeviceKey) -> Self {
-        let digest = Sha256::digest(key.as_bytes());
+        Self::hashing(key.as_bytes())
+    }
+
+    /// The code of a key written as `bytes`.
+    #[must_use]
+    pub fn hashing(bytes: &[u8]) -> Self {
+        let digest = Sha256::digest(bytes);
         let bits = u64::from_be_bytes(
             *digest
                 .as_slice()

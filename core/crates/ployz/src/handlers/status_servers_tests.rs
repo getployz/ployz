@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use ployz_core::{
     ContainerAddress, ContainerKind, ContainerObservation, ContainerObservationParts, ContainerRun,
-    DEPLOYMENT_ID_LABEL, DeploymentLogId, HealthObservation, Machine, MachineFailure,
-    MachineSuccess, MembershipEvidence, PartialResult, RpcErrorCode, ServiceMode, ServiceName,
+    DeploymentLogId, HealthObservation, Machine, MachineFailure, MachineSuccess,
+    MembershipEvidence, PartialResult, RpcErrorCode, ServiceMode, ServiceName, labels,
     service_containers,
 };
 use serde_json::json;
@@ -498,7 +498,7 @@ fn messages(check: &Check) -> Vec<&str> {
     check
         .attention
         .iter()
-        .map(|attention| attention.message.as_str())
+        .map(|attention| attention.message())
         .collect()
 }
 
@@ -662,8 +662,8 @@ fn left_pending_hint(deployed: &[(&str, &str)], authored: &[&str]) -> Vec<Option
     check
         .attention
         .into_iter()
-        .filter(|attention| attention.reason == "copies_left_pending")
-        .map(|attention| attention.next)
+        .filter(|attention| attention.reason() == "copies_left_pending")
+        .map(|attention| attention.command().map(str::to_owned))
         .collect()
 }
 
@@ -695,7 +695,7 @@ fn a_copy_with_no_recorded_rotation_is_not_named_left_pending() {
         check
             .attention
             .iter()
-            .all(|attention| attention.reason != "copies_left_pending")
+            .all(|attention| attention.reason() != "copies_left_pending")
     );
 }
 
@@ -714,7 +714,7 @@ fn a_copy_left_pending_on_a_down_server_is_not_named() {
         check
             .attention
             .iter()
-            .map(|attention| attention.reason.as_str())
+            .map(|attention| attention.reason())
             .collect::<Vec<_>>(),
         ["machine_down"]
     );
@@ -890,7 +890,7 @@ fn a_down_server_hides_a_deployed_service_with_no_copies_behind_its_down_row() {
     let reasons: Vec<&str> = check
         .attention
         .iter()
-        .map(|attention| attention.reason.as_str())
+        .map(|attention| attention.reason())
         .collect();
     assert_eq!(reasons, ["machine_down"]);
 }
@@ -1017,7 +1017,7 @@ fn a_copy_held_under_its_own_deploy_does_not_hide_a_restarting_copy() {
             |parts| {
                 parts
                     .labels
-                    .insert(DEPLOYMENT_ID_LABEL.to_owned(), "run".to_owned());
+                    .insert(labels::DEPLOYMENT_ID.to_owned(), "run".to_owned());
             },
         ),
     ]);
@@ -1329,7 +1329,7 @@ fn an_out_copy_beside_a_down_server_leaves_only_the_down_row() {
     let reasons: Vec<&str> = check
         .attention
         .iter()
-        .map(|attention| attention.reason.as_str())
+        .map(|attention| attention.reason())
         .collect();
     assert_eq!(reasons, ["machine_down"]);
 }
@@ -1439,18 +1439,14 @@ fn status_names_every_copy_on_machines_that_share_a_name() {
         listed_copies(vec![restarting(&second, '1'), restarting(&first, '2')]),
     );
 
-    let [
-        Attention {
-            message,
-            subject: Some(Subject::NotServing { copies, .. }),
-            ..
-        },
-    ] = check.attention.as_slice()
-    else {
+    let [attention] = check.attention.as_slice() else {
+        panic!("one copies_not_serving row");
+    };
+    let Some(Subject::NotServing { copies, .. }) = attention.subject() else {
         panic!("one copies_not_serving row");
     };
     assert_eq!(
-        message,
+        attention.message(),
         "Serving 0 of 2 copies. twin restarting, twin restarting."
     );
     let containers: Vec<ContainerId> = copies.iter().map(|copy| copy.container).collect();
@@ -1476,7 +1472,7 @@ fn status_points_to_the_logs_when_a_named_copy_is_in() {
     let hints: Vec<Option<&str>> = check
         .attention
         .iter()
-        .map(|attention| attention.next.as_deref())
+        .map(|attention| attention.command())
         .collect();
     assert_eq!(hints, [Some("ployz logs web")]);
 }
@@ -1516,7 +1512,7 @@ fn status_names_a_crashing_copy_before_a_machine_that_lacks_a_route() {
     let reasons: Vec<&str> = check
         .attention
         .iter()
-        .map(|attention| attention.reason.as_str())
+        .map(|attention| attention.reason())
         .collect();
     assert_eq!(reasons, ["copies_not_serving", "routes_not_acked"]);
 }
@@ -1697,7 +1693,7 @@ fn status_names_no_machine_for_a_removed_copy_when_a_down_machine_shares_its_sub
         check
             .attention
             .iter()
-            .all(|attention| attention.reason == "machine_down"),
+            .all(|attention| attention.reason() == "machine_down"),
         "{}",
         serde_json::to_value(&check.attention).unwrap()
     );
@@ -1712,7 +1708,7 @@ fn status_names_no_machine_for_a_removed_copy_whose_owner_is_down() {
         check
             .attention
             .iter()
-            .all(|attention| attention.reason == "machine_down"),
+            .all(|attention| attention.reason() == "machine_down"),
         "{}",
         serde_json::to_value(&check.attention).unwrap()
     );
@@ -1746,7 +1742,7 @@ fn status_names_no_machine_for_a_removed_copy_whose_owner_the_reader_calls_down(
         check
             .attention
             .iter()
-            .all(|attention| attention.reason != "routes_stale_address"),
+            .all(|attention| attention.reason() != "routes_stale_address"),
         "{}",
         serde_json::to_value(&check.attention).unwrap()
     );
@@ -2345,8 +2341,8 @@ fn status_warns_when_the_context_it_was_given_does_not_exist() {
 
 #[test]
 fn status_checks_nothing_and_says_nothing_with_no_server_set_up() {
-    if std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists()
-        || std::env::var_os(crate::cli::env::TOKEN).is_some()
+    if ployz_core::MachineLayout::production().socket().exists()
+        || std::env::var_os(crate::env::TOKEN).is_some()
     {
         return;
     }
@@ -2394,5 +2390,115 @@ fn a_check_that_could_not_see_every_server_is_partial() {
         })
         .partial(),
         "status skips the copy check on purpose while a deploy runs"
+    );
+}
+
+fn one_of_each_attention() -> Vec<Attention> {
+    let [one, ..] = machines();
+    let copy = || NotServingCopy {
+        machine: "machine-1".to_owned(),
+        container: container_id('1'),
+        rotation: CopyRotation::In,
+        runtime: ContainerRuntimeObservation::Exited { code: 143 },
+        run: Some(ContainerRun {
+            restart_count: 2,
+            started_at_unix_nanos: 5,
+        }),
+    };
+    vec![
+        Attention::new(
+            Some(Subject::Unanswered {
+                servers: vec!["machine-1".to_owned(), "machine-2".to_owned()],
+            }),
+            "no_server_answers",
+            "None answered.",
+        ),
+        Attention::new(None, "not_found", "No such Project.").next("ployz link --project PROJECT"),
+        Attention::new(None, "deployment_failed", "Deployment 4 did not complete")
+            .deployment(ployz_store::DeploymentId::parse("a".repeat(32)).unwrap())
+            .next("ployz deploy status"),
+        Attention::new(
+            Some(Subject::NotServing {
+                service: qualified("app", "web"),
+                serving: 0,
+                wanted: 1,
+                copies: vec![copy()],
+            }),
+            "copies_not_serving",
+            "Serving 0 of 1 copy.",
+        )
+        .next("ployz logs web"),
+        Attention::new(
+            Some(Subject::LeftPending {
+                service: qualified("app", "web"),
+                copies: vec![copy()],
+            }),
+            "copies_left_pending",
+            "1 copy takes no traffic.",
+        )
+        .next("ployz deploy web"),
+        down_attention(&listed(&[], &[&one]).into_iter().next().unwrap()),
+        Attention::new(
+            Some(Subject::DiskFull {
+                machine: one.name.clone(),
+                free_bytes: 30_000_000,
+            }),
+            "disk_full",
+            "Its disk is nearly full.",
+        ),
+        no_copies(qualified("app", "web"), false, |words| words.join(" ")),
+        not_picked_up(
+            qualified("app", "web"),
+            vec!["machine-1".to_owned(), "machine-2".to_owned()],
+        ),
+        stale_address(
+            qualified("app", "web"),
+            "machine-1".to_owned(),
+            BTreeSet::from([ContainerAddress(Ipv4Addr::new(10, 210, 0, 1))]),
+        ),
+    ]
+}
+
+#[test]
+fn every_attention_and_subject_serializes_to_these_bytes() {
+    let attention = one_of_each_attention();
+    let bytes = attention
+        .iter()
+        .map(|attention| serde_json::to_string(attention).unwrap())
+        .collect::<Vec<_>>();
+    let copy = r#"{"machine":"machine-1","container":"%s","rotation":"in","runtime":{"state":"exited","code":143},"run":{"restart_count":2,"started_at_unix_nanos":5}}"#.replace("%s", &"1".repeat(64));
+    assert_eq!(
+        bytes,
+        [
+            r#"{"reason":"no_server_answers","message":"None answered.","servers":["machine-1","machine-2"]}"#.to_owned(),
+            r#"{"reason":"not_found","message":"No such Project.","next":"ployz link --project PROJECT"}"#.to_owned(),
+            r#"{"reason":"deployment_failed","message":"Deployment 4 did not complete","deployment":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","next":"ployz deploy status"}"#.to_owned(),
+            format!(r#"{{"reason":"copies_not_serving","message":"Serving 0 of 1 copy.","next":"ployz logs web","service":"app/web","serving":0,"wanted":1,"copies":[{copy}]}}"#),
+            format!(r#"{{"reason":"copies_left_pending","message":"1 copy takes no traffic.","next":"ployz deploy web","service":"app/web","copies":[{copy}]}}"#),
+            r#"{"reason":"machine_down","message":"Down. Its copies serve again once it's back.","machine":"machine-1"}"#.to_owned(),
+            r#"{"reason":"disk_full","message":"Its disk is nearly full.","machine":"machine-1","free_bytes":30000000}"#.to_owned(),
+            r#"{"reason":"no_copies","message":"No copies running. For a global Service, no Server matches its placement.","next":"deploy web","service":"app/web"}"#.to_owned(),
+            r#"{"reason":"routes_not_acked","message":"machine-1, machine-2 have not picked up the new copies. Check their network.","service":"app/web","machines":["machine-1","machine-2"]}"#.to_owned(),
+            r#"{"reason":"routes_stale_address","message":"machine-1 routes a copy to 10.210.0.1, which its owner does not report. Check its network.","service":"app/web","machine":"machine-1","addresses":["10.210.0.1"]}"#.to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn every_attention_renders_under_the_label_its_subject_gives() {
+    assert_eq!(
+        super::super::link::rendered(one_of_each_attention()),
+        "organization     ?\n\
+         signed in as     local\n\
+         needs attention  None answered.\n\
+         needs attention  No such Project.\n\
+         needs attention  Deployment 4 did not complete\n\
+         web              Serving 0 of 1 copy.\n\
+         web              1 copy takes no traffic.\n\
+         machine-1        Down. Its copies serve again once it's back.\n\
+         machine-1        Its disk is nearly full.\n\
+         web              No copies running. For a global Service, no Server matches its placement.\n\
+         web              machine-1, machine-2 have not picked up the new copies. Check their network.\n\
+         web              machine-1 routes a copy to 10.210.0.1, which its owner does not report. Check its network.\n"
     );
 }

@@ -58,6 +58,53 @@ minutes.
 Add more servers the same way, even at different providers. Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
+### Approve a join when device enforcement is on
+
+An existing server must approve the new server before it publishes the assignment or shares
+the Cluster's Sealing Key. When you add a server from an approved computer, the CLI signs that
+approval with your Device key.
+
+A copy-paste join on a new server has no approved Device key. If the join asks for approval,
+copy the code from that server's refusal. From an approved computer, run the command it names:
+
+```sh
+ployz device approve --join CODE
+```
+
+Compare the 20-character code with the one printed on the server. The code carries 100 bits
+of the Server identity and key fingerprint. Check the name, subnet, and endpoints the CLI
+shows before it signs. Then rerun the same join command on the server, keeping its token and
+options. A new admission needs an approval less than 15 minutes old. If the reply is lost,
+rerun the same command to recover the stored capsule, even after the approval expires.
+
+A server that receives a valid approved capsule takes its Devices and starting peers only
+from that approval and enables enforcement. Each enforcing server checks new Machine rows
+against its own Devices before accepting them as members or WireGuard peers. The servers in the
+starting set you signed with `ployz device enforce` are trusted without a join approval. A peer
+saved by an older unsigned join that isn't in that set is dropped as a WireGuard and gossip peer,
+including after a restart.
+
+The admitting server doesn't publish the new server as a member until the new server proves it
+opened its capsule. Opening the capsule gives the new server the Cluster's Sealing Key, and it
+answers with a confirmation only that key can produce. The join command sends the confirmation
+back through the same path as the join, and the admitting server checks it before it publishes
+the new server. Until then, no server peers with it. A join command from before this release
+never sends a confirmation, so its join times out waiting for the new server to become ready.
+Update ployz where you run the join, then rerun it.
+
+A fresh server has no independent pin for its first authority. If Cloud withholds the
+capsule during an approved join, the new server joins without the Sealing Key, under Devices
+Cloud chose and with enforcement off. It can't confirm, so no honest server publishes or peers
+with it. It holds no sealed secret, reaches no server over the mesh, and admits no other server.
+Cloud can also forge a capsule under its own Sealing Key and Devices. Its confirmation fails
+the admitting server's check, and honest servers refuse that forged membership and never wrap
+the real Sealing Key to an unapproved key. Without an approval, bootstrap keeps today's
+behavior and takes Cloud's Devices and peers.
+
+Pinning the joining server's initial authority through verified SSH or a short code matched in
+the browser is follow-up work. This release does not change the bootstrap default for customers
+who use only the dashboard.
+
 ## Add a standalone server
 
 To start a Cluster outside Ployz Cloud, run this on the Linux server:
@@ -86,6 +133,57 @@ token when it asks. The card then says **Listening for servers…** until the fi
 
 Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can make a token. For a member, **Get install command** and **Add servers**
 say so instead.
+
+### Choose a name and Cloudflare Tunnel first
+
+Under **Get install command**, **Use Cloudflare Tunnel instead of public ports** opens two
+choices for the Cluster your first server starts. Leave it closed and the first server starts as
+it always did: ports 80 and 443 open, and your apps get addresses under your organization's free
+domain.
+
+- **Cluster name** is the name your services' private addresses end in, like
+  `.acme.ployz.internal`. It starts as your organization's slug. Change it here, or later in
+  **Organization → Network**.
+- **Cloudflare Tunnel** serves your apps through your own Cloudflare zone, so your servers never
+  open ports 80 and 443. Turn it on, paste a Cloudflare API token with **Zone Read**, **DNS Edit**
+  and **Cloudflare Tunnel Edit**, and click **Find zones**. Pick the
+  zone, like `example.com`, and click **Check**. Ployz checks the token can set up the tunnel and
+  that `*.example.com` is free, and creates nothing yet. The card says **Ready for example.com**.
+
+**Get install command** waits until Cloudflare is ready. Turn the switch off, or close the
+section before it's ready, and the card says **Without Cloudflare Tunnel, your servers open ports
+80 and 443.**
+
+With Cloudflare ready, the install line starts your first server with ports 80 and 443 closed.
+Keep the tab open while it joins: the tab holds your token, and Ployz never stores it. Once the
+server joins, Ployz creates a tunnel named `ployz-<your organization>` and one `*.example.com`
+record, opens the tunnel on the server, drops the token, and the Servers page says **Cloudflare
+Tunnel is set up on example.com**. With no open ports to keep your apps answering meanwhile,
+Ployz then switches your web traffic to the tunnel by itself, and a deployment that is already
+running when it looks moves with it. Your apps get addresses like `web-production.example.com`. If that
+switch stops, **Organization → Network** says why, and **Review and switch** finishes it.
+
+If setup stops, the Servers page says why. **Try again** runs it with the same token. **Use
+public ports instead** opens ports 80 and 443. A setup that fails once it has reached your server
+opens the ports instead, so your apps answer, and says so. If you closed the tab before the server joined, the
+Servers page says your apps aren't reachable yet: paste the token again to finish, or open the
+ports. A server whose `ployz` predates this can't start closed, and enrolling it says to update
+`ployz` or get an install command without Cloudflare Tunnel.
+
+A Cluster remembers the doors you chose: `ployz server add --ingress-closed` and `ployz ingress use`
+record them on the Cluster. A server joins with them whichever way you add it, and a server that
+restarts doesn't start a tunnel connector the Cluster left closed. A server whose `ployz` is too old to follow
+them can't join a Cluster that is closed or uses the tunnel, with or without the ports. Adding it says
+to update `ployz` on it and run the join command again. A Cluster that never recorded its doors works
+as it did: new servers copy the doors the servers already run. So does one whose entry server runs an
+older `ployz`, when no server of the Cluster can record doors. When one can, `ployz ingress use` run
+through the older server records the doors on that one and goes on.
+
+The bottom bar of an environment offers the same card under **Add servers** while you have no
+server. You can skip it and build your project first.
+
+Once a server has joined, the card is gone. Rename the Cluster and switch between public ports
+and Cloudflare Tunnel in **Organization → Network**; see [Cloudflare Tunnel](../services/cloudflare-tunnel.md).
 
 Once you have a server, or one is waiting, make more tokens with **Add servers**:
 
@@ -329,8 +427,13 @@ these there:
 
 | Port | From | Needed for |
 | --- | --- | --- |
-| TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic |
+| TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic. Not needed behind a [Cloudflare Tunnel](../services/cloudflare-tunnel.md) |
 | UDP 51820 | Your other servers | Services on different servers reaching each other |
+
+On a server that runs firewalld (`systemctl is-active firewalld` says `active`), also open UDP
+51820 and trust `ployz-wg` in firewalld, as
+[A server that runs firewalld doesn't answer your other servers](../troubleshooting/servers.md#a-server-that-runs-firewalld-doesnt-answer-your-other-servers)
+shows.
 
 ## IPv6-only servers
 
@@ -373,8 +476,8 @@ images from ghcr.io.
   [The install stops while checking Docker](../troubleshooting/servers.md#the-install-stops-while-checking-docker).
   Docker's default never rotates container logs, so they can fill the disk; see
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
-- **Pinning your own Caddy?** `--ingress-image` needs Caddy 2.8 or newer. Ployz refuses an older
-  version tag.
+- **Which Caddy runs?** The one the server's Ployz release ships with. Upgrading Ployz on the
+  server moves its web server to the new release's Caddy.
 - **A server that never joined doesn't hold up the next one.** If a token was used but its server
   never joined, `ployz server ls` lists it as down with no version and warns that it hasn't
   joined and may still be joining. `ployz status` shows the same. Both name

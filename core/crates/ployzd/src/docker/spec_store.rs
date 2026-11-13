@@ -13,7 +13,8 @@ use ployz_core::{
     ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun, CopyRotation,
     DockerVolumeName, Namespace, ResolvedServiceSpec, VolumeGen,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::{Mutex, MutexGuard, watch};
@@ -40,6 +41,9 @@ CREATE TABLE IF NOT EXISTS creations (
     id   TEXT NOT NULL
 );
 ";
+/// The tables keyed by a Container's Docker ID, which move and are dropped with it.
+const ID_TABLES: [&str; 3] = [SPEC_TABLE, "rotations", "stops"];
+const SPEC_TABLE: &str = "containers";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The namespace, kind and creation key a keyed create reserved. A container-level
@@ -90,50 +94,98 @@ impl MachineSpecStore {
         })
     }
 
+    /// Runs `work` on a blocking thread over a connection of its own.
+    async fn run<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let path = self.path.clone();
+        blocking(move || work(&mut connect(&path)?)).await
+    }
+
+    /// The JSON column `query` selects for `container_id`, decoded; `None` when the
+    /// Container has no row.
+    async fn decoded<T: DeserializeOwned>(
+        &self,
+        query: &'static str,
+        container_id: &ContainerId,
+    ) -> Result<Option<T>, Error> {
+        let container_id = container_id.to_string();
+        let encoded = self
+            .run(move |connection| {
+                connection
+                    .query_row(query, [container_id], |row| row.get::<_, String>(0))
+                    .optional()
+                    .map_err(Error::from)
+            })
+            .await?;
+        encoded
+            .map(|encoded| serde_json::from_str(&encoded).map_err(Error::from))
+            .transpose()
+    }
+
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.
     pub async fn rotation(
         &self,
         container_id: &ContainerId,
     ) -> Result<Option<CopyRotation>, Error> {
-        let path = self.path.clone();
+        self.decoded("SELECT rotation FROM rotations WHERE id = ?1", container_id)
+            .await
+    }
+
+    /// A Container's spec and its rotation, read over one connection. `None` when it has
+    /// no spec.
+    pub async fn spec_and_rotation(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<(ResolvedServiceSpec, Option<CopyRotation>)>, Error> {
         let container_id = container_id.to_string();
-        let encoded = blocking(move || {
-            connect(&path)?
-                .query_row(
-                    "SELECT rotation FROM rotations WHERE id = ?1",
-                    [container_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(Error::from)
-        })
-        .await?;
-        encoded
-            .map(|encoded| serde_json::from_str(&encoded).map_err(Error::from))
-            .transpose()
+        let (spec, rotation) = self
+            .run(move |connection| {
+                let read = |query: &str| {
+                    connection
+                        .query_row(query, [&container_id], |row| row.get::<_, String>(0))
+                        .optional()
+                };
+                let spec = read("SELECT service_spec FROM containers WHERE id = ?1")?;
+                let rotation = match spec {
+                    Some(_) => read("SELECT rotation FROM rotations WHERE id = ?1")?,
+                    None => None,
+                };
+                Ok((spec, rotation))
+            })
+            .await?;
+        let Some(spec) = spec else {
+            return Ok(None);
+        };
+        Ok(Some((
+            serde_json::from_str(&spec)?,
+            rotation
+                .map(|rotation| serde_json::from_str(&rotation))
+                .transpose()?,
+        )))
     }
 
     pub async fn rotations(
         &self,
         container_ids: Vec<ContainerId>,
     ) -> Result<BTreeMap<ContainerId, CopyRotation>, Error> {
-        let path = self.path.clone();
-        let encoded = blocking(move || {
-            let connection = connect(&path)?;
-            let mut statement =
-                connection.prepare("SELECT rotation FROM rotations WHERE id = ?1")?;
-            let mut encoded = Vec::new();
-            for container_id in container_ids {
-                if let Some(rotation) = statement
-                    .query_row([container_id.to_string()], |row| row.get::<_, String>(0))
-                    .optional()?
-                {
-                    encoded.push((container_id, rotation));
+        let encoded = self
+            .run(move |connection| {
+                let mut statement =
+                    connection.prepare("SELECT rotation FROM rotations WHERE id = ?1")?;
+                let mut encoded = Vec::new();
+                for container_id in container_ids {
+                    if let Some(rotation) = statement
+                        .query_row([container_id.to_string()], |row| row.get::<_, String>(0))
+                        .optional()?
+                    {
+                        encoded.push((container_id, rotation));
+                    }
                 }
-            }
-            Ok(encoded)
-        })
-        .await?;
+                Ok(encoded)
+            })
+            .await?;
         encoded
             .into_iter()
             .map(|(container_id, encoded)| Ok((container_id, serde_json::from_str(&encoded)?)))
@@ -148,29 +200,28 @@ impl MachineSpecStore {
         present: Vec<ContainerId>,
         service_id: String,
     ) -> Result<bool, Error> {
-        let path = self.path.clone();
-        let absent = blocking(move || {
-            let present = present
-                .iter()
-                .map(ContainerId::as_str)
-                .collect::<HashSet<_>>();
-            let connection = connect(&path)?;
-            let mut statement = connection.prepare(
-                "SELECT id, service_spec FROM containers WHERE NOT EXISTS \
+        let absent = self
+            .run(move |connection| {
+                let present = present
+                    .iter()
+                    .map(ContainerId::as_str)
+                    .collect::<HashSet<_>>();
+                let mut statement = connection.prepare(
+                    "SELECT id, service_spec FROM containers WHERE NOT EXISTS \
                  (SELECT 1 FROM creations WHERE creations.id = containers.id)",
-            )?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows
-                .into_iter()
-                .filter(|(id, _)| !present.contains(id.as_str()))
-                .map(|(_, spec)| spec)
-                .collect::<Vec<_>>())
-        })
-        .await?;
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows
+                    .into_iter()
+                    .filter(|(id, _)| !present.contains(id.as_str()))
+                    .map(|(_, spec)| spec)
+                    .collect::<Vec<_>>())
+            })
+            .await?;
         for encoded in absent {
             let spec: ResolvedServiceSpec = serde_json::from_str(&encoded)?;
             if spec.service_id.as_str() == service_id {
@@ -185,9 +236,7 @@ impl MachineSpecStore {
         &self,
         container_ids: Vec<ContainerId>,
     ) -> Result<Vec<ContainerId>, Error> {
-        let path = self.path.clone();
-        blocking(move || {
-            let connection = connect(&path)?;
+        self.run(move |connection| {
             let mut statement = connection.prepare(
                 "SELECT EXISTS (SELECT 1 FROM containers WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM rotations WHERE id = ?1)",
             )?;
@@ -207,9 +256,7 @@ impl MachineSpecStore {
         &self,
         container_ids: Vec<ContainerId>,
     ) -> Result<Vec<ContainerId>, Error> {
-        let path = self.path.clone();
-        blocking(move || {
-            let connection = connect(&path)?;
+        self.run(move |connection| {
             let mut statement = connection.prepare(
                 "SELECT EXISTS (SELECT 1 FROM containers WHERE id = ?1 AND json_extract(service_spec, '$.container.healthcheck') IS NULL)",
             )?;
@@ -229,22 +276,8 @@ impl MachineSpecStore {
         &self,
         container_id: &ContainerId,
     ) -> Result<Option<ContainerRun>, Error> {
-        let path = self.path.clone();
-        let container_id = container_id.to_string();
-        let encoded = blocking(move || {
-            connect(&path)?
-                .query_row(
-                    "SELECT run FROM stops WHERE id = ?1",
-                    [container_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(Error::from)
-        })
-        .await?;
-        encoded
-            .map(|encoded| serde_json::from_str(&encoded).map_err(Error::from))
-            .transpose()
+        self.decoded("SELECT run FROM stops WHERE id = ?1", container_id)
+            .await
     }
 
     #[must_use]
@@ -266,9 +299,8 @@ impl MachineSpecStore {
     /// Forget every floor, for a Machine leaving its cluster.
     pub async fn clear_floors(&self) -> Result<(), Error> {
         let _turn = self.floor_turn().await;
-        let path = self.path.clone();
-        blocking(move || {
-            connect(&path)?.execute("DELETE FROM volume_floors", [])?;
+        self.run(move |connection| {
+            connection.execute("DELETE FROM volume_floors", [])?;
             Ok(())
         })
         .await
@@ -285,22 +317,11 @@ impl MachineSpecStore {
         &self,
         container_id: &ContainerId,
     ) -> Result<Option<ResolvedServiceSpec>, Error> {
-        let path = self.path.clone();
-        let container_id = container_id.to_string();
-        let encoded = blocking(move || {
-            connect(&path)?
-                .query_row(
-                    "SELECT service_spec FROM containers WHERE id = ?1",
-                    [container_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(Error::from)
-        })
-        .await?;
-        encoded
-            .map(|encoded| serde_json::from_str(&encoded).map_err(Error::from))
-            .transpose()
+        self.decoded(
+            "SELECT service_spec FROM containers WHERE id = ?1",
+            container_id,
+        )
+        .await
     }
 }
 
@@ -312,11 +333,11 @@ impl ConfigOperation<'_> {
         container_id: &ContainerId,
         rotation: &CopyRotation,
     ) -> Result<(), Error> {
-        let path = self.store.path.clone();
         let container_id = container_id.to_string();
         let rotation = serde_json::to_string(rotation)?;
-        blocking(move || {
-            connect(&path)?.execute(
+        self.store
+            .run(move |connection| {
+            connection.execute(
                 "INSERT INTO rotations (id, rotation) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET rotation = excluded.rotation",
                 params![container_id, rotation],
             )?;
@@ -332,10 +353,9 @@ impl ConfigOperation<'_> {
         &mut self,
         container_ids: Vec<ContainerId>,
     ) -> Result<(), Error> {
-        let path = self.store.path.clone();
         let rotation = serde_json::to_string(&CopyRotation::In)?;
-        blocking(move || {
-            let mut connection = connect(&path)?;
+        self.store
+            .run(move |connection| {
             let transaction = connection.transaction()?;
             for container_id in container_ids {
                 transaction.execute(
@@ -355,39 +375,38 @@ impl ConfigOperation<'_> {
         &mut self,
         container_ids: Vec<ContainerId>,
     ) -> Result<bool, Error> {
-        let path = self.store.path.clone();
-        blocking(move || {
-            let mut connection = connect(&path)?;
-            let transaction = connection.transaction()?;
-            let mut adopted = false;
-            for container_id in container_ids {
-                let container_id = container_id.to_string();
-                let Some(encoded) = transaction
-                    .query_row(
-                        "SELECT service_spec FROM containers WHERE id = ?1",
-                        [&container_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-                else {
-                    continue;
-                };
-                // Listing skips a spec it cannot decode; it must not stop the others.
-                let Ok(mut spec) = serde_json::from_str::<ResolvedServiceSpec>(&encoded) else {
-                    continue;
-                };
-                if spec.adopt_unprobed() {
-                    transaction.execute(
-                        "UPDATE containers SET service_spec = ?2 WHERE id = ?1",
-                        params![container_id, serde_json::to_string(&spec)?],
-                    )?;
-                    adopted = true;
+        self.store
+            .run(move |connection| {
+                let transaction = connection.transaction()?;
+                let mut adopted = false;
+                for container_id in container_ids {
+                    let container_id = container_id.to_string();
+                    let Some(encoded) = transaction
+                        .query_row(
+                            "SELECT service_spec FROM containers WHERE id = ?1",
+                            [&container_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?
+                    else {
+                        continue;
+                    };
+                    // Listing skips a spec it cannot decode; it must not stop the others.
+                    let Ok(mut spec) = serde_json::from_str::<ResolvedServiceSpec>(&encoded) else {
+                        continue;
+                    };
+                    if spec.adopt_unprobed() {
+                        transaction.execute(
+                            "UPDATE containers SET service_spec = ?2 WHERE id = ?1",
+                            params![container_id, serde_json::to_string(&spec)?],
+                        )?;
+                        adopted = true;
+                    }
                 }
-            }
-            transaction.commit()?;
-            Ok(adopted)
-        })
-        .await
+                transaction.commit()?;
+                Ok(adopted)
+            })
+            .await
     }
 
     /// Record that this Machine stopped `run` for a `Stopped` want, and republish
@@ -399,11 +418,11 @@ impl ConfigOperation<'_> {
         container_id: &ContainerId,
         run: &ContainerRun,
     ) -> Result<(), Error> {
-        let path = self.store.path.clone();
         let container_id = container_id.to_string();
         let run = serde_json::to_string(run)?;
-        blocking(move || {
-            connect(&path)?.execute(
+        self.store
+            .run(move |connection| {
+            connection.execute(
                 "INSERT INTO stops (id, run) SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM containers WHERE id = ?1) ON CONFLICT (id) DO UPDATE SET run = excluded.run",
                 params![container_id, run],
             )?;
@@ -426,12 +445,11 @@ impl ConfigOperation<'_> {
         slot: Option<&CreationSlot>,
         spec: &ResolvedServiceSpec,
     ) -> Result<(), Error> {
-        let path = self.store.path.clone();
         let container_id = container_id.to_string();
         let slot = slot.cloned();
         let spec = serde_json::to_string(spec)?;
-        blocking(move || {
-            let mut connection = connect(&path)?;
+        self.store
+            .run(move |connection| {
             let transaction = connection.transaction()?;
             transaction.execute(
                 "INSERT INTO containers (id, service_spec) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET service_spec = excluded.service_spec",
@@ -457,8 +475,16 @@ impl ConfigOperation<'_> {
         &mut self,
         listed: Vec<(ContainerId, Option<CreationSlot>)>,
     ) -> Result<bool, Error> {
-        let path = self.store.path.clone();
-        blocking(move || Ok(!reconcile_creations(&path, &listed, false)?.is_empty())).await
+        self.store
+            .run(move |connection| {
+                let mut restored = false;
+                reconcile_creations(connection, &listed, |_, _| {
+                    restored = true;
+                    Ok(())
+                })?;
+                Ok(restored)
+            })
+            .await
     }
 
     /// Move the records of each listed Container's restored-over ID onto it, so it is
@@ -468,32 +494,54 @@ impl ConfigOperation<'_> {
         &mut self,
         listed: Vec<(ContainerId, Option<CreationSlot>)>,
     ) -> Result<Vec<(String, ContainerId)>, Error> {
-        let path = self.store.path.clone();
-        blocking(move || reconcile_creations(&path, &listed, true)).await
+        self.store
+            .run(move |connection| {
+                let mut moved = Vec::new();
+                reconcile_creations(connection, &listed, |transaction, restored| {
+                    for table in ID_TABLES {
+                        transaction.execute(
+                            &format!("UPDATE {table} SET id = ?2 WHERE id = ?1"),
+                            params![restored.old, restored.new.as_str()],
+                        )?;
+                    }
+                    transaction.execute(
+                        "UPDATE creations SET id = ?2 WHERE slot = ?1",
+                        params![restored.slot, restored.new.as_str()],
+                    )?;
+                    moved.push((restored.old.clone(), restored.new));
+                    Ok(())
+                })?;
+                Ok(moved)
+            })
+            .await
     }
 
     pub async fn remove(&mut self, container_id: &ContainerId) -> Result<bool, Error> {
         let path = self.store.path.clone();
         let container_id = container_id.to_string();
-        blocking(move || {
-            let connection = connect(&path)?;
-            connection.execute("DELETE FROM rotations WHERE id = ?1", [&container_id])?;
-            connection.execute("DELETE FROM stops WHERE id = ?1", [&container_id])?;
-            let removed =
-                connection.execute("DELETE FROM containers WHERE id = ?1", [&container_id])? > 0;
-            connection.execute("DELETE FROM creations WHERE id = ?1", [container_id])?;
-            if removed
-                && let Err(error) = referenced_config_names(&connection)
-                    .and_then(|retained| garbage_collect_config_files(&path, &retained))
-            {
-                eprintln!(
-                    "failed to reclaim materialized configs: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-            }
-            Ok(removed)
-        })
-        .await
+        self.store
+            .run(move |connection| {
+                let mut removed = false;
+                for table in ID_TABLES.iter().rev() {
+                    let rows = connection.execute(
+                        &format!("DELETE FROM {table} WHERE id = ?1"),
+                        [&container_id],
+                    )?;
+                    removed |= *table == SPEC_TABLE && rows > 0;
+                }
+                connection.execute("DELETE FROM creations WHERE id = ?1", [container_id])?;
+                if removed
+                    && let Err(error) = referenced_config_names(connection)
+                        .and_then(|retained| garbage_collect_config_files(&path, &retained))
+                {
+                    eprintln!(
+                        "failed to reclaim materialized configs: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
+                }
+                Ok(removed)
+            })
+            .await
     }
 
     pub async fn materialize_config(
@@ -509,12 +557,12 @@ impl ConfigOperation<'_> {
 
     pub async fn garbage_collect_configs(&mut self) -> Result<(), Error> {
         let path = self.store.path.clone();
-        blocking(move || {
-            let connection = connect(&path)?;
-            let retained = referenced_config_names(&connection)?;
-            garbage_collect_config_files(&path, &retained)
-        })
-        .await
+        self.store
+            .run(move |connection| {
+                let retained = referenced_config_names(connection)?;
+                garbage_collect_config_files(&path, &retained)
+            })
+            .await
     }
 }
 
@@ -533,11 +581,10 @@ impl FloorTurn<'_> {
         name: &DockerVolumeName,
         r#gen: VolumeGen,
     ) -> Result<Result<(), VolumeGen>, super::Error> {
-        let path = self.store.path.clone();
         let name = name.to_string();
-        blocking(move || {
-            let connection = connect(&path)?;
-            let floor = volume_floor(&connection, &name)?;
+        self.store
+            .run(move |connection| {
+            let floor = volume_floor(connection, &name)?;
             if r#gen < floor {
                 return Ok(Err(floor));
             }
@@ -560,14 +607,14 @@ impl FloorTurn<'_> {
         name: &DockerVolumeName,
         r#gen: VolumeGen,
     ) -> Result<Result<(), VolumeGen>, super::Error> {
-        let path = self.store.path.clone();
         let name = name.to_string();
-        blocking(move || {
-            let floor = volume_floor(&connect(&path)?, &name)?;
-            Ok(if r#gen < floor { Err(floor) } else { Ok(()) })
-        })
-        .await
-        .map_err(super::Error::from)
+        self.store
+            .run(move |connection| {
+                let floor = volume_floor(connection, &name)?;
+                Ok(if r#gen < floor { Err(floor) } else { Ok(()) })
+            })
+            .await
+            .map_err(super::Error::from)
     }
 }
 
@@ -695,17 +742,23 @@ fn garbage_collect_config_files(
     Ok(())
 }
 
+/// A listed Container with no spec whose slot names an ID absent from the listing that
+/// holds a spec: a Container a restore recreated under a new ID.
+struct Restored {
+    slot: String,
+    old: String,
+    new: ContainerId,
+}
+
 /// Point each listed slot that has no holder with a spec at the listed Container
-/// holding its spec, and return each listed Container with no spec whose slot names
-/// an ID absent from `listed` that holds a spec: one a restore recreated under a new
-/// ID. With `adopt`, that old ID's records move to the new ID, so `listed` must be
-/// read under the lock.
+/// holding its spec, and call `on_restored` for each [`Restored`] in the order found,
+/// inside the same transaction. A caller that adopts moves the old ID's records in it,
+/// so `listed` must be read under the config lock.
 fn reconcile_creations(
-    path: &Path,
+    connection: &mut Connection,
     listed: &[(ContainerId, Option<CreationSlot>)],
-    adopt: bool,
-) -> Result<Vec<(String, ContainerId)>, Error> {
-    let mut connection = connect(path)?;
+    mut on_restored: impl FnMut(&Transaction, &Restored) -> Result<(), Error>,
+) -> Result<(), Error> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let present = listed
         .iter()
@@ -718,7 +771,6 @@ fn reconcile_creations(
             |row| row.get::<_, bool>(0),
         )
     };
-    let mut restored = Vec::new();
     for (id, slot) in listed {
         let Some(CreationSlot(slot)) = slot else {
             continue;
@@ -741,22 +793,17 @@ fn reconcile_creations(
         if present.contains(old.as_str()) || !has_spec(&old)? {
             continue;
         }
-        if adopt {
-            for table in ["containers", "rotations", "stops"] {
-                transaction.execute(
-                    &format!("UPDATE {table} SET id = ?2 WHERE id = ?1"),
-                    params![old, id.as_str()],
-                )?;
-            }
-            transaction.execute(
-                "UPDATE creations SET id = ?2 WHERE slot = ?1",
-                params![slot, id.as_str()],
-            )?;
-        }
-        restored.push((old, *id));
+        on_restored(
+            &transaction,
+            &Restored {
+                slot: slot.clone(),
+                old,
+                new: *id,
+            },
+        )?;
     }
     transaction.commit()?;
-    Ok(restored)
+    Ok(())
 }
 
 fn initialize(path: &Path) -> Result<Connection, Error> {
@@ -808,6 +855,7 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::labels;
     use std::{
         fs,
         os::unix::fs::{MetadataExt, PermissionsExt},
@@ -975,7 +1023,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_copy_created_before_rotation_existed_is_in_until_a_rotation_is_written() {
-        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+        use crate::docker::test_support::runtime_with_running_container;
         use ployz_core::{CopyRotation, MachineId};
 
         let (runtime, fake, id) = runtime_with_running_container().await;
@@ -988,7 +1036,7 @@ mod tests {
             .unwrap()
             .as_object_mut()
             .unwrap()
-            .remove(LABEL_GEN)
+            .remove(labels::GEN)
             .unwrap();
         let machine = MachineId::random();
         let rotation = || async {
@@ -1023,11 +1071,11 @@ mod tests {
         crate::docker::test_support::FakeDocker,
         ContainerId,
     ) {
-        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+        use crate::docker::test_support::runtime_with_running_container;
 
         let (runtime, fake, id) = runtime_with_running_container().await;
         edit_config(&fake, |config| {
-            labels(config).remove(LABEL_GEN).unwrap();
+            labels(config).remove(labels::GEN).unwrap();
         });
         assert_eq!(stored_healthcheck(&runtime, &id).await, None);
         (runtime, fake, id)
@@ -1115,12 +1163,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_system_copy_with_no_healthcheck_keeps_it() {
-        use crate::docker::LABEL_NAMESPACE;
-
         let (runtime, fake, _id) = unstamped_copy_with_no_healthcheck().await;
         edit_config(&fake, |config| {
             labels(config).insert(
-                LABEL_NAMESPACE.into(),
+                labels::NAMESPACE.into(),
                 ployz_core::Namespace::system().to_string().into(),
             );
         });
@@ -1158,7 +1204,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_sync_adopts_each_unstamped_copy_whose_spec_decodes() {
-        use crate::docker::LABEL_GEN;
         use crate::docker::test_support::{
             FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
         };
@@ -1195,7 +1240,7 @@ mod tests {
                 .pointer_mut("/Config/Labels")
                 .and_then(serde_json::Value::as_object_mut)
                 .unwrap()
-                .remove(LABEL_GEN)
+                .remove(labels::GEN)
                 .unwrap();
         }
         let [undecodable, valid] = ids.try_into().unwrap();
@@ -1618,5 +1663,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.rotation(&id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_spec_and_its_rotation_are_read_together_and_removal_drops_every_id_table() {
+        use crate::docker::test_support::runtime_with_running_container;
+        use ployz_core::CopyRotation;
+
+        let (runtime, _fake, id) = runtime_with_running_container().await;
+        let store = MachineSpecStore::open(runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        let (_, rotation) = store.spec_and_rotation(&id).await.unwrap().unwrap();
+        assert_eq!(rotation, store.rotation(&id).await.unwrap());
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&CopyRotation::Out)
+            .await
+            .unwrap();
+        let (spec, rotation) = store.spec_and_rotation(&id).await.unwrap().unwrap();
+        assert_eq!(rotation, Some(CopyRotation::Out));
+        assert_eq!(Some(spec), store.get(&id).await.unwrap());
+
+        runtime.remove(&id, false, true).await.unwrap();
+        assert!(store.spec_and_rotation(&id).await.unwrap().is_none());
+        assert_eq!(store.stopped_run(&id).await.unwrap(), None);
     }
 }

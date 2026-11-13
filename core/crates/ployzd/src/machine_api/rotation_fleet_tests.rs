@@ -54,6 +54,7 @@ const SETTLE: Duration = Duration::from_secs(10);
 const CLUSTER_CONTAINERS: &str = "SELECT id, machine_id, container FROM containers ORDER BY id";
 const SERVICE_ROUTES: &str =
     "SELECT machine_id, service_id, containers FROM ingress_routes WHERE service_id = ?";
+const CONTAINER_ROW: &str = "SELECT machine_id, container FROM containers WHERE id = ?";
 
 struct Node {
     service: MachineService,
@@ -61,6 +62,9 @@ struct Node {
     fake: FakeDocker,
     row: Machine,
 }
+
+/// The Machine whose copies the next peer inspect holds, and the gate it waits on.
+type HeldInspect = Arc<Mutex<Option<(MachineId, Arc<tokio::sync::Barrier>)>>>;
 
 struct Fleet {
     nodes: Vec<Node>,
@@ -72,6 +76,8 @@ struct Fleet {
     cluster: FakeCluster,
     /// Machines whose daemons don't answer a peer's inspect, though their membership is Up.
     silent: Arc<Mutex<BTreeSet<MachineId>>>,
+    /// The next peer inspect of a copy on this Machine waits on the gate.
+    held: HeldInspect,
 }
 
 impl Fleet {
@@ -91,13 +97,34 @@ impl Fleet {
         let shutdown = CancellationToken::new();
         let runtimes = Arc::new(Mutex::new(BTreeMap::<MachineId, ContainerRuntime>::new()));
         let silent = Arc::new(Mutex::new(BTreeSet::new()));
+        let held = HeldInspect::default();
         let peers: crate::machine::PeerInspect = {
-            let (runtimes, silent) = (Arc::clone(&runtimes), Arc::clone(&silent));
+            let (runtimes, silent, held) = (
+                Arc::clone(&runtimes),
+                Arc::clone(&silent),
+                Arc::clone(&held),
+            );
             Arc::new(move |machine, container| {
                 let runtime = (!silent.lock().unwrap().contains(&machine))
                     .then(|| runtimes.lock().unwrap().get(&machine).cloned())
                     .flatten();
-                Box::pin(async move { runtime?.inspect_managed(&container, &machine).await.ok() })
+                let gate = {
+                    let mut held = held.lock().unwrap();
+                    held.as_ref()
+                        .is_some_and(|(on, _)| *on == machine)
+                        .then(|| held.take().map(|(_, gate)| gate))
+                        .flatten()
+                };
+                Box::pin(async move {
+                    if let Some(gate) = gate {
+                        gate.wait().await;
+                        gate.wait().await;
+                    }
+                    runtime?
+                        .inspect_managed_details(&container, &machine)
+                        .await
+                        .ok()
+                })
             })
         };
         let mut nodes = Vec::new();
@@ -157,7 +184,17 @@ impl Fleet {
             dir,
             cluster,
             silent,
+            held,
         }
+    }
+
+    /// Hold the next inspect a peer makes of a copy on `index`, before it reads the
+    /// copy, until the returned gate is waited on twice: once to see it held, once to
+    /// release it.
+    fn hold_inspect(&self, index: usize) -> Arc<tokio::sync::Barrier> {
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *self.held.lock().unwrap() = Some((self.id(index), Arc::clone(&gate)));
+        gate
     }
 
     /// `index`'s daemon stops answering its peers' inspects.
@@ -629,6 +666,7 @@ fn machine_row(octet: u8) -> Machine {
             format!("192.0.2.{octet}:51820").parse().unwrap(),
         )],
         runtime: MachineRuntime::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -778,7 +816,14 @@ fn gone(container: ContainerId) -> ContainerWant {
 }
 
 async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
-    let request = op::EnsureContainer::into_request(EnsureContainerRequest { want });
+    let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+        teardown: None,
+        preview: None,
+        want,
+        approval: None,
+        deploy: None,
+        rule: None,
+    });
     node.service
         .ensure_container(Request::new(request.encode().unwrap()))
         .await
@@ -1056,6 +1101,111 @@ async fn stale_out_race() {
     let reply = ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))).await;
 
     refused(&reply, ContainerRefusalReason::LastIn);
+    assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
+}
+
+/// A late Out for A read B's row In, and before it reached its turn another run took
+/// B out. B's row still read In when A's guard read it, so only B's owner knows B left.
+#[tokio::test]
+async fn an_out_that_read_its_sibling_in_before_the_sibling_left_is_refused() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    let b = fleet.routed(1, "b", "api", 1).await;
+    fleet.ack_all(&api, &[a, b]).await;
+    let reading = fleet.cluster.hold_query(CONTAINER_ROW, 1);
+
+    let (late, ()) = tokio::join!(
+        ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))),
+        async {
+            reading.wait().await;
+            ensured(&ensure(fleet.node(1), out(b, false, Some(CopyRotation::In))).await);
+            reading.wait().await;
+        }
+    );
+
+    refused(&late, ContainerRefusalReason::LastIn);
+    assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
+    assert_eq!(fleet.node(1).rotation(b).await, CopyRotation::Out);
+}
+
+/// Two Outs race on the last two copies. A's owner has marked A leaving and is asking
+/// B's owner when B's Out asks A's: B's sees A leaving and refuses, then A's sees B
+/// still In and lets A go.
+#[tokio::test]
+async fn of_two_outs_racing_on_the_last_two_copies_one_is_refused() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    let b = fleet.routed(1, "b", "api", 1).await;
+    fleet.ack_all(&api, &[a, b]).await;
+    let asking = fleet.hold_inspect(1);
+
+    let (first, second) = tokio::time::timeout(SETTLE * 4, async {
+        tokio::join!(
+            ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))),
+            async {
+                asking.wait().await;
+                let second = ensure(fleet.node(1), out(b, false, Some(CopyRotation::In))).await;
+                asking.wait().await;
+                second
+            }
+        )
+    })
+    .await
+    .expect("A's Out asks B's owner, so the held inspect is reached");
+
+    refused(&second, ContainerRefusalReason::LastIn);
+    ensured(&first);
+    assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::Out);
+    assert_eq!(fleet.node(1).rotation(b).await, CopyRotation::In);
+}
+
+/// An inspect that began while the copy was marked leaving reports the mark, however the
+/// Out that set it ends while Docker answers. Reading the mark after the rotation could
+/// pair an In read before the Out's write with a mark already cleared.
+#[tokio::test]
+async fn an_inspect_reports_the_leaving_mark_it_began_under() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.routed(0, "a", "api", 1).await;
+    let machine = fleet.id(0);
+    let leaving = node.runtime.leave(a);
+    let docker = node.hold_inspect();
+
+    let (answer, ()) = tokio::join!(node.runtime.inspect_managed_details(&a, &machine), async {
+        docker.wait().await;
+        drop(leaving);
+        docker.wait().await;
+    });
+
+    let answer = answer.unwrap();
+    assert!(answer.leaving);
+    assert_eq!(*answer.container.rotation(), CopyRotation::In);
+    assert!(
+        !node
+            .runtime
+            .inspect_managed_details(&a, &fleet.id(0))
+            .await
+            .unwrap()
+            .leaving
+    );
+}
+
+/// A sibling whose owner doesn't answer can't be confirmed In, so the copy stays In.
+#[tokio::test]
+async fn last_in_does_not_count_a_sibling_whose_owner_does_not_answer() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    let b = fleet.routed(1, "b", "api", 1).await;
+    fleet.ack_all(&api, &[a, b]).await;
+    fleet.silence(1);
+
+    let reply = ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))).await;
+
+    let message = refused(&reply, ContainerRefusalReason::LastIn);
+    assert!(message.contains("couldn't confirm"), "{message}");
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
 }
 
@@ -2284,7 +2434,14 @@ fn creation_on_wire(
             container: RunTarget::New(new),
             rotation: RunRotation::Pending,
         };
-        let request = op::EnsureContainer::into_request(EnsureContainerRequest { want });
+        let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+            teardown: None,
+            preview: None,
+            want,
+            approval: None,
+            deploy: None,
+            rule: None,
+        });
         service
             .ensure_container(Request::new(request.encode().unwrap()))
             .await
@@ -2306,7 +2463,11 @@ async fn leave_held_at_listing(
     let listing = Arc::new(tokio::sync::Barrier::new(2));
     *node.fake.listed_hold.lock().unwrap() = Some(Arc::clone(&listing));
     let local = node.service.local.clone();
-    let leaving = tokio::spawn(async move { local.leave(ployz_core::LeaveRequest {}).await });
+    let leaving = tokio::spawn(async move {
+        local
+            .leave(ployz_core::LeaveRequest { teardown: None })
+            .await
+    });
     listing.wait().await;
     (leaving, listing)
 }
@@ -2314,7 +2475,11 @@ async fn leave_held_at_listing(
 /// A Leave on `node`. This fleet has no volume plugin, so a Leave that stopped and
 /// removed every copy fails at storage departure, and the Machine stays.
 async fn failed_leave(node: &Node) {
-    let left = node.service.local.leave(ployz_core::LeaveRequest {}).await;
+    let left = node
+        .service
+        .local
+        .leave(ployz_core::LeaveRequest { teardown: None })
+        .await;
     assert!(left.is_err(), "{left:?}");
 }
 

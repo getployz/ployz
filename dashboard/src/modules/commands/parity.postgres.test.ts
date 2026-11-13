@@ -24,6 +24,7 @@ import { handleRunRequest } from "#/routes/api/cli/-handlers";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
+import { holdProduction, hostedPolar } from "#/test/billing";
 import { seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c301";
@@ -47,11 +48,12 @@ const Heard = Schema.fromJsonString(Schema.Union([
  * the agent do; `rows` is everything a published command can change. `checker` answers each probe request the way the
  * uptime checker does, with a triggered 500 from eu-west.
  */
-const parity = Effect.fn(function* () {
+const parity = Effect.fn(function* (billing?: "free" | "production") {
   const stub = ConfigProvider.layer(ConfigProvider.fromEnv({ env: { PLOYZ_AGENT_STUB: "1" } }));
-  const services = yield* storeTestCloudWith(Layer.merge(AuthLive, stub));
+  const services = yield* storeTestCloudWith(Layer.merge(AuthLive, stub), billing === undefined ? {} : { polar: hostedPolar });
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
+  if (billing === "production") yield* provided(holdProduction(ORGANIZATION));
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "dashboard" };
   const { secret } = yield* provided(createOrganizationToken(caller, { name: "parity", expiresInDays: 1 }));
   const approvals = yield* provided(Effect.gen(function* () {
@@ -149,6 +151,12 @@ const parity = Effect.fn(function* () {
     return { upgrades, decided, checks };
   }));
 
+  const probesAsked = provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const asked = yield* drizzle.select({ at: uptimeCheck.probeRequestedAt }).from(uptimeCheck).where(eq(uptimeCheck.organizationId, ORGANIZATION));
+    return asked.filter(({ at }) => at !== null).length;
+  }));
+
   const restore = (to: Effect.Success<typeof rows>) => provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.delete(organizationServerUpgrades).where(eq(organizationServerUpgrades.organizationId, ORGANIZATION));
@@ -162,7 +170,7 @@ const parity = Effect.fn(function* () {
     return { members, invites };
   }));
 
-  return { route, sidebar, converse, listed, rows, team, provided, restore, checker, approvals: approvals.map(({ id }) => id), userId };
+  return { route, sidebar, converse, listed, rows, probesAsked, team, provided, restore, checker, approvals: approvals.map(({ id }) => id), userId };
 });
 
 it.live("lists each agent command in the sidebar with the manifest's input schema, so the agent never calls a command with a different input than ployz", () =>
@@ -190,7 +198,7 @@ it.live("gives the same answer and leaves the same rows through ployz and the si
       ["uptime_show", { service: "web" }],
     ];
     const raced = ["uptime_check"];
-    const asked = ["org_member_role", "org_member_rm", "org_invite_revoke"];
+    const asked = ["cluster_rename", "org_member_role", "org_member_rm", "org_invite_revoke", "private_access_use", "web_traffic_use"];
     expect([...fixtures.map(([name]) => name), ...raced, ...asked].sort()).toEqual(COMMANDS.filter((command) => command.agents).map((command) => command.name).sort());
     for (const [name, input] of fixtures) {
       const before = yield* rows;
@@ -427,3 +435,22 @@ it.live("checks a Service now through ployz and the sidebar alike, returns the r
     expect(viaSidebar).toMatchObject({ ok: true, value: round });
     expect(yield* rows).toEqual(before);
   }), 15_000);
+
+it.live("refuses uptime_show and uptime_check to a hosted Organization without Production through ployz and the sidebar alike, and asks the checker for nothing", () =>
+  Effect.gen(function* () {
+    const { route, sidebar, probesAsked } = yield* parity("free");
+    const refusal = { code: "needs_production", message: expect.stringContaining("Production") };
+    for (const name of ["uptime_show", "uptime_check"]) {
+      expect(yield* route(name, { service: "web" }), name).toMatchObject({ body: { error: refusal } });
+      expect(yield* sidebar(name, { service: "web" }), name).toMatchObject({ ok: false, refusal });
+    }
+    expect(yield* probesAsked).toBe(0);
+  }));
+
+it.live("shows uptime to a hosted Organization with Production through ployz and the sidebar alike", () =>
+  Effect.gen(function* () {
+    const { route, sidebar } = yield* parity("production");
+    const shown = yield* route("uptime_show", { service: "web" });
+    expect(shown).toMatchObject({ status: 200, body: { output: { service: "web", status: "unreachable" } } });
+    expect(yield* sidebar("uptime_show", { service: "web" })).toMatchObject({ ok: true, value: { service: "web", status: "unreachable" } });
+  }));

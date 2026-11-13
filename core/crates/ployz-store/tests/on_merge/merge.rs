@@ -1363,3 +1363,37 @@ fn a_generated_value_lands_made_in_saved_and_working_alike() {
     // Saved and Working hold the same value: nothing is left to save.
     assert!(production_diff(&store, &who).published);
 }
+
+#[test]
+fn the_refusal_of_a_merge_value_s_plain_text_is_pinned_for_the_cli_and_for_anyone_else() {
+    let (store, who) = shop();
+    let token = sealed_in(&store, &who, "pr-5", "web", "TOKEN", 1);
+    set(&store, &who, "pr-5", &[("web.env.TOKEN", token)]);
+    let plain = merge_value("web.env.TOKEN", Some("prod-token"));
+    let cli = Trusted {
+        from_cli: true,
+        ..Trusted::default()
+    };
+    let error = store.write_trusted(&who, &plain, &cli).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str(), error.details),
+        (
+            RpcErrorCode::Unsupported,
+            "TOKEN: update ployz to set a Sealed value.",
+            json!({
+                "variable": "TOKEN",
+                "next": "curl -fsSL https://ployz.sh | sh",
+                "follow_up": { "kind": "update_client", "beta": false },
+            }),
+        )
+    );
+    let error = store.write(&who, &plain).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str(), error.details),
+        (
+            RpcErrorCode::InvalidArgument,
+            "web.env.TOKEN: secrets are sealed on your device",
+            json!({ "row": "00000000-0000-4000-8000-000000000003:variables.TOKEN" }),
+        )
+    );
+}

@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
@@ -18,8 +19,7 @@ use ployz_core::{
     CORROSION_GOSSIP_PORT, CapabilityName, ContainerKind, ContainerRuntimeObservation,
     ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
     HealthObservation, LogsOptions, MACHINE_API_PORT, MachineId, MachineRpcServer,
-    MembershipObservation, NAMESPACE_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
-    UNREGISTRY_PORT, op,
+    MembershipObservation, PROTOCOL_MAJOR, RpcError, RpcErrorCode, UNREGISTRY_PORT, labels, op,
 };
 use ployz_testkit::fake_machine::Fake;
 use serde_json::{Value, json};
@@ -39,6 +39,7 @@ mod sdk_data_loss;
 mod sdk_destroy_cluster;
 mod sdk_destroy_namespace;
 mod sdk_drain;
+mod sdk_lost_reply;
 mod sdk_metrics;
 mod sdk_prepare;
 mod sdk_register;
@@ -469,7 +470,7 @@ async fn lazy_first_connection_falls_through_to_a_healthy_machine() {
     assert_eq!(client.connection().to_string(), live.to_string());
     assert_eq!(
         client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -579,6 +580,7 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
 #[tokio::test]
 async fn volume_listing_retains_successes_and_target_failures() {
     let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
+        attest: None,
         machine_id: MachineId::random(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
@@ -669,7 +671,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
                 name: DockerVolumeName::parse("data").unwrap(),
             },
             options: BTreeMap::from([("type".into(), "none".into())]),
-            labels: BTreeMap::from([(NAMESPACE_LABEL.into(), "app".into())]),
+            labels: BTreeMap::from([(labels::NAMESPACE.into(), "app".into())]),
             storage: ployz_core::DockerVolumeStorageObservation::Plain {
                 driver: "local".into(),
             },
@@ -1211,6 +1213,7 @@ fn listing_container(
 #[tokio::test]
 async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
     let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
+        attest: None,
         machine_id: MachineId::random(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
@@ -1370,6 +1373,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
     let tcp_address = tcp.local_addr().unwrap();
     let unix = UnixListener::bind(&socket).unwrap();
     let description = ContractDescription {
+        attest: None,
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
@@ -1404,7 +1408,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         .unwrap();
         assert_eq!(
             client
-                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+                .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
                 .await
                 .unwrap(),
             description
@@ -1417,7 +1421,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         .unwrap();
     assert_eq!(
         fallback
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1436,7 +1440,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         .unwrap();
     assert_eq!(
         direct
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1464,7 +1468,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
     );
     assert_eq!(
         failed_over
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1490,7 +1494,7 @@ async fn unary_call_retries_unavailable_after_redial() {
 
     assert_eq!(
         client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1510,7 +1514,7 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
         .unwrap()
         .push_back(DescribeOutcome::Status(Status::not_found("missing")));
     let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap_err();
     assert!(
@@ -1533,7 +1537,7 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
             cause: Vec::new(),
         }));
     let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap_err();
     assert!(
@@ -1562,7 +1566,7 @@ async fn unary_call_gives_up_after_four_unavailable_attempts() {
     ]);
 
     let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap_err();
     assert!(
@@ -1602,7 +1606,7 @@ async fn stream_after_redial_uses_the_replaced_channel() {
         )));
 
     client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap();
     assert_eq!(connects.load(Ordering::SeqCst), 2);
@@ -1658,7 +1662,7 @@ async fn redial_rechecks_expected_machine_identity() {
             "transport dropped",
         )));
     let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap_err();
     assert!(error.to_string().contains("identity mismatch"));

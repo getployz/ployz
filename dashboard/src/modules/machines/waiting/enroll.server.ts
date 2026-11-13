@@ -9,10 +9,12 @@ import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPair
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
+import { foundingClusterName } from "#/modules/cluster-name/cluster-name.server";
 import { machineNameFromHostname } from "#/modules/machines/waiting/names";
 import {
   COMMITTED_STAGES,
   ENROLL_MIN_CLI_VERSION,
+  INGRESS_CLOSED_OPTION,
   type EnrollInput,
   type EnrollInstruction,
   type EnrollmentRole,
@@ -40,6 +42,8 @@ export type EnrollCandidate = {
   readonly enrolling: boolean;
   readonly joined?: boolean;
   readonly tokenEnded: "expired" | "revoked" | null;
+  /** Its Fleet Token founds the Cluster with every Door closed. */
+  readonly foundsClosed?: boolean;
 };
 
 export type PlannedEnrollment = {
@@ -90,6 +94,8 @@ export function planServerEnrollment(
   candidates: ReadonlyArray<EnrollCandidate>,
   organization: {
     readonly hasFirst: boolean;
+    /** The Cluster Name a founder founds with; read only when there is no first Server yet. */
+    readonly clusterName?: string | undefined;
     /** Names the Organization's Servers and open enrollments hold, and per waiting server those its own Machine holds. */
     readonly takenNames: ReadonlySet<string>;
     readonly heldNames: ReadonlyMap<string, ReadonlySet<string>>;
@@ -120,6 +126,14 @@ export function planServerEnrollment(
     if (pick === undefined) return { kind: "refused", message: "Pick the first server: it sets up the cluster the rest join." };
     const skip = skipped.find((row) => row.id === pick);
     if (skip !== undefined) return { kind: "refused", message: `The first server can't enroll: ${skip.reason}.` };
+    // A CLI that doesn't list the option would drop it and open ports 80 and 443.
+    const picked = byId.get(pick);
+    if (picked?.foundsClosed === true && !input.runs.ingress) {
+      return { kind: "refused", message: "Cloudflare Tunnel needs the first server to take web traffic. Turn on Web traffic for it, or get an install command without Cloudflare Tunnel." };
+    }
+    if (picked?.foundsClosed === true && picked.report.enrollOptions?.includes(INGRESS_CLOSED_OPTION) !== true) {
+      return { kind: "refused", message: "The first server's ployz is too old for Cloudflare Tunnel. Update ployz on it, or get an install command without Cloudflare Tunnel." };
+    }
     founder = pick;
   }
   const ordered = founder === null
@@ -154,12 +168,19 @@ export function planServerEnrollment(
     taken.add(name);
     return name;
   };
+  const { clusterName } = organization;
+  const instructionFor = (row: EnrollCandidate, storage: EnrollStorage): EnrollInstruction => {
+    const instruction = { name: nameFor(row), storage, policy } satisfies EnrollInstruction;
+    if (row.id !== founder) return instruction;
+    const named = clusterName === undefined ? instruction : { ...instruction, clusterName };
+    return row.foundsClosed === true ? { ...named, ingressClosed: true } : named;
+  };
   const rows = ordered.map(({ row, storage }): PlannedEnrollment => ({
     waitingServerId: row.id,
     fleetTokenId: row.fleetTokenId,
     hostname: row.report.hostname,
     role: row.id === founder ? "founder" : "joiner",
-    instruction: { name: nameFor(row), storage, policy },
+    instruction: instructionFor(row, storage),
   }));
   const long = rows.find((row) => row.instruction.name.length > 63);
   if (long !== undefined) return { kind: "refused", message: `${long.instruction.name} is over 63 characters. Choose a shorter name pattern.` };
@@ -186,6 +207,7 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
       enrolling: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.endedAt} is null)`,
       joined: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.state} = 'joined')`,
       tokenEnded: sql<"expired" | "revoked" | null>`case when ${fleetToken.revokedAt} is not null then 'revoked' when ${fleetToken.expiresAt} <= now() then 'expired' end`,
+      foundsClosed: fleetToken.foundsClosed,
     })
     .from(waitingServer)
     .innerJoin(fleetToken, eq(fleetToken.id, waitingServer.fleetTokenId))
@@ -304,7 +326,7 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   const plan = planServerEnrollment(
     input,
     ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
-    { hasFirst, ...yield* takenNames(organizationId, ids) },
+    { hasFirst, clusterName: hasFirst ? undefined : yield* foundingClusterName(organizationId), ...yield* takenNames(organizationId, ids) },
   );
   if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
   return { ...plan, founded };

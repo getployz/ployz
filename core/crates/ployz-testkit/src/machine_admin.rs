@@ -76,6 +76,8 @@ impl Cluster {
         .enrollment
         .ok_or_else(|| TestkitError::Rpc("missing enrollment snapshot".into()))?;
         let mut request = RegisterRequest {
+            join_approval: None,
+            join_confirmation: None,
             machine_id: token.id,
             assigned_subnet: None,
             initial_policy: Default::default(),
@@ -85,6 +87,7 @@ impl Cluster {
             public_ip: token.public_ip,
             advertised_endpoints: token.advertised_endpoints,
             runtime: token.runtime,
+            capabilities: Vec::new(),
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])
             .map_err(|error| TestkitError::Rpc(error.to_string()))?;
@@ -140,7 +143,13 @@ impl Cluster {
         let mut client = self.client(entry).await?;
         match response(
             client
-                .forget(op::Forget::into_request(ForgetRequest { machine_id }).encode()?)
+                .forget(
+                    op::Forget::into_request(ForgetRequest {
+                        teardown: None,
+                        machine_id,
+                    })
+                    .encode()?,
+                )
                 .await?
                 .into_inner(),
         )?

@@ -12,6 +12,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::Trusted;
 use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, VolumeId};
@@ -90,6 +91,7 @@ pub(crate) fn record(
     tx: &mut dyn Tx,
     who: &Actor,
     resized: &VolumeResized,
+    trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let mut environment = scope::lock_id(tx, who, &resized.environment)?;
     let id = environment.summary.id.clone();
@@ -158,13 +160,11 @@ pub(crate) fn record(
     )?;
     if let Some(mut node) = applied {
         node.storage = to;
-        tx.execute(
-            "UPDATE config_applied SET node = ?3 WHERE environment_id = ?1 AND node_id = ?2",
-            &[
-                id.as_str().into(),
-                volume.into(),
-                scope::Node::Volume(&node).document().as_str().into(),
-            ],
+        deployment::applied::resize(
+            tx,
+            &id,
+            volume,
+            scope::Node::Volume(&node).document().as_str(),
         )?;
     }
     let follows = staged.is_some_and(|node| {
@@ -175,7 +175,7 @@ pub(crate) fn record(
         follows
     });
     if follows {
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     Ok(())
 }
@@ -226,13 +226,9 @@ fn applied_volume(
     environment: &EnvironmentId,
     volume: &str,
 ) -> Result<Option<SavedVolumeIntent>, RpcError> {
-    tx.query(
-        "SELECT node FROM config_applied WHERE environment_id = ?1 AND node_id = ?2",
-        &[environment.as_str().into(), volume.into()],
-    )?
-    .first()
-    .map(|row| row.json(0, "Applied State"))
-    .transpose()
+    deployment::applied::node(tx, environment, volume)?
+        .map(|row| row.json(0, "Applied State"))
+        .transpose()
 }
 
 /// `volumes` at the size their Servers hold: a Provisioned Volume's lock row, once a

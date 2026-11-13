@@ -30,9 +30,11 @@ the deploy keeps but only clears an old copy of reads `removing old`, then `swit
 deploy leaves old replicas running, the row reads like `switched 3/3, 2 left running` and the
 summary adds `2 copies left running`; see
 [Old and new versions answer at once](#old-and-new-versions-answer-at-once). The block
-ends with a summary that counts the Servers involved. In CI or redirected output,
-Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
-change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
+ends with a summary that counts the Servers involved. When a Service doesn't end up serving its
+new copies, `ployz deploy` and `ployz up` follow the summary with a line per Service on stdout,
+as `ployz deployment show` prints it, such as `a: serves its new copies`,
+`b: not switched to its new copies` and `c: not started`. In CI or redirected output, Ployz
+prints changes as lines and says `still waiting:` after 30 seconds without a change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
 records the existing Deployment events as NDJSON, each naming the Deployment's `id` and
 `number`. Source builds appear against their
@@ -70,9 +72,15 @@ lines when the deploy failed. When a newer deployment, such as a push, takes the
 one you were following without shipping all of its services, the CLI says
 `Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`.
 When a newer deploy takes over the environment while one running on your machine is still going,
-yours stops at its next step, and the CLI says `Deployment #3 was replaced by #4 before it
-finished.` and points at `ployz deployment show 4`. What #3 changed before it stopped shows as
-unknown.
+yours stops at its next step. What the CLI says depends on how far #3 got:
+
+- If #3 started changing your servers and attempted no volume deletion, it records what it did
+  as interrupted. The CLI says `Deployment #3 did not complete.`, or, if the plan blocked a
+  service, that service's name and why it was blocked.
+- If #3 stopped before it started changing your servers, or after it tried to delete a volume,
+  whether or not the deletion worked, nothing is recorded for it. The CLI says
+  `Deployment #3 was replaced by #4 before it finished.` and points at
+  `ployz deployment show 4`, and anything #3 changed shows as unknown.
 
 A failed deploy exits with code 1. A Deployment that applied but whose result is missing
 a Server, or that left an old container running because its Server didn't answer, exits
@@ -165,6 +173,17 @@ or a command's exit code and output.
   [Deploy without downtime](../deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy).
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
+
+If the server doesn't answer while Ployz stops the new replica, Ployz keeps trying for up to a
+minute. If it still can't stop it, the deploy names the replica, with why in parentheses, for
+example `my-app-production/web copy 3f9c1e2a7b04 left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
+The reason can also read `transport error` when the connection to the server failed.
+If the connection dropped while the replica was being created, the deploy says the create may
+have happened anyway instead, since Ployz never learned the replica's ID. Either way that replica
+never gets requests. Each deploy of a service first removes the replicas that earlier failed
+deploys of it left on servers that answer, so retrying a failing deploy leaves at most one extra
+replica of that service. A replica it can't remove that way is named in the same words, and the
+deploy goes on. So is one that started getting requests after the deploy planned.
 
 ## My new version runs out of memory
 

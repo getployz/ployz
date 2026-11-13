@@ -1,13 +1,15 @@
 //! Tests for bounded Global catch-up and target storage eligibility.
 
+use ployz_core::error_chain;
 use std::num::NonZeroU64;
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRefusal,
-    ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL, DeploymentLogId, DockerVolumeName, Gen,
+    Ciphertext, ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRefusal,
+    ContainerRefusalReason, ContainerRuntimeObservation, DeploymentLogId, DockerVolumeName, Gen,
     HealthObservation, MachineId, MachineStorageObservation, Namespace, Placement,
-    ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig, ServiceMode,
-    ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    PrivateAccessSet, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig,
+    ServiceMode, ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, labels,
 };
 
 use super::*;
@@ -31,7 +33,7 @@ fn with_gen(mut observed: ContainerObservation, r#gen: u64) -> ContainerObservat
 }
 
 fn message(error: CatchUpError, joiner: &Machine) -> String {
-    crate::ui::chain_text(&joined_catch_up_error(error, joiner, |args| {
+    error_chain::row(&joined_catch_up_error(error, joiner, |args| {
         shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
     }))
 }
@@ -53,10 +55,10 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
     let unlisted = machine('e', "unlisted");
     for failed in [true, false] {
         let mut client = fake(&joiner, Vec::new());
-        client.names = vec![
+        client.names = ServerNames::listing([
             (joiner.id, joiner.name.clone()),
             (peer.id, peer.name.clone()),
-        ];
+        ]);
         if failed {
             client.failures = vec![ployz_core::MachineFailure {
                 machine_id: peer.id,
@@ -107,7 +109,8 @@ async fn unreadable_answer_asks_to_update_ployz_not_connectivity() {
     ));
     for omitted in [false, true] {
         let mut client = fake(&joiner, Vec::new());
-        client.names = vec![(newer.id, newer.name.clone()), (down.id, down.name.clone())];
+        client.names =
+            ServerNames::listing([(newer.id, newer.name.clone()), (down.id, down.name.clone())]);
         client.failures = vec![ployz_core::MachineFailure {
             machine_id: newer.id,
             error: unreadable.clone(),
@@ -135,11 +138,11 @@ async fn only_omissions_that_are_not_unarrived_block_catch_up() {
     let peer = machine('f', "peer");
     let claimed = machine('e', "claimed");
     let mut client = fake(&joiner, Vec::new());
-    client.names = vec![
+    client.names = ServerNames::listing([
         (peer.id, peer.name.clone()),
         (claimed.id, claimed.name.clone()),
-    ];
-    client.unarrived = vec![(claimed.id, claimed.name.clone())];
+    ]);
+    client.unarrived = ServerNames::listing([(claimed.id, claimed.name.clone())]);
     client.omissions = vec![claimed.id];
     catch_up(&mut client, &joiner).await.unwrap();
 
@@ -428,6 +431,48 @@ async fn a_pending_copy_older_than_an_in_gen_is_not_the_source() {
     );
 }
 
+// Catches the newest-copy tie-break drifting: of two copies created in the same
+// nanosecond, the larger Container ID says whether the Service is a Global.
+#[test]
+fn a_creation_tie_goes_to_the_larger_container_id_when_naming_a_global() {
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let global = |hex| {
+        global_service(
+            identity.clone(),
+            'a',
+            Placement::default(),
+            running_on(&founder, hex),
+        )
+        .containers
+        .remove(0)
+        .into_observation()
+    };
+    let replicated = |hex| {
+        let mut copy = global(hex);
+        copy.try_update(|parts| {
+            parts.resolved_spec.mode = ServiceMode::Replicated {
+                replicas: std::num::NonZeroU32::MIN,
+            };
+        })
+        .unwrap();
+        copy
+    };
+
+    for (smaller, larger, named) in [
+        (global('a'), replicated('b'), 0),
+        (replicated('a'), global('b'), 1),
+    ] {
+        for copies in [
+            [smaller.clone(), larger.clone()],
+            [larger.clone(), smaller.clone()],
+        ] {
+            let services = ployz_core::derive_services(copies);
+            assert_eq!(sources(&services, false, None).len(), named);
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_copy_keeps_its_sources_label_and_gen() {
     let joiner = machine('1', "joiner");
@@ -438,7 +483,7 @@ async fn a_copy_keeps_its_sources_label_and_gen() {
         .try_update(|parts| {
             parts
                 .labels
-                .insert(DEPLOYMENT_ID_LABEL.to_owned(), deploy.to_string());
+                .insert(labels::DEPLOYMENT_ID.to_owned(), deploy.to_string());
         })
         .unwrap();
     let service = global_service(qualified("app", "api"), 'a', Placement::default(), source);
@@ -544,45 +589,456 @@ async fn own_superseded_copies_retire_after_in() {
     assert!(client.removed.is_empty());
 }
 
+fn unconfirmed(ids: &[MachineId]) -> cleanup::Unconfirmed {
+    cleanup::Unconfirmed {
+        machines: ids.to_vec(),
+        unanswered: Vec::new(),
+    }
+}
+
+fn refusal(reason: ContainerRefusalReason) -> ContainerRefusal {
+    ContainerRefusal {
+        reason,
+        message: format!("owner refused: {reason:?}"),
+        capability: None,
+    }
+}
+
+#[test]
+fn a_step_reads_as_the_error_each_outcome_names() {
+    let (one, two) = (machine('1', "one").id, machine('2', "two").id);
+    step_error(Rotated::Done).unwrap();
+    let refused = refusal(ContainerRefusalReason::LastIn);
+    assert_eq!(
+        step_error(Rotated::Refused(refused.clone())).unwrap_err(),
+        refused.into_error()
+    );
+    let unconfirmed = step_error(Rotated::NotConfirmed(unconfirmed(&[one, two]))).unwrap_err();
+    assert_eq!(unconfirmed.code, ployz_core::RpcErrorCode::Unavailable);
+    assert_eq!(
+        unconfirmed.message,
+        format!("{one}, {two} did not confirm the copy left its routes")
+    );
+    let cancelled = step_error(Rotated::Cancelled).unwrap_err();
+    assert_eq!(cancelled.code, ployz_core::RpcErrorCode::Internal);
+    assert_eq!(cancelled.message, "Cancelled.");
+}
+
+/// A superseded copy that does not retire stays, and the Service is named with the reason
+/// its outcome gave. Cancellation ends the retirement without a reason of its own.
 #[tokio::test(start_paused = true)]
-async fn a_proxy_copy_skips_rotation() {
+async fn a_superseded_copy_that_does_not_retire_names_why_it_stays() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
-    let ingress = QualifiedService::system_ingress();
+    let identity = qualified("app", "api");
+    let stuck = machine('2', "stuck").id;
+    type Outcome = (fn() -> Rotated, Option<String>);
+    let outcomes: [Outcome; 4] = [
+        (
+            || Rotated::Refused(refusal(ContainerRefusalReason::LastIn)),
+            Some("superseded copy {old} stays: owner refused: LastIn".into()),
+        ),
+        (
+            || Rotated::NotConfirmed(unconfirmed(&[machine('2', "stuck").id])),
+            Some(format!(
+                "superseded copy {{old}} stays: {stuck} did not confirm it left the routes"
+            )),
+        ),
+        (|| Rotated::Cancelled, None),
+        (|| Rotated::Done, None),
+    ];
+    for (retire, stays) in outcomes {
+        let service = global_service(
+            identity.clone(),
+            'a',
+            Placement::default(),
+            rotated(running_on(&founder, 'b'), CopyRotation::In),
+        );
+        let mut client = fake(&joiner, vec![service]);
+        client.target_services = Some(vec![
+            global_service(
+                identity.clone(),
+                'a',
+                Placement::default(),
+                running_on(&joiner, 'c'),
+            ),
+            global_service(
+                identity.clone(),
+                'a',
+                Placement::default(),
+                running_on(&joiner, 'a'),
+            ),
+        ]);
+        client.run_result = Ok(Some(container_id('c')));
+        client.retire_step = retire;
+        let old = container_id('a');
+        let result = catch_up(&mut client, &joiner).await;
+        match stays {
+            None => result.unwrap(),
+            Some(stays) => {
+                let error = result.unwrap_err();
+                let text = message(error, &joiner);
+                let stays = stays.replace("{old}", old.as_str());
+                assert!(text.contains(&format!("app/api: {stays}")), "{text}");
+            }
+        }
+    }
+}
+
+/// A started copy the owner refuses In is removed; when that removal does not finish, the
+/// reason says the copy stays and how its removal ended.
+#[tokio::test(start_paused = true)]
+async fn a_refused_started_copy_whose_removal_does_not_finish_says_it_stays() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let service = global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&founder, 'a'),
+    );
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(vec![global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&joiner, 'b'),
+    )]);
+    client.run_result = Ok(Some(container_id('b')));
+    client.bring_in = FakeBringIn::Refused(ContainerRefusalReason::OlderThanIn);
+    client.remove_step = || Removal::Refused(refusal(ContainerRefusalReason::InRotation));
+    let text = message(catch_up(&mut client, &joiner).await.unwrap_err(), &joiner);
+    let stays = format!(
+        "{OUTDATED}; the started copy stays: Refused(ContainerRefusal {{ reason: InRotation, message: \"owner refused: InRotation\", capability: None }})"
+    );
+    assert!(text.contains(&stays), "{text}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_ingress_proxy_is_set_once_through_its_doors() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
     let held = rotated(
         running_on(&founder, 'a'),
         CopyRotation::Held(DeploymentLogId::parse("dep-a").unwrap()),
     );
-    let service = global_service(ingress.clone(), 'a', Placement::default(), held);
-    let mut client = fake(&joiner, vec![service]);
-    client.target_services = Some(vec![
-        global_service(
-            ingress.clone(),
-            'a',
-            Placement::default(),
-            running_on(&joiner, 'b'),
-        ),
-        global_service(ingress, 'a', Placement::default(), running_on(&joiner, 'c')),
-    ]);
-    client.run_result = Ok(Some(container_id('b')));
+    let caddy = global_service(
+        QualifiedService::system_ingress(),
+        'a',
+        Placement::default(),
+        held,
+    );
+    let holder = grouped(
+        QualifiedService::system_ingress_holder(),
+        ployz_core::holder_service_spec("pause:1", ployz_core::IngressPorts::Public)
+            .to_resolved(service_id('b'), ResolvedUpdateConfig::default())
+            .expect("volume graph is scoped"),
+        running_on(&founder, 'b'),
+    );
+    let mut client = fake(&joiner, vec![caddy, holder]);
+
     catch_up(&mut client, &joiner).await.unwrap();
+
     assert_eq!(
-        client.run_calls.len(),
-        1,
-        "a Held proxy copy is still the source"
+        client.door_calls,
+        [(service_id('a'), ClusterDoors::public())],
+        "one call, for the observed Caddy, covers both doors"
     );
     assert!(
-        client.brought_in.is_empty(),
-        "the proxy stays Pending for life"
+        client.run_calls.is_empty(),
+        "no door identity reaches the ordinary copy path"
     );
+    assert!(client.brought_in.is_empty());
     assert!(client.retired.is_empty());
     assert!(client.removed.is_empty());
+}
+
+// Catches a joiner with the ingress role going without an Ingress Proxy because no Server
+// runs one yet.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_with_the_role_gets_doors_when_no_server_runs_them() {
+    let joiner = machine('1', "joiner");
+    let mut client = fake(&joiner, Vec::new());
+
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    assert_eq!(client.door_calls.len(), 1);
+
+    let mut without_role = machine('2', "plain");
+    without_role.accepts_ingress = false;
+    let mut client = fake(&without_role, Vec::new());
+    catch_up(&mut client, &without_role).await.unwrap();
+    assert!(client.door_calls.is_empty());
+}
+
+fn cluster_on_the_tunnel(founder: &Machine) -> Vec<ServiceObservation> {
+    let sealed = ployz_core::Ciphertext::from_bytes(vec![9; 48]);
+    let spec = ployz_core::tunnel_service_spec("cloudflared:1", &sealed)
+        .to_resolved(service_id('b'), ResolvedUpdateConfig::default())
+        .expect("volume graph is scoped");
+    vec![
+        global_service(
+            QualifiedService::system_ingress(),
+            'a',
+            Placement::default(),
+            running_on(founder, 'a'),
+        ),
+        grouped(
+            QualifiedService::system_tunnel(),
+            spec,
+            running_on(founder, 'c'),
+        ),
+    ]
+}
+
+// Catches catch-up sending the Tunnel Door to a joiner whose daemon predates it, which would
+// answer UnsupportedDoors instead of the client naming the capability first.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_whose_daemon_predates_the_tunnel_door_is_named_and_not_asked() {
+    let founder = machine('f', "founder");
+    let mut joiner = machine('1', "joiner");
+    joiner.runtime.capabilities = [ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned()].into();
+    let mut client = fake(&joiner, cluster_on_the_tunnel(&founder));
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+
+    assert!(client.door_calls.is_empty());
+    assert!(
+        message(error, &joiner).contains(ployz_core::SET_INGRESS_TUNNEL_CAPABILITY),
+        "the refusal names the capability the joiner lacks"
+    );
+}
+
+// Catches the capability check refusing a joiner that can open the Tunnel Door, or one whose
+// row predates capabilities and so claims nothing.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_that_can_open_the_tunnel_door_is_asked() {
+    let founder = machine('f', "founder");
+    for capabilities in [
+        vec![
+            ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned(),
+            ployz_core::SET_INGRESS_TUNNEL_CAPABILITY.to_owned(),
+        ],
+        Vec::new(),
+    ] {
+        let mut joiner = machine('1', "joiner");
+        joiner.runtime.capabilities = capabilities.into_iter().collect();
+        let mut client = fake(&joiner, cluster_on_the_tunnel(&founder));
+
+        catch_up(&mut client, &joiner).await.unwrap();
+
+        let [(_, asked)] = client.door_calls.as_slice() else {
+            panic!("one call sets the doors: {:?}", client.door_calls);
+        };
+        assert!(asked.doors.has(ployz_core::IngressDoor::Tunnel));
+    }
+}
+
+// Catches a joiner opening ports 80 and 443 on a Cluster founded closed, whose tunnel has
+// not opened yet.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_on_a_cluster_founded_closed_opens_no_door() {
+    let founder = machine('f', "founder");
+    let joiner = machine('1', "joiner");
+    let holder = ployz_core::holder_service_spec("pause:1", ployz_core::IngressPorts::Closed)
+        .to_resolved(service_id('d'), ResolvedUpdateConfig::default())
+        .expect("volume graph is scoped");
+    let cluster = vec![
+        global_service(
+            QualifiedService::system_ingress(),
+            'a',
+            Placement::default(),
+            running_on(&founder, 'a'),
+        ),
+        grouped(
+            QualifiedService::system_ingress_holder(),
+            holder,
+            running_on(&founder, 'e'),
+        ),
+    ];
+    let mut client = fake(&joiner, cluster);
+
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    let [(_, asked)] = client.door_calls.as_slice() else {
+        panic!("one call sets the doors: {:?}", client.door_calls);
+    };
+    assert_eq!(asked.doors, ployz_core::IngressDoors::closed());
+}
+
+// Catches catch-up following the newest holder when the Cluster declares its Doors: a closed
+// Cluster stays closed whatever its Servers last ran, and one declared Public opens.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_follows_the_declared_doors_over_the_newest_holder() {
+    let founder = machine('f', "founder");
+    let joiner = machine('1', "joiner");
+    let holder = |ports| {
+        ployz_core::holder_service_spec("pause:1", ports)
+            .to_resolved(service_id('d'), ResolvedUpdateConfig::default())
+            .expect("volume graph is scoped")
+    };
+    let cluster = |ports| {
+        vec![
+            global_service(
+                QualifiedService::system_ingress(),
+                'a',
+                Placement::default(),
+                running_on(&founder, 'a'),
+            ),
+            grouped(
+                QualifiedService::system_ingress_holder(),
+                holder(ports),
+                running_on(&founder, 'e'),
+            ),
+        ]
+    };
+    for (running, declared) in [
+        (
+            ployz_core::IngressPorts::Public,
+            ployz_core::IngressDoors::closed(),
+        ),
+        (
+            ployz_core::IngressPorts::Closed,
+            ployz_core::IngressDoors::public(),
+        ),
+    ] {
+        let mut client = fake(&joiner, cluster(running));
+        client.declared = Some(declared.clone());
+        catch_up(&mut client, &joiner).await.unwrap();
+        let [(_, asked)] = client.door_calls.as_slice() else {
+            panic!("one call sets the doors: {:?}", client.door_calls);
+        };
+        assert_eq!(asked.doors, declared);
+    }
+}
+
+// Catches catch-up calling a Caddy that crashes after the daemon set it caught up.
+#[tokio::test(start_paused = true)]
+async fn a_caddy_that_is_not_running_after_its_doors_fails_catch_up() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let mut client = fake(
+        &joiner,
+        vec![global_service(
+            QualifiedService::system_ingress(),
+            'a',
+            Placement::default(),
+            running_on(&founder, 'a'),
+        )],
+    );
+    let mut set = doors_on(&joiner);
+    if let Some(proxy) = &mut set.proxy {
+        proxy
+            .now
+            .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Restarting)
+            .unwrap();
+    }
+    client.doors_result = Ok(Some(set));
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+
+    assert!(message(error, &joiner).contains("keeps crashing"));
+}
+
+// Catches the router reaching the ordinary copy path, which would run it on the joiner
+// without its key file, or without any key at all.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_gets_the_router_through_the_sealed_key_an_observed_one_carries() {
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    let founder = machine('f', "founder");
+    let sealed = Ciphertext::from_bytes(vec![5; 48]);
+    let mut client = fake(&joiner, vec![router_service(&founder, &sealed)]);
+
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    assert_eq!(client.private_access_calls, [sealed]);
+    assert!(
+        client.run_calls.is_empty(),
+        "the router never reaches the ordinary copy path"
+    );
+    assert!(client.door_calls.is_empty());
+}
+
+// Catches catch-up sending the router to a joiner whose daemon predates Private Access,
+// which would answer an unknown route instead of the client naming the capability.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_whose_daemon_predates_private_access_is_named_and_not_asked() {
+    let founder = machine('f', "founder");
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    joiner.runtime.capabilities = [ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned()].into();
+    let mut client = fake(
+        &joiner,
+        vec![router_service(
+            &founder,
+            &Ciphertext::from_bytes(vec![5; 48]),
+        )],
+    );
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+
+    assert!(client.private_access_calls.is_empty());
+    assert!(
+        message(error, &joiner).contains(ployz_core::SET_PRIVATE_ACCESS_CAPABILITY),
+        "the refusal names the capability the joiner lacks"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cluster_with_no_router_asks_the_joiner_for_none() {
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    let mut client = fake(&joiner, Vec::new());
+
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    assert!(client.private_access_calls.is_empty());
+}
+
+// Catches a joiner that Tailscale refused counting as caught up.
+#[tokio::test(start_paused = true)]
+async fn a_router_tailscale_refused_fails_catch_up_and_names_the_way_to_retry() {
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    let founder = machine('f', "founder");
+    let mut client = fake(
+        &joiner,
+        vec![router_service(
+            &founder,
+            &Ciphertext::from_bytes(vec![5; 48]),
+        )],
+    );
+    client.private_access_result = Ok(PrivateAccessSet {
+        failure: Some(ployz_core::PrivateAccessFailure {
+            problem: ployz_core::PrivateAccessProblem::KeyRefused,
+            detail: "invalid key".into(),
+        }),
+        ..router_on(&joiner)
+    });
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+    let failure = joined_catch_up_error(error, &joiner, |args| {
+        shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+    });
+    let said = error_chain::row(&failure);
+
+    assert!(said.contains("refused the auth key"), "{said}");
+    assert!(!said.contains("redeploy"), "{said}");
+    assert_eq!(
+        failure.hints(),
+        [Hint::Retry(
+            "ployz private-access on --auth-key-stdin".to_owned()
+        )]
+    );
 }
 
 #[tokio::test(start_paused = true)]
 async fn interruption_settles_started_work_and_only_reports_unresolved_globals() {
     for excluded in [false, true] {
-        let joiner = machine('1', "joiner");
+        let mut joiner = machine('1', "joiner");
+        // No Ingress Proxy work, so the two Globals are the only ones.
+        joiner.accepts_ingress = false;
         let founder = machine('f', "founder");
         let first = qualified("app", "api");
         let second = qualified("app", "worker");
@@ -652,14 +1108,21 @@ struct FakeCatchUpClient {
     target_services: Option<Vec<ServiceObservation>>,
     run_calls: Vec<NewContainer>,
     run_result: Result<Option<ContainerId>, RpcError>,
+    door_calls: Vec<(ServiceId, ClusterDoors)>,
+    doors_result: Result<Option<IngressDoorsSet>, RpcError>,
+    private_access_calls: Vec<Ciphertext>,
+    private_access_result: Result<PrivateAccessSet, RpcError>,
     bring_in: FakeBringIn,
     brought_in: Vec<Copy>,
     retired: Vec<Copy>,
     removed: Vec<Copy>,
+    retire_step: fn() -> Rotated,
+    remove_step: fn() -> Removal,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
-    names: crate::drain::retirement::Names,
-    unarrived: crate::drain::retirement::Names,
+    names: ServerNames,
+    unarrived: ServerNames,
+    declared: Option<ployz_core::IngressDoors>,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
     /// What the joiner's Containers show, call by call, before `target_services`.
@@ -673,17 +1136,67 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         target_services: None,
         run_calls: Vec::new(),
         run_result: Ok(Some(container_id('a'))),
+        door_calls: Vec::new(),
+        doors_result: Ok(Some(doors_on(joiner))),
+        private_access_calls: Vec::new(),
+        private_access_result: Ok(router_on(joiner)),
         bring_in: FakeBringIn::In,
         brought_in: Vec::new(),
         retired: Vec::new(),
         removed: Vec::new(),
+        retire_step: || Rotated::Done,
+        remove_step: || Removal::Removed,
         failures: Vec::new(),
         omissions: Vec::new(),
-        names: Vec::new(),
-        unarrived: Vec::new(),
+        names: ServerNames::default(),
+        unarrived: ServerNames::default(),
+        declared: None,
         relisted: None,
         listings: 0,
         starting: std::collections::VecDeque::new(),
+    }
+}
+
+/// The answer of a daemon that created the Private Access router on `machine`, running.
+fn router_on(machine: &Machine) -> PrivateAccessSet {
+    PrivateAccessSet {
+        router: Some(ployz_core::DoorOutcome {
+            now: running_on(machine, 'c'),
+            change: ployz_core::DoorChange::Created,
+        }),
+        ..PrivateAccessSet::default()
+    }
+}
+
+/// The router a Server runs, carrying `sealed` as its auth key.
+fn router_service(server: &Machine, sealed: &Ciphertext) -> ServiceObservation {
+    let identity = QualifiedService::system_tailscale();
+    let mut spec = requested(ServiceMode::Global);
+    spec.name = identity.name.clone();
+    spec.container.labels =
+        ployz_core::ContainerLabels::parse(std::collections::BTreeMap::from([(
+            ployz_core::PRIVATE_ACCESS_KEY_LABEL.to_owned(),
+            String::from(sealed.clone()),
+        )]))
+        .unwrap();
+    grouped(
+        identity,
+        spec.to_resolved(service_id('c'), ResolvedUpdateConfig::default())
+            .unwrap(),
+        running_on(server, 'c'),
+    )
+}
+
+/// The answer of a daemon that created the holder and Caddy on `machine`, both running.
+fn doors_on(machine: &Machine) -> IngressDoorsSet {
+    let created = |hex| ployz_core::DoorOutcome {
+        now: running_on(machine, hex),
+        change: ployz_core::DoorChange::Created,
+    };
+    IngressDoorsSet {
+        holder: Some(created('d')),
+        proxy: Some(created('e')),
+        ..IngressDoorsSet::default()
     }
 }
 
@@ -693,6 +1206,48 @@ fn flatten(services: &[ServiceObservation]) -> Vec<ContainerObservation> {
         .flat_map(ServiceObservation::members)
         .map(|container| container.as_observation().clone())
         .collect()
+}
+
+impl SlotIo for FakeCatchUpClient {
+    async fn list_target(
+        &mut self,
+        _machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        panic!("orchestration delegates listing to run_slot")
+    }
+
+    async fn bridge_capacity(
+        &mut self,
+        _machine_id: &MachineId,
+    ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
+        panic!("orchestration delegates capacity checks to run_slot")
+    }
+
+    async fn retire_if_ineligible(
+        &mut self,
+        _machine_id: &MachineId,
+        _new: &NewContainer,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, RpcError> {
+        panic!("orchestration delegates eligibility to run_slot")
+    }
+
+    async fn retire_copy(
+        &mut self,
+        copy: &Copy,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Rotated, RpcError> {
+        self.retired.push(copy.clone());
+        Ok((self.retire_step)())
+    }
+
+    async fn ensure_pending(
+        &mut self,
+        _target: &MachineTarget,
+        _container: RunTarget,
+    ) -> Result<ContainerNow, RpcError> {
+        panic!("orchestration delegates creation to run_slot")
+    }
 }
 
 impl CatchUpClient for FakeCatchUpClient {
@@ -706,7 +1261,7 @@ impl CatchUpClient for FakeCatchUpClient {
                 self.omissions.clone(),
             ),
         };
-        let live = LiveServices {
+        let services = LiveServices {
             containers: ployz_core::PartialResult {
                 successes: vec![ployz_core::MachineSuccess {
                     machine_id: self.machine_id,
@@ -717,27 +1272,13 @@ impl CatchUpClient for FakeCatchUpClient {
             },
         };
         Ok(Observed {
-            live,
-            names: self.names.clone(),
+            live: Live {
+                services,
+                names: self.names.clone(),
+            },
             unarrived: self.unarrived.clone(),
+            declared: self.declared.clone(),
         })
-    }
-
-    async fn bridge_capacity(
-        &mut self,
-        _machine_id: &MachineId,
-    ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
-        panic!("orchestration delegates capacity checks to run_slot")
-    }
-
-    async fn retire_if_ineligible(
-        &mut self,
-        machine_id: &MachineId,
-        _new: &NewContainer,
-        _cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<bool, RpcError> {
-        assert_eq!(machine_id, &self.machine_id);
-        Ok(matches!(self.run_result, Ok(None)))
     }
 
     async fn run_slot(
@@ -758,6 +1299,28 @@ impl CatchUpClient for FakeCatchUpClient {
         }))
     }
 
+    async fn run_doors(
+        &mut self,
+        machine_id: &MachineId,
+        proxy_service: ServiceId,
+        doors: ClusterDoors,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Option<IngressDoorsSet>, RpcError> {
+        assert_eq!(machine_id, &self.machine_id);
+        self.door_calls.push((proxy_service, doors));
+        self.doors_result.clone()
+    }
+
+    async fn run_private_access(
+        &mut self,
+        machine_id: &MachineId,
+        sealed: Ciphertext,
+    ) -> Result<PrivateAccessSet, RpcError> {
+        assert_eq!(machine_id, &self.machine_id);
+        self.private_access_calls.push(sealed);
+        self.private_access_result.clone()
+    }
+
     async fn bring_in(
         &mut self,
         copy: &Copy,
@@ -769,22 +1332,14 @@ impl CatchUpClient for FakeCatchUpClient {
             FakeBringIn::Refused(reason) => BroughtIn::Refused(ContainerRefusal {
                 reason: *reason,
                 message: format!("owner refused In: {reason:?}"),
+                capability: None,
             }),
         })
     }
 
-    async fn retire_copy(
-        &mut self,
-        copy: &Copy,
-        _cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Step, RpcError> {
-        self.retired.push(copy.clone());
-        Ok(Step::Done)
-    }
-
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError> {
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
         self.removed.push(copy.clone());
-        Ok(Step::Done)
+        Ok((self.remove_step)())
     }
 
     async fn target_containers(
@@ -860,6 +1415,136 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
     });
     let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert!(message(error, &joiner).contains("creation key conflict"));
+}
+
+/// A joiner as `place_slot` sees it: what it lists, and what it was asked.
+struct FakeSlot {
+    eligible: bool,
+    listing: Vec<ContainerObservation>,
+    retired: Vec<ContainerId>,
+    ensured: Vec<&'static str>,
+}
+
+impl FakeSlot {
+    fn listing(listing: Vec<ContainerObservation>) -> Self {
+        Self {
+            eligible: true,
+            listing,
+            retired: Vec::new(),
+            ensured: Vec::new(),
+        }
+    }
+}
+
+impl SlotIo for FakeSlot {
+    async fn list_target(
+        &mut self,
+        _machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        Ok(self.listing.clone())
+    }
+
+    async fn bridge_capacity(
+        &mut self,
+        _machine_id: &MachineId,
+    ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
+        Ok(Some(BridgeEndpointCapacity::new(10, 0)))
+    }
+
+    async fn retire_if_ineligible(
+        &mut self,
+        _machine_id: &MachineId,
+        _new: &NewContainer,
+        _cancel: &CancellationToken,
+    ) -> Result<bool, RpcError> {
+        Ok(!self.eligible)
+    }
+
+    async fn retire_copy(
+        &mut self,
+        copy: &Copy,
+        _cancel: &CancellationToken,
+    ) -> Result<Rotated, RpcError> {
+        self.retired.push(copy.container_id);
+        Ok(Rotated::Done)
+    }
+
+    async fn ensure_pending(
+        &mut self,
+        _target: &MachineTarget,
+        container: RunTarget,
+    ) -> Result<ContainerNow, RpcError> {
+        self.ensured.push(match container {
+            RunTarget::New(_) => "new",
+            RunTarget::Existing(_) => "existing",
+        });
+        Ok(ContainerNow::Absent {
+            of: ployz_core::ContainerLocator::Id(container_id('f')),
+        })
+    }
+}
+
+async fn placed(
+    slot: &mut FakeSlot,
+    joiner: &Machine,
+    origin: &ContainerObservation,
+) -> Result<Option<Copy>, RpcError> {
+    place_slot(
+        slot,
+        &joiner.id,
+        new_copy(origin),
+        &CancellationToken::new(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_slot_the_joiner_rules_out_is_retired_and_creates_nothing() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let mut slot = FakeSlot::listing(Vec::new());
+    slot.eligible = false;
+    assert!(placed(&mut slot, &joiner, &origin).await.unwrap().is_none());
+    assert!(slot.ensured.is_empty());
+}
+
+#[tokio::test]
+async fn a_slot_with_no_copy_here_creates_one() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let mut slot = FakeSlot::listing(Vec::new());
+    placed(&mut slot, &joiner, &origin).await.unwrap();
+    assert_eq!(slot.ensured, ["new"]);
+}
+
+#[tokio::test]
+async fn a_slot_whose_copy_runs_here_is_adopted_not_recreated() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let here = running_on(&joiner, 'b');
+    let mut slot = FakeSlot::listing(vec![here.clone()]);
+    let copy = placed(&mut slot, &joiner, &origin).await.unwrap().unwrap();
+    assert_eq!(copy.container_id, here.container_id);
+    assert_eq!(slot.ensured, ["existing"]);
+}
+
+#[tokio::test]
+async fn an_out_copy_goes_before_a_new_one_is_made_and_a_held_one_refuses() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let here = running_on(&joiner, 'b');
+
+    let mut slot = FakeSlot::listing(vec![rotated(here.clone(), CopyRotation::Out)]);
+    placed(&mut slot, &joiner, &origin).await.unwrap();
+    assert_eq!(slot.retired, [here.container_id]);
+    assert_eq!(slot.ensured, ["new"]);
+
+    let held = CopyRotation::Held(DeploymentLogId::parse("dep-a").unwrap());
+    let mut slot = FakeSlot::listing(vec![rotated(here.clone(), held)]);
+    let error = placed(&mut slot, &joiner, &origin).await.unwrap_err();
+    assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
+    assert!(error.message.contains("stopped on this Machine by a user"));
+    assert!(slot.ensured.is_empty() && slot.retired.is_empty());
 }
 
 #[path = "global_catch_up_rpc_tests.rs"]

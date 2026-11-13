@@ -1,0 +1,670 @@
+//! The approval a Device, or a browser key under a passkey's session grant, signs for one
+//! Service restart, and the checks a Machine runs before it acts on one.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use super::{
+    canonical::{self, Timestamp},
+    keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
+    proposal::ProposalRef,
+    refusal::{AuthorityRefusal, field, first_mismatch},
+    session::{ActionFamily, GrantScope},
+    trusted_key::TrustedKeys,
+};
+use crate::{
+    ContainerId, ContainerKind, ContainerLocator, ContainerWant, DeviceKey, MachineId, Namespace,
+    OperationId, RunTarget, SealingPublicKey, ServiceName,
+};
+
+/// The workflow an approval is for. One approval never serves another kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowKind {
+    Restart,
+    Stop,
+    Start,
+}
+
+impl WorkflowKind {
+    /// Whether this workflow authorizes the requested lifecycle step.
+    #[must_use]
+    pub fn permits(self, step: RestartStep) -> bool {
+        match self {
+            Self::Restart => matches!(
+                step,
+                RestartStep::Hold | RestartStep::Stop | RestartStep::Start
+            ),
+            Self::Stop => matches!(step, RestartStep::Hold | RestartStep::Stop),
+            Self::Start => step == RestartStep::Start,
+        }
+    }
+
+    /// Whether this workflow may act on a Container of `kind`. Only a stop reaches a
+    /// pre-deploy hook: a hook that ran once never runs again on an approval.
+    #[must_use]
+    pub fn reaches(self, kind: ContainerKind) -> bool {
+        self == Self::Stop || kind == ContainerKind::ServiceContainer
+    }
+
+    /// The family a session grant must name to let a browser key approve this workflow.
+    #[must_use]
+    pub const fn family(self) -> ActionFamily {
+        match self {
+            Self::Restart => ActionFamily::Restart,
+            Self::Stop => ActionFamily::Stop,
+            Self::Start => ActionFamily::Start,
+        }
+    }
+}
+
+impl std::fmt::Display for WorkflowKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+            Self::Start => "start",
+        })
+    }
+}
+
+/// The key a statement says signed it. A Device's key is written bare, as before browser
+/// keys existed, so a Device's approval keeps the bytes an older daemon reads. A browser
+/// key is written as `{"browser": key}`, which an older daemon refuses to parse. A rule a
+/// passkey answers for itself says `"passkey"`: the browser writes the body before the
+/// person picks which passkey answers, and the answer names it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum SignerKey {
+    Device(DeviceKey),
+    Browser { browser: SigningPublicKey },
+    Passkey(OwnPrompt),
+}
+
+/// The one value [`SignerKey::Passkey`] takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub enum OwnPrompt {
+    #[serde(rename = "passkey")]
+    Passkey,
+}
+
+/// A Device, or a browser key under a session grant, approves one Container's lifecycle
+/// steps in one Cluster and Service, under one operation with a bounded lifetime.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RestartApproval {
+    /// The Cluster's Sealing public key, which every Machine holds and Cloud cannot mint.
+    pub cluster: SealingPublicKey,
+    pub operation: OperationId,
+    pub kind: WorkflowKind,
+    pub namespace: Namespace,
+    pub service: ServiceName,
+    /// Sorted and distinct.
+    #[serde(deserialize_with = "canonical::sorted_distinct")]
+    pub machines: Vec<MachineId>,
+    pub container: ContainerId,
+    pub issued_at: Timestamp,
+    pub expires_at: Timestamp,
+    /// The key that signed, which the signature must come from.
+    pub signer: SignerKey,
+    /// Which step of a signed proposal this is, when it is one. Absent from a single
+    /// approval, which keeps the bytes a daemon from before proposals reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub proposal: Option<ProposalRef>,
+}
+
+impl RestartApproval {
+    /// Check the request this Machine holds is the one this body approves.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first field that differs.
+    pub(super) fn matches(
+        &self,
+        cluster: SealingPublicKey,
+        facts: &RestartFacts<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        first_mismatch([
+            (field::CLUSTER, self.cluster == cluster),
+            (
+                "a workflow",
+                self.kind.permits(facts.step) && self.kind.reaches(facts.kind),
+            ),
+            (field::ENVIRONMENT, &self.namespace == facts.namespace),
+            ("a Service", &self.service == facts.service),
+            (field::MACHINES, self.machines.contains(facts.machine)),
+            ("a Container", &self.container == facts.container),
+        ])
+    }
+}
+
+pub use super::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
+
+impl Statement for RestartApproval {
+    const PURPOSE: Purpose = Purpose::Workflow;
+}
+
+/// The steps a restart takes on one Container, in the order they run. A Machine records
+/// the furthest step each operation reached per Container, so a step never runs twice
+/// and an earlier step never runs after a later one.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartStep {
+    Hold,
+    Out,
+    Stop,
+    Start,
+    Remove,
+}
+
+impl RestartStep {
+    /// The lifecycle step on an existing Container. `None` requires deploy authorization,
+    /// even when a new-creation request would adopt an existing Container.
+    #[must_use]
+    pub fn of(want: &ContainerWant) -> Option<(Self, &ContainerLocator)> {
+        match want {
+            ContainerWant::Held { container, .. } => Some((Self::Hold, container)),
+            ContainerWant::Out { container, .. } => Some((Self::Out, container)),
+            ContainerWant::Stopped { container, .. } => Some((Self::Stop, container)),
+            ContainerWant::Gone { container, .. } => Some((Self::Remove, container)),
+            ContainerWant::Running {
+                container: RunTarget::Existing(container),
+                ..
+            } => Some((Self::Start, container)),
+            ContainerWant::Running {
+                container: RunTarget::New(_),
+                ..
+            } => None,
+        }
+    }
+}
+
+/// What a Machine knows when it checks an approval against one request.
+#[derive(Clone, Debug)]
+pub struct RestartFacts<'a> {
+    /// The Sealing public key this Machine holds, or `None` while it holds none.
+    pub cluster: Option<SealingPublicKey>,
+    pub machine: &'a MachineId,
+    pub trusted: &'a TrustedKeys,
+    /// The Service the requested Container belongs to.
+    pub namespace: &'a Namespace,
+    pub service: &'a ServiceName,
+    pub container: &'a ContainerId,
+    /// Whether the requested Container is a Service copy or a pre-deploy hook, by its own labels.
+    pub kind: ContainerKind,
+    pub step: RestartStep,
+    pub now: Timestamp,
+}
+
+/// A restart approval a Machine checked, and who approved it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Approved {
+    pub body: RestartApproval,
+    pub by: Approver,
+}
+
+/// Check `approval` approves exactly this request, signed by one of this Machine's Devices
+/// or by a browser key a trusted passkey lent a grant covering it. A passkey itself signs
+/// no envelope, so it is never among the signers. A step of a proposal carries the signed
+/// bundle instead of a signature and is checked by [`super::proposal::verify_step`].
+///
+/// # Errors
+/// Returns the first [`AuthorityRefusal`] found: a signature or grant problem, a
+/// malformed body, a body naming a different Cluster, workflow, Service, Machine or
+/// signer, a grant that does not cover the approval, or an expired approval. Replay is
+/// the Machine's consumption record to refuse.
+pub fn verify(
+    approval: &Signed<RestartApproval>,
+    facts: &RestartFacts<'_>,
+) -> Result<Approved, AuthorityRefusal> {
+    if let Some(bundle) = &approval.proposal {
+        return super::proposal::verify_step(bundle, approval, facts);
+    }
+    let approvers = approval.approvers(facts.trusted, facts.now)?;
+    let body = approval.open()?;
+    let Some(cluster) = facts.cluster else {
+        return Err(AuthorityRefusal::NoClusterIdentity);
+    };
+    if body.proposal.is_some() {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "a proposal",
+        });
+    }
+    let by = approvers
+        .into_iter()
+        .find(|approver| approver.signs_as(body.signer))
+        .ok_or(AuthorityRefusal::Mismatch {
+            field: "the signer",
+        })?;
+    body.matches(cluster, facts)?;
+    if let Approver::Browser { grant, .. } = &by {
+        grant.body.covers(&GrantScope {
+            cluster,
+            environment: &body.namespace,
+            machines: &body.machines,
+            family: body.kind.family(),
+            issued_at: body.issued_at,
+            expires_at: body.expires_at,
+        })?;
+    }
+    verify_time(&body, facts.now)?;
+    Ok(Approved { body, by })
+}
+
+/// Check the signed lifetime and the Machine's clock, including its persisted time floor.
+///
+/// # Errors
+/// Returns a mismatch for an invalid lifetime or future issue time, or an expired refusal.
+pub fn verify_time(body: &RestartApproval, now: Timestamp) -> Result<(), AuthorityRefusal> {
+    super::validity::verify(body.issued_at, body.expires_at, now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authority::keys::Signer;
+
+    fn signer(seed: u8) -> Signer {
+        Signer::from_seed(&[seed; 32])
+    }
+
+    fn device(signer: &Signer) -> DeviceKey {
+        signer.public().into()
+    }
+
+    fn approval(signer: &Signer) -> RestartApproval {
+        RestartApproval {
+            cluster: SealingPublicKey::from_bytes([9; 32]),
+            operation: OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap(),
+            kind: WorkflowKind::Restart,
+            namespace: Namespace::parse("app").unwrap(),
+            service: ServiceName::parse("api").unwrap(),
+            machines: vec![
+                MachineId::parse("1111111111111111111111111111111a").unwrap(),
+                MachineId::parse("2222222222222222222222222222222b").unwrap(),
+            ],
+            container: ContainerId::parse("a".repeat(64)).unwrap(),
+            issued_at: Timestamp::from_millis(100_000).unwrap(),
+            expires_at: Timestamp::from_millis(1_000_000).unwrap(),
+            signer: SignerKey::Device(device(signer)),
+            proposal: None,
+        }
+    }
+
+    struct Machine {
+        id: MachineId,
+        trusted: TrustedKeys,
+        namespace: Namespace,
+        service: ServiceName,
+        container: ContainerId,
+    }
+
+    impl Machine {
+        fn facts(&self) -> RestartFacts<'_> {
+            RestartFacts {
+                cluster: Some(SealingPublicKey::from_bytes([9; 32])),
+                machine: &self.id,
+                trusted: &self.trusted,
+                namespace: &self.namespace,
+                service: &self.service,
+                container: &self.container,
+                kind: ContainerKind::ServiceContainer,
+                step: RestartStep::Stop,
+                now: Timestamp::from_millis(999_999).unwrap(),
+            }
+        }
+    }
+
+    fn machine(approved: &[&Signer]) -> Machine {
+        Machine {
+            id: MachineId::parse("2222222222222222222222222222222b").unwrap(),
+            trusted: TrustedKeys {
+                devices: approved.iter().map(|signer| device(signer)).collect(),
+                passkeys: Vec::new(),
+            },
+            namespace: Namespace::parse("app").unwrap(),
+            service: ServiceName::parse("api").unwrap(),
+            container: ContainerId::parse("a".repeat(64)).unwrap(),
+        }
+    }
+
+    #[test]
+    fn an_approved_device_signing_this_request_passes() {
+        let signer = signer(1);
+        let signed = Signed::sign(&approval(&signer), &signer).unwrap();
+        let machine = machine(&[&signer]);
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap(),
+            Approved {
+                body: approval(&signer),
+                by: Approver::Device(signer.public()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_trusted_passkey_signing_an_envelope_as_if_it_were_a_device_is_refused() {
+        let passkey_seed = signer(3);
+        let mut machine = machine(&[&signer(1)]);
+        machine
+            .trusted
+            .passkeys
+            .push(crate::authority::trusted_key::tests::trusted_eddsa_passkey(
+                &[3; 32],
+            ));
+        let signed = Signed::sign(&approval(&passkey_seed), &passkey_seed).unwrap();
+        assert_eq!(
+            verify(&signed, &machine.facts()),
+            Err(AuthorityRefusal::UnknownKey {
+                key: passkey_seed.public()
+            })
+        );
+    }
+
+    #[test]
+    fn the_body_travels_canonically_with_a_hex_signature() {
+        let signer = signer(1);
+        let signed = Signed::sign(&approval(&signer), &signer).unwrap();
+        assert!(
+            signed.body.starts_with(r#"{"cluster":""#),
+            "{}",
+            signed.body
+        );
+        assert!(signed.body.contains(r#""kind":"restart""#));
+        let [signature] = signed.signatures.as_slice() else {
+            panic!("one signature, found {:?}", signed.signatures);
+        };
+        assert_eq!(signature.signature.len(), 64);
+        let json = serde_json::to_string(&signed).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Signed<RestartApproval>>(&json).unwrap(),
+            signed
+        );
+    }
+
+    #[test]
+    fn a_signed_workflow_permits_only_its_own_steps() {
+        let signer = signer(1);
+        let machine = machine(&[&signer]);
+        for kind in [
+            WorkflowKind::Restart,
+            WorkflowKind::Stop,
+            WorkflowKind::Start,
+        ] {
+            let signed = Signed::sign(
+                &RestartApproval {
+                    kind,
+                    ..approval(&signer)
+                },
+                &signer,
+            )
+            .unwrap();
+            for (step, allowed) in [
+                (RestartStep::Hold, kind != WorkflowKind::Start),
+                (RestartStep::Stop, kind != WorkflowKind::Start),
+                (RestartStep::Start, kind != WorkflowKind::Stop),
+                (RestartStep::Out, false),
+                (RestartStep::Remove, false),
+            ] {
+                let mut facts = machine.facts();
+                facts.step = step;
+                assert_eq!(
+                    verify(&signed, &facts).is_ok(),
+                    allowed,
+                    "{kind:?} {step:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_stop_reaches_a_pre_deploy_hook() {
+        let signer = signer(1);
+        let machine = machine(&[&signer]);
+        for (kind, step, allowed) in [
+            (WorkflowKind::Start, RestartStep::Start, false),
+            (WorkflowKind::Restart, RestartStep::Start, false),
+            (WorkflowKind::Restart, RestartStep::Stop, false),
+            (WorkflowKind::Stop, RestartStep::Stop, true),
+        ] {
+            let signed = Signed::sign(
+                &RestartApproval {
+                    kind,
+                    ..approval(&signer)
+                },
+                &signer,
+            )
+            .unwrap();
+            let mut facts = machine.facts();
+            facts.kind = ContainerKind::PreDeployHook;
+            facts.step = step;
+            assert_eq!(
+                verify(&signed, &facts).map(|approved| approved.body.kind),
+                if allowed {
+                    Ok(kind)
+                } else {
+                    Err(AuthorityRefusal::Mismatch {
+                        field: "a workflow",
+                    })
+                },
+                "{kind} {step:?} on a completed hook"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_the_machine_has_not_approved_is_unknown() {
+        let stranger = signer(2);
+        let signed = Signed::sign(&approval(&stranger), &stranger).unwrap();
+        let machine = machine(&[&signer(1)]);
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap_err(),
+            AuthorityRefusal::UnknownKey {
+                key: stranger.public()
+            }
+        );
+    }
+
+    #[test]
+    fn a_body_changed_after_signing_fails_its_signature() {
+        let signer = signer(1);
+        let mut signed = Signed::sign(&approval(&signer), &signer).unwrap();
+        signed.body = signed
+            .body
+            .replace(r#""service":"api""#, r#""service":"db""#);
+        let machine = machine(&[&signer]);
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap_err(),
+            AuthorityRefusal::BadSignature {
+                key: signer.public()
+            }
+        );
+    }
+
+    #[test]
+    fn a_signature_by_another_device_over_a_body_naming_this_one_mismatches_the_signer() {
+        let named = signer(1);
+        let other = signer(2);
+        let signed = Signed::sign(&approval(&named), &other).unwrap();
+        let machine = machine(&[&named, &other]);
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap_err(),
+            AuthorityRefusal::Mismatch {
+                field: "the signer"
+            }
+        );
+    }
+
+    #[test]
+    fn no_signature_is_unsigned() {
+        let signer = signer(1);
+        let mut signed = Signed::sign(&approval(&signer), &signer).unwrap();
+        signed.signatures.clear();
+        let machine = machine(&[&signer]);
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap_err(),
+            AuthorityRefusal::Unsigned {
+                purpose: Purpose::Workflow
+            }
+        );
+    }
+
+    #[test]
+    fn each_bound_field_must_match_the_request() {
+        let signer = signer(1);
+        let mut machine = machine(&[&signer]);
+        let signed = Signed::sign(&approval(&signer), &signer).unwrap();
+
+        let mut facts = machine.facts();
+        facts.cluster = Some(SealingPublicKey::from_bytes([8; 32]));
+        assert_eq!(
+            verify(&signed, &facts).unwrap_err(),
+            AuthorityRefusal::Mismatch { field: "a Cluster" }
+        );
+        facts.cluster = None;
+        assert_eq!(
+            verify(&signed, &facts).unwrap_err(),
+            AuthorityRefusal::NoClusterIdentity
+        );
+
+        machine.namespace = Namespace::parse("other").unwrap();
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap_err(),
+            AuthorityRefusal::Mismatch {
+                field: "an Environment"
+            }
+        );
+        machine.namespace = Namespace::parse("app").unwrap();
+
+        machine.service = ServiceName::parse("db").unwrap();
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap_err(),
+            AuthorityRefusal::Mismatch { field: "a Service" }
+        );
+        machine.service = ServiceName::parse("api").unwrap();
+
+        machine.id = MachineId::parse("3333333333333333333333333333333c").unwrap();
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap_err(),
+            AuthorityRefusal::Mismatch { field: "Machines" }
+        );
+    }
+
+    #[test]
+    fn an_approval_past_its_expiry_is_refused() {
+        let signer = signer(1);
+        let signed = Signed::sign(&approval(&signer), &signer).unwrap();
+        let machine = machine(&[&signer]);
+        let mut facts = machine.facts();
+        facts.now = Timestamp::from_millis(1_000_000).unwrap();
+        assert!(
+            verify(&signed, &facts).is_ok(),
+            "the last millisecond still counts"
+        );
+        facts.now = Timestamp::from_millis(1_000_001 + CLOCK_SKEW_MILLIS).unwrap();
+        assert_eq!(
+            verify(&signed, &facts).unwrap_err(),
+            AuthorityRefusal::Expired
+        );
+    }
+
+    #[test]
+    fn lifetime_and_clock_skew_are_bounded() {
+        let signer = signer(1);
+        let mut body = approval(&signer);
+        body.issued_at = Timestamp::from_millis(100_000).unwrap();
+        body.expires_at = body.issued_at.plus(MAX_LIFETIME_MILLIS);
+        assert!(verify_time(&body, body.expires_at.plus(CLOCK_SKEW_MILLIS)).is_ok());
+        assert_eq!(
+            verify_time(&body, body.expires_at.plus(CLOCK_SKEW_MILLIS + 1)),
+            Err(AuthorityRefusal::Expired)
+        );
+        assert!(verify_time(&body, Timestamp::from_millis(0).unwrap()).is_ok());
+        body.issued_at = Timestamp::from_millis(CLOCK_SKEW_MILLIS + 1).unwrap();
+        assert!(matches!(
+            verify_time(&body, Timestamp::from_millis(0).unwrap()),
+            Err(AuthorityRefusal::Mismatch {
+                field: "an issue time"
+            })
+        ));
+        body.issued_at = Timestamp::from_millis(0).unwrap();
+        body.expires_at = body.issued_at.plus(MAX_LIFETIME_MILLIS + 1);
+        assert!(matches!(
+            verify_time(&body, body.issued_at),
+            Err(AuthorityRefusal::Mismatch {
+                field: "a lifetime"
+            })
+        ));
+    }
+
+    #[test]
+    fn unsorted_or_repeated_machines_and_malformed_signatures_do_not_parse() {
+        let signer = signer(1);
+        let mut body = approval(&signer);
+        body.machines.reverse();
+        assert!(Signed::sign(&body, &signer).unwrap().open().is_err());
+        let machine = *body.machines.first().unwrap();
+        body.machines = vec![machine, machine];
+        assert!(Signed::sign(&body, &signer).unwrap().open().is_err());
+        let envelope = serde_json::json!({ "body":"{}", "signatures":[{ "key": signer.public(), "signature":"00" }] });
+        assert!(serde_json::from_value::<Signed<RestartApproval>>(envelope).is_err());
+    }
+
+    #[test]
+    fn a_body_with_a_field_this_machine_cannot_read_is_malformed() {
+        let signer = signer(1);
+        let mut signed = Signed::sign(&approval(&signer), &signer).unwrap();
+        signed.body = signed.body.replacen('{', r#"{"also":"x","#, 1);
+        let machine = machine(&[&signer]);
+        assert_eq!(
+            verify(&signed, &machine.facts()).unwrap_err(),
+            AuthorityRefusal::BadSignature {
+                key: signer.public()
+            },
+            "a changed body never reaches the parser"
+        );
+        let mut unchecked = Signed::sign(&approval(&signer), &signer).unwrap();
+        unchecked.body = signed.body;
+        assert!(matches!(
+            unchecked.open().unwrap_err(),
+            AuthorityRefusal::Malformed { .. }
+        ));
+    }
+
+    #[test]
+    fn restart_steps_are_the_wants_that_act_on_an_existing_container() {
+        use crate::{ContainerId, RunRotation};
+        let id = ContainerId::parse("a".repeat(64)).unwrap();
+        let locator = ContainerLocator::Id(id);
+        let held = ContainerWant::Held {
+            container: locator.clone(),
+            run: crate::DeploymentLogId::parse("1111111111111111111111111111111a").unwrap(),
+            expect: None,
+        };
+        let stopped = ContainerWant::Stopped {
+            container: locator.clone(),
+            drain: crate::Drain::NONE,
+            stop: crate::StopOptions::default(),
+        };
+        let started = ContainerWant::Running {
+            container: RunTarget::Existing(locator.clone()),
+            rotation: RunRotation::Pending,
+        };
+        let out = ContainerWant::Out {
+            container: locator.clone(),
+            allow_empty: false,
+            expect: None,
+        };
+        assert_eq!(RestartStep::of(&held), Some((RestartStep::Hold, &locator)));
+        assert_eq!(
+            RestartStep::of(&stopped),
+            Some((RestartStep::Stop, &locator))
+        );
+        assert_eq!(
+            RestartStep::of(&started),
+            Some((RestartStep::Start, &locator))
+        );
+        assert_eq!(RestartStep::of(&out), Some((RestartStep::Out, &locator)));
+        assert!(RestartStep::Hold < RestartStep::Stop && RestartStep::Stop < RestartStep::Start);
+    }
+}

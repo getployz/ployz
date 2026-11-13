@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use std::{process, time::Duration};
 
 use crate::{
@@ -610,8 +611,15 @@ async fn ensure(
 ) -> ployz_core::ContainerNow {
     client
         .call::<op::EnsureContainer>(
-            EnsureContainerRequest { want },
-            Some(&MachineTarget::from(&machine_id)),
+            EnsureContainerRequest {
+                teardown: None,
+                preview: None,
+                want,
+                approval: None,
+                deploy: None,
+                rule: None,
+            },
+            Call::keyed().to(&MachineTarget::from(&machine_id)),
         )
         .await
         .unwrap()
@@ -627,7 +635,7 @@ async fn inspect_container(
     client
         .call::<op::InspectContainer>(
             InspectContainerRequest { container_id },
-            Some(&MachineTarget::from(&machine_id)),
+            Call::read().to(&MachineTarget::from(&machine_id)),
         )
         .await
         .map(|details| details.container)

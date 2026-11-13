@@ -739,9 +739,10 @@ class Provider:
             raise RuntimeError("Boat cannot start the Machines the pool did not cover now.\n" + "\n".join(problems))
 
     def discard(self, name, why):
-        """Delete a claimed sandbox that is not provably clean, so start() launches a fresh one in its place."""
-        sandbox = self.sandbox(dict(name=name))["id"]
-        print(f"{name}: not reusing {sandbox}: {why}", file=sys.stderr)
+        sandbox = (self.record()["sandboxes"].get(name) or {}).get("id")
+        if not sandbox:
+            return
+        print(f"{name}: deleting {sandbox}: {why}", file=sys.stderr)
         gone = deleted(self.boat("delete", sandbox, "--yes", check=False))
 
         def drop(record):

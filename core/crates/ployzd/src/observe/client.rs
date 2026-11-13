@@ -2,7 +2,7 @@
 //! deadline, and a store that does not answer is unavailable, so one Machine
 //! without ployz-observe fails alone.
 
-use std::{io, path::PathBuf, time::Duration};
+use std::{io, path::PathBuf};
 
 use ployz_core::{
     ContainerId, LogHistoryRequest, OpaquePayload,
@@ -14,13 +14,9 @@ use tonic::Status;
 
 use super::{
     layout::RetainedEnv,
-    serve::{EnvAnswer, MetricsAnswer, Request, read_frame, write_frame},
+    wire::{DEADLINE, EnvAnswer, MAX_ROW, MetricsAnswer, Request, read_frame, write_frame},
 };
 use crate::logs::RpcStream;
-
-const DEADLINE: Duration = Duration::from_secs(3);
-/// A stored line is at most 8 MiB; the rest is the row header.
-const MAX_ROW: usize = 9 << 20;
 
 #[derive(Clone, Debug)]
 pub struct ObserveClient {

@@ -19,9 +19,14 @@ use instant_acme::{
 };
 use ployz_core::{
     CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute, ContainerKind,
-    ContainerObservation, HOSTNAME_VERIFY_PATH, HttpProtocol, IngressHost, IssuanceFailure,
-    IssuanceGate, Machine, MachineId, PortPublication, VerifyAnswer, hostname_verdict,
-    issuance_failure_clock, issuance_gate, refusal_reason, resolve_certificate_policy,
+    ContainerObservation, HOSTNAME_VERIFY_PATH, HttpProtocol, IngressHost, IngressPorts,
+    IngressWiring, IssuanceFailure, Machine, MachineId, PortPublication, TUNNEL_SERVES_CERTIFICATE,
+    VerifyAnswer, hostname_verdict, issuance_failure_clock, issuance_gate, refusal_reason,
+    resolve_certificate_policy, validate_ingress_service_spec,
+};
+use ployz_decide::issuance::{
+    Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, issuance_action, issued,
+    machine_rank, step, wake,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -38,89 +43,8 @@ use crate::{
 
 pub(crate) const DIRECTORY_ENV: &str = "PLOYZ_ACME_DIRECTORY";
 const ACCOUNT_FILE: &str = "account.json";
-const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
-const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const RESUBSCRIBE_INTERVAL: Duration = Duration::from_secs(1);
-/// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
-pub(crate) const RANK_STEP: Duration = CHALLENGE_WAIT;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IssuanceAction {
-    Nothing,
-    Order,
-    Renew,
-}
-
-/// Rank among Machine identifiers. Lowest id is 0 and may order immediately.
-#[must_use]
-pub(crate) fn machine_rank<'id>(
-    this: &MachineId,
-    machines: impl IntoIterator<Item = &'id MachineId>,
-) -> usize {
-    machines.into_iter().filter(|id| *id < this).count()
-}
-
-/// Whether this Machine should order or renew now.
-///
-/// Rank delay uses `RANK_STEP.max(policy.probe_timeout())` so a later rank
-/// cannot start a competing order while an earlier rank is still presenting.
-#[must_use]
-pub(crate) fn issuance_action(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> IssuanceAction {
-    action_due(row, rank, elapsed, now, machine_id, policy).0
-}
-
-fn rank_delay(rank: usize, step: Duration) -> Duration {
-    step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX))
-}
-
-fn issuance_step(policy: &CertificatePolicy) -> Duration {
-    RANK_STEP.max(policy.probe_timeout())
-}
-
-fn action_due(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> (IssuanceAction, Duration) {
-    let delay = rank_delay(rank, issuance_step(policy));
-    match row.and_then(CertificateRow::material) {
-        None => {
-            let wait = delay.saturating_sub(elapsed);
-            let action = if wait.is_zero() {
-                IssuanceAction::Order
-            } else {
-                IssuanceAction::Nothing
-            };
-            (action, wait)
-        }
-        Some(material) => match renew_at(material, machine_id, policy.renew_at_lifetime_fraction())
-        {
-            Some(renew_at) => {
-                let wait = saturating_add(renew_at, delay)
-                    .duration_since(now)
-                    .unwrap_or(Duration::ZERO);
-                let action = if wait.is_zero() {
-                    IssuanceAction::Renew
-                } else {
-                    IssuanceAction::Nothing
-                };
-                (action, wait)
-            }
-            None => (IssuanceAction::Nothing, RETRY_INTERVAL),
-        },
-    }
-}
 
 /// Instant `fraction` of the certificate's own lifetime has elapsed.
 #[must_use]
@@ -193,17 +117,48 @@ fn saturating_add(time: SystemTime, duration: Duration) -> SystemTime {
     time.checked_add(duration).unwrap_or(time)
 }
 
-fn poll_wait(
-    row: Option<&CertificateRow>,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    machine_id: &MachineId,
-    policy: &CertificatePolicy,
-) -> Duration {
-    match action_due(row, rank, elapsed, now, machine_id, policy) {
-        (IssuanceAction::Order | IssuanceAction::Renew, _) => RANK_STEP,
-        (IssuanceAction::Nothing, due_in) => due_in.min(RETRY_INTERVAL),
+/// A hostname's `Issuance` and the instant its rank delay started, which a hold or a refusal
+/// ends. The loop keeps one per wanted hostname.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Host {
+    issuance: Issuance,
+    since: Instant,
+}
+
+impl Host {
+    /// How long the rank delay has run.
+    fn orderable_for(self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.since)
+    }
+}
+
+/// What the row holds that scheduling reads: material, and when this Machine renews it.
+fn held(row: Option<&CertificateRow>, machine_id: &MachineId, policy: &CertificatePolicy) -> Held {
+    match row.and_then(CertificateRow::material) {
+        None => Held::Nothing,
+        Some(material) => Held::Material {
+            renew_at: renew_at(material, machine_id, policy.renew_at_lifetime_fraction()),
+        },
+    }
+}
+
+/// The next state of a hostname this pass probed. `prev` is its state after this Machine's
+/// last pass.
+fn advance(prev: Option<Host>, now: Instant, pass: Pass<'_>) -> Host {
+    let stepped = step(
+        prev.map(|host| Prev {
+            issuance: host.issuance,
+            orderable_for: host.orderable_for(now),
+        }),
+        pass,
+    );
+    let since = match prev {
+        Some(host) if stepped.keeps_since => host.since,
+        Some(_) | None => now,
+    };
+    Host {
+        issuance: stepped.issuance,
+        since,
     }
 }
 
@@ -224,6 +179,49 @@ pub(crate) fn challenge_probe_addresses(
         .collect()
 }
 
+/// Which Servers hold the Public Door open, from their running door Containers, and
+/// which hold it closed for the Tunnel Door. A Server with both, mid-switch, is open.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct DoorStanding {
+    pub(crate) public: BTreeSet<MachineId>,
+    pub(crate) closed: BTreeSet<MachineId>,
+}
+
+pub(crate) fn door_standing(observations: &[ContainerObservation]) -> DoorStanding {
+    let mut standing = DoorStanding::default();
+    for observation in observations
+        .iter()
+        .filter(|observation| observation.runtime.may_serve())
+        .filter(|observation| observation.identity().is_ingress_door())
+    {
+        match validate_ingress_service_spec(&observation.resolved_spec).ok() {
+            Some(IngressWiring::LegacyProxy | IngressWiring::Holder(IngressPorts::Public)) => {
+                standing.public.insert(observation.machine_id);
+            }
+            Some(IngressWiring::Holder(IngressPorts::Closed)) => {
+                standing.closed.insert(observation.machine_id);
+            }
+            Some(IngressWiring::JoinedProxy | IngressWiring::Tunnel) | None => {}
+        }
+    }
+    standing
+        .closed
+        .retain(|machine_id| !standing.public.contains(machine_id));
+    standing
+}
+
+/// The Machines that take part in ordering: every one but those with the Public Door
+/// closed, which Let's Encrypt can't reach.
+pub(crate) fn ordering_machines<'m>(
+    machines: &'m [Machine],
+    standing: &'m DoorStanding,
+) -> impl Iterator<Item = &'m MachineId> {
+    machines
+        .iter()
+        .map(|machine| &machine.id)
+        .filter(|machine_id| !standing.closed.contains(machine_id))
+}
+
 fn ingress_challenge_ips(
     machines: &[Machine],
     observations: &[ContainerObservation],
@@ -235,9 +233,10 @@ fn ingress_challenge_ips(
         })
         .map(|observation| observation.machine_id)
         .collect();
+    let standing = door_standing(observations);
     machines
         .iter()
-        .filter(|machine| ingress.contains(&machine.id))
+        .filter(|machine| ingress.contains(&machine.id) && !standing.closed.contains(&machine.id))
         .flat_map(machine_challenge_ips)
         .collect()
 }
@@ -365,7 +364,7 @@ pub(crate) async fn run(
     shutdown: CancellationToken,
 ) {
     let account_dir = data_dir.join("acme");
-    let mut first_seen = BTreeMap::new();
+    let mut hosts = BTreeMap::new();
     loop {
         let subscribed = tokio::select! {
             subscribed = store.subscribe_container_changes() => subscribed,
@@ -387,7 +386,7 @@ pub(crate) async fn run(
                 &directory_default,
                 &account_dir,
                 &machine_id,
-                &mut first_seen,
+                &mut hosts,
             )
             .await
             {
@@ -422,13 +421,27 @@ async fn wait_to_resubscribe(shutdown: &CancellationToken) -> bool {
     }
 }
 
-async fn issue_wanted(
+/// What a pass reads before it decides any hostname.
+struct PassInputs {
+    policy: CertificatePolicy,
+    directory: String,
+    wanted: BTreeSet<IngressHost>,
+    rows: BTreeMap<CertificateHost, CertificateRow>,
+    machine_ids: Vec<MachineId>,
+    cluster: Vec<IpAddr>,
+    verify_client: Client,
+    rank: usize,
+}
+
+/// The pass's reads, or `None` when it stops before deciding any hostname: the Certificate
+/// Policy is refused, which every Machine records for every wanted hostname, it has no
+/// directory, no hostname is wanted, every Server uses the Tunnel Door, which every Machine
+/// records the same way, or this Machine's Public Door is closed.
+async fn read_pass(
     store: &ReplicatedStore,
     directory_default: &Option<String>,
-    account_dir: &Path,
     machine_id: &MachineId,
-    first_seen: &mut BTreeMap<IngressHost, Instant>,
-) -> Result<Duration, Error> {
+) -> Result<Option<PassInputs>, Error> {
     let policy = match resolve_certificate_policy(
         store.certificate_policy().await?.as_deref(),
         &CertificatePolicy::built_in(directory_default.clone()),
@@ -448,105 +461,153 @@ async fn issue_wanted(
                     ),
                 }
             }
-            return Ok(RETRY_INTERVAL);
+            return Ok(None);
         }
     };
-    let Some(directory) = policy.directory_url() else {
-        return Ok(RETRY_INTERVAL);
+    let Some(directory) = policy.directory_url().map(str::to_owned) else {
+        return Ok(None);
     };
     let containers = store.containers().await?;
-    let mut rows = store.certificate_state().await?;
+    let rows = store.certificate_state().await?;
     let wanted = wanted_certificate_hosts(containers.observations.iter(), &rows);
-    first_seen.retain(|hostname, _| wanted.contains(hostname));
     if wanted.is_empty() {
-        return Ok(RETRY_INTERVAL);
+        return Ok(None);
     }
     let machines = store.machines().await?;
-    let cluster = cluster_addresses(&machines.observations);
-    let machine_ids: Vec<_> = machines
-        .observations
-        .iter()
-        .map(|machine| machine.id)
-        .collect();
+    let standing = door_standing(&containers.observations);
+    if standing.public.is_empty() && !standing.closed.is_empty() {
+        for hostname in &wanted {
+            match store
+                .record_certificate_error(hostname, TUNNEL_SERVES_CERTIFICATE)
+                .await?
+            {
+                AcmeWrite::Changed | AcmeWrite::Kept => {}
+                AcmeWrite::Moved => eprintln!(
+                    "did not record why no certificate is ordered for {hostname}: its row changed on every attempt"
+                ),
+            }
+        }
+        return Ok(None);
+    }
+    if standing.closed.contains(machine_id) {
+        return Ok(None);
+    }
     let verify_client = probe_client(policy.probe_timeout())?;
     let rank = machine_rank(
         machine_id,
-        machines.observations.iter().map(|machine| &machine.id),
+        ordering_machines(&machines.observations, &standing),
     );
+    Ok(Some(PassInputs {
+        policy,
+        directory,
+        wanted,
+        rows,
+        machine_ids: ordering_machines(&machines.observations, &standing)
+            .copied()
+            .collect(),
+        cluster: cluster_addresses(&machines.observations),
+        verify_client,
+        rank,
+    }))
+}
+
+async fn issue_wanted(
+    store: &ReplicatedStore,
+    directory_default: &Option<String>,
+    account_dir: &Path,
+    machine_id: &MachineId,
+    hosts: &mut BTreeMap<IngressHost, Host>,
+) -> Result<Duration, Error> {
+    // A read Err returns with `hosts` as it was, so an error does not cost a delay already
+    // earned. A pass the policy or a missing directory stops is a blocked pass, as a hold is.
+    let Some(PassInputs {
+        policy,
+        directory,
+        wanted,
+        rows,
+        machine_ids,
+        cluster,
+        verify_client,
+        rank,
+    }) = read_pass(store, directory_default, machine_id).await?
+    else {
+        hosts.clear();
+        return Ok(RETRY_INTERVAL);
+    };
+    hosts.retain(|hostname, _| wanted.contains(hostname));
     let now = Instant::now();
     let wall = SystemTime::now();
     let mut to_order = Vec::new();
     for hostname in &wanted {
         let row = rows.get(hostname.as_str());
-        let elapsed = match row.and_then(CertificateRow::material) {
-            Some(_) => {
-                first_seen.remove(hostname);
-                Duration::ZERO
-            }
+        let held = held(row, machine_id, &policy);
+        let host = match issued(held, rank, wall, &policy) {
+            Some(issuance) => Host {
+                issuance,
+                since: now,
+            },
             None => {
-                let seen = if let Some(&seen) = first_seen.get(hostname) {
-                    seen
-                } else {
-                    first_seen.insert(hostname.clone(), now);
-                    now
-                };
-                now.saturating_duration_since(seen)
+                let addresses = resolve_host(hostname)
+                    .await
+                    .into_iter()
+                    .map(|address| SocketAddr::new(address, 80))
+                    .collect::<Vec<_>>();
+                let answers = verify_answers(&verify_client, hostname, &addresses).await;
+                let verdict = hostname_verdict(&answers, &machine_ids, &cluster);
+                let gate = issuance_gate(
+                    row.and_then(CertificateRow::clock),
+                    verdict,
+                    wall,
+                    policy.backoff_base(),
+                    policy.backoff_cap(),
+                );
+                let prev = hosts.get(hostname).copied();
+                advance(
+                    prev,
+                    now,
+                    Pass {
+                        gate,
+                        held,
+                        rank,
+                        wall,
+                        policy: &policy,
+                    },
+                )
             }
         };
-        let due = issuance_action(row, rank, elapsed, wall, machine_id, &policy);
-        if row.and_then(CertificateRow::material).is_some()
-            && !matches!(due, IssuanceAction::Order | IssuanceAction::Renew)
-        {
-            continue;
-        }
-        let addresses = resolve_host(hostname)
-            .await
-            .into_iter()
-            .map(|address| SocketAddr::new(address, 80))
-            .collect::<Vec<_>>();
-        let answers = verify_answers(&verify_client, hostname, &addresses).await;
-        let verdict = hostname_verdict(&answers, &machine_ids, &cluster);
-        let gate = issuance_gate(
-            row.and_then(CertificateRow::clock),
-            verdict,
-            wall,
-            policy.backoff_base(),
-            policy.backoff_cap(),
-        );
-        let route = match gate {
-            IssuanceGate::Nothing => continue,
-            IssuanceGate::Refuse { refusal, clock } => {
-                first_seen.remove(hostname);
-                if rank == 0 {
-                    let reason = refusal_reason(hostname, refusal, &cluster);
-                    let tried = row.and_then(CertificateRow::material);
-                    match store
-                        .record_certificate_failure(hostname, tried, reason, clock)
-                        .await
-                    {
-                        Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
-                        Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
-                            "did not record certificate refusal for {hostname}: its row no longer holds the failed material as ACME material"
-                        ),
-                        Ok(AcmeWrite::Moved) => eprintln!(
-                            "did not record certificate refusal for {hostname}: its row changed on every attempt"
-                        ),
-                        Err(error) => eprintln!(
-                            "failed to record certificate refusal for {hostname}: {error}",
-                            error = ployz_core::error_chain::inline(&error),
-                        ),
-                    }
+        hosts.insert(hostname.clone(), host);
+        match host.issuance {
+            Issuance::Refused { refusal, clock } if rank == 0 => {
+                let reason = refusal_reason(hostname, refusal, &cluster);
+                let tried = row.and_then(CertificateRow::material);
+                match store
+                    .record_certificate_failure(hostname, tried, reason, clock)
+                    .await
+                {
+                    Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
+                    Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
+                        "did not record certificate refusal for {hostname}: its row no longer holds the failed material as ACME material"
+                    ),
+                    Ok(AcmeWrite::Moved) => eprintln!(
+                        "did not record certificate refusal for {hostname}: its row changed on every attempt"
+                    ),
+                    Err(error) => eprintln!(
+                        "failed to record certificate refusal for {hostname}: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    ),
                 }
-                continue;
             }
-            IssuanceGate::Order(route) => route,
-        };
-        if matches!(due, IssuanceAction::Order | IssuanceAction::Renew) {
-            to_order.push((hostname, route));
+            Issuance::Order(route) | Issuance::Renew(route) => {
+                to_order.push((hostname, route));
+            }
+            Issuance::Issued { .. }
+            | Issuance::Waiting
+            | Issuance::Held(_)
+            | Issuance::Refused { .. } => {}
         }
     }
     if !to_order.is_empty() {
-        account(directory, &policy, account_dir).await?;
+        account(&directory, &policy, account_dir).await?;
         let results = join_all(to_order.iter().map(|(hostname, route)| {
             obtain(
                 store,
@@ -597,26 +658,12 @@ async fn issue_wanted(
                 }
             }
         }
-        rows = store.certificate_state().await?;
     }
     let now = Instant::now();
     let wall = SystemTime::now();
-    Ok(wanted
-        .iter()
-        .map(|hostname| {
-            let elapsed = first_seen
-                .get(hostname)
-                .map(|seen| now.saturating_duration_since(*seen))
-                .unwrap_or(Duration::ZERO);
-            poll_wait(
-                rows.get(hostname.as_str()),
-                rank,
-                elapsed,
-                wall,
-                machine_id,
-                &policy,
-            )
-        })
+    Ok(hosts
+        .values()
+        .map(|host| wake(host.issuance, rank, host.orderable_for(now), wall, &policy))
         .min()
         .unwrap_or(RETRY_INTERVAL))
 }
@@ -640,15 +687,10 @@ async fn obtain(
     machine_id: &MachineId,
 ) -> Result<(), Error> {
     let row = store.certificate_row(hostname).await?;
-    if row.material().is_some()
-        && issuance_action(
-            Some(&row),
-            rank,
-            Duration::ZERO,
-            SystemTime::now(),
-            machine_id,
-            policy,
-        ) == IssuanceAction::Nothing
+    let held = held(Some(&row), machine_id, policy);
+    if held != Held::Nothing
+        && issuance_action(held, rank, Duration::ZERO, SystemTime::now(), policy)
+            == IssuanceAction::Nothing
     {
         return Ok(());
     }

@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{
     net::IpAddr,
     process::{self, Command},
@@ -545,7 +546,7 @@ async fn publish_material(
                     private_key_pem: private_key.to_owned(),
                 },
             },
-            None,
+            Call::keyed(),
         )
         .await
         .map(|_| ())
@@ -558,7 +559,7 @@ async fn clear_material(client: &mut ployz::connect::Client, hostname: &str) {
                 hostname: CertificateHost::parse(hostname).unwrap(),
                 change: CertificateMaterialChange::Clear,
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -734,15 +735,13 @@ async fn connect(direct: &str) -> ployz::connect::Client {
     .unwrap()
 }
 
-/// Give `server` the ingress role; the Ingress Proxy follows it with the preloaded Caddy image.
-fn ingress_role(server: &Machine) -> [&str; 6] {
+/// Give `server` the ingress role; the Ingress Proxy follows it with the images its daemon pins.
+fn ingress_role(server: &Machine) -> [&str; 4] {
     [
         "server",
         "set",
         server.id.as_str(),
         "--accepts-ingress=true",
-        "--ingress-image",
-        "caddy:2.10.2",
     ]
 }
 

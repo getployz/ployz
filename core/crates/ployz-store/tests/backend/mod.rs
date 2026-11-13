@@ -201,6 +201,7 @@ pub fn admit(
         .write_trusted(
             who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: ployz_store::EnvironmentRef {
                     project: None,
@@ -213,6 +214,7 @@ pub fn admit(
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )

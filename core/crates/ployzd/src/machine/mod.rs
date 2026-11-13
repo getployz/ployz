@@ -1,7 +1,7 @@
 //! Local Machine record persistence and Live Observation operations.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     os::unix::fs::OpenOptionsExt,
@@ -13,9 +13,9 @@ use std::{
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    DeviceCode, DeviceKey, LocalMachinePhase, Machine, MachineId, MachineRuntime,
+    ClientKey, DeviceCode, DeviceKey, LocalMachinePhase, Machine, MachineId, MachineRuntime,
     MachineStorageObservation, ManagementClientLabel, PinnedAddresses, RecoverySeed,
-    SelectedEndpoint,
+    SelectedEndpoint, WireGuardPublicKey,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -28,9 +28,9 @@ mod record_wire;
 use record_wire::LocalMachineRecordWire;
 
 mod ingress;
-mod local_machine;
+pub(crate) mod local_machine;
 mod record_owner;
-mod store;
+pub(crate) mod store;
 
 pub use record_owner::{RecordOwner, RecordOwnerStopped};
 #[cfg(test)]
@@ -38,18 +38,22 @@ use store::PENDING_RESET_FILE_NAME;
 pub use store::{EnrollPlan, LocalMachineStore, StoreError};
 pub(crate) use store::{InterruptedReset, Opened};
 
+pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
-pub(crate) use local_machine::{CutRefusal, RecoveryError, RuntimeWatchTelemetry, SealingError};
+pub(crate) use local_machine::{
+    Admitted, CopyStep, CutRefusal, HeldStep, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
+    SealingError,
+};
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
 #[cfg(test)]
+mod record_tests;
+#[cfg(test)]
 mod register_tests;
 
-pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
-pub const PREPARE_DIR_NAME: &str = "prepare";
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -193,6 +197,19 @@ pub struct LocalMachineRecord {
     /// records from before Devices were Full-only, when any client could name one.
     #[serde(default)]
     device_slots_vetted: bool,
+    /// Whether an Operator caller's Service restart needs a Device-signed approval.
+    /// Off until a Full caller turns it on, so an upgrade changes nothing.
+    #[serde(default)]
+    device_enforcement: bool,
+    #[serde(default)]
+    trusted_machines: Vec<ployz_core::authority::Member>,
+    /// Passkeys a Full caller approved here. They approve workflows and rules only and hold no slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    passkeys: Vec<ployz_core::authority::TrustedPasskey>,
+    #[serde(default)]
+    membership_cluster: Option<ployz_core::SealingPublicKey>,
+    #[serde(default)]
+    enrollment: Option<ployz_core::EnrollRequest>,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -214,33 +231,33 @@ enum ManagementClientSlot {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum LiveSlot {
     Pending {
-        pending: [u8; 32],
+        pending: ClientKey,
     },
     Active {
-        accepted: [u8; 32],
+        accepted: ClientKey,
     },
     Rotating {
-        accepted: [u8; 32],
-        pending: [u8; 32],
+        accepted: ClientKey,
+        pending: ClientKey,
     },
 }
 
 impl LiveSlot {
-    fn accepted(self) -> Option<[u8; 32]> {
+    fn accepted(self) -> Option<ClientKey> {
         match self {
             Self::Active { accepted } | Self::Rotating { accepted, .. } => Some(accepted),
             Self::Pending { .. } => None,
         }
     }
 
-    fn pending(self) -> Option<[u8; 32]> {
+    fn pending(self) -> Option<ClientKey> {
         match self {
             Self::Pending { pending } | Self::Rotating { pending, .. } => Some(pending),
             Self::Active { .. } => None,
         }
     }
 
-    fn holds(self, remote: &[u8; 32]) -> bool {
+    fn holds(self, remote: &ClientKey) -> bool {
         self.accepted().as_ref() == Some(remote) || self.pending().as_ref() == Some(remote)
     }
 }
@@ -253,16 +270,16 @@ impl ManagementClientSlot {
         }
     }
 
-    fn accepted(self) -> Option<[u8; 32]> {
+    fn accepted(self) -> Option<ClientKey> {
         self.live().and_then(LiveSlot::accepted)
     }
 
-    fn pending(self) -> Option<[u8; 32]> {
+    fn pending(self) -> Option<ClientKey> {
         self.live().and_then(LiveSlot::pending)
     }
 
     /// Whether this tombstone holds `remote`.
-    fn clears(self, remote: &[u8; 32]) -> bool {
+    fn clears(self, remote: &ClientKey) -> bool {
         matches!(self, Self::Cleared { was } if was.holds(remote))
     }
 }
@@ -283,17 +300,97 @@ impl LocalMachineRecord {
             .map(|(label, _)| label)
     }
 
+    #[must_use]
+    pub fn passkeys(&self) -> &[ployz_core::authority::TrustedPasskey] {
+        &self.passkeys
+    }
+
+    /// Every key this Machine trusts, from its own record: its Devices and its passkeys.
+    #[must_use]
+    pub fn trusted_keys(&self) -> ployz_core::authority::TrustedKeys {
+        ployz_core::authority::TrustedKeys {
+            devices: self.devices().collect(),
+            passkeys: self.passkeys.clone(),
+        }
+    }
+
     /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
     pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
         self.management_clients.iter().filter_map(|(label, slot)| {
-            let key = DeviceKey::from_bytes(slot.accepted()?);
+            let key = DeviceKey::from_bytes(*slot.accepted()?.as_bytes());
             (DeviceCode::named_by(label) == Some(key.code())).then_some(key)
         })
     }
 
+    /// Whether this Machine accepts the row as a Cluster member using its own authority.
+    pub(crate) fn accepts_machine(&self, machine: &Machine) -> bool {
+        if !self.device_enforcement || self.pins_machine(machine) {
+            return true;
+        }
+        let Some(approval) = &machine.join_approval else {
+            return false;
+        };
+        let Ok(signers) = approval.verified_signers(self.devices().map(Into::into)) else {
+            return false;
+        };
+        let Ok(body) = approval.open() else {
+            return false;
+        };
+
+        ployz_core::authority::Member::from(&body.machine).matches(machine)
+            && body.sealing_recipient == machine.public_key
+            && signers.contains(&body.signer.into())
+            && self.membership_cluster == Some(body.cluster)
+    }
+
+    /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
+    /// the IDs a complete snapshot has an accepted row or a removal for, and is `None` while
+    /// the store can't say who left. With enforcement off the peer stays until such a
+    /// snapshot. Under enforcement only a trusted Member stays, until the snapshot answers
+    /// for its ID, so a missing or refused row never cuts the peers carrying gossip.
+    pub(crate) fn keeps_unlisted_peer(
+        &self,
+        key: &WireGuardPublicKey,
+        answered: Option<&BTreeSet<MachineId>>,
+    ) -> bool {
+        if !self.device_enforcement {
+            return answered.is_none();
+        }
+        self.trusted_machines.iter().any(|member| {
+            member.public_key == *key && answered.is_none_or(|ids| !ids.contains(&member.id))
+        })
+    }
+
+    /// Trusted Members whose key is `installed` and whose ID `listed` lacks. Under
+    /// enforcement each stays until the store shows its row deleted, so only these need
+    /// that evidence. Empty with enforcement off.
+    pub(crate) fn unlisted_trusted_machines(
+        &self,
+        installed: impl Fn(&WireGuardPublicKey) -> bool,
+        listed: &BTreeSet<MachineId>,
+    ) -> Vec<MachineId> {
+        if !self.device_enforcement {
+            return Vec::new();
+        }
+        self.trusted_machines
+            .iter()
+            .filter(|member| installed(&member.public_key) && !listed.contains(&member.id))
+            .map(|member| member.id)
+            .collect()
+    }
+
+    pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {
+        self.machine()
+            .is_some_and(|own| ployz_core::authority::Member::from(own).matches(machine))
+            || self
+                .trusted_machines
+                .iter()
+                .any(|member| member.matches(machine))
+    }
+
     /// Whether `remote` is a key some Clear left in a tombstone.
     #[must_use]
-    pub fn clears_management_client(&self, remote: &[u8; 32]) -> bool {
+    pub fn clears_management_client(&self, remote: &ClientKey) -> bool {
         self.management_clients
             .values()
             .any(|slot| slot.clears(remote))
@@ -301,7 +398,7 @@ impl LocalMachineRecord {
 
     /// Public key `label` currently has accepted by the management transport.
     #[must_use]
-    pub fn accepted_client(&self, label: &ManagementClientLabel) -> Option<[u8; 32]> {
+    pub fn accepted_client(&self, label: &ManagementClientLabel) -> Option<ClientKey> {
         self.management_clients
             .get(label)
             .and_then(|slot| slot.accepted())
@@ -309,7 +406,7 @@ impl LocalMachineRecord {
 
     /// Public key `label` has awaiting an authenticated handover.
     #[must_use]
-    pub fn pending_client(&self, label: &ManagementClientLabel) -> Option<[u8; 32]> {
+    pub fn pending_client(&self, label: &ManagementClientLabel) -> Option<ClientKey> {
         self.management_clients
             .get(label)
             .and_then(|slot| slot.pending())
@@ -317,7 +414,7 @@ impl LocalMachineRecord {
 
     /// Whether `remote` is any slot's accepted key, so it may run operational RPCs.
     #[must_use]
-    pub fn accepts_management_client(&self, remote: &[u8; 32]) -> bool {
+    pub fn accepts_management_client(&self, remote: &ClientKey) -> bool {
         self.management_clients
             .values()
             .any(|slot| slot.accepted().as_ref() == Some(remote))
@@ -325,7 +422,7 @@ impl LocalMachineRecord {
 
     /// Label of the slot holding `remote` as its pending key.
     #[must_use]
-    pub fn pending_label(&self, remote: &[u8; 32]) -> Option<&ManagementClientLabel> {
+    pub fn pending_label(&self, remote: &ClientKey) -> Option<&ManagementClientLabel> {
         self.management_clients
             .iter()
             .find(|(_, slot)| slot.pending().as_ref() == Some(remote))
@@ -334,7 +431,7 @@ impl LocalMachineRecord {
 
     /// Label of the slot holding `remote` as its accepted key.
     #[must_use]
-    pub fn accepted_label(&self, remote: &[u8; 32]) -> Option<&ManagementClientLabel> {
+    pub fn accepted_label(&self, remote: &ClientKey) -> Option<&ManagementClientLabel> {
         self.management_clients
             .iter()
             .find(|(_, slot)| slot.accepted().as_ref() == Some(remote))
@@ -344,7 +441,7 @@ impl LocalMachineRecord {
     /// What `remote` may call: the widest scope of any slot holding it as its accepted
     /// or pending key, or `None` when no slot holds it.
     #[must_use]
-    pub fn management_scope(&self, remote: &[u8; 32]) -> Option<ployz_core::ManagementScope> {
+    pub fn management_scope(&self, remote: &ClientKey) -> Option<ployz_core::ManagementScope> {
         self.management_clients
             .iter()
             .filter(|(_, slot)| {
@@ -356,7 +453,7 @@ impl LocalMachineRecord {
 
     /// Whether `remote` is any slot's accepted or pending key, so it may connect.
     #[must_use]
-    pub fn admits_management_client(&self, remote: &[u8; 32]) -> bool {
+    pub fn admits_management_client(&self, remote: &ClientKey) -> bool {
         self.accepts_management_client(remote) || self.pending_label(remote).is_some()
     }
 }
@@ -507,7 +604,12 @@ impl LocalMachineRecord {
                 return Err(StoreError::MissingPeers);
             }
         }
-        Ok(Self {
+        Ok(Self::fresh(body, wireguard_private_key))
+    }
+
+    /// A record as it is born: its own secret, no slots, no pins, nothing vetted away.
+    fn fresh(body: LocalMachineBody, wireguard_private_key: WireGuardPrivateKey) -> Self {
+        Self {
             body,
             wireguard_private_key,
             management_secret: ManagementSecret::generate(),
@@ -517,7 +619,12 @@ impl LocalMachineRecord {
             pinned_addresses: PinnedAddresses::default(),
             push_target: None,
             device_slots_vetted: true,
-        })
+            device_enforcement: false,
+            trusted_machines: Vec::new(),
+            passkeys: Vec::new(),
+            membership_cluster: None,
+            enrollment: None,
+        }
     }
 
     #[must_use]
@@ -529,6 +636,12 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn push_target(&self) -> Option<&Url> {
         self.push_target.as_ref()
+    }
+
+    /// Whether an Operator caller's Service restart needs a Device-signed approval.
+    #[must_use]
+    pub fn device_enforcement(&self) -> bool {
+        self.device_enforcement
     }
 
     /// Secret behind this Machine's Management Identity.
@@ -600,10 +713,15 @@ impl LocalMachineRecord {
         self.body.recovery_seed()
     }
 
-    /// Bootstrap Machines persisted for join and catch-up.
+    /// Bootstrap Machines persisted for join and catch-up that this Machine accepts.
     #[must_use]
-    pub fn bootstrap(&self) -> &[Machine] {
-        self.body.bootstrap()
+    pub fn bootstrap(&self) -> Vec<Machine> {
+        self.body
+            .bootstrap()
+            .iter()
+            .filter(|machine| self.accepts_machine(machine))
+            .cloned()
+            .collect()
     }
 
     /// Minimum store versions this joiner must reach before participating.
@@ -617,14 +735,7 @@ impl LocalMachineRecord {
             body: LocalMachineBody::Resetting {
                 prior: Box::new(self.body.into_prior()),
             },
-            wireguard_private_key: self.wireguard_private_key,
-            management_secret: self.management_secret,
-            management_clients: self.management_clients,
-            wireguard_mtu: self.wireguard_mtu,
-            selected_endpoints: self.selected_endpoints,
-            pinned_addresses: self.pinned_addresses,
-            push_target: self.push_target,
-            device_slots_vetted: self.device_slots_vetted,
+            ..self
         }
     }
 }
@@ -661,6 +772,7 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
         store_syncs_commits: store_filesystem.as_deref().map(|name| name != "tmpfs"),
         store_filesystem,
         capabilities: ployz_core::served_capabilities(),
+        device_enforcement: None,
         management_identity: None,
         leaving: false,
     }
@@ -690,14 +802,7 @@ fn filesystem_name(magic: u32) -> String {
 
 async fn local_storage(program: &Path, timeout: Duration) -> Option<MachineStorageObservation> {
     let mut command = tokio::process::Command::new(program);
-    command
-        .args([
-            "list",
-            "-Hp",
-            "-o",
-            "name,size,allocated,free,health,readonly",
-        ])
-        .kill_on_drop(true);
+    command.args(machine_pool::ZPOOL_LIST).kill_on_drop(true);
     match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) if output.status.success() => {
             let output = String::from_utf8(output.stdout).ok()?;

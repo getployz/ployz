@@ -27,17 +27,18 @@ mod capacity;
 mod copy;
 mod departure;
 mod inspect;
-mod mirror;
+mod marks;
 mod pool;
 mod removal;
 mod seed;
 mod size;
+mod slot;
 mod storage;
 mod transfer;
 
 use storage::{
-    CapacityAdmission, DATASET_ROOT, Dataset, MIRROR_ROOT, MOUNT_ROOT, Place, VolumeStorage,
-    checked_command, checked_output, parse_size, run_command,
+    CapacityAdmission, Dataset, VolumeStorage, checked_command, checked_output, parse_size,
+    run_command,
 };
 
 type Result<T> = std::result::Result<T, VolumeError>;
@@ -104,7 +105,7 @@ impl fmt::Display for DockerVolumeName {
 
 impl DockerVolumeName {
     fn mountpoint(&self) -> String {
-        format!("{MOUNT_ROOT}/{self}")
+        ployzd::dataset_layout::root_mountpoint(self)
     }
 }
 
@@ -410,6 +411,8 @@ mod tests {
 
     #[path = "copy_tests.rs"]
     mod copy_tests;
+    mod marks_model_tests;
+    mod marks_tests;
     mod seed_tests;
     mod size_tests;
 
@@ -602,7 +605,7 @@ mod tests {
         let message = error(&response);
         assert!(message.contains("tank/ployz"));
         assert!(message.contains("/tank/ployz"));
-        assert!(message.contains(MOUNT_ROOT));
+        assert!(message.contains(ployzd::dataset_layout::MOUNT_ROOT));
         assert!(
             !fs::read_to_string(test.0.join("commands"))
                 .unwrap()

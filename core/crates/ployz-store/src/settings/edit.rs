@@ -390,7 +390,7 @@ pub(crate) fn edit(
     } = editing;
     crate::git::check_sources(&before, &environment.working, trusted)?;
     if environment.working != before {
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     Ok(Edited {
         environment: environment.summary,
@@ -603,13 +603,8 @@ impl Editing<'_> {
                 ));
             }
             (Some(Target::Variable(key)), Some(value)) => {
-                let guard = crate::old_cli::Guard::from(self.trusted);
-                let sealer = crate::client_sealed::Sealer {
-                    organization: &self.who.organization,
-                    recipient: self.trusted.sealing.as_ref(),
-                };
-                let (changed, typed) =
-                    variables::set(environment, service, key, value, guard, sealer)?;
+                let sealer = self.trusted.sealer(self.who);
+                let (changed, typed) = variables::set(environment, service, key, value, sealer)?;
                 self.typed_addresses
                     .extend(typed.map(|Typed { services, instead }| TypedAddresses {
                         path: path.clone(),

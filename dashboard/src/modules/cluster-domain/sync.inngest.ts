@@ -1,4 +1,5 @@
 import { Effect, Option, Schema } from "effect";
+import { activeCloudflareZone } from "#/modules/cloudflare/source.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import {
   ensureClusterDomainCertificate,
@@ -34,7 +35,8 @@ function recordedServers<Server>(
 }
 
 /**
- * Keeps the Organization's Cluster Domain correct: skip when none is reserved → probe ingress Servers →
+ * Keeps the Organization's Cluster Domain correct: skip when none is reserved → while Cloudflare is the source, only
+ * renew the lease → probe ingress Servers →
  * full-set records PUT when something answered (which renews the lease), then record what the probe found →
  * otherwise record it, then renew the lease → replace the wildcard certificate when missing or near expiry →
  * republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
@@ -53,6 +55,12 @@ export async function executeSyncClusterDomain(
   const name = await step.run("load-name", () =>
     runEffect(loadClusterDomain(organizationId).pipe(Effect.map((row) => row?.name ?? null))));
   if (name === null) return { organizationId, skipped: true };
+  // Behind Cloudflare the Hosted records and certificate serve nothing; only the lease is kept, so going back finds the name.
+  const zone = await step.run("load-cloudflare-zone", () => runEffect(activeCloudflareZone(organizationId)));
+  if (zone !== null) {
+    await step.run("renew-lease", () => runEffect(renewClusterDomainLease(organizationId)));
+    return { organizationId, name, skipped: "cloudflare" as const };
+  }
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
   const reachable = probe.kind === "probed" ? recordedServers(probe) : [];
   // Hosted DNS refuses an empty set, and the last good set is better than none.

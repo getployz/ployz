@@ -12,7 +12,6 @@ use ployz::connect::diagnostics::{DialOutcome, DialTimings, should_emit};
 use ployz::sdk;
 use ployz_core::{
     DataLossConfirmation, ManagementClientLabel, Namespace, RemoveVolumesRequest, RpcError,
-    RpcErrorCode,
 };
 
 /// One cancellable connection attempt.
@@ -182,7 +181,7 @@ impl PendingConnection {
         let result = tokio::select! {
             biased;
             () = self.cancel.cancelled() => Err(sdk::CallError {
-                error: RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null, cause: Vec::new() },
+                error: RpcError::unavailable("connection cancelled"),
                 unanswered: true,
                 target_unreached: false,
             }),
@@ -313,6 +312,7 @@ pub struct RunningDeployHandle {
 #[cfg(test)]
 mod dial_diagnostic_tests {
     use super::*;
+    use ployz_core::RpcErrorCode;
 
     #[test]
     fn only_a_fired_deadline_is_timed_out() {
@@ -393,6 +393,21 @@ impl Client {
         self.inner.set_push_target(url).await.map_err(rpc_to_napi)
     }
 
+    /// Name the Cluster, and answer the name the entry Machine now holds.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a name that is not one DNS label, `unsupported` when the
+    /// Machine predates Cluster Names, and transport errors.
+    #[napi(ts_return_type = "Promise<string | null>")]
+    pub async fn set_cluster_name(&self, name: String) -> Result<Option<String>> {
+        let name = ployz_core::ClusterName::parse(name).map_err(invalid_argument)?;
+        self.inner
+            .set_cluster_name(name)
+            .await
+            .map(|named| named.name.map(String::from))
+            .map_err(rpc_to_napi)
+    }
+
     /// What the dial confirmed about the entry's Cluster: null when the connect expected none.
     #[napi(ts_return_type = "{ verified: boolean; foreign: string[] } | null")]
     pub fn cluster(&self) -> Result<serde_json::Value> {
@@ -406,6 +421,22 @@ impl Client {
     #[napi(ts_return_type = "Promise<MachineDetails>")]
     pub async fn inspect(&self) -> Result<serde_json::Value> {
         to_json(&self.inner.inspect().await.map_err(rpc_to_napi)?)
+    }
+
+    /// Inspect `machine` through this session's entry.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed Machine ID, or transport or inspection
+    /// errors.
+    #[napi(ts_return_type = "Promise<MachineDetails>")]
+    pub async fn inspect_machine(&self, machine: String) -> Result<serde_json::Value> {
+        to_json(
+            &self
+                .inner
+                .inspect_machine(&machine)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
     }
 
     /// Read enrollment facts from this confirmed Entry Machine.
@@ -694,12 +725,17 @@ impl Client {
         &self,
         machine: String,
         #[napi(ts_arg_type = "DataLossConfirmation")] confirm_data_loss: serde_json::Value,
+        #[napi(ts_arg_type = "TeardownApproval | null")] teardown: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
             from_js(confirm_data_loss).map_err(invalid_argument)?;
+        let teardown = teardown
+            .map(from_js)
+            .transpose()
+            .map_err(invalid_argument)?;
         let removed = self
             .inner
-            .remove_machine(&machine, &confirm_data_loss)
+            .remove_machine(&machine, &confirm_data_loss, teardown)
             .await
             .map_err(rpc_to_napi)?;
         to_json(&removed)
@@ -739,6 +775,43 @@ impl Client {
         to_json(&check)
     }
 
+    /// Open `doors` (`public`, `tunnel`, or both) on every Server with the ingress role,
+    /// sealing the Cloudflare tunnel `token` to the Cluster when given.
+    #[napi(ts_return_type = "Promise<DoorsChanged>")]
+    pub async fn set_ingress_doors(
+        &self,
+        doors: Vec<String>,
+        token: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let changed = self
+            .inner
+            .set_ingress_doors(&doors, token.as_deref())
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&changed)
+    }
+
+    /// Turn Private Access on with the auth key `on` carries, sealed and approved in the
+    /// person's browser, or off when `on` is null.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `on` is not
+    /// `PrivateAccessOn` data, the session is closed, or observation fails.
+    #[napi(ts_return_type = "Promise<AccessChanged>")]
+    pub async fn set_private_access(
+        &self,
+        #[napi(ts_arg_type = "PrivateAccessOn | null")] on: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let on = on.map(from_js).transpose().map_err(invalid_argument)?;
+        let changed = self
+            .inner
+            .set_private_access(on)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&changed)
+    }
+
     /// Stop and remove the Ingress Proxy on `machine` once its ingress role is off.
     #[napi]
     pub async fn stop_ingress(&self, machine: String) -> Result<()> {
@@ -752,9 +825,17 @@ impl Client {
     /// Returns a generated [`RpcError`] JSON payload when the session is closed or the
     /// Machine can't be taken out: not visible, or the last one while held.
     #[napi]
-    pub async fn remove_machine_membership(&self, machine: String) -> Result<()> {
+    pub async fn remove_machine_membership(
+        &self,
+        machine: String,
+        #[napi(ts_arg_type = "TeardownApproval | null")] teardown: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let teardown = teardown
+            .map(from_js)
+            .transpose()
+            .map_err(invalid_argument)?;
         self.inner
-            .remove_machine_membership(&machine)
+            .remove_machine_membership(&machine, teardown)
             .await
             .map_err(rpc_to_napi)
     }
@@ -930,12 +1011,22 @@ impl Client {
         namespace: String,
         #[napi(ts_arg_type = "DataLossConfirmation")] confirm_data_loss: serde_json::Value,
         destroy_volumes: bool,
+        #[napi(ts_arg_type = "TeardownApproval | null")] teardown: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
             from_js(confirm_data_loss).map_err(invalid_argument)?;
+        let teardown = teardown
+            .map(from_js)
+            .transpose()
+            .map_err(invalid_argument)?;
         let outcome = self
             .inner
-            .destroy_namespace(&namespace, &confirm_data_loss, volume_fate(destroy_volumes))
+            .destroy_namespace(
+                &namespace,
+                &confirm_data_loss,
+                volume_fate(destroy_volumes),
+                teardown,
+            )
             .await
             .map_err(rpc_to_napi)?;
         to_json(&outcome)
@@ -1167,12 +1258,7 @@ pub(crate) fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
 }
 
 fn invalid_argument(error: impl std::fmt::Display) -> Error {
-    rpc_to_napi(RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: error.to_string(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    })
+    rpc_to_napi(RpcError::invalid_argument(error.to_string()))
 }
 
 const RPC_ERROR_PREFIX: &str = "PLOYZ_RPC_ERROR:";
@@ -1220,15 +1306,8 @@ pub fn allocate_enrollment(
     let request = from_js(request).map_err(invalid_argument)?;
     let snapshot = from_js(snapshot).map_err(invalid_argument)?;
     let saved: Vec<ployz_core::EnrollmentAssignment> = from_js(saved).map_err(invalid_argument)?;
-    let assignment =
-        ployz_core::allocate_enrollment(&request, &snapshot, &saved).map_err(|error| {
-            rpc_to_napi(ployz_core::RpcError {
-                code: ployz_core::RpcErrorCode::Conflict,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            })
-        })?;
+    let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &saved)
+        .map_err(|error| rpc_to_napi(RpcError::conflict(error.to_string())))?;
     to_json(&assignment)
 }
 

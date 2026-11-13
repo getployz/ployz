@@ -28,6 +28,7 @@ import { accessFor, type GithubAccess } from "./github-access";
 import { GithubApi, resolveGithubRepository } from "./github-observation.api";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "./github-ingestion.contracts";
 import { normalizePublicGithubRepository } from "./public-repository";
+import { repositoryOwnerId, resolveReadableRepository } from "./readable-repository.server";
 import { AppConfig, type GithubOrigins } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Validation, NotFound } from "#/server/public-error";
@@ -182,6 +183,19 @@ export const listGithubBranches = Effect.fn("Github.listBranches")(
     const repository = yield* readableRepository(actor, input);
     const branches = yield* listGithubRepositoryBranches(repository.access, repository.fullName);
     return { branches };
+  },
+);
+
+/**
+ * The GitHub IDs of `repository` and its owner, as this Organization may read it: what an automatic deploy rule names.
+ * Refused not found for a repository the Organization can't read.
+ */
+export const githubRepositoryOwner = Effect.fn("Github.repositoryOwner")(
+  function* (actor: Actor, input: { readonly organizationSlug: string; readonly repository: string }) {
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "project:read");
+    const readable = yield* resolveReadableRepository(organization.id, input.repository);
+    if (readable === null) return yield* new NotFound({ message: `This organization can't read ${input.repository} on GitHub.` });
+    return { repositoryId: readable.repositoryId, ownerId: yield* repositoryOwnerId(readable) };
   },
 );
 

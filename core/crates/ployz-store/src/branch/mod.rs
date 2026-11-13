@@ -7,15 +7,17 @@
 
 mod create;
 mod follow;
+pub(crate) mod idle;
 mod live;
 mod never_sync;
 mod pair;
 mod proposal;
+pub(crate) mod rows;
 mod setup;
 mod sync;
 pub(crate) use create::*;
 pub use follow::{FollowHint, IncomingChange};
-pub(crate) use follow::{follow, hints, incoming};
+pub(crate) use follow::{follow, hints, incoming, lock_below, stopped};
 pub(crate) use live::*;
 pub use never_sync::{NeverSync, NeverSynced};
 pub(crate) use never_sync::{marked, marks, never_sync};
@@ -24,9 +26,11 @@ pub(crate) use proposal::remove as remove_proposal;
 pub use proposal::{Included, ProposalSource, RemoveProposal, Removed};
 pub(crate) use proposal::{Owners, release_changed};
 pub(crate) use proposal::{end_included, included};
+pub(crate) use rows::{Row, parent_and_made_with, parent_of, row};
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{
-    Own, branch_setup, refuse_service_named_setup, set_branch_setup, set_own, setup_is_not_staged,
+    Own, Setup, branch_setup, refuse_service_named_setup, set_branch_setup, set_own,
+    setup_is_not_staged,
 };
 pub use sync::{
     Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
@@ -42,11 +46,11 @@ use ployz_core::config::{
     Arrives, At, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
     Cells, ConfigError, EnvironmentNodeType, Hostnames, Landed, LiveLineageUse, LiveValuesInput,
     LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableIntent, SavedVariableProducer, SealedCell, SealedSecret,
-    ServiceImageCredentials, ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner,
-    VariableValue, Verdict, Way, Why, canonicalize_environment_intent, compile_environment_intent,
-    dependents, live_values, marks_on, parse_service_setting, plan, plan_branch, put_back,
-    referenced_by_others, unapply, unchanged_since,
+    SavedServiceIntent, SavedVariableProducer, SealedCell, SealedSecret, ServiceImageCredentials,
+    ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner, VariableValue, Verdict,
+    Way, Why, canonicalize_environment_intent, compile_environment_intent, dependents, live_values,
+    marks_on, parse_service_setting, plan, plan_branch, put_back, referenced_by_others, unapply,
+    unchanged_since,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -55,6 +59,7 @@ use ts_rs::TS;
 
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
+use crate::followup::{FollowUp, Place};
 use crate::id::{
     DeploymentId, EnvironmentId, EnvironmentName, ProposalId, PullRequestNumber, Revision, SyncId,
     VolumeName,
@@ -295,7 +300,7 @@ fn several(asked: &RowRef, found: &BTreeSet<RowId>, rows: &[NamedRow]) -> RpcErr
     };
     error::ambiguous(
         format!("{asked} names more than one row: name one"),
-        json!({ "valid_children": choices }),
+        error::valid(choices),
     )
 }
 
@@ -517,20 +522,6 @@ pub(crate) fn not_set(
     Ok(not_set)
 }
 
-/// A Branch's row.
-pub(crate) struct Row {
-    pub(crate) parent: EnvironmentId,
-    pub(crate) kept: bool,
-    setup: Vec<Setup>,
-}
-
-/// A Setup Command, by the Service lineage it runs in, so renames keep it.
-#[derive(Serialize, Deserialize)]
-struct Setup {
-    lineage: String,
-    command: String,
-}
-
 /// An Environment a Branch comes from, with what it runs.
 struct Ancestor {
     environment: Environment,
@@ -551,6 +542,13 @@ fn chain(tx: &mut dyn Tx, parent: &EnvironmentId) -> Result<Vec<Ancestor>, RpcEr
     Ok(chain)
 }
 
+/// The nearest of `chain` that runs the node of lineage `lineage`.
+fn owner_of<'a>(chain: &'a [Ancestor], lineage: &str) -> Option<&'a Ancestor> {
+    chain
+        .iter()
+        .find(|ancestor| holds(&ancestor.applied, lineage))
+}
+
 /// The Environments `id` comes from, nearest first: none for a root.
 pub(crate) fn ancestors(
     tx: &mut dyn Tx,
@@ -568,27 +566,16 @@ pub(crate) fn ancestors(
     Ok(found)
 }
 
-pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, RpcError> {
-    let rows = tx.query(
-        "SELECT parent_id, kept, setup FROM config_environment_branch WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    Ok(Some(Row {
-        parent: row.parse::<EnvironmentId>(0, "Branch")?,
-        kept: row.int(1)? != 0,
-        setup: row.json(2, "Branch")?,
-    }))
-}
-
 /// `environment`'s Branch row, or why only a Branch does this.
 fn branch_row(tx: &mut dyn Tx, environment: &Environment) -> Result<Row, RpcError> {
     row(tx, &environment.summary.id)?.ok_or_else(|| {
         error::invalid(
             format!("{} is not a Branch", environment.summary.name),
-            json!({ "next": format!("ployz env branch NAME --from {} --project {}", environment.summary.name, environment.summary.project) }),
+            FollowUp::EnvironmentBranch {
+                from: environment.summary.name.clone(),
+                project: environment.summary.project.clone(),
+            }
+            .details(),
         )
     })
 }
@@ -739,6 +726,6 @@ fn lineages(intent: &SavedEnvironmentIntent) -> Vec<String> {
         .collect()
 }
 
-fn document(intent: &SavedEnvironmentIntent) -> String {
+pub(crate) fn document(intent: &SavedEnvironmentIntent) -> String {
     serde_json::to_string(intent).expect("Working State is JSON")
 }

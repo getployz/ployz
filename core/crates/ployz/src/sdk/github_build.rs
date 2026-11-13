@@ -8,6 +8,9 @@
 //! A run that never checked in, or that GitHub failed for its own reasons, is
 //! skipped: the next Builder of the build's walk takes it. A failed build step fails it.
 
+use ployz_core::error_chain;
+pub use ployz_decide::github_build::GithubLook;
+use ployz_decide::github_build::{self, EndedRun, Ending, First, GrantRead};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -18,7 +21,7 @@ use ployz_core::{
 };
 use ployz_store::{
     BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
-    GithubReport, RunEnd,
+    GithubReport, GithubRule, RunEnd,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,7 +29,7 @@ use serde_json::Value;
 use super::build::OutsideBuild;
 use super::preparation::{BuildReceipt, OutsideBuildInput};
 use super::store_call;
-use super::store_runner::{internal, log_line, only};
+use super::store_runner::{log_line, only};
 use super::{Dialed, Session};
 use crate::connect::{ClusterExpectation, ConnectError, SystemConnector};
 use crate::context::Connection;
@@ -41,13 +44,33 @@ pub enum GithubStart {
     Dispatch { runner: String },
     /// GitHub can't take it; the Store recorded why, for the next Builder.
     Skipped { message: String },
+    /// It builds under an automatic deploy rule, on the run the push started: follow
+    /// that run of `workflow`, whose builder job's OIDC token names `workflow_ref`.
+    Follow {
+        workflow: String,
+        workflow_ref: String,
+        /// The pushed commit the build pins.
+        commit: String,
+    },
+    /// It builds a commit a person reviewed or approved under a rule: dispatch
+    /// `workflow` on `branch` with `commit` as its input. Its builder job's OIDC token
+    /// names `workflow_ref`.
+    Approved {
+        workflow: String,
+        workflow_ref: String,
+        branch: String,
+        commit: String,
+    },
 }
 
 /// Decide how GitHub build `id` starts: reuse the Service's latest image when a
 /// Machine still holds it for this commit, else dispatch to the runner of its one
 /// platform. A Service that needs several platforms, or a Cluster Cloud can't read,
-/// skips GitHub. With `expect`, it reads only an entry of that Cluster, as
-/// [`super::run_deployment_expecting`] runs, naming the Machines it left.
+/// skips GitHub. A commit a person approved under the automatic deploy rule reuses the
+/// image a redeploy's source built when a Machine still holds it and its token was built
+/// under the rule's generation, else builds on a dispatch. With `expect`, it reads only
+/// an entry of that Cluster, as [`super::run_deployment_expecting`] runs, naming the
+/// Machines it left.
 ///
 /// # Errors
 /// Returns the Store's `conflict` when the build already started or ended.
@@ -57,11 +80,53 @@ pub async fn github_start(
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
 ) -> Result<Dialed<GithubStart>, RpcError> {
+    // A push under a rule already started its own run; an older image has no image
+    // token, so it isn't reused. A reviewed preview builds the commit a person reviewed,
+    // on a run Cloud dispatches on the parent's branch, and an approved commit on one
+    // Cloud dispatches on the rule's.
+    let (rule, review, approval) = store_call(&store, {
+        let id = id.clone();
+        move |store| {
+            Ok((
+                store.github_rule(&id)?,
+                store.github_review(&id)?,
+                store.github_approval(&id)?,
+            ))
+        }
+    })
+    .await?;
     let built = store_call(&store, {
         let id = id.clone();
         move |store| store.github_input(&id)
     })
     .await?;
+    if let Some(source) = rule.as_ref().and_then(GithubRule::source) {
+        let commit = built.commit.to_string();
+        if approval.is_some()
+            && let Some(GithubRule::Auto(rule)) = &rule
+            && let Some(reused) =
+                reuse_approved(&store, &id, rule, &built, connections, expect).await?
+        {
+            return Ok(reused);
+        }
+        let outcome = match (review, approval) {
+            (Some(_), _) | (None, Some(_)) => GithubStart::Approved {
+                workflow: source.workflow,
+                workflow_ref: source.builder.r#ref,
+                branch: source.branch,
+                commit,
+            },
+            (None, None) => GithubStart::Follow {
+                workflow: source.workflow,
+                workflow_ref: source.builder.r#ref,
+                commit,
+            },
+        };
+        return Ok(Dialed {
+            outcome,
+            foreign: Vec::new(),
+        });
+    }
     let deployment = only(&built.input, &id.service);
     let commit = built.commit;
     let receipt = built
@@ -105,7 +170,7 @@ pub async fn github_start(
         Err(error) => GithubEnd::Skipped {
             message: format!(
                 "Cloud couldn't read your Servers: {}",
-                crate::ui::row(&error)
+                error_chain::row(&error)
             ),
         },
     };
@@ -122,6 +187,66 @@ pub async fn github_start(
         outcome: start,
         foreign,
     })
+}
+
+/// Reuse the image a redeploy's source built for an approved commit, ending the build
+/// on it, when its token was built under `rule`'s generation and a Machine still holds
+/// the image. None when it must build: the Servers check the token's generation against
+/// the rule, so an older one would only be refused.
+async fn reuse_approved(
+    store: &Arc<ConfigStore>,
+    id: &GithubBuildId,
+    rule: &ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>,
+    built: &ployz_store::GithubInput,
+    connections: Vec<Connection>,
+    expect: Option<ClusterExpectation>,
+) -> Result<Option<Dialed<GithubStart>>, RpcError> {
+    let generation = rule.open().ok().map(|rule| rule.generation);
+    let Some(token) = built
+        .image_token
+        .as_ref()
+        .filter(|token| Some(token.generation) == generation)
+    else {
+        return Ok(None);
+    };
+    let Some(receipt) = built
+        .receipt
+        .clone()
+        .and_then(|receipt| serde_json::from_value::<BuildReceipt>(receipt).ok())
+        .filter(|receipt| receipt.image.reference == token.image)
+    else {
+        return Ok(None);
+    };
+    let Ok(session) = session(connections, expect).await else {
+        return Ok(None);
+    };
+    let foreign = session.foreign();
+    let outside = session
+        .outside_build(OutsideBuildInput {
+            deployment: only(&built.input, &id.service),
+            commit: built.commit.to_string(),
+            receipt: Some(receipt),
+        })
+        .await;
+    session.close().await;
+    let receipt = match outside {
+        Ok(OutsideBuild::Reuse { receipt, .. }) if receipt.image.reference == token.image => {
+            receipt
+        }
+        Ok(OutsideBuild::Reuse { .. } | OutsideBuild::Build { .. }) | Err(_) => return Ok(None),
+    };
+    let end = GithubEnd::Built {
+        receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),
+    };
+    store_call(store, {
+        let id = id.clone();
+        move |store| store.github_end(&id, None, &end)
+    })
+    .await?;
+    Ok(Some(Dialed {
+        outcome: GithubStart::Reused,
+        foreign,
+    }))
 }
 
 /// A receipt that can't be checked is only a missed shortcut: GitHub builds.
@@ -198,7 +323,7 @@ pub async fn github_check_in(
     })
     .await?;
     if build.status != BuildStatus::Building || build.grant.is_some() {
-        return Err(conflict(
+        return Err(RpcError::conflict(
             "This build already checked in or is no longer wanted",
         ));
     }
@@ -215,7 +340,7 @@ pub async fn github_check_in(
         BTreeMap::from([(id.service.clone(), commit.to_string())]),
     )?
     .remove(&id.service)
-    .ok_or_else(|| internal("The build has no fingerprint"))?;
+    .ok_or_else(|| RpcError::internal("The build has no fingerprint"))?;
     let sealed = sealed_record(&deployment, &id.service)?;
     let session = session(connections, expect).await?;
     let foreign = session.foreign();
@@ -232,10 +357,26 @@ pub async fn github_check_in(
                 move |store| store.github_end(&id, Some(run_id), &end)
             })
             .await?;
-            return Err(conflict(OLD_MINT_SKIPS));
+            return Err(RpcError::conflict(OLD_MINT_SKIPS));
         }
         Err(error) => {
             session.close().await;
+            // An enforcing Machine takes no build Cloud starts. Say so on the build, so
+            // the Deployment reads why now and not after the run's own end.
+            if crate::connect::refused_by_enforcement(
+                &error,
+                ployz_core::MINT_BUILD_GRANT_CAPABILITY,
+            ) {
+                let end = GithubEnd::Unstarted {
+                    message: error.message.clone(),
+                };
+                // The runner still reads the refusal if the run no longer holds the build.
+                let _ = store_call(&store, {
+                    let id = id.clone();
+                    move |store| store.github_end(&id, Some(run_id), &end)
+                })
+                .await;
+            }
             return Err(error);
         }
     };
@@ -273,6 +414,320 @@ pub async fn github_check_in(
     })
 }
 
+/// What a rule build's runner receives at check-in. Cloud relays all of it; the
+/// runner and the grant Machine check it, so none of it is trusted. Holds no secret:
+/// the Sealed values stay sealed to the Cluster.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleCheckIn {
+    /// The build's id, which its grant and reports name.
+    pub build: GithubBuildId,
+    #[serde(flatten)]
+    pub rule: Relayed,
+    pub cluster: ployz_core::SealingPublicKey,
+    pub attest: ployz_core::authority::AttestKey,
+    pub service: ServiceName,
+    /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
+    pub deployment: Value,
+    /// A person's review of the commit, for a reviewed preview's build.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<ployz_core::authority::Review>,
+    /// A person's approval of the commit, for a build of one that isn't the rule
+    /// branch's head.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
+}
+
+/// The rule a build runs under, as the runner reads it: `rule` for an automatic deploy
+/// rule, `preview` for a preview rule.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Relayed {
+    Rule(ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>),
+    Preview(ployz_core::authority::Signed<ployz_core::authority::PreviewRule>),
+}
+
+impl From<GithubRule> for Relayed {
+    fn from(rule: GithubRule) -> Self {
+        match rule {
+            GithubRule::Auto(rule) => Self::Rule(rule),
+            GithubRule::Preview(rule) => Self::Preview(rule),
+        }
+    }
+}
+
+/// A rule build's runner checks in, on the run of the push it builds, with the OIDC
+/// `claims` Cloud verified and the `commit` it checked out. Returns the rule and the
+/// Cluster's keys as the entry Machine reports them. Changes nothing: the grant does.
+///
+/// # Errors
+/// Returns `not_found` when no build holds the run, `unauthenticated` for a token of
+/// another repository, workflow or run, and `conflict` when the build pins another
+/// commit, holds a grant, or builds under no rule.
+pub async fn github_rule_check_in(
+    store: Arc<ConfigStore>,
+    claims: GithubClaims,
+    commit: String,
+    connections: Vec<Connection>,
+    expect: Option<ClusterExpectation>,
+) -> Result<Dialed<RuleCheckIn>, RpcError> {
+    let (
+        id,
+        RuleBuild {
+            rule,
+            review,
+            approval,
+        },
+        built,
+    ) = rule_build(&store, &claims, &commit).await?;
+    let session = session(connections, expect).await?;
+    let foreign = session.foreign();
+    let contract = session.about().await;
+    session.close().await;
+    let contract = contract?;
+    let (Some(ployz_core::Sealing::Held { public_key }), Some(attest)) =
+        (contract.sealing, contract.attest)
+    else {
+        return Err(ployz_core::RpcError::conflict(
+            "GitHub builds under an automatic deploy rule need a newer Ployz on your servers",
+        ));
+    };
+    Ok(Dialed {
+        outcome: RuleCheckIn {
+            deployment: only(&built.input, &id.service),
+            build: id.clone(),
+            rule: rule.into(),
+            cluster: public_key,
+            attest,
+            service: id.service,
+            review,
+            approval,
+        },
+        foreign,
+    })
+}
+
+/// What a rule build's runner asks the grant Machine for, in its own words: the grant
+/// token's audience binds every field.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuleAsk {
+    pub proof: ployz_core::GithubToken,
+    pub service: ServiceName,
+    pub holder: BuildGrantId,
+    pub recipient: ployz_core::authority::RecipientKey,
+    pub commit: ployz_core::authority::CommitSha,
+    pub authority: ployz_core::authority::CommitAuthority,
+}
+
+/// The Machine that minted a rule build's grant.
+#[derive(Clone, Debug, Serialize)]
+pub struct RuleGranted {
+    /// Its Management Identity, as lowercase hex.
+    pub machine: String,
+}
+
+/// Relay a rule build's grant `ask` to a Machine with the build's Sealed values, still
+/// sealed, and `reader` for its head read. The Machine checks the token, the rule and the
+/// head before anything opens. Recorded as the run's check-in.
+///
+/// # Errors
+/// As [`github_rule_check_in`], plus the Machine's refusal.
+pub async fn github_rule_grant(
+    store: Arc<ConfigStore>,
+    claims: GithubClaims,
+    ask: RuleAsk,
+    reader: Option<ployz_core::GithubToken>,
+    connections: Vec<Connection>,
+    expect: Option<ClusterExpectation>,
+) -> Result<Dialed<RuleGranted>, RpcError> {
+    let (
+        id,
+        RuleBuild {
+            rule,
+            review,
+            approval,
+        },
+        built,
+    ) = rule_build(&store, &claims, &ask.commit.to_string()).await?;
+    if ask.service != id.service {
+        return Err(ployz_core::RpcError::conflict(
+            "The grant asks for another Service than its build's",
+        ));
+    }
+    let deployment = only(&built.input, &id.service);
+    let fingerprint = super::expected_fingerprints(
+        deployment.clone(),
+        BTreeMap::from([(id.service.clone(), built.commit.to_string())]),
+    )?
+    .remove(&id.service)
+    .ok_or_else(|| ployz_core::RpcError::internal("The build has no fingerprint"))?;
+    let sealed = sealed_record(&deployment, &id.service)?;
+    let session = session(connections, expect).await?;
+    let foreign = session.foreign();
+    let minted = async {
+        let details = session.inspect().await?;
+        let (capability, newer) = match rule {
+            GithubRule::Auto(_) => (
+                ployz_core::BUILD_GRANT_RULE_CAPABILITY,
+                "GitHub builds under an automatic deploy rule need a newer Ployz on your servers",
+            ),
+            GithubRule::Preview(_) => (
+                ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY,
+                "Previews under a preview rule need a newer Ployz on your servers",
+            ),
+        };
+        let advertises = |capability| {
+            details
+                .machine
+                .as_ref()
+                .is_some_and(|machine| machine.runtime.capabilities.contains(capability))
+        };
+        if !advertises(capability) {
+            return Err(ployz_core::RpcError::conflict(newer));
+        }
+        // An older Machine refuses every reviewed preview; this says why first.
+        if review.is_some() && !advertises(ployz_core::PREVIEW_REVIEW_CAPABILITY) {
+            return Err(ployz_core::RpcError::conflict(
+                "Reviewed previews need a newer Ployz on your servers",
+            ));
+        }
+        // An older Machine refuses the approval's field as unknown; this says why first.
+        if approval.is_some() && !advertises(ployz_core::COMMIT_APPROVAL_CAPABILITY) {
+            return Err(ployz_core::RpcError::conflict(
+                "Rebuilding an approved commit needs a newer Ployz on your servers",
+            ));
+        }
+        let (rule, preview) = match rule {
+            GithubRule::Auto(rule) => (
+                Some(ployz_core::RuleGrant {
+                    rule,
+                    proof: ask.proof,
+                    service: ask.service,
+                    commit: ask.commit,
+                    authority: ask.authority,
+                    approval,
+                    recipient: ask.recipient,
+                    reader,
+                }),
+                None,
+            ),
+            GithubRule::Preview(rule) => (
+                None,
+                Some(ployz_core::PreviewGrant {
+                    rule,
+                    review,
+                    proof: ask.proof,
+                    service: ask.service,
+                    commit: ask.commit,
+                    authority: ask.authority,
+                    recipient: ask.recipient,
+                    reader,
+                }),
+            ),
+        };
+        let minted = session
+            .mint_build_grant(MintBuildGrantRequest {
+                repository: repository(&id)?,
+                holder: Some(ask.holder),
+                sealed,
+                rule,
+                preview,
+            })
+            .await?;
+        Ok::<_, RpcError>((details.id, minted))
+    }
+    .await;
+    session.close().await;
+    let (machine, minted) = minted?;
+    let MintedKey::Holder { machine: identity } = minted.key else {
+        return Err(ployz_core::RpcError::internal(
+            "The Machine returned a grant secret for a held grant",
+        ));
+    };
+    let grant = GithubGrant {
+        id: minted.id.to_string(),
+        machine,
+        fingerprint,
+    };
+    let run_id = claims_run(&claims)?;
+    store_call(&store, {
+        let id = id.clone();
+        move |store| store.github_check_in(&id, run_id, &grant)
+    })
+    .await?;
+    Ok(Dialed {
+        outcome: RuleGranted {
+            machine: identity.to_hex(),
+        },
+        foreign,
+    })
+}
+
+/// The rule a build runs under, with a person's review of its commit for a reviewed
+/// preview, or their approval of it for a commit that isn't the rule branch's head.
+struct RuleBuild {
+    rule: GithubRule,
+    review: Option<ployz_core::authority::Review>,
+    approval: Option<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
+}
+
+/// The build run `claims` names holds, authorized, with its rule and inputs, once it
+/// pins `commit` and has no grant yet.
+async fn rule_build(
+    store: &Arc<ConfigStore>,
+    claims: &GithubClaims,
+    commit: &str,
+) -> Result<(GithubBuildId, RuleBuild, ployz_store::GithubInput), RpcError> {
+    let run_id = claims_run(claims)?;
+    let claims = claims.clone();
+    let commit = commit.to_owned();
+    store_call(store, move |store| {
+        let id = store.github_by_run(run_id)?.ok_or_else(|| RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "No build holds this run yet".to_owned(),
+            details: Value::Null,
+            cause: Vec::new(),
+        })?;
+        let build = store.github_authorize(&id, &claims)?;
+        if build.status != BuildStatus::Building || build.grant.is_some() {
+            return Err(ployz_core::RpcError::conflict(
+                "This build already checked in or is no longer wanted",
+            ));
+        }
+        let rule = store.github_rule(&id)?.ok_or_else(|| {
+            ployz_core::RpcError::conflict("This build runs under no automatic deploy rule")
+        })?;
+        let review = store.github_review(&id)?;
+        let approval = store.github_approval(&id)?;
+        let built = store.github_input(&id)?;
+        if built.commit.as_str() != commit {
+            return Err(ployz_core::RpcError::conflict(
+                "This run checked out another commit than the one this build pins",
+            ));
+        }
+        Ok((
+            id,
+            RuleBuild {
+                rule,
+                review,
+                approval,
+            },
+            built,
+        ))
+    })
+    .await
+}
+
+fn claims_run(claims: &GithubClaims) -> Result<u64, RpcError> {
+    claims.run_id.parse().map_err(|_| RpcError {
+        code: RpcErrorCode::Unauthenticated,
+        message: "The token names no run".to_owned(),
+        details: Value::Null,
+        cause: Vec::new(),
+    })
+}
+
 const OLD_MINT_SKIPS: &str =
     "GitHub builds a sealed value only with an up-to-date Ployz on the runner and your server";
 
@@ -289,7 +744,7 @@ fn sealed_record(
         .map(SealedRecord::of)
         .transpose()
         .map(Option::flatten)
-        .map_err(|error| internal(&error.to_string()))
+        .map_err(|error| RpcError::internal(error.to_string()))
 }
 
 /// Mint on the session's Machine, or `None` when GitHub can't take this build.
@@ -312,9 +767,11 @@ async fn mint(
     };
     let minted = session
         .mint_build_grant(MintBuildGrantRequest {
+            preview: None,
             repository: repository(id)?,
             holder,
             sealed,
+            rule: None,
         })
         .await?;
     Ok(Some((details.id, minted)))
@@ -342,8 +799,8 @@ fn minting(holder: Option<BuildGrantId>, capabilities: &BTreeSet<String>, sealed
 
 /// The one repository a runner's Build Grant may push into.
 fn repository(id: &GithubBuildId) -> Result<BuildGrantRepository, RpcError> {
-    BuildGrantRepository::parse(format!("ployz-build/{}", id.service))
-        .map_err(|_| internal("The Service has no Build Grant repository"))
+    BuildGrantRepository::for_service(&id.service)
+        .map_err(|_| RpcError::internal("The Service has no Build Grant repository"))
 }
 
 /// One batch of a runner's `ployz build --events` lines, from line `from`, and once
@@ -358,6 +815,9 @@ struct StepsReport {
     platforms: Option<Vec<String>>,
     #[serde(default)]
     install_failed: Option<String>,
+    /// A rule build's image token, in its final report.
+    #[serde(default)]
+    image_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -387,12 +847,8 @@ pub async fn github_report(
     claims: GithubClaims,
     report: Value,
 ) -> Result<GithubReported, RpcError> {
-    let report: StepsReport = serde_json::from_value(report).map_err(|_| RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: "The report is not Build Steps".to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    })?;
+    let report: StepsReport = serde_json::from_value(report)
+        .map_err(|_| RpcError::invalid_argument("The report is not Build Steps"))?;
     let mut lines: Vec<String> = report
         .events
         .iter()
@@ -400,12 +856,9 @@ pub async fn github_report(
         .collect();
     let run_end = match (report.install_failed, report.platforms) {
         (Some(_), Some(_)) => {
-            return Err(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "A report ends a build or says ployz didn't install, not both".to_owned(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::invalid_argument(
+                "A report ends a build or says ployz didn't install, not both",
+            ));
         }
         // No final report: GitHub failed it, so the next Builder takes it.
         (Some(version), None) => {
@@ -414,7 +867,10 @@ pub async fn github_report(
         }
         (None, platforms) => platforms.map(|platforms| match platforms.is_empty() {
             true => RunEnd::Failed,
-            false => RunEnd::Built { platforms },
+            false => RunEnd::Built {
+                platforms,
+                image_token: report.image_token,
+            },
         }),
     };
     let ended = run_end.is_some();
@@ -441,20 +897,19 @@ pub enum GithubFinish {
     Ended(BuildStatus),
 }
 
-/// End a GitHub build whose run reported its end, completed, or ran out of time
-/// (`timed_out`, and Cloud cancelled it): read its grant on the Machine that minted
-/// it, and write the receipt from the digest it received. A run that never checked
-/// in, or that GitHub failed for its own reasons, is skipped for the next Builder.
-/// With `expect`, it reads the grant only on an entry of that Cluster: a grant
-/// Machine of another Cluster fails the build with the connection's sentence, since
-/// waiting won't change it. One that doesn't answer reads as unreachable.
+/// End a GitHub build at Cloud's `look`: read its grant on the Machine that minted it,
+/// and write the receipt from the digest it received. A run that never checked in, or
+/// that GitHub failed for its own reasons, is skipped for the next Builder. With
+/// `expect`, it reads the grant only on an entry of that Cluster: a grant Machine of
+/// another Cluster fails the build with the connection's sentence, since waiting won't
+/// change it. One that doesn't answer reads as unreachable.
 ///
 /// # Errors
 /// Returns a storage error; the Store's `conflict` means the build already ended.
 pub async fn github_finish(
     store: Arc<ConfigStore>,
     id: GithubBuildId,
-    timed_out: bool,
+    look: GithubLook,
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
 ) -> Result<GithubFinish, RpcError> {
@@ -471,38 +926,33 @@ pub async fn github_finish(
         return Ok(GithubFinish::Ended(build.status));
     }
     let run_id = build.run.run_id;
-    let end = match &build.grant {
-        None => {
-            let message = if timed_out {
-                "no runner started the build in time"
-            } else {
-                "the run ended before it started the build"
+    let (end, waits) = match github_build::first(build.grant.as_ref(), look) {
+        First::Unstarted(why) => (
+            GithubEnd::Unstarted {
+                message: why.message().to_owned(),
+            },
+            true,
+        ),
+        First::ReadGrant(grant) => {
+            let read = inspect_grant(grant, connections, expect).await;
+            let ended = build.ended.as_ref().map(|ended| match ended {
+                RunEnd::Built { platforms, .. } => EndedRun::Built(platforms),
+                RunEnd::Failed => EndedRun::Failed,
+            });
+            let Some(ending) = github_build::after_read(ended, look, read) else {
+                return Ok(GithubFinish::Waiting);
             };
-            let end = GithubEnd::Unstarted {
-                message: message.to_owned(),
-            };
-            // It checked in meanwhile: the next look finds it started.
-            return match settle(&store, id, run_id, end).await {
-                Err(error) if error.code == RpcErrorCode::Conflict => Ok(GithubFinish::Waiting),
-                finished => finished,
-            };
-        }
-        Some(grant) => {
-            let pushed = match inspect_grant(grant, connections, expect).await {
-                GrantRead::Pushed(pushed) => pushed,
-                GrantRead::Refused(message) => {
-                    return settle(&store, id, run_id, GithubEnd::Failed { message }).await;
-                }
-                GrantRead::Unreachable if !timed_out => return Ok(GithubFinish::Waiting),
-                GrantRead::Unreachable => {
-                    let end = GithubEnd::Failed {
-                        message: "your Machine couldn't be reached to confirm the push".to_owned(),
-                    };
-                    return settle(&store, id, run_id, end).await;
-                }
-            };
-            match (pushed, &build.ended) {
-                (Some(pushed), Some(RunEnd::Built { platforms })) => {
+            let end = match ending {
+                Ending::Failed(why) => GithubEnd::Failed {
+                    message: why.message().to_owned(),
+                },
+                Ending::Skipped(why) => GithubEnd::Skipped {
+                    message: why.message().to_owned(),
+                },
+                Ending::Built {
+                    pushed,
+                    run: platforms,
+                } => {
                     let tag = format!(
                         "{}:{RETAINED_DIGEST_TAG_PREFIX}{}",
                         repository(&id)?,
@@ -523,19 +973,15 @@ pub async fn github_finish(
                         receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),
                     }
                 }
-                (_, Some(RunEnd::Failed)) => GithubEnd::Failed {
-                    message: "a build step failed".to_owned(),
-                },
-                _ if timed_out => GithubEnd::Skipped {
-                    message: "the run ran out of time".to_owned(),
-                },
-                _ => GithubEnd::Skipped {
-                    message: "the run ended without pushing an image".to_owned(),
-                },
-            }
+            };
+            (end, false)
         }
     };
-    settle(&store, id, run_id, end).await
+    match settle(&store, id, run_id, end).await {
+        // It checked in meanwhile: the next look finds it started.
+        Err(error) if waits && error.code == RpcErrorCode::Conflict => Ok(GithubFinish::Waiting),
+        finished => finished,
+    }
 }
 
 async fn settle(
@@ -549,19 +995,6 @@ async fn settle(
     })
     .await
     .map(GithubFinish::Ended)
-}
-
-/// What reading a grant on the Machine that minted it found.
-#[derive(Debug, Eq, PartialEq)]
-enum GrantRead {
-    /// What it received, if anything. A grant that expired or whose Machine restarted
-    /// received nothing more.
-    Pushed(Option<ployz_core::ImageDigest>),
-    /// The Machine cannot read grants, or belongs to another Cluster; the build fails
-    /// with this sentence.
-    Refused(String),
-    /// The Machine can't be reached now.
-    Unreachable,
 }
 
 async fn inspect_grant(
@@ -655,23 +1088,11 @@ async fn session(
     expect: Option<ClusterExpectation>,
 ) -> Result<Session, RpcError> {
     if connections.is_empty() {
-        return Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "No Server is enrolled in this Organization".to_owned(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        return Err(RpcError::unavailable(
+            "No Server is enrolled in this Organization",
+        ));
     }
     Ok(super::dial(connections, Arc::new(SystemConnector::default()), expect).await?)
-}
-
-fn conflict(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: message.to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
 }
 
 #[cfg(test)]
@@ -784,6 +1205,24 @@ mod tests {
             grant_read(Err(error(RpcErrorCode::Unavailable)), &machine),
             GrantRead::Unreachable
         );
+    }
+
+    #[test]
+    fn only_an_enforcing_machines_refusal_of_the_mint_ends_the_build_by_name() {
+        let refusal = |code: &str, capability: &str| RpcError {
+            code: RpcErrorCode::from(code),
+            message: "This server runs only builds an approved device starts.".into(),
+            details: serde_json::json!({ "capability": capability }),
+            cause: Vec::new(),
+        };
+        let mint = ployz_core::MINT_BUILD_GRANT_CAPABILITY;
+        let refused = |error| crate::connect::refused_by_enforcement(&error, mint);
+        assert!(refused(refusal(ployz_core::FORBIDDEN_CODE, mint)));
+        assert!(!refused(refusal(
+            ployz_core::FORBIDDEN_CODE,
+            ployz_core::BUILD_CAPABILITY
+        )));
+        assert!(!refused(refusal("conflict", mint)));
     }
 
     #[tokio::test]

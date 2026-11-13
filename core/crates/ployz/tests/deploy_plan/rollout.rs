@@ -592,7 +592,7 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
 
 #[test]
 fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
-    use ployz::deploy::{ServiceGroup, Step};
+    use ployz::deploy::{ServiceGroup, Stage};
     use ployz_core::{DependencyCondition, DeployIntent, ServiceDependency};
 
     let mut db = requested(ServiceMode::Replicated {
@@ -644,13 +644,13 @@ fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
             ServiceGroup {
                 service: Some(db.name.clone()),
                 dependencies: Vec::new(),
-                steps: vec![Step::Serial(0), Step::Parallel(vec![1, 2])],
+                steps: vec![Stage::Serial(0), Stage::Parallel(vec![1, 2])],
                 publish: true,
             },
             ServiceGroup {
                 service: Some(web.name),
                 dependencies: vec![db.name],
-                steps: vec![Step::Parallel(vec![3])],
+                steps: vec![Stage::Parallel(vec![3])],
                 publish: true,
             },
         ]
@@ -688,7 +688,7 @@ fn replacement_walk(
     operations: &[DeployOperation],
     groups: &[ployz::deploy::ServiceGroup],
 ) -> (Vec<UpdateOrder>, Vec<Vec<MachineId>>) {
-    use ployz::deploy::Step;
+    use ployz::deploy::Stage;
 
     let orders = operations
         .iter()
@@ -707,11 +707,11 @@ fn replacement_walk(
         .steps
         .iter()
         .map(|step| match step {
-            Step::Parallel(indices) => indices
+            Stage::Parallel(indices) => indices
                 .iter()
                 .map(|index| operations.get(*index).unwrap().machine_id())
                 .collect(),
-            Step::Serial(index) => panic!("replacement {index} ran serially"),
+            Stage::Serial(index) => panic!("replacement {index} ran serially"),
         })
         .collect();
     (orders, steps)

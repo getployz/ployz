@@ -21,39 +21,43 @@
 mod checks;
 pub(crate) mod on_merge;
 mod plan;
+mod reviewed;
+pub use crate::pr_environment::PullRequestRef;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
 pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeValue};
 pub(crate) use on_merge::{forget_edits, set_merge_value};
 pub(crate) use plan::*;
+pub(crate) use reviewed::preview_review;
+use reviewed::reviews;
+pub use reviewed::{EnvironmentReview, PreviewReviewQuery, PreviewReviewView};
 
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
 };
 use std::collections::BTreeSet;
 
-use ployz_core::config::{
-    SavedEnvironmentIntent, ServiceGitAccess, ServiceGitBranch, ServiceSource,
-};
+use ployz_core::config::{SavedEnvironmentIntent, ServiceGitAccess, ServiceSource};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
-use crate::branch::{self, CreateBranch, SetupCommand};
+use crate::branch::idle::Deadline;
+use crate::branch::{self, CreateBranch, Setup, SetupCommand};
 use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
+use crate::pr_environment::pull_request_ref;
 use crate::project::ProjectSummary;
+use crate::removal::mark;
 use crate::review::history::NotSetVariable;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 use crate::{Actor, Trusted, review};
-
-/// A Branch closes after this long without a Deployment.
-const IDLE: i64 = 7 * 24 * 60 * 60;
 
 /// Why a pull request's head didn't deploy.
 pub(crate) const NEEDS_APPROVAL: &str = "Needs approval";
@@ -103,14 +107,6 @@ pub struct Sweep {
     /// Cloud's clock, in seconds since the Unix epoch.
     #[ts(type = "number")]
     pub now: i64,
-}
-
-/// A pull request whose GitHub check Cloud publishes again from
-/// [`crate::Query::PullRequest`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct PullRequestRef {
-    pub repository_id: RepositoryId,
-    pub number: PullRequestNumber,
 }
 
 /// Change a Project's PR plan for one repository: only the fields given change.
@@ -189,6 +185,10 @@ pub struct OpenPullRequest {
     pub standing: Standing,
     /// None until a member approves it.
     pub environment: Option<EnvironmentName>,
+    /// Whether each Server starts its head only once a person reviews it, whatever its
+    /// standing: its PR Environment runs under a live preview rule that doesn't trust
+    /// its author.
+    pub needs_review: bool,
 }
 
 /// Whether a pull request's head deploys. Only a member's pull request from the
@@ -205,29 +205,210 @@ pub enum Standing {
     Approved(CommitSha),
 }
 
-impl Standing {
-    pub(crate) fn admits(&self, head: &CommitSha) -> bool {
-        match self {
-            Self::Trusted => true,
-            Self::NeedsApproval => false,
-            Self::Approved(approved) => approved == head,
+/// Whether `facts` deploy without approval by Cloud's latest look at the members: a
+/// pull request from the repository itself, by a bot or a member. None trusts no
+/// member.
+fn trusts(facts: &PullRequest, members: Option<&[GithubUserId]>) -> bool {
+    let own = facts.head_repository_id == Some(facts.repository_id);
+    let member = facts
+        .author_id
+        .zip(members)
+        .is_some_and(|(author, members)| members.contains(&author));
+    own && (facts.bot || member)
+}
+
+/// Where a pull request is, stored as one tagged column beside its facts: open,
+/// closed or merged, each with the head its standing is of.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+enum Phase {
+    Open {
+        head: CommitSha,
+        standing: OpenStanding,
+    },
+    Closed {
+        head: CommitSha,
+        standing: OpenStanding,
+    },
+    /// For good: no later facts reopen it.
+    Merged {
+        commit: CommitSha,
+        into: BranchName,
+        head: CommitSha,
+        standing: OpenStanding,
+        /// What each Destination didn't take. None until it landed, and for good for
+        /// a merge a Store from before `0012_on_merge` landed.
+        landed: Option<Vec<on_merge::Unlanded>>,
+    },
+}
+
+/// How the phase column of a merged pull request begins.
+const MERGED: &str = "{\"phase\":\"merged\"";
+
+/// A [`Standing`] whose approval is of the head stored beside it, so it can name no
+/// other.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OpenStanding {
+    Trusted,
+    NeedsApproval,
+    ApprovedHead,
+}
+
+impl Phase {
+    /// The phase the columns of a Store from before `0040_pull_request_phase` mean.
+    /// An approval of any head but the latest never admits that head, so it needs one.
+    fn of_columns(
+        facts: &PullRequest,
+        merged: Option<Merged>,
+        landed: Option<Vec<on_merge::Unlanded>>,
+        standing: Option<Standing>,
+    ) -> Self {
+        let head = facts.head.clone();
+        let standing = match standing {
+            Some(Standing::Trusted) => OpenStanding::Trusted,
+            Some(Standing::Approved(approved)) if approved == head => OpenStanding::ApprovedHead,
+            Some(Standing::NeedsApproval | Standing::Approved(_)) | None => {
+                OpenStanding::NeedsApproval
+            }
+        };
+        let merged = merged.or_else(|| {
+            facts.merge_commit.clone().map(|commit| Merged {
+                commit,
+                into: facts.target_branch.clone(),
+            })
+        });
+        match merged {
+            Some(Merged { commit, into }) => Self::Merged {
+                commit,
+                into,
+                head,
+                standing,
+                landed,
+            },
+            None if facts.open => Self::Open { head, standing },
+            None => Self::Closed { head, standing },
         }
     }
 
-    /// What `event` earns: an approval holds only while its head does.
-    fn of(event: &PullRequest, trusted: &Trusted, before: Self) -> Self {
-        let own = event.head_repository_id == Some(event.repository_id);
-        let member = event
-            .author_id
-            .zip(trusted.members.as_ref())
-            .is_some_and(|(author, members)| members.contains(&author));
-        if own && (event.bot || member) {
-            return Self::Trusted;
+    fn head(&self) -> &CommitSha {
+        match self {
+            Self::Open { head, .. } | Self::Closed { head, .. } | Self::Merged { head, .. } => head,
         }
-        match before {
-            Self::Approved(head) if head == event.head => Self::Approved(head),
-            Self::Trusted | Self::NeedsApproval | Self::Approved(_) => Self::NeedsApproval,
+    }
+
+    fn open_standing(&self) -> OpenStanding {
+        match self {
+            Self::Open { standing, .. }
+            | Self::Closed { standing, .. }
+            | Self::Merged { standing, .. } => *standing,
         }
+    }
+
+    /// It, standing as `standing`.
+    fn standing_as(mut self, to: OpenStanding) -> Self {
+        match &mut self {
+            Self::Open { standing, .. }
+            | Self::Closed { standing, .. }
+            | Self::Merged { standing, .. } => *standing = to,
+        }
+        self
+    }
+
+    /// Its standing as listings show it and the `standing` column holds it.
+    fn standing(&self) -> Standing {
+        match self.open_standing() {
+            OpenStanding::Trusted => Standing::Trusted,
+            OpenStanding::NeedsApproval => Standing::NeedsApproval,
+            OpenStanding::ApprovedHead => Standing::Approved(self.head().clone()),
+        }
+    }
+
+    fn merge(&self) -> Option<Merged> {
+        match self {
+            Self::Merged { commit, into, .. } => Some(Merged {
+                commit: commit.clone(),
+                into: into.clone(),
+            }),
+            Self::Open { .. } | Self::Closed { .. } => None,
+        }
+    }
+
+    /// Whether `head` deploys: Trusted only while `facts` still earn it from
+    /// `members`, an approval only of its own head.
+    fn admits(
+        &self,
+        head: &CommitSha,
+        facts: &PullRequest,
+        members: Option<&[GithubUserId]>,
+    ) -> bool {
+        match self.open_standing() {
+            OpenStanding::Trusted => trusts(facts, members),
+            OpenStanding::NeedsApproval => false,
+            OpenStanding::ApprovedHead => self.head() == head,
+        }
+    }
+}
+
+/// The JSON in column `index` of `row`, if any.
+fn optional<T: serde::de::DeserializeOwned>(
+    row: &crate::storage::Row,
+    index: usize,
+    what: &str,
+) -> Result<Option<T>, RpcError> {
+    row.optional_text(index)?
+        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
+        .transpose()
+}
+
+/// A pull request's row: the facts Cloud last reported, and where it is.
+struct Record {
+    facts: PullRequest,
+    phase: Phase,
+}
+
+/// The columns [`Record::read`] reads, in its order.
+const RECORD: &str = "facts, merged, unlanded, standing, phase";
+
+impl Record {
+    /// [`RECORD`]'s columns, from `at` in `row`. A row a Store from before
+    /// `0040_pull_request_phase` inserted has no phase, and one it wrote since may
+    /// hold facts, a merge or a standing its phase doesn't: either reads from those
+    /// columns, which this Store writes beside every phase.
+    fn read(row: &crate::storage::Row, at: usize) -> Result<Self, RpcError> {
+        let facts: PullRequest = row.json(at, "pull request")?;
+        let derived = Phase::of_columns(
+            &facts,
+            optional(row, at + 1, "pull request merge")?,
+            optional(row, at + 2, "unlanded")?,
+            optional(row, at + 3, "pull request standing")?,
+        );
+        let stored: Option<Phase> = optional(row, at + 4, "pull request phase")?;
+        let agrees = |stored: &Phase| {
+            std::mem::discriminant(stored) == std::mem::discriminant(&derived)
+                && stored.head() == derived.head()
+                && stored.merge() == derived.merge()
+                && stored.open_standing() == derived.open_standing()
+        };
+        let phase = match stored {
+            Some(stored) if agrees(&stored) => stored,
+            Some(_) | None => derived,
+        };
+        Ok(Self { facts, phase })
+    }
+
+    /// Its facts, merged once its phase is: a merge reported before newer facts still
+    /// counts.
+    fn facts(&self) -> PullRequest {
+        let mut facts = self.facts.clone();
+        if facts.merge_commit.is_none()
+            && let Some(merged) = self.phase.merge()
+        {
+            facts.merge_commit = Some(merged.commit);
+            facts.target_branch = merged.into;
+            facts.open = false;
+        }
+        facts
     }
 }
 
@@ -239,6 +420,12 @@ pub struct ApprovePullRequest {
     pub number: PullRequestNumber,
     /// The head the approver saw: refused once the pull request moved on.
     pub head: CommitSha,
+    /// A person's review of `head` for each PR Environment that runs under a preview
+    /// rule, which their client signed. Cloud keeps each with the Deployment it admits
+    /// there; every Server checks it before anything opens.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<EnvironmentReview>>")]
+    pub reviews: Vec<EnvironmentReview>,
 }
 
 /// A pull request's PR Environments and whether it is ready to merge.
@@ -307,12 +494,6 @@ struct Stored {
     include_bots: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Setup {
-    lineage: String,
-    command: String,
-}
-
 /// The repository's pull requests with a PR Environment in the Project, not being
 /// closed, then the others a member approves: waiting, or approved but not yet made.
 fn open_in(
@@ -322,40 +503,57 @@ fn open_in(
     repository_id: RepositoryId,
 ) -> Result<Vec<OpenPullRequest>, RpcError> {
     let rows = tx.query(
-        "SELECT p.number, e.name FROM config_pr_environment p \
-         JOIN config_environment e ON e.id = p.environment_id \
-         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE e.project_id = ?1 AND p.repository_id = ?2 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m WHERE m.environment_id = b.environment_id AND m.state = 'removing') ORDER BY p.number",
+        &format!(
+            "SELECT p.number, e.name, p.environment_id FROM config_pr_environment p \
+             JOIN config_environment e ON e.id = p.environment_id \
+             JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+             WHERE e.project_id = ?1 AND p.repository_id = ?2 AND {} ORDER BY p.number",
+            mark::unmarked("b.environment_id")
+        ),
         &[project.as_str().into(), repository_id.into()],
     )?;
     let mut open = Vec::new();
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
         let environment = row.parse::<EnvironmentName>(1, "Environment name")?;
-        let facts = facts(tx, who, repository_id, number)?;
-        let standing = standing(tx, who, repository_id, number)?;
+        let id = row.parse::<EnvironmentId>(2, "Environment")?;
+        let record = record(tx, who, repository_id, number)?;
+        let needs_review = match &record {
+            Some(record) => reviewed::needs_review(tx, &id, &record.facts)?,
+            None => false,
+        };
         open.push(OpenPullRequest {
             number,
-            title: facts.as_ref().map(|f| f.title.clone()).unwrap_or_default(),
-            author: facts.as_ref().map(|f| f.author.clone()).unwrap_or_default(),
-            head: facts.map(|f| f.head),
-            standing,
+            title: record
+                .as_ref()
+                .map(|r| r.facts.title.clone())
+                .unwrap_or_default(),
+            author: record
+                .as_ref()
+                .map(|r| r.facts.author.clone())
+                .unwrap_or_default(),
+            head: record.as_ref().map(|r| r.facts.head.clone()),
+            standing: record.map_or(Standing::NeedsApproval, |r| r.phase.standing()),
             environment: Some(environment),
+            needs_review,
         });
     }
     if !plan.enabled || plan.start_from.is_none() {
         return Ok(open);
     }
     let rows = tx.query(
-        "SELECT number, facts, standing FROM config_pull_request \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND merged IS NULL ORDER BY number",
+        &format!(
+            "SELECT number, {RECORD} FROM config_pull_request \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND updated <> '' \
+             AND merged IS NULL ORDER BY number"
+        ),
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
-        let facts: PullRequest = row.json(1, "pull request")?;
-        let standing = stored_standing(&row)?;
-        let waiting = facts.open
+        let Record { facts, phase } = Record::read(&row, 1)?;
+        let standing = phase.standing();
+        let waiting = matches!(phase, Phase::Open { .. })
             && !(facts.bot && !plan.include_bots)
             && standing != Standing::Trusted
             && !open.iter().any(|listed| listed.number == number);
@@ -367,73 +565,160 @@ fn open_in(
                 head: Some(facts.head),
                 standing,
                 environment: None,
+                needs_review: false,
             });
         }
     }
     Ok(open)
 }
 
-/// What the Store decided of a pull request; one it never saw needs approval.
-pub(crate) fn standing(
+/// The pull request's row; none before Cloud first reported it.
+fn record(
     tx: &mut dyn Tx,
     who: &Actor,
     repository_id: RepositoryId,
     pr: PullRequestNumber,
-) -> Result<Standing, RpcError> {
+) -> Result<Option<Record>, RpcError> {
     let rows = tx.query(
-        "SELECT number, facts, standing FROM config_pull_request \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+        &format!(
+            "SELECT {RECORD} FROM config_pull_request \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND updated <> ''"
+        ),
         &[
             who.organization.as_str().into(),
             repository_id.into(),
             pr.into(),
         ],
     )?;
-    rows.first()
-        .map_or(Ok(Standing::NeedsApproval), stored_standing)
+    rows.first().map(|row| Record::read(row, 0)).transpose()
 }
 
 /// Whether `head` of `repository_id` may deploy into `environment`: anywhere but a
-/// PR Environment of that repository, whose pull request must admit it.
+/// PR Environment of that repository, whose pull request must admit it. A Trusted
+/// one admits only while its stored author is among `trusted`'s members, as Cloud
+/// read them for this write, or is a bot's from the repository itself.
 pub(crate) fn admits(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    repository_id: RepositoryId,
-    head: &CommitSha,
+    (repository_id, head): (RepositoryId, &CommitSha),
+    trusted: &Trusted,
 ) -> Result<bool, RpcError> {
     let rows = tx.query(
-        "SELECT e.repository_id, e.number, p.standing FROM config_pr_environment e \
+        "SELECT p.facts, p.merged, p.unlanded, p.standing, p.phase \
+         FROM config_pr_environment e \
          LEFT JOIN config_pull_request p ON p.organization_id = e.organization_id \
          AND p.repository_id = e.repository_id AND p.number = e.number \
          WHERE e.environment_id = ?1 AND e.repository_id = ?2",
         &[environment.as_str().into(), repository_id.into()],
     )?;
-    rows.first()
-        .map_or(Ok(true), |row| Ok(stored_standing(row)?.admits(head)))
+    let Some(row) = rows.first() else {
+        return Ok(true);
+    };
+    if row.optional_text(0)?.is_none() {
+        return Ok(false);
+    }
+    let record = Record::read(row, 0)?;
+    Ok(record
+        .phase
+        .admits(head, &record.facts, trusted.members.as_deref()))
 }
 
-/// The standing in column 2 of `row`.
-fn stored_standing(row: &crate::storage::Row) -> Result<Standing, RpcError> {
-    row.optional_text(2)?
-        .map_or(Ok(Standing::NeedsApproval), |text| {
-            serde_json::from_str(text).map_err(|_| error::corrupt("pull request standing"))
-        })
+/// Take Trusted from each pull request of `who`'s Organization whose author
+/// `trusted`'s members leave out, so it lists as needing approval, and a member can
+/// approve it, rather than showing Trusted while each deploy of it is refused. A
+/// bot's pull request from the repository itself keeps it, and a later report that
+/// finds the author a member gives it back. Without members Cloud looked at no one,
+/// so nothing changes. Each row it changes locks before any Environment, as news of a
+/// pull request takes them.
+pub(crate) fn withdraw_trust(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let Some(members) = trusted.members.as_deref() else {
+        return Ok(());
+    };
+    let rows = tx.query(
+        &format!(
+            "SELECT repository_id, number, {RECORD} FROM config_pull_request \
+             WHERE organization_id = ?1 AND updated <> '' AND standing = ?2 \
+             AND merged IS NULL ORDER BY repository_id, number"
+        ),
+        &[
+            who.organization.as_str().into(),
+            serde_json::to_string(&Standing::Trusted)
+                .expect("a standing is JSON")
+                .as_str()
+                .into(),
+        ],
+    )?;
+    for row in rows {
+        let pr = pull_request_ref(&row)?;
+        if trusts(&Record::read(&row, 2)?.facts, Some(members)) {
+            continue;
+        }
+        lock(tx, who, pr.repository_id, pr.number)?;
+        let Some(record) = record(tx, who, pr.repository_id, pr.number)? else {
+            continue;
+        };
+        if record.phase.open_standing() == OpenStanding::Trusted
+            && !trusts(&record.facts, Some(members))
+        {
+            let phase = record.phase.standing_as(OpenStanding::NeedsApproval);
+            write_phase(tx, who, &pr, &phase)?;
+        }
+    }
+    Ok(())
 }
 
-fn set_standing(
+/// Record each pull request's phase from the columns that held it before
+/// `0040_pull_request_phase`.
+pub(crate) fn record_phases(tx: &mut dyn Tx) -> Result<(), RpcError> {
+    let rows = tx.query(
+        &format!(
+            "SELECT organization_id, repository_id, number, {RECORD} FROM config_pull_request"
+        ),
+        &[],
+    )?;
+    for row in rows {
+        let phase = Record::read(&row, 3)?.phase;
+        tx.execute(
+            "UPDATE config_pull_request SET phase = ?4 \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+            &[
+                row.text(0)?.into(),
+                row.int(1)?.into(),
+                row.int(2)?.into(),
+                serde_json::to_string(&phase)
+                    .expect("a phase is JSON")
+                    .as_str()
+                    .into(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Store `phase` as the pull request's, and its standing in the column a Store from
+/// before `0040_pull_request_phase` reads.
+fn write_phase(
     tx: &mut dyn Tx,
     who: &Actor,
     pr: &PullRequestRef,
-    standing: &Standing,
+    phase: &Phase,
 ) -> Result<(), RpcError> {
     tx.execute(
-        "UPDATE config_pull_request SET standing = ?4 \
+        "UPDATE config_pull_request SET phase = ?4, standing = ?5 \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
         &[
             who.organization.as_str().into(),
             pr.repository_id.into(),
             pr.number.into(),
-            serde_json::to_string(standing)
+            serde_json::to_string(phase)
+                .expect("a phase is JSON")
+                .as_str()
+                .into(),
+            serde_json::to_string(&phase.standing())
                 .expect("a standing is JSON")
                 .as_str()
                 .into(),
@@ -467,16 +752,7 @@ fn start_from(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Environment>
 }
 
 fn pr_environment(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<bool, RpcError> {
-    Ok(of(tx, id)?.is_some())
-}
-
-/// The pull request (repository ID, number) Environment `id` is the PR Environment of.
-pub(crate) fn of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<PullRequestRef>, RpcError> {
-    let rows = tx.query(
-        "SELECT repository_id, number FROM config_pr_environment WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?;
-    rows.first().map(pull_request_ref).transpose()
+    Ok(crate::pr_environment::of(tx, id)?.is_some())
 }
 
 /// The pull request of PR Environment `from` when `into` is one of its Destinations.
@@ -486,7 +762,8 @@ pub(crate) fn destined(
     into: &EnvironmentId,
 ) -> Result<Option<PullRequestRef>, RpcError> {
     let rows = tx.query(
-        "SELECT e.repository_id, e.number, p.facts FROM config_pr_environment e \
+        "SELECT e.repository_id, e.number, p.facts, p.merged, p.unlanded, p.standing, p.phase \
+         FROM config_pr_environment e \
          JOIN config_pull_request p ON p.organization_id = e.organization_id \
          AND p.repository_id = e.repository_id AND p.number = e.number \
          WHERE e.environment_id = ?1",
@@ -496,18 +773,10 @@ pub(crate) fn destined(
         return Ok(None);
     };
     let pr = pull_request_ref(row)?;
-    let facts: PullRequest = row.json(2, "pull request")?;
+    let facts = Record::read(row, 2)?.facts();
     let project = scope::project_of(tx, from)?.id;
     let destinations = destinations_of(tx, &project, pr.repository_id, &facts.target_branch)?;
     Ok(destinations.contains(into).then_some(pr))
-}
-
-/// A pull request's repository and number, the first two columns of `row`.
-fn pull_request_ref(row: &crate::storage::Row) -> Result<PullRequestRef, RpcError> {
-    Ok(PullRequestRef {
-        repository_id: row.number(0, "pull request")?,
-        number: row.number(1, "pull request")?,
-    })
 }
 
 /// The latest facts Cloud reported of a pull request, merged once any event said so:
@@ -518,29 +787,7 @@ pub(crate) fn facts(
     repository_id: RepositoryId,
     pr: PullRequestNumber,
 ) -> Result<Option<PullRequest>, RpcError> {
-    let rows = tx.query(
-        "SELECT facts, merged FROM config_pull_request \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
-        &[
-            who.organization.as_str().into(),
-            repository_id.into(),
-            pr.into(),
-        ],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    let mut facts: PullRequest = row.json(0, "pull request")?;
-    if facts.merge_commit.is_none()
-        && let Some(merged) = row.optional_text(1)?
-    {
-        let merged: Merged =
-            serde_json::from_str(merged).map_err(|_| error::corrupt("pull request merge"))?;
-        facts.merge_commit = Some(merged.commit);
-        facts.target_branch = merged.into;
-        facts.open = false;
-    }
-    Ok(Some(facts))
+    Ok(record(tx, who, repository_id, pr)?.map(|record| record.facts()))
 }
 
 /// The pull request of every PR Environment in `environment`'s Project not being
@@ -550,14 +797,159 @@ pub(crate) fn project_checks(
     environment: &EnvironmentId,
 ) -> Result<Vec<PullRequestRef>, RpcError> {
     let rows = tx.query(
-        "SELECT DISTINCT p.repository_id, p.number FROM config_pr_environment p \
-         JOIN config_environment e ON e.id = p.environment_id \
-         JOIN config_environment s ON s.project_id = e.project_id \
-         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE s.id = ?1 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m WHERE m.environment_id = b.environment_id AND m.state = 'removing') ORDER BY p.repository_id, p.number",
+        &format!(
+            "SELECT DISTINCT p.repository_id, p.number FROM config_pr_environment p \
+             JOIN config_environment e ON e.id = p.environment_id \
+             JOIN config_environment s ON s.project_id = e.project_id \
+             JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+             WHERE s.id = ?1 AND {} ORDER BY p.repository_id, p.number",
+            mark::unmarked("b.environment_id")
+        ),
         &[environment.as_str().into()],
     )?;
     rows.iter().map(pull_request_ref).collect()
+}
+
+/// What Cloud's report of a pull request did to its row.
+struct Reported {
+    /// The row before; none at its first report.
+    before: Option<Record>,
+    /// Whether the report's facts were newer than those the row held, and replaced
+    /// them.
+    fresh: bool,
+    /// Whether it was the first to tell of the merge.
+    first_merge: bool,
+    phase: Phase,
+}
+
+/// Record Cloud's report `event` of a pull request. Its phase is written here, by
+/// [`approve`], by [`pull_request`] once the merge landed, by [`withdraw_trust`],
+/// and by the migration ([`record_phases`]). Newer facts replace older ones, but
+/// never reopen a merge. The first merge reported, whatever the order, stays. The
+/// standing follows the facts the row holds and Cloud's latest look at the members:
+/// an older report still takes a Trusted standing from an author who left.
+fn record_facts(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    event: &PullRequest,
+    trusted: &Trusted,
+) -> Result<Reported, RpcError> {
+    let organization = who.organization.as_str();
+    let pr = PullRequestRef {
+        repository_id: event.repository_id,
+        number: event.number,
+    };
+    let (repository_id, number) = (pr.repository_id.into(), pr.number.into());
+    let facts = serde_json::to_string(event).expect("facts are JSON");
+    // The lock: a placeholder no facts are older than, or the row. A second first
+    // report waits here on the first, then reads what it left.
+    tx.execute(
+        "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated) \
+         VALUES (?1, ?2, ?3, ?4, '') \
+         ON CONFLICT (organization_id, repository_id, number) \
+         DO UPDATE SET updated = config_pull_request.updated",
+        &[
+            organization.into(),
+            repository_id,
+            number,
+            facts.as_str().into(),
+        ],
+    )?;
+    let before = record(tx, who, pr.repository_id, pr.number)?;
+    let not_merged = format!("merged IS NULL AND COALESCE(phase, '') NOT LIKE '{MERGED}%'");
+    let reopens = match event.open {
+        true => format!(" AND {not_merged}"),
+        false => String::new(),
+    };
+    let fresh = tx.execute(
+        &format!(
+            "UPDATE config_pull_request SET facts = ?4, updated = ?5 \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 \
+             AND updated <= ?5{reopens}"
+        ),
+        &[
+            organization.into(),
+            repository_id,
+            number,
+            facts.as_str().into(),
+            event.updated.as_str().into(),
+        ],
+    )? != 0;
+    let mut first_merge = false;
+    if let Some(commit) = &event.merge_commit {
+        let merged = serde_json::to_string(&Merged {
+            commit: commit.clone(),
+            into: event.target_branch.clone(),
+        })
+        .expect("a merge is JSON");
+        first_merge = tx.execute(
+            &format!(
+                "UPDATE config_pull_request SET merged = ?4 \
+                 WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 \
+                 AND {not_merged}"
+            ),
+            &[
+                organization.into(),
+                repository_id,
+                number,
+                merged.as_str().into(),
+            ],
+        )? == 1;
+    }
+    let held = match (fresh, &before) {
+        (true, _) => None,
+        (false, Some(before)) => Some(before),
+        (false, None) => return Err(error::corrupt("pull request")),
+    };
+    let (facts, head) = match held {
+        Some(held) => (&held.facts, held.phase.head().clone()),
+        None => (event, event.head.clone()),
+    };
+    let was = before.as_ref().map(|before| &before.phase);
+    let standing = if trusts(facts, trusted.members.as_deref()) {
+        OpenStanding::Trusted
+    } else if was
+        .is_some_and(|was| was.open_standing() == OpenStanding::ApprovedHead && *was.head() == head)
+    {
+        OpenStanding::ApprovedHead
+    } else {
+        OpenStanding::NeedsApproval
+    };
+    let phase = match (was, first_merge, held) {
+        (_, true, _) => Phase::Merged {
+            commit: event.merge_commit.clone().expect("a merge has its commit"),
+            into: event.target_branch.clone(),
+            head,
+            standing,
+            landed: None,
+        },
+        (
+            Some(Phase::Merged {
+                commit,
+                into,
+                landed,
+                ..
+            }),
+            false,
+            _,
+        ) => Phase::Merged {
+            commit: commit.clone(),
+            into: into.clone(),
+            head,
+            standing,
+            landed: landed.clone(),
+        },
+        (_, false, Some(held)) => held.phase.clone().standing_as(standing),
+        (_, false, None) if event.open => Phase::Open { head, standing },
+        (_, false, None) => Phase::Closed { head, standing },
+    };
+    write_phase(tx, who, &pr, &phase)?;
+    Ok(Reported {
+        before,
+        fresh,
+        first_merge,
+        phase,
+    })
 }
 
 pub(crate) fn pull_request(
@@ -567,67 +959,24 @@ pub(crate) fn pull_request(
     trusted: &Trusted,
 ) -> Result<Automated, RpcError> {
     validate(event)?;
-    let organization = who.organization.as_str();
     let (repository_id, number) = (event.repository_id, event.number);
-    lock(tx, who, repository_id, number)?;
-    let before = facts(tx, who, repository_id, number)?;
-    let stood = standing(tx, who, repository_id, number)?;
-    let written = tx.execute(
-        "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
-         ON CONFLICT (organization_id, repository_id, number) DO UPDATE SET \
-         facts = excluded.facts, updated = excluded.updated \
-         WHERE excluded.updated >= config_pull_request.updated",
-        &[
-            organization.into(),
-            repository_id.into(),
-            number.into(),
-            serde_json::to_string(event)
-                .expect("facts are JSON")
-                .as_str()
-                .into(),
-            event.updated.as_str().into(),
-        ],
-    )?;
-    // Merged is for good: whatever order the events come in, the first merge stays,
-    // and lands once.
-    let mut first_merge = None;
-    if let Some(commit) = &event.merge_commit {
-        let merged = tx.execute(
-            "UPDATE config_pull_request SET merged = ?1 \
-             WHERE organization_id = ?2 AND repository_id = ?3 AND number = ?4 \
-             AND merged IS NULL",
-            &[
-                serde_json::to_string(&Merged {
-                    commit: commit.clone(),
-                    into: event.target_branch.clone(),
-                })
-                .expect("a merge is JSON")
-                .as_str()
-                .into(),
-                organization.into(),
-                repository_id.into(),
-                number.into(),
-            ],
-        )?;
-        if merged == 1 {
-            first_merge = Some(commit);
-        }
-    }
+    let Reported {
+        before,
+        fresh,
+        first_merge,
+        mut phase,
+    } = record_facts(tx, who, event, trusted)?;
+    let first_merge = event.merge_commit.as_ref().filter(|_| first_merge);
     let mut automated = Automated::default();
-    let fresh = written != 0;
     let reported = PullRequestRef {
         repository_id,
         number,
     };
-    let refused = !stood.admits(&event.head);
-    let standing = match fresh {
-        true => Standing::of(event, trusted, stood),
-        false => stood,
-    };
-    if fresh {
-        set_standing(tx, who, &reported, &standing)?;
-    }
+    let members = trusted.members.as_deref();
+    let refused = !before
+        .as_ref()
+        .is_some_and(|before| before.phase.admits(&event.head, &before.facts, members));
+    let before = before.as_ref().map(Record::facts);
     if !fresh && first_merge.is_none() {
         // Older than what the Store holds: never undo a newer fact.
         return Ok(automated);
@@ -668,21 +1017,14 @@ pub(crate) fn pull_request(
             if !merged.all {
                 kept.insert(environment.clone());
                 // A close that came before the merge is undone: it stays open.
-                tx.execute(
-                    "DELETE FROM config_removal_mark WHERE environment_id = ?1 AND state = 'removing'",
-                    &[environment.as_str().into()],
-                )?;
+                mark::drop_live(tx, environment)?;
             }
         }
-        on_merge::record_unlanded(
-            tx,
-            who,
-            &PullRequestRef {
-                repository_id,
-                number,
-            },
-            &unlanded,
-        )?;
+        on_merge::record_unlanded(tx, who, &reported, &unlanded)?;
+        if let Phase::Merged { landed, .. } = &mut phase {
+            *landed = Some(unlanded);
+        }
+        write_phase(tx, who, &reported, &phase)?;
     }
     if fresh {
         let renamed = before
@@ -690,7 +1032,7 @@ pub(crate) fn pull_request(
             .is_some_and(|before| before.head_branch != event.head_branch);
         if renamed {
             for (environment, _) in &current {
-                retrack(tx, who, environment, event)?;
+                retrack(tx, who, environment, event, trusted)?;
             }
         }
         let retargeted = before
@@ -706,10 +1048,10 @@ pub(crate) fn pull_request(
             });
         }
     }
-    // A closed event closes it, whichever told of the merge first, unless this
-    // event's merge kept it or what the merge recorded holds it (`holds_open`);
-    // older facts never reopen.
-    if !event.open {
+    // Closed or merged, it closes, whichever event told of the merge first, unless
+    // this event's merge kept it or what the merge recorded holds it (`holds_open`).
+    // Only newer facts reopen it, and never once merged.
+    if !matches!(phase, Phase::Open { .. }) {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             if plan.remove_on_close
@@ -720,19 +1062,20 @@ pub(crate) fn pull_request(
                 crate::removal::close(tx, who, environment, because, &mut automated)?;
             }
         }
-    } else if fresh {
+    } else {
         for (environment, _) in &current {
             let target = crate::removal::Target::Environment(environment.clone());
             crate::removal::mark::clear_tombstone(tx, &target)?;
         }
+        let admits = phase.admits(&event.head, event, members);
         let at = Opening {
             event,
-            standing: &standing,
+            admits,
             trusted,
         };
         open(tx, who, &at, &current, &mut automated)?;
         // A push it refused before the author proved a member never comes again.
-        if refused && standing.admits(&event.head) {
+        if refused && admits {
             for (environment, _) in &current {
                 crate::automation::deploy_head(
                     tx,
@@ -763,21 +1106,22 @@ pub(crate) fn approve(
 ) -> Result<Automated, RpcError> {
     let (repository_id, number) = (approval.repository_id, approval.number);
     lock(tx, who, repository_id, number)?;
-    let Some(event) = facts(tx, who, repository_id, number)? else {
+    let Some(record) = record(tx, who, repository_id, number)? else {
         return Err(error::not_found(
             format!("No pull request #{number} in this repository"),
             json!({}),
         ));
     };
-    if !event.open {
+    if !matches!(record.phase, Phase::Open { .. }) {
         return Err(error::conflict("This pull request is closed", json!({})));
     }
-    if event.head != approval.head {
+    if *record.phase.head() != approval.head {
         return Err(error::conflict(
             "This pull request has a newer commit. Approve that one.",
-            json!({ "head": event.head }),
+            json!({ "head": record.phase.head() }),
         ));
     }
+    let event = record.facts();
     let current = current(tx, who, repository_id, number, false)?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(start_froms(tx, who, repository_id)?);
@@ -786,31 +1130,43 @@ pub(crate) fn approve(
         repository_id,
         number,
     };
-    let before = standing(tx, who, repository_id, number)?;
-    let first = !before.admits(&event.head);
-    let standing = match first {
-        true => Standing::Approved(event.head.clone()),
-        false => before,
+    let reviews = reviews(tx, approval, &current)?;
+    let first = !record
+        .phase
+        .admits(&approval.head, &record.facts, trusted.members.as_deref());
+    let phase = match first {
+        true => record.phase.standing_as(OpenStanding::ApprovedHead),
+        false => record.phase,
     };
-    set_standing(tx, who, &pr, &standing)?;
+    write_phase(tx, who, &pr, &phase)?;
     let mut automated = Automated::default();
     let at = Opening {
         event: &event,
-        standing: &standing,
+        admits: true,
         trusted,
     };
     open(tx, who, &at, &current, &mut automated)?;
-    if first {
-        for (environment, _) in &current {
-            crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
+    for (environment, _) in &current {
+        let review = reviews.get(environment);
+        if !first && review.is_none() {
+            continue;
+        }
+        let before = automated.admitted.len();
+        crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
+        if let Some(review) = review {
+            for admitted in automated.admitted.get(before..).unwrap_or_default() {
+                deployment::reviewed(tx, &admitted.deployment.id, review)?;
+            }
+            deployment::reviewed_held(tx, environment, event.head.as_str(), review)?;
         }
     }
     automated.checks.push(pr);
     Ok(automated)
 }
 
-/// Lock the pull request's row, so news of it and approvals of it take turns: each
-/// reads the facts and standing the one before it left. Taken before any Environment.
+/// Lock the pull request's row, so approvals and news of it take turns: each reads
+/// the facts and phase the one before it left. Taken before any Environment. News of
+/// it locks in [`record_facts`], which makes the row first.
 fn lock(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -857,10 +1213,9 @@ fn current(
     closing: bool,
 ) -> Result<Vec<(EnvironmentId, crate::id::ProjectId)>, RpcError> {
     let open = if closing {
-        ""
+        String::new()
     } else {
-        "AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
-         WHERE m.environment_id = b.environment_id AND m.state = 'removing')"
+        format!("AND {}", mark::unmarked("b.environment_id"))
     };
     let rows = tx.query(
         &format!(
@@ -889,7 +1244,8 @@ fn current(
 /// A pull request's PR Environments open from its facts, as it stands.
 struct Opening<'a> {
     event: &'a PullRequest,
-    standing: &'a Standing,
+    /// Whether its head deploys.
+    admits: bool,
     trusted: &'a Trusted,
 }
 
@@ -903,7 +1259,7 @@ fn open(
 ) -> Result<(), RpcError> {
     let Opening {
         event,
-        standing,
+        admits,
         trusted,
     } = *at;
     let rows = tx.query(
@@ -929,11 +1285,25 @@ fn open(
         else {
             continue;
         };
-        if !standing.admits(&event.head) {
+        if !admits {
             automated.skipped.push(Skipped {
                 environment: start.summary.id.clone(),
                 reason: NEEDS_APPROVAL.to_owned(),
             });
+            // A person reviews the head under a preview rule, and the review names the PR
+            // Environment, so it opens now and deploys nothing.
+            if let Some(rule) =
+                crate::preview_rule::live(tx, &start.summary.id, event.repository_id.get())?
+            {
+                let opened = crate::storage::attempt(tx, |tx| {
+                    make(tx, who, &start, &plan, (event, trusted), Some(rule.rule))
+                });
+                match opened {
+                    Ok(_) => {}
+                    Err(error) if crate::automation::skippable(&error) => {}
+                    Err(error) => return Err(error),
+                }
+            }
             continue;
         }
         if trusted.runnable().is_err() {
@@ -968,8 +1338,95 @@ fn create(
     plan: &Stored,
     (event, trusted): (&PullRequest, &Trusted),
 ) -> Result<Option<AutoDeployed>, RpcError> {
+    let preview = crate::preview_rule::live(tx, &start.summary.id, event.repository_id.get())?
+        .map(|rule| rule.rule);
+    let Some(made) = make(tx, who, start, plan, (event, trusted), preview)? else {
+        return Ok(None);
+    };
+    let Made {
+        environment,
+        saved,
+        cluster_domain,
+    } = made;
+    let pins = environment
+        .working
+        .services
+        .iter()
+        .filter(|service| ours(event, &service.config.source))
+        .map(|service| (service.config.private_dns.clone(), event.head.clone()))
+        .collect();
+    let push = crate::deployment::GitPush {
+        repository_id: event.repository_id,
+        branch: event.head_branch.clone(),
+        head: event.head.clone(),
+    };
+    let deployment = crate::automation::auto_admit(
+        tx,
+        who,
+        (&environment, &saved),
+        (&[], &[]),
+        (cluster_domain.as_ref(), &pins),
+        crate::deployment::Admission::New {
+            id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
+            push: Some(&push),
+        },
+        trusted,
+    )?;
+    Ok(Some(AutoDeployed {
+        environment: environment.summary.id.clone(),
+        deployment,
+    }))
+}
+
+/// Whether `source` builds from the pull request's repository.
+fn ours(event: &PullRequest, source: &ServiceSource) -> bool {
+    source.builds_repository(event.repository_id.get())
+}
+
+/// A PR Environment [`make`] opened and saved, with the Cluster Domain its generated
+/// domains expand under.
+struct Made {
+    environment: Environment,
+    saved: review::Saved,
+    cluster_domain: Option<crate::Hostname>,
+}
+
+/// Open a PR Environment from `parent` for the sample pull request `event`, as a preview
+/// of rule `rule` would open, for the caller to lower and then undo: what a Device
+/// signs a preview rule over. None when no Service of `parent` deploys from the
+/// repository.
+pub(crate) fn rehearse(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    parent: &Environment,
+    (event, trusted): (&PullRequest, &Trusted),
+    rule: ployz_core::authority::RuleId,
+) -> Result<Option<Environment>, RpcError> {
+    let rows = tx.query(
+        "SELECT project_id FROM config_environment WHERE id = ?1",
+        &[parent.summary.id.as_str().into()],
+    )?;
+    let project = rows
+        .first()
+        .ok_or_else(|| error::corrupt("Environment"))?
+        .parse::<crate::id::ProjectId>(0, "Project ID")?;
+    let plan = load(tx, &project, event.repository_id)?.unwrap_or_default();
+    Ok(make(tx, who, parent, &plan, (event, trusted), Some(rule))?.map(|made| made.environment))
+}
+
+/// Make the pull request's PR Environment from `start` and save its first revision,
+/// in the Namespace a preview of rule `preview` derives when there is one. None when no
+/// Service of `start` deploys from the repository.
+fn make(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    start: &Environment,
+    plan: &Stored,
+    (event, trusted): (&PullRequest, &Trusted),
+    preview: Option<ployz_core::authority::RuleId>,
+) -> Result<Option<Made>, RpcError> {
     let working = &start.working;
-    let ours = |source: &ServiceSource| matches!(source, ServiceSource::Git { repository_id, .. } if *repository_id == event.repository_id.get());
+    let ours = |source: &ServiceSource| ours(event, source);
     let mut copy: Vec<NodeName> = working
         .services
         .iter()
@@ -1018,7 +1475,7 @@ fn create(
         &CreateBranch {
             id: id.clone(),
             from,
-            name: name.clone(),
+            name,
             copy,
             live: Vec::new(),
             setup,
@@ -1028,8 +1485,17 @@ fn create(
         trusted,
     )?;
     let mut environment = scope::lock_id(tx, who, &id)?;
+    if let Some(rule) = preview {
+        // Every Server derives a preview's Namespace from the rule and the branch, and
+        // its generated domains hold it.
+        let namespace =
+            ployz_core::authority::preview::preview_namespace(rule, &preview_key(event));
+        deployment::reserve_namespace(tx, who, &id, &namespace)?;
+        environment.working = preview_prefixes(environment.working, working, &namespace);
+        environment.working = inherit_sealed(environment.working, working);
+    }
     environment.working = derive(environment.working, event);
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     // Copies keep their Deployment Policy, except that the repository's Services
     // deploy on push whatever the start-from's says; wait for CI and watch paths stay.
     for service in environment
@@ -1059,6 +1525,7 @@ fn create(
     let latest = review::latest_saved(tx, &id)?;
     review::publish(
         tx,
+        Evidence::Caller(trusted),
         who,
         &id,
         environment.working.clone(),
@@ -1066,34 +1533,85 @@ fn create(
         (None, &[]),
     )?;
     let saved = review::latest_saved(tx, &id)?.ok_or_else(|| error::corrupt("Saved State"))?;
-    let pins = environment
-        .working
-        .services
-        .iter()
-        .filter(|service| ours(&service.config.source))
-        .map(|service| (service.config.private_dns.clone(), event.head.clone()))
-        .collect();
-    let push = crate::deployment::GitPush {
-        repository_id: event.repository_id,
-        branch: event.head_branch.clone(),
-        head: event.head.clone(),
-    };
-    let deployment = crate::automation::auto_admit(
-        tx,
-        who,
-        (&environment, &saved),
-        (&[], &[]),
-        (cluster_domain.as_ref(), &pins),
-        crate::deployment::Admission::New {
-            id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
-            push: Some(&push),
-        },
-        trusted,
-    )?;
-    Ok(Some(AutoDeployed {
-        environment: id,
-        deployment,
+    Ok(Some(Made {
+        environment,
+        saved,
+        cluster_domain,
     }))
+}
+
+/// Which preview `event` is: its branch for a pull request from the repository itself,
+/// its number for one from a fork.
+pub(super) fn preview_key(event: &PullRequest) -> ployz_core::authority::PreviewKey {
+    if event.head_repository_id == Some(event.repository_id) {
+        ployz_core::authority::PreviewKey::Branch(event.head_branch.to_string())
+    } else {
+        ployz_core::authority::PreviewKey::Fork(event.number.get())
+    }
+}
+
+/// `intent` with each secret an Own Copy holds no value for taking the value `parent`
+/// sealed for itself: lowered in a preview's Namespace, a Server opens it under the
+/// parent's identity only for a key the preview rule lets that Service inherit.
+fn inherit_sealed(
+    mut intent: SavedEnvironmentIntent,
+    parent: &SavedEnvironmentIntent,
+) -> SavedEnvironmentIntent {
+    for service in &mut intent.services {
+        let Some(from) = parent
+            .services
+            .iter()
+            .find(|from| from.lineage_id == service.lineage_id)
+        else {
+            continue;
+        };
+        for variable in &mut service.variables {
+            if variable.value != ployz_core::config::VariableValue::NotSet {
+                continue;
+            }
+            if let Some(sealed) = from.variables.iter().find(|held| {
+                held.key == variable.key
+                    && matches!(
+                        held.value,
+                        ployz_core::config::VariableValue::Sealed {
+                            ciphertext: Some(ployz_core::config::SecretCiphertext::ClientSealed(_)),
+                            ..
+                        }
+                    )
+            }) {
+                variable.value = sealed.value.clone();
+            }
+        }
+    }
+    intent
+}
+
+/// `intent` with each generated domain's prefix taken from the Service's in `parent`,
+/// followed by the preview's `namespace`: one per preview, alike in every preview.
+fn preview_prefixes(
+    mut intent: SavedEnvironmentIntent,
+    parent: &SavedEnvironmentIntent,
+    namespace: &ployz_core::Namespace,
+) -> SavedEnvironmentIntent {
+    for service in &mut intent.services {
+        let Some(from) = parent
+            .services
+            .iter()
+            .find(|from| from.lineage_id == service.lineage_id)
+        else {
+            continue;
+        };
+        for (managed, from) in service
+            .config
+            .managed_hostnames
+            .iter_mut()
+            .zip(&from.config.managed_hostnames)
+        {
+            managed.prefix =
+                ployz_core::authority::preview::preview_prefix(&from.prefix, namespace);
+        }
+    }
+    intent
 }
 
 /// `pr-N`, or `pr-N-2`… when that is taken in the Project.
@@ -1131,19 +1649,7 @@ fn derive(mut intent: SavedEnvironmentIntent, event: &PullRequest) -> SavedEnvir
 
 /// `intent` with the repository's Services tracking the pull request's head branch.
 fn track(mut intent: SavedEnvironmentIntent, event: &PullRequest) -> SavedEnvironmentIntent {
-    for service in &mut intent.services {
-        if let ServiceSource::Git {
-            repository_id,
-            branch,
-            ..
-        } = &mut service.config.source
-            && *repository_id == event.repository_id.get()
-        {
-            *branch = ServiceGitBranch::Connected {
-                name: event.head_branch.to_string(),
-            };
-        }
-    }
+    intent.retarget(event.repository_id.get(), event.head_branch.as_str(), None);
     intent
 }
 
@@ -1154,12 +1660,14 @@ fn retrack(
     who: &Actor,
     id: &EnvironmentId,
     event: &PullRequest,
+    trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let mut environment = scope::lock_id(tx, who, id)?;
     if let Some(latest) = review::latest_saved(tx, id)? {
         let tracked = track(latest.intent.clone(), event);
         review::publish(
             tx,
+            Evidence::Caller(trusted),
             who,
             id,
             tracked,
@@ -1170,7 +1678,7 @@ fn retrack(
     let tracked = track(environment.working.clone(), event);
     if tracked != environment.working {
         environment.working = tracked;
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     Ok(())
 }
@@ -1184,55 +1692,23 @@ fn shut_down(
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     let environment = scope::lock_id(tx, who, id)?;
-    if deployment::in_flight(tx, id)?.is_none() && crate::removal::on_servers(tx, id)?.is_some() {
+    if deployment::in_flight(tx, id)?.is_none() && deployment::on_servers(tx, id)?.is_some() {
         automated.shutting_down.push(environment.summary);
     }
     Ok(())
 }
 
-/// What the idle rule reads of each Branch: `environment_id`, kept, whether a
-/// removal names it (or a cancelled one did), its latest admission (-1 for none),
-/// its Branches and whether it is a Default.
-const IDLE_FACTS: &str = "SELECT b.environment_id, b.kept, \
-     (SELECT COUNT(*) FROM config_removal_mark m WHERE (m.environment_id = b.environment_id AND m.state <> 'removed') \
-      OR (m.state = 'removing' AND m.project_id = (SELECT e.project_id FROM config_environment e WHERE e.id = b.environment_id))), \
-     (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
-     (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
-     (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
-     FROM config_environment_branch b";
-
-/// When the sweep closes a Branch for sitting idle, from an [`IDLE_FACTS`] row: a
-/// week after its latest Deployment. Never when it is kept, being removed or its
-/// removal was cancelled, never
-/// deployed, a Parent or the Default Environment.
-fn idle_close(row: &crate::storage::Row) -> Result<Option<i64>, RpcError> {
-    let (kept, marked, admitted) = (row.int(1)?, row.int(2)?, row.int(3)?);
-    let held = kept != 0 || marked != 0 || admitted < 0 || row.int(4)? != 0 || row.int(5)? != 0;
-    Ok((!held).then_some(admitted + IDLE))
-}
-
-/// When a Branch closes for sitting idle, in seconds since the Unix epoch.
-pub(crate) fn closes_at(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<i64>, RpcError> {
-    let rows = tx.query(
-        &format!("{IDLE_FACTS} WHERE b.environment_id = ?1"),
-        &[id.as_str().into()],
-    )?;
-    rows.first().map_or(Ok(None), idle_close)
-}
-
 /// Move every removal on, then close each Branch idle past its deadline.
 pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Automated, RpcError> {
-    let rows = tx.query(
-        &format!("{IDLE_FACTS} WHERE b.organization_id = ?1 ORDER BY b.environment_id"),
-        &[who.organization.as_str().into()],
-    )?;
     // Closing would lose what it holds for its merge: an idle PR Environment that
     // holds something only comes off the Servers.
     let mut idle = Vec::new();
     let mut held = Vec::new();
-    for row in &rows {
-        let id = row.parse::<EnvironmentId>(0, "Environment ID")?;
-        let closes_at = idle_close(row)?;
+    for deadline in branch::idle::deadlines(tx, &who.organization)? {
+        let Deadline {
+            environment: id,
+            closes_at,
+        } = deadline?;
         if closes_at.is_some_and(|at| sweep.now >= at) && on_merge::holds_open(tx, who, &id)? {
             held.push(id);
         } else {
@@ -1281,21 +1757,24 @@ pub(crate) fn awaiting_merge(
     branch: &BranchName,
 ) -> Result<Vec<PullRequestNumber>, RpcError> {
     let rows = tx.query(
-        "SELECT DISTINCT p.number, r.facts FROM config_pr_environment p \
-         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         JOIN config_pull_request r ON r.organization_id = p.organization_id \
-         AND r.repository_id = p.repository_id AND r.number = p.number \
-         WHERE p.organization_id = ?1 AND p.repository_id = ?2 \
-         AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
-         WHERE m.environment_id = b.environment_id AND m.state = 'removing') \
-         AND r.merged IS NULL ORDER BY p.number",
+        &format!(
+            "SELECT DISTINCT p.number, r.facts, r.merged, r.unlanded, r.standing, r.phase \
+             FROM config_pr_environment p \
+             JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+             JOIN config_pull_request r ON r.organization_id = p.organization_id \
+             AND r.repository_id = p.repository_id AND r.number = p.number \
+             WHERE p.organization_id = ?1 AND p.repository_id = ?2 \
+             AND {} AND r.merged IS NULL ORDER BY p.number",
+            mark::unmarked("b.environment_id")
+        ),
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
     let mut awaiting = Vec::new();
     for row in rows {
-        let facts: PullRequest = row.json(1, "pull request")?;
+        let Record { facts, phase } = Record::read(&row, 1)?;
         let number = row.number(0, "pull request")?;
-        if facts.open && facts.target_branch == *branch && !awaiting.contains(&number) {
+        let open = matches!(phase, Phase::Open { .. });
+        if open && facts.target_branch == *branch && !awaiting.contains(&number) {
             awaiting.push(number);
         }
     }

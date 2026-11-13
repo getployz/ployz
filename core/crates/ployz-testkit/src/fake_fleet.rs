@@ -22,22 +22,23 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, ContainerDetails, ContainerId, ContainerKind, ContainerList,
-    ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
+    CapabilityAdvertisement, ClusterDoorsDeclared, ContainerDetails, ContainerId, ContainerKind,
+    ContainerList, ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     ContractDescription, CopyRole, CopyRotation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, EnsuredContainer, HealthObservation, HistoryContainer,
-    HistoryContainerKind, HistoryRow, HistoryStream, LiveLogTarget, LocalMachinePhase, LogBody,
-    LogDirection, LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine,
-    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
-    MachineRelease, MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt,
-    MachineUpgradeOutcome, MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace,
-    OpaquePayload, PROTOCOL_MAJOR, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
-    RoutedAddresses, RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RunTarget, RuntimeWatchFrame, ServiceId, ServiceName, SlotId, SlotRole,
+    DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnrollmentSnapshot, EnsuredContainer,
+    HealthObservation, HistoryContainer, HistoryContainerKind, HistoryRow, HistoryStream,
+    IngressDoors, IngressDoorsSet, LiveLogTarget, LocalMachinePhase, LogBody, LogDirection,
+    LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, Machine, MachineDetails, MachineId,
+    MachineList, MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc,
+    MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
+    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, PrivateAccessSet,
+    ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge, RoutedAddresses,
+    RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
+    RuntimeWatchFrame, ServiceId, ServiceName, SetPrivateAccessRequest, SlotId, SlotRole,
     StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
-    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
+    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame, labels,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,7 +56,6 @@ const VOLUME_BYTES: NonZeroU64 = NonZeroU64::new(10 * GIB).expect("10 GiB is not
 const USED_BYTES: u64 = GIB;
 const FIRST_LOG_NANOS: i64 = 1_700_000_000_000_000_000;
 const LOG_STEP_NANOS: i64 = 1_000_000_000;
-const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
 
 /// `dashboard/evals/agent/machines.json`: the fleet as it starts.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -73,6 +73,16 @@ pub struct FleetMachine {
     pub containers: Vec<FleetContainer>,
     #[serde(default)]
     pub volumes: Vec<FleetVolume>,
+    /// The Sealing Key it holds, reported by Inspect and in its row.
+    #[serde(default)]
+    pub sealing: Option<ployz_core::SealingPublicKey>,
+    /// A daemon from before SetClusterDoors: it neither advertises the capability nor
+    /// serves the route.
+    #[serde(default)]
+    pub predates_doors: bool,
+    /// A daemon that advertises SetClusterDoors and answers it with a refusal.
+    #[serde(default)]
+    pub refuses_doors: bool,
 }
 
 /// One Container. The fixture's `id` is the Docker display name; its wire Container ID
@@ -246,6 +256,14 @@ impl FakeFleet {
         self.shared.lock()?.machine_mut(name)?.online = false;
         self.shared.close(name);
         Ok(())
+    }
+
+    /// The Doors the fleet's Cluster declares, once a SetClusterDoors wrote them.
+    ///
+    /// # Errors
+    /// Returns an error when the state lock is poisoned.
+    pub fn declared_doors(&self) -> Result<Option<IngressDoors>, FakeFleetError> {
+        Ok(self.shared.lock()?.declared_doors.clone())
     }
 
     /// Every request recorded so far, in order.
@@ -525,9 +543,12 @@ struct MachineState {
     id: MachineId,
     version: MachineVersion,
     online: bool,
+    predates_doors: bool,
+    refuses_doors: bool,
     containers: Vec<ContainerState>,
     copies: Vec<CopyState>,
     upgrades: Vec<MachineUpgradeAttempt>,
+    sealing: Option<ployz_core::Sealing>,
 }
 
 struct ContainerState {
@@ -548,6 +569,8 @@ struct Fleet {
     calls: BTreeMap<(MachineId, &'static str), u32>,
     ledger: Vec<LedgerEntry>,
     sink: Option<File>,
+    /// The Doors a SetClusterDoors declared; shared by every Machine, as the replicated key is.
+    declared_doors: Option<IngressDoors>,
 }
 
 impl Fleet {
@@ -567,6 +590,7 @@ impl Fleet {
             calls: BTreeMap::new(),
             ledger: Vec::new(),
             sink,
+            declared_doors: None,
         };
         for place in scenario.drop_volumes {
             let name = physical(&place);
@@ -736,15 +760,9 @@ impl Fleet {
                         machine_id: machine.id,
                         protocol_major: PROTOCOL_MAJOR,
                         daemon_version: machine.version.to_string(),
-                        capabilities: [
-                            CapabilityAdvertisement::Always,
-                            CapabilityAdvertisement::Container,
-                            CapabilityAdvertisement::Cluster,
-                        ]
-                        .into_iter()
-                        .flat_map(CapabilityAdvertisement::capabilities)
-                        .collect::<BTreeSet<_>>(),
+                        capabilities: machine.capabilities(),
                         sealing: None,
+                        attest: None,
                     }
                     .into(),
                 )
@@ -762,23 +780,51 @@ impl Fleet {
                         store_version: BTreeMap::new(),
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
+                        passkeys: Vec::new(),
                         telemetry: None,
                         storage: None,
                         upgrade: machine.upgrades.last().cloned(),
                         token: None,
-                        sealing: None,
+                        sealing: machine.sealing,
                         founding: Default::default(),
                     }
                     .into(),
                 )
             }
-            RpcRequestBody::ListMachines(_) => unary(
-                MachineList {
-                    enrollment: None,
-                    machines: self.observations(),
-                }
-                .into(),
+            RpcRequestBody::ListMachines(_) => {
+                let machines = self.observations();
+                let enrollment = self.declared_doors.clone().map(|doors| EnrollmentSnapshot {
+                    network: "10.210.0.0/16".parse().expect("a network"),
+                    machines: machines
+                        .iter()
+                        .map(|observation| observation.machine.clone())
+                        .collect(),
+                    target_versions: BTreeMap::new(),
+                    doors: Some(doors),
+                });
+                unary(
+                    MachineList {
+                        enrollment,
+                        machines,
+                    }
+                    .into(),
+                )
+            }
+            RpcRequestBody::SetClusterDoors(_) if self.by_id(target)?.predates_doors => Err(
+                Status::unimplemented("this daemon predates SetClusterDoors"),
             ),
+            RpcRequestBody::SetClusterDoors(_) if self.by_id(target)?.refuses_doors => {
+                Err(Status::unavailable("this daemon's store is not ready"))
+            }
+            RpcRequestBody::SetClusterDoors(request) => {
+                self.declared_doors = Some(request.doors.clone());
+                unary(
+                    ClusterDoorsDeclared {
+                        doors: request.doors,
+                    }
+                    .into(),
+                )
+            }
             RpcRequestBody::ListContainers(_) => {
                 let machine = self.by_id(target)?;
                 unary(
@@ -800,6 +846,7 @@ impl Fleet {
                         image_id: None,
                         last_check: None,
                         run: None,
+                        leaving: false,
                     }
                     .into(),
                 )
@@ -825,6 +872,10 @@ impl Fleet {
                     return Err(unimplemented("ensure_container for this want"));
                 };
                 unary(self.ensure(target, container_id, &request.want)?)
+            }
+            RpcRequestBody::SetIngressDoors(_) => unary(self.set_doors(target)?.into()),
+            RpcRequestBody::SetPrivateAccess(request) => {
+                unary(self.set_private_access(target, &request)?.into())
             }
             RpcRequestBody::ReadRoutes(request) => unary(self.routes(&request.service).into()),
             RpcRequestBody::ReadRoutedAddresses(_) => unary(
@@ -966,6 +1017,7 @@ impl Fleet {
                 refusal: ContainerRefusal {
                     reason: ContainerRefusalReason::NotFound,
                     message: format!("no Container {container_id}"),
+                    capability: None,
                 },
             }
             .into());
@@ -993,6 +1045,105 @@ impl Fleet {
             Err(refusal) => EnsuredContainer::Refused { now, refusal },
         }
         .into())
+    }
+
+    /// The Ingress Proxy on `target` as a daemon sets it: the holder, then Caddy, each
+    /// created or started unless it already runs.
+    fn set_doors(&mut self, target: MachineId) -> Result<IngressDoorsSet, Status> {
+        let mut set = IngressDoorsSet::default();
+        for (identity, image) in [
+            (QualifiedService::system_ingress_holder(), "pause"),
+            (QualifiedService::system_ingress(), "caddy"),
+        ] {
+            let outcome = Some(self.place_system(target, &identity, image)?);
+            if identity == QualifiedService::system_ingress_holder() {
+                set.holder = outcome;
+            } else {
+                set.proxy = outcome;
+            }
+        }
+        Ok(set)
+    }
+
+    /// Private Access on `target` as a daemon sets it: the router created or started
+    /// unless it already runs, or every router removed.
+    fn set_private_access(
+        &mut self,
+        target: MachineId,
+        request: &SetPrivateAccessRequest,
+    ) -> Result<PrivateAccessSet, Status> {
+        let identity = QualifiedService::system_tailscale();
+        if request.enabled {
+            return Ok(PrivateAccessSet {
+                router: Some(self.place_system(target, &identity, "tailscale")?),
+                ..PrivateAccessSet::default()
+            });
+        }
+        let machine = self.by_id_mut(target)?;
+        let mut retired = Vec::new();
+        machine.containers.retain(|container| {
+            let router = container.spec.namespace == identity.namespace
+                && container.spec.service == identity.name;
+            if router {
+                retired.push(container.id);
+            }
+            !router
+        });
+        Ok(PrivateAccessSet {
+            retired,
+            ..PrivateAccessSet::default()
+        })
+    }
+
+    /// The reserved Container `identity` on `target`, created or started unless it
+    /// already runs.
+    fn place_system(
+        &mut self,
+        target: MachineId,
+        identity: &QualifiedService,
+        image: &str,
+    ) -> Result<DoorOutcome, Status> {
+        let machine = self.by_id_mut(target)?;
+        let name = format!("{}-{}", machine.name, identity.name);
+        let found = machine.containers.iter_mut().find(|container| {
+            container.spec.namespace == identity.namespace
+                && container.spec.service == identity.name
+        });
+        let (id, change) = match found {
+            Some(container) if container.spec.state == RunState::Running => {
+                (container.id, DoorChange::Unchanged)
+            }
+            Some(container) => {
+                container.spec.state = RunState::Running;
+                (container.id, DoorChange::Started)
+            }
+            None => {
+                let id = container_id(&name);
+                machine.containers.push(ContainerState {
+                    spec: FleetContainer {
+                        name,
+                        namespace: identity.namespace.clone(),
+                        service: identity.name.clone(),
+                        image: image.into(),
+                        state: RunState::Running,
+                        env: BTreeMap::new(),
+                        deployment: None,
+                        logs: Vec::new(),
+                        rotation: CopyRotation::default(),
+                    },
+                    id,
+                });
+                (id, DoorChange::Created)
+            }
+        };
+        let machine = self.by_id(target)?;
+        let container = machine
+            .container(&id)
+            .ok_or_else(|| Status::internal("the placed Container vanished"))?;
+        Ok(DoorOutcome {
+            now: machine.observe(container)?,
+            change,
+        })
     }
 
     fn routes(&self, service: &QualifiedService) -> RoutesRead {
@@ -1048,6 +1199,7 @@ impl Fleet {
             volumes,
             certificates: Vec::new(),
             incomplete_ids: Default::default(),
+            unanswered: Vec::new(),
             observed_at: time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .map_err(internal)?,
@@ -1071,6 +1223,8 @@ impl MachineState {
             id: machine.id,
             version: machine.version,
             online: machine.online,
+            predates_doors: machine.predates_doors,
+            refuses_doors: machine.refuses_doors,
             containers: machine
                 .containers
                 .into_iter()
@@ -1081,7 +1235,27 @@ impl MachineState {
                 .collect(),
             copies,
             upgrades: Vec::new(),
+            sealing: machine
+                .sealing
+                .map(|public_key| ployz_core::Sealing::Held { public_key }),
         })
+    }
+
+    /// What the daemon advertises: every catalogued capability, less SetClusterDoors for
+    /// one that predates it.
+    fn capabilities(&self) -> BTreeSet<ployz_core::CapabilityName> {
+        [
+            CapabilityAdvertisement::Always,
+            CapabilityAdvertisement::Container,
+            CapabilityAdvertisement::Cluster,
+        ]
+        .into_iter()
+        .flat_map(CapabilityAdvertisement::capabilities)
+        .filter(|capability| {
+            !(self.predates_doors
+                && capability.as_str() == ployz_core::SET_CLUSTER_DOORS_CAPABILITY)
+        })
+        .collect()
     }
 
     fn record(&self) -> Machine {
@@ -1101,8 +1275,15 @@ impl MachineState {
             advertised_endpoints: Vec::new(),
             runtime: MachineRuntime {
                 daemon_version: self.version.to_string(),
+                sealing: self.sealing,
+                capabilities: self
+                    .capabilities()
+                    .iter()
+                    .map(|capability| capability.as_str().to_owned())
+                    .collect(),
                 ..MachineRuntime::default()
             },
+            join_approval: None,
             build_concurrency: None,
         }
     }
@@ -1129,12 +1310,12 @@ impl MachineState {
         }))
         .map_err(internal)?;
         let mut labels = BTreeMap::from([
-            ("ployz.service.id".to_owned(), service_id.to_string()),
-            ("ployz.service.name".to_owned(), spec.service.to_string()),
-            (NAMESPACE_LABEL.to_owned(), spec.namespace.to_string()),
+            (labels::SERVICE_ID.to_owned(), service_id.to_string()),
+            (labels::SERVICE_NAME.to_owned(), spec.service.to_string()),
+            (labels::NAMESPACE.to_owned(), spec.namespace.to_string()),
         ]);
         if let Some(deployment) = spec.deployment {
-            labels.insert(DEPLOYMENT_LABEL.to_owned(), deployment.to_string());
+            labels.insert(labels::DEPLOYMENT_ID.to_owned(), deployment.to_string());
         }
         ContainerObservation::try_from(ContainerObservationParts {
             rotation: Some(spec.rotation.clone()),
@@ -1173,8 +1354,8 @@ impl MachineState {
                     CopyRole::Writer | CopyRole::Switching => (
                         format!("/var/lib/ployz/{}", copy.name),
                         BTreeMap::from([
-                            (MANAGED_LABEL.to_owned(), String::new()),
-                            (NAMESPACE_LABEL.to_owned(), copy.namespace.to_string()),
+                            (labels::MANAGED.to_owned(), String::new()),
+                            (labels::NAMESPACE.to_owned(), copy.namespace.to_string()),
                         ]),
                     ),
                 };
@@ -1343,13 +1524,7 @@ fn physical(place: &VolumePlace) -> DockerVolumeName {
 }
 
 fn not_found(container_id: &ContainerId) -> RpcResponse {
-    RpcError {
-        code: RpcErrorCode::NotFound,
-        message: format!("no Container {container_id}"),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
-    .into()
+    RpcError::not_found(format!("no Container {container_id}")).into()
 }
 
 fn unimplemented(command: &str) -> Status {

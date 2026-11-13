@@ -1,0 +1,445 @@
+#![expect(clippy::indexing_slicing, reason = "JSON fixtures")]
+
+use std::collections::BTreeMap;
+
+use ployz_core::{
+    BuildGrantRepository, EnvValue, GithubToken, MintBuildGrantRequest, Namespace, SealedScope,
+    authority::{
+        CommitSha, PayloadDigest, PreviewRule, PreviewService, Review, ReviewedService, RuleId,
+        Signed, SignerKey, preview::PreviewReview,
+    },
+};
+use serde_json::json;
+use uuid::Uuid;
+
+use super::*;
+use crate::{
+    github::test_support::{TEST_KID, signed_by_test_signer},
+    machine::local_machine::rule_grant::tests::{
+        BUILDER_SHA, COMMIT, Fixture, answer, claims, commit, fixture, github, holder, now, policy,
+        recipient, rule_for, web,
+    },
+    management::build_grant::Mint,
+};
+
+/// The parent Environment's Cloud ID, which its inherited values are sealed for.
+pub(crate) const PARENT: Uuid = Uuid::from_u128(9);
+/// The GitHub account the fixture's tokens name as their actor.
+pub(crate) const ACTOR: u64 = 1_109_914;
+
+/// A build record whose one value is the parent's `NPM_TOKEN`, sealed for [`PARENT`].
+pub(crate) fn inherited(fixture: &Fixture) -> SealedRecord {
+    let env = BTreeMap::from([(
+        "NPM_TOKEN".to_owned(),
+        EnvValue::Sealed(
+            fixture
+                .sealing
+                .seal_inherited("NPM_TOKEN", PARENT, "parent-token"),
+        ),
+    )]);
+    fixture.sealing.open(env).unwrap().record.unwrap()
+}
+
+/// A preview rule over the fixture's Cluster and Machine, its one Service inheriting
+/// `NPM_TOKEN` for the build `record`.
+pub(crate) fn preview_rule(fixture: &Fixture, record: &SealedRecord) -> PreviewRule {
+    let base = rule_for(
+        fixture.cluster,
+        fixture.machine.record().id(),
+        &fixture.signer,
+        &fixture.record,
+    );
+    PreviewRule {
+        cluster: fixture.cluster,
+        rule: RuleId::from_bytes([0x22; 16]),
+        generation: 2,
+        machines: base.machines,
+        parent: Namespace::parse("app").unwrap(),
+        parent_id: PARENT,
+        domain: "preview.example.com".to_owned(),
+        source: base.source,
+        trusted: vec![ACTOR],
+        services: vec![PreviewService {
+            name: web(),
+            template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
+            setup: None,
+            policy: policy(),
+            secrets: Some(ployz_core::authority::preview::secrets_digest(record).unwrap()),
+            inherit: ["NPM_TOKEN".to_owned()].into(),
+            generated: BTreeMap::new(),
+        }],
+        issued_at: Timestamp::from_millis(now().as_millis() - 60_000).unwrap(),
+        ended: false,
+        signer: SignerKey::Device(fixture.signer.public().into()),
+    }
+}
+
+pub(crate) fn claim(rule: &PreviewRule, authority: CommitAuthority) -> BuildClaim {
+    BuildClaim {
+        cluster: rule.cluster,
+        rule: rule.rule,
+        generation: rule.generation,
+        service: web(),
+        policy: PolicyDigest::of(&policy()).unwrap(),
+        commit: commit(),
+        authority,
+        stage: BuildStage::Grant {
+            holder: holder(),
+            recipient: recipient(),
+        },
+    }
+}
+
+/// A token for `claim`'s audience, run by `event` on `branch` by `actor`, spent as `jti`.
+pub(crate) fn token(
+    claim: &BuildClaim,
+    jti: &str,
+    event: &str,
+    branch: &str,
+    actor: u64,
+) -> GithubToken {
+    let mut claims = claims();
+    claims["aud"] = json!(claim.audience().unwrap());
+    claims["jti"] = json!(jti);
+    claims["event_name"] = json!(event);
+    claims["ref"] = json!(format!("refs/heads/{branch}"));
+    claims["workflow_ref"] = json!(format!(
+        "Ployz-test/lab-service/.github/workflows/ployz-build.yml@refs/heads/{branch}"
+    ));
+    claims["job_workflow_ref"] = json!(format!(
+        "Ployz-test/build/.github/workflows/build.yml@{BUILDER_SHA}"
+    ));
+    claims["job_workflow_sha"] = json!(BUILDER_SHA);
+    claims["actor_id"] = json!(actor.to_string());
+    claims["sha"] = json!(COMMIT);
+    GithubToken::new(signed_by_test_signer(TEST_KID, &claims))
+}
+
+fn grant(fixture: &Fixture, rule: &PreviewRule, proof: GithubToken) -> PreviewGrant {
+    PreviewGrant {
+        rule: Signed::sign(rule, &fixture.signer).unwrap(),
+        review: None,
+        proof,
+        service: web(),
+        commit: commit(),
+        authority: CommitAuthority::Head,
+        recipient: recipient(),
+        reader: None,
+    }
+}
+
+/// A Device-signed review of the `feature` preview of `commit` under `rule`.
+pub(crate) fn review(fixture: &Fixture, rule: &PreviewRule, commit: CommitSha) -> Review {
+    let body = PreviewReview {
+        cluster: rule.cluster,
+        rule: rule.rule,
+        generation: rule.generation,
+        key: PreviewKey::Fork(12),
+        commit,
+        environment: Uuid::from_u128(1),
+        services: vec![ReviewedService {
+            name: web(),
+            digest: PayloadDigest::parse(&"cd".repeat(32)).unwrap(),
+        }],
+        issued_at: Timestamp::from_millis(now().as_millis() - 1_000).unwrap(),
+        expires_at: Timestamp::from_millis(now().as_millis() + 600_000).unwrap(),
+    };
+    Review::Signed(Signed::sign(&body, &fixture.signer).unwrap())
+}
+
+/// A reviewed build's grant: a dispatch on the parent's branch under `review`.
+fn reviewed(fixture: &Fixture, rule: &PreviewRule, review: Review, jti: &str) -> PreviewGrant {
+    let authority = CommitAuthority::Review(review.digest());
+    let mut grant = grant(
+        fixture,
+        rule,
+        token(
+            &claim(rule, authority),
+            jti,
+            "workflow_dispatch",
+            "main",
+            ACTOR,
+        ),
+    );
+    grant.authority = authority;
+    grant.review = Some(review);
+    grant
+}
+
+async fn admit(
+    fixture: &Fixture,
+    grant: &PreviewGrant,
+    sealed: &SealedRecord,
+) -> Result<AdmittedRule, Error> {
+    fixture
+        .machine
+        .admit_preview_grant(
+            grant,
+            Some(&holder()),
+            Some(sealed),
+            &github(commit()),
+            now(),
+        )
+        .await
+}
+
+#[track_caller]
+fn refused(result: Result<AdmittedRule, Error>, field: &str) {
+    match result {
+        Err(Error::PreviewGrantRefused(PreviewRefusal::Rule(AuthorityRefusal::Mismatch {
+            field: named,
+        }))) => assert_eq!(named, field),
+        other => panic!("expected a refusal naming {field}, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_trusted_push_to_another_branch_mints_and_its_inherited_values_open() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let claim = claim(&rule, CommitAuthority::Head);
+    let grant = grant(
+        &fixture,
+        &rule,
+        token(&claim, "trusted", "push", "feature", ACTOR),
+    );
+    let admitted = admit(&fixture, &grant, &record).await.unwrap();
+    assert_eq!(admitted.audience, claim.audience().unwrap());
+    let mint = Mint::check_admitted(
+        MintBuildGrantRequest {
+            repository: BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            holder: Some(holder()),
+            sealed: Some(record),
+            rule: None,
+            preview: Some(grant),
+        },
+        Some(&fixture.sealing.dir.0),
+        Some(admitted),
+    );
+    assert!(mint.is_ok(), "{:?}", mint.err());
+}
+
+#[tokio::test]
+async fn a_push_by_an_account_the_rule_does_not_trust_is_refused() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let claim = claim(&rule, CommitAuthority::Head);
+    let grant = grant(
+        &fixture,
+        &rule,
+        token(&claim, "stranger", "push", "feature", 42),
+    );
+    refused(admit(&fixture, &grant, &record).await, "an account");
+}
+
+#[tokio::test]
+async fn a_push_to_the_parents_branch_is_not_a_preview() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let claim = claim(&rule, CommitAuthority::Head);
+    let grant = grant(
+        &fixture,
+        &rule,
+        token(&claim, "parent", "push", "main", ACTOR),
+    );
+    refused(admit(&fixture, &grant, &record).await, "a branch");
+}
+
+#[tokio::test]
+async fn a_build_record_with_a_value_of_its_own_is_refused() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let claim = claim(&rule, CommitAuthority::Head);
+    let grant = grant(
+        &fixture,
+        &rule,
+        token(&claim, "own", "push", "feature", ACTOR),
+    );
+    let own = BTreeMap::from([(
+        "NPM_TOKEN".to_owned(),
+        EnvValue::Sealed(
+            fixture
+                .sealing
+                .seal("NPM_TOKEN", SealedScope::Shared, "own"),
+        ),
+    )]);
+    let own = fixture.sealing.open(own).unwrap().record.unwrap();
+    refused(
+        admit(&fixture, &grant, &own).await,
+        ployz_core::authority::preview::SEALED_VALUE,
+    );
+}
+
+/// `body` under the fixture's trusted passkey: its own prompt over the review's digest.
+pub(crate) fn passkey_review(body: &PreviewReview) -> Review {
+    let body = ployz_core::authority::canonical::to_canonical(body).unwrap();
+    let assertion = answer(ployz_core::authority::preview::review_digest(&body).as_bytes());
+    Review::Passkey { body, assertion }
+}
+
+/// `body` signed by a browser key under the trusted passkey's session grant, lent for the
+/// reviewed preview's Namespace and Environment.
+pub(crate) fn session_review(rule: &PreviewRule, body: &PreviewReview) -> Review {
+    use ployz_core::authority::{
+        ActionFamily, GrantBody, SessionGrant, Signer, preview::preview_namespace,
+        session::Delegation,
+    };
+    let browser = Signer::from_seed(&[8; 32]);
+    let issued_at = Timestamp::from_millis(body.issued_at.as_millis() - 1_000).unwrap();
+    let grant = GrantBody {
+        browser_key: browser.public(),
+        cluster: rule.cluster,
+        environment: preview_namespace(rule.rule, &body.key),
+        environment_id: body.environment,
+        machines: rule.machines.clone(),
+        families: vec![ActionFamily::Deploy],
+        issued_at,
+        expires_at: issued_at.plus(60 * 60_000),
+        delegation: Delegation::None,
+    };
+    let grant = ployz_core::authority::canonical::to_canonical(&grant).unwrap();
+    let session = SessionGrant {
+        assertion: answer(&GrantBody::challenge(&grant)),
+        body: grant,
+    };
+    Review::Signed(Signed::sign_under(body, &browser, session).unwrap())
+}
+
+fn opened(review: &Review) -> PreviewReview {
+    let body = match review {
+        Review::Signed(signed) => signed.body.clone(),
+        Review::Passkey { body, .. } => body.clone(),
+    };
+    ployz_core::authority::canonical::from_canonical(&body).unwrap()
+}
+
+#[tokio::test]
+async fn a_reviewed_build_of_the_reviewed_commit_mints() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let grant = reviewed(&fixture, &rule, review(&fixture, &rule, commit()), "review");
+    let admitted = admit(&fixture, &grant, &record).await.unwrap();
+    let mint = Mint::check_admitted(
+        MintBuildGrantRequest {
+            repository: BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            holder: Some(holder()),
+            sealed: Some(record),
+            rule: None,
+            preview: Some(grant),
+        },
+        Some(&fixture.sealing.dir.0),
+        Some(admitted),
+    );
+    assert!(mint.is_ok(), "{:?}", mint.err());
+}
+
+/// Each check runs in admission, which never opens the record: only a mint of an admitted
+/// grant does.
+#[tokio::test]
+async fn a_reviewed_build_is_refused_before_anything_opens() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let other = CommitSha::parse(&"7".repeat(40)).unwrap();
+    let stale = reviewed(&fixture, &rule, review(&fixture, &rule, other), "stale");
+    refused(admit(&fixture, &stale, &record).await, "a commit");
+
+    let mut body = opened(&review(&fixture, &rule, commit()));
+    body.rule = RuleId::from_bytes([0x33; 16]);
+    let foreign = Review::Signed(Signed::sign(&body, &fixture.signer).unwrap());
+    let foreign = reviewed(&fixture, &rule, foreign, "foreign");
+    refused(admit(&fixture, &foreign, &record).await, "a rule");
+
+    let mut body = opened(&review(&fixture, &rule, commit()));
+    body.services.clear();
+    let elsewhere = Review::Signed(Signed::sign(&body, &fixture.signer).unwrap());
+    let elsewhere = reviewed(&fixture, &rule, elsewhere, "elsewhere");
+    refused(admit(&fixture, &elsewhere, &record).await, "a Service");
+
+    let mut bare = reviewed(&fixture, &rule, review(&fixture, &rule, commit()), "bare");
+    bare.review = None;
+    refused(admit(&fixture, &bare, &record).await, "a review");
+
+    // A review beside a trusted push's Head authority names no build.
+    let head = claim(&rule, CommitAuthority::Head);
+    let mut pushed = grant(
+        &fixture,
+        &rule,
+        token(&head, "pushed", "push", "feature", ACTOR),
+    );
+    pushed.review = Some(review(&fixture, &rule, commit()));
+    refused(admit(&fixture, &pushed, &record).await, "a review");
+
+    // A dispatch on another branch than the parent's is no reviewed build.
+    let review = review(&fixture, &rule, commit());
+    let authority = CommitAuthority::Review(review.digest());
+    let mut branch = grant(
+        &fixture,
+        &rule,
+        token(
+            &claim(&rule, authority),
+            "branch",
+            "workflow_dispatch",
+            "feature",
+            ACTOR,
+        ),
+    );
+    branch.authority = authority;
+    branch.review = Some(review);
+    refused(admit(&fixture, &branch, &record).await, "ref");
+}
+
+/// Operator decision 6: a session reviews only a preview that opens no secret.
+#[tokio::test]
+async fn a_session_may_not_review_a_preview_build_that_opens_secrets() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let body = opened(&review(&fixture, &rule, commit()));
+    let session = reviewed(&fixture, &rule, session_review(&rule, &body), "session");
+    refused(admit(&fixture, &session, &record).await, "the signer");
+    let passkey = reviewed(&fixture, &rule, passkey_review(&body), "passkey");
+    let admitted = admit(&fixture, &passkey, &record).await;
+    assert!(admitted.is_ok(), "{:?}", admitted.err());
+}
+
+#[tokio::test]
+async fn a_session_may_review_a_preview_build_that_opens_nothing() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let mut rule = preview_rule(&fixture, &record);
+    rule.services[0].secrets = None;
+    rule.services[0].inherit.clear();
+    let body = opened(&review(&fixture, &rule, commit()));
+    let grant = reviewed(&fixture, &rule, session_review(&rule, &body), "open");
+    let admitted = fixture
+        .machine
+        .admit_preview_grant(&grant, Some(&holder()), None, &github(commit()), now())
+        .await;
+    assert!(admitted.is_ok(), "{:?}", admitted.err());
+}
+
+#[tokio::test]
+async fn a_preview_grant_token_is_spent_once() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let claim = claim(&rule, CommitAuthority::Head);
+    let grant = grant(
+        &fixture,
+        &rule,
+        token(&claim, "once", "push", "feature", ACTOR),
+    );
+    admit(&fixture, &grant, &record).await.unwrap();
+    assert!(matches!(
+        admit(&fixture, &grant, &record).await,
+        Err(Error::PreviewGrantRefused(PreviewRefusal::Rule(
+            AuthorityRefusal::ProofReplayed
+        )))
+    ));
+}

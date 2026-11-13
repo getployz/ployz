@@ -6,6 +6,7 @@ import type { PageContext } from "#/modules/agent/page-context";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
+import { pendingProposalsOptions } from "./proposals.queries";
 
 type Panel = typeof import("./agent-panel").default;
 const loadPanel = () => import("./agent-panel").then((module) => module.default);
@@ -24,7 +25,8 @@ export function AgentButton({ organizationSlug, chat, onChat }: {
   onChat: (thread: string | undefined) => void;
 }) {
   const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
-  const waiting = chat === undefined ? pending?.filter(waitsOnYou).length ?? 0 : 0;
+  const { data: proposals } = useQuery(pendingProposalsOptions(organizationSlug));
+  const waiting = chat === undefined ? (pending?.filter(waitsOnYou).length ?? 0) + (proposals?.length ?? 0) : 0;
   const toggle = () => onChat(chat === undefined ? localStorage.getItem(threadKey(organizationSlug)) ?? crypto.randomUUID() : undefined);
   const waitingLabel = `${waiting} ${waiting === 1 ? "approval" : "approvals"} waiting`;
   return (

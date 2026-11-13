@@ -72,9 +72,9 @@ pub(super) fn capture(
     match recipe {
         Recipe::Railpack { command } => {
             // An explicit build command wins, as it does over a plain value.
-            let planned = values
-                .iter()
-                .filter(|(name, _)| command.is_none() || name.as_str() != "RAILPACK_BUILD_CMD");
+            let planned = values.iter().filter(|(name, _)| {
+                command.is_none() || name.as_str() != ployz_build::railpack::BUILD_CMD
+            });
             if opened.is_none() {
                 refuse_railpack_settings(planned.clone().map(|(name, _)| name))?;
             }
@@ -168,7 +168,7 @@ fn standard_frontend(syntax: &str) -> bool {
 fn refuse_railpack_settings<'name>(
     mut sealed: impl Iterator<Item = &'name String>,
 ) -> Result<(), Error> {
-    match sealed.find(|name| name.starts_with("RAILPACK_")) {
+    match sealed.find(|name| name.starts_with(ployz_build::railpack::SETTING_PREFIX)) {
         Some(name) => Err(Error::Sealed(format!(
             "{name} is sealed. Railpack settings can't be sealed."
         ))),
@@ -225,6 +225,7 @@ mod tests {
     fn sealed_intent(ciphertext: u8) -> (DeployIntent, EnvValue) {
         let mut intent = intent(&["api"]);
         let sealed = EnvValue::Sealed(ployz_core::SealedValue {
+            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![ciphertext; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: "NPM_TOKEN".into(),
@@ -464,6 +465,7 @@ mod tests {
 
     fn with_sealed(intent: &mut DeployIntent, name: &str, byte: u8) {
         let value = EnvValue::Sealed(ployz_core::SealedValue {
+            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![byte; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: name.into(),
@@ -659,6 +661,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (mut intent, _) = sealed_intent(7);
         let setting = EnvValue::Sealed(ployz_core::SealedValue {
+            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: "RAILPACK_BUILD_CMD".into(),
@@ -706,6 +709,7 @@ RUN --mount=type=secret,id=RAILPACK_BUILD_CMD true
         fs::write(source.join("drop.log"), "excluded").unwrap();
         let (mut intent, _) = sealed_intent(7);
         let setting = EnvValue::Sealed(ployz_core::SealedValue {
+            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: "RAILPACK_CONFIG_FILE".into(),
@@ -765,6 +769,7 @@ RUN --mount=type=secret,id=RAILPACK_BUILD_CMD true
         let root = tempfile::tempdir().unwrap();
         let (mut intent, _) = sealed_intent(7);
         let setting = EnvValue::Sealed(ployz_core::SealedValue {
+            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: "RAILPACK_BUILD_CMD".into(),

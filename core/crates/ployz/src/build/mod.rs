@@ -27,6 +27,7 @@ mod platforms;
 pub use platforms::placement_platforms;
 mod remote;
 pub use local::LocalImage;
+pub(crate) use remote::CapabilityCheckError;
 mod reuse;
 pub(crate) use reuse::{holder, image_stores, runs_everywhere};
 mod sealed;
@@ -50,8 +51,7 @@ pub enum Recipe {
 }
 
 /// Remote failure evidence cannot contain a successful build outcome.
-#[derive(Clone, Debug, Eq, Error, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RemoteBuildFailure {
     /// The Build Machine confirmed the attempt ended without an image. The
     /// caller says the Build failed; this is why.
@@ -123,6 +123,18 @@ pub struct CapturedBuild {
     targets: Vec<CapturedTarget>,
     /// The Sealed values a runner fetched for this Build, held for every solve.
     opened: Option<OpenedSealed>,
+    /// The GitHub Actions cache a local Build uses.
+    local_cache: LocalCache,
+}
+
+/// The GitHub Actions cache a local Build may read and write.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum LocalCache {
+    /// Whatever the runner exposes, each target in a scope of its own name.
+    #[default]
+    Runner,
+    /// A rule's: off, or one scope its policy names.
+    Pinned(Option<String>),
 }
 
 struct CapturedTarget {
@@ -163,7 +175,11 @@ pub fn capture(
             capture_target(service, spec, opened.as_ref())
         })
         .collect::<Result<_, _>>()?;
-    Ok(CapturedBuild { targets, opened })
+    Ok(CapturedBuild {
+        targets,
+        opened,
+        local_cache: LocalCache::Runner,
+    })
 }
 
 fn capture_target(
@@ -197,12 +213,14 @@ fn capture_target(
             };
             let mut sealed = sealed::capture(service, &recipe, &inputs, opened)?;
             if let Some(command) = command {
-                args.insert("RAILPACK_BUILD_CMD".into(), command);
+                args.insert(ployz_build::railpack::BUILD_CMD.into(), command);
             }
             let config = args
-                .get("RAILPACK_CONFIG_FILE")
+                .get(ployz_build::railpack::CONFIG_FILE)
                 .map(String::as_str)
-                .or_else(|| opened.and_then(|opened| opened.get("RAILPACK_CONFIG_FILE")));
+                .or_else(|| {
+                    opened.and_then(|opened| opened.get(ployz_build::railpack::CONFIG_FILE))
+                });
             let context = inputs.railpack_context(&spec.context, config)?;
             let context = inputs.relative(&context);
             // Railpack variables stay in private upload material, not the recipe.
@@ -299,6 +317,15 @@ struct CapturedRecipe {
 }
 
 impl CapturedBuild {
+    /// Build every target for exactly `platforms`, with the Actions cache in `scope` or
+    /// off without one: a rule's policy, not the runner's environment, decides both.
+    pub(crate) fn pin_local(&mut self, platforms: Vec<String>, scope: Option<String>) {
+        for target in &mut self.targets {
+            target.target.platforms.clone_from(&platforms);
+        }
+        self.local_cache = LocalCache::Pinned(scope);
+    }
+
     /// Images still to produce, with the platforms each must carry.
     pub fn targets(&self) -> impl Iterator<Item = &ployz_build::Target> {
         self.targets.iter().map(|captured| &captured.target)

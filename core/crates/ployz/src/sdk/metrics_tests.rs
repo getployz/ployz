@@ -6,7 +6,7 @@ use ployz_core::{
     },
 };
 
-use super::{MetricHistory, merge, unavailable};
+use super::{MetricHistory, merge};
 
 const SINCE: i64 = 1_000_000_000_000;
 const MIN: i64 = 60_000_000_000;
@@ -62,7 +62,7 @@ fn a_machine_that_times_out_is_named_and_the_rest_still_sum() {
     let fast = answered(MIN, vec![point(0, 2.0, 100, Some(1_000))]);
     let timeout = MachineFailure {
         machine_id: slow,
-        error: unavailable("deadline exceeded"),
+        error: ployz_core::RpcError::unavailable("deadline exceeded"),
     };
 
     let history = merge(&request(), vec![fast.clone()], vec![timeout]);
@@ -152,4 +152,56 @@ fn no_answer_has_no_step() {
 
     assert_eq!(history.step_nanos, None);
     assert!(service_points(&history).is_empty());
+}
+
+/// A Machine that lists no Machine and counts the ListMachines asked of it.
+async fn counting_lists() -> (
+    crate::connect::Client,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = lists.clone();
+    let (client, server) = crate::connect::test_support::rpc_client(move |rpc| {
+        let counted = counted.clone();
+        async move {
+            let body = rpc.into_inner().decode_request().unwrap().body;
+            if let ployz_core::RpcRequestBody::ListMachines(_) = body {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            let listed = ployz_core::MachineList {
+                enrollment: None,
+                machines: Vec::new(),
+            };
+            Ok(tonic::Response::new(
+                ployz_core::RpcResponse::from(listed).encode().unwrap(),
+            ))
+        }
+    })
+    .await;
+    (client, lists, server)
+}
+
+#[tokio::test]
+async fn a_services_history_lists_the_cluster_unless_the_caller_already_did() {
+    let (client, lists, server) = counting_lists().await;
+    let subject = || super::MetricSubject::Service {
+        service: QualifiedService::parse("prod/web").unwrap(),
+    };
+    let range = request().range;
+
+    super::metric_history(&client, subject(), range, None)
+        .await
+        .unwrap();
+    assert_eq!(lists.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    super::metric_history_among(&client, subject(), range, None, Some(&[]))
+        .await
+        .unwrap();
+    assert_eq!(
+        lists.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a caller's listing is the one listing"
+    );
+    server.abort();
 }

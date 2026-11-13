@@ -38,14 +38,17 @@ what is missing or invalid.
 | `APP_URL` | yes | public URL of web |
 | `BETTER_AUTH_SECRET` | yes | auth session secret |
 | `APP_ENCRYPTION_SECRET` | yes | 32+ characters; encrypts stored credentials, keep it stable |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes | GitHub OAuth App (sign-in) |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_WEBHOOK_SECRET` | yes | GitHub App (repository access) |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes | GitHub OAuth App (sign-in); with `GITHUB_MINTER_URL`, the ID must be an OAuth App's (`Ov23…` or 20 hex digits), never the GitHub App's |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_WEBHOOK_SECRET` | yes | GitHub App (repository access) |
+| `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_SECRET` | unless `GITHUB_MINTER_URL` | the App's key and client secret, held in Cloud; refused alongside `GITHUB_MINTER_URL` |
+| `GITHUB_MINTER_URL`, `GITHUB_MINTER_ACCESS_KEY_ID`, `GITHUB_MINTER_SECRET_ACCESS_KEY` | no | all or none; the minter's Lambda Function URL and the IAM key that signs for it. Set, Cloud asks the minter (`minter/`) for every token and Actions call instead of holding the App's key |
 | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | yes | shared with the Inngest server |
 | `PLOYZ_HOSTED_DNS_URL` | yes | Hosted DNS, which grants Cluster Domains: `https://dns.ployz.app/` for Ployz-hosted and Self-hosted Cloud; tests and local dev use a closed port |
 | `INNGEST_BASE_URL`, `INNGEST_CONNECT_GATEWAY_URL` | no | Inngest API and Connect gateway; unset, they point at Inngest Cloud, so local and self-hosted setups set both |
 | `BETTER_AUTH_TRUSTED_ORIGINS`, `PORT` | no | `PORT` defaults to 3000 |
 | `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID`, `POLAR_SERVER` | no | all or none; none disables billing and every Organization is unlimited |
 | `UPTIME_ENABLED` | no | `true` on the dashboard when an uptime checker (`uptime/`) runs; unset hides uptime |
+| `AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS` | no | how old a release must be before automatic upgrades take it; defaults to `72`, `0` takes it as soon as it's out. Manual upgrades never wait |
 | `ANALYTICS_ENABLED` | no | `true` on a Self-hosted Cloud to issue analytics salts and store pageviews; Ployz-hosted Cloud is always on |
 | `POSTHOG_KEY`, `POSTHOG_HOST` | no | product analytics, Ployz-hosted only; no key disables it. `POSTHOG_HOST` defaults to PostHog US Cloud; `pnpm posthog:backfill` sends existing users and Organizations once |
 

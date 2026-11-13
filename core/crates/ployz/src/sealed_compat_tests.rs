@@ -51,6 +51,7 @@ async fn listing(machines: Vec<MachineObservation>) -> Fleet {
                 let response = match rpc.into_inner().decode_request().unwrap().body {
                     RpcRequestBody::DescribeContract(_) => {
                         RpcResponse::from(ployz_core::ContractDescription {
+                            attest: None,
                             machine_id: id,
                             protocol_major: ployz_core::PROTOCOL_MAJOR,
                             daemon_version: "fixture".into(),
@@ -88,6 +89,7 @@ pub(crate) fn spec(sealed: bool) -> ResolvedServiceSpec {
     let mut spec = requested(ServiceMode::Global);
     let value = if sealed {
         EnvValue::Sealed(SealedValue {
+            environment: None,
             sealed: Ciphertext::from_bytes(vec![7; 48]),
             scope: SealedScope::Shared,
             key: "TOKEN".into(),
@@ -212,7 +214,7 @@ fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
     let behind = machine('b', "behind");
     let visible = vec![
         MachineObservation::new(behind.clone(), MembershipObservation::Up),
-        MachineObservation::new(able.clone(), MembershipObservation::Up),
+        MachineObservation::new(able, MembershipObservation::Up),
     ];
 
     let plain = crate::sealed_compat::builders(&visible, None).unwrap();

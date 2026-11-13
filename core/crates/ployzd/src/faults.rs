@@ -11,8 +11,9 @@ pub(crate) use enabled::{apply, check};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-const LONG_EFFECTS: [&str; 8] = [
+const LONG_EFFECTS: [&str; 9] = [
     "SetVolumeCopy.WriterToMirror",
+    "SetVolumeCopy.Handoff",
     "SetVolumeCopy.WriterToSnapshot",
     "SetVolumeCopy.WriterToForget",
     "SetVolumeCopy.SeedToForget",
@@ -47,6 +48,10 @@ pub enum Want<'a> {
     },
     Forget,
     Floor,
+    Handoff {
+        at: SnapshotGuid,
+        epoch: WriterEpoch,
+    },
 }
 
 impl<'a> Identity<'a> {
@@ -59,8 +64,12 @@ impl<'a> Identity<'a> {
             },
             WantedCopy::Mirror { target, .. } => Want::Mirror { target },
             WantedCopy::Snapshot { name } => Want::Snapshot { snapshot: name },
-            WantedCopy::Forget => Want::Forget,
+            WantedCopy::Forget { .. } => Want::Forget,
             WantedCopy::Floor => Want::Floor,
+            WantedCopy::Handoff { at, epoch, .. } => Want::Handoff {
+                at: *at,
+                epoch: *epoch,
+            },
         };
         Self {
             volume,
@@ -112,7 +121,9 @@ fn warn(act: Act, verb: &'static str, identity: Option<Identity<'_>>) {
     let (target, snapshot, writer) = match identity.map(|identity| identity.want) {
         Some(Want::Mirror { target }) => (Some(target), None, None),
         Some(Want::Snapshot { snapshot }) => (None, Some(snapshot), None),
-        Some(Want::Writer { at, epoch }) => (None, None, Some((at, epoch))),
+        Some(Want::Writer { at, epoch } | Want::Handoff { at, epoch }) => {
+            (None, None, Some((at, epoch)))
+        }
         Some(Want::Forget | Want::Floor) | None => (None, None, None),
     };
     tracing::warn!(
@@ -152,12 +163,12 @@ mod enabled {
         time::Duration,
     };
 
+    use ployz_core::MachineLayout;
     use tokio::time::Instant;
 
     use super::{Act, Identity, Release, warn};
 
     /// Read on every check, so a run arms and disarms a fault without restarting a daemon.
-    const PATH: &str = "/run/ployz/fault";
     /// Names another fault file, so parallel test children each arm their own.
     pub const PATH_ENV: &str = "PLOYZD_FAULT_FILE";
     const POLL: Duration = Duration::from_secs(1);
@@ -229,7 +240,8 @@ mod enabled {
     }
 
     fn path() -> PathBuf {
-        std::env::var_os(PATH_ENV).map_or_else(|| PathBuf::from(PATH), PathBuf::from)
+        std::env::var_os(PATH_ENV)
+            .map_or_else(|| MachineLayout::production().fault_file(), PathBuf::from)
     }
 
     fn armed() -> Option<FaultPoint> {

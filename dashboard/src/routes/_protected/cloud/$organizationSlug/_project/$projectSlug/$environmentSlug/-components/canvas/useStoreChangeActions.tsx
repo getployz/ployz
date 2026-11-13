@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConfigCommand, DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
+import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DeletionDialog } from "#/components/deletion-dialog";
+import { toErrorMessage } from "#/lib/error-message";
 import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
+import { useDeployApprovals } from "#/modules/config-store/use-deploy-approvals";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
+import { useDeployApproval } from "./useDeployApproval";
 type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
@@ -34,13 +38,26 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
  * even when the draft saved before the click: the review the user read as they pressed doesn't include it. Nor does
  * a press while any other write that moves the review still saves. The bar then shows the draft, pink and counted,
  * and the next press ships exactly that.
+ *
+ * On Servers that enforce Device approval, a Deploy asks for a passkey session first, unless one covers it, and carries
+ * this browser's approval of the plan it ships, which it then lists; Saved State changes reach a Server only through it.
+ * One that deletes Volume data also carries the person's passkey teardown of exactly the Volumes they typed for.
+ * Each staged Volume workflow such a Server takes part in then asks the passkey once, after the loss dialog, so the loss
+ * the person confirmed is the loss each approval names.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
-  version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS) {
+  version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS,
+  /**
+   * Reads each staged Volume workflow on a Server that enforces, then answers with its prompts, which ask the passkey for
+   * each; false when the person cancels one.
+   */
+  preparePlacements: () => Promise<() => Promise<boolean>> = () => Promise.resolve(() => Promise.resolve(true))) {
   const writer = useStoreWriter(organizationSlug);
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
+  const approval = useDeployApproval(organizationSlug, environment);
+  const approvals = useDeployApprovals(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
   const [loss, setLoss] = useState<Loss | null>(null);
@@ -73,6 +90,27 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     // Each press is judged once: a later one with no pointer or key before it (assistive tech) starts from here.
     gesture.current = { mark: writeMark(queryClient), saving: false };
     if (saving || reviewMoving(queryClient, organizationSlug, environment, mark)) return { status: "staging" };
+    // The Volume workflows' reads go while the Deploy asks for its own approval; their prompts wait for it.
+    const placements = action === "deploy" ? preparePlacements() : null;
+    placements?.catch(() => undefined);
+    let scope;
+    let teardown;
+    try {
+      scope = action === "deploy" ? await approval.scope() : undefined;
+      if (scope !== null && action === "deploy") teardown = await approvals.volumeLoss(environment, accept);
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Couldn't approve the deploy"));
+      return { status: "failed" };
+    }
+    if (scope === null) return { status: "failed" };
+    if (placements !== null) {
+      try {
+        if (!(await (await placements)())) return { status: "failed" };
+      } catch (error) {
+        toast.error(toErrorMessage(error, "Couldn't approve the volume changes"));
+        return { status: "failed" };
+      }
+    }
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
     const command: ConfigCommand = action === "deploy"
@@ -80,8 +118,17 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
       : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words };
     // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
     if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
+    if (command.command === "admit" && command.admit === "deploy" && teardown !== undefined) command.teardown = teardown;
     try {
-      await writer.commit(command, ["confirmation_required"]);
+      // What this browser signed, shown as `ployz deploy` prints it.
+      let lines: readonly string[] = [];
+      const approved = scope === undefined ? undefined : async () => {
+        const signed = await approval.approve(scope, id, version);
+        lines = signed.lines;
+        return { ...command, approval: signed.approval };
+      };
+      await writer.commit(command, ["confirmation_required"], approved);
+      if (lines.length > 0) toast.success("Deploy approved", { description: <div className="font-mono whitespace-pre-wrap break-all">{lines.map((line, at) => <div key={`${at}:${line}`}>{line}</div>)}</div> });
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {

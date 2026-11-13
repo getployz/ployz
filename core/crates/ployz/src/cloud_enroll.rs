@@ -107,6 +107,35 @@ pub(crate) enum Error {
 struct ResponseLost(#[source] Option<Error>);
 
 impl Error {
+    pub(crate) fn capability(&self) -> Option<String> {
+        let body = match self {
+            Self::Status { body, .. } | Self::CodedConflict { body } => body,
+            Self::Timeout(_)
+            | Self::Connect(_)
+            | Self::Http(_)
+            | Self::Json(_)
+            | Self::TokenRefused
+            | Self::FounderWait
+            | Self::RetrySameCommand { .. }
+            | Self::CloudCantReach => return None,
+        };
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()?
+            .pointer("/details/capability")?
+            .as_str()
+            .map(str::to_owned)
+    }
+    fn is_connect(&self) -> bool {
+        matches!(self, Self::Connect(_))
+    }
+    /// Cloud answers 503 until it can reach the Machine; both stages are safe to repeat.
+    fn is_callback_retryable(&self) -> bool {
+        self.is_transport()
+            || matches!(
+                self,
+                Self::Status { status: 503, .. } | Self::CloudCantReach
+            )
+    }
     fn is_transport(&self) -> bool {
         match self {
             Self::Timeout(error) | Self::Connect(error) | Self::Http(error) => {
@@ -200,6 +229,12 @@ pub(crate) struct EnrollIdentity {
     disk_available_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_support: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join_confirmation: Option<ployz_core::authority::join::JoinConfirmation>,
+    /// What this client honors when it runs the joiner's catch-up. Cloud relays it in
+    /// Register, and the Machine refuses a joiner that claims too little for the
+    /// Cluster's declared Doors.
+    capabilities: Vec<&'static str>,
 }
 
 fn serialize_as_wireguard_base64<S>(
@@ -233,6 +268,20 @@ impl EnrollIdentity {
             disk_total_bytes: token.disk_total_bytes,
             disk_available_bytes: token.disk_available_bytes,
             recovery_support: recovery_supported.then_some(RECOVERY_SUPPORT),
+            join_confirmation: None,
+            capabilities: vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY],
+        }
+    }
+
+    /// The same identity, carrying the joiner's confirmation of its approved capsule for Cloud
+    /// to relay in Register.
+    pub(crate) fn confirming(
+        &self,
+        confirmation: ployz_core::authority::join::JoinConfirmation,
+    ) -> Self {
+        Self {
+            join_confirmation: Some(confirmation),
+            ..self.clone()
         }
     }
 }
@@ -352,35 +401,6 @@ impl From<RecoveryWire> for Recovery {
     }
 }
 
-/// Enroll URL: host without a scheme is HTTPS. The token travels only as a bearer header,
-/// so it never reaches a URL that proxies and access logs record.
-#[must_use]
-pub(crate) fn enroll_url(cloud_url: &str) -> String {
-    format!("{}/api/enroll", cloud_origin(cloud_url))
-}
-
-/// Final enrollment completion: `POST /api/enroll/callback`.
-#[must_use]
-pub(crate) fn callback_url(cloud_url: &str) -> String {
-    format!("{}/callback", enroll_url(cloud_url))
-}
-
-/// Best-effort setup report: `POST /api/enroll/report`.
-#[must_use]
-pub(crate) fn report_url(cloud_url: &str) -> String {
-    format!("{}/report", enroll_url(cloud_url))
-}
-
-/// `https://` + a bare host, or the URL as given; no trailing slash.
-pub(crate) fn cloud_origin(cloud_url: &str) -> String {
-    let host = cloud_url.trim().trim_end_matches('/');
-    if host.contains("://") {
-        host.to_owned()
-    } else {
-        format!("https://{host}")
-    }
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnrollCallback<'a> {
@@ -468,9 +488,10 @@ pub(crate) async fn enroll(
     loop {
         let response = crate::setup_retry::run(
             &mut (),
+            &crate::ui::WaitNotices,
             &format!("Cloud enrollment at {}", diagnostic_origin(url)),
             crate::setup_retry::WAIT,
-            |error| matches!(error, Error::Connect(_)),
+            Error::is_connect,
             async |_| send(post(&http, url, token, identity).timeout(ENROLL_TIMEOUT)).await,
         )
         .await
@@ -619,16 +640,10 @@ async fn post_callback(
     let sent = sent_strings(token, body);
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
         crate::setup_retry::WAIT,
-        // Cloud answers 503 until it can reach the Machine; both stages are safe to repeat.
-        |error: &Error| {
-            error.is_transport()
-                || matches!(
-                    error,
-                    Error::Status { status: 503, .. } | Error::CloudCantReach
-                )
-        },
+        Error::is_callback_retryable,
         async |_| {
             post_json(&http, url, token, body).await.map_err(|error| {
                 let (status, body) = match error {
@@ -721,11 +736,24 @@ fn sent_strings(token: &CloudEnrollToken, body: &EnrollCallback<'_>) -> Vec<Stri
 }
 
 fn coded_refusal_status(body: &str, sent: &[String], operation: &str) -> Error {
+    let join_approval = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|mut parsed| {
+            let details = parsed.as_object_mut()?.remove("details")?;
+            (details == serde_json::json!({ "capability": ployz_core::JOIN_APPROVAL_CAPABILITY }))
+                .then(|| parsed.to_string())
+        });
+    let said = coded_cloud_refusal(join_approval.as_deref().unwrap_or(body), sent);
     Error::CodedConflict {
-        body: coded_cloud_refusal(body, sent).map_or_else(
-            || format!("{operation} rejected"),
-            |said| serde_json::json!({ "error": said }).to_string(),
-        ),
+        body: match (said, join_approval.is_some()) {
+            (Some(said), false) => serde_json::json!({ "error": said }).to_string(),
+            (None, false) => format!("{operation} rejected"),
+            (said, true) => serde_json::json!({
+                "error": said.unwrap_or_else(|| format!("{operation} rejected")),
+                "details": { "capability": ployz_core::JOIN_APPROVAL_CAPABILITY },
+            })
+            .to_string(),
+        },
     }
 }
 
@@ -893,7 +921,7 @@ async fn send(request: reqwest::RequestBuilder) -> Result<Vec<u8>, Error> {
     let coded_conflict = status == reqwest::StatusCode::CONFLICT
         && sent
             .headers()
-            .get("Ployz-Error-Code")
+            .get(ployz_core::cloud_contract::ERROR_CODE_HEADER)
             .is_some_and(|code| code == "CONFLICT");
     let bytes = sent.bytes().await.map_err(classify_http)?;
     if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -1008,6 +1036,8 @@ mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
+    use crate::cloud_origin::CloudOrigin;
+    use ployz_core::error_chain;
 
     #[tokio::test]
     async fn public_conflict_messages_follow_clouds_enroll_contract() {
@@ -1116,7 +1146,7 @@ mod tests {
                     );
                     continue;
                 }
-                for printed in [crate::ui::chain_text(&error), format!("{error:?}")] {
+                for printed in [error_chain::row(&error), format!("{error:?}")] {
                     if let Some(expected) = expected {
                         assert!(printed.contains(expected), "path={path}: {printed}");
                     } else {
@@ -1162,7 +1192,7 @@ mod tests {
         .await
         .unwrap_err();
         server.await.unwrap();
-        assert_eq!(crate::ui::chain_text(&error), said);
+        assert_eq!(error_chain::row(&error), said);
         assert_eq!(
             crate::failure::Failure::from(error).report().code,
             ployz_core::rpc::RpcErrorCode::Conflict
@@ -1368,6 +1398,7 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             visible_peers: Vec::new(),
@@ -1379,23 +1410,6 @@ mod tests {
 
     fn token() -> CloudEnrollToken {
         CloudEnrollToken::parse("pmet_test").unwrap()
-    }
-
-    #[test]
-    fn host_without_scheme_is_https_under_ployz_dev() {
-        assert_eq!(enroll_url("ployz.dev"), "https://ployz.dev/api/enroll");
-        assert_eq!(
-            enroll_url("http://127.0.0.1:9"),
-            "http://127.0.0.1:9/api/enroll"
-        );
-        assert_eq!(
-            callback_url("ployz.dev"),
-            "https://ployz.dev/api/enroll/callback"
-        );
-        assert_eq!(
-            report_url("ployz.dev"),
-            "https://ployz.dev/api/enroll/report"
-        );
     }
 
     #[test]
@@ -1638,7 +1652,8 @@ mod tests {
                 .unwrap();
             String::from_utf8_lossy(buf.get(..read).unwrap()).into_owned()
         });
-        let url = enroll_url(&origin);
+        let origin = CloudOrigin::new(&origin);
+        let url = origin.enroll_url();
         enroll(Command::ServerAdd, &url, &token(), &identity(), &|_| {})
             .await
             .unwrap();
@@ -1650,7 +1665,7 @@ mod tests {
                 .lines()
                 .any(|line| line.eq_ignore_ascii_case("authorization: Bearer pmet_test"))
         );
-        for url in [url, callback_url(&origin), report_url(&origin)] {
+        for url in [url, origin.callback_url(), origin.report_url()] {
             assert!(!url.contains(token().as_str()), "{url}");
         }
     }
@@ -1671,7 +1686,7 @@ mod tests {
         });
         let error = enroll(
             Command::ServerAdd,
-            &enroll_url(&origin),
+            &CloudOrigin::new(&origin).enroll_url(),
             &token(),
             &identity(),
             &|_| {},
@@ -1707,7 +1722,7 @@ mod tests {
         let stages = std::cell::RefCell::new(Vec::new());
         let outcome = enroll(
             Command::ServerAdd,
-            &enroll_url(&origin),
+            &CloudOrigin::new(&origin).enroll_url(),
             &token(),
             &identity(),
             &|stage| {
@@ -1761,7 +1776,7 @@ mod tests {
             answers_after + Duration::from_secs(10),
             enroll(
                 Command::ServerAdd,
-                &enroll_url(&origin),
+                &CloudOrigin::new(&origin).enroll_url(),
                 &token(),
                 &identity(),
                 &|_| {},
@@ -1796,7 +1811,7 @@ mod tests {
             timeout.to_string(),
             "Enrollment timed out waiting for Cloud."
         );
-        assert!(!crate::ui::chain_text(&timeout).contains(&hang));
+        assert!(!error_chain::row(&timeout).contains(&hang));
 
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused = format!("http://{}", closed.local_addr().unwrap());
@@ -1806,7 +1821,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(connect.to_string(), "Could not connect to Cloud.");
         assert_ne!(timeout.to_string(), connect.to_string());
-        let connect = crate::ui::chain_text(&connect);
+        let connect = error_chain::row(&connect);
         assert!(connect.contains("Connection refused"), "{connect}");
         assert!(!connect.contains(&refused));
     }
@@ -1839,7 +1854,7 @@ mod tests {
             .await
             .expect("lost response must return without retrying")
             .unwrap_err();
-            let rendered = crate::ui::chain_text(&error);
+            let rendered = error_chain::row(&error);
             assert!(rendered.contains("uncertain"), "{rendered}");
             let message = error.to_string();
             match command {
@@ -1890,7 +1905,7 @@ mod tests {
         .await
         .expect("the retry budget ends the held request")
         .unwrap_err();
-        let rendered = crate::ui::chain_text(&error);
+        let rendered = error_chain::row(&error);
         assert!(rendered.contains("uncertain"), "{rendered}");
         assert!(!rendered.contains("did not recover"), "{rendered}");
         assert!(error.to_string().contains("without --reset"), "{error}");
@@ -2239,7 +2254,7 @@ mod tests {
         .await
         .unwrap_err();
         server.await.unwrap();
-        crate::ui::chain_text(&error)
+        error_chain::row(&error)
     }
 
     #[tokio::test]
@@ -2349,12 +2364,12 @@ mod tests {
             .await
             .unwrap_err();
             server.await.unwrap();
-            for printed in [crate::ui::chain_text(&error), format!("{error:?}")] {
+            for printed in [error_chain::row(&error), format!("{error:?}")] {
                 assert!(!printed.contains(&echoed), "{echoed}: {printed}");
                 assert!(!printed.contains("Refused"), "{echoed}: {printed}");
             }
             assert!(
-                crate::ui::chain_text(&error).contains("HTTP 409: candidate publication rejected"),
+                error_chain::row(&error).contains("HTTP 409: candidate publication rejected"),
                 "{echoed}"
             );
         }
@@ -2416,13 +2431,11 @@ mod tests {
                 )
             };
             let error = result.unwrap_err();
-            for rendered in [crate::ui::chain_text(&error), format!("{error:?}")] {
+            for rendered in [error_chain::row(&error), format!("{error:?}")] {
                 assert!(!rendered.contains(&secret));
                 assert!(!rendered.contains(pairing));
             }
-            assert!(
-                crate::ui::chain_text(&error).contains(&format!("HTTP 400: {operation} rejected"))
-            );
+            assert!(error_chain::row(&error).contains(&format!("HTTP 400: {operation} rejected")));
             assert!(error.to_string().contains("without --reset"));
         }
     }
@@ -2499,6 +2512,38 @@ mod tests {
         assert_eq!(
             json.get("diskAvailableBytes"),
             Some(&serde_json::json!(85_899_345_920_u64))
+        );
+    }
+}
+
+#[cfg(test)]
+mod join_capability_tests {
+    use super::coded_refusal_status;
+    #[test]
+    fn join_approval_capability_survives_the_refusal_sanitiser_and_only_from_details() {
+        let capability = ployz_core::JOIN_APPROVAL_CAPABILITY;
+        let refused = |body: serde_json::Value| {
+            coded_refusal_status(
+                &body.to_string(),
+                &["pmet_secret_token_value".to_owned()],
+                "enrollment",
+            )
+        };
+        let approval = refused(serde_json::json!({
+            "error": "Approve this join.", "details": {"capability": capability},
+        }));
+        assert_eq!(approval.capability().as_deref(), Some(capability));
+        assert!(approval.to_string().contains("Approve this join."));
+        assert_eq!(
+            refused(serde_json::json!({"error": capability})).capability(),
+            None
+        );
+        assert_eq!(
+            refused(serde_json::json!({
+                "error": "x", "details": {"capability": "pmet_secret_token_value"},
+            }))
+            .capability(),
+            None
         );
     }
 }

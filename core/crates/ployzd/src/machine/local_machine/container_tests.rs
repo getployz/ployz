@@ -98,7 +98,7 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         .await
         .unwrap();
     assert!(fake.existing_container.lock().unwrap().is_none());
-    let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
+    let ingress = crate::images::legacy_caddy_for_tests("caddy:test")
         .to_resolved(ServiceId::random(), Default::default())
         .unwrap();
     let error = local
@@ -113,11 +113,26 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("accept"), "{error}");
-    local
+    let error = local
         .create_container(
             ContainerKind::ServiceContainer,
             &Namespace::system(),
             &ingress,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, super::Error::IngressProxyServiceSpec(_)),
+        "{error}"
+    );
+    local
+        .create_container(
+            ContainerKind::ServiceContainer,
+            &Namespace::system(),
+            &crate::images::DoorSpecs::public(ServiceId::random()).holder,
             None,
             None,
             None,
@@ -272,6 +287,7 @@ async fn joining_admits_direct_create() {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let mut peer = machine.clone();
@@ -356,7 +372,7 @@ async fn removal_warning_restarts_and_keeps_recovery_available_without_container
         .with_containers(Some(runtime))
         .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))))
         .with_plugin(plugin);
-    let left = local.leave(LeaveRequest {}).await.unwrap();
+    let left = local.leave(LeaveRequest { teardown: None }).await.unwrap();
     assert!(
         matches!(
             left,

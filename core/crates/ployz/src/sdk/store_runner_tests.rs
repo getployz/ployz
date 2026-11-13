@@ -54,6 +54,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
         .write_trusted(
             &actor,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployment.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -63,6 +64,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -74,6 +76,8 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             store,
             deployment,
             runner,
+            over: Latch::new(),
+            reader: None,
         },
         actor,
     )
@@ -88,6 +92,7 @@ fn take_over(run: &Run, actor: &ployz_store::Actor) {
         .write_trusted(
             actor,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: deployment.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -97,6 +102,7 @@ fn take_over(run: &Run, actor: &ployz_store::Actor) {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -134,6 +140,30 @@ fn after_cancel(token: &CancellationToken) -> tokio::sync::oneshot::Receiver<()>
         let _ = done.send(());
     });
     cleanup
+}
+
+/// A runner plans with the runs its claim reports ended, so its Deploy removes the
+/// Pending copies they left.
+#[tokio::test]
+async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
+    let (superseded, actor) = run();
+    take_over(&superseded, &actor);
+    let run = Run {
+        store: superseded.store.clone(),
+        deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+        runner: RunnerId::parse("other").unwrap(),
+        over: Latch::new(),
+        reader: None,
+    };
+
+    let claimed = run.claim(Operator::Cloud).await.unwrap();
+
+    assert_eq!(
+        claimed.intent.options.ended_runs,
+        BTreeSet::from([
+            ployz_core::DeploymentLogId::parse(superseded.deployment.as_str()).unwrap()
+        ])
+    );
 }
 
 #[tokio::test]
@@ -214,7 +244,10 @@ async fn renewing_aborts_but_keeps_owned_work_driven_until_cleanup_finishes() {
 async fn renewing_aborts_once_the_store_hands_the_environment_to_another_runner() {
     let (run, actor) = run();
     take_over(&run, &actor);
-    assert_eq!(run.status().await.unwrap(), DeploymentStatus::Unknown);
+    assert_eq!(
+        run.record(RunEvidence::Alive).await.unwrap().status,
+        DeploymentStatus::Unknown
+    );
     let token = CancellationToken::new();
     let work = async {
         token.cancelled().await;
@@ -227,6 +260,264 @@ async fn renewing_aborts_once_the_store_hands_the_environment_to_another_runner(
     .await
     .expect("a lost runner stops at its next poll");
     assert_eq!(result, "aborted");
+}
+
+/// `forget_cluster` (ployz-store teardown.rs) cancels every Deployment in flight without
+/// waiting on its runner; every later read of it answers "This Deployment already ended".
+fn forget_cluster(run: &Run) {
+    run.store
+        .system(
+            &ployz_store::OrganizationId::parse("test").unwrap(),
+            &ployz_store::SystemEvent::ClusterForgotten,
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+}
+
+/// Whether `connecting` lets go of a dial that never ends within a few of its polls.
+async fn connecting_lets_go(run: &Run) -> bool {
+    let dial = std::future::pending::<Result<(), RpcError>>();
+    tokio::time::timeout(Duration::from_secs(5), run.connecting(dial))
+        .await
+        .is_ok()
+}
+
+#[tokio::test]
+async fn renewing_aborts_once_the_store_ended_the_run() {
+    let (run, _) = run();
+    forget_cluster(&run);
+    let token = CancellationToken::new();
+    let work = async {
+        token.cancelled().await;
+        "aborted"
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        run.renewing(work, || token.cancel()),
+    )
+    .await
+    .expect("renewing keeps the work going for a Deployment the store ended");
+    assert_eq!(result, "aborted");
+}
+
+#[tokio::test]
+async fn connecting_stops_once_the_store_hands_the_environment_to_another_runner() {
+    let (run, actor) = run();
+    take_over(&run, &actor);
+    assert!(
+        connecting_lets_go(&run).await,
+        "connecting dials on after the store said the run is Unknown"
+    );
+}
+
+#[tokio::test]
+async fn connecting_stops_once_the_store_ended_the_run() {
+    let (run, _) = run();
+    forget_cluster(&run);
+    assert!(
+        connecting_lets_go(&run).await,
+        "connecting dials on for a Deployment the store ended"
+    );
+}
+
+/// The store never hands a Deployment it set Unknown back, so a read that fails after
+/// one said Unknown still leaves the run lost.
+#[tokio::test]
+async fn a_run_stays_lost_when_a_later_read_fails() {
+    let (run, actor) = run();
+    take_over(&run, &actor);
+    let token = CancellationToken::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        run.renewing(token.cancelled(), || token.cancel()),
+    )
+    .await
+    .expect("renewing aborts once it reads the takeover");
+    // A Store that never held the Deployment: every later read fails.
+    let run = Run {
+        store: Arc::new(
+            ConfigStore::open(
+                "sqlite::memory:",
+                ployz_store::SealingKey::new(b"test").unwrap(),
+            )
+            .unwrap(),
+        ),
+        ..run
+    };
+    let read = run.record(RunEvidence::Alive).await.unwrap_err();
+    assert_eq!(read.code, RpcErrorCode::NotFound);
+    assert_eq!(
+        run.standing().await,
+        Standing::Over(Over::Lost),
+        "a read that fails after the takeover lets the run go on"
+    );
+}
+
+/// The Deployment `run` claimed, with an empty Deploy Preview recorded.
+async fn prepared(run: &Run) {
+    let claimed = run.claim(Operator::Cloud).await.unwrap();
+    let preview = serde_json::from_value(serde_json::json!({
+        "namespace": claimed.intent.namespace,
+        "operations": [], "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    run.record(RunEvidence::Prepared(preview)).await.unwrap();
+}
+
+/// What the store kept as the outcome of `run`'s execution.
+fn kept_summary(run: &Run, actor: &ployz_store::Actor) -> Option<Value> {
+    let view = run
+        .store
+        .read(
+            actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    match view.deployment.outcome {
+        Some(ployz_store::Outcome::Executed { summary, .. }) => Some(summary),
+        _ => None,
+    }
+}
+
+fn interrupted_summary() -> Value {
+    serde_json::to_value(ployz_core::config::RuntimeOutcomeSummary::Failed {
+        completed: 0,
+        unexecuted: 0,
+        reason: ployz_core::config::RuntimeFailureKind::Interrupted,
+    })
+    .unwrap()
+}
+
+/// A takeover that lands after the run's last read: the run sends what executing did,
+/// and the store keeps it as Interrupted, the one outcome it takes from a lost run.
+#[tokio::test]
+async fn a_run_taken_over_after_its_last_read_keeps_its_outcome_as_interrupted() {
+    let (run, actor) = run();
+    prepared(&run).await;
+    take_over(&run, &actor);
+    let outcome = DeployOutcome::Success {
+        completed: Vec::new(),
+        services: Vec::new(),
+    };
+    let recorded = run.executed(outcome, Vec::new(), Vec::new()).await;
+    let summary = recorded.expect("the store refuses the run's outcome, and nothing keeps it");
+    assert_eq!(summary.status, DeploymentStatus::Unknown);
+    assert_eq!(kept_summary(&run, &actor), Some(interrupted_summary()));
+}
+
+/// A lost run whose outcome the store refused sends it again as Interrupted only when it
+/// tried to delete no Volume, since the store reads an Interrupted outcome's removed
+/// Volumes as never attempted.
+#[tokio::test]
+async fn a_lost_run_that_tried_to_delete_a_volume_keeps_the_refusal() {
+    let volume = ployz_core::DockerVolumeId {
+        machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+        name: ployz_core::DockerVolumeName::parse("app_data").unwrap(),
+    };
+    let removal = |outcome| ployz_core::VolumeRemoval {
+        id: volume.clone(),
+        outcome,
+    };
+    let cases = [
+        (ployz_core::VolumeRemovalOutcome::Omitted, true),
+        (ployz_core::VolumeRemovalOutcome::Removed, false),
+        (
+            ployz_core::VolumeRemovalOutcome::Failed {
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "no reply".into(),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+            },
+            false,
+        ),
+    ];
+    for (outcome, resent) in cases {
+        let (run, actor) = run();
+        prepared(&run).await;
+        take_over(&run, &actor);
+        let success = DeployOutcome::Success {
+            completed: Vec::new(),
+            services: Vec::new(),
+        };
+        let recorded = run
+            .executed(success, Vec::new(), vec![removal(outcome.clone())])
+            .await;
+        if resent {
+            assert_eq!(recorded.unwrap().status, DeploymentStatus::Unknown);
+            assert_eq!(kept_summary(&run, &actor), Some(interrupted_summary()));
+        } else {
+            assert_eq!(
+                recorded.unwrap_err().code,
+                RpcErrorCode::Conflict,
+                "{outcome:?}"
+            );
+            assert_eq!(kept_summary(&run, &actor), None, "{outcome:?}");
+        }
+    }
+}
+
+/// Each answer to a record, as the standing the run acts on.
+#[tokio::test]
+async fn a_read_is_the_standing_its_status_or_error_code_names() {
+    let (run, _) = run();
+    let summary = run.record(RunEvidence::Alive).await.unwrap();
+    let read = |status| {
+        let mut summary = summary.clone();
+        summary.status = status;
+        standing(read_of(&Ok(summary)))
+    };
+    let failed = |code| {
+        standing(read_of(&Err(RpcError {
+            code,
+            message: String::new(),
+            details: Value::Null,
+            cause: Vec::new(),
+        })))
+    };
+    assert_eq!(read(DeploymentStatus::Running), Standing::Keep);
+    assert_eq!(read(DeploymentStatus::Cancelling), Standing::Cancel);
+    assert_eq!(read(DeploymentStatus::Unknown), Standing::Over(Over::Lost));
+    for ended in [
+        DeploymentStatus::Applied,
+        DeploymentStatus::Failed,
+        DeploymentStatus::Cancelled,
+        DeploymentStatus::WaitingForCi,
+        DeploymentStatus::Queued,
+        DeploymentStatus::Superseded,
+    ] {
+        assert_eq!(read(ended), Standing::Over(Over::Ended), "{ended:?}");
+    }
+    assert_eq!(failed(RpcErrorCode::Conflict), Standing::Over(Over::Ended));
+    for unread in [
+        RpcErrorCode::Unavailable,
+        RpcErrorCode::NotFound,
+        RpcErrorCode::Internal,
+    ] {
+        assert_eq!(failed(unread.clone()), Standing::Unread, "{unread:?}");
+    }
+}
+
+/// The first read that says the store no longer holds the run is the one every later
+/// read says: an ended Deployment's refusal cannot turn a lost run into an ended one.
+#[tokio::test]
+async fn the_first_read_that_says_the_run_is_over_is_the_one_it_keeps() {
+    let (run, actor) = run();
+    take_over(&run, &actor);
+    assert_eq!(run.standing().await, Standing::Over(Over::Lost));
+    let run = Run {
+        store: run.store.clone(),
+        runner: RunnerId::parse("other").unwrap(),
+        ..run
+    };
+    assert_eq!(
+        run.record(RunEvidence::Alive).await.unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(run.standing().await, Standing::Over(Over::Lost));
 }
 
 #[test]
@@ -354,7 +645,7 @@ async fn a_queued_build_says_so_in_its_log_while_it_waits() {
                 ployz_build::Progress::Stage(ployz_build::Stage::Queued),
             ));
             let _ = released.await;
-            Err(internal("released"))
+            Err(RpcError::internal("released"))
         });
     let log = || {
         run.store
@@ -424,13 +715,14 @@ async fn a_build_reports_the_server_it_runs_on_by_name() {
                         public_ip: None,
                         advertised_endpoints: Vec::new(),
                         runtime: Default::default(),
+                        join_approval: None,
                         build_concurrency: None,
                     },
                     reason: super::super::prepare::BuilderReason::Spread,
                     rejections: Vec::new(),
                 },
             )));
-            Err(internal("the build failed"))
+            Err(RpcError::internal("the build failed"))
         });
     assert!(run.follow(&target, &running).await.unwrap().is_err());
     let build = run
@@ -790,6 +1082,7 @@ fn separately_uploaded() -> Claimed {
             .write_trusted(
                 &actor,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: deployment.clone(),
                     environment: EnvironmentRef::default(),
                     services: services
@@ -806,6 +1099,7 @@ fn separately_uploaded() -> Claimed {
                     message: None,
                     prune: false,
                     no_prune: false,
+                    approval: None,
                 }),
                 &ployz_store::Trusted::default(),
             )
@@ -851,6 +1145,7 @@ fn a_build_with_no_server_in_its_walk_fails_with_the_reason_github_gave() {
         Sources {
             checkouts: BTreeMap::new(),
             upload: Some(PathBuf::from("/extracted")),
+            reader: None,
         },
     ) else {
         panic!("a build no Server takes fails");
@@ -871,6 +1166,7 @@ fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
         Sources {
             checkouts: BTreeMap::new(),
             upload: Some(extracted.clone()),
+            reader: None,
         },
     ) {
         Ok(targets) => targets,
@@ -938,26 +1234,20 @@ struct Recording {
     wants: std::sync::Mutex<Vec<ployz_core::ContainerWant>>,
 }
 
-impl MachineOperations for Recording {
-    async fn prepare_volumes(
-        &self,
-        machine_id: &MachineId,
-        specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        MachineOperations::prepare_volumes(&self.client, machine_id, specs).await
-    }
+impl crate::deploy::Session for Recording {}
 
+impl CopyLifecycle for Recording {
     async fn service_containers(
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
-        MachineOperations::service_containers(&self.client, service).await
+        CopyLifecycle::service_containers(&self.client, service).await
     }
 
     async fn replicated_containers(
         &self,
     ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
-        MachineOperations::replicated_containers(&self.client).await
+        CopyLifecycle::replicated_containers(&self.client).await
     }
 
     async fn ensure_container(
@@ -966,46 +1256,7 @@ impl MachineOperations for Recording {
         want: ployz_core::ContainerWant,
     ) -> Result<(ployz_core::ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
         self.wants.lock().unwrap().push(want.clone());
-        MachineOperations::ensure_container(&self.client, machine_id, want).await
-    }
-
-    async fn inspect_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Result<ployz_core::ContainerDetails, RpcError> {
-        MachineOperations::inspect_container(&self.client, machine_id, container_id).await
-    }
-
-    async fn update_container_limits(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-        spec: &ployz_core::ResolvedServiceSpec,
-    ) -> Result<ployz_core::ContainerLimitsUpdated, RpcError> {
-        MachineOperations::update_container_limits(&self.client, machine_id, container_id, spec)
-            .await
-    }
-
-    async fn remove_volume(&self, id: &ployz_core::DockerVolumeId) -> Result<(), RpcError> {
-        MachineOperations::remove_volume(&self.client, id).await
-    }
-
-    async fn runs_global(
-        &self,
-        machine_id: &MachineId,
-        slot: &ployz_core::SlotKey,
-        spec: &ployz_core::ResolvedServiceSpec,
-    ) -> Result<bool, RpcError> {
-        MachineOperations::runs_global(&self.client, machine_id, slot, spec).await
-    }
-
-    async fn ensure_image(
-        &self,
-        machine_id: &MachineId,
-        spec: &ployz_core::ResolvedServiceSpec,
-    ) -> Result<ployz_core::ImagePulled, RpcError> {
-        MachineOperations::ensure_image(&self.client, machine_id, spec).await
+        CopyLifecycle::ensure_container(&self.client, machine_id, want).await
     }
 
     async fn ensure_unsettled(
@@ -1015,7 +1266,15 @@ impl MachineOperations for Recording {
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         self.wants.lock().unwrap().push(want.clone());
-        MachineOperations::ensure_unsettled(&self.client, machine_id, want, timeout).await
+        CopyLifecycle::ensure_unsettled(&self.client, machine_id, want, timeout).await
+    }
+
+    async fn inspect_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+    ) -> Result<ployz_core::ContainerDetails, RpcError> {
+        CopyLifecycle::inspect_container(&self.client, machine_id, container_id).await
     }
 
     async fn read_routes(
@@ -1023,14 +1282,14 @@ impl MachineOperations for Recording {
         machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<ployz_core::RoutesRead, RpcError> {
-        MachineOperations::read_routes(&self.client, machine_id, service).await
+        CopyLifecycle::read_routes(&self.client, machine_id, service).await
     }
 
     async fn read_entry_routes(
         &self,
         service: &QualifiedService,
     ) -> Result<ployz_core::RoutesRead, RpcError> {
-        MachineOperations::read_entry_routes(&self.client, service).await
+        CopyLifecycle::read_entry_routes(&self.client, service).await
     }
 }
 
@@ -1384,4 +1643,68 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
             assert_eq!(unchanged.reason, plain);
         }
     }
+}
+
+fn service(name: &str, image: &str) -> RequestedServiceSpec {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": image, "pull_policy": "missing"},
+    }))
+    .unwrap()
+}
+
+#[test]
+fn the_runner_writes_each_approved_image_into_its_spec_before_planning() {
+    use ployz_core::authority::{
+        ApprovedService, DeployApproval, PayloadDigest, Signed, Signer, SignerKey, Timestamp,
+    };
+    const PINNED: &str =
+        "nginx:1.29-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000001";
+    const BY_HAND: &str =
+        "api@sha256:0000000000000000000000000000000000000000000000000000000000000002";
+    let namespace = ployz_core::Namespace::parse("app").unwrap();
+    let signer = Signer::from_seed(&[1; 32]);
+    let digest = PayloadDigest::of(&service("web", PINNED), &namespace).unwrap();
+    let issued_at = Timestamp::now();
+    let body = DeployApproval {
+        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+        operation: ployz_core::OperationId::random(),
+        namespace,
+        machines: vec![ployz_core::MachineId::parse("1".repeat(32)).unwrap()],
+        services: vec![
+            ApprovedService {
+                name: ServiceName::parse("api").unwrap(),
+                digest,
+                image: None,
+            },
+            ApprovedService {
+                name: ServiceName::parse("web").unwrap(),
+                digest,
+                image: Some(PINNED.to_owned()),
+            },
+        ],
+        issued_at,
+        expires_at: issued_at.plus(60_000),
+        signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
+    };
+    let approval = Signed::sign(&body, &signer).unwrap();
+    let mut target = vec![
+        service("api", BY_HAND),
+        service("web", "nginx:1.29-alpine"),
+        service("worker", "busybox:1"),
+    ];
+    pin_approved(&mut target, Some(&approval));
+    let images: Vec<_> = target
+        .iter()
+        .map(|spec| spec.container.image.as_str())
+        .collect();
+    assert_eq!(images, [BY_HAND, PINNED, "busybox:1"]);
+    let mut unsigned = vec![service("web", "nginx:1.29-alpine")];
+    pin_approved(&mut unsigned, None);
+    assert_eq!(
+        unsigned.first().unwrap().container.image,
+        "nginx:1.29-alpine"
+    );
 }

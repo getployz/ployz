@@ -474,16 +474,20 @@ pub fn first_ts(buf: &[u8]) -> Option<i64> {
     })
 }
 
+/// The timestamp of the frame that ends `buf`, found from its footer alone.
+#[must_use]
+pub fn footer_ts(buf: &[u8]) -> Option<i64> {
+    let footer = buf.len().checked_sub(HEADER)?;
+    let size = read_size(buf, footer)?;
+    let start = footer.checked_sub(size)?.checked_sub(HEADER)?;
+    Frames::new(buf).frame_at(start).map(|(_, entry)| entry.ts)
+}
+
 /// The last complete frame's timestamp in `buf`, read from its footer when
 /// the file ends on a whole frame and by a full walk otherwise.
 #[must_use]
 pub fn last_ts(buf: &[u8]) -> Option<i64> {
-    let from_footer = buf.len().checked_sub(HEADER).and_then(|footer| {
-        let size = read_size(buf, footer)?;
-        let start = footer.checked_sub(size)?.checked_sub(HEADER)?;
-        Frames::new(buf).frame_at(start).map(|(_, entry)| entry.ts)
-    });
-    from_footer.or_else(|| {
+    footer_ts(buf).or_else(|| {
         Frames::new(buf)
             .filter_map(|event| match event {
                 Event::Entry(entry) => Some(entry.ts),

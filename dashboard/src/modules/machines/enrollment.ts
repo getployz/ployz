@@ -1,8 +1,14 @@
 import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
-import { Effect, Schema, SchemaGetter } from "effect";
+import { Data, Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { Uuid } from "#/lib/schema";
 import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
+
+export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired")<{ readonly message: string }> {
+  readonly publicErrorCategory = "conflict";
+  readonly userFacing = true;
+  readonly details = { capability: "ployz.machine.join.device-approval.v1" };
+}
 
 export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -140,11 +146,18 @@ export const enrollmentIdentitySchema = Schema.Struct({
   diskTotalBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
   diskAvailableBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
   recoverySupport: Schema.optionalKey(Schema.Literal(1)),
+  /** The joiner's proof that it opened its approved capsule. Cloud relays it in Register; it opens nothing. */
+  joinConfirmation: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
+  /** What the client that runs this joiner's catch-up honors, as capability names. Absent claims nothing. Cloud relays it in Register. */
+  capabilities: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export type EnrollmentIdentity = typeof enrollmentIdentitySchema.Type;
 
-/** HTTP enroll identity → SDK RegisterRequest. CLI does not POST runtime. */
+/**
+ * HTTP enroll identity → SDK RegisterRequest. CLI does not POST runtime. The joiner's `capabilities` and
+ * `joinConfirmation` are left out: they ride only the Register Cloud dispatches, never the saved assignment a retry compares.
+ */
 export function registerRequestFromEnrollmentIdentity(
   identity: EnrollmentIdentity,
 ): RegisterRequest {

@@ -4,9 +4,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
 
-use crate::{RestartPolicy, SealedValue, ServiceName, UpdateOrder};
+use crate::{ClientSealedValue, RestartPolicy, ServiceName, UpdateOrder};
 
 /// Authored Cloud settings. Runtime specs are compiled from this configuration;
 /// they cannot reconstruct repository authority, build policy, or credentials.
@@ -127,6 +126,23 @@ pub enum ServiceSource {
     },
 }
 
+impl ServiceSource {
+    /// The source a Service has until it gets one: nothing, at the repository root.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::Empty {
+            version: 1,
+            root_dir: "/".to_owned(),
+        }
+    }
+
+    /// Whether this builds from the Git repository `repository_id`.
+    #[must_use]
+    pub fn builds_repository(&self, repository_id: u64) -> bool {
+        matches!(self, Self::Git { repository_id: at, .. } if *at == repository_id)
+    }
+}
+
 /// How Cloud reads a GitHub repository; public access never borrows credentials.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -167,7 +183,7 @@ pub enum ServiceImageCredentials {
 }
 
 /// An authored HTTP or shell-command readiness check, or none, which also disables the image's own check.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -175,6 +191,7 @@ pub enum ServiceImageCredentials {
     deny_unknown_fields
 )]
 pub enum ServiceHealthcheck {
+    #[default]
     None,
     Http {
         path: String,
@@ -187,7 +204,7 @@ pub enum ServiceHealthcheck {
 }
 
 /// Cloud's retry count is authored separately; parsing reuses Docker policy admission.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(type = "'unless-stopped' | 'always' | 'on-failure' | 'no'")]
 pub struct ServiceRestartPolicy(pub RestartPolicy);
@@ -262,6 +279,9 @@ pub enum BuildMethod {
     Railpack,
 }
 
+/// The Dockerfile a Dockerfile Build reads when `dockerfilePath` is unset.
+pub const DEFAULT_DOCKERFILE_PATH: &str = "Dockerfile";
+
 /// Build settings for the selected Build Method.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -325,17 +345,6 @@ pub struct EncryptedSecretValue {
     pub ciphertext: String,
 }
 
-/// A Sealed value the browser sealed to one Environment's Sealing Key, bound to
-/// the variable it was authored as. Cloud carries it and never opens it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ClientSealedValue {
-    /// The Environment whose Sealing Key opens it: in any other it is Not set.
-    #[ts(type = "string")]
-    pub sealed_for: Uuid,
-    pub value: SealedValue,
-}
-
 /// A secret's value sealed with the Store's own key: the envelope registry
 /// credentials use.
 pub type LegacyCiphertext = EncryptedSecretValue;
@@ -395,6 +404,7 @@ pub enum ServiceEnvValue {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+    use uuid::Uuid;
 
     use super::*;
     use crate::config::{SavedVariableIntent, VariableValue};
@@ -408,6 +418,22 @@ mod tests {
             "sealedFor": "00000000-0000-4000-8000-000000000002",
             "value": { "sealed": SEALED, "scope": { "service": "00000000-0000-4000-8000-000000000003" }, "key": "K" }
         })
+    }
+
+    #[test]
+    fn typed_defaults_serialize_as_the_literals_they_replace() {
+        fn json(value: impl Serialize) -> String {
+            json!(value).to_string()
+        }
+        assert_eq!(
+            json(ServiceSource::empty()),
+            r#"{"rootDir":"/","type":"empty","version":1}"#
+        );
+        assert_eq!(json(ServiceHealthcheck::default()), r#"{"type":"none"}"#);
+        assert_eq!(json(ServiceRestartPolicy::default()), r#""unless-stopped""#);
+        assert_eq!(json(default_max_retries()), "10");
+        assert_eq!(json(default_replicas()), "1");
+        assert_eq!(json(BuildMethod::default()), r#""railpack""#);
     }
 
     #[test]

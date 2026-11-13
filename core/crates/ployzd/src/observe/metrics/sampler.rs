@@ -12,8 +12,9 @@
 //! the Pool's objset kstats. The Machine row's disk breakdown takes the last
 //! 60 s reading from [`disk`] and never waits for it.
 
+use ployz_core::labels::{self, Class};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, hash_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -23,8 +24,8 @@ use bollard::{
     Docker, models::ContainerInspectResponse, query_parameters::ListContainersOptionsBuilder,
 };
 use ployz_core::{
-    ContainerId, DockerVolumeName, MachineId, Namespace, PROVISIONED_VOLUME_DRIVER,
-    QualifiedService, ServiceId, ServiceName,
+    ContainerId, DockerVolumeName, MachineId, MachineLayout, PROVISIONED_VOLUME_DRIVER,
+    QualifiedService, ServiceId,
     metrics::{CpuJiffies, DiskBreakdown, HostMemory, HostSample, InterfaceBytes, MetricSample},
 };
 use tokio::{
@@ -34,18 +35,18 @@ use tokio::{
 
 use super::{
     cgroup::{self, MemoryLimit},
-    disk::{self, DatasetPlace, SlowReading},
+    disk::{self, SlowReading},
     host::{self, HostCounters},
     net::{self, NetCounters},
+    policy::RETENTION,
     rollup,
     segment::{self, Row},
+    volume_io::{Mounts, VolumeLedger},
     zfs_io::{self, DatasetIo},
     zfs_usage::{ZFS_LIST_TIMEOUT, ZfsUsageReader},
 };
 use crate::{
-    docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_SERVICE_ID},
-    machine::LocalMachineRecord,
-    machine_pool,
+    machine::store,
     network::DOCKER_NETWORK_NAME,
     observe::{
         harvest,
@@ -53,10 +54,8 @@ use crate::{
     },
 };
 
-const INTERVAL: Duration = Duration::from_secs(10);
+const INTERVAL: Duration = RETENTION.sample;
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(5);
-const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
-const MACHINE_FILE: &str = "machine.json";
 const CGROUP_V2_PREFIX: &str = "0::";
 const LOOPBACK: &str = "lo";
 /// The host end of each container's veth pair. Its bytes are the
@@ -117,7 +116,7 @@ pub(crate) async fn run(docker: Docker, store: StoreRoot, data_dir: PathBuf) {
         disk::run(
             store.clone(),
             zfs,
-            PathBuf::from(machine_pool::BACKING_FILE),
+            MachineLayout::production().machine_pool_file(),
             latest,
         ),
         sample_every_interval(docker, store, data_dir, slow),
@@ -229,8 +228,7 @@ async fn refresh(docker: &Docker, roots: &Roots, tracked: &mut HashMap<Container
 /// Service's labels but is not one of its replicas, so it stays out of the
 /// Service's numbers.
 fn sampled(labels: &HashMap<String, String>) -> bool {
-    (labels.contains_key(LABEL_MANAGED) || labels.contains_key(LABEL_SYSTEM_MANAGED))
-        && !labels.contains_key(LABEL_HOOK)
+    Class::of(labels).is_some_and(|class| class != Class::PreDeployHook)
 }
 
 fn track(
@@ -245,25 +243,14 @@ fn track(
         .pid
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|pid| *pid != 0)?;
-    let service_id = inspected
+    // A row names its Service both ways or neither, so a half-labelled
+    // container is booked like a system one.
+    let (service_id, service) = inspected
         .config
         .as_ref()
         .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get(LABEL_SERVICE_ID))
-        .and_then(|label| ServiceId::parse(label.clone()).ok());
-    let service = meta.namespace.as_deref().zip(meta.service.as_deref());
-    let service = service.and_then(|(namespace, name)| {
-        Some(QualifiedService::new(
-            Namespace::parse(namespace).ok()?,
-            ServiceName::parse(name).ok()?,
-        ))
-    });
-    // A row names its Service both ways or neither, so a half-labelled
-    // container is booked like a system one.
-    let (service_id, service) = match (service_id, service) {
-        (Some(id), Some(service)) => (Some(id), Some(service)),
-        _ => (None, None),
-    };
+        .and_then(labels::service_pair)
+        .unzip();
     let volumes = inspected
         .mounts
         .iter()
@@ -329,10 +316,7 @@ fn tick(
 
 /// Read every tick: a reset gives the Machine a new id.
 pub(in crate::observe) fn machine_id(data_dir: &Path) -> Option<MachineId> {
-    let bytes = fs::read(data_dir.join(MACHINE_FILE)).ok()?;
-    serde_json::from_slice::<LocalMachineRecord>(&bytes)
-        .ok()
-        .map(|record| record.id())
+    store::identity(data_dir).map(|identity| identity.id)
 }
 
 /// One row per live container, then the Machine's row with its disk. Marker
@@ -351,7 +335,15 @@ fn sample(
     let (live, gone): (Vec<&Tracked>, Vec<&Tracked>) = containers.iter().partition(|container| {
         cgroup_path(&roots.proc, container.pid).as_deref() == Some(container.cgroup.as_str())
     });
-    ledger.book(zfs_io::read(&roots.zfs_kstat), &live);
+    let mounts: Vec<Mounts<'_>> = live
+        .iter()
+        .map(|container| Mounts {
+            id: container.id,
+            service_id: container.labels.service_id,
+            volumes: &container.volumes,
+        })
+        .collect();
+    ledger.book(zfs_io::read(&roots.zfs_kstat), &mounts);
     let mut rows = Vec::with_capacity(live.len() + 1);
     for container in live {
         let dir = roots.cgroup.join(container.cgroup.trim_start_matches('/'));
@@ -365,7 +357,7 @@ fn sample(
             container,
             &counters,
             net,
-            ledger.booked.get(&container.id).copied(),
+            ledger.booked(&container.id),
         )));
     }
     let host = host::read_host(&roots.proc, &[store]);
@@ -379,89 +371,6 @@ fn sample(
         rows,
         gone.into_iter().map(|container| container.id).collect(),
     )
-}
-
-/// Volume bytes as each container's own running total. A kstat counts from
-/// its dataset's mount, so booking it whole would jump whenever another
-/// replica takes a Volume over or a kstat misses a tick. Only the growth
-/// between two readings of a dataset is booked.
-#[derive(Debug, Default)]
-struct VolumeLedger {
-    seen: HashMap<String, DatasetIo>,
-    booked: HashMap<ContainerId, DatasetIo>,
-}
-
-impl VolumeLedger {
-    fn book(&mut self, datasets: BTreeMap<String, DatasetIo>, live: &[&Tracked]) {
-        let grown: BTreeMap<String, DatasetIo> = datasets
-            .into_iter()
-            .map(|(dataset, now)| {
-                let grown = self.seen.insert(dataset.clone(), now).map_or_else(
-                    DatasetIo::default,
-                    |last| DatasetIo {
-                        read_bytes: growth(last.read_bytes, now.read_bytes),
-                        write_bytes: growth(last.write_bytes, now.write_bytes),
-                    },
-                );
-                (dataset, grown)
-            })
-            .collect();
-        for (container, io) in volume_io(&grown, live) {
-            let total = self.booked.entry(container).or_default();
-            total.read_bytes = total.read_bytes.saturating_add(io.read_bytes);
-            total.write_bytes = total.write_bytes.saturating_add(io.write_bytes);
-        }
-        self.booked
-            .retain(|id, _| live.iter().any(|container| container.id == *id));
-    }
-}
-
-/// A counter below its last reading restarted, as a remount resets it.
-fn growth(last: u64, now: u64) -> u64 {
-    now.checked_sub(last).unwrap_or(now)
-}
-
-/// Each Volume's ZFS bytes, booked once per Service on the lowest container
-/// id that mounts it. Replicas sharing a Volume cannot be told apart, and
-/// booking it on each would count it once per replica.
-fn volume_io(
-    datasets: &BTreeMap<String, DatasetIo>,
-    containers: &[&Tracked],
-) -> HashMap<ContainerId, DatasetIo> {
-    let by_volume: HashMap<&str, DatasetIo> = datasets
-        .iter()
-        .filter_map(|(dataset, io)| match DatasetPlace::of(dataset) {
-            DatasetPlace::Volume(volume) => Some((volume, *io)),
-            DatasetPlace::Slot | DatasetPlace::Other => None,
-        })
-        .collect();
-    let mut owners: HashMap<(Option<ServiceId>, &str), ContainerId> = HashMap::new();
-    for container in containers {
-        for volume in &container.volumes {
-            if !by_volume.contains_key(volume.as_str()) {
-                continue;
-            }
-            match owners.entry((container.labels.service_id, volume.as_str())) {
-                Entry::Occupied(mut owner) if container.id < *owner.get() => {
-                    owner.insert(container.id);
-                }
-                Entry::Occupied(_) => {}
-                Entry::Vacant(owner) => {
-                    owner.insert(container.id);
-                }
-            }
-        }
-    }
-    let mut booked: HashMap<ContainerId, DatasetIo> = HashMap::new();
-    for ((_, volume), owner) in owners {
-        let Some(io) = by_volume.get(volume) else {
-            continue;
-        };
-        let total = booked.entry(owner).or_default();
-        total.read_bytes = total.read_bytes.saturating_add(io.read_bytes);
-        total.write_bytes = total.write_bytes.saturating_add(io.write_bytes);
-    }
-    booked
 }
 
 fn container_sample(
@@ -695,7 +604,7 @@ Inter-|   Receive                                                |  Transmit
                 )
                 .unwrap();
                 fs::write(
-                    data_dir.join(super::MACHINE_FILE),
+                    crate::machine::store::path(&data_dir),
                     serde_json::to_vec(&record).unwrap(),
                 )
                 .unwrap();
@@ -722,19 +631,27 @@ Inter-|   Receive                                                |  Transmit
 
     #[test]
     fn ployz_containers_are_sampled_and_hooks_are_not() {
-        use crate::docker::{LABEL_HOOK, LABEL_MANAGED};
+        use ployz_core::labels;
         let labels = |keys: &[&str]| -> std::collections::HashMap<String, String> {
             keys.iter()
                 .map(|key| ((*key).to_owned(), String::new()))
                 .collect()
         };
-        assert!(super::sampled(&labels(&[LABEL_MANAGED])));
-        assert!(super::sampled(&labels(&[super::LABEL_SYSTEM_MANAGED])));
+        assert!(super::sampled(&labels(&[labels::MANAGED])));
+        assert!(super::sampled(&labels(&[labels::SYSTEM_MANAGED])));
         assert!(
-            !super::sampled(&labels(&[LABEL_MANAGED, LABEL_HOOK])),
+            !super::sampled(&labels(&[labels::MANAGED, labels::HOOK])),
             "a pre-deploy Hook is not a replica"
         );
         assert!(!super::sampled(&labels(&["com.example.other"])));
+        assert!(!super::sampled(&labels(&[])));
+        assert!(!super::sampled(&labels(&["ployz.namespace"])));
+        assert!(super::sampled(&labels(&["ployz.managed"])));
+        assert!(super::sampled(&labels(&["ployzd.managed"])));
+        assert!(
+            !super::sampled(&labels(&["ployzd.managed", "ployz.service.hook"])),
+            "the system marker does not exempt a hook"
+        );
     }
 
     #[test]
@@ -895,8 +812,8 @@ Inter-|   Receive                                                |  Transmit
 
     #[test]
     fn a_service_container_is_keyed_by_name_as_well_as_id() {
-        use crate::docker::{LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID, LABEL_SERVICE_NAME};
         use bollard::models::{ContainerConfig, ContainerInspectResponse, ContainerState};
+        use ployz_core::labels;
 
         let fixture = Fixture::new();
         let web = fixture.start(1);
@@ -919,18 +836,18 @@ Inter-|   Receive                                                |  Transmit
         };
 
         let labelled = inspect(&[
-            (LABEL_MANAGED, String::new()),
-            (LABEL_SERVICE_ID, service(1).to_string()),
-            (LABEL_NAMESPACE, "default".to_owned()),
-            (LABEL_SERVICE_NAME, "web-1".to_owned()),
+            (labels::MANAGED, String::new()),
+            (labels::SERVICE_ID, service(1).to_string()),
+            (labels::NAMESPACE, "default".to_owned()),
+            (labels::SERVICE_NAME, "web-1".to_owned()),
         ]);
         let tracked = super::track(&fixture.roots.proc, web.id, &labelled).unwrap();
         assert_eq!(tracked.labels.service_id, Some(service(1)));
         assert_eq!(tracked.labels.service, Some(qualified(1)));
 
         let half = inspect(&[
-            (LABEL_MANAGED, String::new()),
-            (LABEL_SERVICE_ID, service(1).to_string()),
+            (labels::MANAGED, String::new()),
+            (labels::SERVICE_ID, service(1).to_string()),
         ]);
         let tracked = super::track(&fixture.roots.proc, web.id, &half).unwrap();
         assert_eq!(
@@ -938,6 +855,68 @@ Inter-|   Receive                                                |  Transmit
             (None, None),
             "a container without a Service name is booked like a system one"
         );
+    }
+
+    #[test]
+    fn a_row_names_its_service_both_ways_or_neither() {
+        use bollard::models::{ContainerConfig, ContainerInspectResponse, ContainerState};
+
+        let fixture = Fixture::new();
+        let web = fixture.start(1);
+        let id = service(1).to_string();
+        let booked = |labels: &[(&str, &str)]| {
+            let inspected = ContainerInspectResponse {
+                config: Some(ContainerConfig {
+                    labels: Some(
+                        labels
+                            .iter()
+                            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                            .collect(),
+                    ),
+                    ..Default::default()
+                }),
+                state: Some(ContainerState {
+                    pid: Some(i64::from(web.pid)),
+                    running: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let tracked = super::track(&fixture.roots.proc, web.id, &inspected)?;
+            Some((
+                tracked.labels.service_id.is_some(),
+                tracked.labels.service.is_some(),
+            ))
+        };
+        let all = [
+            ("ployz.managed", ""),
+            ("ployz.service.id", id.as_str()),
+            ("ployz.namespace", "default"),
+            ("ployz.service.name", "web"),
+        ];
+        assert_eq!(booked(&all), Some((true, true)));
+        for without in ["ployz.service.id", "ployz.namespace", "ployz.service.name"] {
+            let labels: Vec<_> = all
+                .iter()
+                .filter(|(key, _)| *key != without)
+                .copied()
+                .collect();
+            assert_eq!(booked(&labels), Some((false, false)), "without {without}");
+        }
+        let mut bad_id = all;
+        bad_id[1] = ("ployz.service.id", "not-an-id");
+        assert_eq!(booked(&bad_id), Some((false, false)));
+        let mut bad_namespace = all;
+        bad_namespace[2] = ("ployz.namespace", "Not_DNS");
+        assert_eq!(booked(&bad_namespace), Some((false, false)));
+        let mut bad_name = all;
+        bad_name[3] = ("ployz.service.name", "Bad_Name");
+        assert_eq!(booked(&bad_name), Some((false, false)));
+        assert_eq!(
+            booked(&[("ployzd.managed", ""), ("ployz.service.id", id.as_str())]),
+            Some((false, false))
+        );
+        assert_eq!(booked(&[("com.example.other", "")]), None);
     }
 
     #[test]
@@ -950,7 +929,7 @@ Inter-|   Receive                                                |  Transmit
         let corrosion = fixture.start(1);
         let inspected = ContainerInspectResponse {
             config: Some(ContainerConfig {
-                labels: Some([(super::LABEL_SYSTEM_MANAGED.to_owned(), String::new())].into()),
+                labels: Some(ployz_core::labels::system_labels()),
                 ..Default::default()
             }),
             state: Some(ContainerState {

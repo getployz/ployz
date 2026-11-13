@@ -12,6 +12,7 @@ import {
 import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
 import { createServerDrainFunctions } from "#/modules/machines/server-drain.inngest";
 import { createServerEnrollmentFunctions } from "#/modules/machines/waiting/server-enrollment.inngest";
+import { createIngressDoorsFunctions } from "#/modules/ingress/doors.inngest";
 import { createServerWebTrafficFunctions } from "#/modules/machines/server-web-traffic.inngest";
 import { createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
 import { createEnsureClusterSealingKey } from "#/modules/machines/sealing-backfill.inngest";
@@ -21,6 +22,7 @@ import {
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
 import { createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
+import { createClusterNameFunctions } from "#/modules/cluster-name/cluster-name.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import { createSweepExpiredVerifications } from "#/modules/identity/verification-sweep.inngest";
@@ -37,6 +39,7 @@ import { createSendUptimeAlerts } from "#/modules/uptime/alert-mail.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 import { createSweepOperationOutbox } from "#/modules/operations/outbox.server";
+import { createSweepProposals } from "#/modules/proposals/proposals.inngest";
 import { createServiceActFunctions } from "#/modules/service-act/service-act.inngest";
 import { createSendMail } from "#/modules/mail/mail.inngest";
 import { createCrashMailFunctions } from "#/modules/observe-ingest/crash-mail.inngest";
@@ -56,12 +59,14 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     ...createServerDrainFunctions(inngest),
     ...createServerEnrollmentFunctions(inngest),
     ...createServerWebTrafficFunctions(inngest),
+    ...createIngressDoorsFunctions(inngest),
     ...createNamespaceCleanupFunctions(inngest),
     createRetireServerAccess(inngest),
     createPruneOrganizationChangeLog(inngest),
     createSweepExpiredVerifications(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
+    ...createClusterNameFunctions(inngest),
     createEnsureClusterSealingKey(inngest),
     createResealVariables(inngest),
     ...createServerUpgradeFunctions(inngest),
@@ -78,6 +83,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createStoreSweepRequested(inngest),
     ...createVolumeRunFunctions(inngest),
     ...createServiceActFunctions(inngest),
+    createSweepProposals(inngest),
     createSweepOperationOutbox(inngest),
     createRefreshVolumeMirrors(inngest),
     ...createUptimeMaintenanceFunctions(inngest),

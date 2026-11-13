@@ -51,7 +51,7 @@ fn held_elsewhere(credential: &Credential, scoped: &Scoped) -> Result<(), Error>
     };
     match refusable::<ContainersAnswer>(credential, asked)? {
         Err(StoreCallError::Refused(refused))
-            if refused.code.as_str() == "forbidden"
+            if refused.code.as_str() == ployz_core::FORBIDDEN_CODE
                 && refused
                     .details
                     .get("environments")
@@ -171,9 +171,9 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
                     }
                     LogText::Withheld { why } => {
                         ui::note(format_args!(
-                            "{service}@{}: logs withheld ({})",
+                            "{service}@{}: logs withheld: {}.",
                             log.server,
-                            word(why)
+                            why.reason()
                         ));
                     }
                 }

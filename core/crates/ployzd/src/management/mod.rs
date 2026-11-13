@@ -26,8 +26,8 @@ use iroh::{
     tls::CaTlsConfig,
 };
 use ployz_core::{
-    BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, FORGOTTEN_ALPN, MANAGEMENT_ALPN, MANAGEMENT_PORT,
-    MANAGEMENT_PROOF_LABEL, ManagementProof, Rpc, TUNNEL_ALPN, op,
+    BUILD_GRANT_ALPN, ClientKey, DEFAULT_RELAY_URL, FORGOTTEN_ALPN, MANAGEMENT_ALPN,
+    MANAGEMENT_PORT, MANAGEMENT_PROOF_LABEL, ManagementProof, Rpc, TUNNEL_ALPN, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -46,11 +46,11 @@ pub use build_grant::{BuildGrants, Mint};
 pub use forgotten::Roster;
 
 /// Application close code sent when the remote key is not admitted and no tombstone holds it.
-pub const CLIENT_REFUSED: VarInt = VarInt::from_u32(0x50);
+pub const CLIENT_REFUSED: VarInt = VarInt::from_u32(ployz_core::CLIENT_REFUSED_CLOSE);
 /// Application close code sent to a live connection whose key no slot holds any more.
-pub const REVOKED: VarInt = VarInt::from_u32(0x51);
+pub const REVOKED: VarInt = VarInt::from_u32(ployz_core::REVOKED_CLOSE);
 /// Authenticated confirmation that the dialing key was cleared: a Cleared tombstone holds it.
-pub const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
+pub const CLIENT_CLEARED: VarInt = VarInt::from_u32(ployz_core::CLIENT_CLEARED_CLOSE);
 
 const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -158,14 +158,9 @@ fn transport() -> QuicTransportConfig {
         .max_idle_timeout(Some(
             IdleTimeout::try_from(IDLE_TIMEOUT).expect("60s is within the idle timeout bounds"),
         ))
-        .enable_segmentation_offload(false)
+        .enable_segmentation_offload(ployz_core::SEGMENTATION_OFFLOAD)
         .build()
 }
-
-/// The Management Client key a connection proved with its [`ManagementProof`]. Each
-/// management request carries it; the connection's own transport key is never trusted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProvenClient(pub [u8; 32]);
 
 /// Serve `api` over `endpoint` until `shutdown`, then drain every connection.
 ///
@@ -258,7 +253,10 @@ async fn serve_connection<S, R>(
     };
     if connection.alpn() == BUILD_GRANT_ALPN {
         drop(permit);
-        build_grant::serve(connection, &grants, shutdown).await;
+        // The current record, read at each admission and request: see `Enforcing`.
+        let enforcing: build_grant::Enforcing =
+            Arc::new(move || local.record().device_enforcement());
+        build_grant::serve(connection, &grants, enforcing, shutdown).await;
         return;
     }
     if connection.alpn() == TUNNEL_ALPN {
@@ -288,7 +286,7 @@ async fn serve_connection<S, R>(
     }
     match serve_admitted(
         &connection,
-        ProvenClient(remote),
+        remote,
         streams,
         revoked(records, remote),
         api,
@@ -304,7 +302,7 @@ async fn serve_connection<S, R>(
 /// Accept the connection's first stream and read the client's proof from its head.
 /// Returns the client key it proves with the stream, or `None` when the proof is missing,
 /// late, malformed, or signed for another connection.
-async fn authenticate(connection: &Connection) -> Option<([u8; 32], (SendStream, RecvStream))> {
+async fn authenticate(connection: &Connection) -> Option<(ClientKey, (SendStream, RecvStream))> {
     let proven = async {
         let (send, mut recv) = connection.accept_bi().await.ok()?;
         let mut frame = [0; ManagementProof::LEN];
@@ -314,7 +312,7 @@ async fn authenticate(connection: &Connection) -> Option<([u8; 32], (SendStream,
         connection
             .export_keying_material(&mut exporter, MANAGEMENT_PROOF_LABEL, &[])
             .ok()?;
-        PublicKey::from_bytes(&proof.client)
+        PublicKey::from_bytes(proof.client.as_bytes())
             .ok()?
             .verify(
                 &ManagementProof::message(&exporter),
@@ -330,7 +328,7 @@ async fn authenticate(connection: &Connection) -> Option<([u8; 32], (SendStream,
 }
 
 /// The close code refusing `remote`, or `None` when a slot admits it.
-fn refusal(record: &LocalMachineRecord, remote: &[u8; 32]) -> Option<VarInt> {
+fn refusal(record: &LocalMachineRecord, remote: &ClientKey) -> Option<VarInt> {
     if record.admits_management_client(remote) {
         None
     } else if record.clears_management_client(remote) {
@@ -352,7 +350,7 @@ enum Ended {
 
 async fn serve_admitted<S>(
     connection: &Connection,
-    client: ProvenClient,
+    client: ClientKey,
     (send, recv): (SendStream, RecvStream),
     revoked: impl Future<Output = ()>,
     api: S,
@@ -422,7 +420,7 @@ where
 }
 
 /// Completes once a published record no longer admits `remote`.
-async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: [u8; 32]) {
+async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: ClientKey) {
     loop {
         if records.changed().await.is_err() {
             // The record owner stopped; shutdown ends this connection.
@@ -438,13 +436,15 @@ async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: 
 }
 
 /// The Machine API as one management connection serves it: each request carries its
-/// connection, and once the connection drains every stream but `SetManagementClient`
-/// and `SetDevice` ends.
+/// connection, and once the connection drains every stream ends but the ones that can
+/// revoke their own caller: `SetManagementClient`, `SetDevice` and `RemoveTrustedKey`.
 #[derive(Clone)]
 struct ConnectionApi<S> {
     api: S,
     connection: Connection,
-    client: ProvenClient,
+    /// The Management Client key the connection proved with its [`ManagementProof`]. Each
+    /// management request carries it; the connection's own transport key is never trusted.
+    client: ClientKey,
     drain: CancellationToken,
 }
 
@@ -466,7 +466,7 @@ where
     fn call(&mut self, request: http::Request<hyper::body::Incoming>) -> Self::Future {
         let may_revoke_caller = matches!(
             request.uri().path(),
-            op::SetManagementClient::PATH | op::SetDevice::PATH
+            op::SetManagementClient::PATH | op::SetDevice::PATH | op::RemoveTrustedKey::PATH
         );
         let mut request = request.map(Body::new);
         request

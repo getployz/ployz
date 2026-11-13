@@ -50,6 +50,7 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
           tokenHash: hashFleetToken(token),
           expiresAt,
           autoEnrollMax: input.autoEnroll?.maxServers ?? null,
+          foundsClosed: input.foundsClosed ?? false,
           createdByUserId: actor.userId,
         })
         .returning({ id: fleetToken.id });

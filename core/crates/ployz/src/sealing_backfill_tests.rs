@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use futures_util::FutureExt;
 use ployz_core::{
-    LocalMachinePhase, MachineId, RpcError, RpcErrorCode, SealedSealingKey, Sealing,
+    Evidence, LocalMachinePhase, MachineId, RpcError, RpcErrorCode, SealedSealingKey, Sealing,
     SealingPublicKey, SealingRefusal, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
@@ -83,7 +83,7 @@ fn refusal(refusal: SealingRefusal) -> RpcError {
     RpcError {
         code: RpcErrorCode::Conflict,
         message: "refused".into(),
-        details: refusal.details(),
+        details: refusal.to_details(),
         cause: Vec::new(),
     }
 }

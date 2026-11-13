@@ -1,6 +1,11 @@
 //! Model checks of Ployz protocols that tests rarely reach. Each module models one
-//! protocol, calls the real code where it can, and its tests explore every
-//! interleaving within the bounds the module states.
+//! protocol and its tests explore every interleaving within the bounds the module states.
+//!
+//! A module calls the `ployz-core` code its protocol runs where that code is pure:
+//! `issuance_gate`, `issuance_backoff` and `issuance_failure_clock` in `acme_issuance`,
+//! `RestartPolicy` in `bridge_notes`, `MachineUpgradeOutcome::is_terminal` in `upgrade_attempt` and
+//! `plan` in `volume_runs`. The other modules re-state their protocol's decisions by hand,
+//! and a decision that moves into `ployz-decide` is called, never re-stated.
 
 #[cfg(test)]
 mod acme_issuance;
@@ -10,6 +15,8 @@ mod bridge_notes;
 mod build_handoff;
 #[cfg(test)]
 mod caddy_load;
+#[cfg(test)]
+mod harness;
 #[cfg(test)]
 mod mcp_login;
 #[cfg(test)]

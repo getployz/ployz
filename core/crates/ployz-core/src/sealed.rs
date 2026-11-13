@@ -1,16 +1,51 @@
 use std::fmt;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::ValueError;
+use crate::value::base64_newtype;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sealer::*;
 
 /// HPKE `info` for env values sealed to a Cluster's Sealing Key.
 pub const SEALED_VALUE_INFO: &[u8] = b"ployz-sealed-v1";
+
+/// HPKE `info` for values Ployz itself seals to a Cluster's Sealing Key for one
+/// [`PlatformPurpose`], apart from any Service's env.
+pub const PLATFORM_SEALED_INFO: &[u8] = b"ployz-platform-sealed-v1";
+
+/// What a value Ployz seals to a Cluster is for. A value sealed for one purpose
+/// opens for no other, and for no other Cluster.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlatformPurpose {
+    /// The Cloudflare tunnel token the Tunnel Connector runs with.
+    IngressTunnel,
+    /// The Tailscale auth key the Private Access router joins the tailnet with.
+    PrivateAccess,
+}
+
+impl PlatformPurpose {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IngressTunnel => "ingress-tunnel",
+            Self::PrivateAccess => "private-access",
+        }
+    }
+
+    /// HPKE associated data binding a value to this purpose and to the Cluster
+    /// whose Sealing Key is `cluster`.
+    #[must_use]
+    pub fn associated_data(self, cluster: &crate::SealingPublicKey) -> Vec<u8> {
+        let mut aad = Vec::new();
+        put(&mut aad, PLATFORM_SEALED_INFO);
+        put(&mut aad, self.as_str().as_bytes());
+        put(&mut aad, cluster.as_bytes());
+        aad
+    }
+}
 
 /// HPKE X25519 encapsulated key plus the ChaCha20-Poly1305 tag.
 const MIN_CIPHERTEXT_LEN: usize = 32 + 16;
@@ -50,6 +85,12 @@ pub struct SealedValue {
     pub sealed: Ciphertext,
     pub scope: SealedScope,
     pub key: String,
+    /// The Environment the value was sealed for, when it is not the Container's own: a
+    /// parent's value a preview inherits, opened in place. A daemon that predates it
+    /// refuses the field, so a preview never starts without the check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub environment: Option<Uuid>,
 }
 
 /// Where the sealed variable was authored.
@@ -58,6 +99,17 @@ pub struct SealedValue {
 pub enum SealedScope {
     Shared,
     Service(#[ts(type = "string")] Uuid),
+}
+
+/// A Sealed value the browser sealed to one Environment's Sealing Key, bound to
+/// the variable it was authored as. Cloud carries it and never opens it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientSealedValue {
+    /// The Environment whose Sealing Key opens it: in any other it is Not set.
+    #[ts(type = "string")]
+    pub sealed_for: Uuid,
+    pub value: SealedValue,
 }
 
 /// HPKE encapsulated key followed by the ciphertext.
@@ -125,13 +177,17 @@ impl From<&str> for EnvValue {
 
 impl SealedValue {
     /// HPKE associated data binding this value to the variable it was authored
-    /// as, in `identity`'s Organization and Environment.
+    /// as, in `identity`'s Organization and in its own Environment: the one it names, or
+    /// else `identity`'s.
     #[must_use]
     pub fn associated_data(&self, identity: &SealedIdentity) -> Vec<u8> {
         let mut aad = Vec::new();
         put(&mut aad, SEALED_VALUE_INFO);
         put(&mut aad, identity.organization.as_bytes());
-        put(&mut aad, identity.environment.as_bytes());
+        put(
+            &mut aad,
+            self.environment.unwrap_or(identity.environment).as_bytes(),
+        );
         match self.scope {
             SealedScope::Shared => put(&mut aad, b"shared"),
             SealedScope::Service(service) => {
@@ -168,24 +224,12 @@ impl fmt::Debug for Ciphertext {
     }
 }
 
-impl TryFrom<String> for Ciphertext {
-    type Error = ValueError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        STANDARD
-            .decode(&value)
-            .ok()
-            .filter(|bytes| bytes.len() >= MIN_CIPHERTEXT_LEN)
-            .map(Self)
-            .ok_or_else(|| ValueError::new("sealed value", value, "base64 of at least 48 bytes"))
-    }
-}
-
-impl From<Ciphertext> for String {
-    fn from(value: Ciphertext) -> Self {
-        STANDARD.encode(value.0)
-    }
-}
+base64_newtype!(
+    Ciphertext,
+    "sealed value",
+    "base64 of at least 48 bytes",
+    AtLeast(MIN_CIPHERTEXT_LEN)
+);
 
 /// Seals a value to a Cluster's Sealing Key the way a Machine opens it: HPKE base
 /// mode over X25519, HKDF-SHA256 and ChaCha20-Poly1305, bound by
@@ -201,9 +245,11 @@ mod sealer {
     use rand_core::{OsRng, TryRngCore as _};
     use thiserror::Error;
 
-    use super::{Ciphertext, SEALED_VALUE_INFO, SealedIdentity, SealedScope, SealedValue};
-    use crate::SealingPublicKey;
-    use crate::config::ClientSealedValue;
+    use super::{
+        Ciphertext, PLATFORM_SEALED_INFO, PlatformPurpose, SEALED_VALUE_INFO, SealedIdentity,
+        SealedScope, SealedValue,
+    };
+    use crate::{ClientSealedValue, SealingPublicKey};
 
     type Kem = X25519HkdfSha256;
 
@@ -229,6 +275,7 @@ mod sealer {
         let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(recipient.as_bytes())
             .map_err(|_| SealError::Recipient)?;
         let mut value = SealedValue {
+            environment: None,
             sealed: Ciphertext::from_bytes(Vec::new()),
             scope: SealedScope::Service(identity.service),
             key: key.to_owned(),
@@ -251,6 +298,33 @@ mod sealer {
             sealed_for: identity.environment,
             value,
         })
+    }
+
+    /// Seals `plaintext` for `purpose` to the Cluster whose Sealing Key is `recipient`.
+    ///
+    /// # Errors
+    /// [`SealError`] when `recipient` is not a usable public key or HPKE refuses.
+    pub fn seal_platform(
+        recipient: &SealingPublicKey,
+        purpose: PlatformPurpose,
+        plaintext: &[u8],
+    ) -> Result<Ciphertext, SealError> {
+        let public = <Kem as hpke::Kem>::PublicKey::from_bytes(recipient.as_bytes())
+            .map_err(|_| SealError::Recipient)?;
+        let aad = purpose.associated_data(recipient);
+        let (encapped, ciphertext) =
+            hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
+                &OpModeS::Base,
+                &public,
+                PLATFORM_SEALED_INFO,
+                plaintext,
+                &aad,
+                &mut OsRng.unwrap_err(),
+            )
+            .map_err(|_| SealError::Seal)?;
+        let mut sealed = encapped.to_bytes().to_vec();
+        sealed.extend(ciphertext);
+        Ok(Ciphertext::from_bytes(sealed))
     }
 
     /// A throwaway Sealing Key for tests that open what [`seal_value`] sealed, as a
@@ -305,14 +379,37 @@ mod sealer {
             .ok()?;
             String::from_utf8(plaintext).ok()
         }
+
+        /// The bytes of `sealed` as sealed for `purpose` to this key, or `None` when
+        /// it was sealed to another key or for another purpose.
+        #[must_use]
+        pub fn open_platform(
+            &self,
+            purpose: PlatformPurpose,
+            sealed: &Ciphertext,
+        ) -> Option<Vec<u8>> {
+            let aad = purpose.associated_data(&self.public);
+            let (encapped, ciphertext) =
+                sealed.as_bytes().split_at_checked(Self::ENCAPPED_KEY_LEN)?;
+            let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
+            hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
+                &hpke::OpModeR::Base,
+                &self.private,
+                &encapped,
+                PLATFORM_SEALED_INFO,
+                ciphertext,
+                &aad,
+            )
+            .ok()
+        }
     }
 
     #[cfg(test)]
     mod tests {
         use uuid::Uuid;
 
-        use super::{Keypair, seal_value};
-        use crate::{SealedIdentity, SealedScope};
+        use super::{Keypair, PlatformPurpose, seal_platform, seal_value};
+        use crate::{SealedIdentity, SealedScope, SealedValue};
 
         fn authored() -> SealedIdentity {
             SealedIdentity {
@@ -335,7 +432,7 @@ mod sealer {
 
             let other_organization = SealedIdentity {
                 organization: "org_2".into(),
-                ..identity.clone()
+                ..identity
             };
             assert_eq!(keypair.open(&other_organization, &sealed), None);
             let other_environment = SealedIdentity {
@@ -361,12 +458,76 @@ mod sealer {
             moved.value.scope = SealedScope::Service(Uuid::from_u128(4));
             assert_eq!(keypair.open(&authored(), &moved), None);
         }
+
+        #[test]
+        fn a_private_access_key_opens_for_its_purpose_only() {
+            let cluster = Keypair::generate();
+            let sealed = seal_platform(
+                &cluster.public(),
+                PlatformPurpose::PrivateAccess,
+                b"tskey-auth-k",
+            )
+            .unwrap();
+            assert_eq!(
+                cluster
+                    .open_platform(PlatformPurpose::PrivateAccess, &sealed)
+                    .as_deref(),
+                Some(&b"tskey-auth-k"[..])
+            );
+            assert_eq!(
+                cluster.open_platform(PlatformPurpose::IngressTunnel, &sealed),
+                None,
+                "a tunnel token's purpose does not open it"
+            );
+        }
+
+        #[test]
+        fn a_platform_value_opens_for_its_purpose_on_its_cluster_only() {
+            let cluster = Keypair::generate();
+            let sealed = seal_platform(
+                &cluster.public(),
+                PlatformPurpose::IngressTunnel,
+                b"eyJhIjoxfQ",
+            )
+            .unwrap();
+            assert_eq!(
+                cluster
+                    .open_platform(PlatformPurpose::IngressTunnel, &sealed)
+                    .as_deref(),
+                Some(&b"eyJhIjoxfQ"[..])
+            );
+            assert_eq!(
+                Keypair::generate().open_platform(PlatformPurpose::IngressTunnel, &sealed),
+                None,
+                "another Cluster's key does not open it"
+            );
+            let as_env = SealedValue {
+                environment: None,
+                sealed: sealed.clone(),
+                scope: SealedScope::Shared,
+                key: "TUNNEL_TOKEN".into(),
+            };
+            assert_eq!(
+                cluster.open(
+                    &authored(),
+                    &crate::ClientSealedValue {
+                        sealed_for: authored().environment,
+                        value: as_env,
+                    }
+                ),
+                None,
+                "a platform value is not an env value"
+            );
+            assert!(!String::from(sealed).contains("eyJhIjoxfQ"));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     use super::*;
 
@@ -380,6 +541,7 @@ mod tests {
 
     fn sealed(key: &str) -> SealedValue {
         SealedValue {
+            environment: None,
             sealed: Ciphertext::from_bytes(vec![7; MIN_CIPHERTEXT_LEN]),
             scope: SealedScope::Service(Uuid::from_u128(2)),
             key: key.into(),
@@ -452,6 +614,7 @@ mod tests {
             ..identity()
         };
         let shared = SealedValue {
+            environment: None,
             scope: SealedScope::Shared,
             ..sealed("TOKEN")
         };
@@ -463,5 +626,35 @@ mod tests {
         ] {
             assert_ne!(other, base);
         }
+    }
+
+    #[test]
+    fn an_inherited_value_binds_the_environment_it_names_in_place_of_its_containers() {
+        let parent = identity();
+        let preview = SealedIdentity {
+            environment: Uuid::from_u128(3),
+            ..identity()
+        };
+        let inherited = SealedValue {
+            environment: Some(parent.environment),
+            ..sealed("TOKEN")
+        };
+        assert_eq!(
+            inherited.associated_data(&preview),
+            sealed("TOKEN").associated_data(&parent)
+        );
+        assert_ne!(
+            inherited.associated_data(&preview),
+            sealed("TOKEN").associated_data(&preview)
+        );
+        let wire = serde_json::to_value(&inherited).unwrap();
+        assert_eq!(
+            wire.get("environment"),
+            Some(&serde_json::json!(parent.environment.to_string()))
+        );
+        assert_eq!(
+            serde_json::from_value::<SealedValue>(wire).unwrap(),
+            inherited
+        );
     }
 }

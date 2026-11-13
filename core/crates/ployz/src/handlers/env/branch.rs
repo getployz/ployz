@@ -1,7 +1,9 @@
 //! Branches: create one, sync changes between two Environments of a Project (or undo a
 //! Sync, or take a hint), copy a Live Node into it, keep it.
 
+use crate::ui::Next;
 use clap::ArgMatches;
+use ployz_core::Hint;
 use ployz_core::ServiceName;
 use ployz_core::config::{ChangeKind, ReviewLifecycleKind, ServiceSettingChange};
 use ployz_store::{
@@ -12,7 +14,7 @@ use ployz_store::{
 };
 
 use super::super::config::expected;
-use super::super::store::{self, Next, Store, mint, project, store};
+use super::super::store::{self, Store, mint, project, store};
 use super::super::{Error, leaf_matches, required};
 use crate::cloud_account::StoreCallError;
 
@@ -198,13 +200,16 @@ fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
     };
     let undone: Undone = store(root)?.args(["--undo", sync]).write(&request)?;
     let into = &undone.into;
-    let next = in_project(matches, &["diff", "--env", into.name.as_str()]);
-    crate::ui::finish(&Next::new(&undone, Some(next.clone())), || {
+    let followed = Next::new(
+        &undone,
+        Some(in_project(matches, &["diff", "--env", into.name.as_str()])),
+    );
+    crate::ui::finish(&followed, || {
         crate::ui::stream(format_args!(
             "Undid Sync {} in {}/{}.",
             request.sync, into.project, into.name
         ));
-        crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
+        followed.say();
     })
 }
 
@@ -250,8 +255,9 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
     let into = &taken.into;
     let next = (!taken.staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
-    crate::ui::finish(&Next::new(taken, next.clone()), || {
-        let into = format!("{}/{}", into.project, into.name);
+    let followed = Next::new(taken, next);
+    crate::ui::finish(&followed, || {
+        let into = into.to_string();
         crate::ui::stream(format_args!(
             "Took {}'s value into {into}.",
             taken.from.name
@@ -262,9 +268,7 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
                 crate::handlers::joined(&taken.staged)
             ));
         }
-        if let Some(next) = &next {
-            crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
-        }
+        followed.say();
     })
 }
 
@@ -472,8 +476,9 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     if let Some(json) = json.as_object_mut() {
         json.remove("proposal");
     }
-    crate::ui::finish(&Next::new(&json, next.clone()), || {
-        let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
+    let followed = Next::new(&json, next);
+    crate::ui::finish(&followed, || {
+        let (from, into) = (&synced.from.name, into.to_string());
         let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
         crate::ui::stream(format_args!("Synced {from} → {into}."));
         if !synced.staged.is_empty() {
@@ -485,10 +490,8 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
         if synced.closing {
             crate::ui::stream(format_args!("Closing {from}."));
         }
-        crate::ui::hint(&crate::ui::Hint::Undo(undo));
-        if let Some(next) = &next {
-            crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
-        }
+        crate::ui::hint(&Hint::Undo(undo));
+        followed.say();
     })
 }
 
@@ -548,7 +551,8 @@ fn stale(error: StoreCallError, matches: &ArgMatches) -> store::Refusal {
 /// A Branch after a change, and `deploy` when it staged something.
 fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), Error> {
     let next = deploy.filter(|_| !result.staged.is_empty());
-    crate::ui::finish(&Next::new(result, next.clone()), || {
+    let followed = Next::new(result, next);
+    crate::ui::finish(&followed, || {
         let branch = &result.branch;
         crate::ui::stream(format_args!(
             "{what} {}/{} of {}.",
@@ -578,9 +582,7 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
                 )),
             }
         }
-        if let Some(next) = next {
-            crate::ui::hint(&crate::ui::Hint::Next(next));
-        }
+        followed.say();
     })
 }
 

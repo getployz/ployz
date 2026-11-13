@@ -42,6 +42,10 @@ still forgets the sign-in here and warns that Cloud may still honour it until yo
 `ployz token rm`. An unreadable sign-in is forgotten too, and `ployz login` replaces it. While it
 is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
+When a command says `Cloud ended this device's sign-in`, run `ployz login` again. A computer
+that signed in before November 2026 sees this once, because Cloud no longer accepts those older
+sign-ins. Organization Tokens and connected agents keep working.
+
 The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when
 `XDG_CONFIG_HOME` is an absolute path. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
 
@@ -116,6 +120,7 @@ as you in that organization, expires after 365 days, and shows as `agent` under 
 `ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. Once the
 token is revoked or expired, each tool call fails with `Cloud refused the agent token` and names
 `ployz mcp login`; run it again. An agent token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
+`ployz mcp` never reads this computer's [device key](../servers/manage-servers.md#require-a-devices-signature-for-restarts), and says so on its first line of stderr.
 When `ployz mcp` asks you, your answer goes with your own sign-in. An agent that can run commands
 in your terminal still acts with your sign-in there, so don't let it run `ployz org approval`
 for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its
@@ -241,7 +246,13 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 
 `exec` and `service port-forward` also need an approved device. Run `ployz device request` and
 have an owner or admin approve the code. See
-[Approve a device](../servers/manage-servers.md#approve-a-device).
+[Approve a device](../servers/manage-servers.md#approve-a-device). With
+[device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts) on,
+`service restart` signs each restart with your device key, and a server refuses a restart no
+approved device signed. `service restart`, `service stop` and `service start` sign without asking.
+`deploy` prints every setting it signs and asks first; a script or CI job on an approved device
+adds `--yes`. See
+[Deploy to servers that enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval).
 
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
@@ -352,8 +363,11 @@ Whoever holds a `full` token can deploy and run commands in your services. A tok
 working at once if you leave the organization, are removed from it, or the organization is
 deleted. Then unset `PLOYZ_TOKEN` and run `ployz login`, or make a new token in an organization
 you're still in. To revoke it,
-find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
-offline, run it again once that server is back. Owners and admins see and can revoke every
+run `ployz token rm` with its name or ID from `ployz token ls`. When two tokens share the name,
+it lists their IDs and removes neither: run it again with one ID. A token whose name is itself
+an ID, like `0b6e…-…`, comes off only by its own ID. If it names a server that's
+offline, run the `ployz token rm ID` it prints once that server is back: the name may by then
+belong to a new token. Owners and admins see and can revoke every
 organization token in the organization, not only their own. Members see only theirs. OWNER
 says whose each token is: `you`, or the teammate's name, and a teammate's `full` token shows as
 `Full as Grace`. With `--json`, each token has an `owner` with its `id`, `name`, `email` and
@@ -416,6 +430,10 @@ server waiting for approval, it leads with a **this server** line: `Installing D
 it as `blocked` lines. With `--json` this is the `this_server` object. After `ployz server rm`
 resets a server that joined from a Fleet Token, its **this server** line says `Not in a Cluster`
 and `this_server` adds `"left": true`.
+
+Run on a server whose daemon is running, with `sudo`, `ployz status` also shows a **wireguard key** line.
+It is the server's WireGuard key fingerprint, the same one `ployz device enforce` prints. With
+`--json` it is `this_machine`, which holds `wireguard_key` and `fingerprint`.
 
 When a server is up but its proxy hasn't picked up a service's current replicas after a deploy,
 `ployz status` names it, one line per service, like

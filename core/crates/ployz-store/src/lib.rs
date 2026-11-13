@@ -4,6 +4,7 @@
 //! for its typed answer. Runners, GitHub builds and automation have methods of
 //! their own. Storage is its only I/O.
 
+mod auto_rule;
 mod automation;
 mod branch;
 mod build;
@@ -13,16 +14,21 @@ mod client_sealed;
 mod command;
 mod config_item;
 mod deployment;
+mod digest;
 pub mod docs;
 mod domain;
 mod error;
+mod followup;
 mod git;
 mod github;
 mod id;
+mod merge_deploy;
 mod names;
 mod old_cli;
 mod permission;
 mod policy;
+mod pr_environment;
+mod preview_rule;
 mod project;
 mod pull_request;
 mod query;
@@ -33,6 +39,7 @@ mod reseal;
 mod review;
 mod rules;
 mod scope;
+mod seal_scrub;
 mod sealing;
 mod sealing_targets;
 mod service;
@@ -50,6 +57,7 @@ use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
 
+pub use auto_rule::{ApproveRule, RuleQuery, RuleView};
 pub use automation::{
     AutoDeployed, Automated, BranchHead, CheckConclusion, CheckStatus, CheckSuite, Skipped,
     SystemEvent,
@@ -66,22 +74,23 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRun, RunEnd,
+    GithubRule, GithubRun, ImageToken, RunEnd,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
 pub use command::*;
+pub use deployment::loss::{RemovedVolume, VolumeLoss, docker_volume};
 pub use deployment::{
     CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
     NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RowTransition, RunEvidence,
-    ServerProgress, ServerRow, StoppedBy, Unclaimed, UploadBase, UploadedSource, starts_container,
+    ServerProgress, ServerRow, StoppedBy, Unclaimed, UploadBase, UploadedSource,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
     DomainAction, DomainAdded, DomainChange, DomainEdit, DomainEvidence, DomainName, DomainQuery,
     DomainRow, DomainStaged, DomainStatus, DomainView, DomainsQuery, DomainsView,
-    PublishedHostname, RemoveDomain, SetGeneratedDomain,
+    PublishedHostname, RemoveDomain, SetGeneratedDomain, TunnelAnswer, TunnelEvidence, TunnelReach,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use github::{
@@ -89,25 +98,27 @@ pub use github::{
 };
 pub use id::*;
 pub use permission::Permission;
+pub use ployz_core::authority::rule_draft::RuleSourceView;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
+pub use preview_rule::{ApprovePreviewRule, PlanPreviewRule, PreviewRuleView};
 pub use pull_request::{
-    ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeInto,
-    OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest,
-    PullRequestQuery, PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing,
-    Sweep,
+    ApprovePullRequest, EnvironmentReview, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion,
+    OnMergeInto, OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView,
+    PreviewReviewQuery, PreviewReviewView, PullRequest, PullRequestQuery, PullRequestRef,
+    PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
 };
 pub use query::*;
 pub use removal::{
     CancelRemoval, ConsentedQuery, ConsentedView, Due, DueQuery, Fix, Left, LeftStatus, Removal,
-    RemovalCancelled, Remove, RemovedQuery, RemovedView, RemovedVolume, Residual, VolumeLoss,
-    Waiting, docker_volume,
+    RemovalCancelled, Remove, RemovedQuery, RemovedView, Residual, Waiting,
 };
 pub use reseal::{LegacyCount, Resealed};
 pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{
-    DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange,
-    introduced_source,
+    ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, DataEffect,
+    DestructiveEffect, DestructiveKind, DiffView, LostAfter, MalformedReviewVersion, NodeChange,
+    OperationVerb, ReviewVersion, introduced_source,
 };
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
@@ -228,27 +239,27 @@ impl ConfigStore {
         command: &C,
         trusted: &Trusted,
     ) -> Result<C::Written, RpcError> {
+        self.with_call(who, trusted, |call| command.apply(call))
+    }
+
+    /// Run `work` in one write transaction, with the [`Call`] of caller `who` and the
+    /// evidence `trusted`: what the caller holds, and the servers it names.
+    fn with_call<T>(
+        &self,
+        who: &Actor,
+        trusted: &Trusted,
+        work: impl FnOnce(&mut Call<'_>) -> Result<T, RpcError>,
+    ) -> Result<T, RpcError> {
         let trusted = trusted.held_by(who);
-        self.acting(&trusted, |tx| {
+        self.storage.write(|tx| {
             let trusted = trusted.naming(tx, who)?;
-            command.apply(&mut Call {
+            work(&mut Call {
                 tx,
                 who,
                 sealing: &self.sealing,
                 trusted: &trusted,
             })
         })
-    }
-
-    /// Run `work` in one write transaction acting for the caller `trusted` describes,
-    /// so a write it reaches deep inside still meets [`storage::admit_protect`].
-    fn acting<T>(
-        &self,
-        trusted: &Trusted,
-        work: impl FnOnce(&mut dyn storage::Tx) -> Result<T, RpcError>,
-    ) -> Result<T, RpcError> {
-        self.storage
-            .write(|tx| work(&mut storage::Acting { tx, trusted }))
     }
 
     /// [`write_trusted`](Self::write_trusted) a [`Command`], answering with the pull
@@ -262,17 +273,10 @@ impl ConfigStore {
         command: &Command,
         trusted: &Trusted,
     ) -> Result<Committed, RpcError> {
-        let trusted = trusted.held_by(who);
-        self.acting(&trusted, |tx| {
-            let trusted = trusted.naming(tx, who)?;
-            let written = command.apply(&mut Call {
-                tx,
-                who,
-                sealing: &self.sealing,
-                trusted: &trusted,
-            })?;
+        self.with_call(who, trusted, |call| {
+            let written = command.apply(call)?;
             let checks = match written.environment() {
-                Some(environment) => pull_request::project_checks(tx, environment)?,
+                Some(environment) => pull_request::project_checks(call.tx, environment)?,
                 None => Vec::new(),
             };
             Ok(Committed { written, checks })
@@ -403,7 +407,9 @@ impl ConfigStore {
     /// Pin the commit each Git Service of Deployment `deployment` builds, by runtime
     /// Service name, as Cloud resolved it from its branch. A pinned commit never
     /// changes: a pin for a Service already pinned is ignored. Returns every source
-    /// with its pin. In-process only.
+    /// with its pin. `trusted` carries the Organization's members as Cloud read them:
+    /// a Trusted pull request's commit pins only while its author is one, or when a bot
+    /// opened it from the repository itself. In-process only.
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
@@ -413,9 +419,16 @@ impl ConfigStore {
         &self,
         deployment: &DeploymentId,
         commits: &std::collections::BTreeMap<ployz_core::ServiceName, CommitSha>,
+        trusted: &Trusted,
     ) -> Result<Vec<GitSource>, RpcError> {
+        // A transaction of its own, before the pin's: a refused pin undoes its writes.
         self.storage.write(|tx| {
-            build::pin(tx, deployment, commits)?;
+            deployment::load(tx, deployment)?;
+            let who = Actor::system(build::organization(tx, deployment)?);
+            pull_request::withdraw_trust(tx, &who, trusted)
+        })?;
+        self.storage.write(|tx| {
+            build::pin(tx, deployment, commits, trusted)?;
             build::sources(tx, deployment)
         })
     }
@@ -527,6 +540,62 @@ impl ConfigStore {
     ) -> Result<GithubBuild, RpcError> {
         self.storage
             .read(|tx| build::github_authorize(tx, id, claims))
+    }
+
+    /// The rule GitHub build `id` builds under, automatic deploy or preview, if any: its
+    /// run is the push's own, which Cloud follows rather than dispatching one.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_rule(&self, id: &GithubBuildId) -> Result<Option<GithubRule>, RpcError> {
+        self.storage.read(|tx| build::github_rule(tx, id))
+    }
+
+    /// The review a person signed for GitHub build `id`'s commit, when it builds a
+    /// reviewed preview: Cloud dispatches it on the parent's branch rather than following
+    /// a push.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_review(
+        &self,
+        id: &GithubBuildId,
+    ) -> Result<Option<ployz_core::authority::Review>, RpcError> {
+        self.storage.read(|tx| build::github_review(tx, id))
+    }
+
+    /// The approval a person signed for GitHub build `id`'s commit, when it builds under
+    /// its Environment's automatic deploy rule: Cloud dispatches it on the rule's branch,
+    /// and relays the approval to the grant Machine.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown build, or a storage error.
+    pub fn github_approval(
+        &self,
+        id: &GithubBuildId,
+    ) -> Result<
+        Option<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
+        RpcError,
+    > {
+        self.storage.read(|tx| build::github_approval(tx, id))
+    }
+
+    /// Whether Deployment `id` waits, queued, for a person to approve its commits again
+    /// once its builds ended: Cloud holds it until one does.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn awaiting_approval(&self, id: &DeploymentId) -> Result<bool, RpcError> {
+        self.storage
+            .read(|tx| deployment::awaiting_approval(tx, id))
+    }
+
+    /// The GitHub build run `run_id` holds while it builds, if any.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn github_by_run(&self, run_id: u64) -> Result<Option<GithubBuildId>, RpcError> {
+        self.storage.read(|tx| build::github_by_run(tx, run_id))
     }
 
     /// What GitHub build `id` builds. In-process only: only the authorized runner

@@ -18,13 +18,12 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerList, ContractDescription, CreateVolumeRequest,
     DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, ForgetRequest, Forgotten, Left, LeftPhase, LocalMachinePhase,
-    MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachinePath, MachineRpcServer, MachineStorageObservation,
-    MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RoutesRead, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
-    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
-    encode_runtime_watch_frame, op,
+    Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
+    MachineRpcServer, MachineStorageObservation, MembershipObservation, ObservedDataLoss,
+    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    RoutesRead, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
+    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
+    WireGuardPublicKey, encode_runtime_watch_frame, labels, op,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
 use serde_json::Value;
@@ -210,6 +209,8 @@ pub(super) struct DiscoveryService {
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
+    /// SetManagementClient and MintBuildGrant announce themselves here, then never answer.
+    pub(super) mutation_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) register_blocked: Option<Arc<tokio::sync::Notify>>,
     /// The one Upgrade attempt this daemon holds.
     upgrade_attempt: Arc<Mutex<Option<ployz_core::MachineUpgradeAttempt>>>,
@@ -254,6 +255,7 @@ pub(super) fn empty_watch_frame() -> RuntimeWatchFrame {
         volumes: Vec::new(),
         certificates: Vec::new(),
         incomplete_ids: ployz_core::RuntimeWatchIncompleteIds::default(),
+        unanswered: Vec::new(),
         observed_at: String::new(),
     }
 }
@@ -314,6 +316,7 @@ impl DiscoveryService {
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
+            mutation_blocked: None,
             register_blocked: None,
             upgrade_attempt: Arc::default(),
             upgrade_outcome: None,
@@ -363,7 +366,10 @@ impl DiscoveryService {
         self.watch.live.lock().unwrap().clear();
     }
 
-    #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the RPC error type"
+    )]
     fn copy(
         &self,
         locator: &ployz_core::ContainerLocator,
@@ -731,6 +737,7 @@ impl FakeMachine for DiscoveryService {
                 advertised_endpoints: Vec::new(),
                 store_version: Default::default(),
                 rtts: Vec::new(),
+                passkeys: Vec::new(),
                 management_clients: self.management_clients.lock().unwrap().clone(),
                 telemetry,
                 storage: inspect.include_storage.then_some(self.storage),
@@ -778,6 +785,7 @@ impl FakeMachine for DiscoveryService {
             public_ip: body.public_ip,
             advertised_endpoints: body.advertised_endpoints,
             runtime: body.runtime,
+            join_approval: None,
             build_concurrency: None,
         };
         let visible_peers = self
@@ -794,6 +802,34 @@ impl FakeMachine for DiscoveryService {
         };
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),
+        ))
+    }
+
+    async fn set_management_client(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(received) = &self.mutation_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let _ = request;
+        Err(Status::unimplemented(
+            "set_management_client is not used by this fixture",
+        ))
+    }
+
+    async fn mint_build_grant(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(received) = &self.mutation_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let _ = request;
+        Err(Status::unimplemented(
+            "mint_build_grant is not used by this fixture",
         ))
     }
 
@@ -824,6 +860,7 @@ impl FakeMachine for DiscoveryService {
                             .map(|observation| observation.machine.clone())
                             .collect(),
                         target_versions: BTreeMap::new(),
+                        doors: None,
                     }),
                 machines,
             })
@@ -1157,7 +1194,10 @@ impl FakeMachine for DiscoveryService {
         ))
     }
 
-    #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the RPC error type"
+    )]
     async fn exec(
         &self,
         request: Request<Streaming<OpaquePayload>>,
@@ -1529,7 +1569,7 @@ impl FakeMachine for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::Forget(ForgetRequest { machine_id }) = request.body else {
+        let RpcRequestBody::Forget(ForgetRequest { machine_id, .. }) = request.body else {
             return Err(Status::invalid_argument("expected forget"));
         };
         if self
@@ -1650,6 +1690,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         MembershipObservation::Up,
@@ -1677,8 +1718,8 @@ pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
 pub(super) fn owned_volume(machine_id: MachineId, name: &str, namespace: &str) -> DockerVolume {
     DockerVolume {
         labels: BTreeMap::from([
-            (MANAGED_LABEL.to_owned(), String::new()),
-            (NAMESPACE_LABEL.to_owned(), namespace.to_owned()),
+            (labels::MANAGED.to_owned(), String::new()),
+            (labels::NAMESPACE.to_owned(), namespace.to_owned()),
         ]),
         ..docker_volume(machine_id, name)
     }
@@ -1705,6 +1746,7 @@ pub(super) fn confirmation(data_loss: impl IntoIterator<Item = DataLoss>) -> Dat
 
 pub(super) fn test_description() -> ContractDescription {
     ContractDescription {
+        attest: None,
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),

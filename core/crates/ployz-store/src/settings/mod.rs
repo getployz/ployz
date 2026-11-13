@@ -18,15 +18,16 @@ use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
     MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, ServiceBuildConfig, ServiceHealthcheck,
-    ServiceImageCredentials, ServiceSource, UPDATE_ORDERS, default_max_retries, default_replicas,
-    parse_service_setting,
+    ServiceImageCredentials, ServiceRestartPolicy, ServiceSource, UPDATE_ORDERS,
+    default_max_retries, default_replicas, parse_service_setting,
 };
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
+use crate::followup::{FollowUp, Place};
 use crate::git::GitSetting;
 use crate::policy::{Policy, PolicySetting};
 use crate::scope::EnvironmentSummary;
@@ -293,7 +294,7 @@ impl ServiceSetting {
             | Self::UpdateOrder => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
             Self::Replicas => json!(default_replicas()),
-            Self::RestartPolicy => json!("unless-stopped"),
+            Self::RestartPolicy => json!(ServiceRestartPolicy::default()),
             Self::Git(git) => git.default(),
             Self::Policy(policy) => policy.default(),
         }
@@ -654,10 +655,7 @@ impl ServiceSetting {
         match (self, &mut config.source) {
             // Disconnected, the Service is empty until it gets a source again.
             (Self::Image, ServiceSource::Image { .. }) => {
-                config.source = ServiceSource::Empty {
-                    version: 1,
-                    root_dir: "/".to_owned(),
-                };
+                config.source = ServiceSource::empty();
                 Ok(())
             }
             (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
@@ -747,10 +745,6 @@ impl ServiceSetting {
                 let first = name.split('.').next().unwrap_or(name);
                 let closest = error::did_you_mean(first, names.clone());
                 let mut details = serde_json::Map::new();
-                details.insert("valid_children".into(), names.collect::<Vec<_>>().into());
-                if let Some(closest) = closest {
-                    details.insert("did_you_mean".into(), closest.into());
-                }
                 if let Some(setting) = Self::ALL
                     .into_iter()
                     .find(|setting| Some(setting.name()) == closest)
@@ -760,7 +754,14 @@ impl ServiceSetting {
                         details.insert("example".into(), example.clone());
                     }
                 }
-                error::invalid("Unknown Service Setting", details.into())
+                let mut details = Value::Object(details);
+                let hints: Vec<_> = closest
+                    .map(|closest| Hint::Closest(closest.into()))
+                    .into_iter()
+                    .chain([Hint::valid(names)])
+                    .collect();
+                Hint::into_details(&hints, &mut details);
+                error::invalid("Unknown Service Setting", details)
             })
     }
 }
@@ -778,15 +779,15 @@ pub(crate) fn healthcheck_text(service: &ServiceName, summary: &EnvironmentSumma
             "{}: text sets an HTTP path like /health; a command takes an object like {{\"command\":\"pg_isready\",\"timeoutSeconds\":60}}, and an HTTP check's timeout one like {{\"path\":\"/health\",\"timeoutSeconds\":60}}",
             setting.name()
         ),
-        json!({
+        FollowUp::PatchHealthcheck {
+            service: service.to_string(),
+            place: Place::of(summary),
+        }
+        .within(json!({
             "setting": setting.name(),
             "expected": setting.expected(),
             "example": setting.examples().get(0),
-            "next": format!(
-                "ployz set {service} --patch '{{\"healthcheck\":{{\"command\":\"pg_isready\"}}}}' --env {} --project {}",
-                summary.name, summary.project
-            ),
-        }),
+        })),
     )
 }
 

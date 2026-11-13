@@ -1,8 +1,8 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery,
-  ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
+  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery, PlanQuery, PreviewReviewQuery,
+  ProjectsQuery, RemovalsQuery, RuleQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
@@ -23,6 +23,9 @@ const refreshedBy = {
   history: ["store_environment", "store_deployment", "store_check_suite"],
   history_preview: ["store_environment", "store_deployment", "store_check_suite"],
   plan: ["store_environment", "store_deployment"],
+  // The rule a Device or a passkey signed, beside the Saved State it approves.
+  rule: ["store_environment"],
+  preview_review: ["store_environment", "store_pull_request"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.
   service: ["store_environment", "store_deployment"],
   services: ["store_environment", "store_deployment"],
@@ -189,6 +192,20 @@ export function shownQueries(queryClient: QueryClient, organizationSlug: string,
     .slice(0, MAX_SHOWN_VIEWS);
 }
 
+/**
+ * Drops the views nothing shows whose answer is a refusal. A Project renamed to a name this tab saw go (a rename
+ * back) would otherwise keep reading `not_found` there: views never go stale on their own, and a hidden one only
+ * rereads after its stale answer has shown.
+ */
+export function dropHiddenRefusals(queryClient: QueryClient, organizationSlug: string) {
+  queryClient.removeQueries({
+    queryKey: storeViewPrefix(organizationSlug),
+    predicate: (query) => queryOf(query) !== null && query.getObserversCount() === 0 && isRefusal(query.state.data),
+  });
+}
+
+const isRefusal = Schema.is(Schema.Struct({ ok: Schema.Literal(false) }));
+
 function viewsOf(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null) {
   return queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })
     .filter((query) => queryOf(query) !== null && (keys === null || [...keys].some((key) => isOfEnvironment(query, key))));
@@ -273,6 +290,26 @@ export function namespaceQuery(environment: EnvironmentRef): { query: "namespace
 /** What the next Deploy changes in an Environment: the pink trail on its canvas and drawers. */
 export function diffQuery(environment: EnvironmentRef): { query: "diff" } & DiffQuery {
   return { query: "diff", environment };
+}
+
+/** The plan a Deploy of the whole Environment ships, with each Service's spec as its runner will send it. */
+export function deployPlanQuery(environment: EnvironmentRef): { query: "plan" } & PlanQuery {
+  return { query: "plan", environment, services: [], target: true };
+}
+
+/** A redeploy of Deployment `deployment`, lowered as its runner will lower it, for this browser to approve. */
+export function redeployPlanQuery(environment: EnvironmentRef, deployment: string): { query: "plan" } & PlanQuery {
+  return { query: "plan", environment, services: [], target: true, deployment };
+}
+
+/** An Environment's automatic deploy rule, beside the Saved settings a new approval of it would pin. */
+export function ruleQuery(environment: EnvironmentRef): { query: "rule" } & RuleQuery {
+  return { query: "rule", environment };
+}
+
+/** A PR Environment's preview under its start-from's preview rule, and what a person signs a review of its head over. */
+export function previewReviewQuery(environment: EnvironmentRef): { query: "preview_review" } & PreviewReviewQuery {
+  return { query: "preview_review", environment };
 }
 
 /** An Environment's public domains with their status: the Networking section of every Service drawer. */

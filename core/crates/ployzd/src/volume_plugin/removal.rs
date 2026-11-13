@@ -4,37 +4,53 @@ use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
 };
-use ployzd::{VolumePluginStatus, machine_pool::MachinePool};
+use ployzd::{
+    VolumePluginStatus,
+    dataset_layout::{DatasetLayout, MOUNT_ROOT},
+    machine_pool::MachinePool,
+};
 use serde::Serialize;
 
 use super::{
-    DATASET_ROOT, DockerVolumeName, ErrorResponse, HangUp, Result, VolumeRequest, VolumeStorage,
-    error_response, storage::CUT_PROPERTY,
+    DockerVolumeName, ErrorResponse, HangUp, Result, VolumeRequest, VolumeStorage, error_response,
+    marks::Mark,
 };
 
 impl VolumeStorage {
-    async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
-        let _guard = self.admit_mutation().await?;
-        let _pool_guard = self.pool.lock_mutation().await?;
-        let Some(pool) = self
+    /// The Pool a route for one Volume looks in, with the Pool lock held until the guard
+    /// drops. `None` when this Machine never held a Pool, so the Volume is absent.
+    ///
+    /// # Errors
+    ///
+    /// Refuses when this Machine has held a Pool that is not imported, so a Volume is
+    /// never reported absent only because its Pool is missing.
+    async fn imported_pool(&self) -> Result<(std::fs::File, Option<MachinePool>)> {
+        let guard = self.pool.lock_mutation().await?;
+        let pool = self
             .pool
             .admit(super::pool::UnlabeledBacking::Preserve)
-            .await?
-        else {
-            if self.pool.has_held_a_pool()? {
-                return Err("this Machine has held a Pool that is not imported".into());
-            }
+            .await?;
+        if pool.is_none() && self.pool.has_held_a_pool()? {
+            return Err("this Machine has held a Pool that is not imported".into());
+        }
+        Ok((guard, pool))
+    }
+
+    async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
+        let _guard = self.admit_mutation().await?;
+        let (_pool_guard, pool) = self.imported_pool().await?;
+        let Some(pool) = pool else {
             return Ok(());
         };
         let datasets = self.datasets(&pool).await?;
-        let requested = format!("{}/{DATASET_ROOT}/{name}", pool.name());
+        let requested = DatasetLayout::of(&pool).root(name);
         if !datasets.iter().any(|dataset| dataset.name == requested) {
             return Ok(());
         }
         let dataset = Self::dataset(&datasets, &pool, name)?
             .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
-        if self.unregistered(&dataset.name).await? {
+        if self.marks(&dataset.name).unregistered().await? {
             return Err(format!(
                 "VolumeSwitching: Volume {name} is a promoted root Docker has not registered yet; refusing to remove {}",
                 dataset.name
@@ -46,15 +62,8 @@ impl VolumeStorage {
     }
 
     async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
-        let _pool_guard = self.pool.lock_mutation().await?;
-        let Some(pool) = self
-            .pool
-            .admit(super::pool::UnlabeledBacking::Preserve)
-            .await?
-        else {
-            if self.pool.has_held_a_pool()? {
-                return Err("this Machine has held a Pool that is not imported".into());
-            }
+        let (_pool_guard, pool) = self.imported_pool().await?;
+        let Some(pool) = pool else {
             return Ok(None);
         };
         let datasets = self.datasets(&pool).await?;
@@ -62,7 +71,7 @@ impl VolumeStorage {
             return self.inspect_cut(&datasets, &pool, name).await;
         };
         dataset.require_provisioned(name)?;
-        if self.unregistered(&dataset.name).await? {
+        if self.marks(&dataset.name).unregistered().await? {
             return Ok(None);
         }
         Ok(Some(PluginVolume::new(name, dataset)))
@@ -80,7 +89,7 @@ impl VolumeStorage {
         let Some(fs) = Self::slot_fs(datasets, pool, name) else {
             return Ok(None);
         };
-        if self.property(&fs.name, CUT_PROPERTY).await?.is_none() {
+        if !self.marks(&fs.name).is_set(Mark::Cut).await? {
             return Ok(None);
         }
         Ok(Some(PluginVolume {
@@ -104,13 +113,14 @@ impl VolumeStorage {
             return Ok(Vec::new());
         };
         let datasets = self.datasets(&pool).await?;
-        let root_name = format!("{}/{DATASET_ROOT}", pool.name());
+        let layout = DatasetLayout::of(&pool);
+        let root_name = layout.root_parent();
         let root = datasets.iter().find(|dataset| dataset.name == root_name);
         if let Some(root) = root {
-            root.require_mountpoint(super::MOUNT_ROOT)?;
+            root.require_mountpoint(MOUNT_ROOT)?;
             root.require_writable()?;
         }
-        let prefix = format!("{}/{DATASET_ROOT}/", pool.name());
+        let prefix = format!("{root_name}/");
         let mut volumes = Vec::new();
         for dataset in &datasets {
             let Some(name) = dataset.name.strip_prefix(&prefix) else {
@@ -128,7 +138,7 @@ impl VolumeStorage {
             }
             let name = name.parse::<DockerVolumeName>()?;
             dataset.require_provisioned(&name)?;
-            if self.unregistered(&dataset.name).await? {
+            if self.marks(&dataset.name).unregistered().await? {
                 continue;
             }
             volumes.push(PluginVolume::new(&name, dataset));

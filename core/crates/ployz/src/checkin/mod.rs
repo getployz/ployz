@@ -11,6 +11,7 @@ mod probe;
 pub(crate) mod unit;
 mod wire;
 
+use crate::cluster::Call;
 use std::{
     fs, io,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -19,15 +20,18 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ployz_core::MachineLayout;
+use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
+use ployz_core::host_preparation::{PrepSteps, StateError, read_state};
+use ployz_core::probe_document::ProbeDocument;
 use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, Hold, KeyError};
 pub(crate) use enroll::Committed;
 use probe::Probes;
-use wire::{Answer, CheckinRequest, PrepState, Wait};
+use wire::{Answer, CheckinRequest, PrepRecord, Wait, host_report};
 pub(crate) use wire::{
-    Attempt, DOCKER_INSTALL_FAILED, DockerPrep, EnrollInstruction, Issue, Prep, Probe, StopReason,
-    ZfsPrep,
+    Attempt, DOCKER_INSTALL_FAILED, DockerPrep, EnrollInstruction, Issue, Prep, StopReason, ZfsPrep,
 };
 
 const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
@@ -50,19 +54,27 @@ pub(crate) const NO_CLUSTER_WHY: &str = "Enroll one server in Ployz Cloud to sta
 pub(crate) struct Paths {
     pub(crate) checkin_dir: PathBuf,
     pub(crate) prepare_state: PathBuf,
+    /// The lock ployzd holds while it prepares this host.
+    pub(crate) prepare_lock: PathBuf,
     pub(crate) token_file: PathBuf,
 }
 
 impl Paths {
-    pub(crate) const CHECKIN_DIR: &str = "/var/lib/ployz-checkin";
-    pub(crate) const TOKEN_FILE: &str = "/etc/ployz/fleet-token";
-
+    /// This host's check-in files, reading the Fleet Token from `token_file`.
     pub(crate) fn system(token_file: PathBuf) -> Self {
+        let layout = MachineLayout::production();
         Self {
-            checkin_dir: PathBuf::from(Self::CHECKIN_DIR),
-            prepare_state: PathBuf::from("/var/lib/ployz/prepare/state.json"),
+            checkin_dir: layout.checkin_dir(),
+            prepare_state: layout.prepare_state(),
+            prepare_lock: layout.prepare_lock(),
             token_file,
         }
+    }
+
+    /// This host's check-in files, reading the Fleet Token from where `ployz server checkin`
+    /// defaults to.
+    pub(crate) fn production() -> Self {
+        Self::system(MachineLayout::production().fleet_token())
     }
 
     pub(crate) fn key(&self) -> PathBuf {
@@ -79,11 +91,6 @@ impl Paths {
 
     pub(crate) fn loop_lock(&self) -> PathBuf {
         self.checkin_dir.join(LOOP_LOCK)
-    }
-
-    /// The lock ployzd holds while it prepares this host.
-    fn prepare_lock(&self) -> PathBuf {
-        self.prepare_state.with_file_name("lock")
     }
 }
 
@@ -168,7 +175,7 @@ pub(crate) enum CheckinEnd {
 }
 
 pub(crate) trait Host {
-    async fn probe(&self) -> Result<Probe, String>;
+    async fn probe(&self) -> Result<ProbeDocument, String>;
     fn hostname(&self) -> String;
     /// Whether systemd says `ployz-prepare` runs.
     async fn prepare_running(&self) -> Result<bool, String>;
@@ -221,7 +228,7 @@ impl System {
 }
 
 impl Host for System {
-    async fn probe(&self) -> Result<Probe, String> {
+    async fn probe(&self) -> Result<ProbeDocument, String> {
         let run = |error: io::Error| format!("run {}: {error}", self.ployzd.display());
         let child = tokio::process::Command::new(&self.ployzd)
             .args(["install", "--probe", "--json"])
@@ -307,7 +314,7 @@ pub(crate) async fn local_machine(timeout: Duration) -> Option<ployz_core::Machi
     use ployz_core::{InspectRequest, op};
 
     let inspect = async {
-        let connection = Connection::unix(Path::new(crate::connect::DEFAULT_LOCAL_SOCKET)).ok()?;
+        let connection = Connection::unix(ployz_core::MachineLayout::production().socket()).ok()?;
         let mut client = crate::connect::connect_selected_with(
             SelectedConnections {
                 source: ConnectionSource::LocalSocket,
@@ -318,7 +325,10 @@ pub(crate) async fn local_machine(timeout: Duration) -> Option<ployz_core::Machi
         .await
         .ok()?;
         client
-            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+            .call::<op::Inspect>(
+                InspectRequest::default(),
+                Call::read().waiting(crate::cluster::Wait::standard()),
+            )
             .await
             .ok()
     };
@@ -944,15 +954,23 @@ async fn check_in<H: Host>(
             return (next, Some(status));
         }
     };
-    let mut report = probe.report(host.hostname(), &state, preparing, gave_up, prepare_started);
+    let mut report = host_report(
+        probe,
+        host.hostname(),
+        &state,
+        preparing,
+        gave_up,
+        prepare_started,
+    );
     report.blockers.extend(stale);
     report.blockers.extend(member);
     report.blockers.extend(port_taken);
     status.blockers.clone_from(&report.blockers);
     let request = CheckinRequest {
-        protocol_version: wire::PROTOCOL_VERSION,
+        protocol_version: CHECKIN_PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
         cli_version: env!("CARGO_PKG_VERSION"),
+        enroll_options: ENROLL_OPTIONS,
         report: &report,
         prep: Some(prep),
         attempt: status.attempt.as_ref(),
@@ -1173,18 +1191,21 @@ pub(crate) fn record(status: &LocalCheckin, paths: &Paths) {
 
 /// ployzd's preparation state and when it was last written, or none when there is none or it
 /// can't be read.
-fn read_prep_state(path: &Path) -> Option<(PrepState, Option<DateTime<Utc>>)> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            crate::ui::note(format!("Could not read {}: {error}", path.display()));
+fn read_prep_state(path: &Path) -> Option<(PrepSteps, Option<DateTime<Utc>>)> {
+    let note = |cause: &dyn std::fmt::Display| {
+        crate::ui::note(format!("Could not read {}: {cause}", path.display()));
+    };
+    let state = match read_state(path) {
+        Ok(state) => state?,
+        Err(StateError::Unreadable(error)) => {
+            note(&error);
+            return None;
+        }
+        Err(StateError::Malformed(error)) => {
+            note(&error);
             return None;
         }
     };
-    let state = serde_json::from_slice(&bytes)
-        .inspect_err(|error| crate::ui::note(format!("Could not read {}: {error}", path.display())))
-        .ok()?;
     let written = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok()
@@ -1222,8 +1243,8 @@ async fn observe_liveness<H: Host>(host: &H, paths: &Paths) -> (Liveness, Vec<St
     if let Err(why) = &unit {
         notes.push(format!("Could not read {}: {why}", unit::PREPARE));
     }
-    let lock = paths.prepare_lock();
-    let liveness = match (unit, host.preparation_marked(&lock)) {
+    let lock = &paths.prepare_lock;
+    let liveness = match (unit, host.preparation_marked(lock)) {
         (Ok(_), Ok(true)) => {
             notes.push(format!(
                 "{} is stopped, but a preparation run holds {}; waiting for it.",
@@ -1254,6 +1275,11 @@ async fn observe_liveness<H: Host>(host: &H, paths: &Paths) -> (Liveness, Vec<St
         (Err(_), Ok(false) | Err(_)) => Liveness::Unknown,
     };
     (liveness, notes)
+}
+
+/// Whether this process runs as root.
+pub(crate) fn process_is_root() -> bool {
+    rustix::process::geteuid().is_root()
 }
 
 /// Whether a preparation run marks the lock at `lock`. ployzd's run puts a whole-file write lock
@@ -1378,7 +1404,7 @@ enum PrepareRun {
 /// last start, up to [`PREPARE_TRIES`] times. A run's last record mid-step is its latest save:
 /// the ZFS step saves what it adds as it goes, without a new time of its own.
 fn preparation(
-    state: Option<&PrepState>,
+    state: Option<&PrepSteps>,
     written: Option<DateTime<Utc>>,
     liveness: Liveness,
     retries: u32,

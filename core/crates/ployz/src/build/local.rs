@@ -2,17 +2,11 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use ployz_build::{BuildError, BuiltImage, Output, OutputScrub, Staged, remote::Definition};
+use ployz_build::{
+    BuildError, BuiltImage, Output, OutputScrub, Staged, capture, remote::Definition,
+};
 
 use super::{CapturedBuild, CapturedTarget, Error, invalid};
-
-/// Variables through which a GitHub Actions runner exposes its build cache service.
-const ACTIONS_CACHE_VARIABLES: [&str; 4] = [
-    "ACTIONS_CACHE_URL",
-    "ACTIONS_RESULTS_URL",
-    "ACTIONS_RUNTIME_TOKEN",
-    "ACTIONS_CACHE_SERVICE_V2",
-];
 
 /// One completed image and the Docker repository its Service names.
 pub struct LocalImage {
@@ -118,14 +112,18 @@ impl CapturedBuild {
                 "PATH".to_owned(),
                 std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
             ),
-            ("HOME".to_owned(), path(&root.join("private"))),
-            (
-                "DOCKER_CONFIG".to_owned(),
-                path(&root.join("private/docker")),
-            ),
+            ("HOME".to_owned(), path(&capture::private(root))),
+            ("DOCKER_CONFIG".to_owned(), path(&capture::docker(root))),
         ]);
-        for name in ACTIONS_CACHE_VARIABLES {
-            if let Ok(value) = std::env::var(name) {
+        let (cache, cache_scope) = match &self.local_cache {
+            super::LocalCache::Runner => (true, None),
+            super::LocalCache::Pinned(scope) => (scope.is_some(), scope.as_deref()),
+        };
+        // Only the cache service's own variables: the run's token credentials stay here.
+        for name in ployz_build::GITHUB_CACHE_ENV {
+            if let Ok(value) = std::env::var(name)
+                && cache
+            {
                 environment.insert(name.to_owned(), value);
             }
         }
@@ -136,7 +134,7 @@ impl CapturedBuild {
         let scrub = self.opened.as_ref().map(OutputScrub::new);
         let request = ployz_build::Request {
             image_contexts: &definition.image_contexts,
-            compose_file: Path::new("compose.yaml"),
+            compose_file: Path::new(capture::COMPOSE),
             sealed_override,
             working_dir: root,
             environment: &environment,
@@ -148,6 +146,7 @@ impl CapturedBuild {
             no_cache: false,
             pull: false,
             sealed: self.opened.is_some(),
+            cache_scope,
         };
         let images = execute(&request, scrub.as_ref()).map_err(build)?;
         Ok((captured, images))
@@ -256,6 +255,7 @@ mod tests {
         container.environment.insert(
             "RAILPACK_BUILD_CMD".into(),
             ployz_core::EnvValue::Sealed(ployz_core::SealedValue {
+                environment: None,
                 sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
                 scope: ployz_core::SealedScope::Shared,
                 key: "RAILPACK_BUILD_CMD".into(),
@@ -295,6 +295,7 @@ mod tests {
             container.environment.insert(
                 name.into(),
                 ployz_core::EnvValue::Sealed(ployz_core::SealedValue {
+                    environment: None,
                     sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
                     scope: ployz_core::SealedScope::Shared,
                     key: name.into(),

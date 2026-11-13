@@ -11,12 +11,13 @@ use std::{
 
 use crate::machine_pool::DEVICE_BACKED_POOL_NAME;
 use ployz_core::StoragePreparation;
+use ployz_core::probe_document::{Blocker, OsRelease, Virtualization};
 
 use super::assess::{
-    Filesystem, Virtualization, ZFS_SMOKE_BYTES, read_secure_boot_variable, read_virtualization,
+    ZFS_SMOKE_BYTES, read_root_filesystem, read_secure_boot_variable, read_virtualization,
     root_reserve_blocker, secure_boot_blocker, virtualization_blocker, zfs_os_route,
 };
-use super::os_release::OsRelease;
+use super::zfs_route::ZfsRoute;
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
     host::write_file_atomically,
@@ -163,12 +164,7 @@ fn existing_device_pool(device: &Path) -> Result<bool, Error> {
     if !command_exists("zpool") {
         return Ok(false);
     }
-    let pools = zpool_stdout([
-        "list",
-        "-Hp",
-        "-o",
-        "name,size,allocated,free,health,readonly",
-    ])?;
+    let pools = zpool_stdout(crate::machine_pool::ZPOOL_LIST)?;
     let pool = crate::machine_pool::one_usable(&pools)
         .map_err(|error| refuse(STAGE, error.to_string()))?;
     let device = fs::canonicalize(device).map_err(|source| Error::Io {
@@ -212,12 +208,7 @@ fn existing_device_pool(device: &Path) -> Result<bool, Error> {
     }
     let status = zpool_stdout(["status", "-LP", DEVICE_BACKED_POOL_NAME])?;
     require_device_backing(&status, &device)?;
-    let pools = zpool_stdout([
-        "list",
-        "-Hp",
-        "-o",
-        "name,size,allocated,free,health,readonly",
-    ])?;
+    let pools = zpool_stdout(crate::machine_pool::ZPOOL_LIST)?;
     match crate::machine_pool::one_usable(&pools)
         .map_err(|error| refuse(STAGE, error.to_string()))?
     {
@@ -290,83 +281,34 @@ fn partition_of(partition: &Path, disk: &Path) -> bool {
 
 pub(super) const STAGE: &str = "prepare ZFS storage";
 
-/// How the ZFS kernel module becomes loadable on the Machine's distro.
-#[derive(Clone, Copy)]
-pub(super) enum ZfsRoute {
-    /// Canonical's prebuilt module package for the running kernel.
-    Ubuntu,
-    /// Debian's `zfs-dkms` from `contrib`, built on the Machine and rebuilt by DKMS for new
-    /// kernels. `keyring` is the path the release's own images name: apt refuses a source whose
-    /// Signed-By differs from another entry for the same suite.
-    Debian {
-        codename: &'static str,
-        keyring: &'static str,
-    },
-    /// The pinned [`OPENZFS_VERSION`] built on the Machine into DKMS and userspace RPMs.
-    AmazonLinux,
-}
-
-impl ZfsRoute {
-    pub(super) fn for_os(os: &OsRelease) -> Option<Self> {
-        match (os.id.as_str(), os.version_id.as_deref()) {
-            ("ubuntu", _) => Some(Self::Ubuntu),
-            ("debian", Some("12")) => Some(Self::Debian {
-                codename: "bookworm",
-                keyring: "debian-archive-keyring.gpg",
-            }),
-            ("debian", Some("13")) => Some(Self::Debian {
-                codename: "trixie",
-                keyring: "debian-archive-keyring.pgp",
-            }),
-            (_, Some("2023")) if os.is_amazon_linux() => Some(Self::AmazonLinux),
-            _ => None,
-        }
-    }
-
-    /// Whether the Machine builds the module itself, unsigned, rather than installing Ubuntu's.
-    pub(super) fn builds_module(self) -> bool {
-        !matches!(self, Self::Ubuntu)
-    }
-
-    pub(super) fn prepare_minutes(self) -> u32 {
-        match self {
-            Self::Ubuntu => 1,
-            Self::Debian { .. } => 10,
-            Self::AmazonLinux => 20,
-        }
-    }
-
-    pub(super) fn package_manager(self) -> &'static str {
-        match self {
-            Self::Ubuntu | Self::Debian { .. } => "apt-get",
-            Self::AmazonLinux => "dnf",
-        }
-    }
-
-    fn install(self, paths: &InstallPaths, os: &OsRelease, kernel: &str) -> Result<(), Error> {
-        super::prepare::install_waiting_for_preparation(
-            paths,
-            self.package_manager(),
-            || match self {
-                Self::Ubuntu => install_zfs_packages(kernel),
-                Self::Debian { codename, keyring } => prepare_debian_zfs(
-                    &paths.apt_dir,
-                    os,
-                    codename,
-                    keyring,
-                    kernel,
-                    super::prepare::prepared_dkms_build(paths, kernel),
-                ),
-                Self::AmazonLinux => prepare_amazon_zfs(
-                    &super::prepare::prepare_dir(paths).join("zfs"),
-                    &paths.modules_load_dir,
-                    os,
-                    kernel,
-                    OPENZFS_SHA256,
-                ),
-            },
-        )
-    }
+fn install_route(
+    route: ZfsRoute,
+    paths: &InstallPaths,
+    os: &OsRelease,
+    kernel: &str,
+) -> Result<(), Error> {
+    super::prepare::install_waiting_for_preparation(
+        paths,
+        route.package_manager(),
+        || match route {
+            ZfsRoute::Ubuntu => install_zfs_packages(kernel),
+            ZfsRoute::Debian { codename, keyring } => prepare_debian_zfs(
+                &paths.apt_dir,
+                os,
+                codename,
+                keyring,
+                kernel,
+                super::prepare::prepared_dkms_build(paths, kernel),
+            ),
+            ZfsRoute::AmazonLinux => prepare_amazon_zfs(
+                &paths.layout.prepare_zfs_dir(),
+                &paths.modules_load_dir,
+                os,
+                kernel,
+                OPENZFS_SHA256,
+            ),
+        },
+    )
 }
 
 fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
@@ -381,7 +323,7 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     require_host_root_reserve()?;
     let cap = zfs_arc_max()?;
     if install {
-        route.install(paths, &os, &kernel)?;
+        install_route(route, paths, &os, &kernel)?;
     }
     // Written only once ZFS is in place, so every refusal above leaves the host untouched.
     persist_zfs_arc_max(paths, cap)?;
@@ -392,8 +334,8 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
 }
 
 pub(super) fn zfs_preflight(paths: &InstallPaths) -> Result<(OsRelease, ZfsRoute), Error> {
-    let refusal = |reason: super::assess::Blocker| refuse(STAGE, reason.message);
-    let os = OsRelease::read(&paths.os_release)?;
+    let refusal = |reason: Blocker| refuse(STAGE, reason.message);
+    let os = super::os_release::read(&paths.os_release)?;
     let route = zfs_os_route(&os).map_err(refusal)?;
     if route.builds_module() {
         let secure_boot = read_secure_boot_variable(&paths.secure_boot)?;
@@ -835,7 +777,7 @@ pub(super) fn uname(arg: &str, stage: &str) -> Result<String, Error> {
 }
 
 fn require_host_root_reserve() -> Result<(), Error> {
-    match root_reserve_blocker(Filesystem::read_root()?) {
+    match root_reserve_blocker(read_root_filesystem()?) {
         Some(blocker) => Err(refuse(STAGE, blocker.message)),
         None => Ok(()),
     }

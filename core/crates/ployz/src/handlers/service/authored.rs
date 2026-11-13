@@ -1,6 +1,7 @@
 //! Authored Services in the Config Store: add, list, inspect, rename and remove.
 //! Every change is staged in Working State until a Deploy ships it.
 
+use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_store::{
@@ -10,10 +11,11 @@ use ployz_store::{
 };
 use serde::Serialize;
 
-use super::super::store::{self, Next};
+use super::super::store;
 use super::super::{Error, leaf_matches};
 use crate::cli::{positional, value};
-use crate::ui::{Cell, Fields, Hint, Table, Tone};
+use crate::ui::{Cell, Fields, Table, Tone};
+use ployz_core::Hint;
 
 pub(crate) fn add_command(command: Command) -> Command {
     store::scoped(command.about("Add a Service; it is staged until a Deploy"))
@@ -70,7 +72,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         store.write(&CreateGitService {
             id,
             environment,
-            name: name.clone(),
+            name,
             repository: ployz_store::RepositoryName::parse(repository)?,
             branch,
         })?
@@ -79,7 +81,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         store.write(&CreateService {
             id,
             environment,
-            name: name.clone(),
+            name,
             image,
             template: None,
         })?
@@ -237,7 +239,8 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
 /// A staged Service change and, when it changed anything, `ployz deploy` to ship it.
 fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<(), Error> {
     let hint = (!result.staged.is_empty()).then(|| store::next(matches, &["deploy"]));
-    crate::ui::finish(&Next::new(result, hint.clone()), || {
+    let followed = Next::new(result, hint);
+    crate::ui::finish(&followed, || {
         // A mutation always says what it did, nothing included.
         if result.staged.is_empty() {
             crate::ui::stream(format_args!(
@@ -253,9 +256,7 @@ fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<()
         for reference in &result.broken {
             crate::ui::stream(format_args!("  {}", store::broken_line(matches, reference)));
         }
-        if let Some(hint) = hint.clone() {
-            crate::ui::hint(&Hint::Next(hint));
-        }
+        followed.say();
     })
 }
 

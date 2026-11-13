@@ -7,7 +7,9 @@ use crate::corrosion::{
 use crate::sealing_key::SealingKey;
 
 mod backfill;
+mod doors;
 mod harness;
+mod join_approval;
 mod policy;
 mod recovery;
 use harness::*;
@@ -22,6 +24,8 @@ async fn register_rejects_an_uninitialized_machine() {
         LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap());
     let empty = local
         .register(RegisterRequest {
+            join_approval: None,
+            join_confirmation: None,
             machine_id: MachineId::random(),
             assigned_subnet: None,
             advertised_endpoints: Vec::new(),
@@ -178,7 +182,7 @@ async fn register_carries_the_entrys_devices_to_the_joiner() {
         .await
         .unwrap();
     assert_eq!(
-        joiner.record().management_scope(device.as_bytes()),
+        joiner.record().management_scope(&device.into()),
         Some(ployz_core::ManagementScope::Full)
     );
 
@@ -416,6 +420,8 @@ async fn register_replaces_a_pending_row_that_carries_a_daemon_version() {
     identity.runtime.daemon_version = "0.3.16".into();
     local.register(identity.clone()).await.unwrap();
     let rekeyed = RegisterRequest {
+        join_approval: None,
+        join_confirmation: None,
         public_key: WireGuardPublicKey([42; 32]),
         ..identity
     };
@@ -490,6 +496,8 @@ async fn a_register_with_another_key_over_a_published_row_is_replaced_and_its_pu
     replicated.publish_local_machine(&joined).await.unwrap();
 
     let rekeyed = RegisterRequest {
+        join_approval: None,
+        join_confirmation: None,
         public_key: WireGuardPublicKey([43; 32]),
         ..identity
     };

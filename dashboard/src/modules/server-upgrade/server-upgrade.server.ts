@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, MachineName, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
+import type { MachineId, MachineName, MachineUpgradeAttempt, MachineUpgradeAttemptId, Signed } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
-import { Data, Effect } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
 import { organization } from "#/modules/organization/tables";
@@ -12,8 +12,10 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import { machineUpgradeAttemptId, rpcErrorCode } from "#/modules/runtime/ployz.server";
+import { machineUpgradeAttemptId, rpcErrorCode, rpcErrorMessage } from "#/modules/runtime/ployz.server";
 import {
+  approvedChannel,
+  type ChannelApproval,
   DEFAULT_SERVER_UPGRADE_SETTINGS,
   endEvidence,
   type EndEvidence,
@@ -32,6 +34,8 @@ import {
 } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { AppConfig } from "#/server/config.server";
+import { Validation } from "#/server/public-error";
 import { Database } from "#/server/database.server";
 
 /** The daemon reads its Release Channel pointers here by default (core `RELEASE_CHANNEL_URL`). */
@@ -43,6 +47,12 @@ const pointers = new Map<string, { readonly release: string | null; readonly rea
 /** The Release Channel pointer could not be read; nothing is cached, so the next read tries again. */
 export class ReleasePointerUnreadable extends Data.TaggedError("ReleasePointerUnreadable")<{
   readonly path: string;
+  readonly cause: unknown;
+}> {}
+
+/** The GitHub release for a version couldn't be read, so its age is unknown; nothing is cached. */
+export class ReleaseDateUnreadable extends Data.TaggedError("ReleaseDateUnreadable")<{
+  readonly release: string;
   readonly cause: unknown;
 }> {}
 
@@ -73,6 +83,34 @@ export const channelRelease = Effect.fn("ServerUpgrade.channelRelease")(function
   return release;
 });
 
+const RELEASES_URL = "https://api.github.com/repos/getployz/ployz/releases/tags";
+const GithubRelease = Schema.Struct({ published_at: Schema.DateFromString });
+// ponytail: a published release's date never changes; one entry per release Cloud has upgraded toward.
+const publishedAt = new Map<string, number>();
+
+/** When `release` was published on GitHub, in epoch ms. Cached for good once read; fails when it can't be read. */
+const releasePublishedAt = Effect.fn("ServerUpgrade.releasePublishedAt")(function* (release: string) {
+  const cached = publishedAt.get(release);
+  if (cached !== undefined) return cached;
+  const body = yield* Effect.tryPromise({
+    try: async (signal) => {
+      const response = await fetch(`${RELEASES_URL}/v${release}`, {
+        headers: { accept: "application/vnd.github+json" },
+        signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    },
+    catch: (cause) => new ReleaseDateUnreadable({ release, cause }),
+  });
+  const { published_at } = yield* Schema.decodeUnknownEffect(GithubRelease)(body).pipe(
+    Effect.mapError((cause) => new ReleaseDateUnreadable({ release, cause })),
+  );
+  const at = published_at.getTime();
+  publishedAt.set(release, at);
+  return at;
+});
+
 /** The Release Channel the Organization chose; no settings row reads as the default. */
 export const organizationReleaseChannel = Effect.fn("ServerUpgrade.channel")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
@@ -88,8 +126,24 @@ export const organizationServerUpgradeSettings = Effect.fn("ServerUpgrade.settin
     id: organizationServerUpgrades.organizationId,
     automatic: organizationServerUpgrades.automatic,
     channel: organizationServerUpgrades.channel,
+    approval: organizationServerUpgrades.channelApproval,
   }).from(organizationServerUpgrades).where(eq(organizationServerUpgrades.organizationId, organizationId));
   return serverUpgradeSettings(rows);
+});
+
+/**
+ * The approval an upgrade along `channel` carries: the one a person last approved, when it names `channel`. A channel
+ * changed without one (from an older CLI, or an agent) sends none, so a Server that enforces says to approve it.
+ */
+const organizationChannelApproval = Effect.fn("ServerUpgrade.channelApproval")(function* (
+  organizationId: string,
+  channel: ReleaseChannel,
+) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ approval: organizationServerUpgrades.channelApproval }).from(organizationServerUpgrades)
+    .where(eq(organizationServerUpgrades.organizationId, organizationId));
+  const approval = row?.approval ?? null;
+  return approvedChannel(approval)?.channel === channel ? approval : null;
 });
 
 /** Each Server's latest Upgrade attempt in the Organization, keyed by Machine ID. */
@@ -144,8 +198,9 @@ const openSession = Effect.fn("ServerUpgrade.openSession")(function* (organizati
 const observeOnlineServers = Effect.fn("ServerUpgrade.observeOnline")(function* (organizationId: string) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const unanswered = new Set(frame.unanswered);
   return frame.machines.flatMap(({ machine, membership }) =>
-    serverStatus({ membership, runningBuilds: machine.runtime.running_builds }) === "online"
+    serverStatus({ membership, runningBuilds: machine.runtime.running_builds, unanswered: unanswered.has(machine.id) }) === "online"
       ? [{ id: machine.id, name: machine.name, version: machine.runtime.daemon_version }]
       : []);
 }, Effect.scoped);
@@ -175,7 +230,8 @@ const haltedReleases = Effect.fn("ServerUpgrade.halted")(function* (organization
 /**
  * Every Server observed online and idle on a release older than the newest on `channel` for its line, in name order:
  * a Server ahead of it (on a beta, after switching to Stable) isn't behind. An automatic rollout also skips a release
- * the Organization is halted on. A Cluster Cloud can't reach has none.
+ * the Organization is halted on, and one published less than `automaticUpgradeReleaseAgeMs` ago (72 hours unless
+ * configured). A Cluster Cloud can't reach, or a release whose date can't be read, has none.
  */
 export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function* (
   organizationId: string,
@@ -183,17 +239,22 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
   channel: ReleaseChannel,
 ) {
   const online = yield* observeOnlineServers(organizationId);
-  const halted = trigger === "automatic" ? yield* haltedReleases(organizationId) : new Set<string>();
+  const automatic = trigger === "automatic";
+  const halted = automatic ? yield* haltedReleases(organizationId) : new Set<string>();
+  const minimumAge = automatic ? (yield* AppConfig).automaticUpgradeReleaseAgeMs : 0;
   const behind: Array<{ readonly id: MachineId; readonly name: string; readonly status: "online" }> = [];
   for (const server of online) {
     const line = releaseLine(server.version);
     const release = line === null ? null : yield* channelRelease(channel, line);
-    if (release !== null && isBehind(server.version, release) && !halted.has(release)) behind.push({ ...server, status: "online" });
+    if (release === null || !isBehind(server.version, release) || halted.has(release)) continue;
+    if (minimumAge > 0 && Date.now() - (yield* releasePublishedAt(release)) < minimumAge) continue;
+    behind.push({ ...server, status: "online" });
   }
   return sortServers(behind).map(({ id }) => id);
 }, Effect.catchIf(
-  (error) => error instanceof ServerUpgradeUnreachable || error instanceof ReleasePointerUnreadable,
-  (error) => Effect.logInfo("The Cluster or a Release Channel pointer can't be read; no Server is upgraded.", error)
+  (error) => error instanceof ServerUpgradeUnreachable || error instanceof ReleasePointerUnreadable
+    || error instanceof ReleaseDateUnreadable,
+  (error) => Effect.logInfo("The Cluster, a Release Channel pointer or a release's date can't be read; no Server is upgraded.", error)
     .pipe(Effect.as<MachineId[]>([])),
 ));
 
@@ -252,7 +313,8 @@ const noteAttempt = Effect.fn("ServerUpgrade.note")(function* (organizationId: s
 
 /**
  * Ask the Server to Upgrade along `channel`, never to an exact version. Busy (a build or another installation just
- * started) drops the row: a refused request is no attempt.
+ * started) drops the row: a refused request is no attempt. A Server that refuses the request itself, as one enforcing
+ * device approval does with no approved Release Channel, answers `refused` with its reason, which ends the attempt.
  */
 export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")(function* (input: {
   readonly organizationId: string;
@@ -260,12 +322,16 @@ export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")
   readonly attemptId: MachineUpgradeAttemptId;
   readonly channel: ReleaseChannel;
 }) {
+  const approval = yield* organizationChannelApproval(input.organizationId, input.channel);
   const session = yield* openSession(input.organizationId);
-  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel).pipe(
+  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel, approval).pipe(
     Effect.map((attempt) => ({ busy: false as const, attempt })),
     Effect.catchIf((error) => rpcErrorCode(error) === "conflict", () => Effect.succeed({ busy: true as const })),
+    Effect.catchIf((error) => rpcErrorCode(error) === "forbidden", (error) =>
+      Effect.succeed({ busy: false as const, refused: rpcErrorMessage(error) ?? "The Server refused the upgrade." })),
     Effect.mapError((cause) => new ServerUpgradeUnreachable({ operation: "request machine upgrade", cause })),
   );
+  if ("refused" in attempt) return { refused: attempt.refused };
   if (attempt.busy) {
     yield* dropUpgradeAttempt(input.organizationId, input.attemptId);
     return null;
@@ -286,8 +352,9 @@ type AttemptOnServer = {
  * restarts mid-Upgrade).
  */
 const resendUpgradeOnServer = Effect.fn("ServerUpgrade.resendOnServer")(function* (input: AttemptOnServer) {
+  const approval = yield* organizationChannelApproval(input.organizationId, input.channel);
   const session = yield* openSession(input.organizationId);
-  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel);
+  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel, approval);
   yield* noteAttempt(input.organizationId, attempt);
   return attempt;
 }, Effect.scoped, Effect.catch((error) =>
@@ -480,6 +547,7 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
       id: organizationServerUpgrades.organizationId,
       automatic: organizationServerUpgrades.automatic,
       channel: organizationServerUpgrades.channel,
+      approval: organizationServerUpgrades.channelApproval,
     });
   // The switch sends `automatic` only when it flips; an extra Rollout queues behind the Organization's one and finds
   // nothing behind, and without a founded Cluster `listServersBehind` returns [].
@@ -487,7 +555,63 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
     yield* sendInngestEvent(createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null }));
   }
   // ponytail: an upsert always returns its row; the fallback only satisfies the type.
-  return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, ...settings };
+  return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, approval: null, ...settings };
+});
+
+/** The upgrade policy as the CLI reads it, with the channel and generation a person last approved. */
+export function upgradeChannelView(settings: { readonly automatic: boolean; readonly channel: ReleaseChannel; readonly approval: Signed | null }) {
+  const approved = approvedChannel(settings.approval);
+  return {
+    channel: settings.channel,
+    automatic: settings.automatic,
+    approved: approved === null ? null : { channel: approved.channel, generation: approved.generation },
+  };
+}
+
+/** `server upgrade-policy set` reads the kept approval's generation here, to sign the next. */
+export const readUpgradeChannel = Effect.fn("ServerUpgrade.readChannel")(function* (actor: Actor, organizationSlug: string) {
+  const { organization } = yield* requireAccess(actor, organizationSlug, "servers:read");
+  return upgradeChannelView(yield* organizationServerUpgradeSettings(organization.id));
+});
+
+/**
+ * Keep a person's approval of a Release Channel, and follow it: every upgrade then requests that channel and carries
+ * the approval. Cloud reads the body only to keep its settings in step; each Server that enforces device approval
+ * checks the signature, the Cluster and the generation itself. An approval no newer than the kept one is refused, so
+ * the settings never step back to an older choice.
+ */
+export const approveUpgradeChannel = Effect.fn("ServerUpgrade.approveChannel")(function* (
+  actor: Actor,
+  input: { readonly organizationSlug: string; readonly approval: ChannelApproval },
+) {
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
+  const approved = approvedChannel(input.approval);
+  if (approved === null) {
+    return yield* new Validation({ message: "That isn't an approval of a Release Channel.", userFacing: true });
+  }
+  const { drizzle } = yield* Database;
+  // SAFETY: `ChannelApproval` decoded the envelope, and Servers check every byte of it.
+  const approval = input.approval as Signed;
+  // The generation check is the upsert's own, so of two concurrent first approvals the second, waiting on the key,
+  // finds the first committed and updates nothing.
+  const kept = sql<number>`coalesce(((${organizationServerUpgrades.channelApproval}->>'body')::jsonb->>'generation')::bigint, 0)`;
+  const [row] = yield* drizzle.insert(organizationServerUpgrades)
+    .values({ organizationId: organization.id, channel: approved.channel, channelApproval: approval })
+    .onConflictDoUpdate({
+      target: organizationServerUpgrades.organizationId,
+      set: { channel: approved.channel, channelApproval: approval, updatedAt: new Date() },
+      setWhere: sql`${kept} < ${approved.generation}`,
+    })
+    .returning({
+      id: organizationServerUpgrades.organizationId,
+      automatic: organizationServerUpgrades.automatic,
+      channel: organizationServerUpgrades.channel,
+      approval: organizationServerUpgrades.channelApproval,
+    });
+  if (row === undefined) {
+    return yield* new Validation({ message: "Someone approved a Release Channel since. Reload and approve again.", userFacing: true });
+  }
+  return row;
 });
 
 const UNCLAIMED = "";

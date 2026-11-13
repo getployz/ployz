@@ -149,7 +149,7 @@ The exact service configuration attached to a Service Container when it is creat
 _Avoid_: Current service spec, canonical service spec
 
 **Namespace**:
-The observer-derived ownership group of the Containers one Environment deploys, named in their labels and Internal DNS. It is not a persisted resource or a workflow. `ployz-system` is reserved for Ployz infrastructure.
+The observer-derived ownership group of the Containers one Environment deploys, named in their labels and Internal DNS. It is not a persisted resource or a workflow. `ployz-system` is reserved for Ployz infrastructure, and `ployz` for the Cluster Name alias.
 _Avoid_: Project (the product grouping), Compose project, deployment resource
 
 **Direct Image Transfer**:
@@ -533,17 +533,29 @@ _Avoid_: replica, endpoint, upstream, Serving Pointer
 The content identity of the Resolved Service Spec fields whose change requires a new Container. Equal shapes are interchangeable Containers. It is derived from observed spec content, not Cluster intent. Service ID is not a Serving Shape.
 _Avoid_: current version, desired generation, Service ID as generation
 
-**Published Serving Shape**:
-The Serving Shape of a published observation. A row in the replicated store keeps no environment and empties Config content, so the shape hashes Config names in place of content, and Containers from an env-only or Config-only change share a shape ([#1419](https://github.com/getployz/ployz/issues/1419)). Ployz compares shapes to match observed Containers to a wanted spec, in drift checks and Global catch-up. Routing follows each Container's `rotation`, not its shape.
-_Avoid_: Serving Shape for observation rows
-
 **Public Ingress**:
 The public HTTP request path from DNS resolution through a Machine's Ingress Proxy to a Serving Container. It is a diagnostic boundary, not a single process or globally authoritative edge.
 _Avoid_: Edge
 
 **Ingress Proxy**:
-The Machine-local process that receives published HTTP traffic and routes it toward Serving Containers. It is one component of Public Ingress, not the whole public request path.
+The Machine-local process that receives published HTTP traffic and routes it toward Serving Containers. It is two Containers: a holder (`ployz-system/ingress-holder`) that owns the Machine's Doors, and Caddy (`ployz-system/ingress`) joined to the holder's network namespace, plus a Tunnel Connector when the Tunnel Door is open. Caddy keeps the routing authority; the holder only keeps the ports bound while Caddy is replaced. The daemon pins every image and sets them through SetIngressDoors; no client builds their specs. It is one component of Public Ingress, not the whole public request path.
 _Avoid_: Edge, public ingress as a process
+
+**Door**:
+A way published HTTP traffic enters a Machine's Ingress Proxy. The Public Door is host ports 80 and 443, which the holder owns. The Tunnel Door is a Tunnel Connector dialling Caddy's 8480 loopback listener, with the holder publishing no port. A Cluster's Doors are one set for every ingress Machine; `{Public, Tunnel}` holds both while a switch runs. The set is declared: the operator's client writes it to the replicated `cluster` key `doors` before it asks any Machine to change, and a Cluster that never declared one is read from its newest door Containers as before. A declared set is a fact commands and joiners follow, and no loop converges Machines toward it. A Machine's open Doors are read from its running door Containers, and a Machine with none is closed. Caddy's 8480 listener is not a Door on its own.
+_Avoid_: Port mapping, ingress port, mode
+
+**Tunnel Connector**:
+The reserved cloudflared Container (`ployz-system/tunnel`) that opens the Tunnel Door: joined to the holder's network namespace, it keeps outbound connections to Cloudflare and proxies each request to Caddy's loopback listener. It runs on the token the daemon opened from the sealed one its spec carries, read from a file on the Machine. The daemon pins its image. It never publishes a port, and it is not the Ingress Proxy.
+_Avoid_: cloudflared sidecar, tunnel service
+
+**Private Access**:
+Reaching a Cluster's private network from a tailnet. Every Machine runs one reserved Tailscale Container (`ployz-system/tailscale`, the router) in userspace mode that advertises the Cluster network as a subnet route, so a device on the tailnet reaches Services at their private addresses. It runs on every Machine whatever its Machine Roles, since a router on each is what lets one fail over to another. The daemon pins the image and builds the spec itself, and runs it on the auth key it opened from the sealed one the spec carries, read from a file in memory on the Machine, so a reboot clears it and the daemon writes it again before the router can restart. The node the router registers is kept on the Machine's disk, so a restart or a reboot brings back the same node with its approved route, and the key is read only when the node first joins. Private Access is one set for the Cluster, turned on and off through SetPrivateAccess. Turning it off forgets the node with the key, so a later on registers a new one, and a Machine that could not remove its router says so and starts no router until off finishes. The node state carries an ID that each router created to mount it is labelled with, and a Machine keeps or starts only a router whose label is the ID on disk, so a router that outlived a forgotten node is replaced, not kept. Routes are approved by hand in the Tailscale admin console. The router is not the Ingress Proxy and opens no Door, and the Services it reaches see the router's Container Address as the client.
+_Avoid_: VPN, Tailscale integration, tailnet Service
+
+**Platform sealing purpose**:
+A named use of the Cluster's Sealing Key outside Sealed Environment values, such as `ingress-tunnel` for the tunnel token and `private-access` for the Tailscale auth key. Each purpose binds its ciphertext to the Cluster and to itself, so a token sealed for one purpose opens for no other and for no other Cluster. A client seals with the Cluster's public key; only a Machine holding the key opens it, and no RPC reads the plaintext back.
+_Avoid_: Sealed secret, generic sealing
 
 **Published Ingress Configuration**:
 A validated routing configuration made available to a Machine's Ingress Proxy. Publication records the daemon's completed handoff; it does not claim that the Ingress Proxy has adopted the configuration or successfully served traffic from it.
@@ -552,6 +564,10 @@ _Avoid_: Activated configuration, accepted configuration
 **Internal DNS Answer**:
 An observer-local, TTL-zero A answer derived from Serving Containers and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, Cluster-wide endpoint set
+
+**Cluster Name**:
+One DNS label naming a Cluster, stored as the optional replicated `cluster` key `name`; the last name written wins. Internal DNS answers `<service>.<namespace>.<cluster>.ployz.internal` as `<service>.<namespace>.internal` when the label is this Machine's read of the name, and NXDOMAIN for any other label or while the Cluster has none. It is not unique: two Clusters may share one.
+_Avoid_: cluster ID, Cluster Domain, Organization slug
 
 **Caller Namespace**:
 The Namespace attributed to an Internal DNS query by matching its source Container Address to exactly one visible Service Container or Hook Container. It is observer-relative attribution, not authenticated identity; zero or several matches mean there is no Caller Namespace. A `{service}.internal` query uses that Namespace as the missing label; without a Caller Namespace the name is NXDOMAIN.
@@ -631,12 +647,16 @@ One named holder slot on a Machine, such as `cloud`, a signed-in computer's `cli
 _Avoid_: Cloud Pairing, user, session, per-user permission
 
 **Management Scope**:
-What a Management Client may do on a Machine, read from its slot: a Device slot holding the key its label names is Full, every other slot is Operator, `cloud` and `cli-<id>` included. Operator drives the Machine but cannot Exec or open a tunnel, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
+What a Management Client may do on a Machine, read from its slot: a Device slot holding the key its label names is Full, every other slot is Operator, `cloud` and `cli-<id>` included. Operator drives the Machine but cannot Exec or open a tunnel, cannot Upgrade to an exact release that no Release Channel resolves to, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
 _Avoid_: role, permission level, access tier
 
 **Device**:
 A person's computer a Machine admits at Full Scope, named by the code of its management public key: the first 10 base32 characters of its SHA-256. Its slot is `device-<code>`, and only a Full caller adds or removes one, so Cloud can relay a Device's request but never approve it. A joining Machine takes the issuing member's Devices from its registration, never from Corrosion.
 _Avoid_: device login, signed-in computer (that is a `cli-<id>` Management Client), user, roster as a replicated table
+
+**Passkey**:
+A person's browser WebAuthn credential a Machine trusts to approve Workflows, and automatic deploy rules through a prompt of its own, and nothing else: it opens no connection, signs no envelope, and manages no Device. A session grant it signed never approves a rule, which stands for every future push. It is named like a Device, by the code of its public key, and only a Full caller adds or removes it on each Machine, which records who approved it. Cloud files a registered passkey under its code, but that row makes no Machine trust it.
+_Avoid_: passkey login, passkey Device, approved row
 
 **Management Proof**:
 A Management Client's signature, by its client key, over keying material only one management connection exports, sent first on that connection. The Machine admits the client key it proves, never the connection's transport key, so each process dials under a key of its own and processes holding one Management Capability never share a relay identity. It cannot be replayed on another connection.

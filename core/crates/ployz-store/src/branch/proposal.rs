@@ -7,8 +7,9 @@
 
 use super::pair::{self, Arrival, Claim, Which};
 use super::*;
+use crate::Trusted;
 use crate::id::{ProposalId, RepositoryId};
-use crate::pull_request::PullRequestRef;
+use crate::pr_environment::{self, PullRequestRef};
 use crate::storage::Param;
 
 /// Remove a proposal from a draft: what it still owns there goes back to what the
@@ -444,6 +445,7 @@ pub(crate) fn remove(
     tx: &mut dyn Tx,
     who: &Actor,
     request: &RemoveProposal,
+    trusted: &Trusted,
 ) -> Result<Removed, RpcError> {
     let id = scope::environment(tx, who, &request.environment)?
         .summary
@@ -460,7 +462,7 @@ pub(crate) fn remove(
     if let Some(version) = request.version.as_deref() {
         review::check(&review::review(tx, &into)?, Some(version))?;
     }
-    take_out(tx, &mut into, &proposal)?;
+    take_out(tx, &mut into, &proposal, trusted)?;
     Ok(Removed {
         environment: into.summary,
         removed: true,
@@ -470,7 +472,12 @@ pub(crate) fn remove(
 /// Put back in `into`, whose lock the caller holds, what `proposal` still owns there,
 /// rewind the pair base, and forget the proposal. Refused when another node uses a
 /// node it brought, or a row of one was edited since.
-fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Result<(), RpcError> {
+fn take_out(
+    tx: &mut dyn Tx,
+    into: &mut Environment,
+    proposal: &Proposal,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
     let id = into.summary.id.clone();
     let owned = pair::arrived(tx, &id, Which::Owned(&proposal.id))?;
     let owned_rows = owned.len();
@@ -616,7 +623,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         &[proposal.id.as_str().into()],
     )?;
     // Last: the rows put back are no longer owned, so nothing is left to release.
-    scope::save_working(tx, into)
+    scope::save_working(tx, into, trusted)
 }
 
 /// What an introduced Service carried in besides its configuration: never the
@@ -784,6 +791,7 @@ pub(crate) fn undo(
     tx: &mut dyn Tx,
     who: &Actor,
     sync: &SyncId,
+    trusted: &Trusted,
 ) -> Result<Option<Undone>, RpcError> {
     let rows = tx.query(
         "SELECT r.environment_id, r.proposal_id FROM config_sync_receipt r \
@@ -834,7 +842,7 @@ pub(crate) fn undo(
             Some(&changed.value),
         ));
     }
-    take_out(tx, &mut into, &proposal)?;
+    take_out(tx, &mut into, &proposal, trusted)?;
     Ok(Some(Undone { into: into.summary }))
 }
 
@@ -895,23 +903,21 @@ pub(crate) fn included(
     environment: &EnvironmentId,
 ) -> Result<Vec<Included>, RpcError> {
     let rows = tx.query(
-        "SELECT p.id, p.source_environment_id, p.source_name, p.source_revision, p.last_sync, \
-         p.repository_id, p.number, \
-         (SELECT COUNT(*) FROM config_sync_arrival a \
-          WHERE a.environment_id = p.environment_id AND a.proposal_id = p.id), \
-         COALESCE(r.name, e.name), COALESCE(r.working_revision, e.working_revision), \
-         r.id \
-         FROM config_proposal p JOIN config_environment d ON d.id = p.environment_id \
-         LEFT JOIN config_environment e ON e.id = p.source_environment_id \
-         LEFT JOIN (SELECT q.environment_id AS id, q.repository_id, q.number, \
-          v.project_id, v.name, v.working_revision \
-          FROM config_pr_environment q JOIN config_environment v ON v.id = q.environment_id \
-          JOIN config_environment_branch b ON b.environment_id = q.environment_id \
-          WHERE NOT EXISTS (SELECT 1 FROM config_removal_mark m \
-          WHERE m.environment_id = b.environment_id AND m.state = 'removing')) r \
-         ON r.id <> p.source_environment_id AND r.repository_id = p.repository_id \
-         AND r.number = p.number AND r.project_id = d.project_id \
-         WHERE p.environment_id = ?1 ORDER BY p.source_name, p.id",
+        &format!(
+            "SELECT p.id, p.source_environment_id, p.source_name, p.source_revision, p.last_sync, \
+             p.repository_id, p.number, \
+             (SELECT COUNT(*) FROM config_sync_arrival a \
+              WHERE a.environment_id = p.environment_id AND a.proposal_id = p.id), \
+             COALESCE(r.name, e.name), COALESCE(r.working_revision, e.working_revision), \
+             r.id \
+             FROM config_proposal p JOIN config_environment d ON d.id = p.environment_id \
+             LEFT JOIN config_environment e ON e.id = p.source_environment_id \
+             LEFT JOIN {} \
+             ON r.id <> p.source_environment_id AND r.repository_id = p.repository_id \
+             AND r.number = p.number AND r.project_id = d.project_id \
+             WHERE p.environment_id = ?1 ORDER BY p.source_name, p.id",
+            pr_environment::live_previews()
+        ),
         &[environment.as_str().into()],
     )?;
     let mut included = Vec::with_capacity(rows.len());

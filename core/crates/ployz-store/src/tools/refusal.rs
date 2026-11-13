@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
 
+use super::ToolId;
 use super::step::{DashboardPage, Fix};
+use crate::followup::{FollowUp, Place};
 
 /// A tool's answer: a value, or a [`Refusal`] that says what to call instead.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -69,6 +71,11 @@ impl Call {
             tool: tool.to_owned(),
             input,
         }
+    }
+
+    #[must_use]
+    pub fn to(tool: ToolId, input: Value) -> Self {
+        Self::new(tool.name(), input)
     }
 
     fn same() -> Self {
@@ -258,17 +265,10 @@ pub(crate) fn from_store(error: RpcError, call: &Call, writes: Writes) -> Refusa
                 .collect()
         })
         .unwrap_or_default();
-    if let Some(next) = details.get("next") {
-        for next in next
-            .as_array()
-            .map_or_else(|| vec![next], |all| all.iter().collect())
-        {
-            match store_next(next) {
-                Next::Call(call) => refusal.next.push(call),
-                Next::Fix(fix) => refusal = refusal.with_fix(&fix),
-                Next::Drop => {}
-            }
-        }
+    match FollowUp::of(&details).map(told) {
+        Some(Told::Call(call)) => refusal.next.push(call),
+        Some(Told::Fix(fix)) => refusal = refusal.with_fix(&fix),
+        Some(Told::Nothing) | None => {}
     }
     if let Some(url) = details.get("claim_url").and_then(Value::as_str) {
         refusal = refusal.with_fix(&Fix::Claim { url: url.into() });
@@ -315,180 +315,98 @@ fn sanitize(message: &str, code: &RpcErrorCode) -> String {
     }
 }
 
-enum Next {
+/// What an agent is told of a [`FollowUp`].
+enum Told {
     Call(Call),
     Fix(Fix),
-    Drop,
+    /// No tool call does what the follow-up does, or it is a person's to run.
+    Nothing,
 }
 
-/// One Store `next`: a structured call, or a CLI line through [`CLI_NEXT`].
-fn store_next(next: &Value) -> Next {
-    if let Some(line) = next.as_str() {
-        return cli_next(line);
-    }
-    let Some(tool) = next.get("tool").and_then(Value::as_str) else {
-        return Next::Drop;
-    };
-    let input = next.get("input").cloned().unwrap_or_else(|| json!({}));
-    match tool {
-        "environment_show" => Next::Call(Call::new(tool, input)),
-        "project_show" => Next::Call(Call::new(
-            "environment_show",
-            json!({ "project": input.get("project") }),
-        )),
+fn told(follow_up: FollowUp) -> Told {
+    let open = |page| Told::Fix(Fix::OpenDashboard { page });
+    let place =
+        |place: &Place| json!({ "project": place.project, "environment": place.environment });
+    match follow_up {
+        FollowUp::ServerAdd => Told::Fix(Fix::ConnectServers),
+        FollowUp::ServerClean { .. } => open(DashboardPage::Servers),
+        FollowUp::SetRegistryCredential { .. }
+        | FollowUp::SetStopFirst { .. }
+        | FollowUp::RenameVariable { .. }
+        | FollowUp::PatchHealthcheck { .. } => open(DashboardPage::Variables),
+        FollowUp::EnvironmentNew { .. }
+        | FollowUp::EnvironmentBranch { .. }
+        | FollowUp::EnvironmentSync { .. }
+        | FollowUp::EnvironmentSetup { .. }
         // Unprotecting is a person's call, made where they can see what it guards.
-        "environment_protect" => Next::Fix(Fix::OpenDashboard {
-            page: DashboardPage::Environments,
-        }),
+        | FollowUp::UnprotectEnvironment { .. } => open(DashboardPage::Environments),
+        FollowUp::ProjectNew => Told::Call(Call::to(ToolId::ProjectCreate, json!({}))),
+        FollowUp::ProjectList => Told::Call(Call::to(ToolId::EnvironmentShow, json!({}))),
+        FollowUp::EnvironmentList { project } | FollowUp::ShowProject { project } => Told::Call(
+            Call::to(ToolId::EnvironmentShow, json!({ "project": project })),
+        ),
+        FollowUp::ShowEnvironment { place: at } | FollowUp::VolumeInspect { place: at, .. } => {
+            Told::Call(Call::to(ToolId::EnvironmentShow, place(&at)))
+        }
+        FollowUp::EnvironmentPr {
+            repository,
+            project,
+        } => Told::Call(Call::to(
+            ToolId::EnvironmentPr,
+            json!({ "project": project, "repository": repository, "enabled": true }),
+        )),
+        FollowUp::GithubList { repository } => Told::Call(Call::to(
+            ToolId::GithubLs,
+            json!({ "repository": repository }),
+        )),
+        FollowUp::GithubConnect => Told::Call(Call::to(ToolId::GithubConnect, json!({}))),
+        FollowUp::Deploy { .. } => Told::Call(Call::to(ToolId::DeployInput, json!({}))),
+        FollowUp::DeploymentList { place: at } => {
+            Told::Call(Call::to(ToolId::DeploymentList, place(&at)))
+        }
+        FollowUp::Diff { place: at } => Told::Call(Call::to(ToolId::Review, place(&at))),
+        FollowUp::DomainAdd { service } => Told::Call(Call::to(
+            ToolId::DomainAdd,
+            json!({ "service": service }),
+        )),
+        FollowUp::RenameSetupService { place: at } => Told::Call(Call::to(
+            ToolId::ServiceRename,
+            json!({
+                "project": at.project,
+                "environment": at.environment,
+                "service": "setup",
+            }),
+        )),
+        FollowUp::VolumeAllowSharedWrites { volume, place: at } => Told::Call(Call::to(
+            ToolId::VolumeUpdate,
+            json!({
+                "project": at.project,
+                "environment": at.environment,
+                "volume": volume,
+                "shared_writes": true,
+            }),
+        )),
         // A removal is never proposed to a call that did not ask for one.
-        _ => Next::Drop,
-    }
-}
-
-/// What a CLI `next` line becomes.
-#[derive(Clone, Copy, Debug)]
-enum CliNext {
-    Fix(FixRow),
-    /// The tool, and the input key the first argument fills.
-    Tool(&'static str, Option<&'static str>),
-    VolumeSharedWrites,
-    /// No tool call does what the line does.
-    Drop,
-}
-
-/// `Fix` without data, so the table stays `const`.
-#[derive(Clone, Copy, Debug)]
-enum FixRow {
-    ConnectServers,
-    Open(DashboardPage),
-}
-
-/// Every CLI command a Store `next` names, by its words, and what an agent calls
-/// instead. A test scans the Store's sources so a new one cannot slip through.
-const CLI_NEXT: &[(&str, CliNext)] = &[
-    ("server add", CliNext::Fix(FixRow::ConnectServers)),
-    (
-        "server clean",
-        CliNext::Fix(FixRow::Open(DashboardPage::Servers)),
-    ),
-    ("set", CliNext::Fix(FixRow::Open(DashboardPage::Variables))),
-    ("project new", CliNext::Tool("project_create", Some("name"))),
-    ("project ls", CliNext::Tool("environment_show", None)),
-    (
-        "env new",
-        CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
-    ),
-    ("env ls", CliNext::Tool("environment_show", None)),
-    (
-        "env branch",
-        CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
-    ),
-    (
-        "env sync",
-        CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
-    ),
-    (
-        "env setup",
-        CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
-    ),
-    (
-        "env pr",
-        CliNext::Tool("environment_pr", Some("repository")),
-    ),
-    ("github ls", CliNext::Tool("github_ls", Some("repository"))),
-    ("github connect", CliNext::Tool("github_connect", None)),
-    ("deploy", CliNext::Tool("deploy", None)),
-    ("deployment ls", CliNext::Tool("deployment_list", None)),
-    ("diff", CliNext::Tool("review", None)),
-    ("domain add", CliNext::Tool("domain_add", Some("service"))),
-    // A removal is never proposed to a call that did not ask for one.
-    ("domain rm", CliNext::Drop),
-    (
-        "service rename",
-        CliNext::Tool("service_rename", Some("service")),
-    ),
-    ("volume inspect", CliNext::Tool("environment_show", None)),
-    ("volume set", CliNext::VolumeSharedWrites),
-    // volume_add takes no shared writes.
-    ("volume add", CliNext::Drop),
-];
-
-/// The table row for a CLI line's positional words, and how many words its
-/// command takes.
-fn cli_row(words: &[&str]) -> Option<(CliNext, usize)> {
-    CLI_NEXT.iter().find_map(|(command, row)| {
-        let width = command.split(' ').count();
-        (words.get(..width)?.join(" ") == *command).then_some((*row, width))
-    })
-}
-
-fn cli_next(line: &str) -> Next {
-    let mut words = line.split_whitespace().skip_while(|word| *word == "ployz");
-    let mut positional = Vec::new();
-    let mut input = Map::new();
-    while let Some(word) = words.next() {
-        match word.strip_prefix("--") {
-            Some(flag @ ("project" | "env")) => {
-                if let Some(value) = words.next() {
-                    let key = if flag == "env" {
-                        "environment"
-                    } else {
-                        "project"
-                    };
-                    input.insert(key.into(), value.into());
-                }
-            }
-            Some(_) => {}
-            None => positional.push(word),
-        }
-    }
-    let Some((row, width)) = cli_row(&positional) else {
-        return Next::Drop;
-    };
-    // A placeholder such as NAME is for a human to fill, never an argument.
-    let argument = positional
-        .iter()
-        .skip(width)
-        .find(|word| !word.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
-        .copied();
-    match row {
-        CliNext::Fix(FixRow::ConnectServers) => Next::Fix(Fix::ConnectServers),
-        CliNext::Fix(FixRow::Open(page)) => Next::Fix(Fix::OpenDashboard { page }),
-        CliNext::Tool(tool, key) => {
-            if let (Some(key), Some(argument)) = (key, argument) {
-                input.insert(key.into(), argument.into());
-            }
-            if tool == "environment_pr" {
-                input.insert("enabled".into(), true.into());
-            }
-            if matches!(tool, "github_ls" | "github_connect" | "project_create") {
-                input.remove("project");
-                input.remove("environment");
-            }
-            Next::Call(Call::new(tool, input.into()))
-        }
-        CliNext::Drop => Next::Drop,
-        CliNext::VolumeSharedWrites => {
-            if let Some(volume) = argument {
-                input.insert("volume".into(), volume.into());
-            }
-            input.insert("shared_writes".into(), true.into());
-            Next::Call(Call::new("volume_update", input.into()))
-        }
+        FollowUp::DomainRemove { .. } | FollowUp::Remove { .. } => Told::Nothing,
+        // volume_add takes no shared writes.
+        FollowUp::VolumeAdd { .. } => Told::Nothing,
+        FollowUp::SyncThenSetSecret { .. }
+        | FollowUp::StopKeepingBranch { .. }
+        | FollowUp::UpdateClient { .. } => Told::Nothing,
     }
 }
 
 /// Settings agents reach for that are not Settings, and the tool that owns each.
-pub const NOT_SETTINGS: &[(&str, &str)] = &[
-    ("managedHostnames", "domain_add"),
-    ("customHostnames", "domain_add"),
-    ("domains", "domain_add"),
-    ("hostnames", "domain_add"),
-    ("volumes", "volume_add"),
+pub const NOT_SETTINGS: &[(&str, ToolId)] = &[
+    ("managedHostnames", ToolId::DomainAdd),
+    ("customHostnames", ToolId::DomainAdd),
+    ("domains", ToolId::DomainAdd),
+    ("hostnames", ToolId::DomainAdd),
+    ("volumes", ToolId::VolumeAdd),
 ];
 
 /// The tool that owns `key` when it is no Setting.
-pub(crate) fn not_setting(key: &str) -> Option<&'static str> {
+pub(crate) fn not_setting(key: &str) -> Option<ToolId> {
     NOT_SETTINGS
         .iter()
         .find(|(name, _)| *name == key)
@@ -496,10 +414,10 @@ pub(crate) fn not_setting(key: &str) -> Option<&'static str> {
 }
 
 /// The sentence for a key that lives in another tool.
-pub(crate) fn not_setting_sentence(tool: &str) -> String {
-    match tool {
-        "domain_add" => "Domains are not Service Settings; add and change them with domain_add and domain_update".to_owned(),
-        _ => format!("That is not a Service Setting; use {tool}"),
+pub(crate) fn not_setting_sentence(tool: ToolId) -> String {
+    match tool == ToolId::DomainAdd {
+        true => "Domains are not Service Settings; add and change them with domain_add and domain_update".to_owned(),
+        false => format!("That is not a Service Setting; use {}", tool.name()),
     }
 }
 

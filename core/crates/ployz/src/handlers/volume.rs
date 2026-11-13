@@ -6,7 +6,9 @@
 //!
 //! Mirror, Sync and Mirror removal are Volume runs in Ployz Cloud; see [`run`].
 
+use crate::ui::Next;
 use clap::{ArgAction, ArgMatches, Command};
+use ployz_core::cloud_contract::MIN_MANAGED_VOLUME_BYTES;
 use ployz_core::config::VolumeKind;
 use ployz_core::{
     MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
@@ -16,11 +18,14 @@ use ployz_store::{
     VolumeListing, VolumeName, VolumeQuery, VolumeStaged, VolumesQuery,
 };
 
-use super::store::{self, Next};
+use super::store;
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
-use crate::ui::{Cell, Fields, Hint, Table, Tone};
+use crate::ui::{Cell, Fields, Table, Tone};
 
+mod approve;
+mod loss_approval;
+mod resize_approval;
 mod restore;
 pub(super) mod run;
 
@@ -50,6 +55,10 @@ pub(super) fn set_command(command: Command) -> Command {
     .arg(shared_writes_flag())
     .arg(run::wait_flag().conflicts_with_all(["docker", "shared-writes"]))
     .arg(crate::cli::approval().conflicts_with_all(["docker", "shared-writes"]))
+    .arg(
+        crate::cli::yes("Sign a resize your device approves without asking")
+            .conflicts_with_all(["docker", "shared-writes"]),
+    )
     .group(
         clap::ArgGroup::new("volume-change")
             .args(["size", "docker", "shared-writes"])
@@ -103,7 +112,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let created = store::store(root)?.write(&CreateVolume {
         id: VolumeId::parse(store::mint())?,
         environment: store::environment(matches)?,
-        name: name.clone(),
+        name,
         storage,
         mounts,
         shared_writes: matches.get_one("shared-writes") == Some(&true),
@@ -132,7 +141,7 @@ fn no_managed_host(matches: &ArgMatches) -> bool {
     let context = matches.try_get_one::<String>("context").ok().flatten();
     runtime.block_on(async {
         let observe = async {
-            let mut client = super::server::connect(matches, context.map(String::as_str))
+            let mut client = super::route::connect(matches, context.map(String::as_str))
                 .await
                 .ok()?;
             let mut machines = client.machines().await.ok()?;
@@ -157,10 +166,6 @@ fn shared_writes_flag() -> clap::Arg {
         .help("Let more than one container write it: replicas of one Service, or several Services. =false refuses a second writer")
 }
 
-/// The smallest size `--size` takes, 0.1 GB: a much smaller Volume is full when created (#2995).
-/// A Volume already recorded smaller still reads and resizes up.
-const SMALLEST_SIZE: u64 = 100_000_000;
-
 fn storage_flags(command: Command) -> Command {
     command
         .arg(
@@ -169,7 +174,7 @@ fn storage_flags(command: Command) -> Command {
                 .value_parser(|size: &str| {
                     let size = ProvisionedVolumeMaximumBytes::parse_gb(size)
                         .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")?;
-                    if size.get() < SMALLEST_SIZE {
+                    if size.get() < MIN_MANAGED_VOLUME_BYTES {
                         return Err("Use a size of at least 0.1GB, such as 5GB or 0.5GB");
                     }
                     Ok(size)
@@ -359,7 +364,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let volume = volume_name(matches, "volume")?;
     let view = store::store(root)?.read(&VolumeQuery {
         environment: store::environment(matches)?,
-        volume: volume.clone(),
+        volume,
     })?;
     let listing = &view.volume;
     let mut record = Fields::new()
@@ -401,8 +406,8 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let name = volume_name(matches, "name")?;
     let renamed = store::store(root)?.write(&ployz_store::RenameVolume {
         environment: store::environment(matches)?,
-        volume: volume.clone(),
-        name: name.clone(),
+        volume,
+        name,
     })?;
     staged(
         matches,
@@ -418,7 +423,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let volume = volume_name(matches, "volume")?;
     let removed = store::store(root)?.write(&RemoveVolume {
         environment: store::environment(matches)?,
-        volume: volume.clone(),
+        volume,
     })?;
     staged(matches, &removed, "Staged removal of Volume", "", false)
 }
@@ -451,8 +456,8 @@ fn staged(
             ),
         );
     }
-    let hint = store::next(matches, &["deploy"]);
-    crate::ui::finish(&Next::new(result, Some(hint.clone())), || {
+    let followed = Next::new(result, Some(store::next(matches, &["deploy"])));
+    crate::ui::finish(&followed, || {
         crate::ui::stream(format_args!(
             "{what} {} in {}/{}.",
             result.volume.name, result.environment.project, result.environment.name
@@ -463,7 +468,7 @@ fn staged(
                 storage_word(result.volume.storage)
             ));
         }
-        crate::ui::hint(&Hint::Next(hint));
+        followed.say();
     })
 }
 
@@ -492,6 +497,7 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             MembershipObservation::Up,

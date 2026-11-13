@@ -2,14 +2,16 @@
 
 use std::fmt;
 
-use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigFileName, ConfigName, Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use super::ServiceSetting;
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{ConfigRef, VolumeName};
+use crate::policy::PolicySetting;
 use crate::variables::VariableKey;
 
 /// A node of an Environment: `SERVICE` for a Service, `volumes.VOLUME` for a
@@ -284,7 +286,7 @@ impl SettingPath {
                     Some(_) => {
                         return Err(error::invalid(
                             "Unknown variable field",
-                            json!({ "valid_children": ["exported", "description"] }),
+                            error::valid(["exported", "description"]),
                         ));
                     }
                 },
@@ -312,29 +314,6 @@ impl SettingPath {
         }
     }
 
-    /// Core's change-row `field` of Service `service` as a path: `SERVICE.SETTING`,
-    /// `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME` or `SERVICE.configs.CONFIG`, naming
-    /// a Volume or Config by `named(family, id)`. Text, not a parsed path: a row may
-    /// name a field no path does.
-    pub(crate) fn from_core(
-        service: &str,
-        field: &str,
-        named: impl Fn(&str, &str) -> String,
-    ) -> String {
-        let key = field
-            .strip_prefix("env.")
-            .or_else(|| field.strip_prefix("variables."));
-        let field = match (key, field.split_once('.')) {
-            (Some(key), _) => format!("env.{key}"),
-            (_, Some(("configs", id))) => format!("configs.@{id}"),
-            (_, Some((family @ "mounts", id))) => {
-                format!("{family}.{}", named(family, id))
-            }
-            _ => field.to_owned(),
-        };
-        format!("{service}.{field}")
-    }
-
     /// The Service it is in; none for a Volume or a Config.
     #[must_use]
     pub const fn service(&self) -> Option<&ServiceName> {
@@ -351,6 +330,17 @@ impl SettingPath {
             Addressed::Service(service, Some(Target::Domains)) => Some(service),
             Addressed::Service(..) | Addressed::Volume(..) | Addressed::Config(..) => None,
         }
+    }
+
+    /// Whether it is a Service's Preferred Builder, `SERVICE.preferredBuilder`.
+    #[must_use]
+    pub const fn is_preferred_builder(&self) -> bool {
+        matches!(
+            self.target(),
+            Some(Target::Setting(ServiceSetting::Policy(
+                PolicySetting::PreferredBuilder
+            )))
+        )
     }
 
     /// The Service whose Settings it addresses, or why a Volume or Config has none.
@@ -450,20 +440,72 @@ impl From<SettingPath> for String {
 
 /// `SERVICE.domains` read-only: an edit to it points at the command that changes them.
 pub(crate) fn domains_are_read_only(path: &SettingPath, service: &ServiceName) -> RpcError {
-    let next = format!("ployz domain add {service}");
-    error::invalid(
-        format!("{path}: use {next} instead"),
-        json!({ "next": next }),
-    )
+    let next = FollowUp::DomainAdd {
+        service: service.to_string(),
+    };
+    error::invalid(format!("{path}: use {next} instead"), next.details())
 }
 
 /// A path that stops at its node: name one of its Settings.
 pub(crate) fn name_a_setting(node: impl std::fmt::Display) -> RpcError {
     error::invalid(
         "Name a Setting: SERVICE.SETTING",
-        json!({
-            "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
-            "example": format!("{node}.replicas"),
-        }),
+        json!({ "example": format!("{node}.replicas") }),
     )
+    .with_hint(Hint::valid(ServiceSetting::ALL.map(ServiceSetting::name)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_core_setting_and_its_path_name_the_same_service_setting() {
+        for setting in ployz_core::config::Setting::ALL {
+            assert_eq!(
+                ServiceSetting::of(setting),
+                ServiceSetting::of_field(setting.path()),
+                "{setting:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_naming_no_setting_lists_every_setting_and_an_example() {
+        let refused = name_a_setting("web");
+        assert_eq!(
+            refused.details,
+            json!({
+                "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
+                "example": "web.replicas",
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_variable_field_lists_the_two_there_are() {
+        let refused = SettingPath::parse("web.env.KEY.nope").unwrap_err();
+        assert_eq!(
+            refused.details,
+            json!({ "valid_children": ["exported", "description"] })
+        );
+    }
+
+    #[test]
+    fn only_a_services_preferred_builder_is_one() {
+        let is = |path: &str| SettingPath::parse(path).unwrap().is_preferred_builder();
+        assert!(is("web.preferredBuilder"));
+        assert!(is("WEB.preferredBuilder"));
+        for path in [
+            "web",
+            "web.replicas",
+            "web.autoDeploy",
+            "web.env.preferredBuilder",
+            "setup.preferredBuilder",
+            "volumes.data",
+            "configs.sentry",
+        ] {
+            assert!(!is(path), "{path}");
+        }
+    }
 }

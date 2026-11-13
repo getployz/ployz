@@ -14,16 +14,16 @@ use ployz_core::{
     ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
     ImageSummary, ImagesRemoved, IngressHost, InspectBuildGrantRequest, InspectRequest,
     LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY, LeaveRequest, Left, LeftPhase,
-    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
-    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate,
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
-    MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
-    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
-    PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
+    ListImagesRequest, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
+    MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
+    ManagementAddress, NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, PruneImagesRequest,
+    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
     PullImageFromMachineRequest, RequestMachineUpgradeRequest, ResolvedServiceSpec, ResponseKind,
     RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, RunRotation, ServiceId,
     ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames,
-    op,
+    labels, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -245,6 +245,10 @@ fn namespace_accepts_lowercase_dns_labels() {
         "a".repeat(63)
     );
     assert!(Namespace::parse("ployz-system").unwrap().is_reserved());
+    assert!(Namespace::parse("ployz").unwrap().is_reserved());
+    assert!(!Namespace::parse("ployz-app").unwrap().is_reserved());
+    assert!(Namespace::parse("ployz-system").unwrap().is_system());
+    assert!(!Namespace::parse("ployz").unwrap().is_system());
     assert_eq!(Namespace::system().as_str(), "ployz-system");
     assert!(!Namespace::parse("shop").unwrap().is_reserved());
 }
@@ -279,7 +283,7 @@ fn namespace_volume_name_includes_the_namespace_and_differs_across_namespaces() 
 #[test]
 fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope() {
     for owner in ["shop", "blog"] {
-        for reserved in [NAMESPACE_LABEL, MANAGED_LABEL] {
+        for reserved in [labels::NAMESPACE, labels::MANAGED] {
             let raw = ployz_core::RawVolumeSource::Ordinary {
                 name: DockerVolumeName::parse("data").unwrap(),
                 driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
@@ -305,7 +309,7 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
     let request = named.to_create_volume_request().unwrap();
     assert_eq!(request.name.as_str(), "shop_data");
     assert_eq!(
-        request.labels.get(NAMESPACE_LABEL).map(String::as_str),
+        request.labels.get(labels::NAMESPACE).map(String::as_str),
         Some("shop")
     );
     assert_eq!(request.labels.get("user").map(String::as_str), Some("kept"));
@@ -525,7 +529,7 @@ fn unknown_observation_variants_preserve_the_raw_value() {
     );
     let wrapped = json!({ "state": "unrecognized", "raw": future });
     assert_eq!(serde_json::to_value(&observation).unwrap(), wrapped);
-    let reread: ContainerRuntimeObservation = serde_json::from_value(wrapped.clone()).unwrap();
+    let reread: ContainerRuntimeObservation = serde_json::from_value(wrapped).unwrap();
     assert_eq!(reread, observation);
 
     // Docker's own inspect State object has no `state` key at all.
@@ -643,6 +647,7 @@ fn per_machine_capability_fixture_is_stable_and_additive() {
             CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY).unwrap(),
         ]),
         sealing: None,
+        attest: None,
     };
 
     assert!(description.supports(DESCRIBE_CONTRACT_CAPABILITY));
@@ -868,20 +873,19 @@ fn image_ingest_contract_returns_the_management_address_destination() {
     for (reason, wire) in frozen {
         assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
         let error = reason.rpc_error("ingest unavailable");
-        assert_eq!(
-            ImageIngestReason::from_details(&error.details),
-            Some(reason)
-        );
+        assert_eq!(error.evidence::<ImageIngestReason>(), Some(reason));
         assert_eq!(error.details, json!({ "reason": wire }));
     }
+    let detailed = |details| RpcError::unavailable("m").with_details(details);
     assert_eq!(
-        ImageIngestReason::from_details(&json!({
+        detailed(json!({
             "reason": "docker_unavailable",
             "extra": 1
-        })),
+        }))
+        .evidence::<ImageIngestReason>(),
         Some(ImageIngestReason::DockerUnavailable)
     );
-    assert_eq!(ImageIngestReason::from_details(&Value::Null), None);
+    assert_eq!(detailed(Value::Null).evidence::<ImageIngestReason>(), None);
 }
 
 /// A newer client may add optional fields to Machine RPC requests within
@@ -1367,7 +1371,7 @@ fn history_requests_name_what_is_outside_the_contract() {
         LogHistoryRequest {
             since_nanos: Some(2),
             until_nanos: Some(1),
-            ..selected.clone()
+            ..selected
         },
     ] {
         assert!(request.validate().is_err(), "{request:?}");
@@ -1518,8 +1522,9 @@ fn typed_errors_preserve_future_error_codes() {
 #[test]
 fn leave_and_forget_round_trip_under_stable_capabilities() {
     let requests = [
-        op::Leave::into_request(LeaveRequest {}),
+        op::Leave::into_request(LeaveRequest { teardown: None }),
         op::Forget::into_request(ForgetRequest {
+            teardown: None,
             machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         }),
     ];
@@ -1578,6 +1583,7 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     );
     assert_eq!(
         op::RemoveVolume::into_request(RemoveVolumeRequest {
+            teardown: None,
             name: name.clone(),
             force: true,
         })
@@ -1587,6 +1593,7 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         .unwrap()
         .body,
         RpcRequestBody::RemoveVolume(RemoveVolumeRequest {
+            teardown: None,
             name: name.clone(),
             force: true,
         })
@@ -1643,6 +1650,11 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         "creation_key": "deploy/slot-1"
     });
     let running = EnsureContainerRequest {
+        teardown: None,
+        preview: None,
+        approval: None,
+        deploy: None,
+        rule: None,
         want: ContainerWant::Running {
             container: RunTarget::New(NewContainer {
                 r#gen: ployz_core::Gen::FIRST,
@@ -1723,6 +1735,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         refusal: ContainerRefusal {
             reason: ContainerRefusalReason::NotFound,
             message: "no Container at the slot".into(),
+            capability: None,
         },
     };
     assert_eq!(
@@ -1750,7 +1763,70 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     }))
     .unwrap();
     assert_eq!(later.reason, ContainerRefusalReason::Unrecognized);
+    assert_eq!(later.capability, None);
     assert_eq!(ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1");
+}
+
+#[test]
+fn an_ingress_refusal_names_the_capability_to_upgrade_to() {
+    let refusal: ployz_core::ContainerRefusal = serde_json::from_value(json!({
+        "reason": "invalid_ingress",
+        "message": "upgrade the ployz CLI",
+        "capability": "ployz.ingress.doors.v1"
+    }))
+    .unwrap();
+    assert_eq!(
+        refusal.capability.as_deref(),
+        Some(ployz_core::SET_INGRESS_DOORS_CAPABILITY)
+    );
+
+    let error = refusal.into_error();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.details,
+        json!({ "capability": "ployz.ingress.doors.v1" })
+    );
+}
+
+#[test]
+fn ingress_doors_wire_shapes_stay_stable() {
+    use ployz_core::{
+        IngressDoor, IngressDoors, IngressDoorsSet, IngressStage, ServiceId, SetIngressDoorsRequest,
+    };
+
+    let request = SetIngressDoorsRequest {
+        doors: IngressDoors::public(),
+        proxy_service: ServiceId::parse("a".repeat(32)).unwrap(),
+        sealed_token: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        json!({ "doors": ["public"], "proxy_service": "a".repeat(32) }),
+        "an older daemon reads a Public request without the token field"
+    );
+    assert!(request.doors.is_public_only());
+    let tunnel: SetIngressDoorsRequest = serde_json::from_value(json!({
+        "doors": ["public", "tunnel"],
+        "proxy_service": "a".repeat(32),
+        "sealed_token": "A".repeat(64),
+    }))
+    .unwrap();
+    assert_eq!(tunnel.doors, IngressDoors::both());
+    assert!(tunnel.sealed_token.is_some());
+    let newer: IngressDoors = serde_json::from_value(json!(["public", "tailnet"])).unwrap();
+    assert_eq!(
+        newer,
+        IngressDoors([IngressDoor::Public, IngressDoor::Unrecognized].into())
+    );
+    assert!(!newer.is_public_only());
+
+    assert_eq!(
+        serde_json::to_value(IngressDoorsSet::default()).unwrap(),
+        json!({}),
+        "an empty answer carries no field"
+    );
+    let stage: IngressStage = serde_json::from_value(json!("network")).unwrap();
+    assert_eq!(stage, IngressStage::Unrecognized);
 }
 
 #[test]
@@ -1825,6 +1901,7 @@ fn sealing_key_backfill_rpcs_have_one_typed_wire_contract() {
         RpcRequestBody::GenerateSealingKey(ployz_core::GenerateSealingKeyRequest {})
     );
     let share = ployz_core::ShareSealingKeyRequest {
+        join_approval: None,
         machine,
         public_key: ployz_core::WireGuardPublicKey([7; 32]),
     };
@@ -1925,14 +2002,12 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
     );
 
     let refusal = ployz_core::RecoveryRefusal::WrongCode;
-    let error = RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: "wrong code".into(),
-        details: refusal.details(),
-        cause: Vec::new(),
-    };
+    let error = RpcError::invalid_argument("wrong code").with_evidence(&refusal);
     assert_eq!(error.details, json!({ "recovery": "wrong_code" }));
-    assert_eq!(error.recovery_refusal(), Some(refusal));
+    assert_eq!(
+        error.evidence::<ployz_core::RecoveryRefusal>(),
+        Some(refusal)
+    );
 }
 
 #[test]
@@ -1941,6 +2016,7 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
     let request = RequestMachineUpgradeRequest {
         attempt_id,
         release: MachineRelease::parse("beta").unwrap(),
+        channel: None,
     };
     assert_eq!(
         op::RequestMachineUpgrade::into_request(request.clone())
@@ -1975,6 +2051,7 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         store_version: BTreeMap::new(),
         rtts: Vec::new(),
         management_clients: Vec::new(),
+        passkeys: Vec::new(),
         telemetry: None,
         storage: None,
         upgrade: None,
@@ -1995,5 +2072,40 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         )
         .unwrap(),
         details
+    );
+}
+
+/// A removal's `reset_warning` is its departure's prose, and a decoded one is rebuilt from
+/// the departure, so the two can't disagree.
+#[test]
+fn a_removal_reset_warning_follows_its_departure() {
+    use ployz_core::{Departed, LocalMachineRemoved};
+    let committed = LocalMachineRemoved::from(Departed::Reset {
+        row_warning: Some("replicated delete failed".into()),
+    });
+    assert_eq!(committed.reset_warning(), Some("replicated delete failed"));
+    assert_eq!(
+        LocalMachineRemoved::from(Departed::AlreadyForgotten).reset_warning(),
+        Some("its reset couldn't be confirmed: it was already gone from the Cluster")
+    );
+    assert_eq!(
+        LocalMachineRemoved::from(Departed::Unreachable {
+            cause: "connection refused".into()
+        })
+        .reset_warning(),
+        Some("target is unreachable; removing shared rows: connection refused")
+    );
+    assert_eq!(
+        LocalMachineRemoved::from(Departed::Reset { row_warning: None }).reset_warning(),
+        None
+    );
+    let decoded: LocalMachineRemoved = serde_json::from_value(serde_json::json!({
+        "reset_warning": "not what happened",
+        "departed": { "kind": "reset", "row_warning": null },
+    }))
+    .unwrap();
+    assert_eq!(
+        decoded,
+        LocalMachineRemoved::from(Departed::Reset { row_warning: None })
     );
 }

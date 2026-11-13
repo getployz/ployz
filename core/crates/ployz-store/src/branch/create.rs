@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::Trusted;
+use crate::followup::{FollowUp, Place};
 
 pub(crate) fn create_branch(
     tx: &mut dyn Tx,
@@ -35,9 +36,11 @@ pub(crate) fn create_branch(
                 "{} is empty, so there is nothing to branch",
                 parent.summary.name
             ),
-            json!({
-                "next": format!("ployz env new {} --project {}", create.name, project.name),
-            }),
+            FollowUp::EnvironmentNew {
+                name: create.name.clone(),
+                project: project.name.clone(),
+            }
+            .details(),
         ));
     }
     let mut copy = create
@@ -67,7 +70,7 @@ pub(crate) fn create_branch(
     if own.is_empty() {
         return Err(error::invalid(
             "Pick something to copy",
-            json!({ "valid_children": names(working) }),
+            error::valid(names(working)),
         ));
     }
     for name in &create.live {
@@ -203,20 +206,14 @@ pub(crate) fn create_branch(
     // A Branch first, so what it lands uses its Parent's nodes live. What it is made
     // with is what it and its Parent share.
     let made_with = document(&base);
-    tx.execute(
-        "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, made_with, setup) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        &[
-            create.id.as_str().into(),
-            who.organization.as_str().into(),
-            parent.summary.id.as_str().into(),
-            i64::from(create.keep).into(),
-            made_with.as_str().into(),
-            serde_json::to_string(&setup)
-                .expect("Setup Commands are JSON")
-                .as_str()
-                .into(),
-        ],
+    rows::insert(
+        tx,
+        who.organization.as_str(),
+        &create.id,
+        &parent.summary.id,
+        create.keep,
+        &made_with,
+        &setup,
     )?;
     share(tx, (&create.id, &parent.summary.id), &base)?;
     let carried = Carried::of(tx, &parent.summary.id, &from)?;
@@ -227,7 +224,7 @@ pub(crate) fn create_branch(
         (&from, &carried),
         applied.next,
         &picks,
-        Some(trusted),
+        trusted,
     )?;
     Ok(Branched {
         branch: view(tx, &branch)?,
@@ -267,15 +264,13 @@ pub(crate) fn copy_node(
             )
         })?;
     settled(tx, &branch)?;
-    let owner = chain(tx, &row.parent)?
-        .into_iter()
-        .find(|ancestor| holds(&ancestor.applied, &lineage))
-        .ok_or_else(|| {
-            error::conflict(
-                format!("Nothing runs {}, so there is nothing to copy", copy.node),
-                json!({ "node": copy.node }),
-            )
-        })?;
+    let chain = chain(tx, &row.parent)?;
+    let owner = owner_of(&chain, &lineage).ok_or_else(|| {
+        error::conflict(
+            format!("Nothing runs {}, so there is nothing to copy", copy.node),
+            json!({ "node": copy.node }),
+        )
+    })?;
     let mut copied = BTreeSet::from([lineage]);
     if let Some(service) = owner
         .applied
@@ -319,14 +314,7 @@ pub(crate) fn copy_node(
         .map(|row| row.id.clone())
         .collect();
     let none = BTreeMap::new();
-    let staged = checked.apply(
-        tx,
-        who,
-        &mut branch,
-        &picks,
-        &none,
-        (Owner::None, Some(trusted)),
-    )?;
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, (Owner::None, trusted))?;
     // The copy's variables have their own IDs: keep the owner's, from the very
     // state the copy landed, for its seals.
     for service in &own.from.services {
@@ -367,20 +355,17 @@ pub(crate) fn copy_node(
 /// An Own Copy rewrites what a Branch runs, so it waits until the Branch runs its
 /// Working State: no Deployment in flight and nothing staged.
 fn settled(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
-    let scope = format!(
-        "--project {} --env {}",
-        branch.summary.project, branch.summary.name
-    );
+    let place = Place::of(&branch.summary);
     if deployment::in_flight(tx, &branch.summary.id)?.is_some() {
         return Err(error::conflict(
             "A Deployment of this Branch is still running: wait for it to finish",
-            json!({ "next": format!("ployz deployment ls {scope}") }),
+            FollowUp::DeploymentList { place }.details(),
         ));
     }
     if !review::review(tx, branch)?.view.changes.is_empty() {
         return Err(error::conflict(
             "This Branch has changes that aren't deployed: deploy or discard them first",
-            json!({ "next": format!("ployz diff {scope}") }),
+            FollowUp::Diff { place }.details(),
         ));
     }
     Ok(())
@@ -395,13 +380,7 @@ pub(crate) fn keep_branch(
     crate::removal::marked(tx, &branch)?;
     let row = branch_row(tx, &branch)?;
     if row.kept != keep.kept {
-        tx.execute(
-            "UPDATE config_environment_branch SET kept = ?1 WHERE environment_id = ?2",
-            &[
-                i64::from(keep.kept).into(),
-                branch.summary.id.as_str().into(),
-            ],
-        )?;
+        rows::set_kept(tx, &branch.summary.id, keep.kept)?;
     }
     Ok(Branched {
         branch: view(tx, &branch)?,

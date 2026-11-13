@@ -68,6 +68,7 @@ fn applied(store: &Path) {
     let who = Actor::system(OrganizationId::parse("local").unwrap());
     let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
     let deploy = Admit::Deploy(Deploy {
+        teardown: None,
         id: id.clone(),
         environment: EnvironmentRef {
             project: Some(ProjectName::parse("shop").unwrap()),
@@ -80,6 +81,7 @@ fn applied(store: &Path) {
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     });
     local
         .write_trusted(&who, &deploy, &Trusted::default())

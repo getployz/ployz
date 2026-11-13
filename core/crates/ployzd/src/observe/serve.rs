@@ -1,9 +1,6 @@
-//! `observe.sock`: history queries for ployzd.
-//!
-//! A request is one frame, `[u32 BE length][JSON]`. A query answers with one
-//! frame per [`HistoryRow`], a heartbeat each second while it reads, and
-//! [`HistoryRow::End`] last. A metrics request answers with one
-//! [`MetricsAnswer`] frame, and an env request with one [`EnvAnswer`] frame.
+//! The store's side of `observe.sock`: history queries for ployzd. The protocol is in
+//! [`wire`]. A query answers with one frame per [`HistoryRow`], a heartbeat each second
+//! while it reads, and [`HistoryRow::End`] last.
 
 use std::{
     io,
@@ -14,13 +11,9 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{
-    ContainerId, HistoryRow, LogHistoryRequest,
-    metrics::{MetricHistoryReply, MetricHistoryRequest},
-};
-use serde::{Deserialize, Serialize};
+use ployz_core::{ContainerId, HistoryRow, LogHistoryRequest, metrics::MetricHistoryRequest};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufWriter},
+    io::{AsyncWrite, AsyncWriteExt as _, BufWriter},
     net::{UnixListener, UnixStream},
     sync::Semaphore,
 };
@@ -30,11 +23,13 @@ use super::{
     layout::{RetainedEnv, StoreRoot},
     metrics::history,
     query::{self, Bounds, Query},
+    wire::{
+        DEADLINE, EnvAnswer, MAX_REQUEST, METRICS_DEADLINE, MetricsAnswer, Request, read_frame,
+        write_frame,
+    },
 };
 
 const HEARTBEAT: Duration = Duration::from_secs(1);
-const REQUEST_DEADLINE: Duration = Duration::from_secs(3);
-const MAX_REQUEST: usize = 64 << 10;
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// Pages read at once. Each can hold a page's text plus the file it decodes,
 /// and the harvester shares the service's memory.
@@ -42,38 +37,6 @@ const READERS: usize = 2;
 /// How long one written row may wait on a reader that stopped reading. Its
 /// page keeps a reader until it is written.
 const STALL: Duration = Duration::from_secs(10);
-/// How long a metrics read may take, inside the client's 3 s deadline.
-const METRICS_DEADLINE: Duration = Duration::from_millis(2_500);
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Request {
-    Query(LogHistoryRequest),
-    Metrics(MetricHistoryRequest),
-    /// The env the store kept for one Container.
-    Env(ContainerId),
-}
-
-/// The one frame an env request is answered with.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum EnvAnswer {
-    /// `None` when the store kept no env for the Container.
-    Reply(Option<RetainedEnv>),
-    /// The store could not be read.
-    Failed(String),
-}
-
-/// The one frame a metrics request is answered with.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MetricsAnswer {
-    Reply(MetricHistoryReply),
-    /// The request is outside the contract.
-    Invalid(String),
-    /// The store could not be read.
-    Failed(String),
-}
 
 pub(super) async fn serve(listener: UnixListener, store: StoreRoot) {
     let reading = Reading {
@@ -105,19 +68,18 @@ struct Reading {
 }
 
 async fn answer(mut stream: UnixStream, reading: Reading) {
-    let request =
-        match tokio::time::timeout(REQUEST_DEADLINE, read_frame(&mut stream, MAX_REQUEST)).await {
-            Ok(Ok(Some(bytes))) => serde_json::from_slice::<Request>(&bytes),
-            Ok(Ok(None)) => return,
-            Ok(Err(error)) => {
-                tracing::warn!(%error, "cannot read a history request");
-                return;
-            }
-            Err(_) => {
-                tracing::warn!("a history reader sent no request within 3 s");
-                return;
-            }
-        };
+    let request = match tokio::time::timeout(DEADLINE, read_frame(&mut stream, MAX_REQUEST)).await {
+        Ok(Ok(Some(bytes))) => serde_json::from_slice::<Request>(&bytes),
+        Ok(Ok(None)) => return,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "cannot read a history request");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!("a history reader sent no request within 3 s");
+            return;
+        }
+    };
     let result = match request {
         Ok(Request::Query(request)) => answer_query(stream, reading, request).await,
         Ok(Request::Metrics(request)) => {
@@ -275,38 +237,6 @@ async fn write_row(stream: &mut (impl AsyncWrite + Unpin), row: &HistoryRow) -> 
     write_frame(stream, &payload.json).await
 }
 
-pub(crate) async fn write_frame(
-    stream: &mut (impl AsyncWrite + Unpin),
-    bytes: &[u8],
-) -> io::Result<()> {
-    let len = u32::try_from(bytes.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame over 4 GiB"))?;
-    stream.write_all(&len.to_be_bytes()).await?;
-    stream.write_all(bytes).await
-}
-
-/// `None` when the peer closed before a new frame began.
-pub(crate) async fn read_frame(
-    stream: &mut (impl AsyncRead + Unpin),
-    max: usize,
-) -> io::Result<Option<Vec<u8>>> {
-    let mut len = [0; 4];
-    match stream.read_exact(&mut len).await {
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        result => result?,
-    };
-    let len = u32::from_be_bytes(len) as usize;
-    if len > max {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("frame of {len} bytes is over the {max} byte limit"),
-        ));
-    }
-    let mut bytes = vec![0; len];
-    stream.read_exact(&mut bytes).await?;
-    Ok(Some(bytes))
-}
-
 #[cfg(test)]
 mod tests {
     use std::{sync::Arc, time::Duration};
@@ -323,7 +253,8 @@ mod tests {
         sync::Semaphore,
     };
 
-    use super::{MetricsAnswer, Reading, STALL, answer_metrics, answer_query, read_frame, serve};
+    use super::{Reading, STALL, answer_metrics, answer_query, serve};
+    use crate::observe::wire::{MetricsAnswer, read_frame};
     use crate::{
         observe::{
             ObserveClient,

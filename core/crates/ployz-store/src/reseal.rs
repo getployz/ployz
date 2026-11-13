@@ -671,7 +671,7 @@ mod tests {
         plant_saved(&store, 1, |_| {});
         plant_applied(&store, |_| {});
         plant_introduction(&store, |_| {});
-        let organization = who.organization.clone();
+        let organization = who.organization;
         assert_eq!(
             store.legacy_organizations().unwrap(),
             vec![organization.clone()]
@@ -833,7 +833,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let organization = who.organization.clone();
+        let organization = who.organization;
         assert_eq!(
             store.legacy_count(&organization).unwrap(),
             LegacyCount {
@@ -1094,7 +1094,7 @@ mod tests {
         };
         plant_applied(&store, token);
         plant_introduction(&store, token);
-        let organization = who.organization.clone();
+        let organization = who.organization;
         assert_eq!(
             store.legacy_count(&organization).unwrap(),
             LegacyCount {
@@ -1161,6 +1161,7 @@ mod tests {
             .write(
                 who,
                 &crate::Admit::Deploy(crate::Deploy {
+                    teardown: None,
                     id: crate::DeploymentId::parse(uuid(10 + n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     services: services
@@ -1173,6 +1174,7 @@ mod tests {
                     message: None,
                     prune: false,
                     no_prune: false,
+                    approval: None,
                 }),
             )
             .map(|_| ())

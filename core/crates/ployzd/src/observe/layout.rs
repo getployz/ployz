@@ -70,17 +70,53 @@ const STORE_DIR: &str = "ployz-observe";
 pub const VERSION_DIR: &str = "v1";
 pub const CONTAINERS_DIR: &str = "containers";
 pub const META_FILE: &str = "meta.json";
-pub const META_TEMP_FILE: &str = "meta.tmp";
 pub const ENV_FILE: &str = "env.json";
-pub const ENV_TEMP_FILE: &str = "env.tmp";
 pub const GAPS_FILE: &str = "gaps.jsonl";
 pub const EXITS_FILE: &str = "exits.jsonl";
-pub const EXITS_TEMP_FILE: &str = "exits.tmp";
 pub const LINKING_FILE: &str = "linking.tmp";
 pub const SCANNED_FILE: &str = "scanned";
-pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
 pub const FIRST_SET_FILE: &str = "first-set.json";
-pub const FIRST_SET_TEMP_FILE: &str = "first-set.tmp";
+
+/// What a Container's directory holds, with whether the file is written through
+/// [`crate::filesystem::atomic_write`] and so has a temporary twin beside it. A new
+/// per-Container file is added here, or cleanup leaves it behind when it removes the
+/// directory.
+const STORE_FILES: [(&str, bool); 7] = [
+    (META_FILE, true),
+    (ENV_FILE, true),
+    (GAPS_FILE, false),
+    (EXITS_FILE, true),
+    (LINKING_FILE, false),
+    (SCANNED_FILE, true),
+    (FIRST_SET_FILE, true),
+];
+
+/// The names cleanup may unlink from a Container's directory: each stored file and the
+/// temporary twin a crash can leave beside it.
+pub(crate) fn store_file_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for (name, has_twin) in STORE_FILES {
+        names.push(name.to_owned());
+        if has_twin && let Some(twin) = crate::filesystem::temporary_path(Path::new(name)).to_str()
+        {
+            names.push(twin.to_owned());
+        }
+    }
+    names
+}
+
+/// `meta.json` in `dir`: `None` when it is not there, `InvalidData` when it does not
+/// parse.
+pub(crate) fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
+    match fs::read(dir.join(META_FILE)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub const METRICS_DIR: &str = "metrics";
 pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";
@@ -95,6 +131,8 @@ const RESUME_FILE: &str = "resume-from";
 const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
+/// Unix nanoseconds in a second, the unit metric rows are stamped in.
+pub(crate) const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 /// The versioned root of the Log Store, `<DockerRootDir>/ployz-observe/v1`.
 #[derive(Clone, Debug)]
@@ -279,7 +317,7 @@ impl SegmentName {
     /// before 1970.
     #[must_use]
     pub fn containing(ts: i64) -> Option<Self> {
-        let secs = u64::try_from(ts.div_euclid(1_000_000_000)).ok()?;
+        let secs = u64::try_from(ts.div_euclid(NANOS_PER_SEC)).ok()?;
         Some(Self {
             start_secs: secs - secs % HOUR_SECS,
         })
@@ -303,6 +341,24 @@ impl SegmentName {
     pub fn end_secs(self) -> u64 {
         self.start_secs.saturating_add(HOUR_SECS)
     }
+
+    /// The Unix nanosecond this segment's hour begins at.
+    #[must_use]
+    pub fn start_nanos(self) -> i64 {
+        secs_to_nanos(self.start_secs())
+    }
+
+    /// The first Unix nanosecond after this segment's hour.
+    #[must_use]
+    pub fn end_nanos(self) -> i64 {
+        secs_to_nanos(self.end_secs())
+    }
+}
+
+fn secs_to_nanos(secs: u64) -> i64 {
+    i64::try_from(secs)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(NANOS_PER_SEC)
 }
 
 impl fmt::Display for SegmentName {
@@ -312,15 +368,7 @@ impl fmt::Display for SegmentName {
 }
 
 /// What a container was, read from its labels when the store first saw it.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ContainerKind {
-    Service,
-    PreDeployHook,
-    /// Ingress, the unregistry, Corrosion, and other containers Ployz runs
-    /// for itself. They share the one cap with apps.
-    System,
-}
+pub use ployz_core::labels::Class as ContainerKind;
 
 /// The contents of `meta.json`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -433,8 +481,54 @@ pub fn run_exits(bytes: &[u8]) -> impl Iterator<Item = RunExit> + '_ {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogFileName, SegmentName, StoreRoot};
+    use std::{fs, io};
+
+    use super::{LogFileName, SegmentName, StoreRoot, read_meta, store_file_names};
     use crate::test_dir::TestDir;
+
+    #[test]
+    fn cleanup_may_unlink_exactly_the_files_a_container_directory_holds() {
+        let mut names = store_file_names();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "env.json",
+                "env.tmp",
+                "exits.jsonl",
+                "exits.tmp",
+                "first-set.json",
+                "first-set.tmp",
+                "gaps.jsonl",
+                "linking.tmp",
+                "meta.json",
+                "meta.tmp",
+                "scanned",
+                "scanned.tmp",
+            ]
+        );
+    }
+
+    #[test]
+    fn stored_metadata_is_absent_or_invalid_data_never_another_error() {
+        let test = TestDir::new("ployzd-observe-meta");
+        fs::create_dir_all(&test.0).unwrap();
+        assert!(read_meta(&test.0).unwrap().is_none());
+        fs::write(test.0.join("meta.json"), "{").unwrap();
+        assert_eq!(
+            read_meta(&test.0).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn a_segment_spans_its_hour_in_unix_nanoseconds() {
+        let name = SegmentName::parse(b"1759996800.jsonl").unwrap();
+        assert_eq!(name.start_nanos(), 1_759_996_800_000_000_000);
+        assert_eq!(name.end_nanos(), 1_760_000_400_000_000_000);
+        assert_eq!(SegmentName::containing(name.end_nanos() - 1), Some(name));
+        assert_ne!(SegmentName::containing(name.end_nanos()), Some(name));
+    }
 
     #[test]
     fn log_file_names_parse_only_in_their_printed_form() {

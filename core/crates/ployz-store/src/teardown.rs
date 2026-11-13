@@ -10,6 +10,7 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::deployment::{self, DeploymentSummary};
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{
     DeploymentId, EnvironmentId, EnvironmentName, OrganizationId, ProjectId, ProjectName,
     VolumeName,
@@ -17,6 +18,7 @@ use crate::id::{
 use crate::project::ProjectSummary;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
+use crate::storage::tables::{CLUSTER_TABLES, ORGANIZATION_TABLES};
 
 /// List a Project's Environments.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -199,7 +201,7 @@ pub(crate) fn environments(
 
 /// Whether `id` is a PR Environment whose pull request merged.
 fn merged(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
-    let Some(pull_request) = crate::pull_request::of(tx, id)? else {
+    let Some(pull_request) = crate::pr_environment::of(tx, id)? else {
         return Ok(false);
     };
     Ok(
@@ -248,15 +250,9 @@ pub(crate) fn set_protected(
     if set.protected {
         crate::removal::marked(tx, &environment)?;
     }
-    let kind = if crate::pull_request::of(tx, &summary.id)?.is_some() {
+    let kind = if crate::pr_environment::of(tx, &summary.id)?.is_some() {
         Some("a PR Environment")
-    } else if !tx
-        .query(
-            "SELECT parent_id FROM config_environment_branch WHERE environment_id = ?1",
-            &[summary.id.as_str().into()],
-        )?
-        .is_empty()
-    {
+    } else if crate::branch::parent_of(tx, summary.id.as_str())?.is_some() {
         Some("a Branch")
     } else {
         None
@@ -376,21 +372,14 @@ pub(crate) fn remove_organization(
                 "This Organization still has Projects ({}). Remove them first",
                 names.join(", ")
             ),
-            json!({
-                "projects": names,
-                "next": crate::removal::next("remove", json!({ "project": first.name })),
-            }),
+            FollowUp::Remove {
+                project: first.name.clone(),
+                environment: None,
+            }
+            .within(json!({ "projects": names })),
         ));
     }
-    for table in [
-        "config_create",
-        "config_branch",
-        "config_check_suite",
-        "config_build_order",
-        "config_pull_request",
-        "config_sync_receipt",
-        "config_removal_mark",
-    ] {
+    for table in ORGANIZATION_TABLES {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),
             &[who.organization.as_str().into()],
@@ -456,7 +445,7 @@ pub(crate) fn forget_cluster(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Deploym
     // Every Deployment write locks its Environment; so does this, against a concurrent admission.
     scope::lock_all(tx, environments)?;
     let cancelled = deployment::cancel_in_flight(tx, who)?;
-    for table in ["config_applied", "config_namespace"] {
+    for table in CLUSTER_TABLES {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),
             &[organization.into()],

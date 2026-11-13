@@ -2,11 +2,14 @@ import { randomUUID } from "node:crypto";
 import { Effect, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { isNeedsProduction, needsProduction } from "#/modules/billing/billing";
+import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
 import contract from "#/modules/uptime/incident-evidence.fixture.json";
 import { mergePoints, tally } from "#/modules/uptime/uptime";
 import { FAILURE_CLASSES, type FailureClass, IncidentEvidence, PHASES, type UptimePoint } from "#/modules/uptime/uptime-status";
 import { readEnvironmentUptime, readServiceUptime, requestUptimeProbe } from "#/modules/uptime/uptime-status.server";
 import type { Database } from "#/server/database.server";
+import { holdProduction, hostedPolar } from "#/test/billing";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const acme = "00000000-0000-4000-8000-0000000e0001";
@@ -39,17 +42,21 @@ afterAll(async () => {
   await harness?.stop();
 });
 
-/** Runs `effect` with the clock at NOW. */
-function at<A, E>(effect: Effect.Effect<A, E, Database>) {
+/** Runs `effect` with the clock at NOW, on a Self-hosted Cloud unless `polar` says otherwise. */
+function at<A, E>(effect: Effect.Effect<A, E, Database | Polar>, polar: PolarService = { mode: "self_hosted" }) {
   return harness.runEffect(Effect.gen(function* () {
     yield* TestClock.setTime(NOW);
     return yield* effect;
-  }).pipe(Effect.provide(TestClock.layer())));
+  }).pipe(Effect.provide(TestClock.layer()), Effect.provideService(Polar, polar)));
 }
 
 type Scope = { environmentId: string; serviceId: string };
 
-const environment = (environmentId: string) => at(readEnvironmentUptime(actor, { organizationSlug: "acme", environmentId }));
+const environment = async (environmentId: string) => {
+  const checks = await at(readEnvironmentUptime(actor, { organizationSlug: "acme", environmentId }));
+  if (isNeedsProduction(checks)) throw new Error("needs Production");
+  return checks;
+};
 /** The ranges the tab offers back from now, by their From edge. */
 const RANGES = ["1d", "7d", "90d"];
 const service = (scope: Scope, from = "1d", to = "now") =>
@@ -58,7 +65,7 @@ const series = async (check: Check, from: string) => (await summary(check, from)
 
 async function summary(check: Check, from = "1d", to = "now") {
   const uptime = await service(check, from, to);
-  if (uptime === null) throw new Error("no check");
+  if (uptime === null || isNeedsProduction(uptime)) throw new Error("no check");
   return uptime;
 }
 
@@ -503,7 +510,7 @@ describe("probe requests", () => {
 });
 
 describe("authorization", () => {
-  const refusal = <A, E>(effect: Effect.Effect<A, E, Database>) => at(Effect.flip(effect));
+  const refusal = <A, E>(effect: Effect.Effect<A, E, Database | Polar>) => at(Effect.flip(effect));
 
   it("refuses another organization under its own slug", async () => {
     const foreign = await createCheck(other);
@@ -519,6 +526,53 @@ describe("authorization", () => {
     await hourly(foreign, "eu-west", hourAgo(2), 4, 0, 0, 120);
     expect(await environment(foreign.environmentId)).toEqual([]);
     for (const range of RANGES) expect(await service(foreign, range)).toBeNull();
+  });
+});
+
+describe("Production", () => {
+  const input = (check: Check) => ({ organizationSlug: "acme", environmentId: check.environmentId, serviceId: check.serviceId });
+  const probeRequested = async (check: Check) =>
+    (await harness.pool.query<{ at: string | null }>("select probe_requested_at::text as at from uptime_check where id = $1", [check.id])).rows[0]?.at;
+  /** Acme's Production state, set for the one test and put back. */
+  const withBilling = async (state: "free" | "lapsed" | "production", run: () => Promise<void>) => {
+    if (state !== "free") await harness.runEffect(holdProduction(acme, state === "production"));
+    try { await run(); } finally { await harness.pool.query("delete from organization_billing_state where organization_id = $1", [acme]); }
+  };
+  const hosted = (check: Check) => ({
+    environment: () => at(readEnvironmentUptime(actor, input(check)), hostedPolar),
+    service: () => at(readServiceUptime(actor, { ...input(check), from: "1d", to: "now" }), hostedPolar),
+    probe: () => at(requestUptimeProbe(actor, input(check)), hostedPolar),
+  });
+
+  it.each(["free", "lapsed"] as const)("a hosted Organization that is %s is asked for Production by every read, and no probe is requested", async (state) => {
+    const check = await createCheck();
+    await incident(check, ago(HOUR));
+    await result(check, "eu-west", ago(HOUR), "pass", 120);
+    await withBilling(state, async () => {
+      const read = hosted(check);
+      expect(await read.environment()).toEqual(needsProduction);
+      expect(await read.service()).toEqual(needsProduction);
+      expect(await read.probe()).toEqual(needsProduction);
+      expect(await probeRequested(check)).toBeNull();
+    });
+  });
+
+  it("a hosted Organization with Production reads its checks and requests probes", async () => {
+    const check = await createCheck();
+    await result(check, "eu-west", ago(HOUR), "pass", 120);
+    await withBilling("production", async () => {
+      const read = hosted(check);
+      expect(await read.environment()).toEqual([{ serviceId: check.serviceId, url: "https://shop.example.com/", openIncidentAt: null }]);
+      expect(await read.service()).toMatchObject({ check: { id: check.id }, status: "up" });
+      expect(await read.probe()).toBeNull();
+      expect(await probeRequested(check)).not.toBeNull();
+    });
+  });
+
+  it("a Self-hosted Cloud's Organization reads without a billing row", async () => {
+    const check = await createCheck();
+    expect(await environment(check.environmentId)).toHaveLength(1);
+    expect(await service(check)).toMatchObject({ check: { id: check.id } });
   });
 });
 

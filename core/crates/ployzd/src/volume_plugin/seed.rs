@@ -9,23 +9,17 @@ use axum::{Json, extract::State};
 use ployz_core::{
     RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError, VolumeCopyView,
 };
-use ployzd::machine_pool::MachinePool;
+use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 use tokio::process::Command;
 
 use super::{
     Dataset, DockerVolumeName, VolumeStorage,
     inspect::{answering, internal},
-    mirror,
-    storage::{
-        HeldMutation, PROMOTE_PROPERTY, PULL_PROPERTY, PULLED_PROPERTY, root_dataset, slot_fs,
-        slot_parent,
-    },
+    marks::{Mark, Marks},
+    slot,
+    storage::HeldMutation,
     transfer::{Busy, Stop, ZfsChild, exited},
 };
-
-/// On the root a seed lands as: the guid of the restore point it holds. Landing sets it on
-/// the slot just before the rename, so a completed copy that has not landed carries none.
-pub(super) const SEED_PROPERTY: &str = "ployz:seed";
 
 /// Where a Seed of `into` at one guid stands on this Machine, as
 /// [`VolumeStorage::seed_progress`] reads it under the mutation. Nothing records it: each
@@ -110,15 +104,8 @@ impl Copied {
         let fs = &self.fs;
         // The slot may be a mirror that pulled this point; landed, it is no received copy.
         storage
-            .zfs(&["inherit", PULLED_PROPERTY, fs])
-            .await
-            .map_err(internal)?;
-        storage
-            .zfs(&["set", &format!("{SEED_PROPERTY}={guid}"), fs])
-            .await
-            .map_err(internal)?;
-        storage
-            .zfs(&["set", &format!("{PROMOTE_PROPERTY}=on"), fs])
+            .marks(fs)
+            .apply(&Marks::landed(guid))
             .await
             .map_err(internal)?;
         storage
@@ -172,8 +159,8 @@ struct Source {
 
 impl VolumeStorage {
     async fn seed_volume(&self, request: &SeedVolumeRequest) -> Result<VolumeCopyView, RpcError> {
-        let name = mirror::name(&request.name)?;
-        let into = mirror::name(&request.into)?;
+        let name = slot::name(&request.name)?;
+        let into = slot::name(&request.into)?;
         let guid = request.guid;
         let (held, _installation) = self.admit_mutation().await.map_err(internal)?;
         let pool = self.one_pool().await.map_err(internal)?;
@@ -235,17 +222,14 @@ impl VolumeStorage {
         into: &DockerVolumeName,
         guid: SnapshotGuid,
     ) -> Result<SeedProgress, RpcError> {
-        let root = root_dataset(pool, into);
-        let parent = slot_parent(pool, into);
+        let root = DatasetLayout::of(pool).root(into);
+        let parent = DatasetLayout::of(pool).slot_parent(into);
         let slot = Self::slot(datasets, pool, into).is_some();
         if Self::dataset(datasets, pool, into)
             .map_err(internal)?
             .is_some()
         {
-            let seed = self
-                .property(&root, SEED_PROPERTY)
-                .await
-                .map_err(internal)?;
+            let seed = self.marks(&root).get(Mark::Seed).await.map_err(internal)?;
             if seed != Some(guid.to_string()) {
                 return Ok(SeedProgress::Taken);
             }
@@ -262,7 +246,7 @@ impl VolumeStorage {
             );
         }
         let pulling = if slot {
-            self.pull_target(&parent).await.map_err(internal)?
+            self.marks(&parent).pull_target().await.map_err(internal)?
         } else {
             None
         };
@@ -305,7 +289,7 @@ impl VolumeStorage {
         into: &DockerVolumeName,
         guid: SnapshotGuid,
     ) -> Result<Source, RpcError> {
-        let root = root_dataset(pool, name);
+        let root = DatasetLayout::of(pool).root(name);
         let Some(bound) = datasets
             .iter()
             .find(|dataset| dataset.name == root)
@@ -340,11 +324,12 @@ impl VolumeStorage {
         into: &DockerVolumeName,
         source: Source,
     ) -> Result<VolumeCopyView, RpcError> {
-        let parent = slot_parent(pool, into);
-        let fs = slot_fs(pool, into);
+        let parent = DatasetLayout::of(pool).slot_parent(into);
+        let fs = DatasetLayout::of(pool).slot_fs(into);
         let Source { root, point, bound } = source;
-        self.create_bounded_slot(&parent, bound).await?;
-        self.zfs(&["set", &format!("{PULL_PROPERTY}={}", point.name), &parent])
+        self.create_slot(&parent, bound).await.map_err(internal)?;
+        self.marks(&parent)
+            .set_pull(point.name.as_str())
             .await
             .map_err(internal)?;
         let storage = self.clone();
@@ -395,25 +380,9 @@ impl VolumeStorage {
             .expect("zfs send stdout is piped")
             .into_owned_fd()
             .map_err(|error| format!("could not hand the send stream over: {error}"))?;
-        let refquota = format!("refquota={bound}");
-        let mut receive = ZfsChild::spawn(
-            Command::new(&self.zfs)
-                .args([
-                    "receive",
-                    "-u",
-                    "-s",
-                    "-o",
-                    "readonly=on",
-                    "-o",
-                    &refquota,
-                    fs,
-                ])
-                .stdin(Stdio::from(stream))
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped()),
-            stop,
-        )
-        .map_err(|error| format!("could not run zfs receive: {error}"))?;
+        let mut receive = self
+            .spawn_receive(fs, bound, Stdio::from(stream), stop)
+            .map_err(|error| format!("could not run zfs receive: {error}"))?;
         let exits = {
             let both = async { tokio::join!(exited(send.child()), exited(receive.child())) };
             tokio::select! {

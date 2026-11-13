@@ -1,13 +1,14 @@
 use clap::ArgMatches;
-use ployz_core::{EnrollAs, EnrollRequest, LocalMachinePhase, MachineRelease};
+use ployz_core::{
+    ClusterName, EnrollAs, EnrollRequest, Hint, LocalMachinePhase, MachineLayout, MachineRelease,
+    RpcErrorCode,
+};
 
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
 use crate::{
-    connect::DEFAULT_LOCAL_SOCKET,
     context::{Connection, Context},
     handlers::{Error, leaf_matches},
-    ui::Hint,
 };
 use serde_json::json;
 
@@ -36,7 +37,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     }
     let destination = matches.get_one::<String>("destination");
     let connection = match destination {
-        None => Connection::unix(DEFAULT_LOCAL_SOCKET)?,
+        None => Connection::unix(MachineLayout::production().socket())?,
         Some(dest) => helpers::configure_ssh_key(
             dest.parse()?,
             matches.get_one::<String>("ssh-key").map(String::as_str),
@@ -44,6 +45,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     };
     let local = destination.is_none();
     let requested_name = helpers::requested_name(matches)?;
+    let cluster_name = founding_name(matches)?;
     let token_request = helpers::token_request(matches)?;
     let pinned = helpers::pinned(&token_request);
     let cluster_network = *matches
@@ -126,6 +128,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         &context_name,
         &["server", "show", machine.name.as_str()],
     );
+    let mut named = None;
     let ingress = runtime.block_on(async {
         let mut ready = helpers::wait_direct_participating(
             matches,
@@ -138,36 +141,87 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 .context("Server initialized; startup incomplete.")
                 .hint(Hint::Inspect(inspect_recovery.clone()))
         })?;
-        if machine.accepts_ingress {
-            let requested = crate::ingress::service_spec(None, Default::default())
-                .await
-                .map_err(|error| {
-                    Error::from(error)
-                        .context("Server initialized; ingress image discovery failed.")
-                        .hint(Hint::Next(ingress_recovery.clone()))
-                })?;
-            let outcome =
-                crate::deploy::apply_requested(&mut ready, &requested, false, false, &context_name)
+        if let Some(name) = cluster_name {
+            let next = super::super::recovery_command(
+                matches,
+                &context_name,
+                &["cluster", "name", name.as_str()],
+            );
+            named = Some(
+                crate::handlers::cluster::set(&ready, name)
                     .await
                     .map_err(|error| {
-                        ingress_incomplete(
-                            super::super::ingress_hints(Error::from(error), |args| {
-                                super::super::recovery_command(matches, &context_name, args)
-                            }),
-                            ingress_recovery.clone(),
-                        )
-                    })?;
-            return Ok(Some(outcome));
+                        error
+                            .context("Server initialized; the Cluster has no name yet.")
+                            .hint(Hint::Next(next))
+                    }),
+            );
+        }
+        let closed = matches.get_flag("ingress-closed");
+        let incomplete = |error: crate::failure::Failure| {
+            ingress_incomplete(
+                super::super::ingress_hints(error, |args| {
+                    super::super::recovery_command(matches, &context_name, args)
+                }),
+                ingress_recovery.clone(),
+            )
+        };
+        if closed {
+            crate::ingress::declare_founding_closed(&mut ready)
+                .await
+                .map_err(&incomplete)?;
+        }
+        if machine.accepts_ingress {
+            let followed = if closed {
+                crate::ingress::found_closed(&mut ready).await
+            } else {
+                crate::ingress::follow_roles(&mut ready).await
+            }
+            .map_err(|error| incomplete(error.into()))?;
+            return Ok(Some(followed));
         }
         Ok::<_, Error>(None)
     });
     // The Machine and its context are committed: print them before a follow-up failure.
+    let named = named.unwrap_or(Ok(Default::default()));
     let result = json!({
         "server": super::server_json(&machine),
         "context": context_name,
+        "cluster": named.as_ref().ok(),
         "ingress": ingress.as_ref().ok().and_then(Option::as_ref),
     });
-    crate::ui::emit_committed(result, ingress.map(drop))
+    crate::ui::emit_committed(result, ingress.map(drop).and(named.map(drop)))
+}
+
+fn founding_name(matches: &ArgMatches) -> Result<Option<ClusterName>, Error> {
+    if let Some(name) = super::founding_cluster_name(matches)? {
+        return Ok(Some(name));
+    }
+    if crate::ui::json() {
+        return Err(unnamed_founding());
+    }
+    if !crate::ui::can_prompt() {
+        return Ok(None);
+    }
+    crate::ui::input(
+        "Name this Cluster",
+        |typed: &str| ClusterName::parse(typed).map_err(|_| crate::handlers::cluster::VALID_NAME),
+        unnamed_founding,
+        "Cancelled. No Server was set up.",
+    )
+    .map(Some)
+}
+
+fn unnamed_founding() -> Error {
+    Error::detailed(
+        RpcErrorCode::InvalidArgument,
+        "A new Cluster needs a name. Pass --cluster-name.",
+        json!({ "flag": "--cluster-name" }),
+    )
+    .hint(Hint::Retry(crate::handlers::typed_with(&[
+        "--cluster-name",
+        "<name>",
+    ])))
 }
 
 /// The initial Server is committed but its Ingress Proxy deploy failed.

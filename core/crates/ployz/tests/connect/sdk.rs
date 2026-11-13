@@ -28,14 +28,23 @@ async fn a_refused_container_tail_names_the_capability_and_the_machine() {
     .expect("connect must not hang")
     .unwrap();
 
+    let names = ployz::sdk::SealedNames::new();
+    let feed = names.clone();
+    tokio::spawn(async move {
+        feed.wanted().await;
+        feed.begin().done(Some(std::collections::BTreeSet::new()));
+    });
     let Err(error) = client
-        .container_logs(ployz::sdk::ContainerLogInput {
-            machine_id: description.machine_id,
-            container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
-            tail: 10,
-            follow: true,
-            since_unix_seconds: None,
-        })
+        .scrubbed_logs(
+            ployz::sdk::ContainerLogInput {
+                machine_id: description.machine_id,
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                tail: 10,
+                follow: true,
+                since_unix_seconds: None,
+            },
+            &names,
+        )
         .await
     else {
         panic!("a refused tail must not open a stream");
@@ -383,6 +392,7 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
                 health: ployz_core::HealthObservation::Healthy,
             },
         ),
+        leaving: false,
     });
     let created = service.created_containers.clone();
     let _machine = session.spawn_machine(description.machine_id, service).await;
@@ -459,6 +469,7 @@ async fn node_configs_round_trip_through_the_store() {
 
 pub(super) fn advertised_description() -> ContractDescription {
     ContractDescription {
+        attest: None,
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "do-not-branch-on-me".into(),

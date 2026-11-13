@@ -27,6 +27,8 @@ class CiTest(unittest.TestCase):
             (["core/crates/ployz-core/tests/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
             (["core/crates/ployz-store/src/lib.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
             (["core/crates/ployz-store/tests/snapshots/agent_tools.json"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
+            (["minter/src/routes.ts"], {"contracts", "minter"}),
+            (["minter/pnpm-lock.yaml"], {"contracts", "minter"}),
             (["dashboard/uptime/src/main.rs"], {"contracts", "uptime"}),
             (["dashboard/uptime/Cargo.lock"], {"contracts", "uptime"}),
             (["dashboard/uptime/Dockerfile"], {"contracts", "uptime"}),
@@ -54,7 +56,7 @@ class CiTest(unittest.TestCase):
         for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", "core/.cargo/config.toml"]:
             with self.subTest(path=path, pull_request=True):
                 self.assertNotIn("release-contracts", ci["select"]([path], pull_request=True))
-        for path in [".github/workflows/release-contracts.yml", "core/.goreleaser.yaml"]:
+        for path in [".github/workflows/release-contracts.yml", "core/.goreleaser.yaml", "core/crates/ployz-core/release-archives.txt", "core/scripts/release-archives.sh", "core/crates/sqlite-probe/src/main.rs", "core/crates/sqlite-probe/Cargo.toml"]:
             with self.subTest(path=path, pull_request=True):
                 self.assertIn("release-contracts", ci["select"]([path], pull_request=True))
         self.assertIn("release-contracts", ci["select"]([".github/workflows/ci.yml", "core/.goreleaser.yaml"]))
@@ -64,7 +66,7 @@ class CiTest(unittest.TestCase):
                 self.assertNotIn("macos-cli", ci["select"]([path], pull_request=True))
 
     def test_store_postgres_reruns_only_when_its_inputs_change(self):
-        for paths in [["core/crates/ployz-store/src/lib.rs"], ["core/crates/ployz-core/src/rpc.rs"], ["docs/user/services/domains.md"],
+        for paths in [["core/crates/ployz-store/src/lib.rs"], ["core/crates/ployz-core/src/rpc.rs"], ["core/crates/ployz-decide/src/github_build.rs"], ["docs/user/services/domains.md"],
                       ["core/crates/ployz/tests/fixtures/published-manifest.json"], ["core/Cargo.lock"], [".github/workflows/ci.yml"], ["unknown.config"]]:
             with self.subTest(paths=paths):
                 self.assertTrue(ci["store_postgres"](paths, pull_request=True))
@@ -75,7 +77,7 @@ class CiTest(unittest.TestCase):
         # STORE_INPUTS names ployz-store's path dependencies by hand; a new one must join it.
         metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=SCRIPT.parent.parent / "core"))
         path_deps = {p["name"]: {d["name"] for d in p["dependencies"] if d.get("path")} for p in metadata["packages"]}
-        self.assertEqual(path_deps["ployz-store"] | path_deps["ployz-core"], {"ployz-core"})
+        self.assertEqual(path_deps["ployz-store"] | path_deps["ployz-core"], {"ployz-core", "ployz-decide"})
 
     def test_only_dns_soak_reaches_rust_from_the_verify_harness(self):
         # select runs no Rust check for core/scripts/verify/; a crate that reads another of its files must join dns-soak.sh.
@@ -85,7 +87,7 @@ class CiTest(unittest.TestCase):
     def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
         self.assertEqual(
             ci["sdk_and_config_wasm_crates"](),
-            {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-store", "ployz-build"},
+            {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-decide", "ployz-store", "ployz-build"},
         )
 
     def test_agent_tool_changes_run_the_tool_tests(self):

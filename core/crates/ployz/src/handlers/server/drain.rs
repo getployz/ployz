@@ -11,13 +11,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::target;
-use crate::approval::{self, Verb};
+use crate::approval;
 use crate::cloud_account::{self, Credential};
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
     Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
 };
 use crate::handlers::{Error, leaf_matches, runtime, store, with_client};
+use ployz_store::OperationVerb;
 
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
 
@@ -26,7 +27,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?;
     let target = MachineTarget::parse(selector)?;
     let runtime = runtime()?;
-    if let Some(credential) = super::cloud_runs(&runtime, matches)? {
+    if let Some(credential) = super::super::route::cloud_runs(&runtime, matches)? {
         let machine = super::cloud_machine(&runtime, matches, selector)?;
         let report = through_cloud(&runtime, matches, &credential, &machine, selector)?;
         let server = &report.server;
@@ -64,7 +65,7 @@ fn through_cloud(
     let id = approval::approved(
         runtime,
         credential,
-        Verb::Drain,
+        OperationVerb::Drain,
         matches.get_one::<String>("approval").cloned(),
         |id| super::approved_rerun(matches, &["server", "drain", selector], id),
         async |approval| {
@@ -140,16 +141,7 @@ fn incomplete(report: &DrainReport) -> Error {
                 ..
             }
             | DrainOutcome::Held => stays.push(entry.service.to_string()),
-            DrainOutcome::Moved { moves }
-                if moves.iter().any(|step| step.old != OldCopyEnd::Stopped) =>
-            {
-                left.push(entry.service.to_string());
-            }
-            DrainOutcome::OldCopies { ends }
-                if ends.iter().any(|end| *end != OldCopyEnd::Stopped) =>
-            {
-                left.push(entry.service.to_string());
-            }
+            outcome if outcome.left_old_copy() => left.push(entry.service.to_string()),
             DrainOutcome::Stays { .. }
             | DrainOutcome::Moved { .. }
             | DrainOutcome::OldCopies { .. }
@@ -226,20 +218,9 @@ fn step_line(step: DrainStep<'_>) -> String {
 fn went_wrong(step: DrainStep<'_>) -> bool {
     match step {
         DrainStep::ServicesOff { .. } => false,
-        DrainStep::Service { service, .. } => match &service.outcome {
-            DrainOutcome::NotRetired { .. }
-            | DrainOutcome::Failed { .. }
-            | DrainOutcome::Interrupted { .. } => true,
-            DrainOutcome::Moved { moves } => {
-                moves.iter().any(|step| step.old != OldCopyEnd::Stopped)
-            }
-            DrainOutcome::OldCopies { ends } => ends.iter().any(|end| *end != OldCopyEnd::Stopped),
-            DrainOutcome::Retired
-            | DrainOutcome::Stays { .. }
-            | DrainOutcome::Held
-            | DrainOutcome::NothingToMove
-            | DrainOutcome::NotAttempted => false,
-        },
+        DrainStep::Service { service, .. } => {
+            service.outcome.failed() || service.outcome.left_old_copy()
+        }
     }
 }
 

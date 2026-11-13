@@ -4,15 +4,16 @@
 use std::{io, net::SocketAddr};
 
 use iroh::{
-    Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey,
-    endpoint::{Connection, ConnectionError, VarInt, presets},
+    Endpoint, PublicKey, SecretKey,
+    endpoint::{Connection, ConnectionError, VarInt},
 };
 use ployz_core::{
     BUILD_GRANT_ALPN, BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, OpenedSealed,
+    X25519Secret, authority::AttestKey,
 };
 use tokio::net::TcpListener;
 
-use super::ManagementRelay;
+use super::{ManagementRelay, management};
 
 /// A loopback registry address forwarding each TCP connection to the grant transport.
 /// Dropping it stops forwarding and closes the connection.
@@ -51,6 +52,31 @@ impl GrantRegistry {
     /// # Errors
     /// Reports the Machine's refusal or an unreadable answer.
     pub async fn sealed(&self) -> io::Result<OpenedSealed> {
+        serde_json::from_slice(&self.fetch_sealed().await?).map_err(io::Error::other)
+    }
+
+    /// The Sealed values of a rule build: sealed by the Machine to `recipient`, from the
+    /// Cluster's attest key `attest`, for the grant token's `audience`. Anything else,
+    /// such as plaintext or values another key sealed, opens nothing.
+    ///
+    /// # Errors
+    /// Reports the Machine's refusal, or a response that does not open.
+    pub async fn sealed_for_build(
+        &self,
+        recipient: &X25519Secret,
+        attest: &AttestKey,
+        audience: &str,
+    ) -> io::Result<OpenedSealed> {
+        OpenedSealed::open_build(&self.fetch_sealed().await?, recipient, attest, audience).map_err(
+            |_| {
+                io::Error::other(
+                    "the build secrets did not come from this Cluster's attest key; refusing to build",
+                )
+            },
+        )
+    }
+
+    async fn fetch_sealed(&self) -> io::Result<Vec<u8>> {
         let response = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -60,7 +86,7 @@ impl GrantRegistry {
             .await
             .map_err(|error| self.refused(error.to_string()))?;
         if response.status().is_success() {
-            return response.json().await.map_err(io::Error::other);
+            return Ok(response.bytes().await.map_err(io::Error::other)?.to_vec());
         }
         let status = response.status();
         let body: serde_json::Value = response.json().await.unwrap_or_default();
@@ -95,18 +121,11 @@ pub async fn open_grant_registry(
 ) -> io::Result<GrantRegistry> {
     let machine = PublicKey::from_bytes(grant.machine().as_bytes())
         .map_err(|_| io::Error::other("the Build Grant names an invalid Machine identity"))?;
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::from_bytes(grant.secret()))
-        .relay_mode(RelayMode::custom([relay.url.clone()]))
-        .ca_tls_config(relay.tls.clone())
+    let endpoint = management::endpoint(SecretKey::from_bytes(grant.secret()), relay)
         .bind()
         .await
         .map_err(io::Error::other)?;
-    let connection = endpoint
-        .connect(
-            EndpointAddr::new(machine).with_relay_url(relay.url.clone()),
-            BUILD_GRANT_ALPN,
-        )
+    let connection = management::dial(&endpoint, machine, relay, BUILD_GRANT_ALPN)
         .await
         .map_err(io::Error::other)?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;

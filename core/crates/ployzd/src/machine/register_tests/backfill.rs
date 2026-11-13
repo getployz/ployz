@@ -52,6 +52,7 @@ impl Peer {
     async fn share_to(&self, recipient: &Peer) -> ployz_core::SealedSealingKey {
         self.local
             .share_sealing_key(ShareSealingKeyRequest {
+                join_approval: None,
                 machine: recipient.machine.id,
                 public_key: recipient.machine.public_key,
             })
@@ -156,7 +157,7 @@ async fn generate_refuses_while_the_cluster_awaits_recovery() {
     };
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
-        error.sealing_refusal(),
+        error.evidence::<SealingRefusal>(),
         Some(SealingRefusal::AwaitsRecovery)
     );
     assert_eq!(SealingKey::load(&dir).unwrap(), None);
@@ -341,6 +342,7 @@ async fn share_refuses_a_recipient_the_cluster_does_not_publish_that_way() {
     let mismatch = holder
         .local
         .share_sealing_key(ShareSealingKeyRequest {
+            join_approval: None,
             machine: joiner.machine.id,
             public_key: WireGuardPublicKey([7; 32]),
         })
@@ -349,6 +351,7 @@ async fn share_refuses_a_recipient_the_cluster_does_not_publish_that_way() {
     let unlisted = holder
         .local
         .share_sealing_key(ShareSealingKeyRequest {
+            join_approval: None,
             machine: unknown,
             public_key: joiner.machine.public_key,
         })
@@ -357,6 +360,7 @@ async fn share_refuses_a_recipient_the_cluster_does_not_publish_that_way() {
     let not_held = joiner
         .local
         .share_sealing_key(ShareSealingKeyRequest {
+            join_approval: None,
             machine: holder.machine.id,
             public_key: holder.machine.public_key,
         })

@@ -122,6 +122,8 @@ async fn node_smoke_covers_session_register() {
 
 fn joiner_identity() -> RegisterRequest {
     RegisterRequest {
+        join_approval: None,
+        join_confirmation: None,
         machine_id: MachineId::random(),
         assigned_subnet: Some("10.210.1.0/24".parse().unwrap()),
         initial_policy: Default::default(),
@@ -131,6 +133,7 @@ fn joiner_identity() -> RegisterRequest {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
         runtime: Default::default(),
+        capabilities: Vec::new(),
     }
 }
 

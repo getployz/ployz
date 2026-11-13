@@ -1,86 +1,18 @@
 import "@tanstack/react-start/server-only";
-import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { Cache, Context, Effect, Layer, Redacted, Schema } from "effect";
-import { GithubDisconnected } from "#/modules/github/github-access";
-import { githubTimestampSchema, isValidGithubId } from "#/modules/github/github-ingestion.contracts";
+import { Cache, Context, Effect, Layer } from "effect";
+import { GithubDisconnected, type GithubAccess } from "#/modules/github/github-access";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
+import { isValidGithubId } from "#/modules/github/github-ingestion.contracts";
 import { GithubObservationError } from "#/modules/github/github-observation.api";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
-import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-
-export const GITHUB_API_VERSION = "2022-11-28";
 
 /** Installation tokens live for one hour on GitHub. */
 const INSTALLATION_TOKEN_TTL = "50 minutes";
 
-export function createGithubAppJwt(input: { readonly appId: string; readonly privateKey: string }): string {
-  const privateKey = input.privateKey.replace(/\\n/g, "\n");
-  const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
-  const payload = Buffer.from(JSON.stringify({ iss: input.appId, iat: now - 60, exp: now + 600 })).toString("base64url");
-  const signature = crypto
-    .createSign("RSA-SHA256")
-    .update(`${header}.${payload}`)
-    .sign({ key: privateKey, padding: crypto.constants.RSA_PKCS1_PADDING }, "base64url");
-  return `${header}.${payload}.${signature}`;
-}
-
-const mintFailed = (args: { code: "request_failed" | "not_found" | "invalid_response"; status?: number; retryAfterSeconds?: number; retriable: boolean }) =>
+const mintFailed = (args: { code: "request_failed" | "not_found"; retriable: boolean }) =>
   new GithubObservationError({ ...args, operation: "installation_token", message: `GitHub installation_token failed (${args.code}).` });
-
-const tokenResponseSchema = Schema.Struct({
-  token: Schema.String.check(Schema.isMinLength(1)),
-  expires_at: githubTimestampSchema,
-});
-
-function retryAfterSeconds(response: Response): number | undefined {
-  const value = response.headers.get("retry-after");
-  if (!value || !/^\d+$/.test(value)) return undefined;
-  const seconds = Number(value);
-  return Number.isSafeInteger(seconds) ? seconds : undefined;
-}
-
-export const githubAppJwt = Effect.fn("GithubTokens.appJwt")(function* () {
-  const { github } = yield* AppConfig;
-  return yield* Effect.try({
-    try: () => createGithubAppJwt({ appId: github.appId, privateKey: Redacted.value(github.appPrivateKey) }),
-    catch: () => mintFailed({ code: "request_failed", retriable: false }),
-  });
-});
-
-export const mintInstallationToken = Effect.fn("GithubTokens.mint")(function* (installationId: number) {
-  const { github } = yield* AppConfig;
-  const jwt = yield* githubAppJwt();
-  const response = yield* Effect.tryPromise({
-    try: (signal) => fetch(`${github.origins.api}/app/installations/${installationId}/access_tokens`, {
-      signal,
-      method: "POST",
-      headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION },
-    }),
-    catch: () => mintFailed({ code: "request_failed", retriable: true }),
-  });
-  if (!response.ok) {
-    const retriable = response.status === 403 || response.status === 429 || response.status >= 500;
-    return yield* mintFailed({
-      code: response.status === 404 ? "not_found" : "request_failed",
-      status: response.status,
-      retryAfterSeconds: retryAfterSeconds(response),
-      retriable,
-    });
-  }
-  const body = yield* Effect.tryPromise({
-    try: async () => {
-      const parsed: unknown = await response.json();
-      return parsed;
-    },
-    catch: () => mintFailed({ code: "request_failed", status: response.status, retriable: true }),
-  });
-  const decoded = yield* Schema.decodeUnknownEffect(tokenResponseSchema)(body).pipe(
-    Effect.mapError(() => mintFailed({ code: "invalid_response", status: response.status, retriable: false })),
-  );
-  return decoded.token;
-});
 
 export interface GithubTokensService {
   /**
@@ -94,6 +26,11 @@ export interface GithubTokensService {
    * cancelling a run Cloud dispatched. An installation GitHub suspended or Cloud forgot gets none, cached or not.
    */
   readonly systemInstallationToken: (installationId: number) => Effect.Effect<string, GithubObservationError>;
+  /**
+   * The installation `access` names, when Cloud may act through it now, as the two token reads check: for an
+   * Organization, linked and not suspended; for Cloud itself, known and not suspended. Mints nothing.
+   */
+  readonly usable: (access: Exclude<GithubAccess, { type: "public" }>) => Effect.Effect<number, GithubObservationError | GithubDisconnected>;
 }
 
 export class GithubTokens extends Context.Service<GithubTokens, GithubTokensService>()("ployz/GithubTokens") {}
@@ -168,10 +105,24 @@ export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (
     if (refusal !== null) return yield* refusal;
     return yield* cached(installationId);
   });
-  return { installationToken, systemInstallationToken } satisfies GithubTokensService;
+  const usable: GithubTokensService["usable"] = Effect.fn("GithubTokens.usable")(function* (access) {
+    if (!isValidGithubId(access.installationId)) return yield* mintFailed({ code: "request_failed", retriable: false });
+    if (access.type === "installation") {
+      const known = yield* installationUsable(access.installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
+      if (!known) return yield* forgotten(access.installationId);
+      return access.installationId;
+    }
+    const link = yield* findInstallationLink(access.organizationId, access.installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
+    if (!link.installed || link.suspended) yield* Cache.invalidate(cache, access.installationId);
+    const refusal = refusalOf(access.organizationId, access.installationId, link);
+    if (refusal !== null) return yield* refusal;
+    return access.installationId;
+  });
+  return { installationToken, systemInstallationToken, usable } satisfies GithubTokensService;
 });
 
+/** Read tokens of the whole read set, one per installation, cached for most of their hour. */
 export const GithubTokensLive = Layer.effect(GithubTokens, Effect.gen(function* () {
-  const config = yield* AppConfig;
-  return yield* makeGithubTokens((installationId) => mintInstallationToken(installationId).pipe(Effect.provideService(AppConfig, config)));
+  const authority = yield* GithubAuthority;
+  return yield* makeGithubTokens((installationId) => authority.readToken(installationId));
 }));

@@ -108,6 +108,15 @@ impl Generator {
         self.length
     }
 
+    /// Whether `value` is one this generator could have made: exactly its length, every
+    /// character from its charset.
+    #[must_use]
+    pub fn could_make(&self, value: &str) -> bool {
+        let alphabet = self.alphabet();
+        value.len() == usize::from(self.length)
+            && value.bytes().all(|byte| alphabet.contains(&byte))
+    }
+
     /// The distinct characters the value is drawn from, in ASCII order.
     #[must_use]
     pub fn alphabet(&self) -> Vec<u8> {

@@ -212,6 +212,7 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                 let response = match body {
                     RpcRequestBody::DescribeContract(_) => {
                         RpcResponse::from(ployz_core::ContractDescription {
+                            attest: None,
                             machine_id: answering.id,
                             protocol_major: ployz_core::PROTOCOL_MAJOR,
                             daemon_version: "fixture".into(),
@@ -236,6 +237,7 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                             machine: Some(answering),
                             store_version: Default::default(),
                             rtts: Vec::new(),
+                            passkeys: Vec::new(),
                             management_clients: Vec::new(),
                             telemetry: Some(TelemetryObservation::BridgeCapacity {
                                 bridge: BridgeEndpointCapacity::new(10, 0),
@@ -424,6 +426,7 @@ fn machine(hex: char) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         MembershipObservation::Up,
@@ -525,17 +528,19 @@ async fn redialed_into_a_refusal(bounded: bool) -> Option<MachineId> {
             }
         })
         .await;
-    client.entry = Some(machine_id('a'));
+    client.session.entry = Some(machine_id('a'));
     let refused = if bounded {
         client
-            .try_read::<op::ListMachines>(
+            .call::<op::ListMachines>(
                 ListMachinesRequest {},
-                &MachineTarget::parse("machine-a").unwrap(),
+                Call::read()
+                    .to(&MachineTarget::parse("machine-a").unwrap())
+                    .budget(crate::connect::target_read_timeout()),
             )
             .await
     } else {
         client
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
             .await
     };
     assert!(refused.is_err(), "{refused:?}");
@@ -559,10 +564,14 @@ async fn a_redial_whose_entry_fails_its_check_leaves_every_clone_on_the_old_chan
         Err(tonic::Status::unavailable("not ready"))
     })
     .await;
-    client.connector = crate::connect::test_support::connector(other.channel());
+    client
+        .session
+        .use_connector(crate::connect::test_support::connector(
+            other.session.channel(),
+        ));
     let clone = client.clone();
 
-    assert!(client.redial_shared().await.is_err());
+    assert!(client.session.redial_shared().await.is_err());
 
     let answer = clone.entry_id().await.unwrap_err();
     assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
@@ -576,6 +585,7 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
     .await;
     let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
         let described = ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+            attest: None,
             machine_id: machine_id('b'),
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "test".into(),
@@ -585,13 +595,17 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
         Ok(tonic::Response::new(described.encode().unwrap()))
     })
     .await;
-    client.entry = Some(machine_id('a'));
-    client.confirmed = Some(machine_id('a'));
-    client.connector = crate::connect::test_support::connector(other.channel());
+    client.session.entry = Some(machine_id('a'));
+    client.session.confirmed = Some(machine_id('a'));
+    client
+        .session
+        .use_connector(crate::connect::test_support::connector(
+            other.session.channel(),
+        ));
 
     // A client whose last redial failed has forgotten its entry, and still refuses.
     let mut forgot = client.clone();
-    forgot.entry = None;
+    forgot.session.entry = None;
     for redialing in [client.clone(), forgot] {
         let refused = redialing.redial_shared().await;
         assert!(
@@ -615,18 +629,22 @@ async fn a_shared_redial_whose_daemon_will_not_say_which_machine_it_is_keeps_the
         Ok(tonic::Response::new(refused.encode().unwrap()))
     })
     .await;
-    client.entry = Some(machine_id('a'));
-    client.confirmed = Some(machine_id('a'));
-    client.connector = crate::connect::test_support::connector(other.channel());
+    client.session.entry = Some(machine_id('a'));
+    client.session.confirmed = Some(machine_id('a'));
+    client
+        .session
+        .use_connector(crate::connect::test_support::connector(
+            other.session.channel(),
+        ));
 
-    let refused = client.redial_shared().await;
+    let refused = client.session.redial_shared().await;
     assert!(
         matches!(refused, Err(ConnectError::Remote(_))),
         "{refused:?}"
     );
 
     // A retry's redial forgets its entry before it dials, and still refuses.
-    let refused = client.clone().redial().await;
+    let refused = client.clone().session.redial().await;
     assert!(
         matches!(refused, Err(ConnectError::Remote(_))),
         "{refused:?}"
@@ -644,6 +662,7 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
     .await;
     let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
         let described = ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+            attest: None,
             machine_id: machine_id('b'),
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "test".into(),
@@ -653,17 +672,21 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
         Ok(tonic::Response::new(described.encode().unwrap()))
     })
     .await;
-    client.entry = Some(machine_id('a'));
-    client.confirmed = Some(machine_id('a'));
-    client.connector = crate::connect::test_support::connector(other.channel());
+    client.session.entry = Some(machine_id('a'));
+    client.session.confirmed = Some(machine_id('a'));
+    client
+        .session
+        .use_connector(crate::connect::test_support::connector(
+            other.session.channel(),
+        ));
 
     // As a Server reset under `server add` does, the endpoint now answers as another
     // Machine; the retry follows it. A clone whose last redial failed has forgotten
     // its entry, and still moves only itself.
     let mut forgot = client.clone();
-    forgot.entry = None;
+    forgot.session.entry = None;
     for mut retrying in [client.clone(), forgot] {
-        retrying.redial().await.unwrap();
+        retrying.session.redial().await.unwrap();
         assert_eq!(retrying.entry_machine(), Some(machine_id('b')));
         assert_eq!(retrying.entry_id().await.unwrap(), machine_id('b'));
     }
@@ -750,6 +773,7 @@ impl Resealing {
                         held.notified().await;
                     }
                     ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+                        attest: None,
                         machine_id: machine_id('a'),
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "test".into(),
@@ -771,6 +795,7 @@ impl Resealing {
                         machine: Some(answering),
                         store_version: Default::default(),
                         rtts: Vec::new(),
+                        passkeys: Vec::new(),
                         management_clients: Vec::new(),
                         telemetry: None,
                         storage: None,
@@ -819,7 +844,7 @@ impl Connector for Resealing {
             },
         )
         .await;
-        Ok(daemon.channel())
+        Ok(daemon.session.channel())
     }
 
     async fn dial_proxy(
@@ -854,9 +879,9 @@ fn expecting(byte: u8, allow_unverified: bool) -> Option<crate::connect::Cluster
 /// Redial `client` as a call does, or as a Deploy does when `shared`.
 async fn redialed(client: &Client, shared: bool) -> Result<(), ConnectError> {
     if shared {
-        client.redial_shared().await
+        client.session.redial_shared().await
     } else {
-        client.clone().redial().await
+        client.clone().session.redial().await
     }
 }
 
@@ -892,8 +917,8 @@ async fn a_redial_whose_entry_still_holds_the_expected_key_keeps_it() {
         let connector = Resealing::new(vec![held(7), sealing, sealing]);
         let mut client = connector.open(expecting(7, false)).await;
 
-        client.redial().await.unwrap();
-        client.redial_shared().await.unwrap();
+        client.session.redial().await.unwrap();
+        client.session.redial_shared().await.unwrap();
         assert_eq!(client.entry_machine(), Some(machine_id('a')));
         assert_eq!(connector.calls(), ["DescribeContract"; 3]);
     }
@@ -931,8 +956,8 @@ async fn a_redial_whose_confirmation_tells_no_key_checks_only_the_machine() {
         let connector = Resealing::new(vec![held(7), sealing, sealing]);
         let mut client = connector.open(expecting(7, false)).await;
 
-        client.redial().await.unwrap();
-        client.redial_shared().await.unwrap();
+        client.session.redial().await.unwrap();
+        client.session.redial_shared().await.unwrap();
         assert_eq!(client.entry_machine(), Some(machine_id('a')));
         // Nothing beyond the confirmation is asked on a redial.
         assert_eq!(connector.calls(), ["DescribeContract"; 3]);
@@ -944,8 +969,8 @@ async fn a_redial_of_a_client_expecting_no_cluster_checks_none() {
     let connector = Resealing::new(vec![held(7), held(9), held(9)]);
     let mut client = connector.open(None).await;
 
-    client.redial().await.unwrap();
-    client.redial_shared().await.unwrap();
+    client.session.redial().await.unwrap();
+    client.session.redial_shared().await.unwrap();
     assert_eq!(client.entry_machine(), Some(machine_id('a')));
 }
 
@@ -956,7 +981,7 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
 
     let refused = client
         .clone()
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
         .map(drop);
     assert!(in_another_cluster(&refused), "{refused:?}");
@@ -965,9 +990,11 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
 
     let read = client
         .clone()
-        .try_read::<op::ListMachines>(
+        .call::<op::ListMachines>(
             ListMachinesRequest {},
-            &MachineTarget::parse("machine-a").unwrap(),
+            Call::read()
+                .to(&MachineTarget::parse("machine-a").unwrap())
+                .budget(crate::connect::target_read_timeout()),
         )
         .await
         .map(drop);
@@ -983,6 +1010,27 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
     );
     let proxied = client.dial_proxy("tcp", "127.0.0.1:1").await.map(drop);
     assert!(in_another_cluster(&proxied), "{proxied:?}");
+    let target = machine_id('b');
+    let full = client
+        .clone()
+        .with_full_routes(FullRoutes::new(
+            vec![
+                Connection::unix("/scripted/full.sock")
+                    .unwrap()
+                    .with_machine_id(target),
+            ],
+            false,
+        ))
+        .call_shared::<op::SetDeviceEnforcement>(
+            ployz_core::SetDeviceEnforcementRequest {
+                enforced: false,
+                starting_set: None,
+            },
+            Call::once().to(&MachineTarget::from(&target)),
+        )
+        .await
+        .map(drop);
+    assert!(in_another_cluster(&full), "{full:?}");
     assert_eq!(connector.calls(), ended);
 }
 
@@ -1029,20 +1077,20 @@ async fn a_call_waiting_to_send_when_another_clone_is_refused_sends_nothing() {
     let connector = Resealing::new(vec![held(7), held(9)]);
     let client = connector.open(expecting(7, false)).await;
     let connect = Arc::new(tokio::sync::Notify::new());
-    client.share(crate::connect::test_support::waiting_channel(
-        connector.unary(held(7), None),
-        connect.clone(),
-    ));
+    client
+        .session
+        .share(crate::connect::test_support::waiting_channel(
+            connector.unary(held(7), None),
+            connect.clone(),
+        ));
 
-    let sent = client.call_unretried::<op::ListMachines>(
+    let sent = client.call_shared::<op::ListMachines>(
         ListMachinesRequest {},
-        None,
-        LIVE_MUTATION_REPLY_TIMEOUT,
+        Call::once().within(Deadline::MutationReply(LIVE_MUTATION_REPLY_TIMEOUT)),
     );
-    let unsent = client.call_unretried::<op::Inspect>(
+    let unsent = client.call_shared::<op::Inspect>(
         ployz_core::InspectRequest::default(),
-        None,
-        LIVE_MUTATION_REPLY_TIMEOUT,
+        Call::once().within(Deadline::MutationReply(LIVE_MUTATION_REPLY_TIMEOUT)),
     );
     let unopened = client.runtime_frame();
     tokio::pin!(sent, unsent, unopened);
@@ -1051,7 +1099,7 @@ async fn a_call_waiting_to_send_when_another_clone_is_refused_sends_nothing() {
     assert!(waits(unsent.as_mut()).await);
     assert!(waits(unopened.as_mut()).await);
 
-    let refused = client.clone().redial().await;
+    let refused = client.clone().session.redial().await;
     assert!(in_another_cluster(&refused), "{refused:?}");
     connect.notify_one();
 
@@ -1159,11 +1207,11 @@ impl Connector for Unreachable {
 
 #[tokio::test]
 async fn a_deploys_redial_tells_a_refusal_from_a_failed_dial() {
-    use crate::deploy::{MachineOperations, RedialFailure};
+    use crate::deploy::{RedialFailure, Session};
 
     let connector = Resealing::new(vec![held(7), held(9)]);
     let client = connector.open(expecting(7, false)).await;
-    let refused = MachineOperations::redial(&client).await;
+    let refused = Session::redial(&client).await;
     assert!(
         matches!(
             &refused,
@@ -1177,8 +1225,8 @@ async fn a_deploys_redial_tells_a_refusal_from_a_failed_dial() {
 
     let connector = Resealing::new(vec![held(7)]);
     let mut client = connector.open(expecting(7, false)).await;
-    client.connector = Arc::new(Unreachable);
-    let failed = MachineOperations::redial(&client).await;
+    client.session.use_connector(Arc::new(Unreachable));
+    let failed = Session::redial(&client).await;
     assert!(
         matches!(failed, Some(Err(RedialFailure::Failed))),
         "{failed:?}"
@@ -1199,7 +1247,7 @@ async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
             Err(tonic::Status::unavailable("restarting"))
         })
         .await;
-    client.entry = Some(machine_id('a'));
+    client.session.entry = Some(machine_id('a'));
 
     let error = client.held_copies(&machine('b')).await.unwrap_err();
 
@@ -1264,7 +1312,7 @@ async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_th
             }
         })
         .await;
-    client.entry = Some(machine_id('a'));
+    client.session.entry = Some(machine_id('a'));
 
     let held = client.held_copies(&machine('b')).await;
 
@@ -1290,5 +1338,153 @@ fn an_unanswered_listing_keeps_whether_the_router_could_dial_the_target() {
     assert!(
         undialed.target_unanswered() && undialed.undialed(),
         "{undialed:?}"
+    );
+}
+
+#[test]
+fn a_leave_goes_to_its_target_itself_as_full_routes_do() {
+    assert!(dials_direct(op::Leave::PATH));
+    assert!(dials_direct(op::SetDeviceEnforcement::PATH));
+    assert!(!dials_direct(op::ListMachines::PATH));
+    assert!(!dials_direct(op::EnsureContainer::PATH));
+}
+
+#[tokio::test]
+async fn a_client_reaches_a_machine_with_full_scope_only_over_ssh_the_socket_or_a_device() {
+    let (client, server) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::unimplemented(""))
+    })
+    .await;
+    let target = machine_id('b');
+    assert!(
+        !client.reaches_full(&target, true),
+        "a client without Full connections"
+    );
+    let management = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+        [2; 32],
+    );
+    let over = |connection: Connection| {
+        client.clone().with_full_routes(FullRoutes::new(
+            vec![connection.with_machine_id(target)],
+            false,
+        ))
+    };
+    let socket = over(Connection::unix("/run/ployz/ployzd.sock").unwrap());
+    assert!(socket.reaches_full(&target, false));
+    let management = over(Connection::management(management.to_secret_string()).unwrap());
+    assert!(
+        !management.reaches_full(&target, false),
+        "Cloud's key is an Operator's"
+    );
+    assert!(
+        management.reaches_full(&target, true),
+        "a Device's key is Full"
+    );
+    let tcp = over(Connection::tcp("127.0.0.1:7569".parse().unwrap()));
+    assert!(!tcp.reaches_full(&target, true));
+    assert!(
+        !socket.reaches_full(&machine_id('c'), true),
+        "no connection names it"
+    );
+    server.abort();
+}
+
+/// A daemon that lists Machines `a` and `b`, names itself `described` whenever asked, and
+/// refuses every other request. Each request it receives is logged in order.
+async fn lists_a_and_b_describing_itself_as(
+    described: char,
+) -> (
+    Client,
+    std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let logged = log.clone();
+    let (client, server) = crate::connect::test_support::rpc_client(move |rpc| {
+        let logged = logged.clone();
+        async move {
+            let body = rpc.into_inner().decode_request().unwrap().body;
+            logged.lock().unwrap().push(body.command());
+            let reply = if let ployz_core::RpcRequestBody::DescribeContract(_) = body {
+                ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+                    attest: None,
+                    machine_id: machine_id(described),
+                    protocol_major: ployz_core::PROTOCOL_MAJOR,
+                    daemon_version: "test".into(),
+                    capabilities: Default::default(),
+                    sealing: None,
+                })
+            } else if let ployz_core::RpcRequestBody::ListMachines(_) = body {
+                ployz_core::RpcResponse::from(ployz_core::MachineList {
+                    enrollment: None,
+                    machines: vec![machine('a'), machine('b')],
+                })
+            } else {
+                return Err(tonic::Status::unimplemented("pinned"));
+            };
+            Ok(tonic::Response::new(reply.encode().unwrap()))
+        }
+    })
+    .await;
+    (client, log, server)
+}
+
+async fn removing(
+    removed: char,
+    confirmed: char,
+    described: char,
+) -> (Result<LocalMachineRemoved, RpcError>, Vec<&'static str>) {
+    let (mut client, log, server) = lists_a_and_b_describing_itself_as(described).await;
+    client.session.entry = Some(machine_id(confirmed));
+    client.session.confirmed = Some(machine_id(confirmed));
+    let nothing_lost = ployz_core::ObservedDataLoss {
+        data_loss: Vec::new(),
+    }
+    .confirm_names([])
+    .unwrap();
+    let removal = client
+        .remove_machine(
+            &MachineTarget::from(&machine_id(removed)),
+            &nothing_lost,
+            Remover::Operator,
+        )
+        .await;
+    server.abort();
+    let seen = log.lock().unwrap().clone();
+    (removal, seen)
+}
+
+const CURRENT_ENTRY_REFUSAL: &str =
+    "the current entry Machine cannot be removed while another Machine is visible";
+
+/// The entry is the Machine a describe names now, not the one confirmed when the channel
+/// opened: a daemon that reset and enrolled as another since is the one removed last.
+#[tokio::test]
+async fn remove_machine_refuses_the_machine_the_daemon_now_describes_as_its_entry() {
+    let (removal, seen) = removing('b', 'a', 'b').await;
+
+    let refused = removal.unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(refused.message, CURRENT_ENTRY_REFUSAL);
+    assert_eq!(
+        seen,
+        ["list_machines", "describe_contract"],
+        "refused before any volume is read"
+    );
+}
+
+/// And the Machine the entry was confirmed as, once the daemon no longer says so, is not
+/// refused as the current entry.
+#[tokio::test]
+async fn remove_machine_does_not_refuse_the_machine_the_daemon_no_longer_describes_as_its_entry() {
+    let (removal, seen) = removing('a', 'a', 'b').await;
+
+    if let Err(error) = removal {
+        assert_ne!(error.message, CURRENT_ENTRY_REFUSAL);
+    }
+    assert_eq!(
+        seen.get(..2),
+        Some(&["list_machines", "describe_contract"][..])
     );
 }

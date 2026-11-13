@@ -16,8 +16,10 @@ use ployz_core::{
     ImagesRemoved, PullPolicy, RegistryAuth,
 };
 
-use super::{ContainerRuntime, Error};
+use super::{ContainerRuntime, Error, Status, classify};
 
+/// What follows a repository in the tag that keeps a pinned image from being pruned. A
+/// daemon of another version reads these tags, so the text does not change.
 const RETENTION_TAG: &str = ":ployz-sha256-";
 /// Unused images kept for rollback.
 const KEEP: usize = 3;
@@ -104,9 +106,7 @@ impl ContainerRuntime {
                 .map(|time| time.timestamp())
                 .filter(|seconds| *seconds > 0)),
             // Removed between list and inspect.
-            Err(DockerError::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(None),
+            Err(error) if classify(&error) == Status::Absent => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
@@ -178,6 +178,17 @@ impl ContainerRuntime {
         }
         Ok(ImagesRemoved { results })
     }
+}
+
+/// The tag a pinned `image` is kept under, `repository:ployz-sha256-<hex>`. A pin that also
+/// names a tag (`redis:7-alpine@sha256:…`) drops it, since a Docker reference holds one tag.
+pub(super) fn retention_tag(image: &str) -> Option<String> {
+    let (name, hex) = image.split_once("@sha256:")?;
+    let repository = match name.rsplit_once(':') {
+        Some((repository, tag)) if !tag.contains('/') => repository,
+        _ => name,
+    };
+    Some(format!("{repository}{RETENTION_TAG}{hex}"))
 }
 
 /// Retention tags in `repository` to remove, newest kept. Images a Container uses,
@@ -313,21 +324,50 @@ fn under_pressure(space: Option<DiskSpace>) -> bool {
 }
 
 fn refusal(error: DockerError) -> ImageRemovalOutcome {
-    if let DockerError::DockerResponseServerError { status_code, .. } = &error {
-        match status_code {
-            404 => return ImageRemovalOutcome::NotFound,
-            409 => return ImageRemovalOutcome::InUse,
-            _ => {}
-        }
-    }
-    ImageRemovalOutcome::Failed {
-        message: ployz_core::error_chain::inline(&error),
+    match classify(&error) {
+        Status::Absent => ImageRemovalOutcome::NotFound,
+        Status::Conflict => ImageRemovalOutcome::InUse,
+        Status::Unchanged | Status::Other => ImageRemovalOutcome::Failed {
+            message: ployz_core::error_chain::inline(&error),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_image_is_kept_under_its_repository_whatever_tag_the_pin_names() {
+        let hex = "1".repeat(64);
+        for (image, kept) in [
+            (
+                format!("redis:7-alpine@sha256:{hex}"),
+                format!("redis:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("example.test/api@sha256:{hex}"),
+                format!("example.test/api:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("localhost:5000/api@sha256:{hex}"),
+                format!("localhost:5000/api:ployz-sha256-{hex}"),
+            ),
+            (
+                format!("localhost:5000/api:v1@sha256:{hex}"),
+                format!("localhost:5000/api:ployz-sha256-{hex}"),
+            ),
+        ] {
+            let tag = retention_tag(&image).unwrap();
+            assert_eq!(tag, kept);
+            assert!(ployz_core::is_image_reference(&tag), "{tag}");
+        }
+    }
+
+    #[test]
+    fn the_retention_tag_text_is_the_one_other_daemons_read() {
+        assert_eq!(RETENTION_TAG, ":ployz-sha256-");
+    }
 
     const NOW: i64 = 100 * 24 * 60 * 60;
     const DAY: i64 = 24 * 60 * 60;

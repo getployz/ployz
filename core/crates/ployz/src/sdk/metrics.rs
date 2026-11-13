@@ -5,12 +5,13 @@
 //! and two grids can differ near the 23 hour raw boundary, so the sum lands on
 //! the widest step any Machine used.
 
+use crate::cluster::Call;
 use std::collections::BTreeMap;
 
 use futures_util::future::join_all;
 use ployz_core::{
-    ListMachinesRequest, MachineFailure, MachineId, MachineSuccess, MachineTarget,
-    QualifiedService, RpcError, RpcErrorCode,
+    MachineFailure, MachineId, MachineObservation, MachineSuccess, MachineTarget, QualifiedService,
+    RpcError,
     metrics::{
         MetricHistoryReply, MetricHistoryRequest, MetricPoints, MetricRange, MetricScope,
         ServicePoint,
@@ -18,10 +19,9 @@ use ployz_core::{
     op,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use ts_rs::TS;
 
-use super::{Session, invalid_argument};
+use super::Session;
 use crate::connect::Client;
 
 /// Whose history to read: one Machine's host totals, or one Service summed
@@ -96,6 +96,21 @@ pub async fn metric_history(
     range: MetricRange,
     step_nanos: Option<i64>,
 ) -> Result<MetricHistory, RpcError> {
+    metric_history_among(client, subject, range, step_nanos, None).await
+}
+
+/// [`metric_history`] over Machines the caller has already listed, so one answer lists the
+/// Cluster once. With `listed` None, a Service's history lists them itself.
+///
+/// # Errors
+/// Returns invalid input or a failure to list Machines.
+pub(super) async fn metric_history_among(
+    client: &Client,
+    subject: MetricSubject,
+    range: MetricRange,
+    step_nanos: Option<i64>,
+    listed: Option<&[MachineObservation]>,
+) -> Result<MetricHistory, RpcError> {
     let (scope, machine) = match subject {
         MetricSubject::Machine { machine_id } => (MetricScope::Machine, Some(machine_id)),
         MetricSubject::Service { service } => (MetricScope::Service { service }, None),
@@ -105,18 +120,34 @@ pub async fn metric_history(
         range,
         step_nanos,
     };
-    request.validate().map_err(invalid_argument)?;
+    request.validate().map_err(RpcError::invalid_argument)?;
     let machines = match machine {
         Some(machine_id) => Asked::one(machine_id),
-        None => Asked::cluster(client).await?,
+        None => match listed {
+            Some(listed) => Asked::among(listed),
+            None => Asked::among(
+                &client
+                    .clone()
+                    .machine_list_uncapped()
+                    .await
+                    .map_err(RpcError::from)?
+                    .machines,
+            ),
+        },
     };
     let answers = join_all(machines.reachable.into_iter().map(|machine_id| {
         let mut client = client.clone();
         let request = request.clone();
         async move {
             let answer = client
-                .read::<op::MetricHistory>(request, &MachineTarget::from(&machine_id))
-                .await;
+                .call::<op::MetricHistory>(
+                    request,
+                    Call::read()
+                        .to(&MachineTarget::from(&machine_id))
+                        .budget(crate::connect::target_read_timeout()),
+                )
+                .await
+                .map_err(crate::connect::rpc_error);
             (machine_id, answer)
         }
     }))
@@ -145,27 +176,22 @@ impl Asked {
         }
     }
 
-    async fn cluster(client: &Client) -> Result<Self, RpcError> {
-        let listed = client
-            .clone()
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map_err(RpcError::from)?;
+    fn among(listed: &[MachineObservation]) -> Self {
         let mut asked = Self {
             reachable: Vec::new(),
             unreachable: Vec::new(),
         };
-        for machine in listed.machines {
+        for machine in listed {
             if machine.invites_rpc() {
                 asked.reachable.push(machine.machine.id);
             } else {
                 asked.unreachable.push(MachineFailure {
                     machine_id: machine.machine.id,
-                    error: unavailable("the Server is not up, so it was not asked"),
+                    error: RpcError::unavailable("the Server is not up, so it was not asked"),
                 });
             }
         }
-        Ok(asked)
+        asked
     }
 }
 
@@ -186,7 +212,9 @@ fn merge(
                 let MetricPoints::Service(points) = &reply.value.points else {
                     unanswered.push(MachineFailure {
                         machine_id: reply.machine_id,
-                        error: unavailable("the Server answered with host totals, not a Service"),
+                        error: RpcError::unavailable(
+                            "the Server answered with host totals, not a Service",
+                        ),
                     });
                     continue;
                 };
@@ -332,16 +360,7 @@ impl Total {
 fn nanos(value: &str, field: &str) -> Result<i64, RpcError> {
     value
         .parse()
-        .map_err(|_| invalid_argument(format!("{field} must be a decimal integer")))
-}
-
-fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+        .map_err(|_| RpcError::invalid_argument(format!("{field} must be a decimal integer")))
 }
 
 #[cfg(test)]

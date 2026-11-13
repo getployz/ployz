@@ -7,8 +7,11 @@ use std::fmt::Display;
 use std::time::Duration;
 
 use chrono::{Local, SecondsFormat, TimeZone};
-use ployz_core::{RpcError, RpcErrorCode};
-use ployz_store::{DestructiveEffect, DestructiveKind, DiffView};
+use ployz_core::{Hint, RpcError, RpcErrorCode};
+use ployz_store::{
+    ApprovalOperation, ApprovalRequired, ApprovalSubject, DestructiveEffect, DestructiveKind,
+    DiffView, OperationVerb,
+};
 use reqwest::Method;
 use serde::Deserialize;
 
@@ -18,105 +21,63 @@ use crate::failure::Failure;
 
 const POLL: Duration = Duration::from_secs(1);
 
-/// The code of Cloud's refusal that waits for a person to approve the call.
-pub(crate) const APPROVAL_REQUIRED: &str = "approval_required";
+/// What the approval covers: a Store write, which carries its diff, or an operation on one
+/// named thing.
+pub(crate) type Subject = ApprovalSubject<Box<DiffView>>;
 
 #[derive(Debug, Deserialize)]
+#[serde(try_from = "ApprovalRequired<Box<DiffView>>")]
 pub(crate) struct Asked {
-    #[serde(rename = "approval_id")]
     pub(crate) id: String,
-    #[serde(rename = "approval")]
-    pub(crate) digest: String,
-    pub(crate) effects: Vec<DestructiveEffect>,
-    #[serde(flatten)]
-    pub(crate) subject: Subject,
-    /// The Organization an operation acts in, which can differ from the one this device
-    /// last acted in once a browser has moved the session.
-    #[serde(default)]
-    organization: Option<String>,
-    /// Set when a Protected Environment asks someone who can't protect it: only another
-    /// person, an owner or admin, can approve, so even a terminal waits.
-    #[serde(default)]
-    protected: Option<serde_json::Value>,
-    /// Set when the Deploy also removes every other Service running in its
-    /// Environment, which only the Servers can name.
-    #[serde(default)]
-    prunes: bool,
-    /// The Servers that didn't answer because large packets to them are dropped, so
-    /// a prune may remove what they run unnamed.
-    #[serde(default)]
-    dropped: Vec<String>,
-    /// Set on a redeploy: its Deployment's number and the later ones it rolls back.
-    #[serde(default)]
-    redeploy: Option<Redeploy>,
+    pub(crate) required: ApprovalRequired<Box<DiffView>>,
     /// Cloud's reason for asking, such as that the Environment is Protected.
-    #[serde(skip)]
     reason: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct Redeploy {
-    deployment: u64,
-    #[serde(default)]
-    rolls_back: Vec<u64>,
+impl TryFrom<ApprovalRequired<Box<DiffView>>> for Asked {
+    type Error = &'static str;
+
+    fn try_from(required: ApprovalRequired<Box<DiffView>>) -> Result<Self, Self::Error> {
+        let id = required.id.clone().ok_or("an approval names its id")?;
+        Ok(Self {
+            id,
+            required,
+            reason: String::new(),
+        })
+    }
 }
 
 impl Asked {
     fn for_someone_else(&self) -> bool {
         !matches!(
-            self.protected,
+            self.required.protected,
             None | Some(serde_json::Value::Null | serde_json::Value::Bool(false))
         )
     }
 }
 
-/// What the approval covers: a Store write, which carries its diff, or an operation on one
-/// named thing.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Subject {
-    Diff(Box<DiffView>),
-    Operation(Operation),
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct Operation {
-    pub(crate) verb: Verb,
-    name: String,
-    #[serde(default)]
-    subject: Option<String>,
-}
-
-impl Operation {
-    fn loses_volume_access(&self) -> bool {
-        // A reset keeps Volume data on the Server's disk; a forget is for a Server that may be gone.
-        self.verb == Verb::Remove
-            && self
-                .subject
-                .as_deref()
-                .is_some_and(|subject| subject.starts_with("server:"))
+fn renamed_addresses(operation: &ApprovalOperation) -> String {
+    let to = format!("*.{}.ployz.internal", operation.name);
+    match operation.renamed_from() {
+        Some(from) => format!("*.{from}.ployz.internal → {to}"),
+        None => to,
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+/// The CLI's words for an approval: Cloud's operations, and the Store writes the CLI
+/// names itself, whose diff names no verb.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Verb {
     Publish,
     Deploy,
     Retry,
-    Drain,
-    Set,
-    Clean,
-    Remove,
-    Forget,
-    Release,
-    RemoveMirror,
-    Stop,
-    Restart,
-    Unprotect,
-    Move,
-    Restore,
-    Resize,
+    Operation(OperationVerb),
+}
+
+impl From<OperationVerb> for Verb {
+    fn from(verb: OperationVerb) -> Self {
+        Self::Operation(verb)
+    }
 }
 
 impl Verb {
@@ -125,19 +86,26 @@ impl Verb {
             Self::Publish => "save",
             Self::Deploy => "deploy",
             Self::Retry => "redeploy",
-            Self::Drain => "drain",
-            Self::Set => "change",
-            Self::Clean => "cleanup",
-            Self::Remove => "removal",
-            Self::Forget => "forgetting",
-            Self::Release => "release",
-            Self::RemoveMirror => "mirror removal",
-            Self::Stop => "stop",
-            Self::Restart => "restart",
-            Self::Unprotect => "unprotecting",
-            Self::Move => "move",
-            Self::Restore => "restore",
-            Self::Resize => "resize",
+            Self::Operation(verb) => match verb {
+                OperationVerb::Drain => "drain",
+                OperationVerb::Set => "change",
+                OperationVerb::Clean => "cleanup",
+                OperationVerb::Remove => "removal",
+                OperationVerb::Forget => "forgetting",
+                OperationVerb::Release => "release",
+                OperationVerb::Mirror => "mirror",
+                OperationVerb::Sync => "full sync",
+                OperationVerb::RemoveMirror => "mirror removal",
+                OperationVerb::Stop => "stop",
+                OperationVerb::Restart => "restart",
+                OperationVerb::Unprotect => "unprotecting",
+                OperationVerb::Move => "move",
+                OperationVerb::Restore => "restore",
+                OperationVerb::Resize => "resize",
+                OperationVerb::SetClusterName => "rename",
+                OperationVerb::SetIngressDoors => "door change",
+                OperationVerb::SetPrivateAccess => "Private Access change",
+            },
         }
     }
 
@@ -146,48 +114,63 @@ impl Verb {
             Self::Publish => "saved",
             Self::Deploy => "deployed",
             Self::Retry => "retried",
-            Self::Drain => "drained",
-            Self::Set => "changed",
-            Self::Clean => "cleaned",
-            Self::Remove => "removed",
-            Self::Forget => "forgotten",
-            Self::Release => "released",
-            Self::RemoveMirror => "removed",
-            Self::Stop => "stopped",
-            Self::Restart => "restarted",
-            Self::Unprotect => "unprotected",
-            Self::Move => "moved",
-            Self::Restore => "restored",
-            Self::Resize => "resized",
+            Self::Operation(verb) => match verb {
+                OperationVerb::Drain => "drained",
+                OperationVerb::Set => "changed",
+                OperationVerb::Clean => "cleaned",
+                OperationVerb::Remove => "removed",
+                OperationVerb::Forget => "forgotten",
+                OperationVerb::Release => "released",
+                OperationVerb::Mirror => "mirrored",
+                OperationVerb::Sync => "synced",
+                OperationVerb::RemoveMirror => "removed",
+                OperationVerb::Stop => "stopped",
+                OperationVerb::Restart => "restarted",
+                OperationVerb::Unprotect => "unprotected",
+                OperationVerb::Move => "moved",
+                OperationVerb::Restore => "restored",
+                OperationVerb::Resize => "resized",
+                OperationVerb::SetClusterName => "renamed",
+                OperationVerb::SetIngressDoors | OperationVerb::SetPrivateAccess => "changed",
+            },
         }
     }
 
     /// `this change to web-2`, but `this removal of web-1`.
     fn preposition(self) -> &'static str {
         match self {
-            Self::Set => "to",
+            Self::Operation(
+                OperationVerb::Set
+                | OperationVerb::SetClusterName
+                | OperationVerb::SetIngressDoors
+                | OperationVerb::SetPrivateAccess,
+            ) => "to",
             Self::Publish
             | Self::Deploy
             | Self::Retry
-            | Self::Drain
-            | Self::Clean
-            | Self::Remove
-            | Self::Forget
-            | Self::Release
-            | Self::RemoveMirror
-            | Self::Stop
-            | Self::Restart
-            | Self::Unprotect
-            | Self::Move
-            | Self::Restore
-            | Self::Resize => "of",
+            | Self::Operation(
+                OperationVerb::Drain
+                | OperationVerb::Clean
+                | OperationVerb::Remove
+                | OperationVerb::Forget
+                | OperationVerb::Release
+                | OperationVerb::Mirror
+                | OperationVerb::Sync
+                | OperationVerb::RemoveMirror
+                | OperationVerb::Stop
+                | OperationVerb::Restart
+                | OperationVerb::Unprotect
+                | OperationVerb::Move
+                | OperationVerb::Restore
+                | OperationVerb::Resize,
+            ) => "of",
         }
     }
 }
 
 impl Asked {
     pub(crate) fn of(error: &RpcError) -> Option<Self> {
-        if error.code.as_str() != APPROVAL_REQUIRED {
+        if error.code.as_str() != ployz_core::APPROVAL_REQUIRED_CODE {
             return None;
         }
         let asked: Self = serde_json::from_value(error.details.clone()).ok()?;
@@ -199,15 +182,15 @@ impl Asked {
 
     /// The verb Cloud named, or `Deploy` for a Store write, whose diff names none.
     pub(crate) fn verb(&self) -> Verb {
-        match &self.subject {
+        match &self.required.subject {
             Subject::Diff(_) => Verb::Deploy,
-            Subject::Operation(operation) => operation.verb,
+            Subject::Operation(operation) => Verb::Operation(operation.verb),
         }
     }
 
     /// The name a person types to approve: the Environment's, or the operation's.
     pub(crate) fn name(&self) -> &str {
-        match &self.subject {
+        match &self.required.subject {
             Subject::Diff(diff) => diff.environment.name.as_str(),
             Subject::Operation(operation) => &operation.name,
         }
@@ -216,7 +199,7 @@ impl Asked {
     /// `this deploy to shop/production`, `this removal of web-1`, `this change to web-2`.
     pub(crate) fn what(&self, verb: Verb) -> String {
         let noun = verb.noun();
-        match &self.subject {
+        match &self.required.subject {
             Subject::Diff(diff) => format!(
                 "this {noun} to {}/{}",
                 diff.environment.project, diff.environment.name
@@ -235,14 +218,18 @@ impl Asked {
     where
         Zone::Offset: Display,
     {
-        let within = match &self.organization {
+        let within = match &self.required.organization {
             Some(organization) => format!(" in Organization {organization}"),
             None => String::new(),
         };
-        let loses_volume_access = matches!(&self.subject, Subject::Operation(operation) if operation.loses_volume_access());
-        let changes_only = self.effects.iter().all(|effect| !destroys(effect.kind));
+        let loses_volume_access = matches!(&self.required.subject, Subject::Operation(operation) if operation.loses_volume_access());
+        let changes_only = self
+            .required
+            .effects
+            .iter()
+            .all(|effect| !destroys(effect.kind));
         // A redeploy ships what its Deployment froze, so its card names that Deployment.
-        let (verb, within) = match &self.redeploy {
+        let (verb, within) = match &self.required.redeploy {
             Some(redeploy) => (Verb::Retry, format!(" of #{}{within}", redeploy.deployment)),
             None => (verb, within),
         };
@@ -251,7 +238,7 @@ impl Asked {
         } else if verb == Verb::Publish {
             format!(
                 "The next deploy{within} after this save destroys {}:",
-                things(self.effects.len())
+                things(self.required.effects.len())
             )
         } else if changes_only || loses_volume_access {
             format!("This {}{within}:", verb.noun())
@@ -259,10 +246,10 @@ impl Asked {
             format!(
                 "This {}{within} destroys {}:",
                 verb.noun(),
-                things(self.effects.len())
+                things(self.required.effects.len())
             )
         }];
-        for effect in &self.effects {
+        for effect in &self.required.effects {
             let mark = if destroys(effect.kind) { "✕" } else { "~" };
             let line = if loses_volume_access && effect.kind == DestructiveKind::DeletesVolume {
                 format!(
@@ -282,7 +269,12 @@ impl Asked {
                 ));
             }
         }
-        if let Some(redeploy) = &self.redeploy
+        if let Subject::Operation(operation) = &self.required.subject
+            && operation.verb == OperationVerb::SetClusterName
+        {
+            lines.push(format!("  ~ {}", renamed_addresses(operation)));
+        }
+        if let Some(redeploy) = &self.required.redeploy
             && let Some(undoes) = deployments(&redeploy.rolls_back)
         {
             lines.push(format!(
@@ -290,17 +282,17 @@ impl Asked {
                 redeploy.deployment
             ));
         }
-        if self.prunes {
+        if self.required.prunes {
             lines.push("  ✕ removes any other Service running in this environment".to_owned());
-            if !self.dropped.is_empty() {
+            if !self.required.dropped.is_empty() {
                 lines.push(format!(
                     "    couldn't check every server: large packets to {} are dropped on the mesh path",
-                    self.dropped.join(", ")
+                    self.required.dropped.join(", ")
                 ));
             }
         }
-        let others = match &self.subject {
-            Subject::Diff(diff) => diff.total_count.saturating_sub(self.effects.len()),
+        let others = match &self.required.subject {
+            Subject::Diff(diff) => diff.total_count.saturating_sub(self.required.effects.len()),
             Subject::Operation(_) => 0,
         };
         if others > 0 {
@@ -374,6 +366,7 @@ pub(crate) fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::RestartsService => format!("restarts Service {name}"),
         DestructiveKind::UnprotectsEnvironment => format!("unprotects Environment {name}"),
         DestructiveKind::RemovesOrganization => format!("removes Organization {name}"),
+        DestructiveKind::RestoresVolume => format!("restores Volume {name} to a snapshot"),
     }
 }
 
@@ -397,7 +390,7 @@ pub(crate) fn settle(
             ),
         )
         .map_err(StoreCallError::Stopped)?;
-        let approve = serde_json::json!({ "approve": { "digest": asked.digest } });
+        let approve = serde_json::json!({ "approve": { "digest": asked.required.digest } });
         return runtime.block_on(async {
             match decide(credential, &asked.id, &approve).await {
                 Ok(()) => Ok(asked.id.clone()),
@@ -415,7 +408,7 @@ pub(crate) fn settle(
             crate::ui::note(&asked.reason);
         }
         crate::ui::note(for_another_approver(credential, &asked.id));
-        crate::ui::hint(&crate::ui::Hint::Inspect(format!(
+        crate::ui::hint(&Hint::Inspect(format!(
             "ployz org approval show {}",
             asked.id
         )));
@@ -423,9 +416,9 @@ pub(crate) fn settle(
         crate::ui::note(where_to_approve(
             credential,
             &asked.id,
-            asked.organization.as_deref(),
+            asked.required.organization.as_deref(),
         ));
-        crate::ui::hint(&crate::ui::Hint::Next(format!(
+        crate::ui::hint(&Hint::Next(format!(
             "ployz org approval approve {}",
             asked.id
         )));
@@ -468,9 +461,7 @@ pub(crate) fn settle(
         )
         .interrupted(),
     };
-    Err(StoreCallError::Stopped(
-        stopped.hint(crate::ui::Hint::Retry(retry)),
-    ))
+    Err(StoreCallError::Stopped(stopped.hint(Hint::Retry(retry))))
 }
 
 /// Where a human answers approval `id`: the Ployz agent's panel, where it waits under
@@ -525,7 +516,8 @@ fn unanswered(error: &LoginError) -> bool {
         | LoginError::AwaitingApproval { .. }
         | LoginError::TokenBound
         | LoginError::UnknownOrganization(_)
-        | LoginError::UnknownCredential(_) => false,
+        | LoginError::UnknownCredential(_)
+        | LoginError::AmbiguousCredential { .. } => false,
     }
 }
 
@@ -535,11 +527,12 @@ fn unanswered(error: &LoginError) -> bool {
 pub(crate) fn approved<T>(
     runtime: &tokio::runtime::Runtime,
     credential: &Credential,
-    verb: Verb,
+    verb: impl Into<Verb>,
     mut approval: Option<String>,
     retry: impl Fn(&str) -> String,
     mut attempt: impl AsyncFnMut(Option<&str>) -> Result<T, StoreCallError>,
 ) -> Result<T, Failure> {
+    let verb = verb.into();
     loop {
         let refused = match runtime.block_on(attempt(approval.as_deref())) {
             Err(StoreCallError::Refused(refused)) => refused,
@@ -549,7 +542,7 @@ pub(crate) fn approved<T>(
             return Err(refused.into());
         };
         if crate::ui::json() {
-            return Err(Failure::from(refused).hint(crate::ui::Hint::Retry(retry(&asked.id))));
+            return Err(Failure::from(refused).hint(Hint::Retry(retry(&asked.id))));
         }
         approval = Some(settle(runtime, credential, verb, &asked, retry(&asked.id))?);
     }
@@ -609,6 +602,8 @@ pub(crate) async fn decide(
 mod tests {
     use chrono::FixedOffset;
 
+    use ployz_store::OperationVerb;
+
     use super::{Asked, Verb};
 
     fn asked(verb: &str, kind: &str) -> Asked {
@@ -632,6 +627,43 @@ mod tests {
         assert_eq!(
             super::for_another_approver(&credential, "a1"),
             "An owner or admin who didn't ask must approve a1 in Ployz Cloud at http://cloud.test, or with ployz org approval approve a1."
+        );
+    }
+
+    #[test]
+    fn a_cluster_rename_reads_as_a_rename_to_its_new_name() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1", "approval": "d1", "effects": [],
+            "operation": { "verb": "set_cluster_name", "name": "acme" },
+        }))
+        .unwrap();
+        assert_eq!(asked.verb(), Verb::Operation(OperationVerb::SetClusterName));
+        assert_eq!(asked.what(asked.verb()), "this rename to acme");
+    }
+
+    #[test]
+    fn a_cluster_rename_shows_the_private_addresses_it_moves() {
+        let review = |preview: serde_json::Value| {
+            let asked: Asked = serde_json::from_value(serde_json::json!({
+                "approval_id": "a1", "approval": "d1", "effects": [], "organization": "ada",
+                "operation": { "verb": "set_cluster_name", "name": "beta", "preview": preview },
+            }))
+            .unwrap();
+            asked.review_in(asked.verb(), &chrono::Utc)
+        };
+        assert_eq!(
+            review(serde_json::json!({ "from": "alpha", "to": "beta" })),
+            [
+                "This rename in Organization ada:",
+                "  ~ *.alpha.ployz.internal → *.beta.ployz.internal",
+            ]
+        );
+        assert_eq!(
+            review(serde_json::json!({ "from": null, "to": "beta" })),
+            [
+                "This rename in Organization ada:",
+                "  ~ *.beta.ployz.internal"
+            ]
         );
     }
 
@@ -961,9 +993,145 @@ mod tests {
         assert!(verbs.contains(&"drain"), "{union}");
         for verb in verbs {
             assert!(
-                serde_json::from_value::<Verb>(serde_json::json!(verb)).is_ok(),
-                "Cloud asks approval to {verb}, which `Verb` does not read"
+                serde_json::from_value::<OperationVerb>(serde_json::json!(verb)).is_ok(),
+                "Cloud asks approval to {verb}, which `OperationVerb` does not read"
             );
         }
+    }
+
+    /// The words each verb Cloud names puts on an approval card are frozen with its text.
+    #[test]
+    fn every_verb_keeps_its_text_and_its_words() {
+        for (verb, noun, past, preposition) in [
+            ("drain", "drain", "drained", "of"),
+            ("set", "change", "changed", "to"),
+            ("clean", "cleanup", "cleaned", "of"),
+            ("remove", "removal", "removed", "of"),
+            ("forget", "forgetting", "forgotten", "of"),
+            ("release", "release", "released", "of"),
+            ("mirror", "mirror", "mirrored", "of"),
+            ("sync", "full sync", "synced", "of"),
+            ("remove_mirror", "mirror removal", "removed", "of"),
+            ("stop", "stop", "stopped", "of"),
+            ("restart", "restart", "restarted", "of"),
+            ("unprotect", "unprotecting", "unprotected", "of"),
+            ("move", "move", "moved", "of"),
+            ("restore", "restore", "restored", "of"),
+            ("resize", "resize", "resized", "of"),
+            ("set_cluster_name", "rename", "renamed", "to"),
+            ("set_ingress_doors", "door change", "changed", "to"),
+            (
+                "set_private_access",
+                "Private Access change",
+                "changed",
+                "to",
+            ),
+        ] {
+            let asked = asked(verb, "removes_member");
+            assert_eq!(asked.verb().noun(), noun, "{verb}");
+            assert_eq!(asked.verb().past(), past, "{verb}");
+            assert_eq!(
+                asked.what(asked.verb()),
+                format!("this {noun} {preposition} bob@example.com"),
+                "{verb}"
+            );
+        }
+        for (verb, noun, past) in [
+            (Verb::Publish, "save", "saved"),
+            (Verb::Deploy, "deploy", "deployed"),
+            (Verb::Retry, "redeploy", "retried"),
+        ] {
+            assert_eq!((verb.noun(), verb.past()), (noun, past));
+        }
+    }
+
+    /// A verb this CLI cannot read leaves the refusal unasked, whatever else it names.
+    #[test]
+    fn a_verb_nobody_taught_this_cli_leaves_the_refusal_unasked() {
+        let refusal = |verb: &str| -> ployz_core::RpcError {
+            serde_json::from_value(serde_json::json!({
+                "code": "approval_required",
+                "message": "A human must approve this.",
+                "details": {
+                    "approval_id": "a1", "approval": "d1", "effects": [],
+                    "operation": { "verb": verb, "name": "web" },
+                },
+            }))
+            .unwrap()
+        };
+        assert!(Asked::of(&refusal("restart")).is_some());
+        for verb in ["frobnicate", "Restart", "set-cluster-name", ""] {
+            assert!(Asked::of(&refusal(verb)).is_none(), "{verb}");
+        }
+    }
+
+    /// Every key Cloud and the Store send on an approval card, read as one ask.
+    #[test]
+    fn an_ask_with_every_key_reads_as_it_always_did() {
+        let operation: ployz_core::RpcError = serde_json::from_value(serde_json::json!({
+            "code": "approval_required",
+            "message": "A human must approve moving pg-data before it runs.",
+            "details": {
+                "approval_id": "a1", "approval": "d1",
+                "effects": [{ "kind": "deletes_volume", "name": "pg-data", "node": "v1", "path": "volumes/v1" }],
+                "operation": { "verb": "remove", "name": "box", "subject": "server:box", "preview": { "from": "alpha" } },
+                "organization": "ada",
+                "protected": { "environment": "production" },
+            },
+        }))
+        .unwrap();
+        let asked = Asked::of(&operation).unwrap();
+        assert_eq!(
+            (
+                asked.id.as_str(),
+                asked.required.digest.as_str(),
+                asked.name()
+            ),
+            ("a1", "d1", "box")
+        );
+        assert!(asked.for_someone_else());
+        assert_eq!(
+            asked.reason,
+            "A human must approve moving pg-data before it runs."
+        );
+        assert_eq!(
+            asked.review_in(asked.verb(), &chrono::Utc),
+            [
+                "This removal in Organization ada:",
+                "  ✕ loses access to Volume pg-data; its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
+            ]
+        );
+
+        let diff: ployz_core::RpcError = serde_json::from_value(serde_json::json!({
+            "code": "approval_required",
+            "message": "m",
+            "details": {
+                "approval_id": "a2", "approval": "d2",
+                "effects": [{ "kind": "removes_service", "name": "web", "node": "s1", "path": "web" }],
+                "diff": {
+                    "environment": { "id": "00000000-0000-4000-8000-000000000002", "project": "shop", "name": "production", "revision": 3 },
+                    "version": "3:2:0.1", "saved": 2, "holds_staged": false, "changes": [], "total_count": 3,
+                },
+                "prunes": true,
+                "dropped": ["box-1", "box-2"],
+                "redeploy": { "deployment": 4, "rolls_back": [5] },
+            },
+        }))
+        .unwrap();
+        let asked = Asked::of(&diff).unwrap();
+        assert!(!asked.for_someone_else());
+        assert_eq!(asked.name(), "production");
+        assert_eq!(asked.what(Verb::Deploy), "this deploy to shop/production");
+        assert_eq!(
+            asked.review_in(Verb::Deploy, &chrono::Utc),
+            [
+                "This redeploy of #4 destroys 1 thing:",
+                "  ✕ removes Service web",
+                "  ~ rolls back to #4, undoing #5",
+                "  ✕ removes any other Service running in this environment",
+                "    couldn't check every server: large packets to box-1, box-2 are dropped on the mesh path",
+                "  + 2 other changes",
+            ]
+        );
     }
 }

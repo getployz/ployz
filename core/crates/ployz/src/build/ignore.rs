@@ -86,7 +86,7 @@ fn railpack_rules(
     config: Option<&Path>,
 ) -> Result<(Vec<String>, Vec<PathBuf>), Error> {
     let invalid = |message: &str| Error::Invalid(message.into());
-    let default = Path::new("railpack.json");
+    let default = Path::new(ployz_build::railpack::DEFAULT_PLAN_FILE);
     let config = config.unwrap_or(default);
     // Go's `filepath.IsLocal`: relative, and still inside once cleaned.
     // The config names a UTF-8 Service variable, so this conversion is exact.

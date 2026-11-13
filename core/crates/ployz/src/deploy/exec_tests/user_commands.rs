@@ -30,15 +30,9 @@ impl Recording {
     }
 }
 
-impl MachineOperations for Recording {
-    async fn prepare_volumes(
-        &self,
-        machine_id: &MachineId,
-        specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        self.fake.prepare_volumes(machine_id, specs).await
-    }
+impl Session for Recording {}
 
+impl CopyLifecycle for Recording {
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -59,12 +53,47 @@ impl MachineOperations for Recording {
         self.fake.ensure_container(machine_id, want).await
     }
 
+    async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<EnsuredContainer, RpcError> {
+        if matches!(want, ContainerWant::Stopped { .. }) {
+            self.stop_deadlines.lock().unwrap().push(timeout);
+        }
+        self.wants.lock().unwrap().push(want.clone());
+        self.fake.ensure_unsettled(machine_id, want, timeout).await
+    }
+
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Result<ContainerDetails, RpcError> {
         self.fake.inspect_container(machine_id, container_id).await
+    }
+
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        self.fake.read_routes(machine_id, service).await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        self.fake.read_entry_routes(service).await
+    }
+}
+
+impl DeployOperations for Recording {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        self.fake.prepare_volumes(machine_id, specs).await
     }
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
@@ -98,30 +127,23 @@ impl MachineOperations for Recording {
     ) -> Result<ImagePulled, RpcError> {
         self.fake.ensure_image(machine_id, spec).await
     }
+}
 
-    async fn ensure_unsettled(
+impl ProxyPlacement for Recording {
+    async fn set_ingress_doors(
         &self,
         machine_id: &MachineId,
-        want: ContainerWant,
-        timeout: Option<Duration>,
-    ) -> Result<EnsuredContainer, RpcError> {
-        if matches!(want, ContainerWant::Stopped { .. }) {
-            self.stop_deadlines.lock().unwrap().push(timeout);
-        }
-        self.wants.lock().unwrap().push(want.clone());
-        self.fake.ensure_unsettled(machine_id, want, timeout).await
+        request: ployz_core::SetIngressDoorsRequest,
+    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
+        self.fake.set_ingress_doors(machine_id, request).await
     }
 
-    async fn read_routes(
+    async fn set_private_access(
         &self,
         machine_id: &MachineId,
-        service: &QualifiedService,
-    ) -> Result<RoutesRead, RpcError> {
-        self.fake.read_routes(machine_id, service).await
-    }
-
-    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
-        self.fake.read_entry_routes(service).await
+        request: ployz_core::SetPrivateAccessRequest,
+    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
+        self.fake.set_private_access(machine_id, request).await
     }
 }
 
@@ -328,23 +350,6 @@ async fn user_stop_start_restart_remove() {
     assert_eq!(ran.rotation, Some(CopyRotation::Out));
     assert_eq!(ran.wants, [stopped()]);
 
-    let mut fake = Scripted::new(vec![inspected()]).with_copy(
-        &machine('a'),
-        &container('1'),
-        CopyRotation::In,
-    );
-    fake.acks.insert(machine('b'), Ack::Never);
-    let ran = run_command(Command::Stop, Recording::of(fake)).await;
-    let error = ran.answer.as_ref().unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Unavailable, "{error:?}");
-    assert!(error.message.contains("left running and Held"), "{error:?}");
-    assert!(
-        error.message.contains(&machine('b').to_string()),
-        "{error:?}"
-    );
-    let run = held_run(&ran.rotation);
-    assert_eq!(ran.wants, [held(&run, CopyRotation::In)]);
-
     let ran = row(
         Command::Start,
         CopyRotation::Held(theirs.clone()),
@@ -528,6 +533,48 @@ async fn user_stop_start_restart_remove() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_remove_of_a_container_its_machine_holds_without_a_spec_says_it_stays() {
+    let fake = Scripted::new(vec![Step(
+        Call::Inspect(machine('a'), container('1')),
+        Reply::Error(RpcError {
+            code: RpcErrorCode::NotFound,
+            message: format!(
+                "resolved spec not found in machine.db for {}",
+                container('1')
+            ),
+            details: serde_json::json!({ "reason": "no_resolved_spec" }),
+            cause: Vec::new(),
+        }),
+    )]);
+
+    let ran = run_command(Command::Remove, Recording::of(fake)).await;
+
+    let Err(error) = &ran.answer else {
+        panic!("the remove answered removed: {:?}", ran.answer);
+    };
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert_eq!(
+        error.details,
+        serde_json::json!({ "reason": "no_resolved_spec" })
+    );
+    assert_eq!(
+        error.message,
+        format!(
+            "Container {} was not removed: Docker on its Server has it, and the Server holds no Resolved Service Spec under its ID.",
+            container('1')
+        )
+    );
+    assert_eq!(
+        error.cause,
+        [format!(
+            "resolved spec not found in machine.db for {}",
+            container('1')
+        )]
+    );
+    assert!(ran.wants.is_empty());
+}
+
 /// After a partial recovery a gen 3 copy runs beside a gen 4 copy that is In. The owner
 /// refuses the older copy In, and the user rows of the caller table never retire a
 /// copy, so the command names the copy and the rotation it is left in.
@@ -579,6 +626,35 @@ async fn a_start_or_restart_of_a_copy_older_than_an_in_copy_reports_it_left_unro
             ran.rotation
         );
         assert_eq!(ran.fake.rotation(&newer), Some(CopyRotation::In));
+    }
+}
+
+/// A Server whose daemon is stopped confirms nothing, and a stop asked for the copy
+/// to stop. Once the wait for that proxy ends, the stop goes on: the copy is not left
+/// running and Held, unrouted everywhere, and a second stop on a copy an earlier one
+/// left Held does not wait out the same proxy again (#3995).
+#[tokio::test(start_paused = true)]
+async fn a_stop_goes_on_when_a_proxy_never_confirms_the_copy_unlisted() {
+    let theirs = DeploymentLogId::parse("stopped-before").unwrap();
+    for rotation in [CopyRotation::In, CopyRotation::Held(theirs.clone())] {
+        let mut fake = Scripted::new(vec![inspected(), copy_call(Call::Stop)]).with_copy(
+            &machine('a'),
+            &container('1'),
+            rotation.clone(),
+        );
+        fake.acks.insert(machine('b'), Ack::Never);
+        let ran = run_command(Command::Stop, Recording::of(fake)).await;
+        ran.answer.unwrap();
+        let run = match &rotation {
+            CopyRotation::Held(run) => run.clone(),
+            CopyRotation::Pending | CopyRotation::In | CopyRotation::Out => held_run(&ran.rotation),
+        };
+        assert_eq!(
+            ran.wants,
+            [held(&run, rotation.clone()), stopped()],
+            "{rotation:?}"
+        );
+        assert_eq!(ran.rotation, Some(CopyRotation::Held(run)), "{rotation:?}");
     }
 }
 
@@ -759,6 +835,37 @@ async fn an_unanswered_held_ask_whose_re_read_fails_brings_the_copy_back_in() {
         .with_copy(&machine('a'), &container('1'), CopyRotation::In);
         let ran = run_command(command, Recording::of(fake)).await;
         assert_failed_back_in(&ran, command);
+    }
+}
+
+/// A Machine that refuses the Hold answered before acting, so the copy is as it was.
+/// The command gives the refusal alone, with no bring-in and no word on where it left
+/// the copy.
+#[tokio::test(start_paused = true)]
+async fn a_refused_hold_leaves_the_copy_as_it_was_and_says_only_why() {
+    for (command, verb) in [(Command::Restart, "restarted"), (Command::Stop, "stopped")] {
+        let fake = Scripted {
+            refused_held: BTreeSet::from([container('1')]),
+            ..Scripted::new(vec![inspected()])
+        }
+        .with_copy(&machine('a'), &container('1'), CopyRotation::In);
+        let ran = run_command(command, Recording::of(fake)).await;
+        let error = ran.answer.unwrap_err();
+        assert_eq!(error.code.as_str(), "forbidden", "{command:?}: {error:?}");
+        assert_eq!(
+            error.message,
+            format!(
+                "Container {} was not {verb}: ployz.restart.device-approval.v2 needs a Device-signed restart approval",
+                container('1')
+            ),
+            "{command:?}"
+        );
+        assert_eq!(ran.rotation, Some(CopyRotation::In), "{command:?}");
+        assert!(
+            matches!(ran.wants.as_slice(), [ContainerWant::Held { .. }]),
+            "{command:?} sent {:?}",
+            ran.wants
+        );
     }
 }
 
@@ -966,5 +1073,133 @@ async fn stop_start_restart_never_admit_a_failed_deploys_pending_copy() {
             configured.iter().all(|(_, copy)| routed.contains(copy)) && !routed.contains(&stray.1),
             "the proxy on {machine} routes {routed:?}"
         );
+    }
+}
+
+/// Neither Ingress door is ever routed, so a user stop, start or restart runs it as it
+/// is: it stays Pending, and nothing says it was left unrouted.
+#[tokio::test(start_paused = true)]
+async fn user_commands_run_either_ingress_door_unrouted() {
+    let (machine, copy) = (machine('a'), container('1'));
+    for door in [
+        QualifiedService::system_ingress(),
+        QualifiedService::system_ingress_holder(),
+    ] {
+        type Calls = &'static [fn(MachineId, ContainerId) -> Call];
+        let commands: [(Command, Calls); 3] = [
+            (Command::Stop, &[Call::Stop]),
+            (Command::Start, &[Call::Restart]),
+            (Command::Restart, &[Call::Stop, Call::Restart]),
+        ];
+        for (command, calls) in commands {
+            let steps = std::iter::once(Step(
+                Call::Inspect(machine, copy),
+                Reply::ObservedDoor(door.clone(), running()),
+            ))
+            .chain(calls.iter().map(|call| copy_call(*call)))
+            .collect();
+            let fake = Scripted::new(steps).with_copy_at(
+                &door,
+                &machine,
+                &copy,
+                CopyRotation::Pending,
+                ployz_core::Gen::FIRST,
+            );
+            let ran = run_command(command, Recording::of(fake)).await;
+            assert!(ran.answer.is_ok(), "{door} {command:?}: {:?}", ran.answer);
+            assert_eq!(
+                ran.rotation,
+                Some(CopyRotation::Pending),
+                "{door} {command:?}"
+            );
+        }
+    }
+}
+
+/// A user command whose proxy wait ends unconfirmed or cancelled says so in the sentence
+/// its command owns, with the error code the caller exits on.
+#[tokio::test(start_paused = true)]
+async fn a_user_command_whose_proxy_wait_fails_says_so_word_for_word() {
+    let (copy, proxy) = (container('1'), machine('b'));
+    let rows = [
+        (
+            Command::Restart,
+            CopyRotation::In,
+            false,
+            format!(
+                "Container {copy} was not restarted: the proxies on {proxy} did not confirm they stopped routing it. It is back In."
+            ),
+        ),
+        (
+            Command::Restart,
+            CopyRotation::In,
+            true,
+            format!(
+                "Container {copy} was not restarted: the wait for its proxies was cancelled. It is back In."
+            ),
+        ),
+        (
+            Command::Stop,
+            CopyRotation::In,
+            true,
+            format!(
+                "Container {copy} was not stopped: the wait for its proxies was cancelled. It is back In."
+            ),
+        ),
+        (
+            Command::Remove,
+            CopyRotation::In,
+            false,
+            format!(
+                "Container {copy} is left running and Out: the proxies on {proxy} did not confirm they stopped routing it."
+            ),
+        ),
+        (
+            Command::Remove,
+            CopyRotation::In,
+            true,
+            format!(
+                "Container {copy} is left running and Out: the wait for its proxies was cancelled."
+            ),
+        ),
+    ];
+    for (command, rotation, cancelled, message) in rows {
+        let mut fake =
+            Scripted::new(vec![inspected()]).with_copy(&machine('a'), &copy, rotation.clone());
+        fake.acks.insert(proxy, Ack::Never);
+        let recording = Recording::of(fake);
+        let cancellation = CancellationToken::new();
+        if cancelled {
+            let cancel = cancellation.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                cancel.cancel();
+            });
+        }
+        let none = || StopOptions {
+            signal: None,
+            grace_period_seconds: None,
+        };
+        let error = match command {
+            Command::Restart => {
+                cleanup::user_restart(&recording, &machine('a'), &copy, none(), 1, &cancellation)
+                    .await
+                    .map(drop)
+            }
+            Command::Stop => {
+                cleanup::user_stop(&recording, &machine('a'), &copy, none(), 1, &cancellation).await
+            }
+            Command::Remove => {
+                cleanup::user_remove(&recording, &machine('a'), &copy, &cancellation).await
+            }
+            Command::Start => unreachable!(),
+        }
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            RpcErrorCode::Unavailable,
+            "{command:?} {rotation:?}"
+        );
+        assert_eq!(error.message, message, "{command:?} {rotation:?}");
     }
 }

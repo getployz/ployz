@@ -3,10 +3,10 @@ mod test_dir;
 use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsExt};
 
 use ployz_core::{
-    AdvertisedEndpoint, DeviceKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest, LeaveRequest,
-    Left, LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName, MachineRuntime,
-    MachineUpdate, ManagementClientLabel, ManagementScope, PublicIpUpdate, Registered,
-    SelectedEndpoint, SetManagementClientRequest,
+    AdvertisedEndpoint, ClientKey, DeviceKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest,
+    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName,
+    MachineRuntime, MachineUpdate, ManagementClientLabel, ManagementScope, PublicIpUpdate,
+    Registered, SelectedEndpoint, SetManagementClientRequest,
 };
 use ployzd::machine::{
     EnrollPlan, LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior,
@@ -66,6 +66,7 @@ async fn initialize_commits_policy_in_the_first_participating_record() {
     .unwrap();
     let Enrolled::Enrolled {
         machine: initialized,
+        ..
     } = local.enroll(request).await.unwrap()
     else {
         panic!("a fresh Machine enrolls");
@@ -148,6 +149,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     second
@@ -270,9 +272,11 @@ async fn clear_persists_a_tombstone_of_public_keys_only() {
                 .unwrap()
                 .capability
                 .unwrap();
-            let public = *iroh::SecretKey::from_bytes(capability.client_secret())
-                .public()
-                .as_bytes();
+            let public = ClientKey::from_bytes(
+                *iroh::SecretKey::from_bytes(capability.client_secret())
+                    .public()
+                    .as_bytes(),
+            );
             (capability, public)
         }
     };
@@ -387,6 +391,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         store_filesystem: None,
         store_syncs_commits: None,
         capabilities: Default::default(),
+        device_enforcement: None,
         management_identity: None,
         leaving: false,
     })
@@ -571,7 +576,7 @@ async fn leave_resent_to_a_resetting_machine_answers_left() {
 #[test]
 fn directory_holding_only_host_preparation_is_claimed() {
     let dir = TestDir::new("ployzd-state");
-    let prepare = dir.0.join(ployzd::machine::PREPARE_DIR_NAME);
+    let prepare = dir.0.join(ployz_core::PREPARE_DIR_NAME);
     fs::create_dir_all(&prepare).unwrap();
     fs::write(prepare.join("state.json"), b"{}").unwrap();
 
@@ -583,7 +588,7 @@ fn directory_holding_only_host_preparation_is_claimed() {
 fn reset_keeps_host_preparation() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    let prepare = dir.0.join(ployzd::machine::PREPARE_DIR_NAME);
+    let prepare = dir.0.join(ployz_core::PREPARE_DIR_NAME);
     fs::create_dir_all(&prepare).unwrap();
     fs::write(prepare.join("state.json"), b"{}").unwrap();
 
@@ -596,7 +601,7 @@ fn reset_keeps_host_preparation() {
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect::<Vec<_>>(),
-        vec![std::ffi::OsString::from(ployzd::machine::PREPARE_DIR_NAME)]
+        vec![std::ffi::OsString::from(ployz_core::PREPARE_DIR_NAME)]
     );
 }
 
@@ -908,6 +913,7 @@ fn sample_machine(id: MachineId, public_key: ployz_core::WireGuardPublicKey) -> 
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -1111,7 +1117,7 @@ fn a_fresh_joiner_admits_the_issuers_devices_and_a_replay_keeps_its_own() {
     );
     assert_eq!(store.record().devices().collect::<Vec<_>>(), [approved]);
     assert_eq!(
-        store.record().management_scope(approved.as_bytes()),
+        store.record().management_scope(&approved.into()),
         Some(ManagementScope::Full)
     );
 
@@ -1187,7 +1193,7 @@ fn local_record_refuses_unknown_management_client_slot_fields() {
         valid.get("management_clients"),
         Some(&serde_json::json!({}))
     );
-    serde_json::from_value::<LocalMachineRecord>(valid.clone()).unwrap();
+    serde_json::from_value::<LocalMachineRecord>(valid).unwrap();
 }
 
 /// A record from a build before Management Clients has no `management_clients`.

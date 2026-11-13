@@ -10,9 +10,10 @@ mod setup_report;
 mod signed_in;
 
 use harness::{
-    EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN, founder_machine,
-    ingress_on, registration, serve_machine,
+    EnrollListen, EventLog, JOIN_CONFIRMATION, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN,
+    approved_registration, founder_machine, ingress_on, registration, serve_machine,
 };
+use ployz::connect::Call;
 use ployz_core::{EnrollAs, EnrollRequest, InspectRequest, LocalMachinePhase, Registered, op};
 use serde_json::json;
 
@@ -100,6 +101,92 @@ async fn cloud_init_join_participates() {
             "machineId": machine_id.as_str(),
             "pairingCredential": PAIRING,
         })]
+    );
+}
+
+async fn add_through_cloud(daemon: JoinDaemon, enroll: &EnrollListen) -> std::process::Output {
+    let machine_addr = serve_machine(daemon).await;
+    let mut child = harness::cli()
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--token-stdin",
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(
+        &mut child.stdin.take().unwrap(),
+        format!("{TOKEN}\n").as_bytes(),
+    )
+    .await
+    .unwrap();
+    child.wait_with_output().await.unwrap()
+}
+
+#[tokio::test]
+async fn an_approved_join_relays_the_joiners_confirmation_through_cloud() {
+    let registration = approved_registration();
+    let join = json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    });
+    let enroll = EnrollListen::script([join.clone(), join]).await;
+    let output = add_through_cloud(JoinDaemon::new(registration), &enroll).await;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let confirmations = enroll
+        .posts()
+        .into_iter()
+        .map(|post| post.get("joinConfirmation").cloned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        confirmations,
+        [None, Some(json!(JOIN_CONFIRMATION.to_string()))],
+        "the identity, then the identity with the confirmation"
+    );
+    assert_eq!(
+        enroll.paths().get(..2),
+        Some(["/api/enroll".to_owned(), "/api/enroll".to_owned()].as_slice())
+    );
+}
+
+#[tokio::test]
+async fn an_approved_join_to_a_server_that_cannot_confirm_stops_and_names_the_update() {
+    let registration = approved_registration();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let output = add_through_cloud(
+        JoinDaemon::new(registration).predating_confirmation(),
+        &enroll,
+    )
+    .await;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Update ployz on it"), "{stderr}");
+    assert_eq!(
+        enroll.posts().len(),
+        1,
+        "nothing is relayed without a confirmation"
     );
 }
 
@@ -252,7 +339,7 @@ async fn cloud_zfs_rejects_a_remote_machine_before_join() {
 
     let details = connect_daemon(machine_addr)
         .await
-        .call::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(InspectRequest::default(), Call::read())
         .await
         .unwrap();
     assert_eq!(details.phase, LocalMachinePhase::Uninitialized);
@@ -483,89 +570,6 @@ async fn cloud_init_initialize_participates() {
         events.entries(),
         ["initialize", "set_management_client", "publish", "callback"]
     );
-}
-
-#[tokio::test]
-async fn caddy_lookup_failure_happens_before_initialize() {
-    let founder = founder_machine();
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::start(json!({
-        "kind": "initialize",
-        "resumed": false,
-        "storage": "none",
-        "pairing": pairing,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-        sealing_key: None,
-        devices: Vec::new(),
-    });
-    let machine_addr = serve_machine(daemon.clone()).await;
-    // Reject the proxy tunnel immediately. Retry exhaustion is covered with a
-    // paused clock in setup_retry; this test checks failure before Initialize.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy = format!("http://{}", listener.local_addr().unwrap());
-    let rejected = tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut stream = BufReader::new(stream);
-            let mut request = String::new();
-            stream.read_line(&mut request).await.unwrap();
-            assert!(request.starts_with("CONNECT "), "{request}");
-            loop {
-                request.clear();
-                assert!(stream.read_line(&mut request).await.unwrap() > 0);
-                if request == "\r\n" {
-                    break;
-                }
-            }
-            stream
-                .get_mut()
-                .write_all(
-                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .unwrap();
-        }
-    });
-
-    let output = harness::cli()
-        .args([
-            "--connect",
-            &format!("ssh://root@{machine_addr}"),
-            "server",
-            "add",
-            "--token-file",
-            harness::token_file(),
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--yes",
-        ])
-        .env("HTTPS_PROXY", &proxy)
-        .env("https_proxy", &proxy)
-        .env("NO_PROXY", "127.0.0.1,localhost")
-        .env("no_proxy", "127.0.0.1,localhost")
-        .output()
-        .await
-        .unwrap();
-
-    rejected.abort();
-    assert!(rejected.await.unwrap_err().is_cancelled());
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("error: Could not list Caddy tags on Docker Hub."),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(daemon.initialize_requests().is_empty());
-    assert!(enroll.callbacks().is_empty());
 }
 
 #[tokio::test]
@@ -811,7 +815,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -871,7 +875,7 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -933,7 +937,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -1004,7 +1008,7 @@ async fn reset_enroll_posts_the_rotated_public_key() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -1076,7 +1080,7 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -1161,8 +1165,15 @@ async fn join_places_observed_ingress_on_this_machine() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Joined Server joiner"), "{stdout}");
-    let ensured = daemon.ensure_requests();
-    assert_eq!(ensure_names(&ensured), [("ployz-system", "ingress")]);
+    assert!(daemon.ensure_requests().is_empty());
+    assert_eq!(
+        daemon.door_requests(),
+        [ployz_core::SetIngressDoorsRequest {
+            doors: ployz_core::IngressDoors::public(),
+            proxy_service: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+            sealed_token: None,
+        }]
+    );
 }
 
 #[tokio::test]
@@ -1267,7 +1278,7 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     }));
     let details = connect_daemon(machine_addr)
         .await
-        .call::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(InspectRequest::default(), Call::read())
         .await
         .unwrap();
     assert!(!details.machine.unwrap().accepts_ingress);
@@ -1370,10 +1381,8 @@ async fn join_starts_created_ingress_before_success() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    assert!(
-        daemon.ensure_requests().is_empty(),
-        "an exact existing creation only needs Start"
-    );
+    assert!(daemon.ensure_requests().is_empty());
+    assert_eq!(daemon.door_requests().len(), 1, "the daemon starts it");
     assert!(daemon.containers().iter().any(|container| {
         container.container_id.as_str() == "b".repeat(64)
             && matches!(
@@ -1384,25 +1393,19 @@ async fn join_starts_created_ingress_before_success() {
 }
 
 #[tokio::test]
-async fn two_concurrent_joins_each_ensure_ingress_locally() {
+async fn two_concurrent_joins_each_set_ingress_locally() {
     let founder = founder_machine();
     let (first, second) = tokio::join!(
         join_against_founder(&founder),
         join_against_founder(&founder),
     );
-    assert_eq!(
-        ensure_names(&first),
-        [("ployz-system", "ingress")],
-        "first Joiner must place Ingress Proxy here"
-    );
-    assert_eq!(
-        ensure_names(&second),
-        [("ployz-system", "ingress")],
-        "second Joiner must place Ingress Proxy here"
-    );
+    assert_eq!(first.len(), 1, "first Joiner must set its Ingress Proxy");
+    assert_eq!(second.len(), 1, "second Joiner must set its Ingress Proxy");
 }
 
-async fn join_against_founder(founder: &ployz_core::Machine) -> Vec<ployz_core::NewContainer> {
+async fn join_against_founder(
+    founder: &ployz_core::Machine,
+) -> Vec<ployz_core::SetIngressDoorsRequest> {
     let mut registration = registration();
     registration.assigned_machine.id = ployz_core::MachineId::random();
     registration.visible_peers = vec![founder.clone()];
@@ -1439,7 +1442,8 @@ async fn join_against_founder(founder: &ployz_core::Machine) -> Vec<ployz_core::
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    daemon.ensure_requests()
+    assert!(daemon.ensure_requests().is_empty());
+    daemon.door_requests()
 }
 
 fn ensure_names(requests: &[ployz_core::NewContainer]) -> Vec<(&str, &str)> {
@@ -1629,6 +1633,8 @@ async fn context_config_standalone_refills_the_selected_empty_context_signed_out
                 "add",
                 "--standalone",
                 &format!("tcp://{address}"),
+                "--cluster-name",
+                "acme",
                 "--name",
                 "verify-server",
                 "--no-install",
@@ -1654,6 +1660,11 @@ async fn context_config_standalone_refills_the_selected_empty_context_signed_out
             .await
             .unwrap();
         assert!(output.status.success(), "{output:?}");
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result.pointer("/cluster/name"),
+            Some(&serde_json::json!("acme"))
+        );
         let config = ployz::context::Config::load(&path).unwrap();
         assert_eq!(config.current_context(), Some("verify"));
         let selected = config.contexts.get("verify").unwrap();

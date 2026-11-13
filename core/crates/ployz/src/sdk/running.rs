@@ -2,12 +2,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::RpcError;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use super::invalid_argument;
 use super::prepare::Progress;
 
 /// Most build output retained ahead of a slow consumer before it is dropped.
@@ -152,15 +151,9 @@ impl<T, E: From<RpcError>> Running<T, E> {
             .lock()
             .await
             .take()
-            .ok_or_else(|| E::from(invalid_argument("result already awaited".into())))?;
-        join.await.map_err(|_| {
-            E::from(RpcError {
-                code: RpcErrorCode::Internal,
-                message: "SDK call task failed".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            })
-        })?
+            .ok_or_else(|| E::from(RpcError::invalid_argument("result already awaited")))?;
+        join.await
+            .map_err(|_| E::from(RpcError::internal("SDK call task failed")))?
     }
 }
 impl<T, E> Drop for Running<T, E> {
@@ -179,7 +172,7 @@ mod tests {
             for n in 0..1000 {
                 events.send((1, serde_json::json!({"n":n}))).unwrap();
             }
-            Err::<(), _>(invalid_argument("fixture failure".into()))
+            Err::<(), _>(RpcError::invalid_argument("fixture failure"))
         });
         let running = Running {
             cancel: CancellationToken::new(),

@@ -4,13 +4,14 @@
 //! `confirm` executes the privately admitted plan to a Deploy Outcome. This module does not
 //! print, read stdin, or exit the process.
 
+use crate::cluster::Call;
+use ployz_core::error_chain;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-use std::time::SystemTime;
 
 use ployz_core::{
     DataLossConfirmation, DeploymentLogId, IngressHost, MachineId, MachineObservation, Namespace,
-    ObservedDataLoss, PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
+    ObservedDataLoss, PortPublication, RpcError, UnconfirmedDataLoss,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -24,8 +25,8 @@ use crate::{
 
 use super::{
     DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, PlanError, PlanOptions, exec::execute_operation_sequence,
-    plan_deploy, planning,
+    DeployWarning, ExecutionError, PlanError, exec::execute_operation_sequence, plan_deploy,
+    planning,
 };
 
 /// Snapshot or planning failure before a Deploy executes.
@@ -63,14 +64,11 @@ impl Client {
     /// # Errors
     ///
     /// Returns when snapshot gathering fails.
-    pub async fn plan_ingress_repairs(
-        &mut self,
-        intent: DeployIntent,
-    ) -> Result<Vec<super::SlotRepair>, DeployError> {
+    pub async fn plan_ingress_repairs(&mut self) -> Result<Vec<super::SlotRepair>, DeployError> {
         let machines = self.machines().await?;
         let read_through = self.entry_machine();
-        let snapshot = gather_deploy_snapshot(self, machines, &intent).await?;
-        let repairs = planning::plan_ingress_repairs(&intent, &snapshot);
+        let snapshot = self.deploy_snapshot(machines).await?;
+        let repairs = planning::plan_ingress_repairs(&snapshot);
         if !repairs
             .iter()
             .any(|repair| matches!(repair.action, super::SlotAction::Unchecked(_)))
@@ -173,7 +171,7 @@ impl Client {
             .require(confirm_data_loss)
             .map_err(UnconfirmedDataLoss::into_rpc_error)?;
         if let Some(reason) = preview.prune_refusal {
-            return Err(invalid_argument(format!(
+            return Err(RpcError::invalid_argument(format!(
                 "{reason}: {}",
                 preview
                     .warnings
@@ -199,12 +197,15 @@ impl Client {
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
         let mut client = self.clone();
-        client.registry_auth.clone_from(preview.registry_auth());
-        let run = client.deployment_id.clone().unwrap_or_else(|| {
+        client
+            .deploy
+            .registry_auth
+            .clone_from(preview.registry_auth());
+        let run = client.deploy.id.clone().unwrap_or_else(|| {
             DeploymentLogId::parse(uuid::Uuid::new_v4().simple().to_string())
                 .expect("a simple uuid is a deployment log id")
         });
-        client.deployment_id = Some(run.clone());
+        client.deploy.id = Some(run.clone());
         execute_operation_sequence(preview, &run, &client, cancellation, progress).await
     }
 
@@ -232,7 +233,7 @@ fn observed_destroy_loss(
     if volumes == super::VolumeFate::Destroy
         && let Some(reason) = preview.prune_refusal
     {
-        return Err(invalid_argument(format!(
+        return Err(RpcError::invalid_argument(format!(
             "{reason}: {}",
             preview
                 .warnings
@@ -247,15 +248,10 @@ fn observed_destroy_loss(
 
 fn require_namespace_present(preview: &DeployPreview) -> Result<(), RpcError> {
     if namespace_not_found(preview) {
-        return Err(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: format!(
-                "Namespace '{}' was not found in this Cluster observation. No changes made.",
-                preview.namespace
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        });
+        return Err(RpcError::not_found(format!(
+            "Namespace '{}' was not found in this Cluster observation. No changes made.",
+            preview.namespace
+        )));
     }
     Ok(())
 }
@@ -287,17 +283,8 @@ impl From<DeployError> for RpcError {
         match error {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into_rpc_error(),
-            DeployError::Namespace(error) => invalid_argument(error.to_string()),
+            DeployError::Namespace(error) => RpcError::invalid_argument(error.to_string()),
         }
-    }
-}
-
-fn invalid_argument(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
     }
 }
 
@@ -368,7 +355,7 @@ pub(crate) async fn push_namespace_images(
                 }
                 failures.extend(service_failures);
             }
-            Err(error) => failures.push(format!("{}: {}", service.image, crate::ui::row(&error))),
+            Err(error) => failures.push(format!("{}: {}", service.image, error_chain::row(&error))),
         }
     }
     Ok(failures)
@@ -393,17 +380,6 @@ async fn preview_gathered(
     Ok(preview)
 }
 
-pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
-    PlanOptions {
-        force_recreate,
-        skip_health_monitor,
-        placement_seed: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos() as u64),
-        ..PlanOptions::default()
-    }
-}
-
 async fn gather_deploy_snapshot(
     client: &mut Client,
     mut machines: Vec<MachineObservation>,
@@ -422,11 +398,14 @@ async fn gather_deploy_snapshot(
             let id = machine.machine.id;
             reads.spawn(async move {
                 let result = client
-                    .read::<ployz_core::op::InspectStorage>(
+                    .call::<ployz_core::op::InspectStorage>(
                         ployz_core::InspectStorageRequest {},
-                        &ployz_core::MachineTarget::from(&id),
+                        Call::read()
+                            .to(&ployz_core::MachineTarget::from(&id))
+                            .budget(crate::connect::target_read_timeout()),
                     )
-                    .await;
+                    .await
+                    .map_err(crate::connect::rpc_error);
                 (id, result)
             });
         }
@@ -511,7 +490,7 @@ async fn push_image(
                 "{} on {}: {}",
                 service.image,
                 failure.machine_id,
-                crate::ui::row(&failure.error)
+                error_chain::row(&failure.error)
             )
         })
         .chain(

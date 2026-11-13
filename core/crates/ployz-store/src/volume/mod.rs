@@ -18,6 +18,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::Trusted;
 use crate::error;
 use crate::id::{EnvironmentId, VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
@@ -142,6 +143,7 @@ pub(crate) fn create_volume(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateVolume,
+    trusted: &Trusted,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &create.environment)?;
     if let Some(from) = &create.restored_from
@@ -184,7 +186,7 @@ pub(crate) fn create_volume(
     for mount in &create.mounts {
         refuse_shared_path(&environment, &mount.service, &create.name)?;
     }
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     scope::introduce(tx, who, &environment.summary.id, scope::Node::Volume(&node))?;
     if create.storage_locked {
         lock_storage(
@@ -205,12 +207,13 @@ pub(crate) fn set_shared_writes(
     tx: &mut dyn Tx,
     who: &Actor,
     set: &SetVolumeSharedWrites,
+    trusted: &Trusted,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &set.environment)?;
     let before = environment.working.clone();
     environment.volume_mut(&set.volume)?.shared_writes = set.shared_writes;
     if environment.working != before {
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     // It applies at once: nothing waits for a Deploy.
     staged(environment, &set.volume, false)
@@ -220,6 +223,7 @@ pub(crate) fn rename_volume(
     tx: &mut dyn Tx,
     who: &Actor,
     rename: &RenameVolume,
+    trusted: &Trusted,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &rename.environment)?;
     let changed = rename.name != rename.volume;
@@ -231,7 +235,7 @@ pub(crate) fn rename_volume(
             None,
         )?;
         environment.volume_mut(&rename.volume)?.name = rename.name.to_string();
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     staged(environment, &rename.name, changed)
 }
@@ -240,6 +244,7 @@ pub(crate) fn set_storage(
     tx: &mut dyn Tx,
     who: &Actor,
     set: &SetVolumeStorage,
+    trusted: &Trusted,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &set.environment)?;
     let volume = environment.volume_mut(&set.volume)?;
@@ -253,7 +258,7 @@ pub(crate) fn set_storage(
             &environment.working.volumes,
             StorageRule::Edit { volume: &edited },
         )?;
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     staged(environment, &set.volume, changed)
 }
@@ -339,6 +344,7 @@ pub(crate) fn remove_volume(
     tx: &mut dyn Tx,
     who: &Actor,
     remove: &RemoveVolume,
+    trusted: &Trusted,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &remove.environment)?;
     let volume = summary(environment.volume(&remove.volume)?)?;
@@ -358,7 +364,7 @@ pub(crate) fn remove_volume(
         .working
         .volumes
         .retain(|node| node.resource_id != volume.id.as_str());
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     Ok(VolumeStaged {
         volume,
         environment: environment.summary,
@@ -677,6 +683,7 @@ mod tests {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
+                    teardown: None,
                     id: DeploymentId::parse(uuid(5)).unwrap(),
                     environment: EnvironmentRef::default(),
                     services: Vec::new(),
@@ -686,6 +693,7 @@ mod tests {
                     message: None,
                     prune: false,
                     no_prune: false,
+                    approval: None,
                 }),
                 &Trusted::default(),
             )

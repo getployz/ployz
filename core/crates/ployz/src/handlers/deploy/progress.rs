@@ -2,13 +2,13 @@
 
 use crate::deploy::{Replica, service_row, starts, updates};
 use crate::failure::Failure;
-use crate::ui::{
-    Hint,
-    progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work},
+use crate::ui::progress::{
+    Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work,
 };
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
+use ployz_core::error_chain;
 use ployz_core::{
-    DeployOperation, DeployWarning, PullPolicy, QualifiedService, RpcError, RpcErrorCode,
+    DeployOperation, DeployWarning, Hint, PullPolicy, QualifiedService, RpcError, RpcErrorCode,
     ServiceName, config::MEM_LIMIT_MAX,
 };
 use ployz_store::{
@@ -404,8 +404,8 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
 
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
     let unchecked = ingress_unchecked(view).map(|cause| {
-        crate::ui::then_sentence(
-            &crate::ui::with_reason("Couldn't check ingress", cause),
+        error_chain::then_sentence(
+            &error_chain::with_reason("Couldn't check ingress", cause),
             "Deploy again to retry.",
         )
     });
@@ -420,8 +420,8 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
                      See what holds it with `sudo ss -ltnp '( sport = :80 or sport = :443 )'`. \
                      Ployz starts ingress on its own once the port is free."
                 ),
-                IngressFailure::Failed { cause } => crate::ui::then_sentence(
-                    &crate::ui::with_reason(
+                IngressFailure::Failed { cause } => error_chain::then_sentence(
+                    &error_chain::with_reason(
                         format_args!("Ingress isn't running on {server}"),
                         cause,
                     ),
@@ -519,10 +519,7 @@ fn superseded(
     let (message, inspect) = match successor {
         Some(newer) => {
             let from = newer.push.as_ref().map_or(String::new(), |push| {
-                format!(
-                    " (push {})",
-                    push.head.as_str().get(..7).unwrap_or_default()
-                )
+                format!(" (push {})", push.head.short())
             });
             let shown = target(newer);
             (
@@ -539,13 +536,7 @@ fn superseded(
             command(&[&["deployment", "ls"][..], &scope].concat()),
         ),
     };
-    Failure::from(RpcError {
-        code: RpcErrorCode::Internal,
-        message,
-        cause: Vec::new(),
-        details: serde_json::Value::Null,
-    })
-    .hint(Hint::Inspect(inspect))
+    Failure::from(RpcError::internal(message)).hint(Hint::Inspect(inspect))
 }
 
 /// The Deployment among `candidates` that took `view`'s Environment over: the first
@@ -774,16 +765,17 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         // failure the inspect hint above reads.
         bad_image |= pulled && !build_failed && built.is_none();
     }
-    let mut failure = Failure::from(RpcError {
-        code: if lost_to_newer {
-            RpcErrorCode::Conflict
-        } else {
-            RpcErrorCode::Internal
-        },
-        message: crate::ui::sentence(reason),
-        cause,
-        details: serde_json::Value::Null,
-    })
+    let mut failure = Failure::from(
+        RpcError::new(
+            if lost_to_newer {
+                RpcErrorCode::Conflict
+            } else {
+                RpcErrorCode::Internal
+            },
+            error_chain::sentence(reason),
+        )
+        .with_causes(cause),
+    )
     .with_diagnostic(diagnostic);
     for hint in hints {
         failure = failure.hint(hint);
@@ -1775,12 +1767,7 @@ mod tests {
         assert_eq!(named(&[older.clone(), queued.clone()]), None);
         // The first newer one that started took over, whatever came after it.
         assert_eq!(
-            named(&[
-                after_it.clone(),
-                queued.clone(),
-                took_over.clone(),
-                older.clone()
-            ]),
+            named(&[after_it.clone(), queued, took_over.clone(), older.clone()]),
             Some(8)
         );
         // When the first that started never ran, it may still have taken over: no

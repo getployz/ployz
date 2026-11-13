@@ -25,6 +25,7 @@ fn server(hex: char, name: &str) -> Machine {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -178,7 +179,7 @@ fn every_other_outcome_keeps_its_line() {
                 "api",
                 DrainOutcome::Failed {
                     moves: vec![step(&web1, OldCopyEnd::Stopped)],
-                    failure: failure.clone(),
+                    failure,
                 }
             ),
             line(

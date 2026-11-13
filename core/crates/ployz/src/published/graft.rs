@@ -152,9 +152,14 @@ mod tests {
     #[test]
     fn every_fixture_entry_becomes_a_leaf_with_one_argument_per_property() {
         let published = published();
-        let mut root = attach(crate::cli::compiled(), &published);
+        let compiled = crate::cli::compiled();
+        let mut root = attach(compiled.clone(), &published);
         root.build();
-        for command in &published.commands {
+        for command in published
+            .commands
+            .iter()
+            .filter(|command| find(&compiled, &command.path).is_none())
+        {
             let leaf = leaf(&root, &command.path);
             assert!(!leaf.has_subcommands(), "{} is a leaf", command.path());
             assert_eq!(

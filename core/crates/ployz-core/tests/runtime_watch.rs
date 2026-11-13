@@ -29,6 +29,7 @@ fn runtime_watch_capability_is_always_advertised_and_not_inferred_from_daemon_ve
         daemon_version: "9.9.9".into(),
         capabilities: BTreeSet::new(),
         sealing: None,
+        attest: None,
     };
     assert!(!old_daemon.supports(RUNTIME_WATCH_CAPABILITY));
 
@@ -40,6 +41,7 @@ fn runtime_watch_capability_is_always_advertised_and_not_inferred_from_daemon_ve
             ployz_core::CapabilityName::parse(RUNTIME_WATCH_CAPABILITY).unwrap()
         ]),
         sealing: None,
+        attest: None,
     };
     assert!(new_daemon.supports(RUNTIME_WATCH_CAPABILITY));
 }
@@ -142,6 +144,7 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
         defaults.incomplete_ids,
         RuntimeWatchIncompleteIds::default()
     );
+    assert!(defaults.unanswered.is_empty());
     assert_eq!(defaults.observed_at, "2024-01-01T00:00:00Z");
 }
 
@@ -253,9 +256,11 @@ fn expected_frame() -> RuntimeWatchFrame {
                     store_filesystem: None,
                     store_syncs_commits: None,
                     capabilities: BTreeSet::new(),
+                    device_enforcement: None,
                     management_identity: None,
                     leaving: false,
                 },
+                join_approval: None,
                 build_concurrency: None,
                 },
                 MembershipObservation::Up,
@@ -319,6 +324,8 @@ fn expected_frame() -> RuntimeWatchFrame {
             }],
             certificates: vec![CertificateHost::parse("pending.example.com").unwrap()],
         },
+        // The frozen frame predates the field, so an older daemon's frame still decodes.
+        unanswered: Vec::new(),
         observed_at: "2024-01-01T00:00:00Z".into(),
     }
 }

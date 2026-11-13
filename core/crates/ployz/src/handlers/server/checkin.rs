@@ -15,16 +15,16 @@ use std::{
 
 use chrono::Utc;
 use clap::{ArgMatches, Command, parser::ValueSource};
-use ployz_core::RpcErrorCode;
+use ployz_core::{Hint, MachineLayout, RpcErrorCode};
 
 use super::super::{Error, leaf_matches, runtime};
 use crate::checkin::{
     self, CheckinClient, CheckinEnd, CheckinKey, FleetToken, Hold, Next, Paths, StopReason, System,
     unit,
 };
-use crate::cli::{base, env, switch, value};
-use crate::cloud_login::DEFAULT_CLOUD;
-use crate::ui::Hint;
+use crate::cli::{base, switch, value};
+use crate::cloud_origin::DEFAULT_CLOUD;
+use crate::env;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SKIP_ZFS: &str = "PLOYZ_SKIP_ZFS";
@@ -37,7 +37,7 @@ pub(crate) fn command(command: Command) -> Command {
         .arg(
             value("token-file", None)
                 .value_parser(clap::value_parser!(PathBuf))
-                .default_value(Paths::TOKEN_FILE)
+                .default_value(MachineLayout::production().fleet_token().into_os_string())
                 .help("Read the Fleet Token from this file. The running check-in loop deletes it once Cloud enrolls or rejects this host, or the token is revoked or expires; an --install that ends with an error keeps it"),
         )
         .arg(
@@ -63,7 +63,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     let token_file = matches
         .get_one::<PathBuf>("token-file")
         .cloned()
-        .unwrap_or_else(|| PathBuf::from(Paths::TOKEN_FILE));
+        .unwrap_or_else(|| MachineLayout::production().fleet_token());
     // The unit runs from /, so a path relative to here would name another file there.
     let token_file = std::path::absolute(&token_file).map_err(|error| {
         Error::caused(
@@ -77,7 +77,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         .map_or(DEFAULT_CLOUD, String::as_str)
         .to_owned();
     let paths = Paths::system(token_file);
-    if !crate::provisioning::process_is_root() {
+    if !crate::checkin::process_is_root() {
         return Err(Error::coded(
             RpcErrorCode::Unauthenticated,
             "Run ployz server checkin as root.",
@@ -297,6 +297,9 @@ async fn install(
             crate::ui::stream(line);
         }
     }
+    crate::ui::note(
+        "To approve changes from your browser, add a passkey in your Ployz Cloud account once this server joins, then run this on each server:\n  sudo ployz device approve --passkey <code>",
+    );
     Ok(())
 }
 

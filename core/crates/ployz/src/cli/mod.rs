@@ -1,39 +1,9 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
+use ployz_store::ReviewVersion;
 
-use crate::handlers;
+use crate::{env, handlers};
 
 pub(crate) mod metrics;
-
-pub mod env {
-    pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
-    pub const BUILD_GRANT: &str = "PLOYZ_BUILD_GRANT";
-    pub const CLOUD_URL: &str = "PLOYZ_CLOUD_URL";
-    /// Set by the shell hook `ployz completion SHELL` prints, to ask for completions.
-    pub const COMPLETE: &str = "PLOYZ_COMPLETE";
-    pub const CONFIG: &str = "PLOYZ_CONFIG";
-    pub const CONNECT: &str = "PLOYZ_CONNECT";
-    pub const CONTEXT: &str = "PLOYZ_CONTEXT";
-    pub const DAEMON_VERSION: &str = "PLOYZ_DAEMON_VERSION";
-    /// The enrollment token for `server add`, kept out of argv.
-    pub const ENROLL_TOKEN: &str = "PLOYZ_ENROLL_TOKEN";
-    pub const TOKEN: &str = "PLOYZ_TOKEN";
-    /// The Environment authoring commands address, as `--env`.
-    pub const ENVIRONMENT: &str = "PLOYZ_ENV";
-    /// The Project authoring commands address, as `--project`.
-    pub const PROJECT: &str = "PLOYZ_PROJECT";
-    /// Hidden test mode: host the Config Store in-process (`sqlite:PATH`). Not for users.
-    pub const STORE: &str = "PLOYZ_STORE";
-    /// Hidden test mode: seconds a followed Deployment sits queued before the follow says why.
-    pub const DEPLOY_UNCLAIMED_SECONDS: &str = "PLOYZ_DEPLOY_UNCLAIMED_SECONDS";
-    /// Hidden test mode: seconds a read waits on a target Machine before calling it silent.
-    pub const TARGET_READ_TIMEOUT_SECONDS: &str = "PLOYZ_TARGET_READ_TIMEOUT_SECONDS";
-
-    /// A hidden test-mode duration in whole seconds, or `None` when unset or unparsable.
-    pub(crate) fn seconds(name: &str) -> Option<std::time::Duration> {
-        let seconds = std::env::var(name).ok()?.parse().ok()?;
-        Some(std::time::Duration::from_secs(seconds))
-    }
-}
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -211,44 +181,12 @@ pub(crate) fn reviewed_version() -> Arg {
         .help("Refuse unless this is still the reviewed version; a data-loss refusal names it")
 }
 
-/// A review's version is `REVISION:SAVED:TOKEN`, and a data-loss refusal's adds
-/// `:DIGEST`. Cloud binds a review's version to the copy loss it refused with
-/// `#loss-HASH`, which the server checks. A Project removal's is `PROJECT:DIGEST`.
+/// A review's version, handed on as it was typed; the grammar is [`ReviewVersion`]'s.
 fn review_version(version: &str) -> Result<String, &'static str> {
-    let (reviewed, bound) = match version.split_once("#loss-") {
-        Some((reviewed, hash)) => (reviewed, Some(hash)),
-        None => (version, None),
-    };
-    let base36 = |hash: &str| {
-        !hash.is_empty()
-            && hash
-                .chars()
-                .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
-    };
-    if bound.is_some_and(|hash| !base36(hash)) {
-        return Err(MALFORMED_VERSION);
-    }
-    let parts: Vec<&str> = reviewed.split(':').collect();
-    match (parts.as_slice(), bound) {
-        ([project, digest], None)
-            if !digest.is_empty() && ployz_store::ProjectId::parse(*project).is_ok() =>
-        {
-            Ok(version.to_owned())
-        }
-        ([revision, saved, token, digests @ ..], _)
-            if revision.parse::<u64>().is_ok()
-                && saved.parse::<u64>().is_ok()
-                && token.split_once('.').is_some_and(|(deployed, ended)| {
-                    deployed.parse::<u64>().is_ok() && ended.parse::<u64>().is_ok()
-                })
-                && digests.iter().all(|digest| {
-                    !digest.is_empty() && digest.chars().all(|c| c.is_ascii_hexdigit())
-                }) =>
-        {
-            Ok(version.to_owned())
-        }
-        _ => Err(MALFORMED_VERSION),
-    }
+    version
+        .parse::<ReviewVersion>()
+        .map(|version| version.to_string())
+        .map_err(|_| MALFORMED_VERSION)
 }
 
 const MALFORMED_VERSION: &str =
@@ -342,6 +280,31 @@ mod tests {
             "5:1:0.1#loss-a#loss-b",
             "#loss-fzfjky",
             "9a79b1a9-3c26-40dc-8cd0-3e5567c6daca:3764cac4355a8215#loss-fzfjky",
+        ] {
+            assert!(super::review_version(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// The grammar takes numbers as Rust parses them and hex digests in either case, and
+    /// hands the text on as it was typed.
+    #[test]
+    fn expect_version_hands_on_what_it_accepted_as_typed() {
+        for good in [
+            "+3:1:0.1",
+            "003:01:0.01",
+            "3:0:0.12:ab12cd:FF00",
+            "3:1:0.1:ABCDEF#loss-0z",
+            "18446744073709551615:0:0.0",
+        ] {
+            assert_eq!(super::review_version(good).as_deref(), Ok(good));
+        }
+        for bad in [
+            "18446744073709551616:0:0.0",
+            "3:1:0.1:xyz",
+            "3:1:+0.1.2",
+            "3:1:0.1:ab:",
+            "3:1:0.1 ",
+            "3:1:0.1#loss-a b",
         ] {
             assert!(super::review_version(bad).is_err(), "{bad}");
         }

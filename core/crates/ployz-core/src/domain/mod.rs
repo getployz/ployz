@@ -3,6 +3,7 @@ mod certificate_policy;
 mod data_loss;
 mod deploy;
 mod device;
+mod doors;
 mod forgotten;
 mod health_wait;
 mod hostname;
@@ -20,6 +21,8 @@ mod runtime_watch;
 mod selector;
 mod service_graph;
 mod spec;
+mod tailscale;
+mod tunnel;
 mod volume;
 
 pub use build_grant::*;
@@ -27,6 +30,7 @@ pub use certificate_policy::*;
 pub use data_loss::*;
 pub use deploy::*;
 pub use device::*;
+pub use doors::*;
 pub use forgotten::*;
 pub use health_wait::*;
 pub use hostname::*;
@@ -44,6 +48,8 @@ pub use runtime_watch::*;
 pub use selector::*;
 pub use service_graph::*;
 pub use spec::*;
+pub use tailscale::*;
+pub use tunnel::*;
 pub use volume::*;
 
 use serde::{Deserialize, Serialize};
@@ -143,6 +149,25 @@ pub struct PartialResult<T, E> {
 }
 
 impl<T, E> PartialResult<T, E> {
+    /// No target has answered yet.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        }
+    }
+
+    /// Keep one target's outcome: a failure, an answer, or none, which is an omission.
+    pub fn record(&mut self, machine_id: MachineId, outcome: Result<Option<T>, E>) {
+        match outcome {
+            Ok(Some(value)) => self.successes.push(MachineSuccess { machine_id, value }),
+            Ok(None) => self.omissions.push(machine_id),
+            Err(error) => self.failures.push(MachineFailure { machine_id, error }),
+        }
+    }
+
     #[must_use]
     pub fn all_targets_succeeded(&self) -> bool {
         self.failures.is_empty() && self.omissions.is_empty()

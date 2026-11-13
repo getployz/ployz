@@ -23,6 +23,8 @@ use super::{ApiClient, ReplicatedStore};
 #[derive(Clone)]
 struct ClusterKv {
     network: Option<String>,
+    name: Option<String>,
+    doors: Option<String>,
     /// The awaited Sealing public key as it stood when the network was written,
     /// so a test awaits the write instead of polling.
     network_written: tokio::sync::watch::Sender<Option<Option<String>>>,
@@ -69,6 +71,8 @@ impl ClusterKv {
         let (certificate_changes, _) = broadcast::channel(16);
         Self {
             network: Some("10.210.0.0/16".into()),
+            name: None,
+            doors: None,
             network_written: tokio::sync::watch::Sender::new(None),
             sealing_public_key: tokio::sync::watch::Sender::new(None),
             sealing_awaits_recovery: None,
@@ -144,10 +148,12 @@ fn router(kv: Arc<Mutex<ClusterKv>>) -> Router {
 
 /// A loopback address that stays free after a test releases it. The kernel
 /// autobinds ports only from the ephemeral range, which starts at 32768 on
-/// Linux, and the random 127/8 address keeps concurrent tests apart.
+/// Linux, and the random 127/8 address keeps concurrent tests apart. Ports from
+/// 10000 up belong to the `ployz` probe tests' `free_port`, which binds every
+/// address.
 pub(crate) fn unclaimed_loopback() -> SocketAddrV4 {
     let [a, b, c, low, high, ..] = RandomState::new().hash_one(()).to_le_bytes();
-    let port = 1024 + u16::from_le_bytes([low, high]) % (32768 - 1024);
+    let port = 1024 + u16::from_le_bytes([low, high]) % (10_000 - 1024);
     SocketAddrV4::new(
         Ipv4Addr::new(127, a.clamp(1, 254), b, c.clamp(1, 254)),
         port,
@@ -488,6 +494,12 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                 json!(kv.sealing_awaits_recovery.clone()),
             ]],
         ),
+        "SELECT value FROM cluster WHERE key = 'name'" => {
+            events(&["value"], kv.name.iter().map(|name| vec![json!(name)]))
+        }
+        "SELECT value FROM cluster WHERE key = 'doors'" => {
+            events(&["value"], kv.doors.iter().map(|doors| vec![json!(doors)]))
+        }
         "SELECT value FROM cluster WHERE key = 'network'" => events(
             &["value"],
             kv.network.iter().map(|network| vec![json!(network)]),
@@ -515,6 +527,7 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
         "SELECT hostname, body FROM certificates ORDER BY hostname" => {
             events(&["hostname", "body"], Vec::new())
         }
+        "SELECT body FROM certificates WHERE hostname = ?" => events(&["body"], None::<Vec<Value>>),
         super::store::VERSION_QUERY => events(&["site_id", "db_version"], Vec::new()),
         query => panic!("unexpected query {query}"),
     })
@@ -538,6 +551,12 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 let awaited = kv.sealing_awaits_recovery.clone();
                 kv.network_written.send_replace(Some(awaited));
             }
+            query if query.starts_with("INSERT INTO cluster (key, value) VALUES ('name', ?)") => {
+                kv.name = Some(text_param(&statement.params, 0).to_owned());
+            }
+            query if query.starts_with("INSERT INTO cluster (key, value) VALUES ('doors', ?)") => {
+                kv.doors = Some(text_param(&statement.params, 0).to_owned());
+            }
             query
                 if query.starts_with(
                     "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?)",
@@ -557,6 +576,8 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     kv.sealing_awaits_recovery = Some(text_param(&statement.params, 0).to_owned());
                 }
             }
+            // The fake keeps no tombstones; a forget here only removes the rows below.
+            query if query.starts_with("INSERT INTO cluster (key, value) SELECT 'forgotten") => {}
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
                 kv.volumes.insert(
                     (
@@ -638,6 +659,7 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 kv.containers.retain(|_, (owner, _)| owner != machine_id);
                 let _ = kv.container_changes.send(());
             }
+            "DELETE FROM certificates WHERE hostname = ?" => {}
             "DELETE FROM machines WHERE id = ?" => {
                 if kv
                     .machines

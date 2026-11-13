@@ -1,3 +1,4 @@
+use ployz_core::labels;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bollard::{
@@ -7,17 +8,44 @@ use bollard::{
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    ContainerId, CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId,
-    DockerVolumeName, DockerVolumeStorageObservation, MachineId, Namespace, QualifiedService,
-    ResolvedServiceSpec, ServiceName, VolumeInventory, VolumeObservationFailure, VolumeSource,
+    ContainerId, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, MachineId, Namespace, QualifiedService, ResolvedServiceSpec,
+    RpcError, ServiceName, VolumeInventory, VolumeObservationFailure, VolumeSource,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ContainerRuntime, Error, LABEL_NAMESPACE, LABEL_SERVICE_NAME, some_map};
+use super::{ContainerRuntime, Error, Status, classify, some_map};
 use crate::VolumePluginStatus;
 
 const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
+
+/// Successful Docker mutation followed by its independent verification outcome.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "verification", rename_all = "snake_case")]
+pub enum CreateVolumeReport {
+    Verified { volume: DockerVolume },
+    Unverified { id: DockerVolumeId, error: RpcError },
+}
+
+impl CreateVolumeReport {
+    /// Return the verified observation or the created identity and verification failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the created identity and verification error when creation succeeded but
+    /// its follow-up observation failed.
+    #[expect(
+        clippy::result_large_err,
+        reason = "both outcomes are public wire values; boxing would leak allocation into the contract"
+    )]
+    pub fn into_observation(self) -> Result<DockerVolume, VolumeObservationFailure> {
+        match self {
+            Self::Verified { volume } => Ok(volume),
+            Self::Unverified { id, error } => Err(VolumeObservationFailure { id, error }),
+        }
+    }
+}
 
 impl ContainerRuntime {
     /// Ensure every mounted Docker Volume exists and every managed source matches exactly.
@@ -84,6 +112,38 @@ impl ContainerRuntime {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Refuse an External mount of a Volume carrying Ployz's managed label. External means
+    /// made outside Ployz, and under Device enforcement the only named Volumes an Operator
+    /// can make come from `PrepareVolumes`, which labels them, so a labelled one may hold
+    /// options nobody approved.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeShapeMismatch`] naming the Volume, or the inspection's error.
+    pub(crate) async fn refuse_managed_external(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        for volume in spec.volume_graph().mounted_volumes() {
+            let ployz_core::RawVolumeSource::External { name } = volume.source.kind() else {
+                continue;
+            };
+            // A missing one is the mount check's to name, after this.
+            let observed = match self.inspect_volume(machine_id, name).await {
+                Ok(observed) => observed,
+                Err(error) if volume_not_found(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            if observed.labels.contains_key(ployz_core::labels::MANAGED) {
+                return Err(Error::VolumeShapeMismatch {
+                    name: name.clone(),
+                    reason: "an External mount names a Volume Ployz manages".into(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Validate every existing provisioned Volume before allocating any new storage.
@@ -334,8 +394,8 @@ impl ContainerRuntime {
 
 fn holder_service(labels: Option<&HashMap<String, String>>) -> Option<QualifiedService> {
     let labels = labels?;
-    let namespace = Namespace::parse(labels.get(LABEL_NAMESPACE)?).ok()?;
-    let name = ServiceName::parse(labels.get(LABEL_SERVICE_NAME)?).ok()?;
+    let namespace = Namespace::parse(labels.get(labels::NAMESPACE)?).ok()?;
+    let name = ServiceName::parse(labels.get(labels::SERVICE_NAME)?).ok()?;
     Some(QualifiedService::new(namespace, name))
 }
 
@@ -382,21 +442,19 @@ fn verify_volume(source: &VolumeSource, observed: &DockerVolume) -> Result<(), E
 }
 
 fn volume_not_found(error: &Error) -> bool {
-    docker_status(error, 404)
+    volume_status(error) == Status::Absent
 }
 
 fn volume_conflict(error: &Error) -> bool {
-    docker_status(error, 409)
+    volume_status(error) == Status::Conflict
 }
 
-fn docker_status(error: &Error, expected: u16) -> bool {
-    matches!(
-        error,
-        Error::Docker(bollard::errors::Error::DockerResponseServerError {
-            status_code,
-            ..
-        }) if *status_code == expected
-    )
+fn volume_status(error: &Error) -> Status {
+    if let Error::Docker(error) = error {
+        classify(error)
+    } else {
+        Status::Other
+    }
 }
 
 // Bollard models Volume Status as key-only data, so valid plugin values use raw JSON recovery.

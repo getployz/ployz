@@ -114,8 +114,8 @@ struct Copy {
 }
 
 /// What A's pool holds for `into`: nothing, the root `<pool>/ployz/<into>`, or the slot
-/// parent `<pool>/ployz-mirror/<into>` with or without its `fs` (storage.rs `root_dataset`,
-/// `slot_parent`, `slot_fs`).
+/// parent `<pool>/ployz-mirror/<into>` with or without its `fs` (`DatasetLayout::root`,
+/// `slot_parent`, `slot_fs` in ployzd's dataset_layout.rs).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Into {
     Absent,
@@ -594,7 +594,7 @@ impl VolumeMarks {
                 (SeedPath::Held, Answer::Refused)
             }
             // seed.rs: `SeedProgress::Stale`: `Stale::clear` runs `zfs destroy -r <parent>`,
-            // then `copy_point` runs `create_bounded_slot`, sets `ployz:pull` and runs
+            // then `copy_point` runs `create_slot`, sets `ployz:pull` and runs
             // `receives.spawn(copy_snapshot)`.
             Into::Slot { fs } => {
                 state.destroyed = Some(Destroy {
@@ -1191,13 +1191,16 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use stateright::{Checker, HasDiscoveries};
+    use stateright::Checker;
 
     use super::*;
+    use crate::harness::{Narrated, breaks, check, last};
 
-    type Path = Vec<(State, Option<Action>)>;
+    impl Narrated for VolumeMarks {
+        fn story(&self, path: &[(State, Option<Action>)]) -> String {
+            story(self, path)
+        }
+    }
 
     /// The code as it is.
     fn fixed(scenario: Scenario) -> VolumeMarks {
@@ -1218,54 +1221,6 @@ mod tests {
             },
             ..fixed(scenario)
         }
-    }
-
-    fn check(model: VolumeMarks) -> impl Checker<VolumeMarks> {
-        model.checker().threads(4).spawn_bfs().join()
-    }
-
-    /// The first path in BFS order whose last state breaks `property` under `model`, so
-    /// no shorter path breaks it, printed as a story under the test's name. The checker's
-    /// own discovery is not that path: `check_block` stores every violation it visits,
-    /// each overwriting the last, and `finish_when` is read once per 1500-state block, so
-    /// a visitor keeps the first. One thread keeps the path the same from run to run.
-    fn breaks(model: VolumeMarks, property: &'static str) -> Path {
-        let holds = model
-            .properties()
-            .into_iter()
-            .find(|candidate| candidate.name == property)
-            .expect("a model property")
-            .condition;
-        let first = Arc::new(Mutex::new(None));
-        let seen = Arc::clone(&first);
-        model
-            .checker()
-            .threads(1)
-            .visitor(move |path: stateright::Path<State, Action>| {
-                let mut first = seen.lock().expect("the first break");
-                if first.is_none() && !holds(&model, path.last_state()) {
-                    *first = Some(path.into_vec());
-                }
-            })
-            .finish_when(HasDiscoveries::AllOf([property].into()))
-            .spawn_bfs()
-            .join();
-        let path = first
-            .lock()
-            .expect("the first break")
-            .take()
-            .expect("a path breaks the property");
-        let test = std::thread::current();
-        println!(
-            "[{}] {property} fails under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            story(&model, &path)
-        );
-        path
-    }
-
-    fn last(path: &Path) -> State {
-        path.last().expect("a path has a state").0
     }
 
     /// The finding, without the floor. The seed run's first request outlives its

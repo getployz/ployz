@@ -10,9 +10,10 @@ use std::{
 };
 
 use ployz_core::{
-    DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId,
-    MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel, PinnedAddresses,
-    PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint, apply_machine_update,
+    ClientKey, DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine,
+    MachineId, MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel,
+    PREPARE_DIR_NAME, PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint,
+    apply_machine_update,
 };
 use reqwest::Url;
 use thiserror::Error;
@@ -25,7 +26,7 @@ use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
 use crate::sealing_key::{KeyFile, OpenError, SealingKey};
 
-const STATE_FILE_NAME: &str = "machine.json";
+pub(crate) const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
 pub(super) const PENDING_RESET_FILE_NAME: &str = ".machine.reset.pending";
 const LOCK_FILE_NAME: &str = ".ployzd.lock";
@@ -55,8 +56,10 @@ pub(crate) struct Installation {
     body: LocalMachineBody,
     sealing_key: Option<SealingKey>,
     devices: Vec<DeviceKey>,
+    device_enforcement: bool,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
+    enrollment: EnrollRequest,
 }
 
 impl Installation {
@@ -119,7 +122,7 @@ impl PreparedReset {
         }
         fs::rename(
             self.data_dir.join(PENDING_RESET_FILE_NAME),
-            self.data_dir.join(STATE_FILE_NAME),
+            path(&self.data_dir),
         )?;
         store.record = self.resetting.clone();
         if let Err(error) = File::open(&self.data_dir).and_then(|directory| directory.sync_all()) {
@@ -209,8 +212,7 @@ impl LocalMachineStore {
                 StoreError::Io(error)
             }
         })?;
-        let path = data_dir.join(STATE_FILE_NAME);
-        let record = match fs::read(&path) {
+        let record = match fs::read(path(&data_dir)) {
             Ok(data) => vet_device_slots(&data_dir, serde_json::from_slice(&data)?)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 match fs::remove_file(data_dir.join(TEMPORARY_FILE_NAME)) {
@@ -218,19 +220,12 @@ impl LocalMachineStore {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
-                let record = LocalMachineRecord {
-                    body: LocalMachineBody::Uninitialized {
+                let record = LocalMachineRecord::fresh(
+                    LocalMachineBody::Uninitialized {
                         id: MachineId::random(),
                     },
-                    wireguard_private_key: WireGuardPrivateKey::generate(),
-                    management_secret: ManagementSecret::generate(),
-                    management_clients: BTreeMap::new(),
-                    wireguard_mtu: None,
-                    selected_endpoints: BTreeMap::new(),
-                    pinned_addresses: PinnedAddresses::default(),
-                    push_target: None,
-                    device_slots_vetted: true,
-                };
+                    WireGuardPrivateKey::generate(),
+                );
                 save(&data_dir, &record)?;
                 record
             }
@@ -343,12 +338,40 @@ impl LocalMachineStore {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<(EnrollPlan, Installation), StoreError> {
+        let enrollment = request.clone();
+        if self.record.enrollment.as_ref() == Some(&request) {
+            let plan = match self.record.phase() {
+                LocalMachinePhase::Joining | LocalMachinePhase::Participating => {
+                    EnrollPlan::Replay(
+                        self.record
+                            .machine()
+                            .expect("persisted enrollment owns a Machine")
+                            .clone(),
+                    )
+                }
+                LocalMachinePhase::Uninitialized
+                | LocalMachinePhase::Resetting
+                | LocalMachinePhase::Unrecognized(_) => EnrollPlan::Conflict(self.record.now()),
+            };
+            return Ok((
+                plan,
+                Installation {
+                    body: self.record.body.clone(),
+                    sealing_key: None,
+                    devices: Vec::new(),
+                    device_enforcement: self.record.device_enforcement,
+                    wireguard_mtu: request.wireguard_mtu,
+                    pinned: request.pinned,
+                    enrollment: request,
+                },
+            ));
+        }
         let EnrollRequest {
             role,
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, devices) = match role {
+        let (body, sealing_key, devices, device_enforcement) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -368,7 +391,7 @@ impl LocalMachineStore {
                     public_ip,
                     advertised_endpoints,
                 )?;
-                (body, sealing_key, Vec::new())
+                (body, sealing_key, Vec::new(), false)
             }
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
@@ -388,8 +411,10 @@ impl LocalMachineStore {
                 body,
                 sealing_key,
                 devices,
+                device_enforcement,
                 wireguard_mtu,
                 pinned,
+                enrollment,
             },
         ))
     }
@@ -419,6 +444,7 @@ impl LocalMachineStore {
             public_ip,
             advertised_endpoints,
             runtime: local_runtime(&self.data_dir),
+            join_approval: None,
             build_concurrency: None,
         };
         let sealing_key = cluster.recovery.is_none().then(SealingKey::generate);
@@ -434,10 +460,10 @@ impl LocalMachineStore {
     fn member(
         &self,
         registration: Registered,
-    ) -> Result<(LocalMachineBody, Option<SealingKey>, Vec<DeviceKey>), StoreError> {
+    ) -> Result<(LocalMachineBody, Option<SealingKey>, Vec<DeviceKey>, bool), StoreError> {
         let Registered {
             assigned_machine: mut machine,
-            visible_peers,
+            mut visible_peers,
             target_versions,
             sealing_key,
             devices,
@@ -454,9 +480,72 @@ impl LocalMachineStore {
         if machine.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
-        let sealing_key = sealing_key
-            .map(|sealed| SealingKey::open(&sealed, &self.record.wireguard_private_key))
+        let opened = sealing_key
+            .map(|sealed| SealingKey::open_join(&sealed, &self.record.wireguard_private_key))
             .transpose()?;
+        let (sealing_key, approval) = match opened {
+            Some((key, approval)) => (Some(key), approval),
+            None => (None, None),
+        };
+        let (devices, device_enforcement) = if let Some(approval) = approval {
+            let body = approval.open().map_err(StoreError::JoinRefused)?;
+            let trusted = if self.record.device_enforcement() {
+                self.record.devices().collect()
+            } else {
+                body.devices
+            };
+            let body = ployz_core::authority::join::verify_signature(
+                &approval,
+                &trusted,
+                ployz_core::authority::Timestamp::now(),
+            )
+            .map_err(StoreError::JoinRefused)?;
+            if body.machine != ployz_core::authority::join::JoinAllocation::from(&machine)
+                || body.sealing_recipient != machine.public_key
+                || sealing_key.as_ref().map(SealingKey::public_key) != Some(body.cluster)
+                || !body.network.contains(&ipnet::Ipv4Net::from(machine.subnet))
+                || body.admitting_machines.is_empty()
+            {
+                return Err(StoreError::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Mismatch {
+                        field: "a joining Machine",
+                    },
+                ));
+            }
+            visible_peers = body
+                .bootstrap
+                .iter()
+                .map(|allocation| Machine {
+                    join_approval: None,
+                    id: allocation.id,
+                    name: allocation.name.clone(),
+                    subnet: allocation.subnet,
+                    public_key: allocation.public_key,
+                    public_ip: allocation.public_ip,
+                    advertised_endpoints: allocation.advertised_endpoints.clone(),
+                    labels: allocation.policy.labels.clone(),
+                    accepts_builds: allocation.policy.accepts_builds,
+                    accepts_services: allocation.policy.accepts_services,
+                    accepts_ingress: allocation.policy.accepts_ingress,
+                    runtime: Default::default(),
+                    build_concurrency: None,
+                })
+                .collect();
+            if visible_peers.is_empty() {
+                return Err(StoreError::MissingPeers);
+            }
+            machine.join_approval = Some(approval);
+            (body.devices, true)
+        } else {
+            if self.record.device_enforcement() {
+                return Err(StoreError::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Unsigned {
+                        purpose: ployz_core::authority::Purpose::Join,
+                    },
+                ));
+            }
+            (devices, false)
+        };
         machine.runtime = local_runtime(&self.data_dir);
         Ok((
             LocalMachineBody::Joining {
@@ -466,6 +555,7 @@ impl LocalMachineStore {
             },
             sealing_key,
             devices,
+            device_enforcement,
         ))
     }
 
@@ -473,15 +563,30 @@ impl LocalMachineStore {
         self.require_uninitialized()?;
         let mut installed = self.record.clone();
         installed.body = installation.body;
+        installed.device_enforcement = installation.device_enforcement;
+        if installation.device_enforcement {
+            installed.trusted_machines =
+                installed.body.bootstrap().iter().map(Into::into).collect();
+        }
+        installed.membership_cluster = installation
+            .sealing_key
+            .as_ref()
+            .map(SealingKey::public_key);
+        installed.enrollment = Some(installation.enrollment);
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
+        if installation.device_enforcement {
+            installed
+                .management_clients
+                .retain(|label, _| !DeviceCode::reserves(label));
+        }
         installed
             .management_clients
             .extend(installation.devices.into_iter().map(|key| {
                 (
                     key.label(),
                     ManagementClientSlot::Live(LiveSlot::Active {
-                        accepted: *key.as_bytes(),
+                        accepted: ClientKey::from(key),
                     }),
                 )
             }));
@@ -491,8 +596,14 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    pub(crate) fn set_sealing_key(&self, key: Option<&SealingKey>) -> io::Result<()> {
+    pub(crate) fn set_sealing_key(&mut self, key: Option<&SealingKey>) -> io::Result<()> {
         SealingKey::set(&self.data_dir, key)?;
+        if self.record.device_enforcement && self.record.membership_cluster.is_none() {
+            let mut updated = self.record.clone();
+            updated.membership_cluster = key.map(SealingKey::public_key);
+            save(&self.data_dir, &updated).map_err(io::Error::other)?;
+            self.record = updated;
+        }
         self.sealing
             .send_replace(SealingKey::observe(&self.data_dir));
         Ok(())
@@ -611,7 +722,7 @@ impl LocalMachineStore {
     pub fn stage_management_client(
         &mut self,
         label: ManagementClientLabel,
-        pending: [u8; 32],
+        pending: ClientKey,
     ) -> Result<(), StoreError> {
         let slot = match self.record.accepted_client(&label) {
             Some(accepted) => ManagementClientSlot::Live(LiveSlot::Rotating { accepted, pending }),
@@ -648,7 +759,7 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn activate_management_client(&mut self, remote: [u8; 32]) -> Result<(), StoreError> {
+    pub fn activate_management_client(&mut self, remote: ClientKey) -> Result<(), StoreError> {
         let Some(label) = self.record.pending_label(&remote).cloned() else {
             return Ok(());
         };
@@ -668,7 +779,7 @@ impl LocalMachineStore {
     pub fn approve_device(&mut self, key: DeviceKey) -> Result<bool, StoreError> {
         let label = key.label();
         let slot = ManagementClientSlot::Live(LiveSlot::Active {
-            accepted: *key.as_bytes(),
+            accepted: ClientKey::from(key),
         });
         if self.record.management_clients.get(&label) == Some(&slot) {
             return Ok(false);
@@ -694,6 +805,46 @@ impl LocalMachineStore {
         Ok(live)
     }
 
+    /// Stop trusting the passkey `code` names. Returns `false` when none is trusted.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn remove_passkey(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
+        let mut updated = self.record.clone();
+        updated.passkeys.retain(|held| held.passkey.code() != code);
+        if updated.passkeys.len() == self.record.passkeys.len() {
+            return Ok(false);
+        }
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(true)
+    }
+
+    /// Trust `trusted` to approve workflows. Returns `false` when a passkey with its code
+    /// is already trusted, which keeps its first approval.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn approve_passkey(
+        &mut self,
+        trusted: ployz_core::authority::TrustedPasskey,
+    ) -> Result<bool, StoreError> {
+        let code = trusted.passkey.code();
+        if self
+            .record
+            .passkeys
+            .iter()
+            .any(|held| held.passkey.code() == code)
+        {
+            return Ok(false);
+        }
+        let mut updated = self.record.clone();
+        updated.passkeys.push(trusted);
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(true)
+    }
+
     /// Replace the push target in one write. An unchanged target skips the write.
     ///
     /// # Errors
@@ -704,6 +855,60 @@ impl LocalMachineStore {
         }
         let mut updated = self.record.clone();
         updated.push_target = url;
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
+    }
+
+    /// Pin approved members so removing the Device that signed them keeps them peered.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub(crate) fn pin_machines(&mut self, machines: &[Machine]) -> Result<(), StoreError> {
+        let mut updated = self.record.clone();
+        updated.trusted_machines.extend(
+            machines
+                .iter()
+                .filter(|machine| {
+                    self.record.accepts_machine(machine) && !self.record.pins_machine(machine)
+                })
+                .map(Into::into),
+        );
+        if updated.trusted_machines.len() == self.record.trusted_machines.len() {
+            return Ok(());
+        }
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
+    }
+
+    /// Turn Device enforcement on or off in one write, trusting `starting` while on.
+    /// Turning it on afresh replaces the trusted Members; while on, `starting` adds to them.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn set_device_enforcement(
+        &mut self,
+        enforced: bool,
+        starting: Vec<ployz_core::authority::Member>,
+    ) -> Result<(), StoreError> {
+        let mut updated = self.record.clone();
+        if enforced && !self.record.device_enforcement {
+            updated.trusted_machines.clear();
+            updated.membership_cluster =
+                SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
+        }
+        updated.device_enforcement = enforced;
+        if enforced {
+            for member in starting {
+                if !updated.trusted_machines.contains(&member) {
+                    updated.trusted_machines.push(member);
+                }
+            }
+        }
+        if updated == self.record {
+            return Ok(());
+        }
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())
@@ -725,7 +930,7 @@ impl LocalMachineStore {
             return Err(StoreError::NotResetting);
         }
         let persisted: LocalMachineRecord =
-            serde_json::from_slice(&fs::read(self.data_dir.join(STATE_FILE_NAME))?)?;
+            serde_json::from_slice(&fs::read(path(&self.data_dir))?)?;
         if persisted != self.record {
             return Err(StoreError::OwnershipLost(self.data_dir.clone()));
         }
@@ -736,8 +941,7 @@ impl LocalMachineStore {
         for entry in fs::read_dir(&self.data_dir)? {
             let entry = entry?;
             let name = entry.file_name();
-            if name == STATE_FILE_NAME || name == LOCK_FILE_NAME || name == super::PREPARE_DIR_NAME
-            {
+            if name == STATE_FILE_NAME || name == LOCK_FILE_NAME || name == PREPARE_DIR_NAME {
                 continue;
             }
             if entry.file_type()?.is_dir() {
@@ -747,8 +951,8 @@ impl LocalMachineStore {
             }
         }
         File::open(&self.data_dir)?.sync_all()?;
-        fs::remove_file(self.data_dir.join(STATE_FILE_NAME))?;
-        if self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
+        fs::remove_file(path(&self.data_dir))?;
+        if self.data_dir.join(PREPARE_DIR_NAME).exists() {
             fs::remove_file(self.data_dir.join(LOCK_FILE_NAME))?;
             return Ok(());
         }
@@ -777,7 +981,7 @@ fn claim_data_dir(data_dir: &Path) -> Result<(), StoreError> {
                 || names.iter().all(|name| {
                     name == TEMPORARY_FILE_NAME
                         || name == LOCK_FILE_NAME
-                        || name == super::PREPARE_DIR_NAME
+                        || name == PREPARE_DIR_NAME
                 });
             if owns_directory {
                 Ok(())
@@ -816,14 +1020,38 @@ fn vet_device_slots(
     Ok(record)
 }
 
+/// Where the Machine record lives under `data_dir`.
+pub(crate) fn path(data_dir: &Path) -> PathBuf {
+    data_dir.join(STATE_FILE_NAME)
+}
+
+/// What the observe process learns about this Machine from its record.
+pub(crate) struct MachineIdentity {
+    pub(crate) id: MachineId,
+    pub(crate) push_target: Option<Url>,
+    pub(crate) management_secret: ManagementSecret,
+}
+
+/// Read the record fresh, without the store's lock: a reset or Cloud setting a
+/// push target changes what the next read returns. None while the record is
+/// missing or unreadable.
+pub(crate) fn identity(data_dir: &Path) -> Option<MachineIdentity> {
+    let bytes = fs::read(path(data_dir)).ok()?;
+    let record = serde_json::from_slice::<LocalMachineRecord>(&bytes).ok()?;
+    Some(MachineIdentity {
+        id: record.id(),
+        push_target: record.push_target().cloned(),
+        management_secret: record.management_secret().clone(),
+    })
+}
+
 fn save(data_dir: &Path, record: &LocalMachineRecord) -> Result<(), StoreError> {
     fs::create_dir_all(data_dir)?;
     fs::set_permissions(data_dir, fs::Permissions::from_mode(0o711))?;
 
-    let path = data_dir.join(STATE_FILE_NAME);
     let temporary = data_dir.join(TEMPORARY_FILE_NAME);
     write_record(&temporary, record)?;
-    fs::rename(temporary, path)?;
+    fs::rename(temporary, path(data_dir))?;
     File::open(data_dir)?.sync_all()?;
     Ok(())
 }
@@ -853,6 +1081,8 @@ fn display_data_directory(path: &Path) -> String {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("join approval refused: {0}")]
+    JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("local Machine record I/O failed")]
     Io(#[from] io::Error),
     #[error("local Machine record JSON is invalid")]
@@ -919,6 +1149,7 @@ mod plan_enroll_tests {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }
@@ -953,7 +1184,7 @@ mod plan_enroll_tests {
             ),
             (
                 "same joining record replays",
-                joining.clone(),
+                joining,
                 Some(1400),
                 EnrollPlan::Replay(wanted.clone()),
             ),
@@ -1272,9 +1503,20 @@ mod device_slot_tests {
         let store = reopened_unvetted(&dir, store);
 
         let record = store.record();
-        assert_eq!(record.management_scope(key().as_bytes()), None);
+        assert_eq!(record.management_scope(&key().into()), None);
         assert_eq!(record.devices().count(), 0);
-        assert!(record.clears_management_client(key().as_bytes()));
+        assert!(record.clears_management_client(&key().into()));
+    }
+
+    #[test]
+    fn device_enforcement_is_off_until_set_and_survives_reopening() {
+        let (dir, mut store) = founded();
+        assert!(!store.record().device_enforcement());
+        store.set_device_enforcement(true, Vec::new()).unwrap();
+
+        let store = reopened(&dir, store);
+
+        assert!(store.record().device_enforcement());
     }
 
     #[test]
@@ -1286,7 +1528,7 @@ mod device_slot_tests {
         let store = reopened(&dir, store);
 
         assert_eq!(
-            store.record().management_scope(key().as_bytes()),
+            store.record().management_scope(&key().into()),
             Some(ManagementScope::Full)
         );
         assert_eq!(store.record().devices().collect::<Vec<_>>(), vec![key()]);
@@ -1299,7 +1541,7 @@ mod device_slot_tests {
         let store = reopened(&dir, store);
 
         assert_eq!(
-            store.record().management_scope(key().as_bytes()),
+            store.record().management_scope(&key().into()),
             Some(ManagementScope::Full)
         );
     }

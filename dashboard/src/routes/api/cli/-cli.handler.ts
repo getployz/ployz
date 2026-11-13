@@ -23,6 +23,7 @@ import {
 import { refusal } from "#/modules/config-store/config-store.server";
 import { DEVICE_KEY } from "#/modules/devices/device-code";
 import { readDeviceRequest, requestDevice } from "#/modules/devices/device-request.server";
+import { readPasskeyRequest } from "#/modules/passkeys/passkeys.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers, forgetServersAsked } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
@@ -43,9 +44,10 @@ import type { MachineRemoveAttemptView } from "#/modules/machines/machine-remova
 import { readCliNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
 import { readCliServerDrain } from "#/modules/machines/server-drain.server";
 import { freshApproval, freshOperationDigest, planClean } from "#/modules/machines/server-operations.server";
-import { readCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
+import { ChannelApproval } from "#/modules/server-upgrade/server-upgrade";
+import { approveUpgradeChannel, readCliServerUpgrade, readUpgradeChannel, upgradeChannelView } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, volumeRunInput } from "#/modules/operations/cli-wire";
+import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, volumeRunInput } from "#/modules/operations/cli-wire";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
@@ -377,6 +379,12 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (!call.ok) return refusal(call.refused.refusal);
       return admitted(yield* upgradeServer(caller, { machineId, channel: input.channel }, call, input.server_name), accepted);
     }
+    case "GET upgrade-channel":
+      return yield* readUpgradeChannel(caller, caller.organization.slug);
+    case "POST upgrade-channel": {
+      const body = yield* decodeBody(Schema.Struct({ approval: ChannelApproval }), request, "Approving a Release Channel takes its signed approval.");
+      return upgradeChannelView(yield* approveUpgradeChannel(caller, { organizationSlug: caller.organization.slug, approval: body.approval }));
+    }
     case "GET server-upgrades/:id":
       if (!isUpgradeAttemptId(id)) return missingRefusal("No such upgrade.");
       return yield* readCliServerUpgrade(caller.organization.id, id);
@@ -386,9 +394,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { namespace, volumes: plan.doomed.map(({ identity, label }) => ({ ...identity.id, label })) };
     }
     case "POST namespaces/:id/clean": {
+      const input = request.body === null ? {} : yield* decodeBody(CleanNamespace, request, "A clean takes at most the teardown a Device signed.");
       const call = yield* operationCall(request);
       if (!call.ok) return refusal(call.refused.refusal);
-      return admitted(yield* cleanNamespace(caller, decodeURIComponent(id ?? ""), call), accepted);
+      return admitted(yield* cleanNamespace(caller, decodeURIComponent(id ?? ""), call, input.teardown ?? null), accepted);
     }
     case "GET namespace-cleanups/:id": {
       const cleanup = Schema.is(Uuid)(id) ? yield* readCliNamespaceCleanup(caller.organization.id, id) : null;
@@ -429,6 +438,14 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const pending = yield* readDeviceRequest(caller.organization.id, decodeURIComponent(id ?? "").trim().toLowerCase());
       if (pending === null) return missingRefusal("No such Device request.");
       return { code: pending.code, key: pending.key, expires_at: pending.expiresAt.toISOString() };
+    }
+    case "GET passkey-requests/:id": {
+      if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can read a passkey request.");
+      const lacking = lacks({ ...caller, support: null }, "servers:shell");
+      if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: null });
+      const pending = yield* readPasskeyRequest(caller.organization.id, decodeURIComponent(id ?? "").trim().toLowerCase());
+      if (pending === null) return missingRefusal("No such passkey request.");
+      return pending;
     }
     case "POST server-access": {
       const access = yield* provideServerAccess(caller);
@@ -551,7 +568,12 @@ function serverRemoval(attempt: MachineRemoveAttemptView) {
     case "running":
       return { state: attempt.state };
     case "succeeded":
-      return { state: attempt.state, reset_warning: attempt.result.resetWarning, release: attempt.result.release };
+      return {
+        state: attempt.state,
+        reset_warning: attempt.result.resetWarning,
+        departed: attempt.result.departed ?? null,
+        release: attempt.result.release,
+      };
     case "missing_identities":
       return refusal({
         code: "invalid_argument",

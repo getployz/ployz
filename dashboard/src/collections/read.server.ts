@@ -10,6 +10,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
+import type { ClusterNameRow } from "#/modules/cluster-name/cluster-name";
 import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
 import type { SupportAccessRow } from "#/modules/support-access/support-access";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
@@ -70,9 +71,18 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         }).from(domain).where(scoped(domain));
         return rows;
       }
+      case "organization_cluster_name": {
+        const cluster = tables.organizationClusterName;
+        const rows: ClusterNameRow[] = yield* database.drizzle.select({
+          id: cluster.organizationId, name: cluster.name, appliedName: cluster.appliedName, refusal: cluster.refusal,
+        }).from(cluster).where(scoped(cluster));
+        return rows;
+      }
       case "organization_server_upgrades": {
         const settings = tables.organizationServerUpgrades;
-        const rows: ServerUpgradeSettingsRow[] = yield* database.drizzle.select({ id: settings.organizationId, automatic: settings.automatic, channel: settings.channel })
+        const rows: ServerUpgradeSettingsRow[] = yield* database.drizzle.select({
+          id: settings.organizationId, automatic: settings.automatic, channel: settings.channel, approval: settings.channelApproval,
+        })
           .from(settings).where(scoped(settings));
         return rows;
       }

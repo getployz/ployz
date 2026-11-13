@@ -10,7 +10,7 @@ import { cancelServerEnrollmentServerFn, openProbeSelectionServerFn, rejectWaiti
 import { waitingServerDetailQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { useYouMay } from "#/modules/organization/members.queries";
 
-export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null };
+export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null; foundsClosed?: boolean };
 
 export const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
 export const ENROLL_REFUSED = "Only an owner or admin can enroll or reject servers.";

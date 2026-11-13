@@ -7,7 +7,7 @@ use uuid::Uuid;
 use super::proposal;
 use super::*;
 use crate::variables::{VariableKey, refuse_template, validate_text};
-use crate::{SecretValue, Trusted, client_sealed, old_cli};
+use crate::{SecretValue, Trusted, client_sealed};
 
 /// Sync one Environment's changes into another of its Project, staged in the
 /// receiver's Working State. Nothing is deleted, published or deployed.
@@ -226,7 +226,7 @@ pub(crate) fn sync(
     let values = sealed(
         checked.rows(),
         [&from, &into],
-        old_cli::Guard::from(trusted),
+        trusted.sealer(who),
         &picks,
         &values,
     )?;
@@ -247,7 +247,7 @@ pub(crate) fn sync(
         sync: &id,
     };
     let before = proposal::credentials(tx, &into)?;
-    let staged = checked.apply(tx, who, &mut into, &picks, &values, (owner, Some(trusted)))?;
+    let staged = checked.apply(tx, who, &mut into, &picks, &values, (owner, trusted))?;
     proposal::keep_carried(tx, &into, &proposal, &before)?;
     if close_after {
         trusted.writes(&from.summary.name)?;
@@ -375,7 +375,10 @@ fn target(
     (from, into): (&EnvironmentRef, Option<&EnvironmentRef>),
 ) -> Result<Target, RpcError> {
     let summary = scope::environment(tx, who, from)?.summary;
-    let next = json!({ "next": format!("ployz env sync --to ENV --project {} --env {}", summary.project, summary.name) });
+    let next = FollowUp::EnvironmentSync {
+        place: Place::of(&summary),
+    }
+    .details();
     let into = match into {
         Some(into) => scope::environment(tx, who, into)?.summary,
         None => match row(tx, &summary.id)? {
@@ -497,14 +500,13 @@ pub(crate) fn sealing_targets(
                 return Err(refuse("it isn't a secret"));
             };
             let service = receiving(&into, &row).ok_or_else(|| {
-                let EnvironmentSummary { name, project, .. } = &into.summary;
-                let set = format!("ployz set {label} --secret --env {name} --project {project}");
                 error::invalid(
                     format!("{label}: {NOT_THERE}"),
-                    json!({
-                        "row": row,
-                        "next": format!("sync without --value first, then {set}"),
-                    }),
+                    FollowUp::SyncThenSetSecret {
+                        label: label.to_string(),
+                        place: Place::of(&into.summary),
+                    }
+                    .within(json!({ "row": row })),
                 )
             })?;
             let service = Uuid::parse_str(&service.id)
@@ -543,11 +545,11 @@ fn receiving<'receiver>(
 const NOT_THERE: &str = "its Service isn't there yet, so nothing can be sealed for it";
 
 /// `values` sealed, each for a picked secret the receiver `into` lacks. Plain text
-/// is refused, through `guard` for the CLI.
+/// is refused, through `sealer` for the CLI.
 pub(crate) fn sealed(
     rows: &[PlannedRow],
     [from, into]: [&Environment; 2],
-    guard: old_cli::Guard,
+    sealer: client_sealed::Sealer<'_>,
     picks: &BTreeSet<RowId>,
     values: &BTreeMap<RowId, SecretValue>,
 ) -> Result<BTreeMap<RowId, SealedCell>, RpcError> {
@@ -572,21 +574,21 @@ pub(crate) fn sealed(
                     json!({ "row": row }),
                 ));
             }
-            let sealed = seal_secret(row, &label, value, into, guard)?;
+            let sealed = seal_secret(row, &label, value, into, sealer)?;
             Ok((row.clone(), SealedCell::Secret(sealed)))
         })
         .collect()
 }
 
 /// `value` for secret `row` (labelled `label`) of `receiver`, once it is one the row
-/// takes. Plain text is refused, through `guard` for the CLI. A client-sealed value
+/// takes. Plain text is refused, through `sealer` for the CLI. A client-sealed value
 /// binds to the receiver's own Service, so it needs that Service there already.
 pub(crate) fn seal_secret(
     row: &RowId,
     label: &str,
     value: &SecretValue,
     receiver: &Environment,
-    guard: old_cli::Guard,
+    sealer: client_sealed::Sealer<'_>,
 ) -> Result<SealedSecret, RpcError> {
     let At::Variable(key) = row.at() else {
         return Err(error::invalid(
@@ -599,7 +601,7 @@ pub(crate) fn seal_secret(
         |message: &str| error::invalid(format!("{label}: {message}"), json!({ "row": row }));
     match value {
         SecretValue::Text(_) => {
-            Err(guard.refuse(key.as_str(), refused(client_sealed::PLAINTEXT_REFUSED)))
+            Err(sealer.refuse(key.as_str(), refused(client_sealed::PLAINTEXT_REFUSED)))
         }
         SecretValue::ClientSealed(value) => {
             let service = receiving(receiver, row).ok_or_else(|| refused(NOT_THERE))?;
@@ -636,7 +638,10 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
     if branch_row(tx, branch)?.kept {
         return Err(error::invalid(
             format!("{} is kept: stop keeping it to close it", summary.name),
-            json!({ "next": crate::removal::next("keep_branch", json!({ "environment": { "project": summary.project, "environment": summary.name }, "kept": false })) }),
+            FollowUp::StopKeepingBranch {
+                place: Place::of(summary),
+            }
+            .details(),
         ));
     }
     crate::removal::guard(tx, branch)
@@ -644,9 +649,14 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
 
 /// Undo Sync `request.sync` in its receiver. A Sync that included a proposal is
 /// undone by removing it, while it is that proposal's only Sync.
-pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<Undone, RpcError> {
+pub(crate) fn undo(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    request: &UndoSync,
+    trusted: &Trusted,
+) -> Result<Undone, RpcError> {
     let id = &request.sync;
-    if let Some(undone) = proposal::undo(tx, who, id)? {
+    if let Some(undone) = proposal::undo(tx, who, id, trusted)? {
         return Ok(undone);
     }
     let landed = tx.query(
@@ -661,7 +671,7 @@ pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<U
     let receiver = receiver.parse::<EnvironmentId>(0, "Sync")?;
     scope::lock_project(tx, &receiver)?;
     let mut receiver = scope::lock_id(tx, who, &receiver)?;
-    if !pair::undo(tx, &mut receiver, id)? {
+    if !pair::undo(tx, &mut receiver, id, trusted)? {
         return Err(missing());
     }
     Ok(Undone {

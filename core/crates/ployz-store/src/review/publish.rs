@@ -15,6 +15,7 @@ use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::SettingPath;
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 use crate::{Actor, Trusted, deployment};
 
 /// Put Working State in Saved State without deploying it.
@@ -141,11 +142,7 @@ impl WayBack {
                 && other.name == change.name
         });
         let path = (!named_twice)
-            .then(|| match change.node.node_type {
-                EnvironmentNodeType::Service => change.name.clone(),
-                EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
-                EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
-            })
+            .then(|| change.path())
             .and_then(|path| SettingPath::parse(&path).ok());
         Self {
             drops_unsaved: path.is_none(),
@@ -188,7 +185,12 @@ pub(crate) fn publish(
         // Nothing staged: Head already is Working State. Proposals ending still
         // moves the revision, so a review of them is stale.
         if consumed {
-            scope::persist_working(tx, &mut environment)?;
+            scope::write_working(
+                tx,
+                Evidence::Caller(trusted),
+                &mut environment,
+                scope::WorkingWrite::Trusted(scope::Reason::Publish),
+            )?;
         }
         return Ok(Published {
             environment: environment.summary,
@@ -222,7 +224,13 @@ pub(crate) fn publish(
         }
         error
     })?;
-    review::guard_saving(tx, &environment.summary.id, review.saved.as_ref(), &target)?;
+    review::guard_saving(
+        tx,
+        Evidence::Caller(trusted),
+        &environment.summary.id,
+        review.saved.as_ref(),
+        &target,
+    )?;
     let gate = review::Gate::new(tx, &environment.summary.id, trusted)?;
     review::approve(
         who,
@@ -235,6 +243,7 @@ pub(crate) fn publish(
     let lost = losses;
     let (saved, created) = review::publish(
         tx,
+        Evidence::Caller(trusted),
         who,
         &environment.summary.id,
         environment.working,
@@ -251,7 +260,12 @@ pub(crate) fn publish(
     let mut summary = environment.summary;
     if consumed && !created {
         let mut whole = scope::load_by_id(tx, &summary.id)?;
-        scope::persist_working(tx, &mut whole)?;
+        scope::write_working(
+            tx,
+            Evidence::Caller(trusted),
+            &mut whole,
+            scope::WorkingWrite::Trusted(scope::Reason::Publish),
+        )?;
         summary = whole.summary;
     }
     Ok(Published {
@@ -265,6 +279,7 @@ pub(crate) fn discard(
     tx: &mut dyn Tx,
     who: &Actor,
     discard: &Discard,
+    trusted: &Trusted,
 ) -> Result<Discarded, RpcError> {
     let environment = scope::lock(tx, who, &discard.environment)?;
     let reviewed = review::review(tx, &environment)?;
@@ -275,13 +290,19 @@ pub(crate) fn discard(
         &reviewed,
         discard.target,
         discard.path.as_ref(),
+        trusted,
     )?;
-    let (mut environment, changed) = prepared.persist(tx)?;
+    let (mut environment, changed) = prepared.persist(tx, Evidence::Caller(trusted))?;
     // Discarding the whole draft ends its proposals; a path keeps them.
     if discard.path.is_none() && crate::branch::end_included(tx, &environment.id, None)? && !changed
     {
         let mut whole = scope::load_by_id(tx, &environment.id)?;
-        scope::persist_working(tx, &mut whole)?;
+        scope::write_working(
+            tx,
+            Evidence::Caller(trusted),
+            &mut whole,
+            scope::WorkingWrite::Trusted(scope::Reason::Publish),
+        )?;
         environment = whole.summary;
     }
     let before = reviewed.view.review_changes();

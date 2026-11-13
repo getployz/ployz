@@ -79,11 +79,37 @@ fn typescript_declarations() -> String {
     declarations.add::<crate::sealing_backfill::BackfillSealingKeyRequest>();
     declarations.add::<crate::sealing_backfill::BackfillSealingKeyReport>();
     declarations.add::<crate::drain::DrainScope>();
+    declarations.add::<crate::ingress::DoorsChanged>();
+    declarations.add::<crate::private_access::AccessChanged>();
+    declarations.add::<crate::private_access::PrivateAccessOn>();
+    declarations.add::<ployz_core::authority::KeyApproval>();
+    declarations.add::<ployz_core::authority::PrivateAccessApproval>();
+    declarations.add::<ployz_core::authority::PrivateAccessTerms>();
     declarations.add::<crate::ingress::IngressCheck>();
     declarations.add::<ExecutionError>();
     declarations.add::<LocalMachineRemoved>();
     declarations.add::<MachineId>();
     declarations.add::<ployz_core::MachineDetails>();
+    declarations.add::<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>();
+    declarations.add::<ployz_core::authority::RestartApproval>();
+    declarations.add::<ployz_core::authority::ProposalApproval>();
+    declarations.add::<ployz_core::authority::DeployApproval>();
+    declarations.add::<ployz_core::authority::ApprovedChange>();
+    declarations.add::<ployz_core::authority::DeployTerms>();
+    declarations.add::<ployz_core::authority::GrantBody>();
+    declarations.add::<ployz_core::authority::VolumeApproval>();
+    declarations.add::<ployz_core::authority::VolumeTerms>();
+    declarations.add::<ployz_core::authority::VolumeDraft>();
+    declarations.add::<ployz_core::authority::TeardownApproval>();
+    declarations.add::<ployz_core::authority::Teardown>();
+    declarations.add::<ployz_core::authority::TeardownTerms>();
+    declarations.add::<ployz_core::authority::TeardownScope>();
+    declarations.add::<ployz_core::authority::AutoDeployRule>();
+    declarations.add::<ployz_core::authority::UpgradeChannel>();
+    declarations.add::<ployz_core::authority::RuleTerms>();
+    declarations.add::<ployz_core::authority::RuleDraft>();
+    declarations.add::<ployz_core::authority::ReviewTerms>();
+    declarations.add::<ployz_core::authority::ReviewDraft>();
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();
     declarations.add::<ployz_core::RequestMachineUpgradeRequest>();
@@ -129,6 +155,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_store::Committed>();
     declarations.add::<ployz_store::Converted>();
     declarations.add::<ployz_store::Trusted>();
+    declarations.add::<ployz_store::OperationVerb>();
     declarations.add::<ployz_store::LegacyCount>();
     declarations.add::<ployz_store::Resealed>();
     declarations.add::<ployz_store::GitSource>();
@@ -189,18 +216,144 @@ fn typescript_declarations() -> String {
 
 /// Every file the SDK package's `generated/` directory holds, by file name: the payload
 /// declarations, `@ployz/sdk/capabilities` as a `CapabilityName` union and ES and CommonJS
-/// modules listing every capability the daemon serves, and the settings catalog.
+/// modules listing every capability the daemon serves, the settings catalog, and
+/// `@ployz/sdk/cloud-contract` as the constants Cloud chooses and the CLI matches.
 #[must_use]
-pub fn generated_files() -> [(&'static str, String); 5] {
+pub fn generated_files() -> [(&'static str, String); 8] {
     let catalog = ployz_store::catalog::schema(None).expect("the whole catalog always renders");
     let catalog = serde_json::to_string_pretty(&catalog).expect("a JSON value serializes");
     let [declarations, esm, cjs] = capabilities_files();
+    let [contract_declarations, contract_esm, contract_cjs] = cloud_contract_files();
     [
         ("payloads.d.ts", typescript_declarations()),
         declarations,
         esm,
         cjs,
         ("catalog.json", format!("{catalog}\n")),
+        contract_declarations,
+        contract_esm,
+        contract_cjs,
+    ]
+}
+
+/// A constant of `ployz_core::cloud_contract`, as TypeScript spells its value.
+enum Constant {
+    Number(i128),
+    Text(&'static str),
+    List(&'static [&'static str]),
+}
+
+impl Constant {
+    fn value(&self) -> String {
+        match self {
+            Self::Number(number) => number.to_string(),
+            Self::Text(text) => format!("{text:?}"),
+            Self::List(items) => format!("Object.freeze({})", Self::tuple(items)),
+        }
+    }
+
+    fn tuple(items: &[&str]) -> String {
+        let items: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
+        format!("[{}]", items.join(", "))
+    }
+
+    fn declaration(&self) -> String {
+        match self {
+            Self::List(items) => format!("readonly {}", Self::tuple(items)),
+            Self::Number(_) | Self::Text(_) => self.value(),
+        }
+    }
+}
+
+fn cloud_contract_constants() -> Vec<(&'static str, Constant)> {
+    use Constant::{List, Number, Text};
+    use ployz_core::cloud_contract as contract;
+    vec![
+        ("UPLOAD_LIMIT", Number(contract::UPLOAD_LIMIT as i128)),
+        ("REVISION_HEADER", Text(contract::REVISION_HEADER)),
+        ("VIA_HEADER", Text(contract::VIA_HEADER)),
+        ("APPROVAL_HEADER", Text(contract::APPROVAL_HEADER)),
+        ("REQUEST_KEY_HEADER", Text(contract::REQUEST_KEY_HEADER)),
+        ("AGENT_HEADER", Text(contract::AGENT_HEADER)),
+        ("ERROR_CODE_HEADER", Text(contract::ERROR_CODE_HEADER)),
+        ("CLIENT_ID", Text(contract::CLIENT_ID)),
+        ("MANIFEST_FORMAT", Number(contract::MANIFEST_FORMAT.into())),
+        (
+            "CHECKIN_PROTOCOL_VERSION",
+            Number(contract::CHECKIN_PROTOCOL_VERSION.into()),
+        ),
+        (
+            "MAX_SKEW_SECONDS",
+            Number(contract::MAX_SKEW_SECONDS.into()),
+        ),
+        (
+            "CHECKIN_WAIT_SECONDS",
+            Number(contract::CHECKIN_WAIT_SECONDS.into()),
+        ),
+        ("ENROLL_OPTIONS", List(contract::ENROLL_OPTIONS)),
+        ("PROBE_WINDOW_MS", Number(contract::PROBE_WINDOW_MS.into())),
+        (
+            "PROBE_FIRST_ATTEMPT_MS",
+            Number(contract::PROBE_FIRST_ATTEMPT_MS.into()),
+        ),
+        (
+            "PROBE_ATTEMPT_EVERY_MS",
+            Number(contract::PROBE_ATTEMPT_EVERY_MS.into()),
+        ),
+        (
+            "PROBE_ATTEMPT_TIMEOUT_MS",
+            Number(contract::PROBE_ATTEMPT_TIMEOUT_MS.into()),
+        ),
+        (
+            "PROBE_GREETING_READ_MS",
+            Number(contract::PROBE_GREETING_READ_MS.into()),
+        ),
+        (
+            "PROBE_GREETING_LENGTH",
+            Number(contract::PROBE_GREETING_LENGTH as i128),
+        ),
+        (
+            "MIN_MANAGED_VOLUME_BYTES",
+            Number(contract::MIN_MANAGED_VOLUME_BYTES.into()),
+        ),
+        (
+            "MAX_LIFETIME_MILLIS",
+            Number(contract::MAX_LIFETIME_MILLIS.into()),
+        ),
+        (
+            "CLOCK_SKEW_MILLIS",
+            Number(contract::CLOCK_SKEW_MILLIS.into()),
+        ),
+        (
+            "MAX_GRANT_LIFETIME_MILLIS",
+            Number(contract::MAX_GRANT_LIFETIME_MILLIS.into()),
+        ),
+    ]
+}
+
+fn cloud_contract_files() -> [(&'static str, String); 3] {
+    let constants = cloud_contract_constants();
+    let declarations: String = constants
+        .iter()
+        .map(|(name, constant)| {
+            format!("export declare const {name}: {};\n", constant.declaration())
+        })
+        .collect();
+    let esm: String = constants
+        .iter()
+        .map(|(name, constant)| format!("export const {name} = {};\n", constant.value()))
+        .collect();
+    let cjs: String = constants
+        .iter()
+        .map(|(name, constant)| format!("exports.{name} = {};\n", constant.value()))
+        .collect();
+    [
+        ("cloud-contract.d.ts", format!("{HEADER}{declarations}")),
+        ("cloud-contract.mjs", format!("{HEADER}{esm}")),
+        (
+            "cloud-contract.js",
+            format!("{HEADER}\"use strict\";\n\n{cjs}"),
+        ),
     ]
 }
 
@@ -233,3 +386,7 @@ fn capabilities_files() -> [(&'static str, String); 3] {
         ),
     ]
 }
+
+#[cfg(test)]
+#[path = "payloads_tests.rs"]
+mod tests;

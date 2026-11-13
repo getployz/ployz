@@ -1,0 +1,39 @@
+M4 lane: the rule template through the minter at this branch, real GitHub, lab App, Ployz-test/lab-m4 (private).
+Repository variables: PLOYZ_BRANCH=ployz-lab-skip (no such branch), PLOYZ_CLOUD=https://lab-push.invalid. Minter config cloud: https://lab.invalid.
+
+Builder pin first tried: getployz/build/.github/workflows/build.yml@5f35eaa (ployz-core BUILDER_SHA at trunk).
+  push run 42986248882 and dispatch run 42986312927: conclusion failure / startup_failure, zero jobs.
+  5f35eaa is the fork commit of getployz/build#8 (head Ployz-test:d3-rule-builder), squash-merged as eb8e7b1; it is in no getployz/build branch.
+  The same file calling Ployz-test/build@c218d09 (probe-fork, run 42986612682) started and skipped its job; at getployz/build@a19b4fc without the if (run 42986995296) it ran to check-in.
+
+At getployz/build@a19b4fca3adea371c25ec29f181e8c7d21037d1e, lab-m4 main ba82cc6f4b03826e917456d4f5618e97dce83e0e:
+POST /v1/workflow ->
+  {"full_name":"Ployz-test/lab-m4","default_branch":"main","state":"active","digest":"43651a4e4cbde948cba4381be45360a5ae57c76521b0576ae694973f1c8b47a5","canonical":true}
+POST /v1/dispatch {branch: main, inputs: {commit: ba82cc6f4b03826e917456d4f5618e97dce83e0e}} -> 200 run 42987420691
+POST /v1/dispatch {branch: probe-fork (another file), inputs: {commit}} -> 400 the build workflow is not a canonical template
+
+Runs of ba82cc6f4b03826e917456d4f5618e97dce83e0e:
+  42987420691 workflow_dispatch failure
+  42987385216 push skipped
+
+Dispatched run 42987420691, log excerpt:
+  2026-11-11T08:29:24.1561296Z Contents: read
+  2026-11-11T08:29:24.1561895Z Metadata: read
+  2026-11-11T08:29:26.2696500Z Uses: getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+  2026-11-11T08:29:26.2700988Z   cloud: https://lab.invalid
+  2026-11-11T08:29:26.2701564Z   commit: ba82cc6f4b03826e917456d4f5618e97dce83e0e
+  2026-11-11T08:29:36.6461984Z error: could not reach Ployz Cloud at https://lab.invalid
+
+Push run of probe-main-noif (no if, PLOYZ_CLOUD from the variable), run 42986995296:
+  2026-11-11T08:26:09.7919757Z   cloud: https://lab-push.invalid
+  2026-11-11T08:26:21.9187866Z error: could not reach Ployz Cloud at https://lab-push.invalid
+
+After review round 2 the template runs on push: branches: ['**'] (no tags). Digest 8870df1d7d879d714300461f97e7599b5230731a5966b91db0a2b4bd7cdf7aa4.
+POST /v1/workflow -> canonical: true. POST /v1/dispatch {branch: main, inputs: {commit}} -> 200 run 43004268002.
+Runs:
+  43004268002 main workflow_dispatch failure
+  43004241196 main push skipped
+  43004248362 probe-main push skipped
+  2026-11-11T10:31:09.1403098Z Uses: getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+  2026-11-11T10:31:09.1409315Z   cloud: https://lab.invalid
+  2026-11-11T10:31:11.3019975Z error: could not reach Ployz Cloud at https://lab.invalid

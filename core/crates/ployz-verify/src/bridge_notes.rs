@@ -5,11 +5,11 @@
 //! A bare `:n` is a line of core/crates/ployzd/src/network/linux.rs.
 //!
 //! What hosts each step. One `ployzd` process runs on the Machine. Each daemon start runs
-//! `NetworkPlane::start` (core/crates/ployzd/src/daemon.rs:276), whose `ensure_docker_network`
+//! `NetworkPlane::start` (core/crates/ployzd/src/daemon.rs:274), whose `ensure_docker_network`
 //! (:687-716) loads both notes (:708-709), readdresses the bridge when its IPv6 shape is wrong
 //! (:734-741), pins its members (:713) and starts the members written down (:714). The Machine
 //! API is built and served only after `NetworkPlane::start` returns
-//! (core/crates/ployzd/src/daemon.rs:353-378, :411-417), so the operator's own steps on a
+//! (core/crates/ployzd/src/daemon.rs:347-372, :411-417), so the operator's own steps on a
 //! Container (`ContainerStep::Start`, `Stop` and `Hold`,
 //! core/crates/ployzd/src/machine/local_machine/container.rs:1106-1136) run only between daemon
 //! starts. Docker's restart policy acts at any step. A crash ends the process: the in-memory
@@ -38,7 +38,37 @@
 use std::fmt::Write as _;
 
 use ployz_core::RestartPolicy;
+use ployz_decide::bridge::{self, Settle};
 use stateright::{Model, Property};
+
+/// The ployz bridge's name in Docker's messages (`DOCKER_NETWORK_NAME`,
+/// core/crates/ployzd/src/network.rs).
+const NETWORK: &str = "ployz";
+
+/// Docker's refusal of a disconnect or connect of a member between restarts.
+fn refusal_between_restarts(member: Member) -> String {
+    format!("network sandbox for container {member:?} not found")
+}
+
+/// Docker's refusal of a disconnect of a member with no endpoint on the bridge.
+fn refusal_not_connected(member: Member) -> String {
+    format!("container {member:?} is not connected to network {NETWORK}")
+}
+
+/// Docker's refusal of a `start_container` the model reads, with its status code.
+fn refused_start(member: Member, answer: Started) -> (u16, String) {
+    match answer {
+        Started::Gone => (404, format!("No such container: {member:?}")),
+        Started::Netless => (
+            404,
+            "failed to set up container networking: network 6d85cc7fe1c5 not found".to_owned(),
+        ),
+        Started::Refused => (500, "refused".to_owned()),
+        Started::Ran { .. } | Started::AlreadyRunning | Started::Deferred => {
+            unreachable!("Docker accepted or never saw the start")
+        }
+    }
+}
 
 /// Daemon starts. The first finding needs two: the start whose `Stopped::start` Docker refuses,
 /// and the start after the operator's stop.
@@ -193,26 +223,9 @@ fn next(hosts: &[Addr], taken: Addrs, after: Option<Addr>) -> Option<Addr> {
         .copied()
 }
 
-/// The restart policy Docker holds for a member, as `settle` reads it (:1180-1186).
-/// `on-failure` is left out: `settle` answers `Leave` for it (:1184), the answer it gives a
-/// member that already exited (:1177-1179), which `No` reaches.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Policy {
-    /// `always` or `unless-stopped`: Docker runs the member again after it exits.
-    Restarts,
-    /// `no`.
-    No,
-}
-
-impl Policy {
-    /// The policy Docker gets for a Service, from `ployz-core`'s `RestartPolicy`.
-    const fn of(policy: RestartPolicy) -> Option<Self> {
-        match policy {
-            RestartPolicy::Always | RestartPolicy::UnlessStopped => Some(Self::Restarts),
-            RestartPolicy::No => Some(Self::No),
-            RestartPolicy::OnFailure { .. } => None,
-        }
-    }
+/// Whether Docker runs a member under `policy` again after it exits.
+const fn restarts(policy: RestartPolicy) -> bool {
+    matches!(policy, RestartPolicy::Always | RestartPolicy::UnlessStopped)
 }
 
 /// Whether a member runs, as Docker holds it.
@@ -220,7 +233,7 @@ impl Policy {
 enum Run {
     Running,
     /// Between restarts: Docker counts it running but it holds no sandbox, so Docker refuses
-    /// to detach or attach it (`between_restarts`, :1146-1156). Under `Restarts` it reads
+    /// to detach or attach it (`ployz_decide::bridge::between_restarts`). Under `Restarts` it reads
     /// `restarting`, and under `No` it is exiting and reads `running`.
     Held,
     Exited,
@@ -256,7 +269,7 @@ impl Endpoint {
 struct Container {
     run: Run,
     endpoint: Endpoint,
-    policy: Policy,
+    policy: RestartPolicy,
 }
 
 /// The ployz bridge.
@@ -279,31 +292,9 @@ struct Seen {
 }
 
 impl Seen {
-    /// `needs_pin` (:1201-1203).
+    /// `BridgeMember::needs_pin`.
     const fn needs_pin(self) -> bool {
-        !self.attached || !self.pinned
-    }
-}
-
-/// `settle`'s answer (:1158-1168).
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Settle {
-    StopAndNote,
-    Stop,
-    Leave,
-}
-
-/// `settle` (:1173-1187).
-const fn settle(running: bool, restarting: bool, policy: Policy) -> Settle {
-    if restarting {
-        return Settle::StopAndNote;
-    }
-    if !running {
-        return Settle::Leave;
-    }
-    match policy {
-        Policy::Restarts => Settle::StopAndNote,
-        Policy::No => Settle::Stop,
+        bridge::needs_pin(self.attached, self.pinned)
     }
 }
 
@@ -315,7 +306,7 @@ enum Why {
     Noted,
     /// Docker refused its start with something other than a 404 (stopped.rs:67-73).
     Refused,
-    /// Docker answered 404 for its missing network (stopped.rs:102-110).
+    /// Docker answered 404 for its missing network (`ployz_decide::bridge::gone`).
     Netless,
     /// Docker started it, and the note's update failed (stopped.rs:80-93).
     Unupdated,
@@ -337,7 +328,7 @@ enum Phase {
 enum Step {
     /// The first disconnect (:1004), or the pinned connect (:1077-1080).
     First,
-    /// `stop`'s inspect (:1022-1030) and `settle` (:1036-1040).
+    /// `stop`'s inspect (:1022-1030) and `ployz_decide::bridge::settle`.
     Inspect,
     /// `stopped.note` (:1044-1047).
     Note,
@@ -470,8 +461,11 @@ enum Disconnect {
     Detached { address_noted: bool },
     /// 404: the member is gone (:1011).
     Gone,
-    /// `between_restarts` (:1148-1156).
+    /// `ployz_decide::bridge::between_restarts`.
     BetweenRestarts,
+    /// Docker refused it, and `between_restarts` does not read the refusal as that, so `detach`
+    /// returns the error.
+    Refused,
 }
 
 /// What a connect answered.
@@ -497,11 +491,11 @@ enum Started {
     },
     /// The member already ran: bollard reads Docker's 304 as `Ok`.
     AlreadyRunning,
-    /// 404 "No such container" (stopped.rs:104-110).
+    /// 404 "No such container" (`ployz_decide::bridge::gone`).
     Gone,
     /// 500, kept (stopped.rs:67-73).
     Refused,
-    /// The netless 404, kept (stopped.rs:102-110).
+    /// The netless 404, kept (`ployz_decide::bridge::gone`).
     Netless,
     /// The fix: Docker shows the member detached, so its start waits.
     Deferred,
@@ -709,7 +703,7 @@ struct Broken {
     /// it (pins.rs:54-55).
     restore_held: bool,
     /// `gone` reads the netless 404 as gone, as `is_not_found` did before 74391f71f9
-    /// (stopped.rs:104-110).
+    /// (`ployz_decide::bridge::gone`).
     netless_gone: bool,
     /// The fix starts a member Docker shows detached.
     fix_starts_detached: bool,
@@ -992,10 +986,10 @@ impl BridgeNotes {
                         return Step::Again;
                     }
                     Run::Running => (true, false),
-                    Run::Held => (true, container.policy == Policy::Restarts),
+                    Run::Held => (true, restarts(container.policy)),
                     Run::Exited => (false, false),
                 };
-                let answer = settle(running, restarting, container.policy);
+                let answer = bridge::settle(running, restarting, Some(container.policy));
                 state.took = Some(Branch::Inspected {
                     member,
                     settle: Some(answer),
@@ -1066,9 +1060,8 @@ impl BridgeNotes {
         let container = state.docker.get_mut(member);
         match (container.run, container.endpoint) {
             (Run::Gone, _) => Disconnect::Gone,
-            // A container between restarts, and one not connected, answer as
-            // `between_restarts` reads (:1152-1155).
-            (Run::Held, _) | (_, Endpoint::Detached) => Disconnect::BetweenRestarts,
+            (Run::Held, _) => Self::disconnect_refused(&refusal_between_restarts(member)),
+            (_, Endpoint::Detached) => Self::disconnect_refused(&refusal_not_connected(member)),
             (
                 Run::Running | Run::Exited,
                 Endpoint::Dynamic(address) | Endpoint::Pinned(address),
@@ -1081,12 +1074,24 @@ impl BridgeNotes {
         }
     }
 
+    /// What `detach` does with a refusal: stop the member when `between_restarts` reads it so.
+    fn disconnect_refused(message: &str) -> Disconnect {
+        if bridge::between_restarts(message, NETWORK) {
+            Disconnect::BetweenRestarts
+        } else {
+            Disconnect::Refused
+        }
+    }
+
     /// Docker's pinned connect of `member` at `ipv4`, before any refusal it may add.
     fn connect(&self, state: &State, member: Member, ipv4: Addr) -> Connect {
         let container = state.docker.get(member);
         match container.run {
             Run::Gone => Connect::Refused,
-            Run::Held => Connect::BetweenRestarts,
+            Run::Held if bridge::between_restarts(&refusal_between_restarts(member), NETWORK) => {
+                Connect::BetweenRestarts
+            }
+            Run::Held => Connect::Refused,
             Run::Running | Run::Exited if container.endpoint.attached() => Connect::Refused,
             Run::Running | Run::Exited if self.held_by_other(state, member, ipv4) => Connect::InUse,
             Run::Running | Run::Exited => Connect::Pinned(ipv4),
@@ -1232,7 +1237,7 @@ impl BridgeNotes {
                                     i,
                                     step: Step::Inspect,
                                 },
-                                (Disconnect::BetweenRestarts, _) => {
+                                (Disconnect::BetweenRestarts | Disconnect::Refused, _) => {
                                     state.took = Some(Branch::DetachFailed { phase, member });
                                     match phase {
                                         // :830-833: `break`, and with `disconnected` an Err
@@ -1432,10 +1437,22 @@ impl BridgeNotes {
                         }
                         None
                     }
-                    Started::AlreadyRunning | Started::Gone => None,
-                    Started::Netless if self.broken.netless_gone => None,
-                    Started::Refused => Some(Why::Refused),
-                    Started::Netless => Some(Why::Netless),
+                    Started::AlreadyRunning => None,
+                    Started::Gone | Started::Refused | Started::Netless => {
+                        let (status_code, message) = refused_start(member, answer);
+                        let dropped = if self.broken.netless_gone {
+                            status_code == 404
+                        } else {
+                            bridge::gone(status_code, &message)
+                        };
+                        if dropped {
+                            None
+                        } else if answer == Started::Netless {
+                            Some(Why::Netless)
+                        } else {
+                            Some(Why::Refused)
+                        }
+                    }
                     Started::Deferred => Some(Why::Deferred),
                 };
                 let tries = *state.retries.get(member);
@@ -1681,8 +1698,7 @@ impl Model for BridgeNotes {
     /// restarts. One start state per restart policy `settle` tells apart: the default
     /// (`RestartPolicy::default()`, core/crates/ployz-core/src/host_config.rs:13-14) and `no`.
     fn init_states(&self) -> Vec<State> {
-        let restarts = Policy::of(RestartPolicy::default()).expect("the default restarts");
-        [restarts, Policy::No]
+        [RestartPolicy::default(), RestartPolicy::No]
             .into_iter()
             .map(|policy| {
                 let member = |run, address| Container {
@@ -1811,8 +1827,8 @@ impl Model for BridgeNotes {
                 let container = state.docker.get_mut(member);
                 container.run = match (container.run, container.policy) {
                     (Run::Running, _) => Run::Held,
-                    (Run::Held, Policy::Restarts) => Run::Running,
-                    (Run::Held, Policy::No) => Run::Exited,
+                    (Run::Held, policy) if restarts(policy) => Run::Running,
+                    (Run::Held, _) => Run::Exited,
                     (Run::Exited | Run::Gone, _) => container.run,
                 };
                 state.took = Some(Branch::Flipped {
@@ -1881,7 +1897,7 @@ impl Model for BridgeNotes {
     }
 }
 
-/// `Settle::StopAndNote`'s doc comment (:1161), `settle`'s (:1170-1172), `Stopped::start`'s
+/// `ployz_decide::bridge::Settle::StopAndNote`'s doc comment, `settle`'s, `Stopped::start`'s
 /// (stopped.rs:58-59) and the module doc (stopped.rs:1-3) say whom the note starts: a member
 /// Docker would run again, stopped so the start could move it. The property narrows that to
 /// what the code can know: the start runs only a member Ployz stopped, and that nobody stopped
@@ -2609,9 +2625,10 @@ fn story(model: &BridgeNotes, path: &[(State, Option<Action>)]) -> String {
                 format!(
                     "start: daemon start 1 loads the notes next; {:?} restarts {}",
                     state.docker.m0.run,
-                    match state.docker.m0.policy {
-                        Policy::Restarts => "under unless-stopped",
-                        Policy::No => "under no",
+                    if restarts(state.docker.m0.policy) {
+                        "under unless-stopped"
+                    } else {
+                        "under no"
                     }
                 )
             },
@@ -2781,7 +2798,8 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                     }
                 ),
                 Disconnect::Gone => "404, so detach returns Ok(false) (:1011)".to_owned(),
-                Disconnect::BetweenRestarts => "Docker refuses it as between restarts (:1005, :1148-1156)".to_owned(),
+                Disconnect::BetweenRestarts => "Docker refuses it as between restarts (:1005, `ployz_decide::bridge::between_restarts`)".to_owned(),
+                Disconnect::Refused => "Docker refuses it, and detach returns the error".to_owned(),
             }
         ),
         Branch::DetachFailed { phase, member } => format!(
@@ -2803,7 +2821,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             member,
             settle: Some(answer),
         } => format!(
-            "stop {member:?}: inspect, and settle answers {answer:?} (:1022-1040, :1173-1187){}",
+            "stop {member:?}: inspect, and settle answers {answer:?} (:1022-1040, `ployz_decide::bridge::settle`){}",
             match answer {
                 Settle::Leave => "; the refused operation is retried",
                 Settle::Stop => "; it is stopped without a note",
@@ -2911,14 +2929,14 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                     attached: Some(address),
                 } => format!("Docker runs it, though it had no ployz endpoint, and attaches it on {address:?}"),
                 Started::AlreadyRunning => "it already runs: bollard reads Docker's 304 as Ok".to_owned(),
-                Started::Gone => "404 No such container, so it is dropped (stopped.rs:66, :104-110)".to_owned(),
+                Started::Gone => "404 No such container, so it is dropped (stopped.rs:66, `ployz_decide::bridge::gone`)".to_owned(),
                 Started::Refused if model.fix.is_none() => "Docker refuses it (500), so it is kept and reported (stopped.rs:67-73)".to_owned(),
                 Started::Netless if model.broken.netless_gone => "Docker answers 404 for its missing network, and gone reads every 404 as gone, so it is dropped".to_owned(),
-                Started::Netless if model.fix.is_none() => "Docker answers 404 for its missing network, so it is kept (stopped.rs:67-73, :102-110)".to_owned(),
+                Started::Netless if model.fix.is_none() => "Docker answers 404 for its missing network, so it is kept (stopped.rs:67-73, `ployz_decide::bridge::gone`)".to_owned(),
                 Started::Refused | Started::Netless | Started::Deferred => format!(
                     "{}, and the fix {}",
                     match answer {
-                        Started::Netless => "Docker answers 404 for its missing network (stopped.rs:67-73, :102-110)",
+                        Started::Netless => "Docker answers 404 for its missing network (stopped.rs:67-73, `ployz_decide::bridge::gone`)",
                         Started::Deferred => "Docker shows it with no ployz endpoint",
                         Started::Refused | Started::Ran { .. } | Started::AlreadyRunning | Started::Gone => {
                             "Docker refuses it (500) (stopped.rs:67-73)"
@@ -2944,9 +2962,9 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
         Branch::Updated {
             kept: false,
             write: Write::Unchanged,
-        } => "Stopped::start keeps nothing, and no stopped note stands to remove (stopped.rs:80-84); ensure_docker_network returns, and the Machine API serves (core/crates/ployzd/src/daemon.rs:353-378)".to_owned(),
+        } => "Stopped::start keeps nothing, and no stopped note stands to remove (stopped.rs:80-84); ensure_docker_network returns, and the Machine API serves (core/crates/ployzd/src/daemon.rs:347-372)".to_owned(),
         Branch::Updated { kept, write } => format!(
-            "Stopped::start {} the stopped note (stopped.rs:80-93): {}; ensure_docker_network returns, and the Machine API serves (core/crates/ployzd/src/daemon.rs:353-378)",
+            "Stopped::start {} the stopped note (stopped.rs:80-93): {}; ensure_docker_network returns, and the Machine API serves (core/crates/ployzd/src/daemon.rs:347-372)",
             if kept { "rewrites" } else { "removes" },
             write_words(write, if kept { "the rewrite" } else { "the removal" })
         ),
@@ -2973,16 +2991,20 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeSet,
-        sync::{Arc, Mutex},
-    };
-
-    use stateright::{Checker, Expectation, HasDiscoveries};
+    use stateright::Checker;
 
     use super::*;
+    use crate::harness::{
+        self, Narrated, breaks, breaks_where, check, first_break, follow, last, reaches,
+    };
 
-    type Path = Vec<(State, Option<Action>)>;
+    type Path = harness::Path<BridgeNotes>;
+
+    impl Narrated for BridgeNotes {
+        fn story(&self, path: &[(State, Option<Action>)]) -> String {
+            story(self, path)
+        }
+    }
 
     /// The code as it is, with one member.
     fn as_is() -> BridgeNotes {
@@ -2993,125 +3015,12 @@ mod tests {
         }
     }
 
-    /// Every state of `model`. The default, `HasDiscoveries::All`, stops once every property
-    /// has a discovery, at a state count that varies with the threads; an empty `AnyOf` never
-    /// matches, so the count is the same from run to run.
-    fn check(model: BridgeNotes) -> impl Checker<BridgeNotes> {
-        model
-            .checker()
-            .threads(4)
-            .finish_when(HasDiscoveries::AnyOf(BTreeSet::new()))
-            .spawn_bfs()
-            .join()
-    }
-
-    /// The first path in BFS order whose last state breaks `property` under `model`, so no
-    /// shorter path breaks it, printed as a story under the test's name. For a `sometimes`,
-    /// such as a `COVERAGE` row's name, it is the first path that reaches it. It panics when
-    /// no path does. The checker's own discovery is not that path: `check_block` stores every
-    /// violation it visits, each overwriting the last, so a visitor keeps the first. One
-    /// thread keeps the path the same from run to run.
-    fn breaks(model: BridgeNotes, property: &'static str) -> Path {
-        first_break(model, property, |_| true, true).expect("a path breaks the property")
-    }
-
-    /// As `breaks`, the first such path that also satisfies `and`. It explores the whole
-    /// model, since the first discovery may not pass `and`. The checker keeps one path to
-    /// each state, so `and` sees only the first path to the state it ends in.
-    fn breaks_where(
-        model: BridgeNotes,
-        property: &'static str,
-        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
-    ) -> Path {
-        first_break(model, property, and, false).expect("a path breaks the property")
-    }
-
-    /// As `breaks_where`, or `None` when no path breaks `property` and satisfies `and`.
-    fn first_break(
-        model: BridgeNotes,
-        property: &'static str,
-        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
-        stop_at_discovery: bool,
-    ) -> Option<Path> {
-        let named = model
-            .properties()
-            .into_iter()
-            .find(|candidate| candidate.name == property)
-            .expect("a model property");
-        let reached = matches!(named.expectation, Expectation::Sometimes);
-        let holds = named.condition;
-        let first = Arc::new(Mutex::new(None));
-        let seen = Arc::clone(&first);
-        let checker =
-            model
-                .checker()
-                .threads(1)
-                .visitor(move |path: stateright::Path<State, Action>| {
-                    let mut first = seen.lock().expect("the first break");
-                    if first.is_none() && holds(&model, path.last_state()) == reached {
-                        let path = path.into_vec();
-                        if and(&path) {
-                            *first = Some(path);
-                        }
-                    }
-                });
-        // The default, `HasDiscoveries::All`, stops once every property has a discovery.
-        // An empty `AnyOf` never matches, so the checker visits every state.
-        let checker = checker.finish_when(if stop_at_discovery {
-            HasDiscoveries::AllOf([property].into())
-        } else {
-            HasDiscoveries::AnyOf(BTreeSet::new())
-        });
-        checker.spawn_bfs().join();
-        let path = first.lock().expect("the first break").take()?;
-        let test = std::thread::current();
-        println!(
-            "[{}] {property} {} under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            if reached { "is reached" } else { "fails" },
-            story(&model, &path)
-        );
-        Some(path)
-    }
-
-    fn last(path: &Path) -> State {
-        path.last().expect("a path has a state").0
-    }
-
     /// The branch each step took, in order.
     fn branches(path: &Path) -> Vec<Branch> {
         path.iter()
             .skip(1)
             .filter_map(|(state, _)| state.took)
             .collect()
-    }
-
-    /// Steps `actions` from the first start state (the default restart policy) under
-    /// `model`, each one offered where it is taken, and prints the path as a story under the
-    /// test's name.
-    fn follow(model: BridgeNotes, actions: &[Action]) -> Path {
-        let mut state = model
-            .init_states()
-            .into_iter()
-            .next()
-            .expect("a start state");
-        let mut path = Vec::new();
-        for &action in actions {
-            let mut offered = Vec::new();
-            model.actions(&state, &mut offered);
-            assert!(offered.contains(&action), "{action:?} is offered");
-            let next = model.next_state(&state, action).expect("a next state");
-            path.push((state, Some(action)));
-            state = next;
-        }
-        path.push((state, None));
-        let test = std::thread::current();
-        println!(
-            "[{}] a schedule under {model:?}:\n{}",
-            test.name().unwrap_or("?"),
-            story(&model, &path)
-        );
-        path
     }
 
     const fn daemon(pick: Pick) -> Action {
@@ -3427,24 +3336,6 @@ mod tests {
             .filter(|row| checker.discovery(row.name).is_none())
             .map(|row| row.name)
             .collect()
-    }
-
-    /// Whether any state of `model` satisfies `reached`.
-    fn reaches(model: BridgeNotes, reached: fn(&State) -> bool) -> bool {
-        let found = Arc::new(Mutex::new(false));
-        let seen = Arc::clone(&found);
-        model
-            .checker()
-            .threads(4)
-            .visitor(move |path: stateright::Path<State, Action>| {
-                if reached(path.last_state()) {
-                    *seen.lock().expect("found") = true;
-                }
-            })
-            .finish_when(HasDiscoveries::AnyOf(BTreeSet::new()))
-            .spawn_bfs()
-            .join();
-        *found.lock().expect("found")
     }
 
     /// A P1 break whose member was loaded for anything but a failed note update.

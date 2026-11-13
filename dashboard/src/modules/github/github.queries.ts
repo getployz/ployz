@@ -1,11 +1,12 @@
 import { queryOptions, useQuery, useSuspenseQuery } from "@tanstack/react-query";
-import { githubBuildRepositoryKey } from "#/modules/github/github-build-workflow";
+import { awaitsWorkflowCommit, githubBuildRepositoryKey } from "#/modules/github/github-build-workflow";
 import {
   listGithubBuildRepositoriesServerFn,
   getGithubRepoAccessStateServerFn,
   listGithubBranchesServerFn,
   getGithubWebServerFn,
   searchGithubFilesServerFn,
+  githubRepositoryOwnerServerFn,
 } from "#/modules/github/github.functions";
 
 /** A repository as one Organization reads it: through its linked installation, or publicly. */
@@ -73,6 +74,15 @@ export function githubBranchesQueryOptions(input: GithubRepositoryRef) {
   });
 }
 
+/** Who owns `repository` on GitHub, which an automatic deploy rule names: read when its dialog opens. */
+export function githubRepositoryOwnerQueryOptions(organizationSlug: string, repository: string) {
+  return queryOptions({
+    queryKey: [...githubKeys.all, "repository-owner", organizationSlug, repository] as const,
+    staleTime: 60_000,
+    queryFn: () => githubRepositoryOwnerServerFn({ data: { organizationSlug, repository } }),
+  });
+}
+
 export function githubBuildRepositoriesQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: [...githubKeys.all, "build-repositories", organizationSlug] as const,
@@ -88,7 +98,7 @@ export function useGithubBuildRepositories(organizationSlug: string, opened: Rea
   return useQuery({
     ...githubBuildRepositoriesQueryOptions(organizationSlug),
     refetchInterval: (query) =>
-      query.state.data?.some((repository) => repository.readiness === "setup_needed" && opened.has(githubBuildRepositoryKey(repository)))
+      query.state.data?.some((repository) => awaitsWorkflowCommit(repository) && opened.has(githubBuildRepositoryKey(repository)))
         ? 10_000
         : false,
   });

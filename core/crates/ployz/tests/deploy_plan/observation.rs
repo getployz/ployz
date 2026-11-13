@@ -102,9 +102,9 @@ fn qualification_uses_selected_work_and_its_dependency_expansion() {
             .has_observation_gaps()
     );
     let intent = intent.with_dependencies(BTreeMap::from([(
-        web.name.clone(),
+        web.name,
         vec![ServiceDependency {
-            service: worker.name.clone(),
+            service: worker.name,
             condition: DependencyCondition::ServiceStarted,
         }],
     )]));
@@ -121,7 +121,7 @@ fn acceptance_is_namespace_aware_and_independently_observed_work_still_counts() 
     let peer = snapshot.machines.get_mut(1).unwrap();
     peer.machine.accepts_services = false;
     peer.machine.accepts_ingress = true;
-    let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default());
+    let ingress = ployz_core::caddy_service_spec("caddy:test");
     let app = DeployIntent::apply_one(
         Namespace::parse("app").unwrap(),
         ingress.clone(),

@@ -23,12 +23,16 @@ mod docker_image;
 pub(crate) mod certificates;
 pub mod corrosion;
 pub mod daemon;
+#[doc(hidden)]
+pub mod dataset_layout;
 pub mod diag;
 pub mod dns;
 pub mod docker;
 pub mod faults;
 pub(crate) mod filesystem;
+pub mod github;
 mod host_capacity;
+pub(crate) mod images;
 pub(crate) mod ingress;
 pub mod installer;
 pub mod logs;
@@ -44,6 +48,7 @@ pub mod observe;
 pub(crate) mod route_acks;
 pub mod runtime_unit;
 pub(crate) mod runtime_watch;
+pub(crate) mod runtime_watch_probe;
 pub(crate) mod sealed_compat;
 pub mod sealed_env;
 pub mod sealing_key;
@@ -53,5 +58,6 @@ mod storage;
 #[cfg(test)]
 #[path = "../tests/test_dir/mod.rs"]
 mod test_dir;
+pub(crate) mod units;
 pub mod volume_copy;
 pub mod volume_send;

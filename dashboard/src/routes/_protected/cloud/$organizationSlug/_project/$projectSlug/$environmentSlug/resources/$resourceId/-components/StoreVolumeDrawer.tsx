@@ -206,7 +206,7 @@ function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
   const placements = useStagedPlacements(state.organizationSlug, state.environment, environmentId, volumes);
   // Its data goes with the Deploy that removes it, which asks first; that Deploy opens its page.
   const actions = useStoreChangeActions(state.organizationSlug, state.environment, version,
-    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss);
+    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss, placements.prepare);
   const { volume } = state;
   const removing = volume.change === "delete";
   const mounts = volume.mounts.length;

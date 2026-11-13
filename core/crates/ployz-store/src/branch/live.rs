@@ -99,9 +99,7 @@ pub(crate) fn branch_plan(
                     BranchNodeRole::Live | BranchNodeRole::LeftOut => None,
                 },
                 toggled,
-                owner: chain
-                    .iter()
-                    .find(|ancestor| holds(&ancestor.applied, lineage))
+                owner: owner_of(&chain, lineage)
                     .map(|ancestor| ancestor.environment.summary.name.clone()),
                 data: holds_data(working, lineage),
             })
@@ -125,6 +123,8 @@ pub(crate) struct Lowering {
     pub(crate) setup: BTreeMap<String, Vec<String>>,
     /// The name of each Live Node, by lineage, as [`live_names`] finds it.
     pub(crate) names: BTreeMap<String, String>,
+    /// The Environment it branches from. None for a root.
+    pub(crate) parent: Option<EnvironmentId>,
 }
 
 /// [`Lowering`] for a Deployment of `saved` in Environment `id`, as things stand now.
@@ -155,6 +155,7 @@ pub(crate) fn lowering(
         live: live_producers(tx, &row.parent, &used_live(saved))?,
         setup,
         names: live_names(tx, id, saved)?,
+        parent: Some(row.parent),
     })
 }
 
@@ -249,9 +250,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
     let live = uses
         .keys()
         .map(|lineage| {
-            let owner = chain
-                .iter()
-                .find(|ancestor| holds(&ancestor.applied, lineage));
+            let owner = owner_of(&chain, lineage);
             LiveNode {
                 name: branch
                     .live
@@ -293,8 +292,8 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
         setup,
         live,
         to_parent,
-        closes_at: crate::pull_request::closes_at(tx, &branch.summary.id)?,
-        pull_request: crate::pull_request::of(tx, &branch.summary.id)?,
+        closes_at: super::idle::closes_at(tx, &branch.summary.id)?,
+        pull_request: crate::pr_environment::of(tx, &branch.summary.id)?,
     })
 }
 
@@ -315,12 +314,9 @@ pub(super) fn live_producers(
         let lineages: Vec<LiveLineageUse> = uses
             .iter()
             .filter(|(lineage, _)| {
-                chain
-                    .iter()
-                    .find(|ancestor| holds(&ancestor.applied, lineage))
-                    .is_some_and(|found| {
-                        found.environment.summary.id == owner.environment.summary.id
-                    })
+                owner_of(&chain, lineage).is_some_and(|found| {
+                    found.environment.summary.id == owner.environment.summary.id
+                })
             })
             .map(|(lineage, keys)| LiveLineageUse {
                 lineage_id: lineage.clone(),

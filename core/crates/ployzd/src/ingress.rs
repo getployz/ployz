@@ -1,11 +1,13 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
+use ployz_core::labels;
 use ployz_core::{
     CertificateHost, ContainerAddress, ContainerId, ContainerObservation,
     ContainerRuntimeObservation, DeploymentLogId, HttpProtocol, IngressHost, Machine, MachineId,
     PortPublication, ProxyRoutes, QualifiedService, ServiceContainer, hostname_owners,
     proxy_routes, reachable_routes, service_containers,
 };
+use ployz_decide::caddy_load::{self as load, Applied, CaddyFile, Input, Probe};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,13 +26,20 @@ use crate::{
         Error as CorrosionError, IngressRouteAck, IngressRouteChange, MachineView, ReplicatedStore,
         Subscription, published_cover,
     },
-    docker::LABEL_DEPLOYMENT,
     filesystem::{atomic_write, set_ployz_group},
     route_acks::{DownMachines, load_down},
 };
 
 const CERTS_DIR: &str = "certs";
-pub(crate) const ACCESS_LOG: &str = "requests/access.log";
+/// The run dir's subdirectory the Ingress Proxy's runtime mount shows.
+const RUNTIME_DIR: &str = "ingress";
+/// Where the Ingress Proxy's runtime mount holds the access log, relative to that mount.
+const ACCESS_LOG: &str = "requests/access.log";
+
+/// The access log the Ingress Proxy writes, as the daemon sees it under its `run_dir`.
+pub(crate) fn access_log_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(RUNTIME_DIR).join(ACCESS_LOG)
+}
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 const WATCH_RESNAPSHOT: Duration = Duration::from_secs(5);
@@ -125,9 +134,13 @@ pub(crate) struct IngressPublication {
 /// The owner facts the trace page shows, independent of health and endpoint eligibility.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub(crate) struct PublicationTrace {
-    /// Deployment attempt of the owner's newest Service Container, when it carries a valid one.
+    /// Deployment attempt of the owner's newest Service Container that is In, or when none
+    /// is, the newest held or pending one, or else the newest of any; when it carries a
+    /// valid one. So it changes only with the In set, which changes only with a route.
     pub(super) deploy: Option<DeploymentLogId>,
-    /// Count of the owner's observed Service Containers per Machine, in any runtime state.
+    /// Count of the owner's observed Service Containers per Machine, in any runtime state,
+    /// leaving out copies rotated Out: only their removal follows, and that removal changes
+    /// no route, so counting them would keep a deploy's old copies on the page.
     pub(super) placement: BTreeMap<MachineId, NonZeroUsize>,
 }
 
@@ -145,11 +158,17 @@ impl PublicationTrace {
             let (placement, newest) = grouped
                 .entry(observation.identity())
                 .or_insert_with(|| (BTreeMap::new(), container));
-            placement
-                .entry(observation.machine_id)
-                .and_modify(|count| *count = count.saturating_add(1))
-                .or_insert(NonZeroUsize::MIN);
-            if creation_key(container) > creation_key(newest) {
+            if !retired(container) {
+                placement
+                    .entry(observation.machine_id)
+                    .and_modify(|count| *count = count.saturating_add(1))
+                    .or_insert(NonZeroUsize::MIN);
+            }
+            if (
+                naming_rank(container),
+                container.as_observation().recency_key(),
+            ) > (naming_rank(newest), newest.as_observation().recency_key())
+            {
                 *newest = container;
             }
         }
@@ -160,12 +179,30 @@ impl PublicationTrace {
                 let deploy = newest
                     .as_observation()
                     .labels
-                    .get(LABEL_DEPLOYMENT)
+                    .get(labels::DEPLOYMENT_ID)
                     .and_then(|label| DeploymentLogId::parse(label).ok());
                 (service, Self { deploy, placement })
             })
             .collect()
     }
+}
+
+/// Which copies name the trace page's deploy first: In, then held or pending, then Out. A
+/// copy leaving or joining without a route change then never changes the name.
+fn naming_rank(container: &ServiceContainer) -> u8 {
+    match container.as_observation().rotation() {
+        ployz_core::CopyRotation::In => 2,
+        ployz_core::CopyRotation::Held(_) | ployz_core::CopyRotation::Pending => 1,
+        ployz_core::CopyRotation::Out => 0,
+    }
+}
+
+/// Rotated Out for good: only its removal follows, which changes no route.
+fn retired(container: &ServiceContainer) -> bool {
+    matches!(
+        container.as_observation().rotation(),
+        ployz_core::CopyRotation::Out
+    )
 }
 
 /// One Serving Container address and container port.
@@ -218,6 +255,15 @@ impl IngressSite {
         self.certificate
             .as_ref()
             .and_then(|certificate| certificate.challenge.as_ref())
+    }
+
+    /// The material Caddy pins for this hostname: for its HTTPS route, or for a hostname
+    /// no Service publishes any more, so HTTPS still completes the handshake and answers
+    /// like HTTP. An HTTP-only hostname pins nothing, as before.
+    #[must_use]
+    pub(super) fn pinned(&self) -> Option<&CertificateMaterial> {
+        self.material()
+            .filter(|_| self.publication.is_none() || self.route(HttpProtocol::Https).is_some())
     }
 
     #[must_use]
@@ -300,7 +346,14 @@ impl IngressProjection {
             });
         }
         for (hostname, site) in &mut sites {
-            if site.https.is_none() {
+            // A hostname no Service publishes any more keeps its own material pinned, so a
+            // covering wildcard replaces it too: nothing renews ACME material once covered.
+            let unpublished_with_material = site.owner.is_none()
+                && site
+                    .certificate
+                    .as_ref()
+                    .is_some_and(|certificate| certificate.material.is_some());
+            if site.https.is_none() && !unpublished_with_material {
                 continue;
             }
             // Published wildcard material wins over ACME material, which stops renewing once covered.
@@ -365,24 +418,15 @@ impl SiteBuilder {
     }
 }
 
-fn container_order<'container>(
+fn container_order(
     local_machine: &MachineId,
-    container: &'container ServiceContainer,
-) -> (bool, QualifiedService, i64, &'container str) {
+    container: &ServiceContainer,
+) -> (bool, QualifiedService, (i64, ContainerId)) {
     let observation = container.as_observation();
     (
         observation.machine_id != *local_machine,
         observation.identity(),
-        observation.created_at_unix_nanos,
-        observation.container_id.as_str(),
-    )
-}
-
-fn creation_key(container: &ServiceContainer) -> (i64, &str) {
-    let observation = container.as_observation();
-    (
-        observation.created_at_unix_nanos,
-        observation.container_id.as_str(),
+        observation.recency_key(),
     )
 }
 
@@ -428,7 +472,7 @@ fn local_ingress<'container>(
             let observation = container.as_observation();
             observation.machine_id == machine.id && is_system_ingress(observation)
         })
-        .max_by(|left, right| creation_key(left).cmp(&creation_key(right)))
+        .max_by_key(|container| container.as_observation().recency_key())
 }
 
 /// What one pass applies: the projection, and the newest local ingress container.
@@ -438,141 +482,63 @@ struct CaddyInput {
     caddy: Option<ContainerId>,
 }
 
+impl Input for CaddyInput {
+    type Caddy = ContainerId;
+
+    /// Whether `other` serves what this does. The trace page's values are left out: a
+    /// Container's start or removal changes them while every route stays, and a reload
+    /// for them alone would clear Caddy's passive health counts, so the page keeps its
+    /// values until a route changes (#2522).
+    fn serves_as(&self, other: &Self) -> bool {
+        let Self { projection, caddy } = self;
+        let IngressProjection { machine, sites } = projection;
+        *caddy == other.caddy
+            && *machine == other.projection.machine
+            && sites.len() == other.projection.sites.len()
+            && sites
+                .iter()
+                .zip(&other.projection.sites)
+                .all(|(site, other)| site.serves_as(other))
+    }
+
+    fn caddy(&self) -> Option<&ContainerId> {
+        self.caddy.as_ref()
+    }
+}
+
+impl IngressSite {
+    fn serves_as(&self, other: &Self) -> bool {
+        let Self {
+            hostname,
+            publication,
+            certificate,
+        } = self;
+        *hostname == other.hostname
+            && *certificate == other.certificate
+            && match (publication, &other.publication) {
+                (Some(publication), Some(other)) => publication.serves_as(other),
+                (None, None) => true,
+                (Some(_), None) | (None, Some(_)) => false,
+            }
+    }
+}
+
+impl IngressPublication {
+    fn serves_as(&self, other: &Self) -> bool {
+        let Self {
+            owner,
+            http,
+            https,
+            trace: _,
+        } = self;
+        *owner == other.owner && *http == other.http && *https == other.https
+    }
+}
+
 type RoutedAddresses = BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>;
 
-/// Whether the Caddyfile a restarted Caddy reads holds what its admin loaded.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CaddyFile {
-    Current,
-    /// `write_caddyfile` failed, so the file may hold an earlier config.
-    Stale,
-}
-
-/// What the watcher last left Caddy serving, carried from one pass to the next.
-enum CaddyLoad {
-    /// Nothing the watcher applied is known to be served.
-    Unapplied,
-    /// The Caddyfile was written from `input` without the admin. A starting Caddy may have
-    /// read the file before the write, so this confirms nothing.
-    Written { input: CaddyInput },
-    /// The admin of `input.caddy` loaded `input`, so Caddy serves `addresses`, and the files
-    /// a restart reads hold it.
-    Loaded {
-        input: CaddyInput,
-        addresses: RoutedAddresses,
-    },
-    /// The admin of `input.caddy` loaded `input`, then `apply_caddy` failed, so the next pass
-    /// applies it again.
-    Served {
-        input: CaddyInput,
-        addresses: RoutedAddresses,
-        file: CaddyFile,
-    },
-}
-
-/// How a pass left Caddy, as [`CaddyLoad::after`] reads it.
-enum PassOutcome {
-    /// [`CaddyLoad::skip`] held through the admin, so nothing was loaded.
-    Cached { addresses: RoutedAddresses },
-    /// Without the admin, the Caddyfile holds `input`.
-    Written { input: CaddyInput },
-    /// `connect` failed, or a write without the admin did.
-    Unknown,
-    /// `apply_caddy` through the admin, and `find_refused` after a refusal.
-    Loaded {
-        input: CaddyInput,
-        addresses: RoutedAddresses,
-        applied: Applied,
-    },
-}
-
-impl PassOutcome {
-    fn through_admin(&self) -> bool {
-        matches!(self, Self::Cached { .. } | Self::Loaded { .. })
-    }
-}
-
-/// What `apply_caddy` through the admin left Caddy serving.
-enum Applied {
-    Ok,
-    AfterServing(CaddyFile),
-    BeforeServing(Probe),
-}
-
-impl CaddyLoad {
-    /// Caddy already serves `input`, so the pass loads nothing. Through the admin, its last
-    /// load is `input` and the files hold it; without, the Caddyfile was written from it.
-    fn skip(&self, input: &CaddyInput, through_admin: bool) -> bool {
-        match self {
-            Self::Loaded { input: loaded, .. } => through_admin && loaded == input,
-            Self::Written { input: written } => !through_admin && written == input,
-            Self::Unapplied | Self::Served { .. } => false,
-        }
-    }
-
-    fn after(self, pass: PassOutcome) -> Self {
-        match pass {
-            PassOutcome::Cached { addresses } => match self {
-                Self::Loaded { input, .. } => Self::Loaded { input, addresses },
-                // `skip` holds through the admin only on a load.
-                Self::Unapplied | Self::Written { .. } | Self::Served { .. } => self,
-            },
-            PassOutcome::Written { input } => Self::Written { input },
-            PassOutcome::Unknown => Self::Unapplied,
-            PassOutcome::Loaded {
-                input,
-                addresses,
-                applied,
-            } => match applied {
-                Applied::Ok => Self::Loaded { input, addresses },
-                Applied::AfterServing(file) => Self::Served {
-                    input,
-                    addresses,
-                    file,
-                },
-                Applied::BeforeServing(Probe::Unchanged) => self.refused_by(input.caddy.as_ref()),
-                Applied::BeforeServing(Probe::Reloaded | Probe::Refused) => Self::Unapplied,
-            },
-        }
-    }
-
-    /// A refused load leaves Caddy serving its last load, and a restart under the same id
-    /// serves the Caddyfile, so the load stands only for the newest ingress container and
-    /// while the file holds it. A new Caddy serves its Caddyfile, which may predate this
-    /// watcher. A restart between the load and the Caddyfile write goes unseen (#2787).
-    fn refused_by(self, caddy: Option<&ContainerId>) -> Self {
-        let stands = match &self {
-            Self::Loaded { input, .. }
-            | Self::Served {
-                input,
-                file: CaddyFile::Current,
-                ..
-            } => input.caddy.is_some() && input.caddy.as_ref() == caddy,
-            Self::Written { .. } => true,
-            Self::Unapplied
-            | Self::Served {
-                file: CaddyFile::Stale,
-                ..
-            } => false,
-        };
-        if stands { self } else { Self::Unapplied }
-    }
-
-    /// `PublishedRoutes.addresses` after a pass. Without the admin, a running Caddy serves
-    /// what it last loaded or, after a restart, the Caddyfile, so only a stopped Caddy's
-    /// empty routes are claimed.
-    fn claim(&self, through_admin: bool, no_caddy: bool) -> Option<RoutedAddresses> {
-        if !through_admin {
-            return no_caddy.then(BTreeMap::new);
-        }
-        match self {
-            Self::Loaded { addresses, .. } | Self::Served { addresses, .. } => {
-                Some(addresses.clone())
-            }
-            Self::Unapplied | Self::Written { .. } => None,
-        }
-    }
-}
+type CaddyLoad = load::CaddyLoad<CaddyInput, RoutedAddresses>;
+type PassOutcome = load::PassOutcome<CaddyInput, RoutedAddresses>;
 
 /// Certificates by file stem: those Caddy loaded last, and those it refused with its reason.
 /// A stem names one site's material, so new material for a refused site is tried again.
@@ -678,20 +644,10 @@ impl CaddyCertificates {
     }
 }
 
-/// What a probe left Caddy serving.
-enum Probe {
-    /// Caddy still serves the config it had.
-    Unchanged,
-    /// Caddy serves a probe config, though it refused no certificate.
-    Reloaded,
-    /// Caddy refused at least one certificate, now quarantined.
-    Refused,
-}
-
 /// The file stem of the certificate the Caddyfile pins for `site`.
 fn pinned_stem(site: &IngressSite) -> Option<String> {
-    site.https()
-        .map(|(material, _)| certificate_file_stem(&site.hostname, material))
+    site.pinned()
+        .map(|material| certificate_file_stem(&site.hostname, material))
 }
 
 /// `projection` with the pinned certificates named in `excluded` left out.
@@ -857,13 +813,7 @@ where
                         }
                     };
                     let through_admin = pass.through_admin();
-                    let refused = matches!(
-                        pass,
-                        PassOutcome::Loaded {
-                            applied: Applied::BeforeServing(Probe::Refused),
-                            ..
-                        }
-                    );
+                    let refused = pass.found_refusal();
                     load = load.after(pass);
                     let addresses = load.claim(through_admin, no_caddy);
                     route_publishes.send_if_modified(|publishes| {
@@ -1151,7 +1101,7 @@ pub(crate) fn write_certificate_files(
     let directory = certificate_directory(config_file)?;
     prepare(&directory)?;
     for site in sites {
-        let Some((material, _)) = site.https() else {
+        let Some(material) = site.pinned() else {
             continue;
         };
         let stem = certificate_file_stem(&site.hostname, material);
@@ -1176,7 +1126,7 @@ pub(crate) fn remove_stale_certificate_files(
     let keep: BTreeSet<String> = sites
         .iter()
         .filter_map(|site| {
-            site.https().map(|(material, _)| {
+            site.pinned().map(|material| {
                 let stem = certificate_file_stem(&site.hostname, material);
                 [format!("{stem}.crt"), format!("{stem}.key")]
             })

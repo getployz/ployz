@@ -73,7 +73,11 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   poolCommittableBytes: Schema.NullOr(Schema.Number),
   /** Whether the Server holds its Cluster's Sealing Key; null when unobserved or from an older daemon. */
   sealing: Schema.NullOr(runtimeSealingSchema),
+  /** Whether the Server requires a customer key's approval before Cloud changes a Service; null or absent when unobserved or from an older daemon. */
+  deviceEnforcement: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
   membership: Schema.String,
+  /** The entry probed this Server's daemon and got no answer, though gossip may read it up. */
+  unanswered: Schema.Boolean,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,
 });

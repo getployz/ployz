@@ -1,6 +1,20 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
-import type { ApprovalDecision } from "#/modules/approvals/approvals";
-import { decideApprovalServerFn, getApprovalServerFn, listPendingApprovalsServerFn } from "#/modules/approvals/approvals.functions";
+import type { Signed } from "@ployz/sdk";
+import { Option, Schema } from "effect";
+import type { DeletionItem } from "#/components/deletion-dialog";
+import { approveVolume, type VolumeChange } from "#/modules/approval-session/volume-approval";
+import type { KeptVolumeApproval } from "#/modules/approvals/approvals";
+import { movesFrom, runChange } from "#/modules/volume-run/run-approval";
+import { readVolumeScope, type VolumeTermsRead } from "#/modules/volume-run/volume-approval-scope";
+import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { actApprovals, type ActTarget } from "#/modules/approval-session/approval-prompt";
+import { type ApprovalDecision, approvalSubject, shownServiceAct } from "#/modules/approvals/approvals";
+import {
+  approvalActTargetServerFn,
+  decideApprovalServerFn,
+  getApprovalServerFn,
+  listPendingApprovalsServerFn,
+} from "#/modules/approvals/approvals.functions";
 
 export type ApprovalView = Awaited<ReturnType<typeof getApprovalServerFn>>;
 
@@ -38,10 +52,120 @@ export type Decided = ApprovalView;
  * Approve exactly the digest shown, or deny with a reason, as the CLI does. Answers the refusal's message when Cloud
  * says no, such as a plan that changed since the card drew.
  */
-export async function decideApproval(organizationSlug: string, id: string, decision: ApprovalDecision): Promise<{ ok: true; decided: Decided } | { ok: false; message: string }> {
-  const answer = await decideApprovalServerFn({ data: { organizationSlug, id, decision } }).catch(() => null);
+export async function decideApproval(
+  organizationSlug: string,
+  id: string,
+  decision: ApprovalDecision,
+  approvals?: Readonly<Record<string, Signed>>,
+  volume?: KeptVolumeApproval,
+): Promise<{ ok: true; decided: Decided } | { ok: false; message: string }> {
+  const answer = await decideApprovalServerFn({ data: { organizationSlug, id, decision, approvals, volume } }).catch(() => null);
   if (answer === null) return { ok: false, message: "Cloud didn't take that answer. Try again." };
   return answer.ok ? { ok: true, decided: answer.approval } : answer;
+}
+
+/** Whether approving `approval` runs a restart or stop, which Servers that enforce take only with the approver's passkey. */
+export const runsServiceAct = (approval: Pick<ApprovalView, "review">) =>
+  "operation" in approval.review && (approval.review.operation.verb === "restart" || approval.review.operation.verb === "stop");
+
+/** Why the approver's browser makes no approvals: what Cloud names isn't what the card shows. */
+export const MISMATCHED_ACT = "This doesn't match the request. Nothing was approved.";
+
+type FetchedTarget = NonNullable<Awaited<ReturnType<typeof approvalActTargetServerFn>>>;
+
+/**
+ * What the browser approves for the restart or stop `approval` shows. Cloud's target must name the card's verb,
+ * Environment, Service, Namespace and runtime name, so Cloud can't swap in another act or Service, and the card's
+ * title and Destroys line must name that same Service in the Store's place for that Environment, so no name the person
+ * reads differs from what gets signed. The approvals carry the card's values.
+ */
+export function shownTarget(approval: Pick<ApprovalView, "command" | "review">, target: FetchedTarget) {
+  const shown = shownServiceAct(approval.review);
+  const matches = shown !== null && shown.verb === target.verb && shown.environment === target.environmentId && shown.service === target.service
+    && shown.namespace === target.namespace && shown.runtime === target.runtime
+    && approvalSubject(approval.command, approval.review).name === shownName(shown, target)
+    && approval.review.effects.every((effect) => effect.name === shown.service);
+  if (!matches) throw new Error(MISMATCHED_ACT);
+  // What gets signed comes from the card. Containers and Servers come from Cloud; each Server checks them against its own.
+  const { environmentName, copies, machines } = target;
+  return {
+    verb: shown.verb,
+    target: {
+      environment: { environmentId: shown.environment, environmentName, namespace: shown.namespace },
+      runtime: shown.runtime,
+      copies,
+      machines,
+    } satisfies ActTarget,
+  };
+}
+
+/** The card's title for the act, as Cloud words it when it asks: `web in shop/production`, or `… on fra-1`. Null for a Server Cloud doesn't list. */
+const shownName = (shown: NonNullable<ReturnType<typeof shownServiceAct>>, target: FetchedTarget) => {
+  const place = `${shown.service} in ${target.project}/${target.environmentName}`;
+  if (shown.only === null) return place;
+  const server = target.machines.find((machine) => machine.id === shown.only?.machine);
+  return server === undefined ? null : `${place} on ${server.name}`;
+};
+
+export async function approverApprovals(organizationSlug: string, approval: Pick<ApprovalView, "id" | "command" | "review">) {
+  const fetched = await approvalActTargetServerFn({ data: { organizationSlug, id: approval.id } });
+  if (fetched === null) return undefined;
+  const { verb, target } = shownTarget(approval, fetched);
+  return actApprovals(verb, target);
+}
+
+const VolumeAsked = Schema.Struct({
+  volume: Schema.NonEmptyString,
+  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
+  run: Schema.Struct({ kind: Schema.String, args: Schema.Record(Schema.String, Schema.Unknown) }),
+});
+
+/** The Volume run an agent's or the CLI's ask names, when Servers that enforce took it only with a passkey's answer. */
+export function askedVolumeRun(approval: Pick<ApprovalView, "review">) {
+  if (!("operation" in approval.review)) return null;
+  const asked = Schema.decodeUnknownOption(VolumeAsked)(approval.review.operation.preview);
+  // SAFETY: Cloud shaped the run when it asked; the browser drafts from it only what the review then shows line by line.
+  return Option.isSome(asked) ? { ...asked.value, run: asked.value.run as VolumeRunInput } : null;
+}
+
+/** The workflow of the Volume run an approval asks for, with the terms it was drafted from. */
+export type AskedVolumeDraft = { readonly read: VolumeTermsRead; readonly change: VolumeChange };
+
+/**
+ * The Volume run `approval` asks for, drafted afresh over what its Servers answer now. Undefined for an approval that
+ * asks for no Volume run.
+ */
+export async function draftAskedVolume(
+  queryClient: QueryClient, organizationSlug: string, approval: Pick<ApprovalView, "review">,
+): Promise<AskedVolumeDraft | undefined> {
+  const asked = askedVolumeRun(approval);
+  if (asked === null) return undefined;
+  const scope = await readVolumeScope(queryClient, organizationSlug, asked.environment, asked.volume);
+  const from = movesFrom(asked.run, scope.members);
+  const read = from === null ? scope : await readVolumeScope(queryClient, organizationSlug, asked.environment, asked.volume, from);
+  return { read, change: runChange(read.name, asked.run, read.members, read) };
+}
+
+/**
+ * What a drafted restore loses, read from the workflow the passkey signs, and the `project/environment` the person types
+ * to confirm it. Null for any other workflow, and for a restore that loses no writes.
+ */
+export function askedLoss({ read, change }: AskedVolumeDraft): { place: string; item: DeletionItem } | null {
+  const { workflow } = change;
+  if (workflow.kind !== "restore" || workflow.loses_after === undefined) return null;
+  const from = read.members.find((member) => member.machine.id === workflow.machine)?.machine.name;
+  const item: DeletionItem = { kind: "volume", name: read.name, lostAfter: new Date(workflow.loses_after), ...(from !== undefined && { detail: `from ${from}` }) };
+  return { place: read.place, item };
+}
+
+/**
+ * The approver's passkey answer to a drafted Volume run, shown line by line first. Undefined when no Server it names
+ * enforces; null when the person cancels.
+ */
+export async function signAskedVolume({ read, change }: AskedVolumeDraft): Promise<KeptVolumeApproval | null | undefined> {
+  const approved = await approveVolume(read, change);
+  if (approved === null || approved === undefined) return approved;
+  return { approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) };
 }
 
 /** Show a decision at once, then reread every approval: the badge and the waiting list drop it. */

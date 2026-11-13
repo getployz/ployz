@@ -65,6 +65,8 @@ pub(super) fn machine_service(
 
 pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
     RegisterRequest {
+        join_approval: None,
+        join_confirmation: None,
         machine_id: MachineId::random(),
         assigned_subnet: Some("10.210.1.0/24".parse().unwrap()),
         initial_policy: Default::default(),
@@ -74,6 +76,7 @@ pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterReq
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
         runtime: MachineRuntime::default(),
+        capabilities: Vec::new(),
     }
 }
 

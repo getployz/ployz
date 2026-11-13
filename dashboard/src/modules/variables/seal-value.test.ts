@@ -3,7 +3,7 @@ import { Chacha20Poly1305 } from "@hpke/chacha20poly1305";
 import { DhkemX25519HkdfSha256, HkdfSha256 } from "@hpke/dhkem-x25519";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SealError } from "#/modules/sealing/seal-error";
-import { sealValue, sealedValueProblem } from "./seal-value";
+import { sealPlatform, sealValue, sealedValueProblem } from "./seal-value";
 
 // Test keys only. ployzd's `sealing_key.rs` opens `CIPHERTEXT` from the same literals, so both sides stay compatible.
 const RECIPIENT_PRIVATE_KEY = "347ace27753bb0420141f071765286281c5fb4c450a9811d4ab13b67ac3da146";
@@ -27,19 +27,46 @@ function hex(text: string) {
   return Uint8Array.from(text.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16)).buffer;
 }
 
-async function open(sealed: string, aad: ArrayBuffer, privateKey = RECIPIENT_PRIVATE_KEY) {
+const AUTH_KEY = "tskey-auth-kTEST1CNTRL-frozenVectorOnly";
+const PLATFORM_CIPHERTEXT =
+  "aQ3JpLLRSRFxTny/uywru4DsdBNaz2ed/8puzj80FnVgGTBxgtUPPvJq60VaDYOLiLov+SoN+uqbTWZL7UG7g0lob9gVuQq8vl0PFXHHIyTb5VnuvCj0";
+// ployz-core's `PlatformPurpose::PrivateAccess.associated_data` for the test Cluster key.
+const PLATFORM_AAD =
+  "00000018706c6f797a2d706c6174666f726d2d7365616c65642d76310000000e707269766174652d61636365737300000020" +
+  "35d895d5063d3f7672a02f36600fc5681b34ce55931bf097535b4b7dc4b40838";
+
+async function open(sealed: string, aad: ArrayBuffer, privateKey = RECIPIENT_PRIVATE_KEY, info = "ployz-sealed-v1") {
   const bytes = Uint8Array.from(atob(sealed), (char) => char.charCodeAt(0));
   const opened = await suite.open(
     {
       recipientKey: await suite.kem.deserializePrivateKey(hex(privateKey)),
       enc: bytes.slice(0, 32).buffer,
-      info: new TextEncoder().encode("ployz-sealed-v1").buffer,
+      info: new TextEncoder().encode(info).buffer,
     },
     bytes.slice(32).buffer,
     aad,
   );
   return new TextDecoder().decode(opened);
 }
+
+describe("sealPlatform", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("seals the frozen Private Access vector ployzd opens, bound to its purpose and Cluster", async () => {
+    const createSenderContext = CipherSuite.prototype.createSenderContext;
+    vi.spyOn(CipherSuite.prototype, "createSenderContext").mockImplementation(function (this: CipherSuite, params) {
+      return createSenderContext.call(this, { ...params, ekm: hex(EPHEMERAL_IKM) });
+    });
+
+    const sealed = await sealPlatform(RECIPIENT_PUBLIC_KEY, "private-access", AUTH_KEY);
+
+    expect(sealed).toBe(PLATFORM_CIPHERTEXT);
+    expect(await open(sealed, hex(PLATFORM_AAD), RECIPIENT_PRIVATE_KEY, "ployz-platform-sealed-v1")).toBe(AUTH_KEY);
+    await expect(open(sealed, hex(PLATFORM_AAD))).rejects.toThrow();
+  });
+});
 
 describe("sealValue", () => {
   afterEach(() => {

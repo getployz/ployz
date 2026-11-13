@@ -10,6 +10,11 @@ pub struct RequestMachineUpgradeRequest {
     pub attempt_id: crate::MachineUpgradeAttemptId,
     /// Exact version or supported release channel to resolve once.
     pub release: crate::MachineRelease,
+    /// The Release Channel a person approved for the Cluster. A Machine that enforces
+    /// Device approval admits an Operator's upgrade only along it; others ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub channel: Option<crate::authority::Signed<crate::authority::UpgradeChannel>>,
 }
 
 crate::value::open_string_enum!(MachineUpgradeStage, Unknown {
@@ -65,15 +70,21 @@ pub enum MachineUpgradeOutcome {
     },
 }
 
+impl MachineUpgradeOutcome {
+    /// Whether the outcome is durable terminal evidence.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded { .. } | Self::Failed { .. } | Self::Interrupted { .. }
+        )
+    }
+}
+
 impl MachineUpgradeAttempt {
     /// Whether the attempt has durable terminal evidence.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self.outcome,
-            MachineUpgradeOutcome::Succeeded { .. }
-                | MachineUpgradeOutcome::Failed { .. }
-                | MachineUpgradeOutcome::Interrupted { .. }
-        )
+    pub const fn is_terminal(&self) -> bool {
+        self.outcome.is_terminal()
     }
 }

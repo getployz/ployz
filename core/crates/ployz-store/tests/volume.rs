@@ -154,6 +154,7 @@ fn admit_named(
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -169,6 +170,7 @@ fn admit_named(
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted {
                 volumes: observed,
@@ -1078,11 +1080,15 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(3),
                 deployment: id(2),
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                approvals: Vec::new(),
+                awaits_approval: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -1241,6 +1247,7 @@ fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(
         store.write_trusted(
             &who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(4),
                 deployment: id(2),
                 rolls_back: Some(vec![3]),
@@ -1249,6 +1256,9 @@ fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                approvals: Vec::new(),
+                awaits_approval: false,
+                approval: None,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),
@@ -1354,7 +1364,7 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
     let approved = Approval::Approved(
         ApprovalDigest::parse(asked.details["approval"].as_str().unwrap()).unwrap(),
     );
-    let unaccepted = publish(&[], Some(observed(&['a'])), None, approved.clone()).unwrap_err();
+    let unaccepted = publish(&[], Some(observed(&['a'])), None, approved).unwrap_err();
     assert_eq!(unaccepted.code, RpcErrorCode::ConfirmationRequired);
 
     store
@@ -1502,6 +1512,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(2),
                 environment: EnvironmentRef::default(),
                 services: vec![ServiceName::parse("api").unwrap()],
@@ -1511,6 +1522,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),
@@ -2323,7 +2335,7 @@ fn a_stale_version_hands_back_the_version_that_binds_the_fresh_loss() {
     }
 
     // Without the observation that finds the data, it is the plain conflict.
-    let unobserved = admit_at(&store, &who, 2, &["data"], None, Some(stale.clone())).unwrap_err();
+    let unobserved = admit_at(&store, &who, 2, &["data"], None, Some(stale)).unwrap_err();
     assert_eq!(unobserved.code, RpcErrorCode::Conflict);
     assert!(
         unobserved.details.get("volume_loss").is_none(),

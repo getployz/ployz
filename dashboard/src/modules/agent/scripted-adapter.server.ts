@@ -108,6 +108,46 @@ const lossRetry = (messages: ReadonlyArray<ModelMessage>, asked: number, action:
   return { text: "No matching Volume-loss refusal to accept. Review that action in its original Project and Environment first." };
 };
 
+const Opened = Schema.fromJsonString(Schema.Struct({ ok: Schema.Literal(true), value: Schema.Struct({ proposal_id: Schema.String }) }));
+const Staged = Schema.fromJsonString(Schema.Struct({ ok: Schema.Literal(true), value: Schema.Struct({ step: Schema.Number }) }));
+const Presented = Schema.fromJsonString(Schema.Struct({ ok: Schema.Literal(true), value: Schema.Struct({ steps: Schema.Number }) }));
+const Followed = Schema.fromJsonString(Schema.Struct({
+  ok: Schema.Literal(true),
+  value: Schema.Struct({
+    status: Schema.String,
+    steps: Schema.Array(Schema.Struct({ index: Schema.Number, verb: Schema.String, service: Schema.String, state: Schema.String, reason: Schema.NullOr(Schema.String) })),
+  }),
+}));
+
+/** "Approved. 1. stop web: done. 2. restart api: failed, machine-2 didn't accept the approval. 3. start web: not run." */
+const standing = ({ status, steps }: typeof Followed.Type["value"]) => {
+  const head = status.charAt(0).toUpperCase() + status.slice(1);
+  const lines = steps.map(({ index, verb, service, state, reason }) => `${index}. ${verb} ${service}: ${state.replace("_", " ")}${reason === null ? "." : `, ${reason.replace(/\.$/, "")}.`}`);
+  return [`${head}.`, ...lines].join(" ");
+};
+
+/**
+ * "propose stop web, restart api, start web": open a proposal, stage each step in turn with `proposal` set to it, then
+ * present it. Each turn reads how far the tool results since the request got. A refusal on the way is quoted.
+ */
+const proposing = (results: ReadonlyArray<string>, plan: string): ScriptedTurn => {
+  const steps = plan.split(",").flatMap((part) => {
+    const step = /\b(stop|start|restart) ([a-z0-9-]+)/.exec(part.trim());
+    return step === null ? [] : [{ verb: step[1] ?? "", service: step[2] ?? "" }];
+  });
+  const last = results.at(-1);
+  const refused = last === undefined ? Option.none() : Schema.decodeUnknownOption(Refused)(last);
+  if (Option.isSome(refused)) return { text: `The proposal stopped: ${refused.value.refusal.message}` };
+  const opened = results.flatMap((result) => Option.toArray(Schema.decodeUnknownOption(Opened)(result))).at(0);
+  if (opened === undefined) return { calls: [{ tool: "proposal_create", input: {} }] };
+  const proposal = opened.value.proposal_id;
+  const staged = results.filter((result) => Option.isSome(Schema.decodeUnknownOption(Staged)(result))).length;
+  const next = steps[staged];
+  if (next !== undefined) return { calls: [{ tool: `service_${next.verb}`, input: { service: next.service, proposal } }] };
+  if (results.some((result) => Option.isSome(Schema.decodeUnknownOption(Presented)(result)))) return { text: `Presented proposal ${proposal}. Say "follow ${proposal}" to see how far it got.` };
+  return { calls: [{ tool: "proposal_present", input: { proposal } }] };
+};
+
 const text = ({ content }: ModelMessage) =>
   Array.isArray(content) ? content.flatMap((part) => (part.type === "text" ? [part.content] : [])).join("") : content ?? "";
 
@@ -136,14 +176,22 @@ const whereAbouts = (messages: ReadonlyArray<ModelMessage>): string => {
  * <owner/repo>" lists a repository's files. After a Save or Deploy refuses Volume loss, an explicit request to accept it
  * retries that action in its original scope, accepting exactly what the Store named. A denial is quoted, never retried.
  * "Where am I" answers from the thread's latest page block. "stop", "start" or "restart <service>" runs that verb on it,
- * and "show a picture" answers with a Markdown image.
+ * "propose stop web, restart api" stages those steps into one proposal and presents it, "follow <id>" reads where that
+ * proposal stands, and "show a picture" answers with a Markdown image.
  */
 export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn {
   const asked = messages.map((message) => message.role).lastIndexOf("user");
   const raw = asked < 0 ? "" : typed(messages[asked] ?? { role: "user", content: "" });
   const said = raw.toLowerCase();
-  const last = messages.slice(asked + 1).filter((message) => message.role === "tool").map(text).at(-1);
+  const results = messages.slice(asked + 1).filter((message) => message.role === "tool").map(text);
+  const plan = /\bpropose (.+)/.exec(said)?.[1];
+  if (plan !== undefined) return proposing(results, plan);
+  const followed = /\bfollow ([0-9a-f-]{36})/.exec(said)?.[1];
+  if (followed !== undefined && results.length === 0) return { calls: [{ tool: "proposal_status", input: { proposal: followed } }] };
+  const last = results.at(-1);
   if (last !== undefined) {
+    const stands = Schema.decodeUnknownOption(Followed)(last);
+    if (Option.isSome(stands)) return { text: standing(stands.value.value) };
     if (Option.isSome(Schema.decodeUnknownOption(Cancelled)(last))) return { text: "The approval was cancelled, so nothing was deployed." };
     const listed = Schema.decodeUnknownOption(Listed)(last);
     if (Option.isSome(listed)) return { text: `Services: ${listed.value.value.services.map(({ name }) => name).join(", ")}.` };

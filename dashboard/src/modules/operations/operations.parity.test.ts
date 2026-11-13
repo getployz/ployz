@@ -11,9 +11,12 @@ const CONFIG_STORE_TOOLS = new Set(["environment_protect", "volume_add", "volume
 const ADDRESSING = {
   agent: new Set(["request_key"]),
   // `server_name` is the name the CLI showed for the Server, which its run row keeps: a label, like `stops`.
-  cli: new Set(["kind", "server_name"]),
-  // `stops` is what a Drain's confirm showed as stopping: the dialog's approval, like `approvalId`.
-  ui: new Set(["organizationSlug", "requestId", "approvalId", "stops"]),
+  // `approval` is the Device's signed VolumeApproval the Machines check, like the dialog's `approvalId`, and
+  // `service` the start spec a Move's approval signs.
+  cli: new Set(["kind", "server_name", "approval", "service"]),
+  // `stops` is what a Drain's confirm showed as stopping: the dialog's approval, like `approvalId`. `approval` is the
+  // passkey's answer to a resize the Machines check, as the CLI's is.
+  ui: new Set(["organizationSlug", "requestId", "approvalId", "stops", "approval"]),
 } as const;
 
 const AgentTools = Schema.fromJsonString(Schema.Struct({

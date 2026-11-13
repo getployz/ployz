@@ -4,6 +4,7 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
+use ployz::connect::Call;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{BufRead, BufReader, Write},
@@ -16,7 +17,7 @@ use std::{
 use ployz::{
     connect::{Client, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
-    sdk::{self, ContainerLogInput},
+    sdk::{self, ContainerLogInput, LogLine, SealedNames},
 };
 use ployz_core::{
     ContainerLocator, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
@@ -71,6 +72,11 @@ async fn client(fleet: &FakeFleet, machine: &str) -> Client {
 
 fn stop(container: &str) -> EnsureContainerRequest {
     EnsureContainerRequest {
+        teardown: None,
+        preview: None,
+        approval: None,
+        deploy: None,
+        rule: None,
         want: ContainerWant::Stopped {
             container: ContainerLocator::Id(container_id(container)),
             drain: Drain::NONE,
@@ -132,7 +138,7 @@ async fn a_dropped_stop_reply_is_retried_and_both_attempts_are_in_the_ledger() {
     client
         .call::<op::EnsureContainer>(
             stop("app-production-web-1"),
-            Some(&MachineTarget::parse("web-1").unwrap()),
+            Call::keyed().to(&MachineTarget::parse("web-1").unwrap()),
         )
         .await
         .unwrap();
@@ -176,7 +182,7 @@ async fn a_disconnect_after_a_web_2_stop_leaves_web_2_offline() {
     let result = client
         .call::<op::EnsureContainer>(
             stop("app-production-web-2"),
-            Some(&MachineTarget::parse("web-2").unwrap()),
+            Call::keyed().to(&MachineTarget::parse("web-2").unwrap()),
         )
         .await;
 
@@ -214,19 +220,31 @@ async fn logs_stream_the_fixture_lines_and_honor_tail() {
         (-1, expected.as_slice()),
         (3, &expected[expected.len() - 3..]),
     ] {
+        let names = SealedNames::new();
+        let feed = names.clone();
+        tokio::spawn(async move {
+            feed.wanted().await;
+            feed.begin().done(Some(BTreeSet::new()));
+        });
         let stream = session
-            .container_logs(ContainerLogInput {
-                machine_id: web_1.id,
-                container_id: container_id("app-staging-web-1"),
-                tail,
-                follow: false,
-                since_unix_seconds: None,
-            })
+            .scrubbed_logs(
+                ContainerLogInput {
+                    machine_id: web_1.id,
+                    container_id: container_id("app-staging-web-1"),
+                    tail,
+                    follow: false,
+                    since_unix_seconds: None,
+                },
+                &names,
+            )
             .await
             .unwrap();
         let mut lines = Vec::new();
         while let Some(record) = stream.next().await.unwrap() {
-            lines.push(record.message);
+            let LogLine::Shown { message, .. } = record.line else {
+                panic!("a fixture line was hidden");
+            };
+            lines.push(message);
         }
         assert_eq!(lines, wanted);
     }
@@ -241,6 +259,7 @@ async fn an_upgrade_resent_with_its_attempt_id_creates_one_attempt() {
     let request = || RequestMachineUpgradeRequest {
         attempt_id,
         release: MachineRelease::Exact(target.clone()),
+        channel: None,
     };
 
     let first = session
@@ -266,13 +285,18 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
     let error = client
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
+                teardown: None,
+                preview: None,
+                approval: None,
+                deploy: None,
+                rule: None,
                 want: ContainerWant::Gone {
                     container: ContainerLocator::Id(container_id("app-staging-web-1")),
                     drain: Drain::NONE,
                     anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
                 },
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap_err();
@@ -315,14 +339,24 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
                 ReadRoutesRequest {
                     service: service.clone(),
                 },
-                None,
+                Call::read(),
             )
             .await
             .unwrap()
     };
     let ensure = async |client: &mut Client, want| {
         client
-            .call::<op::EnsureContainer>(EnsureContainerRequest { want }, on_web_1.as_ref())
+            .call::<op::EnsureContainer>(
+                EnsureContainerRequest {
+                    teardown: None,
+                    preview: None,
+                    want,
+                    approval: None,
+                    deploy: None,
+                    rule: None,
+                },
+                Call::keyed().toward(on_web_1.as_ref()),
+            )
             .await
             .unwrap()
     };
@@ -570,4 +604,56 @@ fn fleet_id(machine: &str) -> ployz_core::MachineId {
         .find(|candidate| candidate.name.as_str() == machine)
         .unwrap()
         .id
+}
+
+// Catches the fleet answering SetIngressDoors without the two Containers a daemon sets,
+// or a second call making them again.
+#[tokio::test(flavor = "multi_thread")]
+async fn set_ingress_doors_runs_the_holder_and_caddy_once() {
+    use ployz_core::{DoorChange, IngressDoors, ServiceId, SetIngressDoorsRequest};
+
+    let (fleet, _sockets) = start(Scenario::default());
+    let mut client = client(&fleet, "web-1").await;
+    let request = || SetIngressDoorsRequest {
+        doors: IngressDoors::public(),
+        proxy_service: ServiceId::parse("a".repeat(32)).unwrap(),
+        sealed_token: None,
+    };
+    let target = MachineTarget::parse("web-1").unwrap();
+
+    let first = client
+        .call::<op::SetIngressDoors>(request(), Call::keyed().to(&target))
+        .await
+        .unwrap();
+    let again = client
+        .call::<op::SetIngressDoors>(request(), Call::keyed().to(&target))
+        .await
+        .unwrap();
+
+    let changes = |set: &ployz_core::IngressDoorsSet| {
+        [&set.holder, &set.proxy].map(|outcome| outcome.as_ref().map(|outcome| outcome.change))
+    };
+    assert_eq!(
+        changes(&first),
+        [Some(DoorChange::Created), Some(DoorChange::Created)]
+    );
+    assert_eq!(
+        changes(&again),
+        [Some(DoorChange::Unchanged), Some(DoorChange::Unchanged)]
+    );
+    assert!(
+        fleet
+            .is_running(&name("web-1"), "web-1-ingress-holder")
+            .unwrap()
+    );
+    assert!(fleet.is_running(&name("web-1"), "web-1-ingress").unwrap());
+    assert_eq!(
+        fleet
+            .ledger()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.command == "set_ingress_doors")
+            .count(),
+        2
+    );
 }

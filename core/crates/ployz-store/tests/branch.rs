@@ -188,6 +188,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: b
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: at(environment),
                 services: Vec::new(),
@@ -197,6 +198,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: b
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -284,7 +286,7 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
     let made = store.write(&who, &create).unwrap();
     // A replay returns the same; the ID with another body is a conflict.
     assert_eq!(store.write(&who, &create).unwrap(), made);
-    let mut other = create.clone();
+    let mut other = create;
     other.keep = false;
     assert_eq!(code(store.write(&who, &other)), RpcErrorCode::Conflict);
 
@@ -723,7 +725,7 @@ fn a_failed_deployment_is_fixed_on_a_branch_and_the_parent_stays() {
     let mut fix = branch("fix", "production", &[]);
     fix.fix = Some(applied);
     assert_eq!(code(store.write(&who, &fix)), RpcErrorCode::InvalidArgument);
-    fix.fix = Some(failed.clone());
+    fix.fix = Some(failed);
     fix.copy = vec![node("volumes.data")];
     assert_eq!(code(store.write(&who, &fix)), RpcErrorCode::InvalidArgument);
 
@@ -2226,6 +2228,7 @@ fn warnings(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: at(environment),
                 services: Vec::new(),
@@ -2235,6 +2238,7 @@ fn warnings(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -2730,4 +2734,51 @@ fn a_fix_made_after_its_parent_sealed_a_value_the_failed_revision_held_plain_tak
     assert_eq!(web["image"], json!("web:2"));
     assert_eq!(web["env"]["API_KEY"], json!({ "secret": false }));
     only_what_production_ran(&url);
+}
+
+#[test]
+fn copying_a_node_waits_for_a_settled_branch() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    deploy(&store, &who, "fix-web", 2, true);
+    let copy = CopyNode {
+        environment: at("fix-web"),
+        node: ServiceName::parse("db").unwrap(),
+        expect: None,
+    };
+
+    set(&store, &who, "fix-web", &[("web.env.EXTRA", json!("x"))]);
+    let undeployed = store.write(&who, &copy).unwrap_err();
+    assert_eq!(
+        undeployed.details["next"],
+        "ployz diff --project shop --env fix-web"
+    );
+
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                teardown: None,
+                id: DeploymentId::parse(uuid(99)).unwrap(),
+                environment: at("fix-web"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let running = store.write(&who, &copy).unwrap_err();
+    assert_eq!(
+        running.details["next"],
+        "ployz deployment ls --project shop --env fix-web"
+    );
 }

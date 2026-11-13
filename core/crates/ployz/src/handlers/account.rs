@@ -1,10 +1,10 @@
 //! `ployz token` and `ployz org`: acting in Cloud as this device's
 //! sign-in or `PLOYZ_TOKEN`. None of them needs a Server.
 
+use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use serde::Serialize;
 
-use super::store::Next;
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;
@@ -12,7 +12,8 @@ use ployz_core::RpcErrorCode;
 use crate::approval;
 use crate::cloud_account::{self, Credential, ServerClears, TokenKind, TokenPreset};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::ui::{self, Cell, Table, Tone};
+use ployz_core::Hint;
 
 pub(super) fn token_group(command: Command) -> Command {
     command.about("Manage Organization Tokens and signed-in devices")
@@ -51,7 +52,10 @@ pub(super) fn token_list_command(command: Command) -> Command {
 pub(super) fn token_remove_command(command: Command) -> Command {
     command
         .about("Revoke a token or sign out a device, at once")
-        .arg(positional("id", true).help("The token or device ID, from ployz token ls"))
+        .arg(
+            positional("id", true)
+                .help("The token's name or ID, or the device's ID, from ployz token ls"),
+        )
 }
 
 pub(super) fn org_group(command: Command) -> Command {
@@ -241,13 +245,14 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
 }
 
 pub(super) fn token_remove(root: &ArgMatches) -> Result<(), Error> {
-    let id = leaf_matches(root)
+    let target = leaf_matches(root)
         .get_one::<String>("id")
         .expect("id is required");
     let (removed, servers) = in_cloud(root, async |_, credential| {
-        cloud_account::remove_token(credential, id).await
+        let id = cloud_account::credential_id(credential, target).await?;
+        cloud_account::remove_token(credential, &id).await
     })?;
-    let next = retry_clears(&servers, id);
+    let next = retry_clears(&servers, &removed.id);
     let report = TokenRemoved {
         removed: &removed,
         servers: &servers,
@@ -505,7 +510,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         .expect("organization is required");
     let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
     let retry = shell_words::join(std::iter::once("ployz").chain(again));
-    super::teardown::confirm(matches, slug, "Organization", retry.clone(), || {
+    super::shared::confirm::confirm(matches, (slug, None), "Organization", retry.clone(), || {
         let refusal = Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(
@@ -566,7 +571,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let removal = approval::approved(
         &runtime,
         &credential,
-        approval::Verb::Remove,
+        ployz_store::OperationVerb::Remove,
         matches.get_one::<String>("approval").cloned(),
         |id| super::server::approved_rerun(matches, &again, id),
         async |approval| {

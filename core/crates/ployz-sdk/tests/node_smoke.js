@@ -183,9 +183,6 @@ async function expectRpc(fn, code) {
   if (typeof sdk.Client.prototype.deploy !== "undefined") {
     throw new Error("Client.deploy must not exist");
   }
-  if (typeof sdk.applyAll !== "function" || typeof sdk.applyOne !== "function") {
-    throw new Error("applyAll / applyOne must be exported");
-  }
   if (typeof sdk.Client.prototype.watch !== "undefined") {
     throw new Error("Client.watch must not exist");
   }

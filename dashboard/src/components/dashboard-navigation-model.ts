@@ -7,6 +7,7 @@ import {
   CreditCardIcon,
   HistoryIcon,
   LayoutGridIcon,
+  PlugIcon,
   ServerIcon,
   SlidersHorizontalIcon,
   TerminalIcon,
@@ -57,13 +58,13 @@ const environmentPlaces = {
 
 /** The organization's three places, in rail order. */
 const organizationPlaceOrder = ["projects", "servers", "organization-settings"] as const;
-type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "billing" | "account";
+type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "integrations" | "billing" | "account";
 const organizationDestinations = {
   projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
   servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
   // Not "Settings": that always means an Environment's.
   "organization-settings": { label: "Organization", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
-  // A section of Organization, with its own page. Only Ployz-hosted Cloud has billing.
+  integrations: { label: "Integrations", icon: PlugIcon, path: "/cloud/$organizationSlug/~/integrations" },
   billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
   // The user's own settings. No rail entry: the avatar row at the rail's foot is this place.
   account: { label: "Account", icon: CircleUserRoundIcon, path: "/cloud/$organizationSlug/~/account" },
@@ -103,7 +104,7 @@ export type DashboardNavSection = ReturnType<typeof placeSections>[number];
 /** The search keys that pick a Settings page's section. */
 export interface DashboardSectionSearch {
   scope?: "environment" | "project";
-  section?: "general" | "members" | "tokens" | "github" | "builds";
+  section?: "general" | "network" | "members" | "tokens" | "github" | "builds";
 }
 
 /** Where `section` lives in `scope`; a section the scope lacks falls back to its home (Architecture or Projects). */
@@ -153,6 +154,8 @@ function openSection(section: DashboardSection, search: DashboardSectionSearch, 
       return search.section ?? "general";
     case "billing":
       return "billing";
+    case "integrations":
+      return "integrations";
     default:
       return undefined;
   }
@@ -185,10 +188,12 @@ function placeSections(
     const to = organizationDestinations["organization-settings"].path;
     return [
       { label: "General", current: open === "general", ...linkOptions({ to, params, search: {} }) },
+      { label: "Network", current: open === "network", ...linkOptions({ to, params, search: { section: "network" as const } }) },
       { label: "Members", current: open === "members", ...linkOptions({ to, params, search: { section: "members" as const } }) },
       { label: "Tokens", current: open === "tokens", ...linkOptions({ to, params, search: { section: "tokens" as const } }) },
       { label: "GitHub", current: open === "github", ...linkOptions({ to, params, search: { section: "github" as const } }) },
       { label: "Builds", current: open === "builds", ...linkOptions({ to, params, search: { section: "builds" as const } }) },
+      { label: "Integrations", current: open === "integrations", ...linkOptions({ to: organizationDestinations.integrations.path, params, search: {} }) },
       ...billingEnabled
         ? [{ label: "Billing", current: open === "billing", ...linkOptions({ to: organizationDestinations.billing.path, params, search: {} }) }]
         : [],
@@ -211,8 +216,7 @@ export function createDashboardNavigation(
   },
 ) {
   const open = openSection(section, search, routeId);
-  // Billing is a section of Organization, so Organization is the current place there.
-  const currentPlace = section === "billing" ? "organization-settings" : section;
+  const currentPlace = section === "billing" || section === "integrations" ? "organization-settings" : section;
   const item = (target: DashboardScope, key: DashboardSection, { label, icon }: Destination): DashboardNavItem => ({
     section: key,
     label,
@@ -234,6 +238,7 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_org/~/", "projects"],
   ["/_protected/cloud/$organizationSlug/_project/new", "projects"],
   ["/_protected/cloud/$organizationSlug/_org/~/billing", "billing"],
+  ["/_protected/cloud/$organizationSlug/_org/~/integrations", "integrations"],
   ["/_protected/cloud/$organizationSlug/_org/~/settings", "organization-settings"],
   ["/_protected/cloud/$organizationSlug/_org/~/account", "account"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],

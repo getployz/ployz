@@ -1,10 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { DashboardPage } from "#/components/dashboard-page";
-import { AccountSections, prefetchAccount } from "../-components/account-sections";
+import { prefetchRemote, requireOrganization } from "#/collections/route-data";
+import { accountReads, AccountSections } from "../-components/account-sections";
+import { passkeysQueryOptions } from "#/modules/passkeys/passkeys.queries";
+import { PasskeysSection } from "../-components/passkeys-section";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/account")({
-  loader: ({ context }) =>
-    prefetchAccount({ queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id }),
+  loader: async ({ context, params }) => {
+    const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
+    const { access } = await requireOrganization(context, params.organizationSlug);
+    // A passkey belongs to a member, so a support visit neither reads nor shows the section.
+    return prefetchRemote(scope, ...accountReads(scope), ...(access === "member" ? [passkeysQueryOptions(params.organizationSlug)] : []));
+  },
   component: AccountPage,
 });
 
@@ -12,7 +19,10 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~
 function AccountPage() {
   return (
     <DashboardPage width="content" title="Account">
-      <AccountSections />
+      <div className="flex flex-col gap-6">
+        <AccountSections />
+        <PasskeysSection />
+      </div>
     </DashboardPage>
   );
 }

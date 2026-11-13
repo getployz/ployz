@@ -10,9 +10,12 @@ import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { deploymentLabel } from "#/modules/config-store/store-deployments";
-import { fetchStoreView, removalsQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { fetchStoreView, namespaceQuery, removalsQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
+import { removalTeardown, removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
+import { useApprovalServers } from "#/modules/config-store/use-deploy-approvals";
+import { reviewApproval } from "#/modules/approval-session/approval-prompt";
+import { approveTeardown } from "#/modules/approval-session/teardown-approval";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
 import { useServerList } from "#/modules/machines/use-servers";
 import { useRoleGate } from "#/modules/organization/members.queries";
@@ -67,6 +70,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
 }) {
   const scope = useCollectionScope();
   const writer = useStoreWriter(organizationSlug);
+  const servers = useApprovalServers(organizationSlug);
   const [open, setOpen] = useState(false);
   const [left, setLeft] = useState<Extract<Removal, { removal: "removing" }> | null>(null);
   const gate = useRoleGate(organizationSlug, target.environment === null ? "project:delete" : "environment:delete", "Only an owner or admin can delete it.");
@@ -105,8 +109,31 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
     return { items, evidence: { accept, version: null, everyCopy: {} } };
   }
 
+  /**
+   * The person's approval of what `consent` takes off, when a Server enforces Device approval: every Namespace on every
+   * Server of the Cluster, and each Volume they accepted losing, read fresh. Throws, before anything is sent, when they
+   * don't approve it.
+   */
+  async function teardown(consent: RemovalConsent) {
+    const read = <Q extends ConfigQuery>(query: Q) => fetchStoreView(organizationSlug, scope, query);
+    const removed = await Promise.all(inScope.map(async (environment) => {
+      const ref = { project: target.project, environment: environment.name };
+      const [{ namespace }, { volumes }] = await Promise.all([read(namespaceQuery(ref)), read(removalsQuery(ref))]);
+      return { name: environment.name, namespace, volumes };
+    }));
+    const { namespaces, volumes } = removalTeardown(removed, consent);
+    return approveTeardown({
+      machines: servers.machines,
+      near: namespaces.flatMap(servers.running),
+      scope: (machines) => ({ kind: "namespace", namespaces, machines, volumes: Object.keys(volumes) }),
+      volumes,
+      title: `Delete ${name}?`,
+      action: "Delete",
+    }, reviewApproval);
+  }
+
   async function confirm(consent: RemovalConsent) {
-    const answer = await removeTarget(writer.commit, target, consent);
+    const answer = await removeTarget(writer.commit, target, consent, await teardown(consent));
     if ("ask" in answer) {
       // The Store found more to lose than the dialog showed, or Servers it couldn't check: shown again, to be typed for again.
       const { items } = await load();

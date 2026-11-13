@@ -75,7 +75,199 @@ fn is_hostname(value: &str) -> bool {
     (1..=253).contains(&value.len()) && value.split('.').all(is_dns_label)
 }
 
+/// Lowercase hex text of a fixed number of bytes, which signed and replicated values share.
+pub(crate) mod hex {
+    use std::fmt;
+
+    pub(crate) fn hex_bytes<const N: usize>(value: &str) -> Option<[u8; N]> {
+        if !super::is_lower_hex(value, N * 2) {
+            return None;
+        }
+        let mut bytes = [0; N];
+        for (byte, pair) in bytes.iter_mut().zip(value.as_bytes().chunks(2)) {
+            *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+        }
+        Some(bytes)
+    }
+
+    pub(crate) fn write_hex(bytes: &[u8], formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        bytes
+            .iter()
+            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
+    }
+}
+
+/// A fixed-size byte value written as lowercase hex, after `$prefix`. `$expected` is the text
+/// a refusal says it wanted; left out, it names the prefix and the byte count. `without_debug`
+/// leaves `Debug` to the caller for a type that prints something other than its bytes.
+macro_rules! hex_newtype {
+    ($(#[$attribute:meta])* $name:ident, $label:literal, $len:literal, $prefix:literal) => {
+        $crate::value::hex_newtype!(
+            $(#[$attribute])* $name, $label, $len, $prefix,
+            concat!($prefix, "lowercase hex of ", stringify!($len), " bytes")
+        );
+    };
+    ($(#[$attribute:meta])* $name:ident, $label:literal, $len:literal, $prefix:literal, $expected:expr) => {
+        $crate::value::hex_newtype!(
+            $(#[$attribute])* $name, $label, $len, $prefix, $expected, without_debug
+        );
+
+        impl ::std::fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                write!(formatter, concat!(stringify!($name), "({})"), self)
+            }
+        }
+    };
+    ($(#[$attribute:meta])* $name:ident, $label:literal, $len:literal, $prefix:literal, $expected:expr, without_debug) => {
+        $(#[$attribute])*
+        #[derive(
+            Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd,
+            ::serde::Serialize, ::serde::Deserialize, ::ts_rs::TS,
+        )]
+        #[serde(try_from = "String", into = "String")]
+        #[ts(type = "string")]
+        pub struct $name([u8; $len]);
+
+        impl $name {
+            #[must_use]
+            pub const fn from_bytes(bytes: [u8; $len]) -> Self {
+                Self(bytes)
+            }
+
+            #[must_use]
+            pub const fn as_bytes(&self) -> &[u8; $len] {
+                &self.0
+            }
+
+            /// # Errors
+            /// Returns a [`ValueError`](crate::ValueError) unless `value` is the prefix, if any, and then
+            /// lowercase hex of the right length.
+            pub fn parse(value: &str) -> Result<Self, $crate::ValueError> {
+                value
+                    .strip_prefix($prefix)
+                    .and_then($crate::value::hex::hex_bytes)
+                    .map(Self)
+                    .ok_or_else(|| $crate::ValueError::new($label, value, $expected))
+            }
+        }
+
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                formatter.write_str($prefix)?;
+                $crate::value::hex::write_hex(&self.0, formatter)
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = $crate::ValueError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::parse(&value)
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                value.to_string()
+            }
+        }
+    };
+}
+pub(crate) use hex_newtype;
+
+/// The `TryFrom<String>`, `From<Name> for String` and, for a fixed length, `Display` of a type
+/// that travels as standard base64, over a `Name([u8; N])` or `Name(Vec<u8>)` the caller
+/// declares. `Fixed(N)` takes exactly N bytes, `AtLeast(N)` and `Any` a vector.
+macro_rules! base64_newtype {
+    ($name:ident, $label:literal, $expected:literal, Fixed($len:literal)) => {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                use base64::Engine as _;
+                formatter.write_str(&base64::engine::general_purpose::STANDARD.encode(self.0))
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = $crate::ValueError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(&value)
+                    .ok()
+                    .and_then(|bytes| <[u8; $len]>::try_from(bytes).ok())
+                    .map(Self)
+                    .ok_or_else(|| $crate::ValueError::new($label, value, $expected))
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                value.to_string()
+            }
+        }
+    };
+    ($name:ident, $label:literal, $expected:literal, Any) => {
+        impl TryFrom<String> for $name {
+            type Error = $crate::ValueError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(&value)
+                    .map(Self)
+                    .map_err(|_| $crate::ValueError::new($label, value, $expected))
+            }
+        }
+
+        $crate::value::base64_newtype!(@into $name);
+    };
+    ($name:ident, $label:literal, $expected:literal, AtLeast($min:expr)) => {
+        impl TryFrom<String> for $name {
+            type Error = $crate::ValueError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(&value)
+                    .ok()
+                    .filter(|bytes| bytes.len() >= $min)
+                    .map(Self)
+                    .ok_or_else(|| $crate::ValueError::new($label, value, $expected))
+            }
+        }
+
+        $crate::value::base64_newtype!(@into $name);
+    };
+    (@into $name:ident) => {
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.encode(value.0)
+            }
+        }
+    };
+}
+pub(crate) use base64_newtype;
+
 macro_rules! hex_id_newtype {
+    ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal, random) => {
+        hex_id_newtype!($(#[$attribute])* $name, $label, $len, $expected);
+
+        impl $name {
+            /// A new ID from a random UUID.
+            #[must_use]
+            pub fn random() -> Self {
+                Self::of(uuid::Uuid::new_v4())
+            }
+
+            fn of(uuid: uuid::Uuid) -> Self {
+                let mut hex = [0_u8; $len];
+                uuid.simple().encode_lower(&mut hex);
+                Self(hex)
+            }
+        }
+    };
     ($(#[$attribute:meta])* $name:ident, $label:literal, $len:expr, $expected:literal) => {
         $(#[$attribute])*
         #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -252,6 +444,13 @@ validated_string_newtype!(
 );
 
 validated_string_newtype!(
+    /// A Cluster's name in its Internal DNS alias `<service>.<namespace>.<cluster>.ployz.internal`.
+    /// It is not unique: two Clusters may share one.
+    ClusterName, "Cluster Name", "one DNS label: up to 63 lowercase letters, digits and '-', starting and ending with a letter or digit",
+    |value| is_dns_label(value)
+);
+
+validated_string_newtype!(
     /// A manifest digest as the Machine stored it: `sha256:` and 64 lowercase hex.
     ImageDigest, "image digest", "`sha256:` followed by 64 lowercase hexadecimal characters",
     |value| value.strip_prefix("sha256:").is_some_and(|hex| is_lower_hex(hex, 64))
@@ -275,6 +474,33 @@ validated_string_newtype!(
                 && component.bytes().all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
         })
 );
+
+/// The repository path every built Service's image and Build Grant lives under.
+pub const BUILD_REPOSITORY_PREFIX: &str = "ployz-build/";
+
+impl BuildGrantRepository {
+    /// The one repository a build of the Service named `service` may push into.
+    ///
+    /// # Errors
+    /// Returns an error when `service` is not a repository path component.
+    pub fn for_service(service: &impl fmt::Display) -> Result<Self, ValueError> {
+        Self::parse(format!("{BUILD_REPOSITORY_PREFIX}{service}"))
+    }
+}
+
+/// The image a Service's plan names before its build or upload has made one, which binding
+/// replaces with the verified content.
+#[must_use]
+pub fn pending_image(service: &impl fmt::Display) -> String {
+    format!("{BUILD_REPOSITORY_PREFIX}{service}:pending")
+}
+
+/// Whether `image` is a built Service's image or its pending placeholder, which no Device
+/// can pin by digest before the build exists.
+#[must_use]
+pub fn is_built_image(image: &str) -> bool {
+    image.starts_with(BUILD_REPOSITORY_PREFIX)
+}
 
 pub(crate) fn is_swarm_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"_-.".contains(&byte)
@@ -307,26 +533,48 @@ hex_id_newtype!(
     MachineId,
     "Machine ID",
     32,
-    "32 lowercase hexadecimal characters"
+    "32 lowercase hexadecimal characters",
+    random
+);
+hex_id_newtype!(
+    /// One approved operation its signer minted. A Machine consumes each step once,
+    /// so a retry after consumption needs a fresh approval.
+    OperationId,
+    "operation ID",
+    32,
+    "32 lowercase hexadecimal characters",
+    random
 );
 hex_id_newtype!(
     /// Identity of one bounded Machine upgrade attempt.
     MachineUpgradeAttemptId,
     "Machine upgrade attempt ID",
     32,
-    "32 lowercase hexadecimal characters"
+    "32 lowercase hexadecimal characters",
+    random
 );
 hex_id_newtype!(
     ServiceId,
     "Service ID",
     32,
-    "32 lowercase hexadecimal characters"
+    "32 lowercase hexadecimal characters",
+    random
 );
 hex_id_newtype!(
     TunnelId,
     "Tunnel ID",
     32,
-    "32 lowercase hexadecimal characters"
+    "32 lowercase hexadecimal characters",
+    random
+);
+hex_id_newtype!(
+    /// One node state the Private Access router keeps on a Machine: minted when the
+    /// daemon makes the state, and stamped on each router that mounts it.
+    PrivateAccessStateId,
+    "Private Access state ID",
+    32,
+    "32 lowercase hexadecimal characters",
+    random
 );
 hex_id_newtype!(
     /// Public handle of one Build Grant: its key's public half. Not secret.
@@ -342,53 +590,25 @@ hex_id_newtype!(
     "64 lowercase hexadecimal characters"
 );
 
-impl MachineId {
-    /// Random 32-character lowercase hexadecimal Machine ID.
-    #[must_use]
-    pub fn random() -> Self {
-        let mut hex = [0_u8; 32];
-        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
-        Self(hex)
+impl OperationId {
+    /// The operation ID of a UUID written in any of its text forms, such as a
+    /// Deployment's ID.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] unless `value` is a UUID.
+    pub fn from_uuid(value: &str) -> Result<Self, ValueError> {
+        uuid::Uuid::parse_str(value)
+            .map(Self::of)
+            .map_err(|_| ValueError::new("operation ID", value, "a UUID"))
     }
 }
 
 impl MachineUpgradeAttemptId {
-    /// Random 32-character lowercase hexadecimal attempt ID.
-    #[must_use]
-    pub fn random() -> Self {
-        Self::of(uuid::Uuid::new_v4())
-    }
-
     /// The attempt ID of a UUID written in any of its text forms.
     pub fn from_uuid(value: &str) -> Result<Self, ValueError> {
         uuid::Uuid::parse_str(value)
             .map(Self::of)
             .map_err(|_| ValueError::new("Machine upgrade attempt ID", value, "a UUID"))
-    }
-
-    fn of(uuid: uuid::Uuid) -> Self {
-        let mut hex = [0_u8; 32];
-        uuid.simple().encode_lower(&mut hex);
-        Self(hex)
-    }
-}
-
-impl ServiceId {
-    #[must_use]
-    pub fn random() -> Self {
-        let mut hex = [0_u8; 32];
-        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
-        Self(hex)
-    }
-}
-
-impl TunnelId {
-    /// Generate a 32-character lowercase hexadecimal Tunnel ID.
-    #[must_use]
-    pub fn random() -> Self {
-        let mut hex = [0_u8; 32];
-        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
-        Self(hex)
     }
 }
 
@@ -466,12 +686,61 @@ validated_string_newtype!(
             && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     }
 );
+/// The namespace a [`ManagementClientLabel`] names, read from its text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagementClientKind {
+    Cloud,
+    Cli,
+    Device,
+    Other,
+}
+
+impl ManagementClientLabel {
+    const CLOUD: &'static str = "cloud";
+    const CLI_PREFIX: &'static str = "cli-";
+
+    /// The label Cloud's slot carries.
+    #[must_use]
+    pub fn cloud() -> Self {
+        Self::parse(Self::CLOUD).expect("`cloud` is a valid Management Client label")
+    }
+
+    #[must_use]
+    pub fn is_cloud(&self) -> bool {
+        self.as_str() == Self::CLOUD
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> ManagementClientKind {
+        if self.is_cloud() {
+            ManagementClientKind::Cloud
+        } else if self.as_str().starts_with(Self::CLI_PREFIX) {
+            ManagementClientKind::Cli
+        } else if crate::DeviceCode::reserves(self) {
+            ManagementClientKind::Device
+        } else {
+            ManagementClientKind::Other
+        }
+    }
+}
+
 validated_string_newtype!(
     DockerVolumeName,
     "Docker Volume name",
     "a non-empty string",
     |value| !value.is_empty()
 );
+
+impl DockerVolumeName {
+    /// The Docker Volume a Volume's data lives in, before its Namespace scopes it:
+    /// `vol-{resource}`.
+    ///
+    /// # Errors
+    /// Returns an error when `resource` is empty text that cannot name a Docker Volume.
+    pub fn for_resource(resource: &str) -> Result<Self, ValueError> {
+        Self::parse(format!("vol-{resource}"))
+    }
+}
 
 validated_string_newtype!(
     ServiceVolumeReference,
@@ -636,14 +905,12 @@ validated_string_newtype!(
     |value| is_dns_label(value)
 );
 
-/// Docker label written on resources Ployz manages.
-pub const MANAGED_LABEL: &str = "ployz.managed";
-/// Docker label recording the owning Namespace.
-pub const NAMESPACE_LABEL: &str = "ployz.namespace";
-
 impl Namespace {
     /// The reserved Namespace for Ployz infrastructure.
     pub const SYSTEM: &'static str = "ployz-system";
+    /// Reserved so `x.ployz.internal` never names a Service: the Internal DNS alias
+    /// `<service>.<namespace>.<cluster>.ployz.internal` owns that suffix.
+    pub const ALIAS: &'static str = "ployz";
 
     /// The reserved Namespace for Ployz infrastructure Containers.
     #[must_use]
@@ -651,10 +918,17 @@ impl Namespace {
         Self::parse(Self::SYSTEM).expect("the reserved Namespace is a valid DNS label")
     }
 
-    /// Whether this name is reserved for Ployz infrastructure.
+    /// Whether this is the Namespace of Ployz infrastructure, which drains, removals and
+    /// teardown leave to Ployz.
+    #[must_use]
+    pub fn is_system(&self) -> bool {
+        self.as_str() == Self::SYSTEM
+    }
+
+    /// Whether users may not create this Namespace: the system one, or the Internal DNS alias.
     #[must_use]
     pub fn is_reserved(&self) -> bool {
-        self.as_str() == Self::SYSTEM
+        matches!(self.as_str(), Self::SYSTEM | Self::ALIAS)
     }
 
     /// Physical Docker Volume name for a declared volume owned by this Namespace.
@@ -737,6 +1011,51 @@ impl QualifiedService {
             Namespace::system(),
             ServiceName::parse("ingress").expect("ingress is a DNS-label Service Name"),
         )
+    }
+
+    /// Reserved holder that owns the Ingress Proxy's network namespace and host ports.
+    #[must_use]
+    pub fn system_ingress_holder() -> Self {
+        Self::new(
+            Namespace::system(),
+            ServiceName::parse("ingress-holder")
+                .expect("ingress-holder is a DNS-label Service Name"),
+        )
+    }
+
+    /// Reserved Tunnel Connector that joins the holder's network and reaches Caddy on
+    /// loopback.
+    #[must_use]
+    pub fn system_tunnel() -> Self {
+        Self::new(
+            Namespace::system(),
+            ServiceName::parse("tunnel").expect("tunnel is a DNS-label Service Name"),
+        )
+    }
+
+    /// Reserved Private Access router that advertises the Cluster network to a tailnet.
+    #[must_use]
+    pub fn system_tailscale() -> Self {
+        Self::new(
+            Namespace::system(),
+            ServiceName::parse("tailscale").expect("tailscale is a DNS-label Service Name"),
+        )
+    }
+
+    /// Whether this is the reserved Private Access router. It is placed only through
+    /// SetPrivateAccess.
+    #[must_use]
+    pub fn is_private_access_router(&self) -> bool {
+        *self == Self::system_tailscale()
+    }
+
+    /// Whether this is one of the three reserved Ingress Proxy identities: the holder,
+    /// Caddy, or the Tunnel Connector. All three are placed only through SetIngressDoors.
+    #[must_use]
+    pub fn is_ingress_door(&self) -> bool {
+        *self == Self::system_ingress()
+            || *self == Self::system_ingress_holder()
+            || *self == Self::system_tunnel()
     }
 }
 
@@ -958,6 +1277,33 @@ impl fmt::Display for WireGuardPublicKey {
     }
 }
 
+impl WireGuardPublicKey {
+    /// 16 lowercase base32 characters (80 bits) of the key's SHA-256, for a person to compare.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+
+        let mut digest = Sha256::new();
+        digest.update(b"ployz-wireguard-key-v1\n");
+        digest.update(self.0);
+        let digest = digest.finalize();
+        let bits = u128::from_be_bytes(
+            *digest
+                .as_slice()
+                .first_chunk()
+                .expect("a SHA-256 digest is 32 bytes"),
+        );
+        let alphabet = b"abcdefghijklmnopqrstuvwxyz234567";
+        (0..16)
+            .map(|index| {
+                let digit =
+                    usize::try_from((bits >> (128 - 5 * (index + 1))) & 31).expect("five bits");
+                char::from(*alphabet.get(digit).expect("five bits index 32 digits"))
+            })
+            .collect()
+    }
+}
+
 validated_string_newtype!(
     /// An open wire capability name using a stable namespace.
     CapabilityName,
@@ -1029,6 +1375,17 @@ impl From<CloudEnrollToken> for String {
 
 #[cfg(test)]
 mod tests {
+    /// A CLI and a daemon of different versions must print the same fingerprint.
+    #[test]
+    fn a_wireguard_key_fingerprint_is_stable_and_tells_keys_apart() {
+        let key = super::WireGuardPublicKey([3; 32]);
+        assert_eq!(key.fingerprint(), "3tneseul2uuppwo6");
+        assert_ne!(
+            key.fingerprint(),
+            super::WireGuardPublicKey([4; 32]).fingerprint()
+        );
+    }
+
     #[test]
     fn hostnames_follow_rfc_1035_lengths() {
         let label = "b".repeat(63);
@@ -1041,11 +1398,156 @@ mod tests {
     }
 
     #[test]
+    fn a_cluster_name_is_one_dns_label_of_at_most_63_characters() {
+        assert_eq!(
+            super::ClusterName::parse("a".repeat(63)).unwrap().as_str(),
+            "a".repeat(63)
+        );
+        let refused = super::ClusterName::parse("a".repeat(64)).unwrap_err();
+        assert!(refused.to_string().contains("63"), "{refused}");
+        for invalid in ["", "Acme", "acme.prod", "-acme", "acme-", "ac_me"] {
+            assert!(super::ClusterName::parse(invalid).is_err(), "{invalid}");
+        }
+        assert!(serde_json::from_value::<super::ClusterName>(serde_json::json!("ACME")).is_err());
+    }
+
+    #[test]
     fn an_upgrade_attempt_id_is_its_uuid_in_lowercase_hex() {
         let id = super::MachineUpgradeAttemptId::from_uuid("0F8FAD5B-D9CB-469F-A165-70867728950E")
             .unwrap();
         assert_eq!(id.as_str(), "0f8fad5bd9cb469fa16570867728950e");
         assert!(super::MachineUpgradeAttemptId::from_uuid("not-a-uuid").is_err());
+    }
+
+    /// Wire strings and refusal texts of the hex and base64 newtypes: replicated, signed and
+    /// sealed values spell these exactly, and `decode::reason` reads the refusal text.
+    #[test]
+    fn hex_and_base64_newtypes_keep_their_wire_strings_and_refusals() {
+        use super::ValueError;
+        use crate::authority::{
+            deploy::PayloadDigest,
+            keys::SigningPublicKey,
+            proposal::StepDigest,
+            rule::{AttestKey, ImageDigest, RuleId},
+        };
+        use crate::{Ciphertext, FoundingClaim, SealedSealingKey, SealingKeyBackup};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        fn wire<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+            value: &T,
+            text: &str,
+        ) {
+            assert_eq!(
+                serde_json::to_value(value).unwrap(),
+                serde_json::json!(text)
+            );
+            assert_eq!(
+                &serde_json::from_value::<T>(serde_json::json!(text)).unwrap(),
+                value
+            );
+        }
+
+        let hex32 = "07".repeat(32);
+        let refused = |error: ValueError| error.to_string();
+        wire(&PayloadDigest::parse(&hex32).unwrap(), &hex32);
+        wire(&StepDigest::parse(&hex32).unwrap(), &hex32);
+        wire(&SigningPublicKey::parse(&hex32).unwrap(), &hex32);
+        wire(&AttestKey::parse(&hex32).unwrap(), &hex32);
+        wire(&RuleId::parse(&"07".repeat(16)).unwrap(), &"07".repeat(16));
+        wire(
+            &ImageDigest::parse(&format!("sha256:{hex32}")).unwrap(),
+            &format!("sha256:{hex32}"),
+        );
+        assert_eq!(
+            refused(PayloadDigest::parse("zz").unwrap_err()),
+            r#"invalid payload digest "zz": 64 lowercase hex digits"#
+        );
+        assert_eq!(
+            refused(StepDigest::parse("zz").unwrap_err()),
+            r#"invalid step digest "zz": 64 lowercase hex digits"#
+        );
+        assert_eq!(
+            refused(SigningPublicKey::parse("zz").unwrap_err()),
+            r#"invalid signing key "zz": 64 lowercase hex digits"#
+        );
+        assert_eq!(
+            refused(RuleId::parse("zz").unwrap_err()),
+            r#"invalid rule ID "zz": lowercase hex of 16 bytes"#
+        );
+        assert_eq!(
+            refused(ImageDigest::parse("zz").unwrap_err()),
+            r#"invalid image digest "zz": sha256:lowercase hex of 32 bytes"#
+        );
+        assert!(PayloadDigest::parse(&"ab".repeat(32)).is_ok());
+        assert!(PayloadDigest::parse(&"AB".repeat(32)).is_err());
+        assert!(ImageDigest::parse(&hex32).is_err());
+
+        let sealing: crate::SealingPublicKey =
+            serde_json::from_value(serde_json::json!(STANDARD.encode([7; 32]))).unwrap();
+        wire(&sealing, &STANDARD.encode([7; 32]));
+        let claim = FoundingClaim::of_pairing("ppair_fake");
+        wire(&claim, &claim.to_string());
+        wire(&SealedSealingKey::from_bytes(vec![1, 2, 3]), "AQID");
+        wire(&SealingKeyBackup::from_bytes(vec![1, 2, 3]), "AQID");
+        wire(
+            &Ciphertext::from_bytes(vec![9; 48]),
+            &STANDARD.encode([9; 48]),
+        );
+        let key = |text: &str| serde_json::from_value::<crate::SealingPublicKey>(text.into());
+        assert!(
+            key("AAAA")
+                .unwrap_err()
+                .to_string()
+                .starts_with(r#"invalid Sealing public key "AAAA": 32 bytes in base64"#)
+        );
+        assert!(
+            serde_json::from_value::<FoundingClaim>("AAAA".into())
+                .unwrap_err()
+                .to_string()
+                .starts_with(r#"invalid Founding Claim "AAAA": 32 bytes in base64"#)
+        );
+        assert!(
+            serde_json::from_value::<SealedSealingKey>("!!".into())
+                .unwrap_err()
+                .to_string()
+                .starts_with(r#"invalid sealed Sealing Key "!!": base64"#)
+        );
+        assert!(
+            serde_json::from_value::<SealingKeyBackup>("!!".into())
+                .unwrap_err()
+                .to_string()
+                .starts_with(r#"invalid Sealing Key backup "!!": base64"#)
+        );
+        let short = STANDARD.encode([9; 47]);
+        assert!(
+            serde_json::from_value::<Ciphertext>(short.clone().into())
+                .unwrap_err()
+                .to_string()
+                .starts_with(&format!(
+                    "invalid sealed value {short:?}: base64 of at least 48 bytes"
+                ))
+        );
+    }
+
+    #[test]
+    fn random_ids_are_32_lowercase_hex_digits() {
+        let texts = [
+            super::MachineId::random().to_string(),
+            super::OperationId::random().to_string(),
+            super::ServiceId::random().to_string(),
+            super::PrivateAccessStateId::random().to_string(),
+            super::TunnelId::random().to_string(),
+            super::MachineUpgradeAttemptId::random().to_string(),
+        ];
+        for text in &texts {
+            assert!(super::is_lower_hex(text, 32), "{text}");
+        }
+        assert_ne!(super::MachineId::random(), super::MachineId::random());
+        let operation = super::OperationId::from_uuid("0F8FAD5B-D9CB-469F-A165-70867728950E");
+        assert_eq!(
+            operation.unwrap().as_str(),
+            "0f8fad5bd9cb469fa16570867728950e"
+        );
     }
 
     #[test]
@@ -1099,6 +1601,28 @@ mod tests {
     }
 
     #[test]
+    fn derived_docker_names_keep_today_s_bytes() {
+        let id = "00000000-0000-4000-8000-000000000002";
+        assert_eq!(
+            super::DockerVolumeName::for_resource(id).unwrap().as_str(),
+            "vol-00000000-0000-4000-8000-000000000002"
+        );
+        assert!(super::DockerVolumeName::for_resource("a/b").is_ok());
+        let web = super::ServiceName::parse("web").unwrap();
+        assert_eq!(
+            super::BuildGrantRepository::for_service(&web)
+                .unwrap()
+                .as_str(),
+            "ployz-build/web"
+        );
+        assert_eq!(super::pending_image(&web), "ployz-build/web:pending");
+        assert!(super::is_built_image("ployz-build/web:pending"));
+        assert!(super::is_built_image("ployz-build/web"));
+        assert!(!super::is_built_image("ployz-builder/web"));
+        assert!(!super::is_built_image("nginx:latest"));
+    }
+
+    #[test]
     fn an_image_digest_is_lowercase_sha256() {
         let digest = super::ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap();
         assert_eq!(digest.hex(), "a".repeat(64));
@@ -1115,6 +1639,26 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_management_client_label_names_its_kind() {
+        for (label, kind) in [
+            ("cloud", ManagementClientKind::Cloud),
+            (
+                "cli-0123456789abcdef0123456789ab",
+                ManagementClientKind::Cli,
+            ),
+            ("device-abc", ManagementClientKind::Device),
+            ("laptop", ManagementClientKind::Other),
+            ("cloud-2", ManagementClientKind::Other),
+            ("cli", ManagementClientKind::Other),
+        ] {
+            let label = ManagementClientLabel::parse(label).unwrap();
+            assert_eq!(label.kind(), kind, "{label}");
+            assert_eq!(label.is_cloud(), kind == ManagementClientKind::Cloud);
+        }
+        assert_eq!(ManagementClientLabel::cloud().as_str(), "cloud");
+    }
 
     #[test]
     fn a_hostname_normalises_to_a_machine_name() {

@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigCommand, DiffView } from "@ployz/sdk";
+import type { ConfigCommand, DiffView, Signed } from "@ployz/sdk";
 import { Cause, Effect, Predicate } from "effect";
 import { toErrorMessage } from "#/lib/error-message";
-import type { ApprovalDecision, ServiceApply, VolumeApply } from "#/modules/approvals/approvals";
+import type { ApprovalDecision, KeptVolumeApproval, ServiceApply, VolumeApply } from "#/modules/approvals/approvals";
 import { type ApprovalView, type Decider, decideApproval, onceFor, type OperationDigest, readAsker, undoApproval } from "#/modules/approvals/approvals.server";
 import { callStore, writePermission } from "#/modules/config-store/config-store.server";
 import { findService } from "#/modules/config-store/store-lookup.server";
@@ -12,6 +12,10 @@ import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import { actService, runVolume } from "#/modules/operations/operations.server";
 import { type Access, requireAccessById } from "#/modules/organization/access.server";
+import { serviceEnforces, strandingStop } from "#/modules/service-act/service-act.server";
+
+/** One approval per container, made in the approver's browser when they approve a restart or stop on Servers that enforce. */
+type Approvals = Readonly<Record<string, Signed>>;
 
 /** Why an approved ask didn't run; `moved` when the plan it reviewed is gone, so it must be asked again. */
 type NotRun = { readonly message: string; readonly moved: boolean };
@@ -20,7 +24,8 @@ type NotRun = { readonly message: string; readonly moved: boolean };
 const notRun = (refusal: StoreRefusal, conflict: "moved" | "busy"): NotRun =>
   ({ message: refusal.message, moved: refusal.code === "approval_required" || (refusal.code === "conflict" && conflict === "moved") });
 
-const askerCaller = (access: Access, credentialId: string): Caller => ({
+/** The member who asked, acting from the dashboard with what they hold now, through the credential that asked. */
+export const askerCaller = (access: Access, credentialId: string): Caller => ({
   userId: access.userId,
   organization: access.organization,
   credential: { kind: "session", id: credentialId },
@@ -45,14 +50,22 @@ const applyService = Effect.fn("Approvals.applyService")(function* (
   asker: { userId: string; credentialId: string },
   approval: ApprovalView,
   { environmentId, service, verb }: ServiceApply,
+  approvals: Approvals | undefined,
 ) {
   const access = yield* requireAccessById({ userId: asker.userId }, organizationId, OPERATIONS[`service.${verb}`].requires);
   const found = yield* findService(organizationId, environmentId, service);
   if (found === null) return { message: "The service is gone.", moved: true } satisfies NotRun;
+  const stranding = verb === "stop" ? yield* strandingStop(organizationId, found, Object.keys(approvals ?? {}).length > 0) : null;
+  if (stranding !== null) return { message: stranding, moved: false } satisfies NotRun;
+  // Servers that enforce take a restart or stop only with the approver's passkey approvals, which only a browser can make.
+  const unapproved = Object.keys(approvals ?? {}).length === 0;
+  if (unapproved && (yield* serviceEnforces(organizationId, found))) {
+    return { message: "Approve it in Ployz Cloud with your passkey.", moved: false } satisfies NotRun;
+  }
   const body = { environmentId, service, only: null };
   const admission = yield* actService(
     askerCaller(access, asker.credentialId),
-    { ...body, ...found, verb, digest: bodyDigest(`service_${verb}`, body) },
+    { ...body, ...found, verb, digest: bodyDigest(`service_${verb}`, body), approvals },
     { key: null, approvalId: approval.id },
   );
   return admission.ok ? null : notRun(admission.refusal, "busy");
@@ -77,7 +90,7 @@ const applyVolume = Effect.fn("Approvals.applyVolume")(function* (
  * Runs what a dashboard ask into a Protected Environment waited on, as its asker with what they hold now and the
  * approval it was given. An ask from `ployz` or an agent has no `apply`: it runs when it asks again with the approval.
  */
-const applyApproved = Effect.fn("Approvals.applyApproved")(function* (organizationId: string, approval: ApprovalView) {
+const applyApproved = Effect.fn("Approvals.applyApproved")(function* (organizationId: string, approval: ApprovalView, approvals: Approvals | undefined) {
   const asker = yield* readAsker(organizationId, approval.id);
   if (asker === undefined || asker.review.apply === undefined) return null;
   if (asker.requestedByUserId === null) return { message: "Whoever asked is no longer in the Organization.", moved: true } satisfies NotRun;
@@ -85,23 +98,26 @@ const applyApproved = Effect.fn("Approvals.applyApproved")(function* (organizati
     ? yield* applyStore(organizationId, asker.requestedByUserId, asker.review.apply, approval, asker.review.diff)
     : "volumeId" in asker.review.apply
       ? yield* applyVolume(organizationId, { userId: asker.requestedByUserId, credentialId: asker.credentialId }, approval, asker.review.apply)
-      : yield* applyService(organizationId, { userId: asker.requestedByUserId, credentialId: asker.credentialId }, approval, asker.review.apply);
+      : yield* applyService(organizationId, { userId: asker.requestedByUserId, credentialId: asker.credentialId }, approval, asker.review.apply, approvals);
 });
 
 /**
  * `decideApproval`, and once this decision approves a dashboard ask into a Protected Environment, what it waited on
- * runs. When it doesn't run, the approval is handed back, to pending or superseded when its plan moved, and the
- * decider is told which. Only the decision that approved the row runs it, so approving again never runs it twice.
+ * runs, with the `approvals` the approver's browser made for a restart on Servers that enforce. `volume` is the
+ * approver's passkey answer to a Volume run's workflow, kept with the approval for the run its asker asks again. When it doesn't run, the
+ * approval is handed back, to pending or superseded when its plan moved, and the decider is told which. Only the decision that approved the row runs it, so approving again never runs it twice.
  */
 export const decideAndApply = <R = never>(
   decider: Decider,
   id: string,
   decision: ApprovalDecision,
   operationDigest?: OperationDigest<R>,
+  approvals?: Approvals,
+  volume?: KeptVolumeApproval,
 ) => Effect.gen(function* () {
-  const decided = yield* decideApproval(decider, id, decision, operationDigest);
+  const decided = yield* decideApproval(decider, id, decision, operationDigest, volume);
   if (!decided.ok || decided.decided !== true || !("approve" in decision)) return decided;
-  const failed = yield* applyApproved(decider.organization.id, decided.approval).pipe(
+  const failed = yield* applyApproved(decider.organization.id, decided.approval, approvals).pipe(
     Effect.catchCause((cause) => {
       const error = Cause.squash(cause);
       const moved = Predicate.isTagged(error, "NotFound");
@@ -111,6 +127,6 @@ export const decideAndApply = <R = never>(
   if (failed === null) return decided;
   yield* undoApproval(decider.organization.id, id, failed.moved);
   const then = failed.moved ? "The plan changed, so it has to be asked again." : "It's still waiting for approval.";
-  const refusal: StoreRefusal = { code: "conflict", message: `Approved, but it didn't run: ${failed.message} ${then}`, details: null };
+  const refusal: StoreRefusal = { code: "conflict", message: `It didn't run: ${failed.message} ${then}`, details: null };
   return { ok: false as const, refusal };
 }).pipe(Effect.withSpan("Approvals.decideAndApply"));

@@ -10,9 +10,11 @@ import {
   type ApprovalReview,
   type Redeploy,
   approvalCommand,
+  asksForAuthKey,
   approvalSubject,
   type OperationVerb,
   type ServiceApply,
+  type KeptVolumeApproval,
   type VolumeApply,
   withoutSealedBefore,
 } from "#/modules/approvals/approvals";
@@ -78,7 +80,7 @@ const readRow = Effect.fn("Approvals.readRow")(function* (organizationId: string
 });
 
 /** The names of the people who asked for `approvals`, keyed by their user id, so a card says whom it waits for. */
-export const askerNames = Effect.fn("Approvals.askerNames")(function* (approvals: readonly ApprovalView[]) {
+export const askerNames = Effect.fn("Approvals.askerNames")(function* (approvals: readonly { readonly requested_by: string | null }[]) {
   const ids = [...new Set(approvals.flatMap((approval) => approval.requested_by ?? []))];
   if (ids.length === 0) return new Map<string, string>();
   const { drizzle } = yield* Database;
@@ -451,8 +453,8 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
   /**
-   * `server:<machine id>`, `servers:<organization id>`, `organization:<organization id>`, `namespace:<name>`,
-   * `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>`,
+   * `server:<machine id>`, `servers:<organization id>`, `organization:<organization id>`, `cluster:<organization id>`,
+   * `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>`,
    * `environment:<environment id>` or `project:<name>`.
    */
   subject: string;
@@ -469,6 +471,8 @@ export type OperationAsked = {
    * instead of starting another. The gate leaves such an approval unspent; it spends every other one on its one run.
    */
   recorded?: true;
+  /** It asks from the CLI or an agent though it destroys nothing, as a Cluster rename does: old private names stop answering. */
+  alwaysAsks?: true;
 };
 
 const requestOperationApproval = Effect.fn("Approvals.requestOperation")(function* (
@@ -495,16 +499,22 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), stale);
   // The subject rides in the refusal, not the stored review: approvalView adds it from the row.
+  const renames = asked.verb === "set_cluster_name";
+  const switches = asked.verb === "set_ingress_doors";
   const details = {
     effects: asked.effects,
     approval: digest,
     approval_id: recorded.id,
-    operation: { ...operation, subject: asked.subject },
+    operation: renames || switches ? { ...operation, preview: asked.preview, subject: asked.subject } : { ...operation, subject: asked.subject },
     organization: caller.organization.slug,
   };
+  const what = renames ? `renaming the Cluster to ${asked.name}`
+    : switches ? `switching web traffic ${asked.name}`
+    : asked.verb === "set_private_access" ? `turning Private Access ${asked.name}`
+    : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
   return {
     code: "approval_required",
-    message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
+    message: `A human must approve ${what} before it runs.`,
     details: asked.protected === undefined ? details : { ...details, protected: { environment: asked.protected } },
   } satisfies StoreRefusal;
 });
@@ -549,7 +559,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   if (caller.via === "dashboard" && asked.protected === undefined) return { ok: true, approvalId: null };
   const trusted = yield* redeemApproval(caller, approvalId, { command: asked.verb, subject: asked.subject });
   if (!trusted.ok) return trusted;
-  if (asked.effects.length === 0 && asked.protected === undefined) return { ok: true, approvalId: null };
+  if (asked.effects.length === 0 && asked.protected === undefined && asked.alwaysAsks === undefined) return { ok: true, approvalId: null };
   if (asked.protected === undefined && !(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (approvalId !== null && trusted.approval !== "required" && trusted.approval.approved === digest) {
@@ -625,7 +635,9 @@ const held = (decider: Decider) => "role" in decider && decider.credential !== u
  * who can protect it, other than its asker, however they decide. Any other is denied by
  * any member and approved by a person in Ployz Cloud, or the prompt that asked.
  */
-const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean): string | null => {
+const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean, keyed: boolean): string | null => {
+  if (keyed && !asksForAuthKey(row.review)) return "This approval doesn't ask for a key.";
+  if (approve && !keyed && asksForAuthKey(row.review)) return "Approve it in Ployz Cloud, where you paste the Tailscale auth key.";
   const guarded = row.review.protected;
   if (guarded !== undefined) {
     if (decider.userId === row.requestedByUserId) return "You asked for this, so someone else who can protect it decides.";
@@ -638,16 +650,13 @@ const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean): str
   return "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
 };
 
-/**
- * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
- * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. Who may decide is
- * `mayNotDecide`'s. The row records who decided.
- */
-export const decideApproval = <R = never>(
+const decide = <R>(
   caller: Decider,
   id: string,
   decision: ApprovalDecision,
-  operationDigest?: OperationDigest<R>,
+  operationDigest: OperationDigest<R> | undefined,
+  keyed: boolean,
+  volume?: KeptVolumeApproval,
 ) => Effect.gen(function* () {
   const found = yield* readRow(caller.organization.id, id);
   if (found === undefined) return yield* new NotFound({ message: "No such approval." });
@@ -669,7 +678,7 @@ export const decideApproval = <R = never>(
   if (lacking !== null) {
     return { ok: false, refusal: { code: "forbidden", message: lacking, details: { approval: approvalView(row) } } } satisfies Decided;
   }
-  const refused = mayNotDecide(caller, row, "approve" in decision);
+  const refused = mayNotDecide(caller, row, "approve" in decision, keyed);
   if (refused !== null) {
     return { ok: false, refusal: { code: "forbidden", message: refused, details: { approval: approvalView(row) } } } satisfies Decided;
   }
@@ -682,11 +691,53 @@ export const decideApproval = <R = never>(
   const decided = { decidedByUserId: caller.userId, decidedAt: now, updatedAt: now };
   const [updated] = yield* drizzle.update(operationApprovals)
     .set("approve" in decision
-      ? { status: "approved", ...decided }
+      ? { status: "approved", ...decided, ...(volume !== undefined && { volumeApproval: volume }) }
       : { status: "denied", reason: decision.reject.reason ?? null, ...decided })
     .where(and(eq(operationApprovals.id, row.id), eq(operationApprovals.status, "pending")))
     .returning();
   if (updated !== undefined) return { ok: true, approval: approvalView(updated), decided: true } satisfies Decided;
   const current = yield* readRow(caller.organization.id, id);
   return current === undefined ? yield* new NotFound({ message: "No such approval." }) : settled(current);
-}).pipe(Effect.withSpan("Approvals.decide"));
+});
+
+/**
+ * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
+ * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. Who may decide is
+ * `mayNotDecide`'s. The row records who decided.
+ */
+export const decideApproval = <R = never>(
+  caller: Decider,
+  id: string,
+  decision: ApprovalDecision,
+  operationDigest?: OperationDigest<R>,
+  volume?: KeptVolumeApproval,
+) => decide(caller, id, decision, operationDigest, false, volume).pipe(Effect.withSpan("Approvals.decide"));
+
+/**
+ * The passkey answer kept with approval `approvalId` for the Volume run it approved, once approved; null for any other.
+ * Only the asker's credential redeems the approval, and the Servers check the answer.
+ */
+export const keptVolumeApproval = Effect.fn("Approvals.keptVolumeApproval")(function* (organizationId: string, approvalId: string | null) {
+  if (approvalId === null || !Schema.is(Uuid)(approvalId)) return null;
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ kept: operationApprovals.volumeApproval }).from(operationApprovals).where(and(
+    eq(operationApprovals.id, approvalId), eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "approved"),
+  )).pipe(Effect.orDie);
+  return row?.kept ?? null;
+});
+
+/**
+ * Approve a row that asks for a key (`asksForAuthKey`) before the key goes anywhere. Only the call that moves the row
+ * from pending to approved goes on to send it; a deny or a second key after that finds the row decided. What the
+ * Servers then do with the key is that run's outcome, not this Approval's.
+ */
+export const approveKeyed = <R = never>(
+  caller: Decider,
+  input: { readonly id: string; readonly digest: string },
+  operationDigest?: OperationDigest<R>,
+) => decide(caller, input.id, { approve: { digest: input.digest } }, operationDigest, true).pipe(
+  Effect.map((answer): Decided => answer.ok && answer.decided !== true
+    ? { ok: false, refusal: { code: "conflict", message: `This approval was already decided elsewhere (${answer.approval.status}).`, details: { approval: answer.approval } } }
+    : answer),
+  Effect.withSpan("Approvals.approveKeyed"),
+);

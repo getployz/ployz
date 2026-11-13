@@ -57,8 +57,13 @@ macro_rules! rpc_catalog {
                 RecoverSealingKey: (recover_sealing_key, "RecoverSealingKey", RecoverSealingKeyRequest, "recover_sealing_key", SealingKeyRecovered, RECOVER_SEALING_KEY_CAPABILITY, "ployz.sealing.recover.v1", Always, Full),
                 Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always, Operator),
                 SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always, Operator),
+                PendingJoins: (pending_joins, "PendingJoins", PendingJoinsRequest, "pending_joins", PendingJoins, PENDING_JOINS_CAPABILITY, "ployz.machine.join.pending.v1", Always, Operator),
+                ApproveJoin: (approve_join, "ApproveJoin", ApproveJoinRequest, "approve_join", JoinApproved, APPROVE_JOIN_CAPABILITY, "ployz.machine.join.approve.v1", Always, Operator),
                 SetDevice: (set_device, "SetDevice", SetDeviceRequest, "set_device", DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
                 SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
+                SetDeviceEnforcement: (set_device_enforcement, "SetDeviceEnforcement", SetDeviceEnforcementRequest, "set_device_enforcement", DeviceEnforcementSet, SET_DEVICE_ENFORCEMENT_CAPABILITY, "ployz.machine.set-device-enforcement.v2", Always, Full),
+                SetPasskey: (set_passkey, "SetPasskey", SetPasskeyRequest, "set_passkey", DeviceSet, SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1", Always, Full),
+                RemoveTrustedKey: (remove_trusted_key, "RemoveTrustedKey", RemoveTrustedKeyRequest, "remove_trusted_key", TrustedKeyRemoved, REMOVE_TRUSTED_KEY_CAPABILITY, "ployz.machine.remove-trusted-key.v1", Always, Full),
                 SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always, Operator),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always, Operator),
@@ -90,6 +95,11 @@ macro_rules! rpc_catalog {
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster, Operator),
                 ReadRoutes: (read_routes, "ReadRoutes", ReadRoutesRequest, "read_routes", RoutesRead, READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1", Cluster, Operator),
                 ReadRoutedAddresses: (read_routed_addresses, "ReadRoutedAddresses", ReadRoutedAddressesRequest, "read_routed_addresses", RoutedAddresses, READ_ROUTED_ADDRESSES_CAPABILITY, "ployz.serving.routed-addresses.v1", Cluster, Operator),
+                SetIngressDoors: (set_ingress_doors, "SetIngressDoors", SetIngressDoorsRequest, "set_ingress_doors", IngressDoorsSet, SET_INGRESS_DOORS_CAPABILITY, "ployz.ingress.doors.v1", Cluster, Operator),
+                SetPrivateAccess: (set_private_access, "SetPrivateAccess", SetPrivateAccessRequest, "set_private_access", PrivateAccessSet, SET_PRIVATE_ACCESS_CAPABILITY, "ployz.private-access.v1", Cluster, Operator),
+                ReadClusterName: (read_cluster_name, "ReadClusterName", ReadClusterNameRequest, "read_cluster_name", ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1", Cluster, Operator),
+                SetClusterName: (set_cluster_name, "SetClusterName", SetClusterNameRequest, "set_cluster_name", ClusterNamed, SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1", Cluster, Operator),
+                SetClusterDoors: (set_cluster_doors, "SetClusterDoors", SetClusterDoorsRequest, "set_cluster_doors", ClusterDoorsDeclared, SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1", Cluster, Operator),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container, Operator),
                 RetainedEnv: (retained_env, "RetainedEnv", RetainedEnvRequest, "retained_env", RetainedEnvReply, RETAINED_ENV_CAPABILITY, "ployz.logs.retained-env.v1", Container, Operator),
             }
@@ -103,22 +113,64 @@ macro_rules! rpc_catalog {
                 Build: (build, "Build", "build", BUILD_CAPABILITY, "ployz.build.v1", Container, Operator),
             }
             capabilities {
+                JOIN_APPROVAL_CAPABILITY: ("ployz.machine.join.device-approval.v1", Always),
                 /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
                 VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
                 /// `SetVolumeSize` takes `allow_shrink` and lowers a bound down to its floor.
                 VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
+                /// `SetVolumeCopy` takes a Device-signed Volume approval and a `Forget` recipient. Under Device enforcement an Operator's pull needs an approval that names this Server and its source, a Snapshot under a Mirror approval grants that Mirror the send stream, and the send stream serves only a granted recipient. A Mirror's `Forget` withdraws it first.
+                VOLUME_APPROVAL_CAPABILITY: ("ployz.volume.approval.v1", Container),
+                /// `SetVolumeCopy` takes the `handoff` want and a request `receipt`. A Move's source records one decision after its cut and signs a receipt for it, refusing the other outcome with `handed_off`. Under Device enforcement a Move's target becomes the Writer only with that receipt.
+                VOLUME_HANDOFF_CAPABILITY: ("ployz.volume.copy.handoff.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.
                 MACHINE_STORAGE_OBSERVATION_CAPABILITY: ("ployz.machine.storage-observation.v1", Always),
                 /// The daemon refuses each RPC its caller's Management Scope does not reach.
                 MANAGEMENT_SCOPE_CAPABILITY: ("ployz.management.scope.v1", Always),
+                /// `RequestMachineUpgrade` takes an exact version no Release Channel resolves to only from a Full caller.
+                UPGRADE_EXACT_CAPABILITY: ("ployz.machine.upgrade.exact.v1", Always),
+                /// `RequestMachineUpgrade` takes the Release Channel a person signed and, under Device enforcement, admits an Operator's upgrade only along it.
+                UPGRADE_CHANNEL_CAPABILITY: ("ployz.machine.upgrade.channel.v1", Always),
                 /// The daemon opens Sealed values and keeps them out of its own logs.
                 ENV_SEALED_CAPABILITY: ("ployz.env.sealed.v1", Always),
                 /// The daemon opens a Build's Sealed values as secret files and keeps them out of its output.
                 BUILD_SEALED_CAPABILITY: ("ployz.build.sealed.v1", Always),
                 /// The daemon mints a Build Grant for a holder's own key and returns no grant secret.
                 BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
+                BUILD_GRANT_RULE_CAPABILITY: ("ployz.build.grant.rule.v1", Always),
+                /// `MintBuildGrant` takes a preview rule with its GitHub token, and a review for a reviewed build, and checks them before it opens anything.
+                BUILD_GRANT_PREVIEW_CAPABILITY: ("ployz.build.grant.preview.v1", Always),
+                /// `EnsureContainer` takes a Device-signed restart approval and, under Device enforcement, refuses an Operator's restart step without one.
+                RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v2", Always),
+                /// A restart or deploy approval may be signed by a browser key under a trusted passkey's session grant that rides in its envelope. The grant names its Environment's ID, and a deploy under it opens only Sealed values sealed for that Environment.
+                RESTART_SESSION_GRANT_CAPABILITY: ("ployz.restart.session-grant.v2", Always),
+                /// A restart approval may be of kind `start`, which permits only an existing Container's start step.
+                START_APPROVAL_CAPABILITY: ("ployz.restart.start-approval.v1", Always),
+                /// `SetIngressDoors` takes the Tunnel Door with a `sealed_token`, and places the Tunnel Connector.
+                SET_INGRESS_TUNNEL_CAPABILITY: ("ployz.ingress.tunnel.v1", Cluster),
+                /// `SetPrivateAccess` takes a person's approval of its sealed auth key and, under Device enforcement, turns Private Access on for an Operator only with one.
+                PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster),
+                /// A restart approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
+                PROPOSAL_APPROVAL_CAPABILITY: ("ployz.restart.proposal.v1", Always),
+                /// `EnsureContainer`, `RemoveVolume`, `Leave` and `Forget` take a person's teardown, signed by a Device or answered by a passkey's own prompt. Under Device enforcement an Operator's Container step that starts nothing, Volume removal, Leave or Forget runs only under one that names this Server and what the request takes off.
+                TEARDOWN_CAPABILITY: ("ployz.teardown.v1", Always),
+                /// `EnsureContainer` takes a deploy approval and, under Device enforcement, creates an Operator's Container only when its spec matches a digest it approves.
+                DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
+                /// A deploy approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
+                DEPLOY_PROPOSAL_CAPABILITY: ("ployz.container.deploy-proposal.v1", Always),
+                /// `EnsureContainer` takes an automatic deploy rule with its image token and, under Device enforcement, creates an Operator's Container under it only for the head's image built under the rule.
+                DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
+                /// An automatic deploy rule may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature.
+                RULE_PASSKEY_CAPABILITY: ("ployz.rule.passkey.v1", Always),
+                /// A Volume approval may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature. A browser key under a session grant still signs none.
+                VOLUME_PASSKEY_CAPABILITY: ("ployz.volume.passkey.v1", Always),
+                /// `EnsureContainer` takes a preview rule with its image token and, under Device enforcement, creates an Operator's Container under it only in the Namespace it derives, with the settings and inherited Sealed values the rule or a review approves. Sealed values carry the Environment they were sealed for.
+                DEPLOY_PREVIEW_CAPABILITY: ("ployz.container.deploy-preview.v1", Always),
+                /// A preview build's grant and its Containers may run on a person's review of one commit, a passkey's own prompt over it or a signature, which the daemon checks before anything opens.
+                PREVIEW_REVIEW_CAPABILITY: ("ployz.preview.review.v1", Always),
+                /// A rule build's grant and its Containers may run on a person's approval of one commit in place of the branch head. The grant needs the commit on the rule's branch, read from GitHub, and a Container the token's image and the rule's settings, the token's lifetime aside.
+                COMMIT_APPROVAL_CAPABILITY: ("ployz.rule.commit-approval.v1", Always),
             }
         }
     };

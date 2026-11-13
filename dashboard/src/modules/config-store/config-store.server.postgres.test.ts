@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
-import { type ConfigCommand, type ConfigQuery, type MachineId, RpcError } from "@ployz/sdk";
+import { type ConfigCommand, type ConfigQuery, type Departed, type LocalMachineRemoved, type MachineId, RpcError } from "@ployz/sdk";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1138,7 +1138,7 @@ it.live(
         const userId = (yield* resolveCaller(signedIn(alice))).userId;
         let runs = 0;
         const removeServer = (server: MachineId, noReset: boolean) => Effect.gen(function* () {
-          const removal = { organizationId, machineId: server, serverName: null, confirmDataLoss: [], noReset };
+          const removal = { organizationId, machineId: server, serverName: null, confirmDataLoss: [], noReset, teardown: null };
           const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: userId });
           const inngestRunId = `run-${++runs}`;
           yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1225,7 +1225,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false, teardown: null };
         const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
         const inngestRunId = "run-retry";
         yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1290,7 +1290,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false, teardown: null };
         const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
         const inngestRunId = "run-left";
         yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1307,8 +1307,9 @@ it.live(
         assert.deepStrictEqual(sent, ["remove", "forget", "forget"]);
         if (removed.kind !== "removed") return assert.fail(`not removed: ${removed.kind}`);
         assert.strictEqual(removed.resetWarning, resetWarning);
+        // The Leave's reply proves the reset: Cloud lets go of the last Server's Cluster.
         const release = yield* releaseServerActivity({ ...removal, ...removed });
-        assert.strictEqual(release.kind, "kept");
+        assert.deepStrictEqual(release, { kind: "released" });
       }).pipe(Effect.provide(cloud));
     }),
   60_000,
@@ -1362,7 +1363,7 @@ const removeDialEntry = Effect.fn(function* (otherAnswers: boolean, frameAnswers
           : { status: "unreachable" as const, error: null }
         : { status: "connected" as const, connected: through(machineId) }),
   };
-  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false, teardown: null };
   const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
   const inngestRunId = "run-dial-entry";
   yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1422,10 +1423,13 @@ it.live(
 );
 
 /**
- * A retried removal whose Server the Cluster already forgot: the SDK answers removed with this warning (ployz
- * `RESET_UNCONFIRMED`), and the Server keeps one device key. `others` Servers of the same pairing stay enrolled.
+ * A removal the SDK answers with `reply`, of a Server that keeps one device key. `others` Servers of the same pairing
+ * stay enrolled.
  */
-const removeForgottenServer = Effect.fn(function* (others: readonly MachineId[]) {
+const removeServerReplying = Effect.fn(function* (
+  others: readonly MachineId[],
+  reply: Pick<LocalMachineRemoved, "reset_warning"> & { readonly departed?: Departed },
+) {
   const alice = yield* signUp("alice");
   const caller = yield* resolveCaller(signedIn(alice));
   const organizationId = caller.organization.id;
@@ -1446,12 +1450,12 @@ const removeForgottenServer = Effect.fn(function* (others: readonly MachineId[])
   });
   const connected = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.fail(new RuntimeConnectionFailure({ cause: "timed out" })),
-    removeMachine: () => Effect.succeed({ reset_warning: "its reset couldn't be confirmed: it was already gone from the Cluster" }),
+    removeMachine: () => Effect.succeed(reply),
   });
   const runtime = { cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected }) };
-  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false, teardown: null };
   const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
-  const inngestRunId = "run-forgotten";
+  const inngestRunId = "run-replying";
   yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
   const removed = yield* Effect.scoped(removeMachineActivity({ ...removal, id: attempt.id, inngestRunId }))
     .pipe(Effect.provideService(OrganizationRuntime, runtime));
@@ -1469,6 +1473,80 @@ const removeForgottenServer = Effect.fn(function* (others: readonly MachineId[])
     pairings: (yield* drizzle.select().from(organizationPairing)).length,
   };
 });
+
+/** A retried removal whose Server the Cluster already forgot: the SDK answers removed with ployz `RESET_UNCONFIRMED`. */
+const removeForgottenServer = (others: readonly MachineId[]) =>
+  removeServerReplying(others, { reset_warning: "its reset couldn't be confirmed: it was already gone from the Cluster" });
+
+/** The Server reset, and then its own row removal failed: the daemon's only reset warning. */
+const resetCommitted = {
+  reset_warning: "replicated delete failed",
+  departed: { kind: "reset", row_warning: "replicated delete failed" },
+} as const;
+
+it.live(
+  "a Server whose reset committed, though its own row removal failed, loses Cloud's row while other Servers keep the Cluster",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const other = ids.machineId("1");
+      const after = yield* removeServerReplying([other], resetCommitted).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.state, "succeeded");
+      assert.deepStrictEqual(after.settled?.result?.release, { kind: "others_remain" });
+      assert.deepStrictEqual(after.servers, [other]);
+      assert.deepStrictEqual(after.keys, []);
+      assert.strictEqual(after.pairings, 1);
+    }),
+  60_000,
+);
+
+it.live(
+  "the last Server whose reset committed, though its own row removal failed, lets Cloud go of its Cluster",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const after = yield* removeServerReplying([], resetCommitted).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.state, "succeeded");
+      assert.deepStrictEqual(after.settled?.result?.release, { kind: "released" });
+      assert.deepStrictEqual(after.servers, []);
+      assert.deepStrictEqual(after.keys, []);
+      assert.strictEqual(after.pairings, 0);
+    }),
+  60_000,
+);
+
+it.live(
+  "Cloud keeps its hold on a Server whose Leave was unreachable",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const other = ids.machineId("1");
+      const after = yield* removeServerReplying([other], {
+        reset_warning: "target is unreachable; removing shared rows: connection refused",
+        departed: { kind: "unreachable", cause: "connection refused" },
+      }).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.result?.release.kind, "kept");
+      assert.deepStrictEqual(after.servers, [ids.machineId("0"), other].sort());
+      assert.deepStrictEqual(after.keys, [ids.machineId("0")]);
+    }),
+  60_000,
+);
+
+it.live(
+  "the last Server the tag says was already forgotten keeps Cloud's hold, as its reset couldn't be confirmed",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const after = yield* removeServerReplying([], {
+        reset_warning: "its reset couldn't be confirmed: it was already gone from the Cluster",
+        departed: { kind: "already_forgotten" },
+      }).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.result?.release.kind, "kept");
+      assert.deepStrictEqual(after.servers, [ids.machineId("0")]);
+      assert.strictEqual(after.pairings, 1);
+    }),
+  60_000,
+);
 
 it.live(
   "a Server already gone from the Cluster loses Cloud's row and its device keys while other Servers keep the Cluster",
@@ -1580,6 +1658,9 @@ it.live(
         mode: "hosted",
         productId: "pro",
         listActiveSubscriptions: () => Effect.die("not used"),
+        createCheckout: () => Effect.die("not used"),
+        setSubscriptionUnits: () => Effect.die("not used"),
+        clearPendingUpdate: () => Effect.die("not used"),
         createCustomerPortal: () => Effect.die("not used"),
       };
       const cloud = yield* cloudServices({ polar: hosted, hostedDnsUrl: hostedDns.url }, inngest);
@@ -1697,13 +1778,17 @@ it.live(
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const caller = yield* resolveCaller(signedIn(alice));
-        // Reading domains loads the Cluster Domain from Cloud's database; make that read fail after the write commits.
+        // The write and the domains reread both load the Cluster Domain; the Store's own commit hides it, so only the reread fails.
         const { drizzle } = yield* Database;
-        yield* drizzle.execute(sql`ALTER TABLE organization_cluster_domain RENAME TO organization_cluster_domain_gone`);
+        yield* drizzle.execute(sql.raw(`CREATE FUNCTION hide_cluster_domain() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN ALTER TABLE IF EXISTS organization_cluster_domain RENAME TO organization_cluster_domain_gone; RETURN NULL; END $$`));
+        yield* drizzle.execute(sql`CREATE TRIGGER hide_cluster_domain AFTER UPDATE ON config_environment EXECUTE FUNCTION hide_cluster_domain()`);
         const domains: ConfigQuery = { query: "domains", environment: here, service: null };
         const edited = yield* writeStoreAsMember(caller, caller.organization.slug, {
           command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }],
         }, [domains, get("web.replicas")]);
+        yield* drizzle.execute(sql`DROP TRIGGER hide_cluster_domain ON config_environment`);
+        yield* drizzle.execute(sql`DROP FUNCTION hide_cluster_domain()`);
         yield* drizzle.execute(sql`ALTER TABLE organization_cluster_domain_gone RENAME TO organization_cluster_domain`);
 
         assert.isTrue(edited.ok, "the write committed, so it answers as committed");

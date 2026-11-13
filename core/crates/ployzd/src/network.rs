@@ -24,7 +24,7 @@ mod path;
 
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
-pub use firewall::{apply_firewall_rules, fence_builder};
+pub use firewall::{Installed, Restored, apply_firewall_rules, fence_builder};
 pub use linux::{Leftover, NetworkPlane};
 pub(crate) use path::PathBook;
 
@@ -488,6 +488,7 @@ mod tests {
             public_ip: None,
             advertised_endpoints: advertised,
             runtime: MachineRuntime::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }
@@ -589,7 +590,7 @@ mod tests {
 
         let refreshed = start + PEER_DOWN_INTERVAL * 2;
         let (mut peers, persist) = attach_peer_selections(
-            peers_for(&observer.id, &[observer.clone(), stale.clone()]),
+            peers_for(&observer.id, &[observer.clone(), stale]),
             peers,
             &BTreeMap::new(),
             refreshed,

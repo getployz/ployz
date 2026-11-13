@@ -1,3 +1,4 @@
+use ployz_core::Hint;
 use std::{future::Future, path::Path, pin::Pin};
 
 use crate::cancellation::on_ctrl_c as cancellation_on_ctrl_c;
@@ -13,6 +14,7 @@ pub(crate) mod build;
 pub(crate) mod catalog;
 pub(crate) mod cloud;
 mod cloud_read;
+pub(crate) mod cluster;
 pub(crate) mod config;
 pub(crate) mod config_item;
 pub(crate) mod context;
@@ -25,16 +27,23 @@ pub(crate) mod docs;
 pub(crate) mod domain;
 pub(crate) mod env;
 pub(crate) mod github;
+mod github_preview;
+mod github_rule;
+pub(crate) mod ingress;
 pub(crate) mod link;
 pub(crate) mod login;
 pub(crate) mod mcp;
 pub(crate) mod metrics;
 pub(crate) mod operator;
+pub(crate) mod private_access;
 pub(crate) mod project;
 pub(crate) mod recovery;
 pub(crate) mod review;
+mod route;
 pub(crate) mod server;
 pub(crate) mod service;
+mod shared;
+mod status;
 mod status_servers;
 pub(crate) mod store;
 mod teardown;
@@ -337,7 +346,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let Some(verb) = verbs::find(&path) else {
         let setup = crate::published::Setup::beside(
             &config_path(leaf_matches(matches))?,
-            std::env::var(crate::cli::env::CLOUD_URL).ok(),
+            crate::cloud_origin::CloudOrigin::named_by_env(),
         );
         if let Some(cached) = setup.cached()
             && let Some(published) = cached.find(&path)
@@ -413,7 +422,7 @@ pub(super) fn completion(root: &ArgMatches) -> Result<(), Error> {
         .completer(&shell.to_string())
         .ok_or_else(|| Error::usage("unsupported completion shell"))?;
     completer.write_registration(
-        crate::cli::env::COMPLETE,
+        crate::env::COMPLETE,
         "ployz",
         "ployz",
         "ployz",
@@ -506,6 +515,7 @@ async fn reconnect_client(
     let connect = matches.get_one::<String>("connect").map(String::as_str);
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         "Reconnecting to the Cluster",
         crate::setup_retry::WAIT,
         crate::connect::ConnectError::is_setup_retryable,
@@ -603,7 +613,7 @@ pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -
         .diagnostic()
         .and_then(|diagnostic| diagnostic.failed_machine)
         .map(|machine| {
-            crate::ui::Hint::Retry(command(&[
+            Hint::Retry(command(&[
                 "server",
                 "set",
                 &machine.to_string(),
@@ -627,7 +637,7 @@ pub(crate) fn ingress_log_hints(
         .logs
         .iter()
         .map(|tail| {
-            crate::ui::Hint::Inspect(command(&[
+            Hint::Inspect(command(&[
                 "logs",
                 &tail.service.to_string(),
                 "--machine",
@@ -650,7 +660,7 @@ where
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        let mut client = server::connect(leaf, context).await?;
+        let mut client = route::connect(leaf, context).await?;
         work(&mut client).await
     })
 }
@@ -664,7 +674,7 @@ where
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        let mut client = server::connect_full(leaf, context).await?;
+        let mut client = route::connect_full(leaf, context).await?;
         work(&mut client).await
     })
 }
@@ -680,7 +690,7 @@ where
         &'a mut crate::connect::Client,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
 {
-    with_lister(root, || Err(server::no_servers()), work)
+    with_lister(root, || Err(route::no_servers()), work)
 }
 
 /// [`with_reader`] for a list: an Organization with no Servers yet runs `empty` instead.
@@ -697,9 +707,9 @@ where
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        match server::reach(leaf, context).await? {
-            Some(server::Reach::Dial(mut client)) => work(&mut client).await.map(|()| None),
-            Some(server::Reach::Ask(credential)) => Ok(Some(credential)),
+        match route::reach(leaf, context).await? {
+            Some(route::Reach::Dial(mut client)) => work(&mut client).await.map(|()| None),
+            Some(route::Reach::Ask(credential)) => Ok(Some(credential)),
             None => empty().map(|()| None),
         }
     })
@@ -942,6 +952,8 @@ mod tests {
             (&["device", "ls"], Some("b")),
             (&["device", "rm", "mmg42klgyq"], Some("b")),
             (&["device", "approve", "mmg42klgyq"], Some("b")),
+            (&["device", "enforce"], Some("b")),
+            (&["device", "enforce", "--off"], Some("b")),
         ] {
             let argv = args
                 .iter()
@@ -1123,7 +1135,7 @@ mod tests {
 
     #[test]
     fn local_machine_init_requires_root_to_install() {
-        if crate::provisioning::process_is_root() {
+        if crate::checkin::process_is_root() {
             return;
         }
         let mut command = command();
@@ -1150,7 +1162,7 @@ mod tests {
 
     #[test]
     fn local_machine_init_without_install_dials_the_unix_socket() {
-        if std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists() {
+        if ployz_core::MachineLayout::production().socket().exists() {
             return;
         }
         let mut command = command();
@@ -1304,7 +1316,7 @@ mod tests {
 
     #[test]
     fn server_add_with_a_token_and_no_daemon_requires_sudo() {
-        if crate::provisioning::process_is_root() {
+        if crate::checkin::process_is_root() {
             return;
         }
         let token = tempfile::NamedTempFile::new().unwrap();

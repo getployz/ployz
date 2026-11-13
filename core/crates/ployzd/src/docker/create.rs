@@ -1,3 +1,4 @@
+use ployz_core::labels::{self, Stamp};
 use std::{
     collections::{BTreeSet, HashMap},
     net::IpAddr,
@@ -11,15 +12,13 @@ use bollard::models::{
     NetworkingConfig, PortBinding, PortMap, ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
-    BindPropagation, BindRecursive, ContainerKind, EnvValue, HEALTHCHECK_DISABLE_SENTINEL,
-    HealthcheckSpec, HostBind, MachineGateway, MachineId, Namespace, PortPublication,
-    QualifiedService, ResolvedServiceSpec, ResolvedServiceVolumeGraph, TransportProtocol,
+    BindPropagation, BindRecursive, ContainerId, ContainerKind, EnvValue,
+    HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec, HostBind, MachineGateway, MachineId, Namespace,
+    PortPublication, QualifiedService, ResolvedServiceSpec, ResolvedServiceVolumeGraph,
+    TransportProtocol,
 };
 
-use super::{
-    Error, LABEL_BRIDGE_IPV6, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_NAMESPACE,
-    LABEL_SERVICE_ID, LABEL_SERVICE_NAME,
-};
+use super::Error;
 use crate::sealed_env;
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
@@ -51,8 +50,10 @@ pub(super) fn ingress_sysctls(
     spec: &ResolvedServiceSpec,
     kernel_supports_migrate_req: bool,
 ) {
+    // The holder owns the Ingress Proxy's netns, so the sysctls go on it. A Caddy that
+    // joins it inherits them, and Docker refuses netns sysctls in `container:` mode.
     if QualifiedService::new(namespace.clone(), spec.name.clone())
-        != QualifiedService::system_ingress()
+        != QualifiedService::system_ingress_holder()
     {
         return;
     }
@@ -79,12 +80,24 @@ pub(super) fn holds_sealed(kind: ContainerKind, spec: &ResolvedServiceSpec) -> b
         .any(EnvValue::is_sealed)
 }
 
+/// Which network a new Container is created in.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum CreationNetwork {
+    /// Its own endpoint on the ployz bridge.
+    Bridge,
+    /// The network namespace of this running Container, as Docker's `container:` mode.
+    /// Docker refuses a hostname, DNS, hosts, ports and an endpoint in that mode, so the
+    /// joined Container carries none and inherits the holder's.
+    Holder(ContainerId),
+}
+
 pub(super) fn container_create_body(
     machine_id: &MachineId,
     gateway: MachineGateway,
     kind: ContainerKind,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
+    network: &CreationNetwork,
     sealing_key_dir: Option<&Path>,
 ) -> Result<ContainerCreateBody, Error> {
     let hook = match kind {
@@ -113,23 +126,21 @@ pub(super) fn container_create_body(
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    labels.extend([
-        (LABEL_MANAGED.into(), String::new()),
-        (LABEL_NAMESPACE.into(), namespace.to_string()),
-        (LABEL_SERVICE_ID.into(), spec.service_id.to_string()),
-        (LABEL_SERVICE_NAME.into(), spec.name.to_string()),
-    ]);
-    if hook.is_some() {
-        labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
-    }
     let publishes_host_port = spec
         .ports
         .iter()
         .any(|port| matches!(port, PortPublication::Host { .. }));
-    labels.insert(LABEL_BRIDGE_IPV6.into(), (!publishes_host_port).to_string());
+    Stamp {
+        namespace,
+        service_id: &spec.service_id,
+        service_name: &spec.name,
+        kind,
+        bridge_ipv6: !publishes_host_port,
+    }
+    .write(&mut labels);
     if let Some(record) = &opened.record {
         labels.insert(
-            sealed_env::LABEL_SEALED.into(),
+            labels::SEALED_ENV.into(),
             serde_json::to_string(record).expect("a sealed record serializes"),
         );
     }
@@ -153,15 +164,19 @@ pub(super) fn container_create_body(
     } else {
         (None, None)
     };
+    let on_bridge = matches!(network, CreationNetwork::Bridge);
     let resources = &container.resources;
     let host_config = HostConfig {
-        dns: Some(vec![gateway.0.to_string()]),
-        dns_search: Some(vec![format!("{namespace}.internal")]),
-        dns_options: Some(vec!["ndots:1".into()]),
+        dns: on_bridge.then(|| vec![gateway.0.to_string()]),
+        dns_search: on_bridge.then(|| vec![format!("{namespace}.internal")]),
+        dns_options: on_bridge.then(|| vec!["ndots:1".into()]),
         init: container.init,
-        network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),
+        network_mode: Some(match network {
+            CreationNetwork::Bridge => crate::network::DOCKER_NETWORK_NAME.into(),
+            CreationNetwork::Holder(holder) => format!("container:{holder}"),
+        }),
         log_config: Some(container_log_config()),
-        port_bindings,
+        port_bindings: port_bindings.filter(|_| on_bridge),
         restart_policy: Some(docker_restart(if hook.is_some() {
             ployz_core::RestartPolicy::No
         } else {
@@ -171,7 +186,7 @@ pub(super) fn container_create_body(
         cap_add: (!container.cap_add.is_empty()).then(|| container.cap_add.clone()),
         cap_drop: (!container.cap_drop.is_empty()).then(|| container.cap_drop.clone()),
         pid_mode: container.pid_mode.as_ref().map(ToString::to_string),
-        extra_hosts: (!container.extra_hosts.is_empty()).then(|| {
+        extra_hosts: (on_bridge && !container.extra_hosts.is_empty()).then(|| {
             container
                 .extra_hosts
                 .iter()
@@ -221,7 +236,11 @@ pub(super) fn container_create_body(
                 .transpose()?
         },
         image: Some(container.image.clone()),
-        hostname: container.hostname.as_ref().map(ToString::to_string),
+        hostname: container
+            .hostname
+            .as_ref()
+            .filter(|_| on_bridge)
+            .map(ToString::to_string),
         working_dir: container
             .working_directory
             .as_ref()
@@ -232,15 +251,15 @@ pub(super) fn container_create_body(
             Some(_) => Some(Vec::new()),
             None => (!container.entrypoint.is_empty()).then(|| container.entrypoint.clone()),
         },
-        exposed_ports,
-        networking_config: super::bridge_endpoint(super::takes_bridge_ipv6(&labels)).map(
-            |endpoint| NetworkingConfig {
+        exposed_ports: exposed_ports.filter(|_| on_bridge),
+        networking_config: super::bridge_endpoint(super::takes_bridge_ipv6(&labels))
+            .filter(|_| on_bridge)
+            .map(|endpoint| NetworkingConfig {
                 endpoints_config: Some(HashMap::from([(
                     crate::network::DOCKER_NETWORK_NAME.to_owned(),
                     endpoint,
                 )])),
-            },
-        ),
+            }),
         labels: Some(labels),
         stop_timeout: container.stop_timeout_secs,
         host_config: Some(host_config),

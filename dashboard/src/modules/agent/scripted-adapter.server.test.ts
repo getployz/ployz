@@ -82,3 +82,47 @@ describe("the scripted model accepting Volume loss", () => {
     expect(stubScript([{ role: "user", content: 'save --version ""' }])).toEqual({ calls: [{ tool: "deploy", input: { skip_deploy: true, version: "" } }] });
   });
 });
+
+describe("the scripted model proposing", () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  const said = "propose stop web, restart api, start web";
+
+  it("opens a proposal, stages each step with proposal set, then presents it", () => {
+    expect(asking(said, [])).toEqual({ calls: [{ tool: "proposal_create", input: {} }] });
+    const opened = exchange("proposal_create", {}, { ok: true, value: { proposal_id: id } });
+    const history = [{ role: "user" as const, content: said }, ...opened];
+    expect(stubScript(history)).toEqual({ calls: [{ tool: "service_stop", input: { service: "web", proposal: id } }] });
+    const one = [...history, ...exchange("service_stop", { service: "web", proposal: id }, { ok: true, value: { step: 1 } })];
+    expect(stubScript(one)).toEqual({ calls: [{ tool: "service_restart", input: { service: "api", proposal: id } }] });
+    const two = [...one, ...exchange("service_restart", { service: "api", proposal: id }, { ok: true, value: { step: 2 } })];
+    expect(stubScript(two)).toEqual({ calls: [{ tool: "service_start", input: { service: "web", proposal: id } }] });
+    const three = [...two, ...exchange("service_start", { service: "web", proposal: id }, { ok: true, value: { step: 3 } })];
+    expect(stubScript(three)).toEqual({ calls: [{ tool: "proposal_present", input: { proposal: id } }] });
+    const presented = [...three, ...exchange("proposal_present", { proposal: id }, { ok: true, value: { steps: 3 } })];
+    expect(stubScript(presented)).toEqual({ text: `Presented proposal ${id}. Say "follow ${id}" to see how far it got.` });
+  });
+
+  it("quotes a refusal and stages nothing more", () => {
+    const opened = exchange("proposal_create", {}, { ok: true, value: { proposal_id: id } });
+    const refused = exchange("service_stop", { service: "web", proposal: id }, { ok: false, refusal: { code: "not_found", message: "No service is named web in shop/production." } });
+    expect(stubScript([{ role: "user", content: said }, ...opened, ...refused])).toEqual({ text: "The proposal stopped: No service is named web in shop/production." });
+  });
+
+  it("reads where a proposal stands and says where each step got", () => {
+    expect(asking(`follow ${id}`, [])).toEqual({ calls: [{ tool: "proposal_status", input: { proposal: id } }] });
+    const stood = exchange("proposal_status", { proposal: id }, {
+      ok: true,
+      value: {
+        status: "approved",
+        steps: [
+          { index: 1, verb: "stop", service: "web", state: "done", reason: null },
+          { index: 2, verb: "restart", service: "api", state: "failed", reason: "machine-2 didn't accept the approval." },
+          { index: 3, verb: "start", service: "web", state: "not_run", reason: null },
+        ],
+      },
+    });
+    expect(stubScript([{ role: "user", content: `follow ${id}` }, ...stood])).toEqual({
+      text: "Approved. 1. stop web: done. 2. restart api: failed, machine-2 didn't accept the approval. 3. start web: not run.",
+    });
+  });
+});

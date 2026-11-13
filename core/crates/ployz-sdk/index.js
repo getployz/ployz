@@ -57,8 +57,8 @@ class Client {
     return withRpcError(this._inner.dataLossIfNamespaceDestroyed(namespace, destroyVolumes));
   }
 
-  destroyNamespace(namespace, confirmDataLoss, destroyVolumes = false) {
-    return withRpcError(this._inner.destroyNamespace(namespace, confirmDataLoss, destroyVolumes));
+  destroyNamespace(namespace, confirmDataLoss, destroyVolumes = false, teardown = null) {
+    return withRpcError(this._inner.destroyNamespace(namespace, confirmDataLoss, destroyVolumes, teardown));
   }
 }
 
@@ -169,35 +169,6 @@ async function* iterateWatch(start, signal) {
     }
     stop();
   }
-}
-
-function defaultPlanOptions() {
-  return {
-    force_recreate: false,
-    skip_health_monitor: false,
-    placement_seed: 0,
-    selected: [],
-  };
-}
-
-function applyAll(namespace, specs, options = defaultPlanOptions()) {
-  return {
-    namespace,
-    target: specs,
-    options,
-  };
-}
-
-function applyOne(namespace, spec, options = defaultPlanOptions()) {
-  return {
-    namespace,
-    target: [spec],
-    options: {
-      ...defaultPlanOptions(),
-      ...options,
-      selected: [{ name: spec.name }],
-    },
-  };
 }
 
 // Cloud's close budget for a short-lived session (SESSION_CLOSE_CLUSTER_MS), which this package cannot import.
@@ -327,6 +298,4 @@ module.exports = {
   Client,
   RpcError,
   SealedNames,
-  applyAll,
-  applyOne,
 };

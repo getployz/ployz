@@ -4,24 +4,20 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Effect, Stop, Tool, at};
+use super::ToolId;
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::Call;
-use super::step::RequestKey;
 use crate::catalog::NODE_NAME;
 use crate::{CreateProject, EnvironmentId, ProjectId, ProjectName, RenameProject};
 
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ProjectCreate {
-    /// The new Project's name, unique in the Organization.
-    #[schemars(with = "String", pattern(NODE_NAME), example = &"docs")]
-    name: ProjectName,
-    /// Any id you choose. A call that repeats a key gets the Project the first call made, not a second one.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-    request_key: Option<RequestKey>,
+tool_input! {
+    pub(crate) struct ProjectCreate {
+        /// The new Project's name, unique in the Organization.
+        #[schemars(with = "String", pattern(NODE_NAME), example = &"docs")]
+        name: ProjectName,
+        @key["Any id you choose. A call that repeats a key gets the Project the first call made, not a second one."],
+    }
 }
 
 impl Tool for ProjectCreate {
@@ -46,10 +42,10 @@ impl Tool for ProjectCreate {
             default_environment,
         })?;
         Ok(json!({
-            "at": at(&created.environment),
+            "at": created.environment.to_string(),
             "project": created.project.name,
             "environment": created.environment.name,
-            "next": Call::new("environment_show", json!({ "project": created.project.name })),
+            "next": Call::to(ToolId::EnvironmentShow, json!({ "project": created.project.name })),
         }))
     }
 }

@@ -7,6 +7,8 @@
 //! own Project. Links live beside the Ployz config, never in the directory, so
 //! nothing needs ignoring or uploading.
 
+use crate::ui::Next;
+use ployz_core::error_chain;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io;
@@ -15,26 +17,27 @@ use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
-use ployz_core::{LocalMachinePhase, RpcErrorCode};
+use ployz_core::{Hint, LocalMachinePhase, RpcErrorCode};
 use ployz_store::{
-    DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
-    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery,
-    ProjectName, ProjectsQuery,
+    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, EnvironmentName,
+    EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery, ProjectName,
+    ProjectsQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::status_servers::{Subject, UNCHECKED};
+use super::status::model::{Attention, Subject};
+use super::status_servers::UNCHECKED;
 use super::store::{
-    Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
+    Backend, LOCAL_ORGANIZATION, Store, backend_at, next, reachable, scoped, store,
 };
 use super::{Error, config_path, leaf_matches};
 use crate::checkin::{LocalCheckin, Paths, Seen};
-use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
 use crate::context::{Config, ConfigError, ContextError, select_connections};
-use crate::ui::{Cell, Fields, Hint, Tone};
+use crate::env;
+use crate::ui::{Cell, Fields, Tone};
 
 pub(super) fn link_command(command: Command) -> Command {
     scoped(command.about("Link this directory to a Project and Environment"))
@@ -263,7 +266,7 @@ struct Link {
 }
 
 fn links_path(config: &Path) -> PathBuf {
-    config.with_file_name("links.json")
+    crate::config_dir::ConfigDir::new(config).links()
 }
 
 /// Every link, by canonical directory.
@@ -445,17 +448,15 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
     };
     let view = store.read(&query)?;
     let linked = record(&config, view.environment)?;
-    let hint = Some("ployz status".to_owned());
+    let followed = Next::new(&linked, Some("ployz status".to_owned()));
     crate::ui::done(
-        &Next::new(&linked, hint.clone()),
+        &followed,
         format_args!(
             "Linked {} to {}/{}.",
             linked.directory, linked.project, linked.environment
         ),
     )?;
-    if let Some(hint) = hint {
-        crate::ui::hint(&Hint::Next(hint));
-    }
+    followed.say();
     Ok(())
 }
 
@@ -580,19 +581,6 @@ struct Staged {
     version: String,
 }
 
-/// Something that needs someone to act, with the command that acts.
-#[derive(Serialize)]
-pub(super) struct Attention {
-    pub(super) reason: String,
-    pub(super) message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) deployment: Option<DeploymentId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) next: Option<String>,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    pub(super) subject: Option<Subject>,
-}
-
 /// This host's check-in record, and whether its Machine left the Cluster since it joined.
 #[derive(Serialize)]
 struct ThisServer {
@@ -619,10 +607,19 @@ impl ThisServer {
     }
 }
 
+/// This host's Machine key, so a person can check the fingerprint `device enforce` prints.
+#[derive(Serialize)]
+struct ThisMachine {
+    wireguard_key: String,
+    fingerprint: String,
+}
+
 #[derive(Serialize)]
 struct Status {
     #[serde(skip_serializing_if = "Option::is_none")]
     this_server: Option<ThisServer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    this_machine: Option<ThisMachine>,
     identity: Option<Identity>,
     scope: Scope,
     /// The Environment the scope resolves to; none when it doesn't resolve.
@@ -641,6 +638,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     crate::context::Config::load_or_empty(config_path(matches)?)?;
     let this_server = this_server();
+    let this_machine = this_machine();
     let store = reachable(root)?;
     let identity = store.as_ref().map(identity).transpose()?;
     let scope = scope(matches)?;
@@ -658,14 +656,10 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     Some(next) => next.to_owned(),
                     None => "ployz link --project PROJECT".to_owned(),
                 };
-                let next = Some(next);
-                attention.push(Attention {
-                    reason: error.code.to_string(),
-                    message: crate::ui::row(&error),
-                    deployment: None,
-                    next,
-                    subject: None,
-                });
+                attention.push(
+                    Attention::new(None, error.code.to_string(), error_chain::row(&error))
+                        .next(next),
+                );
                 None
             }
             Err(error) => return Err(store.fail(error)),
@@ -702,25 +696,24 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                 | DeploymentStatus::Cancelled => None,
             };
             if let Some(reason) = reason {
-                attention.push(Attention {
-                    reason: reason.to_owned(),
-                    message: format!("Deployment {} did not complete", ended.label()),
-                    deployment: Some(ended.id.clone()),
-                    next: Some(super::deploy::hint_for(matches, ended)),
-                    subject: None,
-                });
+                attention.push(
+                    Attention::new(
+                        None,
+                        reason,
+                        format!("Deployment {} did not complete", ended.label()),
+                    )
+                    .deployment(ended.id.clone())
+                    .next(super::deploy::hint_for(matches, ended)),
+                );
             }
         }
         deploying = page.in_flight;
     }
     for reference in diff.iter().flat_map(|diff| &diff.broken) {
-        attention.push(Attention {
-            reason: "broken_reference".to_owned(),
-            message: reference.to_string(),
-            deployment: None,
-            next: Some(super::store::fix_broken(matches, reference)),
-            subject: None,
-        });
+        attention.push(
+            Attention::new(None, "broken_reference", reference.to_string())
+                .next(super::store::fix_broken(matches, reference)),
+        );
     }
     let mut partial = false;
     if let (Some(store), Some(_)) = (&store, &diff) {
@@ -751,7 +744,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     });
     let hint = attention
         .first()
-        .and_then(|attention| attention.next.clone())
+        .and_then(|attention| attention.command().map(str::to_owned))
         .or_else(|| {
             staged
                 .as_ref()
@@ -768,6 +761,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         });
     let status = Status {
         this_server,
+        this_machine,
         identity,
         scope,
         environment: diff.map(|diff| diff.environment),
@@ -775,10 +769,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         deploying,
         attention,
     };
-    crate::ui::fields(&Next::new(&status, hint.clone()), &status_record(&status))?;
-    if let Some(hint) = hint {
-        crate::ui::hint(&Hint::Next(hint));
-    }
+    let followed = Next::new(&status, hint);
+    crate::ui::fields(&followed, &status_record(&status))?;
+    followed.say();
     if partial {
         return Err(Error::partial());
     }
@@ -789,7 +782,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
 const LOCAL_INSPECT: Duration = Duration::from_secs(3);
 
 fn this_server() -> Option<ThisServer> {
-    let path = Path::new(Paths::CHECKIN_DIR).join("status.json");
+    let path = Paths::production().status();
     let checkin = LocalCheckin::read(&path)
         .inspect_err(|error| {
             crate::ui::warn(format!("Could not read {}: {error}", path.display()));
@@ -807,14 +800,26 @@ fn this_server() -> Option<ThisServer> {
                     )
                 })
         });
-    let stopped = crate::checkin::loop_stopped(Path::new(Paths::CHECKIN_DIR));
+    let stopped = crate::checkin::loop_stopped(&Paths::production().checkin_dir);
     Some(ThisServer::read(checkin, left, stopped))
+}
+
+fn this_machine() -> Option<ThisMachine> {
+    let details = super::runtime()
+        .ok()?
+        .block_on(crate::checkin::local_machine(LOCAL_INSPECT))?;
+    let key = details.machine?.public_key;
+    Some(ThisMachine {
+        wireguard_key: key.to_string(),
+        fingerprint: key.fingerprint(),
+    })
 }
 
 #[cfg(test)]
 pub(super) fn rendered(attention: Vec<Attention>) -> String {
     let status = Status {
         this_server: None,
+        this_machine: None,
         identity: Some(Identity {
             credential: "local",
             cloud: None,
@@ -879,6 +884,9 @@ fn status_record(status: &Status) -> Fields {
             crate::checkin::ago(checkin.at, chrono::Utc::now()),
         );
     }
+    if let Some(machine) = &status.this_machine {
+        record.push("wireguard key", &machine.fingerprint);
+    }
     let Some(identity) = &status.identity else {
         record.push("signed in as", "no one");
         return record;
@@ -934,7 +942,7 @@ fn status_record(status: &Status) -> Fields {
         );
     }
     for attention in &status.attention {
-        let label = match &attention.subject {
+        let label = match attention.subject() {
             Some(
                 Subject::NotPickedUp { service, .. }
                 | Subject::StaleAddress { service, .. }
@@ -949,7 +957,7 @@ fn status_record(status: &Status) -> Fields {
         };
         record.push(
             label,
-            Cell::status(crate::ui::escaped(&attention.message), Tone::Bad),
+            Cell::status(crate::ui::escaped(attention.message()), Tone::Bad),
         );
     }
     record
@@ -1054,10 +1062,9 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         .field("project", project)
         .field("environment", environment)
         .field("servers", context.servers.label());
-    crate::ui::fields(&Next::new(&context, hint.clone()), &record)?;
-    if let Some(hint) = hint {
-        crate::ui::hint(&Hint::Next(hint));
-    }
+    let followed = Next::new(&context, hint);
+    crate::ui::fields(&followed, &record)?;
+    followed.say();
     Ok(())
 }
 
@@ -1166,7 +1173,7 @@ impl Servers {
     }
 }
 
-/// In `server::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
+/// In `route::connect`'s order. A `--connect` target isn't echoed: it can carry a capability.
 fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     let via = |via, context| Servers {
         via,
@@ -1192,7 +1199,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     if token || CredentialStore::beside(config).organization()?.is_some() {
         return Ok(via("cloud", None));
     }
-    let local = Path::new(crate::connect::DEFAULT_LOCAL_SOCKET);
+    let local = ployz_core::MachineLayout::production().socket();
     let config = match Config::load(config) {
         Ok(config) => config,
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
@@ -1206,7 +1213,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     // A config file sends commands to its current context, never the local socket, so
     // without one they reach no Server: say what they say.
     Ok(
-        match select_connections(None, Some(&config), None, false, local) {
+        match select_connections(None, Some(&config), None, false, &local) {
             Err(ContextError::NoCurrentContext(_)) => none(
                 "no current context",
                 Some(super::context::retry_use(matches)),
@@ -1377,6 +1384,7 @@ mod tests {
                 left,
                 stopped,
             )),
+            this_machine: None,
             identity: None,
             scope: Scope {
                 project: None,
@@ -1403,6 +1411,37 @@ mod tests {
             status_on(false).starts_with("this server = Joined\nchecked in = "),
             "{}",
             status_on(false)
+        );
+    }
+
+    #[test]
+    fn status_on_a_server_shows_the_fingerprint_device_enforce_prints() {
+        let key = ployz_core::WireGuardPublicKey([3; 32]);
+        let status = Status {
+            this_server: None,
+            this_machine: Some(ThisMachine {
+                wireguard_key: key.to_string(),
+                fingerprint: key.fingerprint(),
+            }),
+            identity: None,
+            scope: Scope {
+                project: None,
+                environment: None,
+                link: None,
+            },
+            environment: None,
+            staged: None,
+            deploying: Vec::new(),
+            attention: Vec::new(),
+        };
+        let mut out = Vec::new();
+        status_record(&status).write(&mut out, false).unwrap();
+        assert_eq!(
+            anstream::adapter::strip_str(&String::from_utf8(out).unwrap()).to_string(),
+            format!(
+                "wireguard key = {}\nsigned in as = no one\n",
+                key.fingerprint()
+            )
         );
     }
 

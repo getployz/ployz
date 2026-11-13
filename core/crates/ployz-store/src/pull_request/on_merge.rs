@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Arrives, At, Cell, Cells, PRIVATE_DOMAIN_KEY, Plan, RowId, SERVICE_NAME_KEY,
-    SavedEnvironmentIntent, SavedVariableValue, SealedCell, ServiceGitBranch, ServiceSource,
-    Setting, ValuePart, ValuePartOwner, Verdict, Why, canonicalize_environment_intent, marks_on,
+    SavedEnvironmentIntent, SavedVariableValue, SealedCell, Setting, ValuePart, ValuePartOwner,
+    Verdict, Why, canonicalize_environment_intent, marks_on,
 };
 use serde_json::Value;
 
@@ -23,6 +23,7 @@ use crate::branch::{
 use crate::id::ServiceLineageId;
 use crate::scope::RemovedServices;
 use crate::storage;
+use crate::trusted::Evidence;
 use crate::variables::{self, VariableKey};
 
 /// Read a PR Environment's On merge list.
@@ -173,7 +174,7 @@ pub(crate) fn landings(
     who: &Actor,
     from: &Environment,
 ) -> Result<(PullRequestRef, Vec<Landing>), RpcError> {
-    let Some(pull_request) = of(tx, &from.summary.id)? else {
+    let Some(pull_request) = crate::pr_environment::of(tx, &from.summary.id)? else {
         return Err(error::invalid(
             format!("{} isn't a PR Environment", from.summary.name),
             json!({}),
@@ -503,7 +504,7 @@ pub(crate) fn set_merge_value(
                 &label,
                 value,
                 &landing.into,
-                crate::old_cli::Guard::from(trusted),
+                trusted.sealer(who),
             )?),
             (SecretValue::ClientSealed(_), false) => {
                 return Err(error::invalid(
@@ -593,7 +594,7 @@ pub(crate) fn holds_open(
     who: &Actor,
     id: &EnvironmentId,
 ) -> Result<bool, RpcError> {
-    let Some(pull_request) = of(tx, id)? else {
+    let Some(pull_request) = crate::pr_environment::of(tx, id)? else {
         return Ok(false);
     };
     let Some(facts) = facts(tx, who, pull_request.repository_id, pull_request.number)? else {
@@ -835,7 +836,13 @@ pub(crate) fn land(
     for landing in landings {
         let into = landing.into.summary.clone();
         let landed = storage::attempt(tx, |tx| {
-            land_one(tx, who, &from, landing, (&pull_request, merge.target))
+            land_one(
+                tx,
+                who,
+                &from,
+                landing,
+                (&pull_request, merge.target, merge.trusted),
+            )
         });
         match landed {
             Ok(services) => {
@@ -922,7 +929,7 @@ fn land_one(
     who: &Actor,
     from: &Environment,
     landing: Landing,
-    (pull_request, target): (&PullRequestRef, &BranchName),
+    (pull_request, target, trusted): (&PullRequestRef, &BranchName, &Trusted),
 ) -> Result<MergedServices, RpcError> {
     let picks = landing.riding();
     let Landing {
@@ -947,20 +954,11 @@ fn land_one(
                 .iter()
                 .any(|row| row.id == RowId::node(lineage) && row.from == Cell::Absent)
         });
-    for service in &mut applied.next.services {
-        if let ServiceSource::Git {
-            repository_id,
-            branch,
-            ..
-        } = &mut service.config.source
-            && *repository_id == pull_request.repository_id.get()
-            && arriving.contains(service.lineage_id.as_str())
-        {
-            *branch = ServiceGitBranch::Connected {
-                name: target.to_string(),
-            };
-        }
-    }
+    applied.next.retarget(
+        pull_request.repository_id.get(),
+        target.as_str(),
+        Some(&arriving),
+    );
     let latest = review::latest_saved(tx, &into)?;
     let old = latest
         .as_ref()
@@ -979,9 +977,10 @@ fn land_one(
         Some(&from.working),
         &applied.next,
     )?;
-    let consent = crate::removal::still_removed(review::consent(latest.as_ref()), &saved);
+    let consent = crate::deployment::loss::still_removed(review::consent(latest.as_ref()), &saved);
     review::publish(
         tx,
+        Evidence::Caller(trusted),
         who,
         &into,
         saved.clone(),
@@ -1092,12 +1091,22 @@ fn land_one(
             (&from.working, &carried),
             working,
             &staged,
-            None,
+            trusted,
         )?;
     } else if consumed {
-        scope::persist_working(tx, &mut destination)?;
+        scope::write_working(
+            tx,
+            Evidence::Caller(trusted),
+            &mut destination,
+            scope::WorkingWrite::Trusted(scope::Reason::Landing),
+        )?;
     } else {
-        scope::persist_removed(tx, &mut destination)?;
+        scope::write_working(
+            tx,
+            Evidence::Caller(trusted),
+            &mut destination,
+            scope::WorkingWrite::Removed,
+        )?;
     }
 
     // The pair shares the PR Environment's values: an Edit is the Destination's own

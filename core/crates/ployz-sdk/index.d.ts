@@ -16,9 +16,7 @@ import type {
   MetricHistoryInput,
   ObservedDataLoss,
   DataLossConfirmation,
-  PlanOptions,
   Namespace,
-  RequestedServiceSpec,
   RpcError as RpcErrorPayload,
   RpcErrorCode,
   RuntimeWatchView,
@@ -266,18 +264,6 @@ export declare function setVolumeCopyRefusal(error: unknown): import("./generate
 /** A call's state between steps. Keep it and hand it back unchanged; only the step machine reads it. */
 export type AgentState = { readonly __brand: "AgentState" };
 export type AgentTurn = { step: import("./generated/payloads").Step; state: AgentState };
-export declare function applyAll(
-  namespace: Namespace,
-  specs: readonly RequestedServiceSpec[],
-  options?: PlanOptions,
-): DeployIntent;
-
-export declare function applyOne(
-  namespace: Namespace,
-  spec: RequestedServiceSpec,
-  options?: PlanOptions,
-): DeployIntent;
-
 type WrappedClientMethods =
   | "containerLogs" | "logHistory" | "metricHistory" | "watch"
   | "prepare" | "build" | "preview" | "previewNamespaceRemoval" | "volumeSwitch"
@@ -306,10 +292,12 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
    */
   volumeSwitch<R extends VolumeSwitchRequest>(machine: MachineTarget, request: R): Promise<VolumeSwitchReply<R["command"]>>;
   dataLossIfNamespaceDestroyed(namespace: Namespace, destroy_volumes?: boolean): Promise<ObservedDataLoss>;
+  /** `teardown`, a person's approval of what goes, reaches each Server; one that enforces Device approval removes nothing without it. */
   destroyNamespace(
     namespace: Namespace,
     confirmDataLoss: DataLossConfirmation,
     destroy_volumes?: boolean,
+    teardown?: import("./generated/payloads").TeardownApproval | null,
   ): Promise<DeployOutcome<ExecutionError>>;
 }
 export declare const Client: { new (inner: native.Client): Client; prototype: Client };
@@ -319,7 +307,7 @@ export interface ConfigStore extends Omit<native.ConfigStore, "read"> {
   /** The view of the same name as the query. */
   read<Q extends ConfigQuery>(organization: string, query: Q, trusted?: ConfigTrusted): Promise<Extract<ConfigView, { view: Q["query"] }>>;
 }
-export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string };
+export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string } | { kind: "follow"; workflow: string; workflow_ref: string; commit: string } | { kind: "approved"; workflow: string; workflow_ref: string; branch: string; commit: string };
 export type GithubCheckIn = ({ grant: string } | { machine: string }) & { commit: string; fingerprint: string; ployzVersion: string; deployment: PreparationInput["deployment"] };
 export type GithubFinish = "waiting" | { ended: BuildStatus };
 /** Calls run off the JavaScript thread, a few at once; a slow or queued call rejects `unavailable`. */

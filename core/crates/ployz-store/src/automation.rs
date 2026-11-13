@@ -23,6 +23,7 @@ use ts_rs::TS;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, GitPush};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId, ServiceLineageId};
+use crate::merge_deploy;
 use crate::policy::{self, is_repository_path};
 use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
@@ -178,8 +179,14 @@ pub(crate) fn system(
 ) -> Result<Automated, RpcError> {
     let who = Actor::system(organization.clone());
     match event {
-        SystemEvent::BranchHead(head) => branch_head(tx, &who, head, trusted),
-        SystemEvent::CheckSuite(suite) => check_suite(tx, &who, suite, trusted),
+        SystemEvent::BranchHead(head) => {
+            crate::pull_request::withdraw_trust(tx, &who, trusted)?;
+            branch_head(tx, &who, head, trusted)
+        }
+        SystemEvent::CheckSuite(suite) => {
+            crate::pull_request::withdraw_trust(tx, &who, trusted)?;
+            check_suite(tx, &who, suite, trusted)
+        }
         SystemEvent::PullRequest(pull) => {
             crate::pull_request::pull_request(tx, &who, pull, trusted)
         }
@@ -189,7 +196,7 @@ pub(crate) fn system(
             ..Automated::default()
         }),
         SystemEvent::VolumeResized(resized) => {
-            crate::volume::size::record(tx, &who, resized).map(|()| Automated::default())
+            crate::volume::size::record(tx, &who, resized, trusted).map(|()| Automated::default())
         }
     }
 }
@@ -442,6 +449,7 @@ fn deploy(
         }
         Ok(Some(Deploy::NoServers)) => crate::trusted::NO_SERVERS.to_owned(),
         Ok(Some(Deploy::NeedsApproval)) => crate::pull_request::NEEDS_APPROVAL.to_owned(),
+        Ok(Some(Deploy::Reapprove(changed))) => crate::auto_rule::reapprove(&changed),
         Ok(Some(Deploy::Idle)) => {
             if let Select::Held(held) = select {
                 deployment::cancel_held(tx, held, IDLE.to_owned())?;
@@ -505,37 +513,21 @@ pub(crate) fn deploy_landed(
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     let (branch, commit) = (merge.target, merge.commit);
-    let earlier = tx.query(
-        "SELECT services, removed_services FROM config_merge_deploy \
-         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
-        &[
-            environment.as_str().into(),
-            repository_id.into(),
-            branch.as_str().into(),
-            commit.as_str().into(),
-        ],
-    )?;
-    if let Some(row) = earlier.first() {
-        pending.extend(merged_services(row)?);
+    let landed = merge_deploy::Landed {
+        environment,
+        repository_id,
+        branch: branch.as_str(),
+        commit: commit.as_str(),
+    };
+    if let Some(row) = merge_deploy::get(tx, landed)? {
+        pending.extend(merged_services(&row)?);
     }
-    tx.execute(
-        "INSERT INTO config_merge_deploy \
-         (environment_id, repository_id, branch, commit_sha, seq, organization_id, services, \
-          removed_services) \
-         SELECT ?1, ?2, ?3, ?4, COALESCE(MAX(seq), 0) + 1, ?5, ?6, ?7 FROM config_merge_deploy \
-         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 \
-         ON CONFLICT (environment_id, repository_id, branch, commit_sha) \
-         DO UPDATE SET services = excluded.services, \
-         removed_services = excluded.removed_services",
-        &[
-            environment.as_str().into(),
-            repository_id.into(),
-            branch.as_str().into(),
-            commit.as_str().into(),
-            who.organization.as_str().into(),
-            json_of(&pending.updates).as_str().into(),
-            json_of(&pending.removals).as_str().into(),
-        ],
+    merge_deploy::put(
+        tx,
+        who.organization.as_str(),
+        landed,
+        &json_of(&pending.updates),
+        &json_of(&pending.removals),
     )?;
     let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
         return Ok(());
@@ -591,15 +583,7 @@ fn landed(
     environment: &EnvironmentId,
     push: &GitPush,
 ) -> Result<(Vec<String>, MergedServices), RpcError> {
-    let rows = tx.query(
-        "SELECT services, removed_services, commit_sha FROM config_merge_deploy \
-         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 ORDER BY seq",
-        &[
-            environment.as_str().into(),
-            push.repository_id.into(),
-            push.branch.as_str().into(),
-        ],
-    )?;
+    let rows = merge_deploy::on_branch(tx, environment, push.repository_id, push.branch.as_str())?;
     let mut commits = rows
         .iter()
         .map(|row| row.text(2).map(str::to_owned))
@@ -638,6 +622,9 @@ enum Deploy {
     NoServers,
     /// It would deploy a pull request's head no member approved.
     NeedsApproval,
+    /// It would deploy settings the Environment's automatic deploy rule doesn't
+    /// approve: these Services.
+    Reapprove(Vec<ServiceName>),
 }
 
 fn admit(
@@ -666,7 +653,7 @@ fn admit(
     };
     // Being removed: a push leaves it be. A shut-down PR Environment (its removal
     // applied) comes back on: the push deploys all of it again.
-    let removal = crate::removal::latest(tx, id)?.filter(|removal| {
+    let removal = crate::deployment::latest_removal(tx, id)?.filter(|removal| {
         !matches!(
             removal.status,
             DeploymentStatus::Failed | DeploymentStatus::Cancelled
@@ -675,7 +662,7 @@ fn admit(
     let shut_down = removal
         .as_ref()
         .is_some_and(|removal| removal.status == DeploymentStatus::Applied)
-        && crate::pull_request::of(tx, id)?.is_some();
+        && crate::pr_environment::of(tx, id)?.is_some();
     if crate::removal::mark::naming(tx, id)?.is_some() || (removal.is_some() && !shut_down) {
         return Ok(None);
     }
@@ -737,7 +724,7 @@ fn admit(
         forget_landed(tx, id, push, &merges)?;
         return Ok(Some(Deploy::Idle));
     }
-    if !crate::pull_request::admits(tx, id, push.repository_id, &push.head)? {
+    if !crate::pull_request::admits(tx, id, (push.repository_id, &push.head), trusted)? {
         return Ok(Some(Deploy::NeedsApproval));
     }
     if trusted.runnable().is_err() {
@@ -751,6 +738,33 @@ fn admit(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| error::corrupt("Service name"))?,
     };
+    // A push of a live rule's branch deploys only the settings the rule approves: any
+    // other Deployment would fail on every Server, so it waits for a person instead.
+    let rule = crate::auto_rule::stored(tx, id)?.and_then(|rule| rule.open().ok());
+    if let Some(rule) = rule.filter(|rule| {
+        !rule.ended
+            && rule.source.repository_id == push.repository_id.get()
+            && rule.source.branch == push.branch.as_str()
+    }) {
+        let target = crate::deployment::query::saved_target(
+            tx,
+            who,
+            trusted,
+            (&environment, &saved.intent),
+            &[],
+        )?;
+        let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+        let ships: Vec<ServiceName> = selected
+            .iter()
+            .filter(|(_, follows)| *follows)
+            .map(|(service, _)| service.config.private_dns.clone())
+            .collect();
+        let sources = crate::auto_rule::sources(&saved.intent);
+        let changed = crate::auto_rule::changed(&rule, &namespace, &target, &sources, &ships);
+        if !changed.is_empty() {
+            return Ok(Some(Deploy::Reapprove(changed)));
+        }
+    }
     if wait && !passed(tx, who, push.repository_id, &push.head)? {
         let ids: Vec<String> = match shut_down {
             true => Vec::new(),
@@ -783,7 +797,9 @@ fn admit(
         } else if let ServiceSource::Git { repository_id, .. } = &service.config.source {
             let repository = RepositoryId::parse(*repository_id)?;
             match last_built(tx, id, service)? {
-                Some(commit) if crate::pull_request::admits(tx, id, repository, &commit)? => {
+                Some(commit)
+                    if crate::pull_request::admits(tx, id, (repository, &commit), trusted)? =>
+                {
                     Some(commit)
                 }
                 Some(_) => None,
@@ -798,8 +814,16 @@ fn admit(
         }
     }
     // Generated domains expand under the Cluster Domain Cloud reserved for the
-    // Environment's last Deploy.
-    let cluster_domain = deployment::cluster_domain(tx, id)?;
+    // Environment's last Deploy. A PR Environment that opened before its first Deploy,
+    // waiting for a review, takes the one its start-from's last Deploy reserved, as its
+    // first Deploy does when it opens and deploys at once.
+    let cluster_domain = match deployment::cluster_domain(tx, id)? {
+        Some(domain) => Some(domain),
+        None => match crate::branch::row(tx, id)? {
+            Some(branch) => deployment::cluster_domain(tx, &branch.parent)?,
+            None => None,
+        },
+    };
     let fresh = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
     let admission = match &held {
         Some(hold) => deployment::Admission::Promote(&hold.id),
@@ -839,16 +863,15 @@ pub(crate) fn shipped_landed(
     environment: &EnvironmentId,
     shipped: &Shipped<'_>,
 ) -> Result<(), RpcError> {
-    let rows = tx.query(
-        "SELECT services, removed_services, repository_id, branch, commit_sha \
-         FROM config_merge_deploy WHERE environment_id = ?1",
-        &[environment.as_str().into()],
-    )?;
+    let rows = merge_deploy::of_environment(tx, environment)?;
     for row in &rows {
         let mut pending = merged_services(row)?;
-        let repository_id: RepositoryId = row.number(2, "merge deploy")?;
-        let branch = row.text(3)?;
-        let commit = row.text(4)?;
+        let landed = merge_deploy::Landed {
+            environment,
+            repository_id: row.number(2, "merge deploy")?,
+            branch: row.text(3)?,
+            commit: row.text(4)?,
+        };
         let before = (pending.updates.len(), pending.removals.len());
         match shipped {
             // Its outcome isn't known yet, so a removal stays for the next push, which
@@ -866,32 +889,14 @@ pub(crate) fn shipped_landed(
         if (pending.updates.len(), pending.removals.len()) == before {
             continue;
         }
-        let key = [
-            environment.as_str().into(),
-            repository_id.into(),
-            branch.into(),
-            commit.into(),
-        ];
         if pending.is_empty() {
-            tx.execute(
-                "DELETE FROM config_merge_deploy WHERE environment_id = ?1 \
-                 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
-                &key,
-            )?;
+            merge_deploy::forget(tx, landed)?;
         } else {
-            let [environment, repository_id, branch, commit] = key;
-            tx.execute(
-                "UPDATE config_merge_deploy SET services = ?5, removed_services = ?6 \
-                 WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 \
-                 AND commit_sha = ?4",
-                &[
-                    environment,
-                    repository_id,
-                    branch,
-                    commit,
-                    json_of(&pending.updates).as_str().into(),
-                    json_of(&pending.removals).as_str().into(),
-                ],
+            merge_deploy::replace(
+                tx,
+                landed,
+                &json_of(&pending.updates),
+                &json_of(&pending.removals),
             )?;
         }
     }
@@ -907,15 +912,14 @@ fn forget_landed(
     commits: &[String],
 ) -> Result<(), RpcError> {
     for commit in commits {
-        tx.execute(
-            "DELETE FROM config_merge_deploy WHERE environment_id = ?1 \
-             AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
-            &[
-                environment.as_str().into(),
-                push.repository_id.into(),
-                push.branch.as_str().into(),
-                commit.as_str().into(),
-            ],
+        merge_deploy::forget(
+            tx,
+            merge_deploy::Landed {
+                environment,
+                repository_id: push.repository_id,
+                branch: push.branch.as_str(),
+                commit,
+            },
         )?;
     }
     Ok(())
@@ -935,7 +939,7 @@ fn last_built(
          AND b.status IN ('built', 'reused') ORDER BY d.admitted DESC",
         &[
             id.as_str().into(),
-            format!("%\"{}\"%", service.id).as_str().into(),
+            deployment::node_pattern(&service.id).as_str().into(),
         ],
     )?;
     for row in &rows {
@@ -1066,7 +1070,7 @@ pub(crate) fn auto_admit(
         saved.revision,
         &frozen,
     )?;
-    build::pin(tx, &summary.id, &pins)?;
+    build::pin(tx, &summary.id, &pins, trusted)?;
     Ok(summary)
 }
 
@@ -1079,7 +1083,7 @@ fn consented(
     namespace: &ployz_core::Namespace,
     trusted: &Trusted,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
-    let removed: Vec<_> = crate::removal::removed(dropped, &saved.intent, namespace)?
+    let removed: Vec<_> = crate::deployment::loss::removed(dropped, &saved.intent, namespace)?
         .into_iter()
         .filter(|volume| {
             saved
@@ -1091,10 +1095,10 @@ fn consented(
     if removed.is_empty() {
         return Ok(Vec::new());
     }
-    match crate::removal::held(removed, trusted.volumes.as_ref()) {
+    match crate::deployment::loss::held(removed, trusted.volumes.as_ref()) {
         Ok((losses, unanswered)) if unanswered.is_empty() => Ok(losses
             .into_iter()
-            .filter(|loss| crate::removal::covered(loss, &saved.accepted))
+            .filter(|loss| crate::deployment::loss::covered(loss, &saved.accepted))
             .collect()),
         Ok(_) | Err(_) => Ok(Vec::new()),
     }

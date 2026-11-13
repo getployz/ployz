@@ -6,6 +6,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { refusedPublicly, statusFor } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -21,11 +22,11 @@ import { Database } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
-import { fakeGithubApi } from "#/test/fake-github";
+import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { sendsNowhere } from "#/test/store-cloud";
 
-type StoreWrites = AppConfig | GithubApi | InngestClient | OrganizationRuntime | SecretEncryption;
+type StoreWrites = AppConfig | GithubApi | GithubAuthority | InngestClient | OrganizationRuntime | SecretEncryption;
 
 const organizationId = "00000000-0000-4000-8000-000000000f01";
 const volumeId = "vol1";
@@ -59,6 +60,7 @@ describe("volume placement", () => {
   const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore | StoreWrites>) => harness.runEffect(operation.pipe(
     Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))))),
     Effect.provideService(GithubApi, fakeGithubApi().service),
+    Effect.provideService(GithubAuthority, fakeGithubAuthority().service),
     Effect.provideService(InngestClient, sendsNowhere()),
     Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("no Cluster") }),
     Effect.provideService(CloudStore, {

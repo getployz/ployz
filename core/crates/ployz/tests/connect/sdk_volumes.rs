@@ -391,6 +391,7 @@ fn set_volume_copy() -> serde_json::Value {
 
 fn advertised_description() -> ployz_core::ContractDescription {
     ployz_core::ContractDescription {
+        attest: None,
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: ployz_core::PROTOCOL_MAJOR,
         daemon_version: "do-not-branch-on-me".into(),
@@ -405,6 +406,7 @@ fn advertised_description() -> ployz_core::ContractDescription {
 
 fn remove<const N: usize>(volumes: [DockerVolumeId; N], force: bool) -> RemoveVolumesRequest {
     RemoveVolumesRequest {
+        teardown: None,
         volumes: volumes.into(),
         force,
     }

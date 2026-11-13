@@ -144,10 +144,16 @@ addresses open without a login. It can't reach the build server's local network,
 or office LAN, any other private address, or the cloud's metadata service, even through a port
 published there. Its DNS keeps working, so port 53 stays open to any address, private ones too.
 
-A Dockerfile `ADD` of a URL or Git repository reaches the internet, and nothing on the server
-running the build or your servers' private network, except the image servers Ployz uses to share
-build images between your servers. Unlike a build step, it still reaches the build server's local
-network. If Ployz can't put that limit in place, the build fails instead of running without it.
+A Dockerfile `ADD` of a URL or Git repository, and every `FROM` image pull, reach the internet
+and nothing on the server running the build or your servers' private network, except the image
+servers Ployz uses to share build images between your servers. Like a build step, they can't
+reach a private address on the build server's local network, like a cloud VPC or office LAN,
+except for DNS. So a base image won't pull from a registry or mirror on your LAN, or from any
+registry whose name your network resolves to a private address, like a cloud registry or
+storage endpoint with private DNS in your VPC. Pull from an address that resolves publicly
+instead, for example by turning off private DNS for that endpoint. A LAN reached over public
+IPv6 addresses isn't fenced off. If Ployz can't put these limits in place, the build fails
+instead of running without them.
 
 ## When your servers mix x86 and ARM
 

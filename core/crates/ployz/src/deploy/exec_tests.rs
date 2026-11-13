@@ -4,14 +4,20 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerRefusal, ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId,
-    DockerVolumeName, HealthFailure, HealthObservation, LastHealthCheck, MembershipObservation,
-    Namespace, RotationTarget, RpcErrorCode, ServiceName, ServiceResult, UpdateOrder,
+    AnswerWhen, ContainerLimitsUpdated, ContainerNow, ContainerRefusal, ContainerRefusalReason,
+    ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
+    EnsuredContainer, HealthFailure, HealthObservation, HookFailure, ImagePulled, LastHealthCheck,
+    MembershipObservation, Namespace, NewContainer, OutOfMemory, RotationTarget, RoutesRead,
+    RpcErrorCode, RunRotation, RunTarget, ServiceName, ServiceResult, UpdateOrder,
 };
 
+use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 use crate::deploy::{DeployOutcome, FailedOperation};
 
+use super::machine_ops::{DeployOperations, Listed, omission_requires_observation};
+use super::transport::{RESTART_POLL, RESTART_WAIT, wait_out_restart};
 use super::*;
+use crate::deploy::cleanup::ACK_POLL;
 
 fn test_namespace() -> Namespace {
     Namespace::parse("app").unwrap()
@@ -103,7 +109,8 @@ enum Reply {
         Option<ployz_core::HealthcheckSpec>,
         Option<LastHealthCheck>,
     ),
-    ObservedIngress(ContainerRuntimeObservation),
+    /// A copy of a reserved Ingress door, the Caddy or its holder.
+    ObservedDoor(QualifiedService, ContainerRuntimeObservation),
     Pending,
     Error(RpcError),
 }
@@ -118,6 +125,8 @@ struct Recorded {
     r#gen: Gen,
     /// The Deploy label its create carried, as the daemon writes it.
     deploy: Option<DeploymentLogId>,
+    /// The creation key of the slot it was created in, as the daemon labels it.
+    key: Option<CreationKey>,
     rotation: CopyRotation,
     /// In before the run, so a proxy that never acks still lists it.
     in_before: bool,
@@ -133,6 +142,7 @@ impl Recorded {
             kind: observed.kind,
             r#gen: observed.copy_gen(),
             deploy: observed.deploy_label(),
+            key: None,
             rotation: observed.rotation().clone(),
             in_before: *observed.rotation() == CopyRotation::In,
             stopped: false,
@@ -257,6 +267,9 @@ struct Scripted {
     /// A Held ask on this copy lands, but no reply to it, or to a resend,
     /// ever arrives.
     unanswered_held: BTreeSet<ContainerId>,
+    /// A Held ask on this copy is refused before the Machine acts, as under Device
+    /// enforcement.
+    refused_held: BTreeSet<ContainerId>,
     /// The reason an unanswered In or Held ask fails with.
     unanswered_reason: &'static str,
     /// This many route reads fail before the next one answers.
@@ -324,6 +337,7 @@ impl Scripted {
             answered_error_after_in: BTreeSet::new(),
             unrouted_in: BTreeSet::new(),
             unanswered_held: BTreeSet::new(),
+            refused_held: BTreeSet::new(),
             unanswered_reason: "no answer before the deadline",
             failed_route_reads: Mutex::new(0),
             read_latency: false,
@@ -371,6 +385,7 @@ impl Scripted {
                 kind: ContainerKind::ServiceContainer,
                 r#gen,
                 deploy: None,
+                key: None,
                 in_before: rotation == CopyRotation::In,
                 rotation,
                 stopped: false,
@@ -450,6 +465,21 @@ impl Scripted {
         self
     }
 
+    /// The copy was created in a slot keyed `key`, as the daemon labels it.
+    fn with_key(mut self, container_id: &ContainerId, key: &str) -> Self {
+        self.copies
+            .get_mut()
+            .unwrap()
+            .get_mut(container_id)
+            .expect("creation key on a recorded copy")
+            .key = Some(CreationKey::try_from(key.to_owned()).unwrap());
+        self
+    }
+
+    fn add_steps(&self, steps: impl IntoIterator<Item = Step>) {
+        self.steps.lock().unwrap().extend(steps);
+    }
+
     fn rotation(&self, container_id: &ContainerId) -> Option<CopyRotation> {
         self.copies
             .lock()
@@ -519,7 +549,7 @@ impl Scripted {
                 if let Some(deploy) = deploy {
                     parts
                         .labels
-                        .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.to_string());
+                        .insert(ployz_core::labels::DEPLOYMENT_ID.into(), deploy.to_string());
                 }
             })
             .unwrap();
@@ -578,7 +608,26 @@ impl Scripted {
         let containers = copies
             .iter()
             .filter(|(_, copy)| copy.present)
-            .map(|(id, copy)| copy.proxied(id))
+            .map(|(id, copy)| {
+                let mut listed = copy.proxied(id);
+                listed
+                    .try_update(|parts| {
+                        if let Some(deploy) = &copy.deploy {
+                            parts.labels.insert(
+                                ployz_core::labels::DEPLOYMENT_ID.into(),
+                                deploy.to_string(),
+                            );
+                        }
+                        if let Some(key) = &copy.key {
+                            parts.labels.insert(
+                                ployz_core::labels::CREATION_KEY.into(),
+                                key.as_str().into(),
+                            );
+                        }
+                    })
+                    .unwrap();
+                listed
+            })
             .collect();
         crate::deploy::DeploySnapshot {
             machines,
@@ -845,8 +894,18 @@ impl Scripted {
             Decision::Write(to) => to,
         };
         let routing = to == CopyRotation::In;
+        let holding = matches!(to, CopyRotation::Held(_));
         if routing && self.unrouted_in.contains(&container_id) {
             return Err(no_server_named(machine_id));
+        }
+        if holding && self.refused_held.contains(&container_id) {
+            return Err(RpcError {
+                code: RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+                message: "ployz.restart.device-approval.v2 needs a Device-signed restart approval"
+                    .into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
         }
         if routing {
             let stopped = self
@@ -865,7 +924,7 @@ impl Scripted {
                     | Reply::CreatedAfter(..)
                     | Reply::OkAfter(_)
                     | Reply::Observed(..)
-                    | Reply::ObservedIngress(_) => {
+                    | Reply::ObservedDoor(..) => {
                         panic!("scripted restart requires Ok, Settled or Error")
                     }
                 }
@@ -889,7 +948,6 @@ impl Scripted {
         if let Some(reads) = left_in.and_then(|service| self.withheld.get(&service)) {
             self.lingering.lock().unwrap().insert(container_id, *reads);
         }
-        let holding = matches!(to, CopyRotation::Held(_));
         self.applied(Move::To(container_id, to));
         if routing && self.answered_error_after_in.contains(&container_id) {
             return Err(error("Docker inspect failed after writing In"));
@@ -971,6 +1029,7 @@ impl Scripted {
                     new.slot.kind,
                     new.r#gen,
                     new.deployment_id.clone(),
+                    new.slot.creation_key.clone(),
                 ));
                 (call, ContainerLocator::Key(new.slot))
             }
@@ -1022,11 +1081,11 @@ impl Scripted {
             | Reply::OkAfter(_)
             | Reply::Listed(_)
             | Reply::Observed(..)
-            | Reply::ObservedIngress(_)
+            | Reply::ObservedDoor(..)
             | Reply::Pending
             | Reply::Error(_) => None,
         };
-        if let (Some((service, kind, r#gen, deploy)), Some(id)) = (created, container_id) {
+        if let (Some((service, kind, r#gen, deploy, key)), Some(id)) = (created, container_id) {
             self.copies.lock().unwrap().insert(
                 id,
                 Recorded {
@@ -1035,6 +1094,7 @@ impl Scripted {
                     kind,
                     r#gen,
                     deploy,
+                    key: Some(key),
                     rotation: CopyRotation::Pending,
                     in_before: false,
                     stopped: false,
@@ -1061,7 +1121,7 @@ impl Scripted {
             }
             Reply::Error(error) => Err(error),
             Reply::Pending => std::future::pending().await,
-            Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedIngress(_) => {
+            Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedDoor(..) => {
                 panic!("scripted ensure requires Created, Ok or Error")
             }
         };
@@ -1092,6 +1152,7 @@ fn refusal(reason: ContainerRefusalReason, message: &str) -> ContainerRefusal {
     ContainerRefusal {
         reason,
         message: message.into(),
+        capability: None,
     }
 }
 
@@ -1113,24 +1174,15 @@ fn edge_refusal(refused: ployz_core::RotationRefusal) -> ContainerRefusal {
     }
 }
 
-impl MachineOperations for Scripted {
+impl Session for Scripted {
     async fn redial(&self) -> Option<Result<(), RedialFailure>> {
         let answer = self.redial.clone()?;
         *self.redials.lock().unwrap() += 1;
         Some(answer)
     }
+}
 
-    async fn prepare_volumes(
-        &self,
-        machine_id: &MachineId,
-        _specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        unit(self.next(Call::Prepare(*machine_id)))?;
-        if let Some(cancel) = &self.cancel_on_prepare {
-            cancel.cancel();
-        }
-        Ok(ployz_core::PreparedVolumes { names: Vec::new() })
-    }
+impl CopyLifecycle for Scripted {
     async fn service_containers(
         &self,
         service: &QualifiedService,
@@ -1161,7 +1213,7 @@ impl MachineOperations for Scripted {
             | Reply::CreatedAfter(..)
             | Reply::OkAfter(_)
             | Reply::Observed(..)
-            | Reply::ObservedIngress(_)
+            | Reply::ObservedDoor(..)
             | Reply::Pending => {
                 panic!("scripted list requires Listed or Error")
             }
@@ -1276,28 +1328,6 @@ impl MachineOperations for Scripted {
         }
     }
 
-    async fn read_routes(
-        &self,
-        machine_id: &MachineId,
-        service: &QualifiedService,
-    ) -> Result<RoutesRead, RpcError> {
-        self.read_at(Some(machine_id), service).await
-    }
-
-    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
-        {
-            let mut blipped = self.blipped_entry_reads.lock().unwrap();
-            if *blipped > 0 {
-                *blipped -= 1;
-                return Err(RpcError::unanswered_target(
-                    RpcErrorCode::Unavailable,
-                    "target Machine RPC timed out".into(),
-                ));
-            }
-        }
-        self.read_at(None, service).await
-    }
-
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
@@ -1320,14 +1350,15 @@ impl MachineOperations for Scripted {
                     image_id: None,
                     last_check,
                     run: None,
+                    leaving: false,
                 })
             }
-            Reply::ObservedIngress(runtime) => {
+            Reply::ObservedDoor(door, runtime) => {
                 let mut container = observation(machine_id, container_id, runtime);
                 container
                     .try_update(|parts| {
-                        parts.namespace = Namespace::system();
-                        parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+                        parts.namespace = door.namespace;
+                        parts.resolved_spec.name = door.name;
                     })
                     .unwrap();
                 Ok(ContainerDetails {
@@ -1336,6 +1367,7 @@ impl MachineOperations for Scripted {
                     image_id: None,
                     last_check: None,
                     run: None,
+                    leaving: false,
                 })
             }
             Reply::Pending => std::future::pending().await,
@@ -1349,6 +1381,42 @@ impl MachineOperations for Scripted {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
+    }
+
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        self.read_at(Some(machine_id), service).await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        {
+            let mut blipped = self.blipped_entry_reads.lock().unwrap();
+            if *blipped > 0 {
+                *blipped -= 1;
+                return Err(RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    "target Machine RPC timed out".into(),
+                ));
+            }
+        }
+        self.read_at(None, service).await
+    }
+}
+
+impl DeployOperations for Scripted {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        _specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        unit(self.next(Call::Prepare(*machine_id)))?;
+        if let Some(cancel) = &self.cancel_on_prepare {
+            cancel.cancel();
+        }
+        Ok(ployz_core::PreparedVolumes { names: Vec::new() })
     }
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
@@ -1397,6 +1465,24 @@ impl MachineOperations for Scripted {
     }
 }
 
+impl ProxyPlacement for Scripted {
+    async fn set_ingress_doors(
+        &self,
+        _machine_id: &MachineId,
+        _request: ployz_core::SetIngressDoorsRequest,
+    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
+        unreachable!("a Deploy never places the Ingress Proxy")
+    }
+
+    async fn set_private_access(
+        &self,
+        _machine_id: &MachineId,
+        _request: ployz_core::SetPrivateAccessRequest,
+    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
+        unreachable!("a Deploy never places the Private Access router")
+    }
+}
+
 fn unit(reply: Reply) -> Result<(), RpcError> {
     match reply {
         Reply::Ok => Ok(()),
@@ -1407,7 +1493,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::CreatedAfter(..)
         | Reply::OkAfter(_)
         | Reply::Observed(..)
-        | Reply::ObservedIngress(_)
+        | Reply::ObservedDoor(..)
         | Reply::Pending => {
             panic!("scripted mutation requires Ok or Error")
         }
@@ -1419,6 +1505,58 @@ fn id_of(locator: &ContainerLocator) -> ContainerId {
         ContainerLocator::Id(id) => *id,
         ContainerLocator::Key(slot) => panic!("unscripted slot {slot:?}"),
     }
+}
+
+fn slot_key(
+    namespace: &Namespace,
+    service: &ServiceName,
+    kind: ContainerKind,
+    key: String,
+) -> SlotKey {
+    SlotKey {
+        namespace: namespace.clone(),
+        service: service.clone(),
+        kind,
+        creation_key: CreationKey::try_from(key).unwrap(),
+    }
+}
+
+fn global_spec() -> ResolvedServiceSpec {
+    let mut global = spec(Some(0), None, None);
+    global.mode = ployz_core::ServiceMode::Global;
+    global
+}
+
+#[test]
+fn only_a_global_service_container_is_keyed_by_its_spec() {
+    let namespace = test_namespace();
+    let slots = Slots::new("run", &namespace, &[]);
+    let (replicated, global) = (spec(Some(0), None, None), global_spec());
+    let per_run = |index: usize| format!("{}:{index}", slots.plan);
+    let key = |slot: SlotKey| slot.creation_key.as_str().to_owned();
+
+    assert_eq!(
+        key(slots.slot(ContainerKind::ServiceContainer, &replicated, 3, None)),
+        per_run(3)
+    );
+    let by_spec = crate::cluster::global_creation_key(&global);
+    assert_eq!(
+        key(slots.slot(ContainerKind::ServiceContainer, &global, 3, None)),
+        by_spec
+    );
+    assert_eq!(
+        key(slots.slot(
+            ContainerKind::ServiceContainer,
+            &global,
+            3,
+            Some(container('a'))
+        )),
+        format!("{by_spec}:replace:{}", container('a'))
+    );
+    assert_eq!(
+        key(slots.slot(ContainerKind::PreDeployHook, &global, 3, None)),
+        per_run(3)
+    );
 }
 
 #[path = "exec_tests/dispatch.rs"]
@@ -1585,7 +1723,7 @@ fn serving(
             if let Some(deploy) = deploy {
                 parts
                     .labels
-                    .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.into());
+                    .insert(ployz_core::labels::DEPLOYMENT_ID.into(), deploy.into());
             }
         })
         .unwrap();
@@ -1612,6 +1750,7 @@ fn machine_record(id: MachineId) -> ployz_core::Machine {
         accepts_ingress: true,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -1709,7 +1848,10 @@ fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {
 }
 
 fn observed_ingress(call: Call, runtime: ContainerRuntimeObservation) -> Step {
-    Step(call, Reply::ObservedIngress(runtime))
+    Step(
+        call,
+        Reply::ObservedDoor(QualifiedService::system_ingress(), runtime),
+    )
 }
 
 fn listed(service: &QualifiedService, containers: Vec<ContainerObservation>) -> Step {
@@ -1910,7 +2052,7 @@ async fn application_failure_and_cancellation_retain_prepared_storage() {
 #[tokio::test(start_paused = true)]
 async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
     let machine = machine('1');
-    // `call_retried` keeps a lost answer only when it was worth retrying.
+    // `Client::repeat` keeps a lost answer only when it was worth retrying.
     let lost = || {
         RpcError {
             code: RpcErrorCode::Unavailable,
@@ -1956,6 +2098,61 @@ fn an_earlier_lost_answer_never_hides_a_silent_target() {
         "target Machine RPC timed out",
     ));
     assert!(crate::connect::keep_lost_call(Some(lost), silent).target_unanswered());
+}
+
+/// What a restart wait reports after a run of attempts, the last of which repeats until the
+/// wait runs out. Every row is what `Client::repeat` reports for the same attempts through
+/// `keep_target_reply` and `keep_lost_call`. The two stay separate folds because one case
+/// differs: a redial the entry refuses ends this wait still saying an earlier send may have
+/// been done (`restart.rs`, `still_lost`), while `keep_lost_call` hands a refusal no retry
+/// fixes back as it is.
+#[tokio::test(start_paused = true)]
+async fn a_restart_wait_reports_what_its_attempts_showed_of_the_machine() {
+    let machine = machine('1');
+    let answered = || unavailable("answered");
+    let lost = || unavailable("lost").reply_lost_from(&machine);
+    let silent = || RpcError::unanswered_target(RpcErrorCode::Unavailable, "silent".into());
+    let unreached = || unavailable("unreached").unreached();
+    let rows: [(&str, Vec<RpcError>, &str); 8] = [
+        (
+            "answered, then silent",
+            vec![answered(), silent()],
+            "answered",
+        ),
+        ("lost, then answered", vec![lost(), answered()], "answered"),
+        ("silent, then lost", vec![silent(), lost()], "lost"),
+        ("lost, then silent", vec![lost(), silent()], "silent"),
+        ("lost, then unreached", vec![lost(), unreached()], "lost"),
+        (
+            "answered, then lost, then unreached",
+            vec![answered(), lost(), unreached()],
+            "lost",
+        ),
+        (
+            "silent, then unreached",
+            vec![silent(), unreached()],
+            "silent",
+        ),
+        (
+            "lost, silent, then unreached",
+            vec![lost(), silent(), unreached()],
+            "silent",
+        ),
+    ];
+    for (row, attempts, reported) in rows {
+        let mut attempts = attempts.into_iter();
+        let error = wait_out_restart(
+            &CancellationToken::new(),
+            || {
+                let attempt = attempts.next().unwrap_or_else(unreached);
+                async move { Err::<(), _>(attempt) }
+            },
+            no_redial,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, reported, "{row}: {error:?}");
+    }
 }
 
 #[tokio::test(start_paused = true)]

@@ -51,6 +51,9 @@ const hostedPolar: PolarService = {
   mode: "hosted",
   productId: HOSTED_ENV.POLAR_PRODUCT_ID,
   listActiveSubscriptions: () => Effect.die("not used"),
+  createCheckout: () => Effect.die("not used"),
+  setSubscriptionUnits: () => Effect.die("not used"),
+  clearPendingUpdate: () => Effect.die("not used"),
   createCustomerPortal: () => Effect.die("not used"),
 };
 
@@ -454,6 +457,37 @@ it.live("a destroying Deploy waits on a person; an early retry only asks again, 
     const approved = yield* agent.call("deploy", { ...SHOP, approval: approvalId });
     expect(approved).toMatchObject({ isError: false, body: { ok: true } });
     expect(admitted(writes)).toEqual([{ approved: approval?.digest }]);
+  }).pipe(Effect.scoped), 30_000);
+
+/** A JSON key a person's approval would leave behind: the signed bundle, a grant, a signature or the browser's key. */
+const SECRET_KEY = /"(bundle|grant|signature|browserKey|approvals)":/;
+
+it.live("a remote agent reaches a restart through one Approval card or a proposal's card, and no answer holds a bundle, grant, signature or key", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const { tools } = yield* Effect.promise(() => agent.client.listTools());
+    for (const name of ["service_restart", "service_stop", "service_start"]) {
+      expect(tools.find((tool) => tool.name === name)?.description).toMatch(/a person approves it in the dashboard/i);
+      expect(tools.find((tool) => tool.name === name)?.description).toContain("stage them in a proposal");
+    }
+    expect(tools.find((tool) => tool.name === "service_start")?.description).toContain("It runs without approval");
+    const answers: Array<unknown> = [];
+    const call = (name: string, args: JsonObject) => agent.call(name, args).pipe(Effect.tap((answer) => Effect.sync(() => answers.push(answer))));
+
+    const single = yield* call("service_restart", { ...SHOP, service: "web" });
+    expect(single).toMatchObject({ isError: true, body: { ok: false, approval_required: { url: expect.stringMatching(/^http:\/\/localhost:3000\/cloud\/shop\?chat=/) } } });
+    expect(single.body.approval_required?.approval_id).toEqual(expect.any(String));
+
+    const created = yield* call("proposal_create", SHOP);
+    const proposal = Schema.decodeUnknownSync(Schema.Struct({ value: Schema.Struct({ proposal_id: Schema.String }) }))(created.body).value.proposal_id;
+    expect(yield* call("service_stop", { ...SHOP, service: "web", proposal })).toMatchObject({ isError: false, body: { ok: true } });
+    const presented = yield* call("proposal_present", { proposal });
+    expect(presented).toMatchObject({ isError: false, body: { ok: true, value: { proposal_id: proposal, url: expect.stringMatching(/^http:\/\/localhost:3000\/cloud\/shop\?chat=/) } } });
+    expect(JSON.stringify(presented.body)).toContain("A person must approve it");
+    expect(yield* call("proposal_status", { proposal })).toMatchObject({ isError: false, body: { ok: true, value: { id: proposal, status: "presented" } } });
+
+    expect(JSON.stringify(answers)).not.toMatch(SECRET_KEY);
   }).pipe(Effect.scoped), 30_000);
 
 // Bo asks to make Ada an admin. Once it's approved, another owner makes Bo a member while his call waits on the member

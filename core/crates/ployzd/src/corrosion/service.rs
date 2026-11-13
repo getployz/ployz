@@ -1,7 +1,6 @@
 //! Runs the Corrosion agent in a Docker container the daemon creates and keeps.
 
 use std::{
-    collections::HashMap,
     fs,
     future::Future,
     net::{Ipv4Addr, SocketAddr},
@@ -23,7 +22,7 @@ use crate::{
     docker::{DesiredContainer, Ensure, ManagedService},
     filesystem::atomic_write,
 };
-use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT};
+use ployz_core::{CORROSION_API_ADDRESS, CORROSION_GOSSIP_PORT};
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
@@ -101,7 +100,7 @@ impl CorrosionConfig {
         Self::new(
             data_dir,
             run_dir,
-            SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
+            CORROSION_API_ADDRESS,
             SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_GOSSIP_PORT)),
             DEFAULT_CONTAINER_NAME,
         )
@@ -305,6 +304,11 @@ fn report(ensured: Result<Ensure, Error>, failing: &mut bool, every: Duration) {
 }
 
 impl RunningCorrosion {
+    pub(crate) fn with_authority(mut self, owner: crate::machine::RecordOwner) -> Self {
+        self.store.authorize(owner);
+        self
+    }
+
     #[must_use]
     pub fn store(&self) -> &ReplicatedStore {
         &self.store
@@ -372,7 +376,7 @@ fn container_config(data_dir: &Path, run_dir: &Path, user: String) -> ContainerC
             data_dir.join("config.toml").to_string_lossy().into_owned(),
         ]),
         user: Some(user),
-        labels: Some(HashMap::from([("ployzd.managed".into(), String::new())])),
+        labels: Some(ployz_core::labels::system_labels()),
         host_config: Some(HostConfig {
             network_mode: Some("host".into()),
             restart_policy: Some(RestartPolicy {
@@ -659,6 +663,12 @@ mod tests {
             config.host_config.unwrap().log_config,
             Some(crate::docker::container_log_config())
         );
+    }
+
+    #[test]
+    fn corrosion_container_carries_the_system_marker_label() {
+        let config = container_config(Path::new("/data"), Path::new("/run"), "1:1".into());
+        assert_eq!(config.labels, Some(ployz_core::labels::system_labels()));
     }
 
     #[tokio::test(start_paused = true)]

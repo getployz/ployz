@@ -3993,6 +3993,7 @@ fn apply_all(store: &ConfigStore, who: &Actor, trusted: &Trusted) {
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4002,6 +4003,7 @@ fn apply_all(store: &ConfigStore, who: &Actor, trusted: &Trusted) {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             trusted,
         )
@@ -4367,6 +4369,7 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4376,6 +4379,7 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &holding(&stages, Approval::Required, Asks::EveryDeploy),
         )
@@ -4448,6 +4452,7 @@ fn a_new_publication_asks_again_for_a_removal_still_queued() {
         store.write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4457,6 +4462,7 @@ fn a_new_publication_asks_again_for_a_removal_still_queued() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted {
                 approval,
@@ -4588,7 +4594,7 @@ fn config_with(
             &ployz_store::CreateConfig {
                 environment: EnvironmentRef::default(),
                 id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
-                name: config.clone(),
+                name: config,
                 mounts,
             },
         )
@@ -5024,5 +5030,81 @@ fn history_keeps_a_change_that_sealing_since_made_read_the_same() {
     assert_eq!(
         token_in_history(&store, &who, 2),
         Some(json!({"kind": "update", "before": {"secret": true}, "after": {"secret": true}}))
+    );
+}
+
+#[test]
+fn a_created_and_a_removed_service_list_every_setting_it_carries() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    add_service(&store, &who, 10, "pg");
+    set(&store, &who, "pg.env.PASS", json!("secret"));
+    set(&store, &who, "pg.env.USER", json!("app"));
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                restored_from: None,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000015").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("pgdata").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("pg").unwrap(),
+                    path: "/var/lib/pg".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let rows = |changes: Vec<ployz_store::NodeChange>| {
+        serde_json::to_value(changes)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["name"] == "pg")
+            .flat_map(|node| node["settings"].as_array().unwrap().clone())
+            .collect::<Vec<_>>()
+    };
+    let row = |kind: &str, path: &str, id: &str, before: Value, after: Value| {
+        json!({
+            "kind": kind, "path": path, "canRestore": false, "before": before, "after": after,
+            "row": format!("00000000-0000-4000-8000-000000000010:{id}"),
+        })
+    };
+    let carried = |kind: &str, side: &dyn Fn(Value) -> (Value, Value)| {
+        let mut rows = Vec::new();
+        for (path, id, value) in [
+            (
+                "pg.source",
+                "source",
+                json!({ "credentials": false, "image": "postgres:16", "type": "image" }),
+            ),
+            ("pg.privateDns", "privateDns", json!("pg")),
+            ("pg.managedHostnames", "managedHostnames", json!([])),
+            (
+                "pg.mounts.pgdata",
+                "mounts.00000000-0000-4000-8000-000000000015",
+                json!("/var/lib/pg"),
+            ),
+            ("pg.env.PASS", "variables.PASS", json!("secret")),
+            ("pg.env.USER", "variables.USER", json!("app")),
+        ] {
+            let (before, after) = side(value);
+            rows.push(row(kind, path, id, before, after));
+        }
+        rows
+    };
+    assert_eq!(
+        rows(diff(&store, &who).draft_changes),
+        carried("add", &|value| (Value::Null, value))
+    );
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "pg");
+    assert_eq!(
+        rows(diff(&store, &who).draft_changes),
+        carried("remove", &|value| (value, Value::Null))
     );
 }

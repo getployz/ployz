@@ -7,8 +7,9 @@ use std::{
 };
 
 use ployz_core::{
-    MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
+    MachineLayout, MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId,
+    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ReleaseChannel,
+    RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -54,6 +55,22 @@ pub enum Error {
     Downgrade {
         installed: MachineVersion,
         target: MachineVersion,
+    },
+    /// An Operator named an exact release that neither Release Channel resolves to.
+    #[error(
+        "{capability} needs Full access: neither `stable` nor `beta` resolves to {target} on this Machine; run `ployz server upgrade {target}` over SSH or from an approved device",
+        capability = ployz_core::UPGRADE_EXACT_CAPABILITY
+    )]
+    OffChannel { target: MachineVersion },
+    /// An Operator asked a Machine that enforces Device approval for a release off the
+    /// Release Channel a person approved for its Cluster.
+    #[error(
+        "{capability}: {requested} isn't on the approved {approved} Release Channel. Approve its channel under Server upgrades, or with `ployz server upgrade-policy set --channel` from an approved device",
+        capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
+    )]
+    OffApprovedChannel {
+        approved: ReleaseChannel,
+        requested: MachineRelease,
     },
     /// The requested release could not be parsed or resolved.
     #[error("could not resolve the Machine release")]
@@ -144,18 +161,83 @@ impl Downgrade {
     }
 }
 
+/// Which releases a request may name, by who asks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReleaseChoice {
+    /// A Full caller: any published release.
+    AnyRelease,
+    /// An Operator on a Machine not enforcing Device approval: a channel, or an exact
+    /// version either channel resolves to now.
+    ChannelResolved,
+    /// An Operator on a Machine enforcing Device approval: the channel a person approved,
+    /// or the exact version it resolves to now.
+    Signed(ReleaseChannel),
+}
+
+impl ReleaseChoice {
+    async fn admit(
+        self,
+        requested: &MachineRelease,
+        target: &MachineVersion,
+        source: &ReleaseSource,
+        installed: Option<&MachineVersion>,
+    ) -> Result<(), Error> {
+        let named = ReleaseChannel::of(requested);
+        match self {
+            Self::AnyRelease => Ok(()),
+            Self::ChannelResolved if named.is_some() => Ok(()),
+            Self::ChannelResolved => {
+                for channel in [ReleaseChannel::Stable, ReleaseChannel::Beta] {
+                    if resolves_to(channel, target, source, installed).await {
+                        return Ok(());
+                    }
+                }
+                Err(Error::OffChannel {
+                    target: target.clone(),
+                })
+            }
+            Self::Signed(approved) => {
+                let on_channel = match named {
+                    Some(channel) => channel == approved,
+                    None => resolves_to(approved, target, source, installed).await,
+                };
+                if on_channel {
+                    Ok(())
+                } else {
+                    Err(Error::OffApprovedChannel {
+                        approved,
+                        requested: requested.clone(),
+                    })
+                }
+            }
+        }
+    }
+}
+
+async fn resolves_to(
+    channel: ReleaseChannel,
+    target: &MachineVersion,
+    source: &ReleaseSource,
+    installed: Option<&MachineVersion>,
+) -> bool {
+    super::release::resolve_release(&channel.into(), source, installed)
+        .await
+        .is_ok_and(|resolved| resolved == *target)
+}
+
 /// Own acceptance and worker launch independently of the requesting client's lifetime.
 /// Dropping the returned future only stops waiting; the task retains exclusive admission.
 pub(crate) fn request(
     request: RequestMachineUpgradeRequest,
     downgrade: Downgrade,
+    choice: ReleaseChoice,
     data_dir: PathBuf,
     run_dir: PathBuf,
     guard: mutation::InstallationGuard,
 ) -> impl Future<Output = Result<MachineUpgradeAttempt, Error>> {
     let task = tokio::spawn(async move {
         let _guard = guard;
-        request_locked(request, downgrade, &data_dir, &run_dir).await
+        request_locked(request, downgrade, choice, &data_dir, &run_dir).await
     });
     async move {
         task.await.map_err(|error| {
@@ -170,6 +252,7 @@ pub(crate) fn request(
 async fn request_locked(
     request: RequestMachineUpgradeRequest,
     downgrade: Downgrade,
+    choice: ReleaseChoice,
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<MachineUpgradeAttempt, Error> {
@@ -202,6 +285,14 @@ async fn request_locked(
     )
     .await
     .map_err(Error::Resolve)?;
+    choice
+        .admit(
+            &request.release,
+            &target,
+            &ReleaseSource::Published,
+            installed.as_ref(),
+        )
+        .await?;
     downgrade.admit(installed.as_ref(), &target)?;
     if already_installed(&request.release, installed.as_ref(), &target) {
         // Nothing to install or restart: the attempt settles on its first reply.
@@ -286,7 +377,7 @@ pub async fn run_worker(
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<(), Error> {
-    super::require_standard_machine_paths(data_dir, &run_dir.join("ployz.sock"))
+    super::require_standard_machine_paths(data_dir, &MachineLayout::socket_in(run_dir))
         .map_err(Error::NonstandardPaths)?;
     work(
         &ReleaseSource::Published,
@@ -301,8 +392,8 @@ async fn work(
     paths: &InstallPaths,
     attempt_id: MachineUpgradeAttemptId,
 ) -> Result<(), Error> {
-    let data_dir = &paths.data_dir;
-    let admission = mutation::MutationGate::new(&paths.run_dir, data_dir);
+    let data_dir = paths.layout.data_dir();
+    let admission = mutation::MutationGate::new(paths.layout.run_dir(), data_dir);
     let guard = admission.lock_installation()?;
     let mut stored = read(data_dir)?;
     if stored.attempt.attempt_id != attempt_id || stored.attempt.is_terminal() {

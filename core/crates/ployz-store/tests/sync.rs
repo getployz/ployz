@@ -1237,6 +1237,7 @@ fn a_branch_a_sync_closed_lists_its_removal_before_and_after_the_sweep_starts_it
         .write_trusted(
             &who,
             &Admit::Remove(AdmitRemoval {
+                teardown: None,
                 id: id.clone(),
                 environment: at("fix-web"),
             }),
@@ -1293,6 +1294,7 @@ fn admit_removal(
     let admitted = store.write_trusted(
         who,
         &Admit::Remove(AdmitRemoval {
+            teardown: None,
             id: id.clone(),
             environment: at("fix-web"),
         }),
@@ -1437,6 +1439,7 @@ fn removing_a_branch_whose_close_waits_for_the_sweep_needs_no_new_confirmation()
     assert!(store.write(&who, &closing).unwrap().closing);
 
     let again = Remove {
+        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: Some(EnvironmentName::parse("fix-web").unwrap()),
         version: None,
@@ -2513,5 +2516,51 @@ fn plain_text_for_a_synced_secret_is_refused_and_an_old_cli_is_told_to_update() 
     assert_eq!(
         values(&store, &who, "production", "web")["env"]["TOKEN"],
         Value::Null
+    );
+}
+
+#[test]
+fn the_refusal_of_a_synced_secret_s_plain_text_is_pinned_for_the_cli_and_for_anyone_else() {
+    let (store, who) = shop(false);
+    let copy = service_id(&store, &who, "fix-web", "web");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[(
+            "web.env.TOKEN",
+            backend::sealed_secret(&uuid(9), copy.as_str(), "TOKEN", 1),
+        )],
+    );
+    let review = view(&store, &who);
+    let with_value = SyncChanges {
+        values: BTreeMap::from([("web.env.TOKEN".into(), "plain-value".into())]),
+        ..sync(&review, Some(&["web.env.TOKEN"]))
+    };
+    let cli = Trusted {
+        from_cli: true,
+        ..Trusted::default()
+    };
+    let error = store.write_trusted(&who, &with_value, &cli).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str(), error.details),
+        (
+            RpcErrorCode::Unsupported,
+            "TOKEN: update ployz to set a Sealed value.",
+            json!({
+                "variable": "TOKEN",
+                "next": "curl -fsSL https://ployz.sh | sh",
+                "follow_up": { "kind": "update_client", "beta": false },
+            }),
+        )
+    );
+    let error = store.write(&who, &with_value).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str(), error.details),
+        (
+            RpcErrorCode::InvalidArgument,
+            "web.env.TOKEN: secrets are sealed on your device",
+            json!({ "row": "00000000-0000-4000-8000-000000000003:variables.TOKEN" }),
+        )
     );
 }

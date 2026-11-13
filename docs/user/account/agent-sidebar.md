@@ -55,6 +55,7 @@ replied. It can:
   mirror, or restore a volume from a server's copy (**volume mirror**, **volume move**,
   **volume release**, **volume mirror remove**, **volume restore**). To refresh a mirror, ask for a
   **volume mirror** to the same server again.
+- Rename the cluster, which asks you first (**cluster name**).
 - Read a connected GitHub repository, or tell you how to connect one (**github ls**,
   **github connect**).
 
@@ -141,6 +142,52 @@ Approving it runs the change as the member who asked. Only an owner or admin who
 approve or deny it. The member who asked finds their card under **Requested**, marked **Waiting on
 an owner or admin.**, with no **Approve** or **Deny**, and it doesn't count on the **Agent** button. An agent that asks for the same sync or take
 again while it waits doesn't add a second card.
+
+## Approve several steps at once
+
+An agent can plan several service restarts, stops and starts as one proposal, like stopping
+`web`, restarting `db`, then starting `web` again. It stages the steps, then presents the plan,
+and one card appears under **Waiting on you**, titled like **3 steps in shop/production** and
+marked **Proposal**. Nothing runs until you approve.
+
+The card lists every step in the order it runs, like **1. Stop web** and **2. Restart db on
+fra-1**, each with the name your servers know the service by, like **On servers
+shop-prod-a1b2/web**. A step names the service as your servers run it; after a rename, the name
+it has now follows in brackets, like **Stop web-old (web)**. Under the steps, it lists what the plan takes away, like **Stops service
+web until started again**, as a stop or restart card does.
+
+1. Read the steps in order, and what they take away.
+2. Click **Approve all**, then use your passkey when the browser asks. Your passkey approves this
+   proposal only, once, even if you used it a moment ago.
+3. Or click **Deny**, with a reason if you like. The agent gets it.
+
+<!-- screenshot: a proposal card for 3 steps in shop/production -->
+
+The steps run one after another, and if one fails, the ones after it don't run. Your approval of
+those steps still stands until it runs out, 15 minutes after you gave it. The card moves under
+**Recent** and shows each step as **Done**, **Failed** with why, or **Not run**. You can ask the
+agent how far the plan got. Each server runs only a step you saw, and each step only once.
+When the 15 minutes run out with steps left, they don't run, and the card says what to start
+yourself. A proposal holds only restarts, stops and starts; a deploy or a settings change still
+asks on its own card.
+
+A proposal in a [Protected environment](../environments/environments.md#protect-an-environment)
+can only be presented by an owner or admin. If a server needs a newer Ployz to take a proposal,
+the card says which one, and nothing runs until it's upgraded.
+
+## Approve a volume change
+
+On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, an agent's volume move, mirror, full sync, restore, mirror removal or resize waits on a card,
+like **Move data to web-2**.
+
+1. Click **Approve**. Your browser lists what the change approves, line by line, as `ployz`
+   prints it.
+2. Read the lines, then use your passkey. Cancel and nothing is approved.
+
+The agent's next try runs the change, once. If a server the change names needs a newer Ployz, or
+doesn't answer, the card says which one and nothing is approved. See
+[Approve from Ployz Cloud](../services/move-a-volume.md#approve-from-ployz-cloud).
 
 ## Good to know
 

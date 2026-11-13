@@ -4,11 +4,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::join_all;
 use ployz_core::QualifiedService;
+use ployz_core::authority::{RestartApproval, Signed};
 use ployz_core::metrics::{MarkerKind, MetricMarker, MetricRange};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    EnvironmentValues, HealthObservation, HealthVerdict, LogHistoryRequest, MachineId,
-    MachineObservation, MachineStorageObservation, Namespace, RpcError, RpcErrorCode, ServiceName,
+    EnvironmentValues, HealthObservation, HealthVerdict, LiveServices, LogHistoryRequest,
+    MachineId, MachineObservation, MachineStorageObservation, Namespace, RpcError, ServiceName,
     StopOptions,
 };
 use ployz_store::DeploymentId;
@@ -26,7 +27,6 @@ use tokio_util::sync::CancellationToken;
 use super::Session;
 use crate::cluster::HealthWaitError;
 use crate::deploy::cleanup::{self, UserStarted};
-use crate::operator::DEPLOYMENT_LABEL;
 
 /// The Namespaces whose Services an answer may describe. A Server answer keeps its host
 /// totals either way; `Only` drops every Service event outside the set before counting.
@@ -69,14 +69,14 @@ pub async fn ask(
         CloudQuery::Logs(query) => encode(&logs(session, query, sealed).await?),
         CloudQuery::ServerLogs(query) => encode(&server_logs(session, query).await?),
         CloudQuery::Metrics(query) => encode(&metrics(session, query, readable).await?),
-        CloudQuery::Copies { .. } => Err(unsupported(
+        CloudQuery::Copies { .. } => Err(RpcError::unsupported(
             "Copies join the Config Store; Ployz Cloud answers them",
         )),
         CloudQuery::Operations(_)
         | CloudQuery::GithubTree(_)
         | CloudQuery::GithubFile(_)
         | CloudQuery::GithubConnection
-        | CloudQuery::GithubBranches { .. } => Err(unsupported(
+        | CloudQuery::GithubBranches { .. } => Err(RpcError::unsupported(
             "Operations and GitHub are Ployz Cloud's records; the Servers do not hold them",
         )),
     }
@@ -99,16 +99,9 @@ async fn servers(
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await
                 .map_err(RpcError::from)?;
-            let mut unanswered = uninvited(&machines);
+            let mut unanswered = unanswered_live(&machines, &live);
             unanswered.extend(gaps.failures.iter().map(|failure| failure.machine_id));
             unanswered.extend(gaps.omissions.iter().copied());
-            unanswered.extend(
-                live.containers
-                    .failures
-                    .iter()
-                    .map(|failure| failure.machine_id),
-            );
-            unanswered.extend(live.containers.omissions.iter().copied());
             let mut namespaces = BTreeMap::<MachineId, BTreeSet<Namespace>>::new();
             for container in live
                 .containers
@@ -186,14 +179,7 @@ async fn containers(
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await
                 .map_err(RpcError::from)?;
-            let mut unanswered = uninvited(&machines);
-            unanswered.extend(
-                live.containers
-                    .failures
-                    .iter()
-                    .map(|failure| failure.machine_id),
-            );
-            unanswered.extend(live.containers.omissions.iter().copied());
+            let unanswered = unanswered_live(&machines, &live);
             let names: BTreeMap<MachineId, &ServerName> = machines
                 .iter()
                 .map(|machine| (machine.machine.id, &machine.machine.name))
@@ -301,9 +287,11 @@ where
         match read {
             Ok(Some(tail)) => {
                 let super::AgentTail { text, withheld } = tail.into();
+                // Always sent, even beside fully withheld text: it names the Containers, and
+                // CLIs before the withheld reason's words print only this note's.
                 if !withheld.is_empty() {
                     notes.push(format!(
-                        "Lines from {} on {} withheld: their env could not be read to scrub Sealed values.",
+                        "Lines from {} on {} withheld: Ployz couldn't check their variables for secret values, so it can't hide them.",
                         withheld.join(", "),
                         machine.machine.name,
                     ));
@@ -367,7 +355,14 @@ async fn metrics(
                 since_nanos: since.0.saturating_mul(NANOS_PER_SECOND),
                 until_nanos,
             };
-            let history = super::metric_history(&client, subject, range, None).await?;
+            let history = super::metrics::metric_history_among(
+                &client,
+                subject,
+                range,
+                None,
+                Some(&machines),
+            )
+            .await?;
             Ok(summarize(
                 &history,
                 &machines,
@@ -499,14 +494,7 @@ pub async fn observe_service(
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await
                 .map_err(RpcError::from)?;
-            let mut unanswered = uninvited(&machines);
-            unanswered.extend(
-                live.containers
-                    .failures
-                    .iter()
-                    .map(|failure| failure.machine_id),
-            );
-            unanswered.extend(live.containers.omissions.iter().copied());
+            let unanswered = unanswered_live(&machines, &live);
             let names: BTreeMap<MachineId, &ServerName> = machines
                 .iter()
                 .map(|machine| (machine.machine.id, &machine.machine.name))
@@ -558,19 +546,22 @@ fn copies_of<'a>(
         .collect()
 }
 
-/// Stop Container `container` on `machine` once no proxy routes to it. A copy that
-/// serves leaves rotation first and stays startable. An answer is the Machine's; a lost
-/// one is the transport's error, and the stop may have happened.
+/// Stop Container `container` on `machine` once no proxy routes to it, or once the
+/// wait for a proxy that never confirms ends. A copy that serves leaves rotation first
+/// and stays startable. `approval` rides every step, for a Machine under Device
+/// enforcement. An answer is the Machine's; a lost one is the transport's error, and
+/// the stop may have happened.
 ///
 /// # Errors
-/// Returns the Machine's refusal, a copy proxies kept routing (left running), or the
-/// transport's error when it did not answer.
+/// Returns the Machine's refusal, a cancelled wait (left running), or the transport's
+/// error when it did not answer.
 pub async fn stop_one(
     session: &Session,
     machine: MachineId,
     container: ContainerId,
+    approval: Option<Signed<RestartApproval>>,
 ) -> Result<(), RpcError> {
-    let client = session.client()?;
+    let client = session.client()?.with_restart_approval(approval);
     session
         .until_closed(cleanup::user_stop(
             &client,
@@ -593,7 +584,9 @@ pub async fn stop_one(
 ///
 /// # Errors
 /// Returns the Machine's refusal, a copy proxies kept routing (left running), or the
-/// transport's error when it did not answer.
+/// transport's error when it did not answer. A Container Docker has while the Machine
+/// holds no Resolved Service Spec under its ID stays, and answers `conflict` with
+/// `details.reason` `no_resolved_spec`.
 pub async fn remove_one(
     session: &Session,
     machine: MachineId,
@@ -635,6 +628,7 @@ impl Started {
 
 /// Start Container `container` on `machine`, then wait until it is healthy or past its
 /// healthcheck deadline. A copy that serves is brought back into rotation once healthy.
+/// `approval` rides every step, for a Machine under Device enforcement.
 ///
 /// # Errors
 /// Returns the Machine's refusal, a Conflict for a copy out of rotation (deploy again),
@@ -643,8 +637,9 @@ pub async fn start_one(
     session: &Session,
     machine: MachineId,
     container: ContainerId,
+    approval: Option<Signed<RestartApproval>>,
 ) -> Result<Started, RpcError> {
-    let client = session.client()?;
+    let client = session.client()?.with_restart_approval(approval);
     session
         .until_closed(async {
             Ok(
@@ -695,9 +690,8 @@ fn report(container: &ContainerObservation, server: &ServerName) -> ContainerRep
         restarts: None,
         image: container.resolved_spec.container.image.clone(),
         deployment: container
-            .labels
-            .get(DEPLOYMENT_LABEL)
-            .and_then(|id| DeploymentId::parse(id.clone()).ok()),
+            .deployment_label()
+            .and_then(|id| DeploymentId::parse(id.to_owned()).ok()),
     }
 }
 
@@ -710,6 +704,23 @@ fn health(observed: &HealthObservation) -> Option<Health> {
         | HealthObservation::Stopping
         | HealthObservation::Unrecognized(_) => None,
     }
+}
+
+/// The Servers a live Container read did not hear from: those that never invited it, and
+/// those that failed or were left out of it.
+fn unanswered_live(
+    machines: &[MachineObservation],
+    live: &LiveServices<RpcError>,
+) -> BTreeSet<MachineId> {
+    let mut unanswered = uninvited(machines);
+    unanswered.extend(
+        live.containers
+            .failures
+            .iter()
+            .map(|failure| failure.machine_id),
+    );
+    unanswered.extend(live.containers.omissions.iter().copied());
+    unanswered
 }
 
 fn uninvited(machines: &[MachineObservation]) -> BTreeSet<MachineId> {
@@ -743,21 +754,8 @@ fn now() -> Timestamp {
 }
 
 fn encode(answer: &impl serde::Serialize) -> Result<Value, RpcError> {
-    serde_json::to_value(answer).map_err(|error| RpcError {
-        code: RpcErrorCode::Internal,
-        message: format!("encoding a Cloud answer: {error}"),
-        details: Value::Null,
-        cause: Vec::new(),
-    })
-}
-
-fn unsupported(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unsupported,
-        message: message.to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    serde_json::to_value(answer)
+        .map_err(|error| RpcError::internal(format!("encoding a Cloud answer: {error}")))
 }
 
 #[cfg(test)]

@@ -15,14 +15,16 @@ import type { SetupCommand as DraftCommand } from "#/modules/config-store/branch
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { rememberProjectRename } from "#/modules/config-store/renamed-projects";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
+import { StoreAutomaticDeploys } from "./store-automatic-deploys";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
-/** An Environment's settings over the Config Store: its protection, and deleting it once it is neither the Default, Protected, nor a Parent. */
+/** An Environment's settings over the Config Store: its protection, Branch setup, automatic deploys, and deleting it once it is neither the Default, Protected, nor a Parent. */
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
@@ -44,6 +46,7 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
     ) : null}
     <StoreBranchSetup organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug}
       saved={environment?.branch_setup ?? []} />
+    <StoreAutomaticDeploys organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug} />
     <StoreTeardownSection
       organizationSlug={organizationSlug}
       target={{ project: projectSlug, environment: environmentSlug }}
@@ -217,16 +220,23 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const writer = useStoreWriter(organizationSlug);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
   const [defaultEnvironment, holdDefault] = useCommitHold(listing.ok ? listing.value.environments.find((row) => row.default)?.name ?? null : null);
-  // A Project deleted here or elsewhere opens Projects; any other refusal leaves the page empty.
-  if (!listing.ok) return listing.refusal.code === "not_found" ? <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace /> : null;
+  // The old name reads as not found once the Store has the rename, before the commit resolves.
+  const [renaming, setRenaming] = useState(false);
+  // A Project deleted here or elsewhere opens Projects; one renamed here opens under its new name; any other refusal leaves the page empty.
+  if (!listing.ok) return listing.refusal.code === "not_found" && !renaming ? <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace /> : null;
   const { environments } = listing.value;
   return (
     <div className="flex flex-col gap-6">
       <SettingsSection id="project" title="Project">
         <ProjectNameRow project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
-          return writer.commit({ command: "rename_project", project: projectSlug, name }).then(() =>
-            navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
+          // Replaced, not pushed: this entry's old name opens nothing. Earlier entries follow the rename through the Project route,
+          // which reads the Projects view; the commit refreshes it because the breadcrumb shows it.
+          setRenaming(true);
+          return writer.commit({ command: "rename_project", project: projectSlug, name }).then(() => {
+            rememberProjectRename(organizationSlug, projectSlug, name);
+            return navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev, replace: true });
+          }).catch(() => undefined).finally(() => setRenaming(false));
         }} />
         <SettingsRow
           label="Default environment"

@@ -11,7 +11,7 @@ afterEach(() => vi.restoreAllMocks());
 
 const done: VolumeRunView = {
   id: "run-1", volume_id: "vol", volume_name: "data", kind: "sync", args: {}, orphan: false,
-  state: "done", epoch: null, message: null, created_at: "", updated_at: "", finished_at: "",
+  state: "done", epoch: null, message: null, created_at: "", updated_at: "", finished_at: "", answers: [],
 };
 
 function watch() {

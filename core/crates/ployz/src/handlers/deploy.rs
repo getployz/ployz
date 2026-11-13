@@ -4,26 +4,29 @@
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
 
+pub(super) mod approve;
+mod built;
 #[cfg(test)]
 mod follow_tests;
 mod progress;
 
+use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress};
-use crate::ui::{self, Cell, Hint, Table, Tone};
+use crate::ui::{self, Cell, Table, Tone};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
     DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, NodeStatus, PlanQuery,
     Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
-use super::store::{Next, Store, environment, mint, next, scoped, store};
+use super::store::{Store, environment, mint, next, scoped, store};
 use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
@@ -63,7 +66,10 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .conflicts_with_all(["service", "plan", "skip-deploy"])
                 .hide(true),
         )
-        .arg(crate::cli::yes("Does nothing; kept for older scripts").hide(true))
+        .arg(crate::cli::yes(
+            "Sign without asking when your servers enforce device approval; still prints \
+             what it signs",
+        ))
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(
@@ -115,8 +121,7 @@ pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
 pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 /// How long a followed Deployment may sit queued before the follow says why it waits.
 fn unclaimed_wait() -> Duration {
-    crate::cli::env::seconds(crate::cli::env::DEPLOY_UNCLAIMED_SECONDS)
-        .unwrap_or(Duration::from_secs(30))
+    crate::env::seconds(crate::env::DEPLOY_UNCLAIMED_SECONDS).unwrap_or(Duration::from_secs(30))
 }
 
 pub(super) fn deployment_group(command: Command) -> Command {
@@ -142,12 +147,15 @@ pub(super) fn redeploy_command(command: Command) -> Command {
         command,
         "Deploy an ended Deployment's commit and settings again, and follow it. Redeploying \
          one older than a Deployment that ran rolls that back until the next deploy, so it \
-         asks first; --yes skips the ask. Outside a terminal without --yes it fails with \
+         asks first. On Servers that enforce Device approval it also asks you to approve each \
+         commit. --yes skips both asks. Outside a terminal without --yes it fails with \
          confirmation_required. A rollback that deletes Volume data needs \
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(crate::cli::yes("Roll back without asking"))
+    .arg(crate::cli::yes(
+        "Roll back and approve the commits without asking",
+    ))
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
@@ -210,7 +218,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         services,
         version: matches.get_one::<String>("expect-version").cloned(),
         source,
-        accept: super::teardown::accepted(matches)?,
+        accept: super::shared::accepted::accepted(matches)?,
         message: matches.get_one::<String>("message").cloned(),
         no_prune,
     };
@@ -224,20 +232,20 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
         environment: environment(matches)?,
         version: matches.get_one::<String>("expect-version").cloned(),
         message: matches.get_one::<String>("message").cloned(),
-        accept_volume_loss: super::teardown::accepted(matches)?,
+        accept_volume_loss: super::shared::accepted::accepted(matches)?,
     };
     let saved = store
         .publish(&saving)
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
-    let where_ = format!("{}/{}", saved.environment.project, saved.environment.name);
+    let where_ = saved.environment.to_string();
     let Some(version) = saved.saved else {
         return ui::done(
             &Next::new(&saved, None),
             format_args!("Nothing staged in {where_}."),
         );
     };
-    let hint = next(matches, &["deploy"]);
-    ui::finish(&Next::new(&saved, Some(hint.clone())), || {
+    let followed = Next::new(&saved, Some(next(matches, &["deploy"])));
+    ui::finish(&followed, || {
         if saved.created {
             ui::stream(format_args!(
                 "Saved version #{version} of {where_}. Not deployed."
@@ -247,7 +255,7 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
                 "Version #{version} already holds everything staged in {where_}. Not deployed."
             ));
         }
-        ui::hint(&Hint::Next(hint));
+        followed.say();
     })
 }
 
@@ -293,11 +301,19 @@ pub(super) fn upload_and_ship(
         .map(|(dir, listing)| uploaded_source(dir, listing))
         .transpose()?;
     let id = DeploymentId::parse(mint())?;
+    // An upload builds an image no Device can name before it exists.
+    let device = match &listing {
+        Some(_) => None,
+        None => approve::sign(matches, store, &id, (&environment, &services))?,
+    };
+    let teardown = super::teardown::volume_loss(matches, store, (&environment, None), &accept)?;
+    let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
         store.upload(&id, dir, listing)?;
     }
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
+            teardown: teardown.map(Box::new),
             id,
             environment,
             services,
@@ -307,9 +323,14 @@ pub(super) fn upload_and_ship(
             message,
             prune: false,
             no_prune,
+            approval: device
+                .as_ref()
+                .map(|device| Box::new(device.signed.clone())),
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
-    execute(matches, store, &admitted, source.as_deref(), events)
+    let mut shipped = execute(matches, store, &admitted, source.as_deref(), events)?;
+    shipped.approved = device.map(|device| device.approved).unwrap_or_default();
+    Ok(shipped)
 }
 
 /// Refuse `--detach` on the hidden local Store before anything is queued: it runs
@@ -377,6 +398,17 @@ pub(super) struct Shipped {
     /// The run found no upload or usable image, so `hint` uploads one.
     pub(super) needs_upload: bool,
     pub(super) presented: bool,
+    /// What this Device approved for each Service, when a Server enforces Device approval.
+    pub(super) approved: Vec<ployz_core::authority::ApprovedChange>,
+}
+
+/// A Deployment's view with what this Device approved, under `--json`.
+#[derive(serde::Serialize)]
+struct WithApproved<'a> {
+    #[serde(flatten)]
+    view: &'a DeploymentView,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    approved: &'a [ployz_core::authority::ApprovedChange],
 }
 
 impl Shipped {
@@ -384,13 +416,18 @@ impl Shipped {
         if let Some(skipped) = prune_skipped(&self.view.deployment, self.view.preview.as_ref()) {
             ui::warn(skipped);
         }
+        let result = WithApproved {
+            view: &self.view,
+            approved: &self.approved,
+        };
+        let next = Next::new(&result, Some(self.hint));
         if self.presented {
-            ui::emit(&Next::new(&self.view, Some(self.hint.clone())))?;
+            ui::finish(&next, || say_unserved(&self.view))?;
         } else {
-            finish_view(&self.view, Some(self.hint.clone()))?;
+            ui::finish(&next, || say_view(&self.view))?;
         }
         if self.needs_upload {
-            ui::hint(&Hint::Next(self.hint));
+            next.say();
         }
         self.ran
     }
@@ -491,7 +528,9 @@ pub(super) fn execute(
                     Disposition::Settled
                 },
             );
-            ui::emit(&Next::new(&followed.view, Some(hint)))?;
+            ui::finish(&Next::new(&followed.view, Some(hint)), || {
+                say_unserved(&followed.view);
+            })?;
             return Err(if interrupted {
                 error.interrupted()
             } else {
@@ -561,6 +600,7 @@ pub(super) fn execute(
         ran,
         needs_upload,
         presented: !detached,
+        approved: Vec::new(),
     })
 }
 
@@ -579,7 +619,7 @@ fn run_here(
         &super::config_path(matches)?,
         direct,
         context,
-        Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     ) {
         Ok(selected) => selected.connections,
         // Nothing named and no Cluster to reach: the runner records that nothing ran.
@@ -590,6 +630,7 @@ fn run_here(
     let sources = crate::sdk::Sources {
         checkouts: BTreeMap::new(),
         upload: source.map(Path::to_path_buf),
+        reader: None,
     };
     let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
     let runtime = runtime()?;
@@ -1011,6 +1052,8 @@ fn plan(
     let plan = store.read(&PlanQuery {
         environment: environment(matches)?,
         services,
+        target: false,
+        deployment: None,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
     let (ingress, ingress_unchecked) = match ingress_check(matches) {
@@ -1031,8 +1074,9 @@ fn plan(
         ingress_unchecked,
         prunes,
     };
-    crate::ui::finish(&Next::new(&shown, Some(hint.clone())), || {
-        let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
+    let followed = Next::new(&shown, Some(hint));
+    crate::ui::finish(&followed, || {
+        let where_ = plan.environment.to_string();
         if plan.changes.is_empty() {
             crate::ui::stream(format_args!("No authored changes to deploy in {where_}."));
         }
@@ -1078,7 +1122,7 @@ fn plan(
         if let Some(undecided) = undecided(&plan.unresolved) {
             ui::stream(format_args!("{undecided}"));
         }
-        ui::hint(&Hint::Next(hint.clone()));
+        followed.say();
     })
 }
 
@@ -1102,7 +1146,7 @@ fn undecided(unresolved: &[String]) -> Option<String> {
 }
 
 /// The plan's warning when no Server answers: the deploy waits on one.
-fn cant_run(silent: &super::server::Silent) -> String {
+fn cant_run(silent: &super::route::Silent) -> String {
     let until = if let [_] = silent.names() {
         "it does"
     } else {
@@ -1117,7 +1161,7 @@ fn cant_run(silent: &super::server::Silent) -> String {
 /// Why ingress went unchecked, and whether that is because no Server answered.
 struct Unchecked {
     cause: String,
-    silent: Option<super::server::Silent>,
+    silent: Option<super::route::Silent>,
 }
 
 fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, Unchecked> {
@@ -1133,11 +1177,11 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, U
     runtime()
         .map_err(|error| unchecked(error.to_string()))?
         .block_on(async {
-            let mut client = super::server::connect(matches, context)
+            let mut client = super::route::connect(matches, context)
                 .await
                 .map_err(|error| Unchecked {
                     cause: crate::ingress::unchecked(&error, None, None),
-                    silent: super::server::Silent::of(&error),
+                    silent: super::route::Silent::of(&error),
                 })?;
             let server = client.server();
             crate::ingress::planned_slots(&mut client)
@@ -1159,7 +1203,7 @@ fn provenance(deployment: &DeploymentSummary) -> Option<String> {
     let source = match &upload.base {
         Some(base) => format!(
             "uploaded by {who}, base {}{}",
-            base.commit.as_str().get(..7).unwrap_or_default(),
+            base.commit.short(),
             if base.changed { " + changes" } else { "" }
         ),
         None => format!("uploaded by {who}, sha256 {digest}"),
@@ -1250,10 +1294,9 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
             Cell::from(deployment.saved.to_string()),
         ]);
     }
-    ui::list(&Next::new(&page, hint.clone()), &table)?;
-    if let Some(hint) = hint {
-        ui::hint(&Hint::Next(hint));
-    }
+    let followed = Next::new(&page, hint);
+    ui::list(&followed, &table)?;
+    followed.say();
     Ok(())
 }
 
@@ -1364,13 +1407,30 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
         false => Some(confirm_rollback(&store, &source)?),
     };
     let events = open_events(matches)?;
+    // On Servers that enforce Device approval, this Device approves each commit.
+    let mut device = built::prepare(matches, &store, &source)?;
+    let accept = super::shared::accepted::accepted(matches)?;
+    // A redeploy's loss is read from its source, wherever it ran.
+    let teardown = super::teardown::volume_loss(
+        matches,
+        &store,
+        (&EnvironmentRef::default(), Some(&source)),
+        &accept,
+    )?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
+            teardown: teardown.map(Box::new),
             id: DeploymentId::parse(mint())?,
             deployment: source.clone(),
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
-            accept_volume_loss: super::teardown::accepted(matches)?,
+            accept_volume_loss: accept,
+            approvals: device
+                .as_mut()
+                .map(|device| std::mem::take(&mut device.approvals))
+                .unwrap_or_default(),
+            awaits_approval: device.is_some(),
+            approval: None,
         }))
         .map_err(|error| {
             let asks = matches!(&error, StoreCallError::Refused(refusal)
@@ -1380,6 +1440,9 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
                 false => refused(matches, &store, &source)(error),
             }
         })?;
+    if let Some(device) = device {
+        device.approve(&store, &admitted)?;
+    }
     ship(matches, &store, &admitted, events)
 }
 
@@ -1478,7 +1541,7 @@ pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
             &["deployment", "ls"],
         )
         .map_err(refused(matches, &store, &id))?;
-    let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
+    let view = store.read(&ployz_store::DeploymentQuery { id })?;
     finish_view(&view, Some(hint_for(matches, &view.deployment)))
 }
 
@@ -1486,7 +1549,7 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
-    let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
+    let view = store.read(&ployz_store::DeploymentQuery { id })?;
     finish_view(&view, None)
 }
 
@@ -1534,7 +1597,7 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("{line}"));
         }
     }
-    if super::teardown::left_on_old_servers(&view.deployment) {
+    if super::shared::accepted::left_on_old_servers(&view.deployment) {
         crate::ui::stream(format_args!(
             "  Left on old servers: no Server was left to take it off, so whatever ran there still runs"
         ));
@@ -1551,9 +1614,10 @@ pub(super) fn say_view(view: &DeploymentView) {
         crate::ui::stream(format_args!("{line}"));
     }
     for build in &view.builds {
-        let commit = build.commit.as_ref().map_or("the upload", |commit| {
-            commit.as_str().get(..7).unwrap_or(commit.as_str())
-        });
+        let commit = build
+            .commit
+            .as_ref()
+            .map_or("the upload", ployz_store::CommitSha::short);
         let reason = build.message.as_deref().unwrap_or_default();
         let on = build
             .server
@@ -1593,6 +1657,31 @@ fn untargeted_lines(
         .collect()
 }
 
+/// After a deploy's progress, says where each Service ended when one doesn't serve its new copies.
+pub(super) fn say_unserved(view: &DeploymentView) {
+    for line in unserved_outcome_lines(&view.deployment.outcome) {
+        crate::ui::stream(format_args!("{line}"));
+    }
+}
+
+/// Where each Service ended, after a deploy's progress: only when one doesn't serve its new copies,
+/// since the progress already shows a deploy that shipped everything.
+fn unserved_outcome_lines(outcome: &Option<ployz_store::Outcome>) -> Vec<String> {
+    let Some(ployz_store::Outcome::Executed { services, .. }) = outcome else {
+        return Vec::new();
+    };
+    let shipped = services.iter().all(|service| {
+        matches!(
+            service.result,
+            ployz_core::ServiceResult::New | ployz_core::ServiceResult::Updated
+        )
+    });
+    if shipped {
+        return Vec::new();
+    }
+    service_outcome_lines(services)
+}
+
 fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String> {
     services
         .iter()
@@ -1616,7 +1705,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 mod tests {
     use super::{
         Tone, open_events, provenance, prune_line, prune_skipped, service_outcome_lines, ships_all,
-        status_tone, status_word, undecided, untargeted_lines,
+        status_tone, status_word, undecided, unserved_outcome_lines, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
 
@@ -1753,6 +1842,51 @@ mod tests {
                 "  cron: a newer deploy serves it",
             ]
         );
+    }
+
+    #[test]
+    fn a_deploy_ends_naming_each_service_only_when_one_isnt_serving_its_new_copies() {
+        let outcome = |services: serde_json::Value| -> Option<ployz_store::Outcome> {
+            Some(
+                serde_json::from_value(serde_json::json!({
+                    "type": "executed", "summary": {}, "services": services,
+                }))
+                .unwrap(),
+            )
+        };
+        assert_eq!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "new"},
+                {"service": "b", "result": "old"},
+                {"service": "c", "result": "not_started"},
+            ]))),
+            [
+                "  a: serves its new copies",
+                "  b: not switched to its new copies",
+                "  c: not started",
+            ]
+        );
+        assert_eq!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "unconfirmed"},
+            ]))),
+            ["  a: may serve its new copies: the switch was not confirmed"]
+        );
+        assert_eq!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "newer"},
+            ]))),
+            ["  a: a newer deploy serves it"]
+        );
+        assert!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "new"},
+                {"service": "b", "result": "updated"},
+            ])))
+            .is_empty()
+        );
+        assert!(unserved_outcome_lines(&outcome(serde_json::json!([]))).is_empty());
+        assert!(unserved_outcome_lines(&None).is_empty());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { checkResize, growWords, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
@@ -7,7 +8,7 @@ const GB = 1_000_000_000;
 type ResizeVerdictCopies = Extract<ResizeVerdict, { kind: "grow" }>["copies"];
 const SIZE = ["ployz.volume.size.set.v1"];
 const holder = (name: string, role: Holder["role"], options: Partial<Holder> = {}): Holder =>
-  ({ name, role, capabilities: SIZE, committableBytes: null, boundBytes: null, ...options });
+  ({ id: name.padEnd(32, "0") as MachineId, name, role, capabilities: SIZE, committableBytes: null, boundBytes: null, enforces: false, passkey: false, ...options });
 const ask = (requested: number, options: Partial<ResizeAsk> = {}): ResizeAsk =>
   ({ volume: "data", recorded: 10 * GB, working: 10 * GB, requested, holders: [holder("fsn-1", "primary"), holder("fsn-2", "mirror")], ...options });
 
@@ -106,9 +107,9 @@ describe("holdersOf", () => {
     const members = [member("fsn-2", "mirror"), member("fsn-1", "writer"), member("fsn-3", "old"), member("fsn-4", "empty")];
     const copies = [copy("fsn-1", "data", 10 * GB), copy("fsn-2", "data", 20 * GB), copy("fsn-2", "other", 50 * GB), copy("fsn-3", "data", null)];
     expect(holdersOf("data", members, [record("fsn-1", SIZE, 30 * GB), record("fsn-2", [], null)], copies)).toEqual([
-      { name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 30 * GB, boundBytes: 10 * GB },
-      { name: "fsn-2", role: "mirror", capabilities: [], committableBytes: null, boundBytes: 20 * GB },
-      { name: "fsn-3", role: "old_copy", capabilities: null, committableBytes: null, boundBytes: null },
+      { id: "fsn-1".padEnd(32, "0"), name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 30 * GB, boundBytes: 10 * GB, enforces: false, passkey: false },
+      { id: "fsn-2".padEnd(32, "0"), name: "fsn-2", role: "mirror", capabilities: [], committableBytes: null, boundBytes: 20 * GB, enforces: false, passkey: false },
+      { id: "fsn-3".padEnd(32, "0"), name: "fsn-3", role: "old_copy", capabilities: null, committableBytes: null, boundBytes: null, enforces: false, passkey: false },
     ]);
   });
 

@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use std::future::Future;
 
 use ployz_core::{
@@ -15,12 +16,14 @@ use crate::{
 
 mod built;
 mod cleanup;
+mod pin;
 pub use built::push_from_machine;
 pub(crate) use built::{
     available_variant, holds_platform, platform_compatible, push_from_machine_using_machines,
 };
 pub use cleanup::prune_images;
 pub(crate) use cleanup::prune_targets;
+pub use pin::{PinError, PinnedImage, pin_public};
 
 #[derive(Debug, Error)]
 pub enum PushError {
@@ -189,7 +192,7 @@ pub(crate) async fn ensure_cluster_image(
     let opened = listing_client
         .call::<op::EnsureImageIngest>(
             EnsureImageIngestRequest {},
-            Some(&MachineTarget::from(peer)),
+            Call::keyed().to(&MachineTarget::from(peer)),
         )
         .await
         .map_err(|error| answered_by(peer, error))?;
@@ -202,7 +205,7 @@ pub(crate) async fn ensure_cluster_image(
                 source: opened.destination,
                 platform: (*platform).to_owned(),
             },
-            Some(&MachineTarget::from(dest)),
+            Call::keyed().to(&MachineTarget::from(dest)),
         )
         .await
         .map(|_| ())
@@ -235,7 +238,7 @@ pub(crate) async fn pull_cluster_image(
                 policy,
                 registry_auth,
             },
-            Some(&MachineTarget::from(dest)),
+            Call::keyed().to(&MachineTarget::from(dest)),
         )
         .await
         .or_else(|error| pulls_on_create(answered_by(dest, error).pulling(image, policy)))
@@ -316,7 +319,7 @@ pub(crate) async fn copy_running_image(
     let opened = client
         .call::<op::EnsureImageIngest>(
             EnsureImageIngestRequest {},
-            Some(&MachineTarget::from(&source.id)),
+            Call::keyed().to(&MachineTarget::from(&source.id)),
         )
         .await
         .map_err(|error| ingest_error(rpc_error(error)))?;
@@ -327,7 +330,7 @@ pub(crate) async fn copy_running_image(
                 source: opened.destination,
                 platform: platform.to_owned(),
             },
-            Some(&MachineTarget::from(&dest.id)),
+            Call::keyed().to(&MachineTarget::from(&dest.id)),
         )
         .await
         .map(drop)
@@ -349,7 +352,7 @@ fn repository(image: &str) -> &str {
 }
 
 fn ingest_error(error: RpcError) -> PushError {
-    match ImageIngestReason::from_details(&error.details) {
+    match error.evidence::<ImageIngestReason>() {
         Some(ImageIngestReason::UnsupportedContainerdStore) => PushError::UnsupportedImageStore,
         Some(
             ImageIngestReason::NotParticipating
@@ -364,6 +367,7 @@ fn ingest_error(error: RpcError) -> PushError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::error_chain;
     use ployz_core::{
         MachineId, MachineName, MachineObservation, MembershipObservation, RpcErrorCode,
         WireGuardPublicKey,
@@ -384,6 +388,7 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             MembershipObservation::Up,
@@ -510,6 +515,6 @@ mod tests {
             error.to_string(),
             "Could not ingest the image on the Machine."
         );
-        assert_eq!(crate::ui::causes(&error), ["transport error"]);
+        assert_eq!(error_chain::causes(&error), ["transport error"]);
     }
 }

@@ -138,6 +138,148 @@ services to their branch's latest commit with nothing staged, use the CLI:
 ployz deploy
 ```
 
+## Deploy to servers that enforce device approval
+
+With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a server creates a container only from a spec an approved device signed. Run `ployz deploy`
+on that device. It works out what each service will run, prints what it signs for each service,
+and asks before it signs with your device key:
+
+```text
+Approved web: nginx:1.29-alpine → @sha256:3f1c2a9b8e7d…
+  variables DATABASE_HOST=db.internal, DATABASE_URL (sealed), URL="postgres://app:" + (sealed "DB_PASSWORD") + "@db.internal/app"
+  command ["nginx","-g","daemon off;"]
+  ports [{"container_port":80,"hostname":"web.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]
+  pull_policy "missing"
+Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b (adds NET_ADMIN, host port 9000)
+  cap_add ["NET_ADMIN"]
+  ...
+Approve web, worker? [y/N]
+```
+
+The first line of each service names the image and anything the service asks of the server:
+privileged mode, added capabilities, PID mode, sysctls, host ports, bind mounts and its
+pre-deploy hook. An image you wrote by digest shows its whole digest. The lines under it list
+every setting the signature covers that isn't Ployz's default, by its name in the spec:
+variables, the start command and entrypoint, user, mounts, config files, ports, privileges, the
+hook and the rest. A setting added to Ployz later shows there too, and so does a `false` or empty
+value that overrides one the hook would inherit. A text value with anything but letters, digits
+and `-_./:@+` shows in double quotes. A sealed value shows by the name it was sealed as, never
+its value, and a value built from text and sealed parts shows its text, quoted. Since the
+approval shows a sealed value's name and not its contents, Ployz Cloud could replace a sealed
+value before a deploy you approve.
+Ployz Cloud relays the plan, so read these lines before you answer: a setting you didn't make
+shows here even if Cloud put it there. A control character in a value prints as its escape,
+such as `\u{1b}`, so a value can't redraw the lines around it. Answer no and nothing is signed
+or deployed, and the command exits with 130.
+
+A script or CI job on an approved device has no terminal to ask in, so `ployz deploy` refuses
+before it signs and tells you to add `--yes`. With `--yes`, or `PLOYZ_AUTO_CONFIRM=1`, it prints
+the same lines and signs without asking. `--json` never asks either, so it needs `--yes` too.
+Use `--yes` only where you trust the plan Ployz Cloud sends. Without device enforcement,
+`ployz deploy` signs nothing and never asks.
+
+A deploy that deletes volume data, such as `ployz deploy --accept-volume-loss data`, also prints
+each volume whose data goes and asks `Delete the data of data for good?` before it signs a
+[teardown](../servers/manage-servers.md#take-things-off-servers-that-enforce) of exactly those
+volumes. In the dashboard, your passkey approves the same after you type to confirm the loss. A
+server deletes no volume data without it.
+
+Each server checks every container it creates against what you signed: the image, command,
+variables and sealed values, mounts, config files, ports, privileges and hook. Ployz Cloud
+carries the approval but can't change what it covers. A server logs each one, such as
+`deploy 0f8fad5b… approved by device 3KQ7-M2XD for web digest=cb8d3c6ef656`. A hook runs once per
+approval, even if the same approval is sent again. The approval lasts 15 minutes. A rollout still
+going after that stops partway; run `ployz deploy` again.
+
+Every image runs by digest, since a tag names whatever the registry holds under it now. For
+a tag on a public registry, `ployz deploy` reads the digest from the registry itself and
+signs it, so `web` above keeps `nginx:1.29-alpine` in your settings and runs that exact
+image. The next deploy reads the tag again, so a tag pushed again runs its new image only
+after you deploy. The digest is the tag's multi-arch index, which works across CPU
+architectures. If you write a digest yourself, write the index digest, not one platform's.
+
+A private image can't be read without credentials, so write its digest. `ployz deploy` stops
+before anything is queued:
+
+```text
+ghcr.io wants credentials to read web's image, so ployz can't pin it. Write its digest.
+next: ployz set 'web.image=ghcr.io/acme/web@sha256:…'
+```
+
+If the registry doesn't answer within 10 seconds, `ployz deploy` stops and names it.
+
+A narrowed deploy, such as `ployz deploy web`, checks only the services it ships. A service
+that builds from source can't deploy to these servers yet; `ployz deploy` says so and stops.
+A deploy through Ployz Cloud that builds from source, such as a Git push, fails earlier: these
+servers refuse the build with `This server runs only builds an approved device starts.`
+
+If `ployz deploy` can't reach your servers to ask whether they enforce, it warns and deploys
+without signing, and servers that enforce refuse it.
+
+### Deploy from the dashboard
+
+**Deploy** at the bottom of an environment asks for your
+[passkey](../servers/manage-servers.md#add-a-passkey) the first time you press it, then not again
+in that environment for 60 minutes. Your browser approves the deployment as `ployz deploy` does,
+then lists what it approved, the same lines `ployz deploy` prints. Each server
+checks every container against that approval. Its log names the passkey and the browser key,
+such as `deploy 0f8fad5b… approved by passkey q3x7mfk2pa via browser key 72asyextvn for web
+digest=cb8d3c6ef656`. If the settings change after you press **Deploy**, the server refuses the
+deployment, and the deployment page shows why.
+
+The dashboard can't pin a tag, since only Ployz Cloud could ask the registry for it. Write the
+image by digest, or run `ployz deploy`, which pins a public tag for you:
+
+```text
+The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.
+```
+
+A server that enforces and runs a Ployz from before 0.4 can't take an approval from the
+dashboard. **Deploy** names it and deploys nothing: upgrade it, or run `ployz deploy`.
+
+#### Other deploys the dashboard starts
+
+**Create and deploy** on a new branch, **Deploy {name}** on a preview that was shut down, and
+**Redeploy** or **Roll back** on a deployment's page ask before they deploy. Your browser reads
+what the deploy ships, then shows every term it will sign, such as:
+
+```text
+Approved web: nginx@sha256:3f1c2a9b8e7d…
+  variables GREETING="hello  world", API_KEY (sealed)
+  deployment 0f8fad5b9d4f4c6e8a1b2c3d4e5f6a7b
+  namespace shop-production
+  servers 6f1e0c2a9b8d4e7f8a1b2c3d4e5f6a7b, 9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f
+  cluster "q8Xc0mZ1vN4yT7rE2wK9pL3sD6fH5jG8aB1nM0oQ4uI="
+  signer browser key 72asyextvn
+  valid 2026-11-11T03:19:09Z to 2026-11-11T03:34:09Z
+```
+
+They ask for your passkey as **Deploy** does. **Approve** signs exactly those lines.
+**Cancel** signs nothing and deploys nothing; a new branch is still created.
+
+A new branch or a preview that runs nowhere yet deploys to the servers of the environment it
+branched from. A redeploy approves what the deployment saved, not what you've saved since. A new
+branch or a preview with a service that builds from source doesn't ask: it deploys under your
+[preview rule](../environments/preview-environments.md#previews-on-servers-that-enforce-device-approval)
+or automatic deploy rule, as a push does.
+
+A redeploy of a deployment that built from GitHub approves each service's commit under your
+[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval), as
+`ployz deployment redeploy` does: see
+[Roll back on servers that enforce device approval](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
+Keep the tab open until it deploys. Once each image is built or reused, your browser approves the
+same commits again without asking. If you close the tab first, nothing deploys.
+
+Servers that enforce refuse a deploy nobody approved: a Git push, an organization token,
+`ployz up`, a restore, or a redeploy or rollback by [the agent](../account/agent-sidebar.md).
+Each server's part of that deployment
+fails with `This server runs only deploys an approved device signed.`, and nothing new starts
+there. A server added after you signed isn't covered by that approval; run `ployz deploy` again.
+A container already stopped starts again only if its settings are ones you approved. Running
+`ployz deploy` with a device key in a script approves whatever is saved in Ployz Cloud at that
+moment, without anyone looking.
+
 ## When another deployment is running
 
 An environment runs one deployment at a time. While one runs, **Deploy** reads **Deploy next**

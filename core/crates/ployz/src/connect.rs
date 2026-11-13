@@ -5,6 +5,7 @@ mod management;
 pub use build_grant::{GrantRegistry, open_grant_registry};
 pub use management::{ManagementRelay, management_proof};
 use management::{connect_management, dial_tunnel};
+use ployz_core::error_chain;
 
 use std::{
     borrow::Cow,
@@ -22,7 +23,7 @@ use std::{
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FramingError, MachineId, MachineTarget, ResolvedServiceSpec, Retry,
+    CodecError, FramingError, MachineId, MachineLayout, MachineTarget, ResolvedServiceSpec, Retry,
     RoutingMetadataError, RpcError, RpcErrorCode, SETTLE_INSPECT_GRACE, apply_one_target,
     settle_deadline,
 };
@@ -42,9 +43,10 @@ use crate::context::{
     SelectedConnections, Transport, expand_home, select_connections,
 };
 
-pub use crate::cluster::{Client, MachineImagesObservation, Remover};
-
-pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
+pub use crate::cluster::{
+    Budgeted, Call, Client, Deadline, MachineImagesObservation, Once, Pacing, Remover, Repeat,
+    Replay, Wait, Waiting,
+};
 
 pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(500),
@@ -56,8 +58,7 @@ pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a targeted read waits before the target counts as silent.
 pub(crate) fn target_read_timeout() -> Duration {
-    crate::cli::env::seconds(crate::cli::env::TARGET_READ_TIMEOUT_SECONDS)
-        .unwrap_or(TARGET_RPC_TIMEOUT)
+    crate::env::seconds(crate::env::TARGET_READ_TIMEOUT_SECONDS).unwrap_or(TARGET_RPC_TIMEOUT)
 }
 
 /// While a call is open, the client pings the entry daemon after this long without a
@@ -264,7 +265,7 @@ pub(crate) fn on_closed_session(error: &RpcError) -> bool {
 #[cfg(test)]
 pub(crate) fn closed_session_error() -> RpcError {
     TransportError {
-        session_closed: true,
+        origin: Origin::SessionClosed,
         ..TransportError::from(tonic::Status::unavailable("transport error"))
     }
     .to_rpc_error()
@@ -770,43 +771,26 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         {
             rpc_error(*error)
         }
-        ConnectError::ClientCleared => RpcError {
-            code: RpcErrorCode::Unauthenticated,
-            message: "Machine confirmed this Management Client was cleared".into(),
-            details: json!({ "management_client": "cleared" }),
-            cause: Vec::new(),
-        },
+        ConnectError::ClientCleared => {
+            RpcError::unauthenticated("Machine confirmed this Management Client was cleared")
+                .with_details(json!({ "management_client": "cleared" }))
+        }
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
-        error @ ConnectError::OlderMachine => RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: error.to_string(),
-            details: json!({ "management_protocol": "older" }),
-            cause: Vec::new(),
-        },
+        error @ ConnectError::OlderMachine => RpcError::unsupported(error.to_string())
+            .with_details(json!({ "management_protocol": "older" })),
         // A refused entry: the call never went out, whatever answered the dial.
         error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClusterMismatch { .. }) => {
-            RpcError {
-                code: RpcErrorCode::Unauthenticated,
-                message: error.to_string(),
-                details: Value::Null,
-                cause: Vec::new(),
-            }
-            .unreached()
+            RpcError::unauthenticated(error.to_string()).unreached()
         }
         error @ (ConnectError::ClusterUnverified { .. }
         | ConnectError::PredatesSealing { .. }
         | ConnectError::ClientRefused
-        | ConnectError::TunnelNeedsFull) => RpcError {
-            code: RpcErrorCode::Unauthenticated,
-            message: error.to_string(),
-            details: Value::Null,
-            cause: Vec::new(),
-        },
-        error @ ConnectError::Codec(CodecError::DecodeJson(_)) => RpcError {
-            details: json!({ "answer": UNREADABLE_ANSWER }),
-            ..crate::ui::rpc_error(RpcErrorCode::Internal, &error)
-        },
+        | ConnectError::TunnelNeedsFull) => RpcError::unauthenticated(error.to_string()),
+        error @ ConnectError::Codec(CodecError::DecodeJson(_)) => {
+            error_chain::rpc_error(RpcErrorCode::Internal, &error)
+                .with_details(json!({ "answer": UNREADABLE_ANSWER }))
+        }
         error @ (ConnectError::Attempt(_)
         | ConnectError::Exhausted(_)
         | ConnectError::EntryNotReady
@@ -826,7 +810,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::AllFailed { .. }
         | ConnectError::Codec(_)
         | ConnectError::Framing(_)
-        | ConnectError::Value(_)) => crate::ui::rpc_error(RpcErrorCode::Internal, &error),
+        | ConnectError::Value(_)) => error_chain::rpc_error(RpcErrorCode::Internal, &error),
     }
 }
 
@@ -1034,7 +1018,7 @@ async fn connect_selected(
                 Some((index, connection, outcome)) = dialing.next() => {
                     let error = match outcome {
                         Ok(mut client) => {
-                            if let Some(ExpectedCluster { check, .. }) = client.cluster.as_deref_mut() {
+                            if let Some(check) = client.cluster_check_mut() {
                                 check.foreign = failures
                                     .values()
                                     .filter_map(|(_, error)| {
@@ -1124,10 +1108,10 @@ pub(crate) async fn connect_one(
     let sealing = confirmed.map_err(|error| naming_local_refusal(connection, error))?;
     if let Some(expect) = expect {
         let check = client.check_cluster(expect, sealing).await?;
-        client.cluster = Some(Box::new(ExpectedCluster {
+        client.expect_cluster(ExpectedCluster {
             expect: *expect,
             check,
-        }));
+        });
     }
     Ok(client)
 }
@@ -1145,7 +1129,7 @@ fn naming_local_refusal(connection: &Connection, error: ConnectError) -> Connect
     let ConnectError::Rpc(transport) = error else {
         return error;
     };
-    if !transport.local {
+    if !transport.is_local() {
         return ConnectError::Rpc(transport);
     }
     match path.parent().and_then(ployz_core::startup_refusal) {
@@ -1229,7 +1213,7 @@ pub(crate) async fn connect_with_ssh_timeout(
         config_path,
         direct,
         context_override,
-        Path::new(DEFAULT_LOCAL_SOCKET),
+        &MachineLayout::production().socket(),
     )?;
     connect_selected_with(
         selected,
@@ -1412,6 +1396,20 @@ impl From<tonic::Status> for ConnectError {
     }
 }
 
+/// What a [`ConnectError`] says about a call: whether to repeat it, and what is known of
+/// the target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Facts {
+    pub(crate) retry: Retry,
+    pub(crate) unreachable: bool,
+    pub(crate) unreached: bool,
+    pub(crate) routed_by_entry: bool,
+    pub(crate) target_unanswered: bool,
+    pub(crate) target_replied: bool,
+    pub(crate) unreplied: bool,
+    pub(crate) target_unreached: bool,
+}
+
 impl ConnectError {
     fn from_ssh_spawn(error: io::Error) -> Self {
         if error.kind() == io::ErrorKind::NotFound {
@@ -1421,46 +1419,91 @@ impl ConnectError {
         }
     }
 
-    pub(crate) fn retry(&self) -> Retry {
+    /// Every answer a [`ConnectError`] gives about the call, in one table.
+    pub(crate) fn facts(&self) -> Facts {
+        let none = Facts {
+            retry: Retry::Never,
+            unreachable: false,
+            unreached: false,
+            routed_by_entry: false,
+            target_unanswered: false,
+            target_replied: false,
+            unreplied: false,
+            target_unreached: false,
+        };
         match self {
-            Self::Attempt(_) | Self::Exhausted(_) | Self::Dial(_) | Self::Join(_) => Retry::Now,
-            Self::Io(error) if transient_io(error) => Retry::Now,
-            Self::SshProbe {
-                failure: SshFailure::Network,
-                ..
-            } => Retry::Now,
-            Self::Rpc(error) => match rpc_error_code(error.code).retry() {
-                // A restarting daemon drops the connection without answering.
-                Retry::Never if error.unanswered => Retry::AfterRestart,
-                retry @ (Retry::Now | Retry::AfterRestart | Retry::Never) => retry,
+            Self::Attempt(_) | Self::Exhausted(_) | Self::Dial(_) => Facts {
+                retry: Retry::Now,
+                unreachable: true,
+                unreached: true,
+                ..none
             },
+            Self::Join(_) => Facts {
+                retry: Retry::Now,
+                ..none
+            },
+            Self::Io(error) => Facts {
+                retry: if transient_io(error) {
+                    Retry::Now
+                } else {
+                    Retry::Never
+                },
+                unreachable: true,
+                unreached: true,
+                ..none
+            },
+            Self::SshProbe { failure, .. } => Facts {
+                retry: if *failure == SshFailure::Network {
+                    Retry::Now
+                } else {
+                    Retry::Never
+                },
+                unreached: true,
+                ..none
+            },
+            Self::Rpc(error) => error.facts(),
             // A socket-activated daemon accepts before it serves.
-            Self::EntryNotReady => Retry::AfterRestart,
-            Self::AllFailed { retry, .. } => *retry,
-            Self::Io(_)
-            | Self::SshProbe { .. }
-            | Self::Remote(_)
-            | Self::IdentityMismatch { .. }
-            | Self::ClusterMismatch { .. }
-            | Self::ClusterUnverified { .. }
-            | Self::PredatesSealing { .. }
-            | Self::ClientRefused
-            | Self::OlderMachine
-            | Self::ClientCleared
-            | Self::TunnelNeedsFull
-            | Self::MissingMachineDetails
-            | Self::SshClientMissing
-            | Self::Routing(_)
+            Self::EntryNotReady => Facts {
+                retry: Retry::AfterRestart,
+                unreachable: true,
+                unreached: true,
+                ..none
+            },
+            Self::AllFailed { retry, reached, .. } => Facts {
+                retry: *retry,
+                unreachable: true,
+                unreached: !reached,
+                ..none
+            },
+            Self::SshClientMissing
             | Self::ProxyUnsupported(_)
             | Self::UnsupportedNetwork(_)
             | Self::Config(_)
             | Self::Connection(_)
             | Self::Context(_)
-            | Self::Path { .. }
+            | Self::Path { .. } => Facts {
+                unreached: true,
+                ..none
+            },
+            Self::IdentityMismatch { .. }
+            | Self::ClusterMismatch { .. }
+            | Self::ClusterUnverified { .. }
+            | Self::PredatesSealing { .. }
+            | Self::MissingMachineDetails
+            | Self::ClientRefused
+            | Self::OlderMachine
+            | Self::ClientCleared
+            | Self::TunnelNeedsFull
+            | Self::Routing(_)
             | Self::Codec(_)
+            | Self::Remote(_)
             | Self::Framing(_)
-            | Self::Value(_) => Retry::Never,
+            | Self::Value(_) => none,
         }
+    }
+
+    pub(crate) fn retry(&self) -> Retry {
+        self.facts().retry
     }
 
     /// Repeatable reads retry until the daemon answers; an answer is final.
@@ -1493,80 +1536,39 @@ impl ConnectError {
     }
 
     pub(crate) fn is_unreachable(&self) -> bool {
-        matches!(
-            self,
-            Self::Attempt(_)
-                | Self::Exhausted(_)
-                | Self::EntryNotReady
-                | Self::Io(_)
-                | Self::Dial(_)
-                | Self::AllFailed { .. }
-        ) || matches!(self, Self::Rpc(error) if error.is_unavailable())
+        self.facts().unreachable
     }
 
     /// No daemon answered: selection, dialing or the transport failed first. A daemon's
     /// own refusal, identity or protocol is an answer, and so is anything unclassified.
     pub(crate) fn unreached(&self) -> bool {
-        match self {
-            Self::Attempt(_)
-            | Self::Exhausted(_)
-            | Self::EntryNotReady
-            | Self::Io(_)
-            | Self::Dial(_)
-            | Self::SshClientMissing
-            | Self::SshProbe { .. }
-            | Self::ProxyUnsupported(_)
-            | Self::UnsupportedNetwork(_)
-            | Self::Config(_)
-            | Self::Connection(_)
-            | Self::Context(_)
-            | Self::Path { .. } => true,
-            Self::Rpc(error) => error.local || error.budget_expired,
-            Self::AllFailed { reached, .. } => !reached,
-            Self::IdentityMismatch { .. }
-            | Self::ClusterMismatch { .. }
-            | Self::ClusterUnverified { .. }
-            | Self::PredatesSealing { .. }
-            | Self::MissingMachineDetails
-            | Self::ClientRefused
-            | Self::OlderMachine
-            | Self::ClientCleared
-            | Self::TunnelNeedsFull
-            | Self::Routing(_)
-            | Self::Join(_)
-            | Self::Codec(_)
-            | Self::Remote(_)
-            | Self::Framing(_)
-            | Self::Value(_) => false,
-        }
+        self.facts().unreached
     }
 
     /// The entry's router made this status for a target that didn't answer, and it came back
     /// over a working channel: the entry itself answered.
     pub(crate) fn routed_by_entry(&self) -> bool {
-        matches!(self, Self::Rpc(error)
-            if error.routed_unanswered && !error.local && !error.session_closed)
+        self.facts().routed_by_entry
     }
 
     /// The read's whole budget ran out without a reply, or the entry's router could not
     /// get one from the target. A status a daemon sent, or a failure reaching the entry,
     /// says nothing about whether the target lives.
     pub(crate) fn target_unanswered(&self) -> bool {
-        matches!(self, Self::Rpc(error) if error.budget_expired || error.routed_unanswered)
+        self.facts().target_unanswered
     }
 
     /// A daemon sent this status itself, so the target was not silent. A call on
     /// a closed session never left this client, so nothing replied to it.
     pub(crate) fn target_replied(&self) -> bool {
-        matches!(self, Self::Rpc(error) if !error.session_closed) && !self.unreplied()
+        self.facts().target_replied
     }
 
     /// The call went out and no status came back: the client's connection dropped, its
     /// deadline elapsed, or the entry's router heard nothing from the target. Whether the
     /// target acted on it is unknown.
     pub(crate) fn unreplied(&self) -> bool {
-        matches!(self, Self::Rpc(error)
-            if error.unanswered || error.budget_expired || error.routed_unanswered)
+        self.facts().unreplied
     }
 
     /// The entry's router said its path to the target drops large packets.
@@ -1579,7 +1581,7 @@ impl ConnectError {
     /// The entry's router could not dial the target, so the target never got the call.
     /// An entry Machine too old to say so leaves this false.
     pub(crate) fn target_unreached(&self) -> bool {
-        matches!(self, Self::Rpc(error) if error.routed_unreached)
+        self.facts().target_unreached
     }
 }
 
@@ -1601,7 +1603,9 @@ pub(crate) fn keep_target_reply(
 /// A call that went out and lost its answer may have been done, and a later attempt that
 /// never reached the target says nothing about it, so the earlier loss stands. A target
 /// that stayed silent is stronger news than an earlier drop, and a failure that no retry
-/// fixes, such as a refused SSH key, is what the user has to act on.
+/// fixes, such as a refused SSH key, is what the user has to act on. Its twin in
+/// `wait_out_restart` agrees on every attempt but a refused redial, which it reports still
+/// saying the earlier send may have been done.
 pub(crate) fn keep_lost_call(lost: Option<ConnectError>, error: ConnectError) -> ConnectError {
     match lost {
         Some(lost)
@@ -1615,6 +1619,30 @@ pub(crate) fn keep_lost_call(lost: Option<ConnectError>, error: ConnectError) ->
     }
 }
 
+/// Where a [`TransportError`] was made.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Origin {
+    /// A status that crossed the wire.
+    Remote,
+    /// The client's connection or stream failed: no status crossed the wire.
+    Local,
+    /// The channel's one stream closed: resending on it can never succeed, so
+    /// [`TransportError::to_rpc_error`] marks it for [`on_closed_session`]. It never left
+    /// this client, so it is a local failure too.
+    SessionClosed,
+}
+
+/// What the entry's router marked a status with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Routed {
+    /// The target did not answer.
+    Unanswered,
+    /// The router's dial to the target failed, so the target never got the call. It rides
+    /// on an unanswered status, and is never read off a local failure, whose metadata may
+    /// be headers that came back before the stream broke.
+    Unreached,
+}
+
 /// A gRPC transport failure. Display is the status message, not Status Debug.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("{message}")]
@@ -1624,24 +1652,16 @@ pub struct TransportError {
     details: Value,
     /// Worth retrying as a silence: the client produced this status, or it is Cancelled.
     unanswered: bool,
-    /// The client's connection or stream failed: no status crossed the wire.
-    local: bool,
+    origin: Origin,
+    /// What the entry's router marked this status with, if it did.
+    routed: Option<Routed>,
     /// The client's own deadline for the whole call elapsed.
     budget_expired: bool,
-    /// The entry's router marked this status: the target did not answer it.
-    routed_unanswered: bool,
-    /// The entry's router marked this status: its dial to the target failed, so the
-    /// target never got the call. Never set on a local failure, whose metadata may be
-    /// headers that came back before the stream broke.
-    routed_unreached: bool,
-    /// The channel's one stream closed: resending on it can never succeed, so
-    /// [`TransportError::to_rpc_error`] marks it for [`on_closed_session`].
-    session_closed: bool,
     /// The status carried details, which ployzd attaches and tonic or a proxy never does.
     detailed: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
-    cause: Option<crate::failure::JoinedChain>,
+    cause: Option<ployz_core::error_chain::JoinedChain>,
 }
 
 impl TransportError {
@@ -1649,11 +1669,9 @@ impl TransportError {
     /// ployzd attaches. A status tonic or a proxy made up carries no details.
     pub(crate) fn answered(&self) -> bool {
         !(self.unanswered
-            || self.local
+            || self.origin != Origin::Remote
             || self.budget_expired
-            || self.routed_unanswered
-            || self.routed_unreached
-            || self.session_closed
+            || self.routed.is_some()
             || self.message.is_empty()
             || !self.detailed)
     }
@@ -1662,7 +1680,29 @@ impl TransportError {
     /// call was cancelled, its session closed, or the entry marked the target silent or unreached.
     /// A status tonic or the daemon made, such as a decode failure, is not one.
     pub(crate) fn connection_lost(&self) -> bool {
-        self.unanswered || self.session_closed || self.routed_unanswered || self.routed_unreached
+        self.unanswered || self.origin == Origin::SessionClosed || self.routed.is_some()
+    }
+
+    fn is_local(&self) -> bool {
+        self.origin != Origin::Remote
+    }
+
+    fn facts(&self) -> Facts {
+        let unreplied = self.unanswered || self.budget_expired || self.routed.is_some();
+        Facts {
+            retry: match rpc_error_code(self.code).retry() {
+                // A restarting daemon drops the connection without answering.
+                Retry::Never if self.unanswered => Retry::AfterRestart,
+                retry @ (Retry::Now | Retry::AfterRestart | Retry::Never) => retry,
+            },
+            unreachable: self.is_unavailable(),
+            unreached: self.is_local() || self.budget_expired,
+            routed_by_entry: self.routed.is_some() && self.origin == Origin::Remote,
+            target_unanswered: self.budget_expired || self.routed.is_some(),
+            target_replied: self.origin != Origin::SessionClosed && !unreplied,
+            unreplied,
+            target_unreached: self.routed == Some(Routed::Unreached),
+        }
     }
 
     /// `error`, which ended the client before the stream opened, as [`rpc_error`] gives it.
@@ -1711,7 +1751,7 @@ impl TransportError {
             })
             .unwrap_or_default();
         lines.push(line);
-        self.cause = crate::failure::JoinedChain::of(lines);
+        self.cause = ployz_core::error_chain::JoinedChain::of(lines);
         self
     }
 
@@ -1743,16 +1783,13 @@ impl TransportError {
 
     #[must_use]
     pub fn to_rpc_error(&self) -> RpcError {
-        RpcError {
-            code: rpc_error_code(self.code),
-            message: self.message.clone(),
-            details: if self.session_closed {
+        RpcError::new(rpc_error_code(self.code), self.message.clone())
+            .with_details(if self.origin == Origin::SessionClosed {
                 json!({ "reason": SESSION_CLOSED_REASON })
             } else {
                 self.details.clone()
-            },
-            cause: ployz_core::error_chain::causes(self),
-        }
+            })
+            .with_causes(ployz_core::error_chain::causes(self))
     }
 }
 
@@ -1774,26 +1811,34 @@ impl From<tonic::Status> for TransportError {
         let cause = match source {
             Some(source) => {
                 let mut lines: Vec<String> = std::iter::once(source.to_string())
-                    .chain(crate::ui::causes(source))
+                    .chain(error_chain::causes(source))
                     .skip_while(|line| line == status.message())
                     .collect();
                 lines.dedup();
-                crate::failure::JoinedChain::of(lines)
+                ployz_core::error_chain::JoinedChain::of(lines)
             }
-            None => sent.clone().and_then(crate::failure::JoinedChain::of),
+            None => sent.and_then(ployz_core::error_chain::JoinedChain::of),
+        };
+        // Tonic merges the response headers into a local failure's metadata.
+        let marked = |key| status.metadata().contains_key(key);
+        let routed = if !local && marked(ployz_core::rpc::TARGET_UNREACHED_KEY) {
+            Some(Routed::Unreached)
+        } else if marked(ployz_core::rpc::TARGET_UNANSWERED_KEY) {
+            Some(Routed::Unanswered)
+        } else {
+            None
         };
         Self {
             unanswered,
-            local,
+            origin: if session_closed {
+                Origin::SessionClosed
+            } else if local {
+                Origin::Local
+            } else {
+                Origin::Remote
+            },
             budget_expired: false,
-            routed_unanswered: status
-                .metadata()
-                .contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY),
-            routed_unreached: !local
-                && status
-                    .metadata()
-                    .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
-            session_closed,
+            routed,
             detailed: !status.details().is_empty(),
             cause,
             code: status.code(),
@@ -1868,8 +1913,12 @@ impl SshFailure {
     }
 }
 
-/// The code of a refusal on the caller's access, such as a Server refusing a scope.
-pub(crate) const FORBIDDEN: &str = "forbidden";
+/// Whether a Machine refused `capability` because Device enforcement is on, as it
+/// refuses an Operator's `Build` and `MintBuildGrant`.
+pub(crate) fn refused_by_enforcement(error: &RpcError, capability: &str) -> bool {
+    error.code.as_str() == ployz_core::FORBIDDEN_CODE
+        && error.details.get("capability").and_then(Value::as_str) == Some(capability)
+}
 
 fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {
     match code {
@@ -1880,7 +1929,7 @@ fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {
         tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
         tonic::Code::Unauthenticated => RpcErrorCode::Unauthenticated,
         // The spelling Cloud's refusals already use; a reader that doesn't know it keeps it.
-        tonic::Code::PermissionDenied => RpcErrorCode::from(FORBIDDEN),
+        tonic::Code::PermissionDenied => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         tonic::Code::Ok
         | tonic::Code::Cancelled
         | tonic::Code::Unknown

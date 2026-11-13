@@ -39,6 +39,14 @@ pub fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
             },
         )
         .unwrap();
+    for (n, name) in [(3, "web"), (4, "api")] {
+        add_git_service(&store, &who, n, name);
+    }
+    (store, who)
+}
+
+/// Save Git Service `name` on `acme/web`'s `main`, with lineage ID ending in `n`.
+pub fn add_git_service(store: &ConfigStore, who: &Actor, n: u8, name: &str) {
     let evidence = Trusted {
         repositories: vec![AuthorizedRepository {
             repository: backend::repo_name("acme/web"),
@@ -49,23 +57,20 @@ pub fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
         }],
         ..Trusted::default()
     };
-    for (n, name) in [(3, "web"), (4, "api")] {
-        store
-            .write_trusted(
-                &who,
-                &CreateGitService {
-                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
-                        .unwrap(),
-                    environment: EnvironmentRef::default(),
-                    name: ServiceName::parse(name).unwrap(),
-                    repository: backend::repo_name("acme/web"),
-                    branch: None,
-                },
-                &evidence,
-            )
-            .unwrap();
-    }
-    (store, who)
+    store
+        .write_trusted(
+            who,
+            &CreateGitService {
+                id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse(name).unwrap(),
+                repository: backend::repo_name("acme/web"),
+                branch: None,
+            },
+            &evidence,
+        )
+        .unwrap();
 }
 
 pub fn publish(store: &ConfigStore, who: &Actor) {

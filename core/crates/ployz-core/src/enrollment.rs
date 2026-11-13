@@ -15,6 +15,17 @@ pub struct EnrollmentSnapshot {
     pub machines: Vec<Machine>,
     /// Entry Machine store versions to carry into publication and Join.
     pub target_versions: BTreeMap<String, i64>,
+    /// The Doors the operator last declared, as this Entry Machine's replica holds them.
+    /// `None` when never declared, when the stored value is unreadable or names a Door
+    /// this release doesn't know, or from a daemon that predates the declaration.
+    /// Readers then infer the Doors from what the Servers run.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::domain::optional_declared"
+    )]
+    #[ts(optional)]
+    pub doors: Option<crate::IngressDoors>,
 }
 
 /// Durable operator claim retained across failed publication and Join attempts.
@@ -152,7 +163,9 @@ pub fn allocate_enrollment(
     }
     let mut identity = request.clone();
     identity.assigned_subnet = None;
+    identity.join_approval = None;
     identity.runtime = Default::default();
+    identity.capabilities = Vec::new();
     let existing = saved.iter().find(|a| a.machine.id == id);
     if saved.iter().any(|a| a.network != snapshot.network) {
         return Err(EnrollmentError::Conflict);
@@ -196,6 +209,7 @@ pub fn allocate_enrollment(
         accepts_builds: request.initial_policy.accepts_builds,
         accepts_services: request.initial_policy.accepts_services,
         accepts_ingress: request.initial_policy.accepts_ingress,
+        join_approval: None,
         build_concurrency: None,
     };
     for other in snapshot
@@ -230,6 +244,8 @@ mod tests {
 
     fn request(seed: u8) -> RegisterRequest {
         RegisterRequest {
+            join_approval: None,
+            join_confirmation: None,
             machine_id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             assigned_subnet: None,
             initial_policy: Default::default(),
@@ -239,6 +255,7 @@ mod tests {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             runtime: Default::default(),
+            capabilities: Vec::new(),
         }
     }
 
@@ -248,13 +265,14 @@ mod tests {
             network: "10.210.0.0/22".parse().unwrap(),
             machines: vec![],
             target_versions: BTreeMap::new(),
+            doors: None,
         };
         let first = allocate_enrollment(&request(1), &snapshot, &[]).unwrap();
         assert_eq!(first.machine.id, request(1).machine_id);
         let second =
             allocate_enrollment(&request(2), &snapshot, std::slice::from_ref(&first)).unwrap();
         assert_ne!(first.machine.subnet, second.machine.subnet);
-        snapshot.machines.push(second.machine.clone());
+        snapshot.machines.push(second.machine);
         let third =
             allocate_enrollment(&request(3), &snapshot, std::slice::from_ref(&first)).unwrap();
         assert_eq!(third.machine.subnet, "10.210.2.0/24".parse().unwrap());
@@ -276,6 +294,7 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![],
             target_versions: BTreeMap::new(),
+            doors: None,
         };
         let first = allocate_enrollment(&request(1), &snapshot, &[]).unwrap();
         for change in 0..5 {
@@ -315,6 +334,7 @@ mod tests {
             network: "10.210.0.0/24".parse().unwrap(),
             machines: vec![],
             target_versions: BTreeMap::new(),
+            doors: None,
         };
         let first = allocate_enrollment(&request(1), &snapshot, &[]).unwrap();
         assert_eq!(
@@ -329,6 +349,85 @@ mod tests {
         assert_eq!(
             allocate_enrollment(&invalid, &snapshot, &[]),
             Err(EnrollmentError::InvalidIdentity)
+        );
+    }
+
+    #[test]
+    fn a_retry_that_claims_other_capabilities_resumes_the_saved_assignment() {
+        let snapshot = EnrollmentSnapshot {
+            network: "10.210.0.0/16".parse().unwrap(),
+            machines: vec![],
+            target_versions: BTreeMap::new(),
+            doors: None,
+        };
+        let first = allocate_enrollment(&request(1), &snapshot, &[]).unwrap();
+        let mut upgraded = request(1);
+        upgraded.capabilities = vec![crate::SET_CLUSTER_DOORS_CAPABILITY.to_owned()];
+        assert_eq!(
+            allocate_enrollment(&upgraded, &snapshot, std::slice::from_ref(&first)),
+            Ok(first)
+        );
+    }
+
+    #[test]
+    fn a_register_without_capabilities_claims_none_and_sends_none() {
+        let wire = serde_json::to_value(request(1)).unwrap();
+        assert!(wire.get("capabilities").is_none());
+        let decoded: RegisterRequest = serde_json::from_value(wire).unwrap();
+        assert!(decoded.capabilities.is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_reads_an_absent_or_unreadable_declaration_as_undeclared() {
+        let snapshot = |doors: Option<serde_json::Value>| {
+            let mut wire = serde_json::Map::new();
+            wire.insert("network".into(), "10.210.0.0/16".into());
+            wire.insert("machines".into(), serde_json::json!([]));
+            wire.insert("target_versions".into(), serde_json::json!({}));
+            if let Some(doors) = doors {
+                wire.insert("doors".into(), doors);
+            }
+            let wire = serde_json::Value::Object(wire);
+            serde_json::from_value::<EnrollmentSnapshot>(wire)
+                .unwrap()
+                .doors
+        };
+        assert_eq!(snapshot(None), None);
+        assert_eq!(
+            snapshot(Some(serde_json::json!([]))),
+            Some(crate::IngressDoors::closed())
+        );
+        assert_eq!(
+            snapshot(Some(serde_json::json!(["tunnel"]))),
+            Some(crate::IngressDoors::tunnel())
+        );
+        for unreadable in [
+            serde_json::json!(["public", "warp"]),
+            serde_json::json!("public"),
+            serde_json::json!({"doors": []}),
+            serde_json::Value::Null,
+        ] {
+            assert_eq!(snapshot(Some(unreadable.clone())), None, "{unreadable}");
+        }
+        let closed = EnrollmentSnapshot {
+            network: "10.210.0.0/16".parse().unwrap(),
+            machines: vec![],
+            target_versions: BTreeMap::new(),
+            doors: Some(crate::IngressDoors::closed()),
+        };
+        assert_eq!(
+            serde_json::to_value(&closed).unwrap().get("doors"),
+            Some(&serde_json::json!([]))
+        );
+        let undeclared = EnrollmentSnapshot {
+            doors: None,
+            ..closed
+        };
+        assert!(
+            serde_json::to_value(&undeclared)
+                .unwrap()
+                .get("doors")
+                .is_none()
         );
     }
 

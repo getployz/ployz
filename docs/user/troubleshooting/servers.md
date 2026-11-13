@@ -324,7 +324,9 @@ your other servers list it as joined before the wait ran out. Start at step 1.
 
 1. Run the same command again. A first start can take several minutes.
 2. Make sure your servers reach each other on UDP 51820, in both directions, in the server's own
-   firewall and in any firewall your provider runs in front of them.
+   firewall and in any firewall your provider runs in front of them. On a server that runs
+   firewalld, follow
+   [A server that runs firewalld doesn't answer your other servers](#a-server-that-runs-firewalld-doesnt-answer-your-other-servers).
 3. Read the server's logs with `sudo journalctl -u ployz -n 200`, or the error's `cause:` line
    when the wait reached the server over SSH. Only if they say `refusing to
    change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
@@ -421,8 +423,9 @@ prepares Docker and ZFS meanwhile.
    installs one.
 12. Once you approve the server, the loop enrolls it and the **this server** line walks through
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
-    the same stages Ployz Cloud shows, where `Queued to join` reads **In line** and `Publishing`
-    reads **Going live**. `Queued to join` means other servers are joining the fleet first. When
+    the same stages Ployz Cloud shows, where `Queued to join` reads **In line**, `Setting up ZFS`
+    reads **Setting up storage** and `Publishing` reads **Going live**. `Queued to join` means
+    other servers are joining the fleet first. When
     it reads `Joined`, the running check-in loop turns itself off and deletes
     `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
@@ -644,9 +647,13 @@ state.
 
 ## A server shows Offline
 
-The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz
-with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place among
-your servers until it reboots or you remove it.
+The server's page says **Can't reach web-2**. Services that run only there are down.
+
+Ployz Cloud also shows a server Offline within about ten seconds of Ployz stopping on it, for
+example after `sudo systemctl stop ployz.socket ployz`, because nothing there answers for what it
+runs. Its containers read **Server offline** rather than Crashed, since what they last reported may
+no longer be true. Start Ployz again and the server reads online. Such a stop doesn't remove the
+server: it keeps its place among your servers until it reboots or you remove it.
 
 1. Check at your provider that the server is running, then run `sudo systemctl status ployz` on
    it.
@@ -749,6 +756,59 @@ work around it. Ask your provider why UDP packets on port 51820 above that size 
 the two servers, or move one of them. Once full-size packets cross again, the warning goes away
 within a minute. A server on 0.3.6 or earlier doesn't check, so it can't name the cause; a call
 routed through it says `target Machine RPC timed out` instead.
+
+## Services on other servers stop answering after a firewall change
+
+Ployz keeps its own iptables rules first in `INPUT` and Docker's `DOCKER-USER` chain. A tool that
+later inserts rules above them or flushes them, such as ufw-docker, `firewall-cmd --reload` or a
+security agent, can cut services off from other servers. Ployz applies its rules again every
+minute, so traffic returns within a minute with no restart.
+
+When a rule Ployz keeps first was missing or no longer first, `journalctl -u ployz` names it, as in
+`restored firewall rules that were missing or no longer first: filter DOCKER-USER: -i ployz-wg -o ployz -j ACCEPT`.
+The line also names the TCP clamp on `ployz-wg` when it was missing. It doesn't name rules inside
+Ployz's own `PLOYZ-` chains, which Ployz rewrites whole each minute, or its NAT rule, which Docker
+moves down every time it creates a network or restarts. When the line repeats every minute,
+something keeps rewriting the firewall. Find it and have it add its rules below Ployz's.
+
+If iptables fails, for example because another program holds its lock for more than 10 seconds,
+the log says `failed to reapply firewall rules` with iptables' reason, and Ployz tries again a
+minute later. Ployz 0.3.16 and earlier put the rules back only when the server restarts.
+
+## A server that runs firewalld doesn't answer your other servers
+
+A command or deploy says `! web-2 did not answer; its rows are missing.` with
+`cause: Permission denied (os error 13)`, and a deploy leaves an old replica running on another
+server. Check whether firewalld runs on that server:
+
+```sh
+systemctl is-active firewalld
+```
+
+If it says `active`, firewalld refuses the calls your other servers make to Ployz on that server,
+even though Ployz opens its ports in iptables. List its zones, and note the one shown above its
+public interface, such as `eth0`:
+
+```sh
+sudo firewall-cmd --get-active-zones
+```
+
+Then open UDP 51820 in that zone, shown here as `public`, and trust `ployz-wg`, the interface your
+servers reach each other on:
+
+```sh
+sudo firewall-cmd --zone=public --permanent --add-port=51820/udp
+sudo firewall-cmd --zone=trusted --permanent --add-interface=ployz-wg
+sudo firewall-cmd --reload
+```
+
+`ployz-wg` only carries traffic from your own servers and the apps on them. Trusting it lets them
+reach anything listening on this server's private address, as they could without firewalld, while
+Ployz keeps its own ports closed to everything else. On some older systems the reload also clears
+Ployz's own iptables rules; Ployz puts them back within a minute, as
+[Services on other servers stop answering after a firewall change](#services-on-other-servers-stop-answering-after-a-firewall-change)
+describes. On Ployz 0.3.16 and earlier, run `sudo systemctl restart ployz` after the reload
+instead.
 
 ## Apps see IPv6 visitors as 10.210.x.1, or services can't reach IPv6 addresses
 

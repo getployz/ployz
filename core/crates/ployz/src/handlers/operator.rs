@@ -12,7 +12,7 @@ use clap::{ArgMatches, parser::ValueSource};
 use crossterm::terminal;
 use ployz_core::{
     ContainerId, ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame,
-    FanoutSelector, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
+    FanoutSelector, Hint, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
     LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector, log_level, select_service,
 };
 use ployz_store::{DeploymentId, NamespaceQuery};
@@ -31,7 +31,6 @@ use crate::{
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
         prepare_service_history, select_proxy_container,
     },
-    ui::Hint,
 };
 
 use super::{
@@ -1677,6 +1676,7 @@ mod tests {
 #[cfg(test)]
 mod scope_tests {
     use super::*;
+    use ployz_core::error_chain;
 
     #[test]
     fn a_log_window_with_no_time_in_it_is_refused() {
@@ -1743,7 +1743,7 @@ mod scope_tests {
         assert!(gaps.outcome().is_ok());
         let failure = ployz_core::MachineFailure {
             machine_id: ployz_core::MachineId::parse("1".repeat(32)).unwrap(),
-            error: crate::ui::rpc_error(
+            error: error_chain::rpc_error(
                 RpcErrorCode::Unavailable,
                 &std::io::Error::other("ployz-observe is down"),
             ),

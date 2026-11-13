@@ -99,13 +99,11 @@ impl Stopped {
     }
 }
 
-/// Docker answers 404 for a container whose network it can't find too, and that
-/// container is still there to start once its network is back.
 fn gone(error: &bollard::errors::Error) -> bool {
     matches!(
         error,
-        bollard::errors::Error::DockerResponseServerError { status_code: 404, message }
-            if message.starts_with("No such container")
+        bollard::errors::Error::DockerResponseServerError { status_code, message }
+            if ployz_decide::bridge::gone(*status_code, message)
     )
 }
 

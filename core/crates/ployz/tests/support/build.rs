@@ -104,7 +104,10 @@ impl BuildFixture {
         )
     }
 
-    #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the RPC error type"
+    )]
     pub fn stream(
         self: Arc<Self>,
         request: Request<tonic::Streaming<OpaquePayload>>,

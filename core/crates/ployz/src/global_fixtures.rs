@@ -24,6 +24,7 @@ pub(crate) fn machine(hex: char, name: &str) -> Machine {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -70,6 +71,7 @@ pub(crate) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             resources: ContainerResources::default(),
             stop_timeout_secs: None,
             sysctls: Default::default(),
+            network: None,
             restart: RestartPolicy::default(),
         },
         placement: Placement::default(),

@@ -1,38 +1,32 @@
 //! Tools on one Service: read it, create it, change its Settings, rename it and
 //! remove it.
 
-use schemars::{JsonSchema, Schema, SchemaGenerator};
-use serde::Deserialize;
+use schemars::{Schema, SchemaGenerator};
 use serde_json::{Map, Value, json};
 
 use super::domain::row;
 use super::environment::{REPOSITORY, source};
-use super::machine::{Cx, Effect, Stop, Tool, at, written};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, written};
 use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting_sentence};
 use super::schema;
 use super::step::{DashboardPage, Fix};
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
+use crate::followup::FollowUp;
 use crate::{
     BatchCommand, BranchName, Change, CreateGitService, CreateService, DomainsQuery, Edit,
-    EnvironmentName, EnvironmentRef, ProjectName, RemoveService, RenameService, RepositoryName,
-    ServiceQuery, ServicesQuery, SettingPath, Written,
+    EnvironmentRef, RemoveService, RenameService, RepositoryName, ServiceQuery, ServicesQuery,
+    SettingPath, Written,
 };
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceInspect {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    service: ServiceName,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceInspect {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        service: ServiceName,
+        @place(named),
+    }
 }
 
 impl Tool for ServiceInspect {
@@ -45,7 +39,7 @@ impl Tool for ServiceInspect {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let environment = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let environment = cx.scope(&self);
         let mut answers = cx
             .read(vec![
                 super::machine::store(&ServiceQuery {
@@ -70,7 +64,7 @@ impl Tool for ServiceInspect {
             .map(|change| own_path(name, &change.shown_path(&view.changes)))
             .collect::<Vec<_>>();
         Ok(json!({
-            "at": at(&view.environment),
+            "at": view.environment.to_string(),
             "revision": view.environment.revision.0,
             "service": name,
             "source": source(view.service.source),
@@ -93,35 +87,26 @@ fn own_path(service: &str, path: &str) -> String {
         .to_owned()
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceAdd {
-    /// New Service name, unique in the Environment.
-    #[schemars(with = "String", pattern(NODE_NAME), example = &"whoami")]
-    name: ServiceName,
-    /// Container image to run. Give image or repository.
-    #[serde(default)]
-    #[schemars(length(min = 1), example = &"traefik/whoami")]
-    image: Option<String>,
-    /// GitHub repository owner/name to build. Give image or repository.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REPOSITORY), example = &"acme/api")]
-    repository: Option<RepositoryName>,
-    /// Branch to build, only with repository. Default: the repository's default branch.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", length(min = 1))]
-    branch: Option<BranchName>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceAdd {
+        /// New Service name, unique in the Environment.
+        #[schemars(with = "String", pattern(NODE_NAME), example = &"whoami")]
+        name: ServiceName,
+        /// Container image to run. Give image or repository.
+        #[serde(default)]
+        #[schemars(length(min = 1), example = &"traefik/whoami")]
+        image: Option<String>,
+        /// GitHub repository owner/name to build. Give image or repository.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(REPOSITORY), example = &"acme/api")]
+        repository: Option<RepositoryName>,
+        /// Branch to build, only with repository. Default: the repository's default branch.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", length(min = 1))]
+        branch: Option<BranchName>,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for ServiceAdd {
@@ -134,7 +119,7 @@ impl Tool for ServiceAdd {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let staged = match (self.image, self.repository) {
             (None, None) => {
                 return Err(Refusal::invalid("Give an image or a repository", "image").into());
@@ -189,7 +174,7 @@ impl Tool for ServiceAdd {
         };
         let (staged, source) = staged;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "service": staged.service.name,
             "source": source,
             "private_dns": staged.service.private_dns,
@@ -198,37 +183,28 @@ impl Tool for ServiceAdd {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceUpdate {
-    #[schemars(with = "String", pattern(NODE_NAME), example = &"web")]
-    service: ServiceName,
-    #[serde(default)]
-    #[schemars(schema_with = "set_schema")]
-    set: Option<Map<String, Value>>,
-    #[serde(default)]
-    #[schemars(schema_with = "unset_schema")]
-    unset: Vec<String>,
-    #[serde(default)]
-    #[schemars(schema_with = "rename_schema")]
-    rename_env: Map<String, Value>,
-    /// With rename_env, also switch the variables that reference a renamed one to its new name.
-    #[serde(default)]
-    update_references: bool,
-    #[serde(default)]
-    #[schemars(schema_with = "generate_secret_schema")]
-    generate_secret: Vec<String>,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceUpdate {
+        #[schemars(with = "String", pattern(NODE_NAME), example = &"web")]
+        service: ServiceName,
+        #[serde(default)]
+        #[schemars(schema_with = "set_schema")]
+        set: Option<Map<String, Value>>,
+        #[serde(default)]
+        #[schemars(schema_with = "unset_schema")]
+        unset: Vec<String>,
+        #[serde(default)]
+        #[schemars(schema_with = "rename_schema")]
+        rename_env: Map<String, Value>,
+        /// With rename_env, also switch the variables that reference a renamed one to its new name.
+        #[serde(default)]
+        update_references: bool,
+        #[serde(default)]
+        #[schemars(schema_with = "generate_secret_schema")]
+        generate_secret: Vec<String>,
+        @revision,
+        @place(named),
+    }
 }
 
 /// The Service Settings, without the credential an agent cannot set.
@@ -313,7 +289,7 @@ impl Tool for ServiceUpdate {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         if let Some(path) = self.set.as_ref().and_then(secret_value) {
             return Err(self.plaintext_secret(cx, scope, &path));
         }
@@ -351,7 +327,7 @@ impl Tool for ServiceUpdate {
         let immediate = paths(&edited.immediate);
         let changed = staged.iter().chain(&immediate).cloned().collect::<Vec<_>>();
         Ok(json!({
-            "at": at(&edited.environment),
+            "at": edited.environment.to_string(),
             "service": name,
             "changed": changed,
             "immediate": immediate,
@@ -382,7 +358,7 @@ impl ServiceUpdate {
                 });
                 return Err(
                     Refusal::invalid(not_setting_sentence(tool), &format!("set.{key}"))
-                        .with_next(Call::new(tool, drop_nulls(next)))
+                        .with_next(Call::to(tool, drop_nulls(next)))
                         .into(),
                 );
             }
@@ -508,9 +484,7 @@ fn refuse_referenced_rename(mut error: RpcError, call: &Call, writes: Writes) ->
         return from_store(error, call, writes);
     };
     // The Store's next is the CLI form of the retry below.
-    if let Value::Object(details) = &mut error.details {
-        details.remove("next");
-    }
+    FollowUp::remove_from(&mut error.details);
     let mut retry = call.input.clone();
     if let Value::Object(fields) = &mut retry {
         fields.insert("update_references".into(), true.into());
@@ -528,25 +502,16 @@ pub(crate) fn drop_nulls(mut value: Value) -> Value {
     value
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceRename {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    service: ServiceName,
-    /// New name.
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    to: ServiceName,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceRename {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        service: ServiceName,
+        /// New name.
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        to: ServiceName,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for ServiceRename {
@@ -560,7 +525,7 @@ impl Tool for ServiceRename {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         cx.expect(&scope, self.expect_revision)?;
         let staged = cx.write(&RenameService {
             environment: scope,
@@ -568,7 +533,7 @@ impl Tool for ServiceRename {
             name: self.to,
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "service": staged.service.name,
             "renamed_from": self.service,
             "staged": true,
@@ -576,22 +541,13 @@ impl Tool for ServiceRename {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceRemove {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    service: ServiceName,
-    /// Writes only if the place is still at this revision.
-    #[serde(default)]
-    expect_revision: Option<u64>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceRemove {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        service: ServiceName,
+        @revision,
+        @place(named),
+    }
 }
 
 impl Tool for ServiceRemove {
@@ -604,16 +560,11 @@ impl Tool for ServiceRemove {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let services = cx.one(&ServicesQuery {
             environment: scope.clone(),
         })?;
-        if self
-            .expect_revision
-            .is_some_and(|expect| services.environment.revision.0 != expect)
-        {
-            return Err(super::machine::stale(cx.call()));
-        }
+        cx.fresh(&services.environment, self.expect_revision)?;
         // A Service never deployed goes without asking anyone.
         let asks_approval = services
             .services
@@ -625,7 +576,7 @@ impl Tool for ServiceRemove {
             service: self.service,
         })?;
         Ok(json!({
-            "at": at(&staged.environment),
+            "at": staged.environment.to_string(),
             "removed": staged.service.name,
             "asks_approval": asks_approval,
             "broken": staged.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),

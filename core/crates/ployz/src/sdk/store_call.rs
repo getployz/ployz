@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::RpcError;
 use ployz_store::ConfigStore;
 use tokio::sync::Semaphore;
 
@@ -40,8 +40,8 @@ async fn bounded<T: Send + 'static>(
 ) -> Result<T, RpcError> {
     let permit = tokio::time::timeout(queue, permits.acquire())
         .await
-        .map_err(|_| unavailable("The Config Store is busy; retry"))?
-        .map_err(|_| unavailable("The Config Store is closed"))?;
+        .map_err(|_| RpcError::unavailable("The Config Store is busy; retry"))?
+        .map_err(|_| RpcError::unavailable("The Config Store is closed"))?;
     // The work holds its turn until it ends, even after its caller stops waiting,
     // so no more than the bound ever runs at once.
     let work = tokio::task::spawn_blocking(move || {
@@ -51,23 +51,15 @@ async fn bounded<T: Send + 'static>(
     tokio::time::timeout(run, work)
         .await
         .map_err(|_| {
-            unavailable("The Config Store did not answer in time; the outcome is unknown")
+            RpcError::unavailable("The Config Store did not answer in time; the outcome is unknown")
         })?
-        .map_err(|_| unavailable("The Config Store call stopped unexpectedly"))?
-}
-
-fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.to_owned(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+        .map_err(|_| RpcError::unavailable("The Config Store call stopped unexpectedly"))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::RpcErrorCode;
 
     #[tokio::test]
     async fn a_call_waiting_past_its_turn_is_busy() {

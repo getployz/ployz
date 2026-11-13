@@ -137,6 +137,7 @@ pub(crate) fn admit(
         Admit::Deploy(deploy) => &deploy.environment,
         Admit::ShutDown(shut_down) => &shut_down.environment,
         Admit::Remove(removal) => &removal.environment,
+        Admit::Reapply(reapply) => &reapply.environment,
         Admit::Retry(_) => return Ok(()),
     };
     environment(tx, who, at, Some(&first.environment_id), c.id().as_str())

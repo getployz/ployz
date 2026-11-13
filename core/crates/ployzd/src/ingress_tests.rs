@@ -48,6 +48,7 @@ pub(crate) fn renderer_projection() -> IngressProjection {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         sites: vec![
@@ -452,3 +453,11 @@ mod rule_f {
 
 #[path = "ingress_tests/reachable.rs"]
 mod reachable;
+
+#[test]
+fn the_access_log_is_in_the_runtime_mount_under_the_run_dir() {
+    assert_eq!(
+        super::access_log_path(std::path::Path::new("/run/ployz")),
+        std::path::Path::new("/run/ployz/ingress/requests/access.log")
+    );
+}

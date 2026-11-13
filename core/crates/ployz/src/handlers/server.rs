@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Deadline};
 use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
@@ -8,29 +9,27 @@ use std::{
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 
 use crate::cli::{
-    base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
+    base, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
+use crate::env;
 use ployz_core::{
-    AdvertisedEndpoint, BuildConcurrencyUpdate, InspectRequest, ListContainersRequest, Machine,
-    MachineId, MachineName, MachineObservation, MachineTarget, MachineUpdate, PublicIpUpdate,
-    RpcError, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest, op,
+    AdvertisedEndpoint, BuildConcurrencyUpdate, EnvironmentValues, Hint, IngressDoors,
+    InspectRequest, ListContainersRequest, Machine, MachineId, MachineName, MachineObservation,
+    MachineTarget, MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint,
+    UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    cloud_account::{self, Credential, StoreCallError},
-    cloud_login::{CredentialStore, LoginError},
     cluster::RoleWaitError,
-    connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
-    context::{Config, Connection, ConnectionSource, ContextError, SelectedConnections},
-    ingress::IngressImage,
+    connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
+    context::Config,
     ui::progress::StartFailure,
 };
 
-use super::{Error, leaf_matches, string_values, with_client};
-use crate::ui::Hint;
+use super::{Error, leaf_matches, route, string_values, with_client};
 
 mod add;
 pub(super) mod checkin;
@@ -46,13 +45,17 @@ mod remove;
 mod show;
 pub(super) mod token;
 mod upgrade;
+pub(super) mod upgrade_policy;
 mod waiting;
 
 use add::add;
-pub(super) use enroll::{enroll_token, requested_storage};
+pub(super) use enroll::{
+    enroll_token, founding_cluster_name, joined_open, joined_unnamed, requested_storage,
+};
 pub(super) use helpers::{
-    Joining, STARTING, check_listed, confirm, connect_direct, enroll, enroll_for_recovery,
-    inspect_token, leave, machine_name, pinned, requested_name, token_request,
+    Joining, STARTING, check_listed, confirm, confirmation_missing, connect_direct, enroll,
+    enroll_for_recovery, enroll_member, inspect_token, leave, machine_name, pinned, requested_name,
+    token_request,
 };
 use init::init;
 pub(super) use remove::remove;
@@ -78,251 +81,10 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Reach the Cluster for a live operation. `--connect` or `--context` win. Otherwise, signed in
-/// to Cloud or holding `PLOYZ_TOKEN`, it dials through this credential's own Server Access;
-/// signed out, through the current context or the local daemon.
-pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Result<Client, Error> {
-    connect_or_none(matches, context)
-        .await?
-        .ok_or_else(no_servers)
-}
-
-/// [`connect`] for what needs Full scope: exec, tunnels and the Device roster. The
-/// `--connect`, `--context` or current context, or the local daemon, goes first, so over SSH
-/// on a Server that approves the first Device; signed in, Cloud's Server Access follows.
-/// Only a Device slot grants Full, so with a Device key every Management Capability
-/// connection dials as the Device.
-pub(super) async fn connect_full(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<Client, Error> {
-    let config = super::config_path(matches)?;
-    let key = super::device::key::path(&config);
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
-    let explicit = direct.is_some() || context.is_some();
-    let credential = if explicit {
-        None
-    } else {
-        match cloud_account::from_env(&CredentialStore::beside(&config)).await {
-            Ok(credential) => Some(credential),
-            Err(LoginError::SignedOut) => None,
-            Err(error) => return Err(error.into()),
-        }
-    };
-    let local = match crate::connect::resolve_connections(
-        &config,
-        direct,
-        context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
-    ) {
-        Ok(mut selected) => {
-            selected.connections = as_device(selected.connections, &key)?;
-            let connector =
-                SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-            crate::connect::connect_selected_with(selected, Arc::new(connector)).await
-        }
-        Err(error) => Err(error),
-    };
-    let Some(credential) = credential else {
-        return local.map_err(|error| signed_out_unless_configured(error, !explicit));
-    };
-    if let Ok(client) = local {
-        return Ok(client);
-    }
-    let mut access = cloud_account::server_access(&credential).await?;
-    access.connections = as_device(access.connections, &key)?;
-    dial(matches, access).await?.ok_or_else(no_servers)
-}
-
-/// `connections`, each Management Capability one dialing as the Device whose key is at `key`
-/// when there is one. SSH and the local socket never read the key.
-fn as_device(
-    connections: Vec<Connection>,
-    key: &std::path::Path,
-) -> Result<Vec<Connection>, super::device::key::KeyError> {
-    let management = |connection: &Connection| {
-        matches!(
-            connection.transport(),
-            crate::context::Transport::Management(_)
-        )
-    };
-    if !connections.iter().any(management) {
-        return Ok(connections);
-    }
-    Ok(match super::device::key::load(key)? {
-        Some(secret) => connections
-            .into_iter()
-            .map(|connection| connection.with_device(secret))
-            .collect(),
-        None => connections,
-    })
-}
-
-/// Signed out with no context or local daemon: the fix is signing in, not a config file.
-/// The hidden test Store is never signed in, so it keeps the cause.
-fn signed_out_unless_configured(error: ConnectError, signed_out: bool) -> Error {
-    let no_config = matches!(error, ConnectError::Context(ContextError::NoConfig));
-    if signed_out && no_config && !super::store::local_mode() {
-        LoginError::SignedOut.into()
-    } else {
-        error.into()
-    }
-}
-
-/// [`connect`], or `None` when Cloud says this Organization has no Servers yet.
-pub(super) async fn connect_or_none(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<Option<Client>, Error> {
-    Ok(connect_or_none_held(matches, context)
-        .await?
-        .map(|(client, _)| client))
-}
-
-/// [`connect`], with the connections Cloud handed over when it was Cloud that gave them;
-/// `None` for those of `--connect`, a context or the local socket, which cost nothing to read
-/// again.
-pub(super) async fn connect_held(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<(Client, Option<Vec<Connection>>), Error> {
-    connect_or_none_held(matches, context)
-        .await?
-        .ok_or_else(no_servers)
-}
-
-async fn connect_or_none_held(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<Option<(Client, Option<Vec<Connection>>)>, Error> {
-    if matches.get_one::<String>("connect").is_none() && context.is_none() {
-        let store = CredentialStore::beside(&super::config_path(matches)?);
-        match cloud_account::from_env(&store).await {
-            Ok(credential) => {
-                let access = cloud_account::server_access(&credential).await?;
-                return Ok(dial_held(matches, access)
-                    .await?
-                    .map(|(client, held)| (client, Some(held))));
-            }
-            Err(LoginError::SignedOut) => {
-                // Signed out with no context or local daemon: the fix is signing in, not a
-                // config file. The hidden test Store is never signed in, so it keeps the cause.
-                return super::connect_context(matches, context)
-                    .await
-                    .map(|client| Some((client, None)))
-                    .map_err(|error| {
-                        let no_config = std::error::Error::source(&error)
-                            .and_then(|source| source.downcast_ref::<ContextError>())
-                            .is_some_and(|source| *source == ContextError::NoConfig);
-                        if no_config && !super::store::local_mode() {
-                            LoginError::SignedOut.into()
-                        } else {
-                            error
-                        }
-                    });
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    super::connect_context(matches, context)
-        .await
-        .map(|client| Some((client, None)))
-}
-
-/// [`connect`] through any Server but `leaving`, and the Server it entered by.
-pub(super) async fn connect_avoiding(
-    matches: &ArgMatches,
-    context: Option<&str>,
-    leaving: &Machine,
-) -> Result<(Client, ployz_core::MachineId), Error> {
-    let mut selected = entries(matches, context).await?;
-    let via = selected.source.clone();
-    selected
-        .connections
-        .retain(|connection| connection.machine_id() != Some(&leaving.id));
-    if !selected.connections.is_empty() {
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        let mut client =
-            crate::connect::connect_selected_with(selected, Arc::new(connector)).await?;
-        let entry = client
-            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, None)
-            .await?
-            .machine_id;
-        if entry != leaving.id {
-            return Ok((client, entry));
-        }
-    }
-    Err(Error::conflict(format!(
-        "Server {} is the only Server reachable through {via}, so it cannot carry its own removal. \
-         Connect through another Server, then retry. No changes made.",
-        leaving.name
-    )))
-}
-
-/// [`connect`] through `machine` alone, or `None` when no connection names it, as with a
-/// local daemon socket or a context that lists only other Servers. `held` are the
-/// connections Cloud already handed over, so it isn't asked again.
-pub(super) async fn connect_only(
-    matches: &ArgMatches,
-    context: Option<&str>,
-    held: Option<&[Connection]>,
-    machine: &ployz_core::MachineId,
-) -> Result<Option<Client>, Error> {
-    let mut selected = match held {
-        Some(connections) => SelectedConnections {
-            source: ConnectionSource::Cloud,
-            connections: connections.to_vec(),
-        },
-        None => entries(matches, context).await?,
-    };
-    selected
-        .connections
-        .retain(|connection| connection.machine_id() == Some(machine));
-    if selected.connections.is_empty() {
-        return Ok(None);
-    }
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(Some(
-        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
-    ))
-}
-
-/// The credential Cloud runs a Server operation under: signed in, with neither `--connect`
-/// nor `--context` naming a Cluster to dial, the same rule [`connect`] follows.
-pub(super) fn cloud_runs(
-    runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
-) -> Result<Option<Credential>, Error> {
-    if matches.get_one::<String>("connect").is_some()
-        || matches.get_one::<String>("context").is_some()
-    {
-        return Ok(None);
-    }
-    signed_in(runtime, matches)
-}
-
-/// The signed-in Cloud credential, or `None` when signed out. Nothing on the command line
-/// or in the environment vetoes it.
-pub(super) fn signed_in(
-    runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
-) -> Result<Option<Credential>, Error> {
-    let store = CredentialStore::beside(&super::config_path(matches)?);
-    match runtime.block_on(cloud_account::from_env(&store)) {
-        Ok(credential) => Ok(Some(credential)),
-        Err(LoginError::SignedOut) => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Whether [`signed_in`] would find something to act with, read from `PLOYZ_TOKEN` and the
-/// stored sign-in alone: it never asks Cloud or writes, so a pending code counts as signed out.
-pub(super) fn signed_in_locally(matches: &ArgMatches) -> bool {
-    crate::cloud_account::env_token().is_some()
-        || super::config_path(matches).is_ok_and(|config| {
-            matches!(CredentialStore::beside(&config).organization(), Ok(Some(_)))
-        })
+/// Whether this CLI holds a Device key, so its Management connections dial as that Device.
+pub(super) fn holds_device_key(matches: &ArgMatches) -> Result<bool, Error> {
+    let key = super::device::key::path(&super::config_path(matches)?);
+    Ok(super::device::key::load(&key)?.is_some())
 }
 
 /// The Server `selector` names, for a Cloud route, among the Servers Cloud's dial sees.
@@ -333,7 +95,7 @@ pub(super) fn cloud_machine(
     selector: &str,
 ) -> Result<ployz_core::Machine, Error> {
     runtime.block_on(async {
-        let mut client = connect(matches, None).await?;
+        let mut client = route::connect(matches, None).await?;
         let machines = client.machines().await?;
         remove::select_machine(&machines, selector)
     })
@@ -342,7 +104,7 @@ pub(super) fn cloud_machine(
 /// The Servers Cloud's dial sees, as [`cloud_machine`] picks among them.
 pub(super) fn servers(matches: &ArgMatches) -> Result<Vec<ployz_core::MachineObservation>, Error> {
     super::runtime()?.block_on(async {
-        let mut client = connect(matches, None).await?;
+        let mut client = route::connect(matches, None).await?;
         Ok(client.machines().await?)
     })
 }
@@ -352,450 +114,6 @@ pub(super) fn approved_rerun(matches: &ArgMatches, args: &[&str], id: &str) -> S
     let mut args = args.to_vec();
     args.extend(["--approval", id]);
     super::rerun(matches, &args)
-}
-
-/// How a read reaches what it reads.
-pub(super) enum Reach {
-    /// Through the Servers themselves.
-    Dial(Client),
-    /// Through Cloud: this credential may read, but Cloud refused it Server access.
-    Ask(Credential),
-}
-
-/// Reach the Cluster for a read Cloud can also answer, the way [`connect_or_none`] does,
-/// except that a credential Cloud refuses Server access, such as a Read only or Deploy
-/// token, comes back to ask Cloud instead.
-pub(super) async fn reach(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<Option<Reach>, Error> {
-    reach_or_silent(matches, context)
-        .await
-        .map_err(|unreached| unreached.error)
-}
-
-/// Why [`reach_or_silent`] reached no Server, and whether that is because none answered.
-pub(super) struct Unreached {
-    pub(super) error: Error,
-    pub(super) silent: Option<Silent>,
-}
-
-impl From<Error> for Unreached {
-    fn from(error: Error) -> Self {
-        Self {
-            error,
-            silent: None,
-        }
-    }
-}
-
-/// [`reach`], telling a connection no Server answered apart from other failures. A route
-/// that enters by a Unix socket is never [`Silent`]: that is this host's own daemon, which
-/// `status` reports as this Server.
-pub(super) async fn reach_or_silent(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<Option<Reach>, Unreached> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
-    let config = super::config_path(matches)?;
-    if direct.is_none() && context.is_none() {
-        let store = CredentialStore::beside(&config);
-        if let Ok(credential) = cloud_account::from_env(&store).await {
-            let access = match cloud_account::server_access(&credential).await {
-                Ok(access) => access,
-                Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
-                    return Ok(Some(Reach::Ask(credential)));
-                }
-                Err(error) => return Err(Error::from(error).into()),
-            };
-            let socket = by_socket(&access.connections);
-            return match dial(matches, access).await {
-                Ok(client) => Ok(client.map(Reach::Dial)),
-                Err(error) => Err(Unreached::of(error, socket)),
-            };
-        }
-    }
-    let socket = crate::connect::resolve_connections(
-        &config,
-        direct,
-        context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
-    )
-    .is_ok_and(|selected| by_socket(&selected.connections));
-    match connect_or_none(matches, context).await {
-        Ok(client) => Ok(client.map(Reach::Dial)),
-        Err(error) => Err(Unreached::of(error, socket)),
-    }
-}
-
-impl Unreached {
-    fn of(error: Error, socket: bool) -> Self {
-        let silent = if socket { None } else { Silent::of(&error) };
-        Self { error, silent }
-    }
-}
-
-fn by_socket(connections: &[crate::context::Connection]) -> bool {
-    connections
-        .iter()
-        .any(|connection| matches!(connection.transport(), crate::context::Transport::Unix(_)))
-}
-
-/// What a forget reaches.
-pub(super) enum Reached {
-    Client(Client),
-    /// Through Cloud, whose Servers all failed to answer.
-    Unanswered(Credential),
-}
-
-/// Reach the Cluster the way [`connect`] does, except that through Cloud a Cluster none of
-/// whose Servers answers comes back with the credential, for Cloud to act alone.
-pub(super) async fn connect_or_unanswered(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<Reached, Error> {
-    if matches.get_one::<String>("connect").is_none() && context.is_none() {
-        let store = CredentialStore::beside(&super::config_path(matches)?);
-        if let Ok(credential) = cloud_account::from_env(&store).await {
-            let access = cloud_account::server_access(&credential).await?;
-            return Ok(match answering(matches, access).await? {
-                Some(client) => Reached::Client(client),
-                None => Reached::Unanswered(credential),
-            });
-        }
-    }
-    connect(matches, context).await.map(Reached::Client)
-}
-
-/// Dial through Cloud's Server Access; `None` when Cloud knows Servers and none answers.
-async fn answering(
-    matches: &ArgMatches,
-    mut access: cloud_account::ServerAccess,
-) -> Result<Option<Client>, Error> {
-    if access.connections.is_empty() {
-        return match (access.unreachable.is_empty(), access.refused.is_empty()) {
-            (true, true) => Err(no_servers()),
-            (false, true) => Ok(None),
-            (_, false) => Err(no_server_access(access, Vec::new(), None)),
-        };
-    }
-    let held = held_servers(&access.connections);
-    let refused = access.refused.is_empty();
-    let connections = named(std::mem::take(&mut access.connections), &access.names);
-    match dial_connections(matches, connections).await {
-        Ok(client) => Ok(Some(client)),
-        Err(ConnectError::AllFailed { reached: false, .. }) if refused => Ok(None),
-        Err(error @ ConnectError::AllFailed { reached: false, .. }) => {
-            Err(no_server_access(access, held, Some(error)))
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Every Server [`connect`] could enter by, in its order: Cloud's Server Access when
-/// signed in, else the `--connect`, `--context` or local daemon connections.
-async fn entries(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<SelectedConnections, Error> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
-    let mut signed_out = false;
-    if direct.is_none() && context.is_none() {
-        let store = CredentialStore::beside(&super::config_path(matches)?);
-        match cloud_account::from_env(&store).await {
-            Ok(credential) => {
-                let access = cloud_account::server_access(&credential).await?;
-                if access.connections.is_empty() {
-                    return Err(
-                        if access.unreachable.is_empty() && access.refused.is_empty() {
-                            no_servers()
-                        } else {
-                            no_server_access(access, Vec::new(), None)
-                        },
-                    );
-                }
-                return Ok(SelectedConnections {
-                    source: ConnectionSource::Cloud,
-                    connections: named(access.connections, &access.names),
-                });
-            }
-            Err(LoginError::SignedOut) => signed_out = true,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    crate::connect::resolve_connections(
-        &super::config_path(matches)?,
-        direct,
-        context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
-    )
-    .map_err(|error| signed_out_unless_configured(error, signed_out))
-}
-
-/// Cloud's dial into this Organization's Servers, or `None` when it has none.
-async fn dial(
-    matches: &ArgMatches,
-    access: cloud_account::ServerAccess,
-) -> Result<Option<Client>, Error> {
-    Ok(dial_held(matches, access).await?.map(|(client, _)| client))
-}
-
-/// [`dial`], with the connections Cloud handed over, so a later dial needs no second ask.
-async fn dial_held(
-    matches: &ArgMatches,
-    mut access: cloud_account::ServerAccess,
-) -> Result<Option<(Client, Vec<Connection>)>, Error> {
-    if access.connections.is_empty() {
-        if access.unreachable.is_empty() && access.refused.is_empty() {
-            return Ok(None);
-        }
-        return Err(no_server_access(access, Vec::new(), None));
-    }
-    let held = held_servers(&access.connections);
-    let connections = named(std::mem::take(&mut access.connections), &access.names);
-    match dial_connections(matches, connections.clone()).await {
-        Ok(client) => Ok(Some((client, connections))),
-        Err(error @ ConnectError::AllFailed { reached: false, .. })
-            if !held.is_empty() || !access.unreachable.is_empty() || !access.refused.is_empty() =>
-        {
-            Err(no_server_access(access, held, Some(error)))
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// The Servers Cloud handed connections for, held without probing them.
-fn held_servers(connections: &[crate::context::Connection]) -> Vec<ployz_core::MachineId> {
-    connections
-        .iter()
-        .filter_map(|connection| connection.machine_id().copied())
-        .collect()
-}
-
-/// Cloud's `connections`, each carrying its Server's name where Cloud holds one.
-fn named(
-    connections: Vec<crate::context::Connection>,
-    names: &BTreeMap<ployz_core::MachineId, String>,
-) -> Vec<crate::context::Connection> {
-    connections
-        .into_iter()
-        .map(|connection| {
-            match connection
-                .machine_id()
-                .and_then(|id| names.get(id))
-                .cloned()
-            {
-                Some(name) => connection.with_name(name),
-                None => connection,
-            }
-        })
-        .collect()
-}
-
-async fn dial_connections(
-    matches: &ArgMatches,
-    connections: Vec<crate::context::Connection>,
-) -> Result<Client, ConnectError> {
-    let selected = SelectedConnections {
-        source: ConnectionSource::Cloud,
-        connections,
-    };
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    crate::connect::connect_selected_with(selected, Arc::new(connector)).await
-}
-
-const NO_SERVERS: &str = "this Organization has no Servers";
-
-pub(super) fn no_servers() -> Error {
-    Error::conflict(NO_SERVERS).hint(Hint::Next("ployz server add".into()))
-}
-
-/// Whether `report` is [`no_servers`]: Cloud knows no Server to look in.
-fn has_no_servers(report: &RpcError) -> bool {
-    report.code == RpcErrorCode::Conflict && report.message == NO_SERVERS
-}
-
-/// No Server of `access` gave this command access: the `unanswered` ones it held a
-/// connection to and those Cloud couldn't reach didn't answer, and Cloud says why each
-/// refused one couldn't. Only with no refusal does it read as [`no_reachable_server`].
-fn no_server_access(
-    access: cloud_account::ServerAccess,
-    mut unanswered: Vec<ployz_core::MachineId>,
-    cause: Option<ConnectError>,
-) -> Error {
-    unanswered.extend(access.unreachable);
-    if access.refused.is_empty() {
-        return no_reachable_server(unanswered, &access.names, cause);
-    }
-    let name = |id: &ployz_core::MachineId| {
-        access
-            .names
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| id.to_string())
-    };
-    let message = match (access.refused.as_slice(), unanswered.as_slice()) {
-        ([one], []) => format!(
-            "Server {} couldn't give this command access: {}",
-            name(&one.machine_id),
-            one.message
-        ),
-        (refused, unanswered) => {
-            let mut why = refused
-                .iter()
-                .map(|server| format!("{} said \"{}\"", name(&server.machine_id), server.message))
-                .collect::<Vec<_>>();
-            why.extend(
-                unanswered
-                    .iter()
-                    .map(|id| format!("{} isn't answering", name(id))),
-            );
-            format!(
-                "No Server could give this command access: {}.",
-                why.join("; ")
-            )
-        }
-    };
-    let refused = access
-        .refused
-        .iter()
-        .map(|server| json!({ "machine_id": server.machine_id, "message": server.message }))
-        .collect::<Vec<_>>();
-    Error::detailed_caused(
-        RpcErrorCode::Unavailable,
-        message,
-        json!({ "refused": refused, "unreachable": unanswered }),
-        cause,
-    )
-}
-
-/// None of `unreachable` answered, each named where Cloud holds its name; `cause` says how
-/// the last attempt failed.
-fn no_reachable_server(
-    unreachable: Vec<ployz_core::MachineId>,
-    names: &BTreeMap<ployz_core::MachineId, String>,
-    cause: Option<ConnectError>,
-) -> Error {
-    let shown = unreachable
-        .iter()
-        .map(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string()))
-        .collect::<Vec<_>>();
-    let message = match shown.as_slice() {
-        // This CLI's own connection to it failed: Cloud reached it to hand that over.
-        [one] if let Some(cause) = &cause => crate::connect::not_answering(one, relayed(cause)),
-        [one] => format!(
-            "Server {one} isn't answering. If it just joined or restarted, try again in a moment."
-        ),
-        _ => format!(
-            "None of your Servers is answering: {}. If one just joined or restarted, try again in a moment.",
-            super::joined(&shown)
-        ),
-    };
-    Error::detailed_caused(
-        RpcErrorCode::Unavailable,
-        message,
-        json!({ "unreachable": unreachable, "servers": shown }),
-        cause,
-    )
-}
-
-/// Whether `error` is a connection whose last try went through Ployz Cloud's relay.
-fn relayed(error: &ConnectError) -> bool {
-    matches!(error, ConnectError::AllFailed { relayed: true, .. })
-}
-
-/// Whether `report` is [`no_reachable_server`]'s: Servers Cloud knows that didn't answer,
-/// and none that refused.
-pub(super) fn servers_unanswered(report: &RpcError) -> bool {
-    report.code == RpcErrorCode::Unavailable
-        && report.details.get("unreachable").is_some()
-        && report.details.get("refused").is_none()
-}
-
-/// The Servers of a Cluster none of whose Servers answered, by name where the failure
-/// says which, empty when it doesn't, and whether it asked through Ployz Cloud's relay.
-pub(super) struct Silent {
-    names: Vec<String>,
-    relayed: bool,
-}
-
-impl Silent {
-    /// Whether `error` is a connection no Server answered: Servers Cloud knows that
-    /// didn't, or a dial whose every connection went unanswered. `None` when a daemon
-    /// answered, or the failure is about something else, such as Cloud itself.
-    pub(super) fn of(error: &Error) -> Option<Self> {
-        let report = error.report();
-        if servers_unanswered(&report) {
-            let names = report.details.get("servers").and_then(Value::as_array);
-            return Some(Self {
-                names: names
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|name| Some(name.as_str()?.to_owned()))
-                    .collect(),
-                // With no connection of its own to try, this CLI asked Cloud.
-                relayed: error.connect_error().is_none_or(relayed),
-            });
-        }
-        let ConnectError::AllFailed {
-            reached: false,
-            attempts,
-            server,
-            relayed,
-            ..
-        } = error.connect_error()?
-        else {
-            return None;
-        };
-        // With more than one connection, the one Server named is only the last tried.
-        Some(Self {
-            names: if *attempts == 1 {
-                server.iter().cloned().collect()
-            } else {
-                Vec::new()
-            },
-            relayed: *relayed,
-        })
-    }
-
-    pub(super) fn names(&self) -> &[String] {
-        &self.names
-    }
-
-    /// What to check, for the Server or Servers named.
-    pub(super) fn next(&self) -> &'static str {
-        match (self.names.as_slice(), self.relayed) {
-            ([_], false) => "Check that its Ployz daemon is running.",
-            (_, false) => "Check that the Ployz daemon is running on your Servers.",
-            ([_], true) => {
-                "Check that it is online, its Ployz daemon is running, and its outgoing https \
-                 isn't filtered."
-            }
-            (_, true) => {
-                "Check that your Servers are online, their Ployz daemon is running, and their \
-                 outgoing https isn't filtered."
-            }
-        }
-    }
-}
-
-impl std::fmt::Display for Silent {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let through = if self.relayed {
-            " through Ployz Cloud"
-        } else {
-            ""
-        };
-        match self.names.as_slice() {
-            [] => write!(formatter, "No Server is answering{through}"),
-            [one] => write!(formatter, "Server {one} isn't answering{through}"),
-            many => write!(
-                formatter,
-                "None of your Servers is answering{through} ({})",
-                super::joined(many)
-            ),
-        }
-    }
 }
 
 pub(super) struct ConnectionOptions {
@@ -886,9 +204,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?;
     let update = parse_update(matches)?;
-    let image = matches.get_one::<String>("ingress-image");
     let rerun = ingress_rerun(matches, selector);
-    let ingress = IngressImage::given_or(image.cloned(), IngressImage::Keep);
     let selector = MachineTarget::parse(selector)?;
     let seed = update
         .advertised_endpoints
@@ -902,9 +218,11 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         return with_client(root, |client| {
             Box::pin(async move {
                 if ask {
-                    confirm_ingress_off(&client.machines().await?, &selector)?;
+                    let machines = client.machines().await?;
+                    let doors = open_doors(client, &machines).await?;
+                    confirm_ingress_off(&machines, &doors, &selector)?;
                 }
-                apply_update(client, selector, update, None, ingress, rerun, recovery).await
+                apply_update(client, selector, update, None, rerun, recovery).await
             })
         });
     };
@@ -912,10 +230,12 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         let context = matches.get_one::<String>("context").map(String::as_str);
         // Ask before seeding: a refusal leaves every Server unchanged.
         if ask {
-            let machines = connect(matches, context).await?.machines().await?;
-            confirm_ingress_off(&machines, &selector)?;
+            let mut client = route::connect(matches, context).await?;
+            let machines = client.machines().await?;
+            let doors = open_doors(&client, &machines).await?;
+            confirm_ingress_off(&machines, &doors, &selector)?;
         }
-        let entries = entries(matches, context).await?;
+        let entries = route::entries(matches, context).await?;
         let connector =
             SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
         let mut seeding = endpoint::seed(&entries, Arc::new(connector), &selector, address).await;
@@ -933,7 +253,6 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             selector,
             update,
             Some(seeding),
-            ingress,
             rerun,
             recovery,
         )
@@ -943,25 +262,38 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
 
 /// The `server set` that finishes turning web traffic on for the Server `selector` names.
 fn ingress_rerun(matches: &ArgMatches, selector: &str) -> String {
-    let mut args = vec!["server", "set", selector, "--accepts-ingress=true"];
-    args.extend(
-        matches
-            .get_one::<String>("ingress-image")
-            .iter()
-            .flat_map(|image| ["--ingress-image", image.as_str()]),
-    );
-    super::rerun(matches, &args)
+    super::rerun(
+        matches,
+        &["server", "set", selector, "--accepts-ingress=true"],
+    )
+}
+
+/// The Doors each Server holds open now. A Server that didn't list its containers is
+/// absent, and taken as serving web traffic when it has a public IP.
+async fn open_doors(
+    client: &Client,
+    machines: &[MachineObservation],
+) -> Result<BTreeMap<MachineId, IngressDoors>, Error> {
+    let live = client
+        .live_services_from(machines, EnvironmentValues::Redacted)
+        .await?;
+    Ok(crate::ingress::machine_doors(&live.services()))
 }
 
 /// Ask before turning web traffic off on the Server `selector` names when no other online
-/// Server would still take it.
+/// Server with an open Door would still take it.
 fn confirm_ingress_off(
     machines: &[MachineObservation],
+    doors: &BTreeMap<MachineId, IngressDoors>,
     selector: &MachineTarget,
 ) -> Result<(), Error> {
     let target = crate::cluster::visible_machine(selector, machines)?;
     let serves_web = |observed: &MachineObservation| {
-        observed.machine.accepts_ingress && observed.machine.public_ip.is_some()
+        observed.machine.accepts_ingress
+            && doors.get(&observed.machine.id).map_or_else(
+                || observed.machine.public_ip.is_some(),
+                |open| !open.0.is_empty(),
+            )
     };
     let last = serves_web(target)
         && !machines.iter().any(|observed| {
@@ -973,16 +305,21 @@ fn confirm_ingress_off(
         return Ok(());
     }
     let name = &target.machine.name;
+    let last_one = doors.get(&target.machine.id).map_or(
+        "the last Server taking web traffic".to_owned(),
+        |open| {
+            let names = open.0.iter().map(|door| door.as_str()).collect::<Vec<_>>();
+            format!("the last Server with a door open ({})", names.join(", "))
+        },
+    );
     crate::ui::confirm(
-        &format!(
-            "Turn off web traffic on {name}, the last Server taking it? Every domain goes dark"
-        ),
+        &format!("Turn off web traffic on {name}, {last_one}? Every domain goes dark"),
         || {
             Error::coded(
                 RpcErrorCode::ConfirmationRequired,
                 format!(
-                    "{name} is the last online Server taking web traffic; turning it off takes \
-                     every domain dark. No changes made."
+                    "{name} is {last_one}; turning it off takes every domain dark. No changes \
+                     made."
                 ),
             )
             .hint(Hint::Retry(super::typed_with(&["--yes"])))
@@ -1013,7 +350,6 @@ pub(crate) async fn apply_update(
     selector: MachineTarget,
     update: MachineUpdate,
     seeding: Option<endpoint::Seeding>,
-    ingress: IngressImage,
     rerun: String,
     recovery: ArgMatches,
 ) -> Result<(), Error> {
@@ -1028,10 +364,11 @@ pub(crate) async fn apply_update(
     // Setting or clearing the public IP pins it, so daemon start no longer looks one up.
     let public_ip_pinned = update.public_ip != PublicIpUpdate::Keep;
     let updated = client
-        .invoke_answered::<op::UpdateMachine>(
+        .call_shared::<op::UpdateMachine>(
             UpdateMachineRequest { update },
-            &selector,
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&selector)
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
         .map_err(|error| (error.unreplied(), RpcError::from(error)));
@@ -1135,11 +472,11 @@ pub(crate) async fn apply_update(
             }
             Err(error) => return Err(unobserved(error)),
         }
-        crate::ingress::follow_roles(client, ingress).await
+        Ok(crate::ingress::follow_roles(client).await?)
     }
     .await;
     let (ingress, follow_up) = match followed {
-        Ok(ingress) => (ingress, Ok(())),
+        Ok(ingress) => (Some(ingress), Ok(())),
         Err(error) => {
             // A rename in this same command leaves the typed selector naming nothing (#3449).
             let (selector, rerun) = if renamed {
@@ -1190,10 +527,11 @@ pub(crate) async fn apply_update(
 /// this command didn't turn on.
 async fn ingress_off(client: &Client, selector: &MachineTarget) -> Option<MachineId> {
     let details = client
-        .invoke_answered::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             InspectRequest::default(),
-            selector,
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(selector)
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
         .ok()?;
@@ -1204,8 +542,8 @@ async fn ingress_off(client: &Client, selector: &MachineTarget) -> Option<Machin
 }
 
 /// How the new Ingress Proxy failed to start on `machine`, when `machine`'s own record held no
-/// ingress role before this command and the Deploy ended on its own there: not interrupted,
-/// and not on another Server.
+/// ingress role before this command and the follow-up ended on its own there: not
+/// interrupted, and not on another Server.
 fn own_start_failure(
     error: &Error,
     machine: MachineId,
@@ -1221,32 +559,37 @@ fn own_start_failure(
         .and_then(|diagnostic| diagnostic.start_failure)
 }
 
-/// Whether `machine` holds no Ingress Proxy Container, in any state, in its own listing. A
-/// created or exited one may still start, under Docker's restart policy or the daemon's retry
-/// of a stranded proxy, and one another operator started serves. An empty listing doesn't say
-/// whose it is, so `machine` is asked who it is after it.
+/// Whether `machine` holds no Ingress Proxy Container, neither a Caddy nor a holder, in any
+/// state, in its own listing. A created or exited one may still start, under Docker's
+/// restart policy or the daemon's retry of a stranded proxy, and one another operator
+/// started serves. An empty listing doesn't say whose it is, so `machine` is asked who it
+/// is after it.
 async fn nothing_serves(client: &Client, machine: MachineId) -> bool {
     let target = MachineTarget::from(&machine);
     let Ok(listed) = client
-        .invoke_answered::<op::ListContainers>(
+        .call_shared::<op::ListContainers>(
             ListContainersRequest::default(),
-            &target,
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&target)
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
     else {
         return false;
     };
-    if listed.containers.iter().any(|container| {
-        container.machine_id != machine || crate::ingress::is_system_ingress(container)
-    }) {
+    if listed
+        .containers
+        .iter()
+        .any(|container| container.machine_id != machine || container.identity().is_ingress_door())
+    {
         return false;
     }
     client
-        .invoke_answered::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             InspectRequest::default(),
-            &target,
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&target)
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
         .is_ok_and(|details| details.id == machine)
@@ -1272,10 +615,11 @@ async fn turn_back_off(
     };
     let name = machine.name.clone();
     match client
-        .invoke_answered::<op::UpdateMachine>(
+        .call_shared::<op::UpdateMachine>(
             UpdateMachineRequest { update: off },
-            &MachineTarget::from(&machine.id),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&machine.id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
     {
@@ -1537,7 +881,7 @@ pub(super) fn remove_command(command: Command) -> Command {
 
 pub(super) fn set_command(command: Command) -> Command {
     machine_policy_flags(base(command, "Change a Server's name, labels, roles, public IP or build concurrency")
-                .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`. When no other online Server with a public IP takes web traffic, --accepts-ingress=false asks first; pass --yes to skip the question, which non-interactive runs need."))
+                .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`. When no other online Server takes web traffic, through public ports or a tunnel, --accepts-ingress=false asks first; pass --yes to skip the question, which non-interactive runs need."))
                 .arg(many("label-rm", None).value_name("KEY").help("Remove the label KEY; repeat for more"))
                 .arg(value("name", None).help("Its new name"))
                 .arg(value("public-ip", None).value_name("IP|none").help("The public IP it advertises; none advertises none"))
@@ -1549,14 +893,13 @@ pub(super) fn set_command(command: Command) -> Command {
                 .arg(many("wg-endpoint", None).value_name("IP[:PORT]").help(
                     "Where peers reach this Server over WireGuard; every other Server the command reaches dials the first one now, even if this Server is unreachable",
                 ))
-                .arg(ingress_image())
                 .arg(crate::cli::yes("Turn off web traffic on the last Server taking it without asking"))
                 .arg(positional("server", true).help("Server name or ID"))
 }
 
 pub(super) fn upgrade_command(command: Command) -> Command {
     base(command, "Upgrade the daemon on explicitly selected Servers, one at a time")
-                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, the Ingress Proxy then moves to the latest Caddy image on every Server with that role. Signed in to Cloud without --context or --connect, Cloud runs each upgrade along the Organization's Release Channel; an exact version needs --context.")
+                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, every Server with that role then moves its Ingress Proxy to the Caddy that release ships. Signed in to Cloud without --context or --connect, Cloud runs each upgrade along the Organization's Release Channel; an exact version needs --context.")
                 .arg_required_else_help(true)
                 .arg(
                     positional("version", true)
@@ -1573,15 +916,6 @@ pub(super) fn upgrade_command(command: Command) -> Command {
                 .arg(switch("allow-downgrade", None).help(
                     "Move a Server to an older version than it runs without asking",
                 ))
-                .arg(ingress_image())
-}
-
-/// Pin the Caddy image the Ingress Proxy is deployed with (offline test clusters).
-fn ingress_image() -> Arg {
-    value("ingress-image", None)
-        .value_name("IMAGE")
-        .value_parser(crate::ingress::pinned_image)
-        .hide(true)
 }
 
 pub(super) fn provisioning_flags(command: Command) -> Command {
@@ -1719,7 +1053,6 @@ mod tests {
                     ..Default::default()
                 },
                 None,
-                IngressImage::Given("caddy:2".into()),
                 String::new(),
                 recovery,
             );
@@ -1873,7 +1206,6 @@ mod tests {
                 MachineTarget::from(&id),
                 update,
                 None,
-                IngressImage::Given("caddy:2".into()),
                 String::new(),
                 recovery,
             );
@@ -1969,7 +1301,6 @@ mod tests {
                             ..Default::default()
                         },
                         None,
-                        IngressImage::Given("caddy:2".into()),
                         String::new(),
                         recovery,
                     ),
@@ -2092,47 +1423,6 @@ mod tests {
                 Hint::Retry(format!("ployz server set {other} '--accepts-ingress=true'")),
             ]
         );
-    }
-
-    #[test]
-    fn full_scope_dials_management_connections_as_the_device() {
-        use std::os::unix::fs::PermissionsExt;
-
-        use crate::context::Transport;
-        use ployz_core::{ManagementCapability, ManagementIdentity};
-
-        let dir = tempfile::tempdir().unwrap();
-        let key = dir.path().join("device.key");
-        let operator = ManagementCapability::new(ManagementIdentity::from_bytes([1; 32]), [2; 32]);
-        let ssh: Connection = "root@node-a".parse().unwrap();
-        let context = vec![
-            Connection::management(operator.to_secret_string()).unwrap(),
-            ssh.clone(),
-        ];
-        let dialed = |connections| {
-            let dialed = as_device(connections, &key).unwrap();
-            let [management, other] = dialed.as_slice() else {
-                panic!("the context's two connections");
-            };
-            let Transport::Management(capability) = management.transport() else {
-                panic!("the context's first connection is a Management Capability");
-            };
-            assert_eq!(other, &ssh);
-            capability.to_secret_string()
-        };
-
-        assert_eq!(dialed(context.clone()), operator.to_secret_string());
-        std::fs::write(&key, [3; 32]).unwrap();
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(
-            dialed(context.clone()),
-            ManagementCapability::new(*operator.machine(), [3; 32]).to_secret_string()
-        );
-
-        std::fs::write(&key, b"broken").unwrap();
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(as_device(vec![ssh.clone()], &key).unwrap(), vec![ssh]);
-        assert!(as_device(context, &key).is_err());
     }
 
     #[test]
@@ -2368,6 +1658,7 @@ mod tests {
                 public_ip: public_ip.map(|ip| ip.parse().unwrap()),
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             membership,
@@ -2378,9 +1669,10 @@ mod tests {
     fn web_traffic_off_asks_only_when_no_other_online_server_takes_it() {
         use ployz_core::MembershipObservation::{Down, Suspect, Unknown, Up};
         let fra1 = MachineTarget::parse("fra-1").unwrap();
+        let unlisted = BTreeMap::new();
         let off = |other: MachineObservation| {
             let machines = [web("fra-1", true, Some("203.0.113.1"), Down), other];
-            confirm_ingress_off(&machines, &fra1).map_err(|error| error.report())
+            confirm_ingress_off(&machines, &unlisted, &fra1).map_err(|error| error.report())
         };
 
         // Tests run in Plain mode, so the question is a refusal naming --yes.
@@ -2411,202 +1703,41 @@ mod tests {
             off(web("fra-2", true, Some("203.0.113.2"), online)).unwrap();
         }
         let already_off = [web("fra-1", false, Some("203.0.113.1"), Up)];
-        confirm_ingress_off(&already_off, &fra1).unwrap();
-    }
-
-    #[tokio::test]
-    async fn cloud_access_dials_nothing_without_servers_and_names_unreachable_ones() {
-        let matches = crate::cli::command()
-            .try_get_matches_from(["ployz", "server", "ls"])
-            .unwrap();
-        let access = |unreachable| cloud_account::ServerAccess {
-            connections: Vec::new(),
-            unreachable,
-            refused: Vec::new(),
-            names: [(
-                ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
-                "box-node-7".to_owned(),
-            )]
-            .into(),
-        };
-        let dialed = dial(leaf_matches(&matches), access(Vec::new())).await;
-        assert!(dialed.unwrap().is_none());
-
-        let offline = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
-        let Err(error) = dial(leaf_matches(&matches), access(vec![offline])).await else {
-            panic!("dialed without a Server");
-        };
-        let error = error.report();
-        assert_eq!(error.code, RpcErrorCode::Unavailable);
-        assert_eq!(
-            error.message,
-            "Server box-node-7 isn't answering. If it just joined or restarted, try again in a moment."
-        );
-        assert_eq!(
-            error.details.get("unreachable"),
-            Some(&json!(["b".repeat(32)]))
-        );
-    }
-
-    #[tokio::test]
-    async fn held_connections_that_reach_no_server_name_the_unreachable_servers() {
-        let matches = crate::cli::command()
-            .try_get_matches_from(["ployz", "server", "ls"])
-            .unwrap();
-        let (held, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = cloud_account::ServerAccess {
-            connections: serde_json::from_value(json!([
-                { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
-            ]))
-            .unwrap(),
-            unreachable: vec![ployz_core::MachineId::parse(gone.clone()).unwrap()],
-            refused: Vec::new(),
-            names: [(
-                ployz_core::MachineId::parse(held.clone()).unwrap(),
-                "web-1".to_owned(),
-            )]
-            .into(),
-        };
-        let Err(error) = dial(leaf_matches(&matches), access).await else {
-            panic!("dialed a Server that is not there");
-        };
-        assert!(
-            !error.causes().is_empty(),
-            "the connect error stays the cause"
-        );
-        let error = error.report();
-        assert_eq!(error.code, RpcErrorCode::Unavailable);
-        assert_eq!(
-            error.message,
-            format!(
-                "None of your Servers is answering: web-1, {gone}. If one just joined or restarted, try again in a moment."
-            )
-        );
-        assert_eq!(error.details.get("unreachable"), Some(&json!([held, gone])));
-    }
-
-    #[tokio::test]
-    async fn silent_servers_are_named_as_cloud_names_them() {
-        let matches = crate::cli::command()
-            .try_get_matches_from(["ployz", "status"])
-            .unwrap();
-        let (held, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = |unreachable: Vec<&String>| -> cloud_account::ServerAccess {
-            serde_json::from_value(json!({
-                "connections": [
-                    { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
-                ],
-                "unreachable": unreachable,
-                "names": { held.clone(): "web-1" },
-            }))
-            .unwrap()
-        };
-        let silent = |access| async {
-            let Err(error) = dial(leaf_matches(&matches), access).await else {
-                panic!("dialed a Server that is not there");
-            };
-            Silent::of(&error).expect("no Server answered")
-        };
-
-        let one = silent(access(Vec::new())).await;
-        assert_eq!(one.to_string(), "Server web-1 isn't answering");
-        assert_eq!(one.next(), "Check that its Ployz daemon is running.");
-        let both = silent(access(vec![&gone])).await;
-        assert_eq!(
-            both.to_string(),
-            format!("None of your Servers is answering (web-1, {gone})")
-        );
-        assert_eq!(both.names(), ["web-1".to_owned(), gone]);
+        confirm_ingress_off(&already_off, &unlisted, &fra1).unwrap();
     }
 
     #[test]
-    fn a_server_silent_through_cloud_may_be_offline_or_filtered() {
-        let error = Error::from(ConnectError::AllFailed {
-            selection: crate::context::ConnectionSource::Cloud,
-            attempts: 1,
-            server: Some("machine-1".into()),
-            relayed: true,
-            retry: ployz_core::Retry::AfterRestart,
-            reached: false,
-            last: None,
-        });
-        let silent = Silent::of(&error).expect("no Server answered");
+    fn web_traffic_off_counts_open_doors_over_public_ips() {
+        use ployz_core::MembershipObservation::{Down, Up};
+        let fra1 = MachineTarget::parse("fra-1").unwrap();
+        let other = web("fra-2", true, None, Up);
+        let machines = [web("fra-1", true, Some("203.0.113.1"), Down), other.clone()];
+        let tunnel = BTreeMap::from([(other.machine.id, IngressDoors::tunnel())]);
+        confirm_ingress_off(&machines, &tunnel, &fra1)
+            .expect("a Server with no public IP takes web traffic through its tunnel");
+
+        let other = web("fra-2", true, Some("203.0.113.2"), Up);
+        let machines = [web("fra-1", true, Some("203.0.113.1"), Down), other.clone()];
+        let closed = BTreeMap::from([(other.machine.id, IngressDoors(Default::default()))]);
+        let refused = confirm_ingress_off(&machines, &closed, &fra1)
+            .map_err(|error| error.report())
+            .unwrap_err();
         assert_eq!(
-            format!("{silent}. {}", silent.next()),
-            "Server machine-1 isn't answering through Ployz Cloud. Check that it is online, its \
-             Ployz daemon is running, and its outgoing https isn't filtered."
+            refused.code,
+            RpcErrorCode::ConfirmationRequired,
+            "a public IP with no open Door serves no web"
         );
-    }
 
-    #[tokio::test]
-    async fn a_cluster_whose_servers_all_fail_to_answer_comes_back_unanswered() {
-        let matches = crate::cli::command()
-            .try_get_matches_from(["ployz", "server", "forget", "web-1"])
-            .unwrap();
-        let matches = leaf_matches(&matches);
-        let unprovisioned = cloud_account::ServerAccess {
-            connections: Vec::new(),
-            unreachable: vec![ployz_core::MachineId::parse("b".repeat(32)).unwrap()],
-            refused: Vec::new(),
-            names: BTreeMap::new(),
-        };
-        assert!(answering(matches, unprovisioned).await.unwrap().is_none());
-
-        let closed = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
-        let held: cloud_account::ServerAccess = serde_json::from_value(json!({
-            "connections": [{ "machine_id": "a".repeat(32), "tcp": closed.to_string() }],
-            "unreachable": [],
-        }))
-        .unwrap();
-        assert!(answering(matches, held).await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn a_server_that_refused_cloud_is_not_one_that_did_not_answer() {
-        let matches = crate::cli::command()
-            .try_get_matches_from(["ployz", "server", "forget", "web-1"])
-            .unwrap();
-        let matches = leaf_matches(&matches);
-        let (refusing, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = |unreachable: &[&String]| -> cloud_account::ServerAccess {
-            serde_json::from_value(json!({
-                "connections": [],
-                "unreachable": unreachable,
-                "refused": [{ "machine_id": refusing, "message": "Cluster store is not available" }],
-                "names": { refusing.clone(): "web-1" },
-            }))
-            .unwrap()
-        };
-
-        let Err(error) = dial(matches, access(&[])).await else {
-            panic!("dialed a Server that refused");
-        };
-        let report = error.report();
+        let last = web("fra-1", true, None, Up);
+        let machines = [last.clone(), web("fra-2", false, None, Up)];
+        let tunnel = BTreeMap::from([(last.machine.id, IngressDoors::tunnel())]);
+        let refused = confirm_ingress_off(&machines, &tunnel, &fra1)
+            .map_err(|error| error.report())
+            .unwrap_err();
         assert_eq!(
-            report.message,
-            "Server web-1 couldn't give this command access: Cluster store is not available"
+            refused.message,
+            "fra-1 is the last Server with a door open (tunnel); turning it off takes every \
+             domain dark. No changes made."
         );
-        assert!(!servers_unanswered(&report), "{report:?}");
-        let Err(error) = answering(matches, access(&[])).await else {
-            panic!("a Server that refused is not unanswered");
-        };
-        assert!(!servers_unanswered(&error.report()));
-
-        let Err(error) = dial(matches, access(&[&gone])).await else {
-            panic!("dialed a Server that refused");
-        };
-        let report = error.report();
-        assert_eq!(
-            report.message,
-            format!(
-                "No Server could give this command access: web-1 said \"Cluster store is not available\"; {gone} isn't answering."
-            )
-        );
-        assert_eq!(report.details.get("unreachable"), Some(&json!([gone])));
-        assert!(!servers_unanswered(&report), "{report:?}");
-        assert!(Silent::of(&error).is_none(), "{report:?}");
     }
 }

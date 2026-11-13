@@ -184,6 +184,7 @@ async fn run_contract_case(case: &str) {
     let request = RequestMachineUpgradeRequest {
         attempt_id,
         release: MachineRelease::parse("1.2.3").unwrap(),
+        channel: None,
     };
     let guard = admission.try_installation().unwrap();
     if case.starts_with("cancelled-launch") {
@@ -191,7 +192,17 @@ async fn run_contract_case(case: &str) {
             let data = data.clone();
             let run = run.clone();
             let request = request.clone();
-            async move { super::request(request, super::Downgrade::Refused, data, run, guard).await }
+            async move {
+                super::request(
+                    request,
+                    super::Downgrade::Refused,
+                    super::ReleaseChoice::AnyRelease,
+                    data,
+                    run,
+                    guard,
+                )
+                .await
+            }
         });
         until_launcher(|| root.join("launch-started").exists())
             .await
@@ -234,6 +245,7 @@ async fn run_contract_case(case: &str) {
     let accepted = super::request(
         request.clone(),
         super::Downgrade::Refused,
+        super::ReleaseChoice::AnyRelease,
         data.clone(),
         run.clone(),
         guard,
@@ -255,6 +267,7 @@ async fn run_contract_case(case: &str) {
             let conflict = RequestMachineUpgradeRequest {
                 attempt_id,
                 release: MachineRelease::parse("1.2.4").unwrap(),
+                channel: None,
             };
             assert!(matches!(
                 replay(&conflict, &data, &run).await,
@@ -266,6 +279,7 @@ async fn run_contract_case(case: &str) {
                 super::request(
                     request,
                     super::Downgrade::Refused,
+                    super::ReleaseChoice::AnyRelease,
                     data.clone(),
                     run.clone(),
                     guard
@@ -278,11 +292,13 @@ async fn run_contract_case(case: &str) {
             let other = RequestMachineUpgradeRequest {
                 attempt_id: MachineUpgradeAttemptId::parse("b".repeat(32)).unwrap(),
                 release: MachineRelease::parse("1.2.3").unwrap(),
+                channel: None,
             };
             assert!(matches!(
                 super::request(
                     other,
                     super::Downgrade::Refused,
+                    super::ReleaseChoice::AnyRelease,
                     data.clone(),
                     run.clone(),
                     guard
@@ -441,7 +457,7 @@ async fn run_worker_case(root: &Path, case: &str) {
     let attempt_id = MachineUpgradeAttemptId::parse("a".repeat(32)).unwrap();
     let target = MachineVersion::parse("1.2.3").unwrap();
     write(
-        &paths.data_dir,
+        paths.layout.data_dir(),
         &StoredAttempt {
             requested: MachineRelease::Exact(target.clone()),
             attempt: MachineUpgradeAttempt {
@@ -452,11 +468,11 @@ async fn run_worker_case(root: &Path, case: &str) {
         },
     )
     .unwrap();
-    mutation::MutationGate::new(&paths.run_dir, &paths.data_dir)
+    mutation::MutationGate::new(paths.layout.run_dir(), paths.layout.data_dir())
         .mark_active(attempt_id.as_str())
         .unwrap();
-    fs::create_dir_all(&paths.run_dir).unwrap();
-    let api = UnixListener::bind(paths.run_dir.join("ployz.sock")).unwrap();
+    fs::create_dir_all(paths.layout.run_dir()).unwrap();
+    let api = UnixListener::bind(paths.layout.socket()).unwrap();
     tokio::spawn(
         tonic::transport::Server::builder()
             .add_service(FakeMachineApi(root.join("running-version")))
@@ -470,7 +486,7 @@ async fn run_worker_case(root: &Path, case: &str) {
     )
     .await;
 
-    let outcome = read(&paths.data_dir).unwrap().attempt.outcome;
+    let outcome = read(paths.layout.data_dir()).unwrap().attempt.outcome;
     match (&result, &outcome) {
         (Ok(()), MachineUpgradeOutcome::Succeeded { .. }) => {}
         (Err(Error::Upgrade(returned)), MachineUpgradeOutcome::Failed { error, .. }) => {
@@ -590,7 +606,7 @@ async fn run_worker_case(root: &Path, case: &str) {
         other => panic!("unknown upgrade worker case {other}"),
     }
     assert!(
-        !mutation::MutationGate::new(&paths.run_dir, &paths.data_dir)
+        !mutation::MutationGate::new(paths.layout.run_dir(), paths.layout.data_dir())
             .active()
             .unwrap()
     );
@@ -655,6 +671,7 @@ impl tonic::server::UnaryService<OpaquePayload> for Contract {
                 daemon_version: self.0.clone(),
                 capabilities: BTreeSet::new(),
                 sealing: None,
+                attest: None,
             })
             .encode()
             .unwrap(),
@@ -685,4 +702,147 @@ fn only_a_direct_connection_downgrades() {
         assert!(policy.admit(Some(&installed), target).is_ok());
     }
     assert!(super::Downgrade::Refused.admit(None, &older).is_ok());
+}
+
+#[tokio::test]
+async fn an_operator_names_only_a_release_a_channel_resolves_to() {
+    let version = |rest: &str| {
+        MachineVersion::parse(format!("{}.{rest}", env!("CARGO_PKG_VERSION_MAJOR"))).unwrap()
+    };
+    let root = tempfile::tempdir().unwrap();
+    let line = root
+        .path()
+        .join(concat!("v", env!("CARGO_PKG_VERSION_MAJOR")));
+    fs::create_dir_all(&line).unwrap();
+    fs::write(line.join("stable"), format!("v{}\n", version("3.16"))).unwrap();
+    fs::write(line.join("beta"), format!("v{}\n", version("3.17-beta.2"))).unwrap();
+    let source = ReleaseSource::Local(root.path().to_owned());
+    let installed = version("3.15");
+    let admit = async |choice: ReleaseChoice, requested: &MachineRelease, target: &str| {
+        choice
+            .admit(requested, &version(target), &source, Some(&installed))
+            .await
+    };
+    let exact = |rest: &str| MachineRelease::Exact(version(rest));
+
+    for (requested, target) in [
+        (MachineRelease::Stable, "3.16"),
+        (MachineRelease::Beta, "3.17-beta.2"),
+        (exact("3.16"), "3.16"),
+        (exact("3.17-beta.2"), "3.17-beta.2"),
+    ] {
+        assert!(
+            admit(ReleaseChoice::ChannelResolved, &requested, target)
+                .await
+                .is_ok(),
+            "an Operator was refused {requested}"
+        );
+    }
+    for off_channel in ["3.17-beta.1", "3.15", "3.14"] {
+        let refused = admit(
+            ReleaseChoice::ChannelResolved,
+            &exact(off_channel),
+            off_channel,
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(Error::OffChannel { target }) if *target == version(off_channel)),
+            "an Operator chose {off_channel}: {refused:?}"
+        );
+        assert!(
+            admit(ReleaseChoice::AnyRelease, &exact(off_channel), off_channel)
+                .await
+                .is_ok()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_channel_that_fails_to_resolve_does_not_hide_the_other() {
+    let version = |rest: &str| {
+        MachineVersion::parse(format!("{}.{rest}", env!("CARGO_PKG_VERSION_MAJOR"))).unwrap()
+    };
+    let root = tempfile::tempdir().unwrap();
+    let line = root
+        .path()
+        .join(concat!("v", env!("CARGO_PKG_VERSION_MAJOR")));
+    fs::create_dir_all(&line).unwrap();
+    fs::write(line.join("beta"), format!("v{}\n", version("3.17-beta.2"))).unwrap();
+    let source = ReleaseSource::Local(root.path().to_owned());
+    let installed = version("3.15");
+    let admit = async |target: &str| {
+        ReleaseChoice::ChannelResolved
+            .admit(
+                &MachineRelease::Exact(version(target)),
+                &version(target),
+                &source,
+                Some(&installed),
+            )
+            .await
+    };
+
+    assert!(
+        admit("3.17-beta.2").await.is_ok(),
+        "beta's release was refused while stable could not resolve"
+    );
+    let refused = admit("3.14").await;
+    assert!(
+        matches!(&refused, Err(Error::OffChannel { .. })),
+        "an unresolvable channel did not refuse by capability: {refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_approved_channel_admits_only_itself_and_what_it_resolves_to() {
+    let version = |rest: &str| {
+        MachineVersion::parse(format!("{}.{rest}", env!("CARGO_PKG_VERSION_MAJOR"))).unwrap()
+    };
+    let root = tempfile::tempdir().unwrap();
+    let line = root
+        .path()
+        .join(concat!("v", env!("CARGO_PKG_VERSION_MAJOR")));
+    fs::create_dir_all(&line).unwrap();
+    fs::write(line.join("stable"), format!("v{}\n", version("3.16"))).unwrap();
+    fs::write(line.join("beta"), format!("v{}\n", version("3.17-beta.2"))).unwrap();
+    let source = ReleaseSource::Local(root.path().to_owned());
+    let installed = version("3.15");
+    let stable = ReleaseChoice::Signed(ployz_core::ReleaseChannel::Stable);
+    let admit = async |requested: &MachineRelease, target: &str| {
+        stable
+            .admit(requested, &version(target), &source, Some(&installed))
+            .await
+    };
+
+    for (requested, target) in [
+        (MachineRelease::Stable, "3.16"),
+        (MachineRelease::Exact(version("3.16")), "3.16"),
+    ] {
+        assert!(
+            admit(&requested, target).await.is_ok(),
+            "the approved channel refused {requested}"
+        );
+    }
+    for (requested, target) in [
+        (MachineRelease::Beta, "3.17-beta.2"),
+        (MachineRelease::Exact(version("3.17-beta.2")), "3.17-beta.2"),
+        (MachineRelease::Exact(version("3.15")), "3.15"),
+    ] {
+        let refused = admit(&requested, target).await;
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::OffApprovedChannel {
+                    approved: ployz_core::ReleaseChannel::Stable,
+                    requested: named,
+                }) if *named == requested
+            ),
+            "a Stable-approved Machine took {requested}: {refused:?}"
+        );
+        assert!(
+            refused
+                .unwrap_err()
+                .to_string()
+                .starts_with(ployz_core::UPGRADE_CHANNEL_CAPABILITY)
+        );
+    }
 }

@@ -1,17 +1,18 @@
 //! Deployment reads: the authored plan of a Deploy, one page of an Environment's
 //! Deployments, and one Deployment with its Node Outcomes.
 
-use ployz_core::config::canonicalize_environment_intent;
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::config::{SavedEnvironmentIntent, canonicalize_environment_intent};
+use ployz_core::{RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::deployment::loss::{VolumeLoss, removed};
 use crate::deployment::{self, DeploymentSummary, DeploymentView};
 use crate::error;
-use crate::id::DeploymentId;
-use crate::removal::{self, VolumeLoss};
+use crate::followup::{FollowUp, Place};
+use crate::id::{DeploymentId, Hostname};
 use crate::review::{self, NodeChange};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -25,6 +26,17 @@ pub struct PlanQuery {
     /// Plan only these Services; none plans every Service.
     #[serde(default)]
     pub services: Vec<ServiceName>,
+    /// Also lower the plan as a runner would, for a Device to approve the spec each
+    /// Service runs. Needs write access to the Environment.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub target: bool,
+    /// Plan a redeploy of this ended Deployment of the Environment instead: what it
+    /// froze, lowered as its redeploy's runner will lower it, for a Device to approve.
+    /// It names no Services and lists no changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deployment: Option<DeploymentId>,
 }
 
 /// The authored review of a Deploy. What only the Servers can decide is `unresolved`.
@@ -39,6 +51,12 @@ pub struct PlanView {
     /// What the Deployment decides from the Servers: which containers start, stop or
     /// move, and where.
     pub unresolved: Vec<String>,
+    /// The spec of each Service this Deploy ships, as its runner would ask a Server to
+    /// run it, when the query asked for `target`. A narrowed Deploy lists the Services
+    /// it names and those they reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target: Option<Vec<RequestedServiceSpec>>,
 }
 
 /// Where an Environment runs on the Servers.
@@ -63,6 +81,30 @@ pub struct NamespaceView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub authored: Option<std::collections::BTreeSet<ServiceName>>,
+    /// Every hostname the Namespace serves as Applied State has it, by what produced
+    /// it. A name the Servers publish that isn't here, no Deployment Cloud knows of put
+    /// there. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub routes: Option<Vec<AppliedRoute>>,
+}
+
+/// A hostname Applied State serves in the Namespace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct AppliedRoute {
+    pub hostname: Hostname,
+    /// The runtime name of the Service serving it, as its containers carry it.
+    pub service: ServiceName,
+    pub kind: RouteKind,
+}
+
+/// What produced a route: a generated domain, expanded under the Cluster Domain its
+/// Deployment used, or a custom domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteKind {
+    Generated,
+    Custom,
 }
 
 /// Every Namespace the Organization's Environments own on the Servers.
@@ -161,11 +203,14 @@ pub(crate) fn numbered(
         return Err(match query.number {
             Some(number) => error::not_found(
                 format!("{project}/{name} has no Deployment #{number}"),
-                json!({ "next": format!("ployz deployment ls --project {project} --env {name}") }),
+                FollowUp::DeploymentList {
+                    place: Place::of(&environment.summary),
+                }
+                .details(),
             ),
             None => error::not_found(
                 format!("{project}/{name} has no Deployment yet"),
-                json!({ "next": "ployz deploy" }),
+                FollowUp::Deploy { no_prune: false }.details(),
             ),
         });
     };
@@ -180,6 +225,9 @@ pub(crate) fn plan(
     query: &PlanQuery,
 ) -> Result<PlanView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
+    if let Some(id) = &query.deployment {
+        return redeploy_plan(tx, who, trusted, (environment, id), query);
+    }
     let mut review = review::review(tx, &environment)?;
     let rows = review::service_rows(&mut review.view.changes);
     crate::domain::name_generated(tx, &environment, &review.head, trusted, rows)?;
@@ -192,7 +240,7 @@ pub(crate) fn plan(
         .as_ref()
         .is_none_or(|saved| saved.intent != target);
     let removed: Vec<VolumeLoss> = if query.services.is_empty() || saves {
-        removal::removed(
+        removed(
             &review::approval::deployed(&review.head),
             &target,
             &namespace,
@@ -219,6 +267,16 @@ pub(crate) fn plan(
         namespace.clone(),
         None,
     )?;
+    let lowered = match query.target {
+        true => Some(lowered_target(
+            tx,
+            who,
+            trusted,
+            (&environment, &target),
+            query,
+        )?),
+        false => None,
+    };
     let changes = review
         .view
         .changes
@@ -234,6 +292,145 @@ pub(crate) fn plan(
         namespace,
         changes,
         unresolved,
+        target: lowered,
+    })
+}
+
+/// A redeploy of Deployment `id` of `environment`, which ships its source's frozen
+/// revision, Namespace and Cluster Domain whatever was saved since. With `target`, the
+/// specs its runner will lower at claim, by the same lowering, for a Device to approve
+/// before it admits the redeploy.
+fn redeploy_plan(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, id): (scope::Environment, &DeploymentId),
+    query: &PlanQuery,
+) -> Result<PlanView, RpcError> {
+    if !query.services.is_empty() {
+        return Err(error::invalid(
+            "A redeploy ships what its Deployment shipped: name no Services",
+            json!({ "deployment": id, "services": query.services }),
+        ));
+    }
+    let stored = deployment::owned(tx, who, id)?;
+    if stored.summary.environment_id != environment.summary.id {
+        return Err(error::not_found(
+            format!("{} has no such Deployment", environment.summary.name),
+            json!({ "deployment": id }),
+        ));
+    }
+    let target = match query.target {
+        true => {
+            trusted.writes(&environment.summary.name)?;
+            let saved = deployment::held_revision(tx, &stored)?;
+            let lowered = deployment::lowered(tx, &stored, &saved)?;
+            let mut target = lowered.intent.target;
+            // A narrowed Deployment creates only what it ships, as a narrowed Deploy does.
+            if !stored.summary.services.is_empty() {
+                target.retain(|spec| lowered.shipped.contains(&spec.name));
+            }
+            Some(target)
+        }
+        false => None,
+    };
+    let version = review::review(tx, &environment)?.view.version;
+    Ok(PlanView {
+        namespace: stored.namespace().clone(),
+        environment: environment.summary,
+        version,
+        changes: Vec::new(),
+        unresolved: vec!["operations".to_owned()],
+        target,
+    })
+}
+
+/// `target` lowered as a claim of a Deploy of it would: the specs of the Services it
+/// ships, for a Device to approve before it admits the Deploy.
+fn lowered_target(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
+    query: &PlanQuery,
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
+    trusted.writes(&environment.summary.name)?;
+    saved_target(tx, who, trusted, (environment, target), &query.services)
+}
+
+/// `target` lowered as a claim of a Deploy of it would, narrowed to `services` unless
+/// that is empty. An automatic deploy rule approves these specs, less their images.
+pub(crate) fn saved_target(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
+    services: &[ServiceName],
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
+    saved_target_setup(tx, who, trusted, (environment, target), services, true)
+}
+
+/// Every Service of `target` lowered as [`saved_target`] lowers it, with a Branch's
+/// Setup Commands only when `setup`: a preview rule approves both forms.
+pub(crate) fn saved_target_with(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
+    setup: bool,
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
+    saved_target_setup(tx, who, trusted, (environment, target), &[], setup)
+}
+
+fn saved_target_setup(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
+    services: &[ServiceName],
+    setup: bool,
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
+    let id = &environment.summary.id;
+    let mut saved = target.clone();
+    crate::volume::size::held(tx, id, &mut saved.volumes)?;
+    let mut branch = crate::branch::lowering(tx, id, &saved)?;
+    if !setup {
+        branch.setup.clear();
+    }
+    let deployed = deployment::deployed_volumes(tx, id, &saved)?;
+    let removals = deployment::ServiceRemovals::default();
+    let ships = match services.is_empty() {
+        true => deployment::Ships::All {
+            removals,
+            prune: false,
+        },
+        false => deployment::Ships::Named {
+            services: services.to_vec(),
+            removals,
+        },
+    };
+    let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let cluster_domain = trusted
+        .domains
+        .cluster_domain
+        .as_ref()
+        .map(|cluster| &cluster.name);
+    deployment::lower(
+        id,
+        &saved,
+        &deployed,
+        &ships,
+        (namespace, cluster_domain),
+        &branch,
+        &who.organization,
+    )
+    .map(|lowered| {
+        let mut target = lowered.intent.target;
+        // A narrowed Deploy creates only what it ships; the rest ride along unchanged.
+        if !services.is_empty() {
+            target.retain(|spec| lowered.shipped.contains(&spec.name));
+        }
+        target
     })
 }
 
@@ -266,8 +463,10 @@ pub(crate) fn namespace(
 ) -> Result<NamespaceView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let head = deployment::head(tx, &environment)?;
+    let clusters = deployment::cluster_domains(tx, &environment.summary.id, &head)?;
+    let applied = &head.applied;
     // Containers run as Applied State has them, under the name the Service has now.
-    let applied = deployment::applied_state(tx, &environment.summary.id, &environment.working)?;
     let services = applied
         .services
         .iter()
@@ -288,11 +487,35 @@ pub(crate) fn namespace(
         .iter()
         .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
         .collect::<std::collections::BTreeSet<_>>();
+    let mut routes = Vec::new();
+    for service in &applied.services {
+        let mut route = |hostname: &str, kind| {
+            if let Ok(hostname) = Hostname::parse(hostname) {
+                routes.push(AppliedRoute {
+                    hostname,
+                    service: service.config.private_dns.clone(),
+                    kind,
+                });
+            }
+        };
+        for held in &service.config.routes {
+            route(&held.hostname, RouteKind::Custom);
+        }
+        for managed in &service.config.managed_hostnames {
+            if let Some(cluster) = clusters.get(&(service.id.clone(), managed.prefix.clone())) {
+                route(
+                    &format!("{}.{cluster}", managed.prefix),
+                    RouteKind::Generated,
+                );
+            }
+        }
+    }
     Ok(NamespaceView {
         environment: environment.summary,
         namespace,
         services,
         authored: Some(authored),
+        routes: Some(routes),
     })
 }
 

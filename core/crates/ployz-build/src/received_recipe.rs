@@ -77,7 +77,7 @@ pub fn validate_capture(
         .copied()
         .chain(definition.image_contexts.keys().map(String::as_str))
         .collect();
-    let bytes = fs::read(root.join("compose.yaml")).map_err(|_| "Build recipe is missing")?;
+    let bytes = fs::read(crate::capture::compose(root)).map_err(|_| "Build recipe is missing")?;
     let document: Value =
         serde_norway::from_slice(&bytes).map_err(|_| "invalid captured Build recipe")?;
     no_interpolation(&document)?;
@@ -141,7 +141,7 @@ pub fn validate_capture(
                 }
                 default_ssh |= id == "default";
                 for path in paths.split(',') {
-                    contained(root, Path::new(path), "private", true)?;
+                    contained(root, Path::new(path), crate::capture::PRIVATE, true)?;
                 }
             }
         }
@@ -161,7 +161,12 @@ pub fn validate_capture(
                     return Err("remote Dockerfile path escapes its context".into());
                 }
             } else {
-                contained(root, &Path::new(context).join(recipe), "source", true)?;
+                contained(
+                    root,
+                    &Path::new(context).join(recipe),
+                    crate::capture::SOURCE,
+                    true,
+                )?;
             }
         }
         if let Some(contexts) = build.get("additional_contexts") {
@@ -249,7 +254,7 @@ pub fn validate_capture(
         }
     }
     let railpack = railpack(root, definition, services, sealed)?;
-    let config_path = root.join("private/docker/config.json");
+    let config_path = crate::capture::docker_config(root);
     let mut config: serde_json::Value = serde_json::from_slice(
         &fs::read(&config_path).map_err(|_| "Build registry configuration is missing")?,
     )
@@ -279,7 +284,7 @@ fn railpack(
     services: &Mapping,
     sealed: SealedFiles,
 ) -> Result<Vec<crate::Railpack>, InputError> {
-    let bytes = match fs::read(root.join("private/railpack.json")) {
+    let bytes = match fs::read(crate::capture::railpack_plan(root)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => return Err("cannot read captured Railpack recipes".into()),
@@ -296,7 +301,7 @@ fn railpack(
         {
             return Err("Railpack recipe does not identify one admitted target".into());
         }
-        contained(root, &recipe.context, "source", false)?;
+        contained(root, &recipe.context, crate::capture::SOURCE, false)?;
         if !root.join(&recipe.context).is_dir() {
             return Err("Railpack context must be a captured directory".into());
         }
@@ -339,7 +344,7 @@ fn secret_file(root: &Path, path: &Path, sealed: SealedFiles) -> Result<(), Inpu
             .filter(|name| crate::valid_name(name))
             .map(|_| ())
             .ok_or_else(|| "Build secret is not a sealed value's file".into()),
-        _ => contained(root, path, "private", true),
+        _ => contained(root, path, crate::capture::PRIVATE, true),
     }
 }
 
@@ -394,7 +399,7 @@ fn context_path(
         }
         return Ok(());
     }
-    contained(root, Path::new(value), "source", false)?;
+    contained(root, Path::new(value), crate::capture::SOURCE, false)?;
     if !root.join(value).is_dir() {
         return Err("Build source context is not a directory".into());
     }

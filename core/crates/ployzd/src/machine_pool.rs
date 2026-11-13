@@ -2,12 +2,6 @@
 
 use std::num::NonZeroU64;
 
-/// The file a root-backed Machine Pool lives in, on the host root filesystem.
-pub const BACKING_FILE: &str = "/var/lib/ployz-machine-pool";
-
-/// Survives a missing device so recovery cannot replace its Pool with a root-backed Pool.
-pub const DEVICE_POOL_MARKER: &str = "/var/lib/ployz-machine-pool.device";
-
 /// Ownership written only after the device Pool has been verified.
 pub const CONFIRMED_DEVICE_POOL_MARKER: &str = "ployz-device\nconfirmed\n";
 
@@ -16,6 +10,14 @@ pub const ROOT_BACKED_POOL_NAME: &str = "ployz";
 
 /// The Pool created on a disk explicitly selected during installation.
 pub const DEVICE_BACKED_POOL_NAME: &str = "ployz-device";
+
+/// The `zpool` arguments whose output [`one_usable`] reads.
+pub const ZPOOL_LIST: [&str; 4] = [
+    "list",
+    "-Hp",
+    "-o",
+    "name,size,allocated,free,health,readonly",
+];
 
 /// A writable imported Machine Pool with usable health.
 #[derive(Debug, Eq, PartialEq)]

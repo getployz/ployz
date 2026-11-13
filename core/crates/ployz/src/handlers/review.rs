@@ -1,13 +1,14 @@
 //! `ployz diff` and `discard`: review staged changes in the Config Store, or undo
 //! them.
 
+use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::config::{EnvironmentNodeType, ReviewLifecycleKind};
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use ployz_store::{DiffQuery, DiffView, Discard, Discarded, SettingPath};
 use serde::Serialize;
 
-use super::store::{Next, environment, next, scoped, store, with_next, with_refresh_hint};
+use super::store::{environment, next, scoped, store, with_next, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::ui::Table;
@@ -100,8 +101,9 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         ),
         view: &view,
     };
-    crate::ui::finish(&Next::new(&shown, hint.clone()), || {
-        let where_ = format!("{}/{}", view.environment.project, view.environment.name);
+    let followed = Next::new(&shown, hint);
+    crate::ui::finish(&followed, || {
+        let where_ = view.environment.to_string();
         if changes.is_empty() {
             crate::ui::note(format_args!("No staged changes in {where_}."));
         }
@@ -182,9 +184,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 "Saved #{saved} holds changes above that its deploy never ran; a new save or deploy leaves them behind."
             ));
         }
-        if let Some(hint) = &hint {
-            crate::ui::hint(&crate::ui::Hint::Next(hint.clone()));
-        }
+        followed.say();
     })
 }
 
@@ -306,7 +306,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
             )),
         }
         comes_back(&backs, saved, discarded.saved_ran_nothing);
-        crate::ui::hint(&crate::ui::Hint::Inspect(hint));
+        crate::ui::hint(&Hint::Inspect(hint));
     })
 }
 

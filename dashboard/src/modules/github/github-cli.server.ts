@@ -13,7 +13,7 @@ import {
   unlinkGithubInstallation,
 } from "#/modules/github/github.repository";
 import { basicGlob } from "#/modules/github/github.server";
-import { resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
+import { repositoryOwnerId, resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
@@ -73,9 +73,13 @@ const readableBy = Effect.fn("GithubCli.readableBy")(function* (caller: Caller, 
 /** `ployz github ls OWNER/REPO`: a repository the Organization may read, and its branches. */
 export const githubBranches = Effect.fn("GithubCli.branches")(function* (caller: Caller, repository: string) {
   const readable = yield* readableBy(caller, repository);
-  const branches = yield* listGithubRepositoryBranches(accessFor(readable.organizationId, readable.installationId), readable.fullName);
+  const access = accessFor(readable.organizationId, readable.installationId);
+  const branches = yield* listGithubRepositoryBranches(access, readable.fullName);
   return {
     repository: readable.fullName,
+    // The IDs an automatic deploy rule names, which renames and transfers keep.
+    repository_id: readable.repositoryId,
+    owner_id: yield* repositoryOwnerId(readable),
     access: readable.installationId === null ? "public" : "connected",
     default_branch: readable.defaultBranch,
     branches: branches.map((branch) => branch.name),

@@ -12,35 +12,18 @@
 
 use std::collections::BTreeMap;
 
-use ployz_core::config::SavedEnvironmentIntent;
-use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, Namespace, RpcError};
+use ployz_core::{DockerVolumeName, MachineId, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::deployment::loss::{RemovedVolume, VolumeLoss, covered, held};
+use crate::digest::short_digest;
 use crate::error;
-use crate::id::{EnvironmentId, VolumeId, VolumeName};
+use crate::id::{EnvironmentId, VolumeName};
 use crate::storage::Tx;
-use crate::trusted::{ObservationStage, VolumeObservation};
-
-/// A deployed Volume a Deploy removes, with the Docker Volume that holds its data.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct RemovedVolume {
-    pub id: VolumeId,
-    pub name: VolumeName,
-    /// The Docker Volume each Server holds its data in.
-    pub docker_volume: DockerVolumeName,
-}
-
-/// A removed Volume and the Docker Volumes found holding its data.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct VolumeLoss {
-    #[serde(flatten)]
-    pub volume: RemovedVolume,
-    /// Each Docker Volume a Deploy deletes, on the Server holding it.
-    pub deletes: Vec<DockerVolumeId>,
-}
+use crate::trusted::VolumeObservation;
 
 /// List the Docker Volumes a Git push may delete, across the Organization.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -89,56 +72,6 @@ pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, R
     Ok(ConsentedView { volumes })
 }
 
-/// The Volumes `held` holds that `target` drops: what a full Deploy of `target`
-/// removes from the Servers.
-pub(crate) fn removed(
-    held: &SavedEnvironmentIntent,
-    target: &SavedEnvironmentIntent,
-    namespace: &Namespace,
-) -> Result<Vec<RemovedVolume>, RpcError> {
-    held.volumes
-        .iter()
-        .filter(|old| drops(target, &old.resource_id))
-        .map(|volume| {
-            Ok(RemovedVolume {
-                id: VolumeId::parse(volume.resource_id.as_str())
-                    .map_err(|_| error::corrupt("Volume ID"))?,
-                name: VolumeName::parse(volume.name.as_str())
-                    .map_err(|_| error::corrupt("Volume name"))?,
-                docker_volume: docker_volume(namespace, &volume.resource_id)?,
-            })
-        })
-        .collect()
-}
-
-fn drops(target: &SavedEnvironmentIntent, volume: &str) -> bool {
-    target.volumes.iter().all(|kept| kept.resource_id != volume)
-}
-
-/// The losses of `consent` whose Volumes `target` still removes, so consent never
-/// outlives a revision that restores its Volume.
-pub(crate) fn still_removed(
-    consent: &[VolumeLoss],
-    target: &SavedEnvironmentIntent,
-) -> Vec<VolumeLoss> {
-    consent
-        .iter()
-        .filter(|loss| drops(target, loss.volume.id.as_str()))
-        .cloned()
-        .collect()
-}
-
-/// The Docker Volume a Volume's data lives in: lowering names it `vol-{id}`, and
-/// the Servers scope that to the Namespace.
-///
-/// # Errors
-/// Returns `internal` when `volume` can't name a Docker Volume.
-pub fn docker_volume(namespace: &Namespace, volume: &str) -> Result<DockerVolumeName, RpcError> {
-    let logical = DockerVolumeName::parse(format!("vol-{volume}"))
-        .map_err(|_| error::corrupt("Volume ID"))?;
-    Ok(namespace.volume_name(&logical))
-}
-
 /// Review `removed` against what the Servers hold, for the Deploy or Publish of
 /// review `base` (its version). Refuses with `unavailable` when the observation is
 /// missing, didn't look for one of them, or a Server didn't answer; with
@@ -161,7 +94,7 @@ pub(crate) fn review(
     if let Some(unknown) = accepted.iter().find(|name| !names.contains(name)) {
         return Err(error::invalid(
             format!("This deletes no Volume named {unknown}"),
-            json!({ "valid_children": names }),
+            error::valid(&names),
         ));
     }
     let (losses, unanswered) = held(removed, observed)?;
@@ -198,40 +131,6 @@ pub(crate) fn review(
     ))
 }
 
-/// Each of `removed` with the Docker Volumes the Servers hold of it, and the
-/// Servers that didn't answer. Refuses `unavailable` when nobody looked for one, or
-/// the look couldn't ask the Servers.
-pub(crate) fn held(
-    removed: Vec<RemovedVolume>,
-    observed: Option<&VolumeObservation>,
-) -> Result<(Vec<VolumeLoss>, Vec<MachineId>), RpcError> {
-    if removed.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let Some(observed) = observed.filter(|observed| {
-        observed.failure.is_none()
-            && removed
-                .iter()
-                .all(|volume| observed.sought.contains(&volume.docker_volume))
-    }) else {
-        return Err(unchecked(&removed, observed));
-    };
-    let losses = removed
-        .into_iter()
-        .map(|volume| {
-            let mut deletes: Vec<DockerVolumeId> = observed
-                .held
-                .iter()
-                .filter(|held| held.name == volume.docker_volume)
-                .cloned()
-                .collect();
-            deletes.sort_by_key(ToString::to_string);
-            VolumeLoss { deletes, volume }
-        })
-        .collect();
-    Ok((losses, observed.unanswered.clone()))
-}
-
 /// The refusal for removing `volumes` while the Servers `unanswered` didn't answer
 /// whether they hold their data, each named by `servers`, else by its ID.
 fn silent(
@@ -265,78 +164,6 @@ fn silent(
     )
 }
 
-/// The refusal for `removed` when the Servers weren't checked for their data. When
-/// the check ran it names the Servers it couldn't check, and carries why as the cause.
-fn unchecked(removed: &[RemovedVolume], observed: Option<&VolumeObservation>) -> RpcError {
-    let volumes: Vec<&VolumeName> = removed.iter().map(|volume| &volume.name).collect();
-    let Some(failure) = observed.and_then(|observed| observed.failure.as_ref()) else {
-        return error::unobserved(
-            "This removes deployed Volumes, and the Servers weren't checked for their data, \
-             so it refuses. Try again once the Servers can be reached",
-            json!({ "volumes": volumes }),
-        );
-    };
-    let servers = &failure.servers;
-    let endpoint = failure.endpoint.as_ref();
-    let mut refused = match failure.stage {
-        ObservationStage::Unreachable => {
-            let (who, them) = match (servers.as_slice(), endpoint) {
-                ([], Some(endpoint)) => (endpoint.clone(), "it"),
-                ([], None) => ("the Servers".to_owned(), "they"),
-                ([server], _) => (format!("Server {server}"), "it"),
-                (servers, _) => (format!("Servers {}", servers.join(", ")), "they"),
-            };
-            error::unobserved(
-                format!(
-                    "This removes deployed Volumes, and Ployz couldn't reach {who} to check \
-                     for their data, so it refuses. Try again once {them} can be reached"
-                ),
-                json!({ "volumes": volumes, "unanswered": servers }),
-            )
-        }
-        ObservationStage::Answered { .. } => {
-            let server = servers.first();
-            let who = match (server, endpoint) {
-                (Some(server), _) => format!("Server {server}"),
-                (None, Some(endpoint)) => endpoint.clone(),
-                (None, None) => "the Server Ployz reached".to_owned(),
-            };
-            let details = match server {
-                Some(server) => json!({ "volumes": volumes, "server": server }),
-                None => json!({ "volumes": volumes }),
-            };
-            error::unobserved(
-                format!(
-                    "This removes deployed Volumes, and {who} returned an error when Ployz \
-                     checked for their data, so it refuses. Fix the error {who} returned, then \
-                     try again"
-                ),
-                details,
-            )
-        }
-    };
-    if let (Some(endpoint), Some(details)) = (endpoint, refused.details.as_object_mut()) {
-        details.insert("endpoint".to_owned(), json!(endpoint));
-    }
-    refused.cause = std::iter::once(failure.reason.clone())
-        .chain(failure.cause.iter().cloned())
-        .collect();
-    refused
-}
-
-/// Whether `consent` accepted deleting `loss`: the same Volume, and no Docker
-/// Volume beyond those seen when it was accepted. A Server that has since started
-/// holding its data is new evidence, so it asks again.
-pub(crate) fn covered(loss: &VolumeLoss, consent: &[VolumeLoss]) -> bool {
-    consent.iter().any(|accepted| {
-        accepted.volume.id == loss.volume.id
-            && loss
-                .deletes
-                .iter()
-                .all(|delete| accepted.deletes.contains(delete))
-    })
-}
-
 /// What a confirmation to delete `lost` binds: who, where, and each Docker Volume
 /// on each Server.
 pub(crate) fn digest(who: &Actor, environment: &EnvironmentId, lost: &[&VolumeLoss]) -> String {
@@ -346,12 +173,6 @@ pub(crate) fn digest(who: &Actor, environment: &EnvironmentId, lost: &[&VolumeLo
         "volumes": lost,
     });
     short_digest(&bound.to_string())
-}
-
-/// The first 8 bytes of `text`'s SHA-256, in hex: enough to tell reviews apart.
-pub(crate) fn short_digest(text: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
-    hex::encode(digest.as_ref().get(..8).unwrap_or_default())
 }
 
 #[cfg(test)]

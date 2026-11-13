@@ -83,6 +83,10 @@ because Ployz restarted there, it can't tell exactly when the service started. T
 gives an estimate and says why: `web was stopped about 43s (its start was retried)`. While the old replica is stopped, `ployz status` names it as not serving, with the
 code it exited with. The row goes once the replica on `web-2` runs.
 
+If `web-1` still has the old replica's container but holds no Ployz spec under its id, Ployz
+doesn't remove it. The move still finishes, and its last line ends with a sentence naming each
+container that stays on its server, like `web was stopped 26s; <container id> stays on web-1, not removed.`
+
 If `web` has one replica, its domain answers
 [`503 · NOT_RUNNING`](../troubleshooting/app-not-reachable.md#this-app-isnt-running) from about when
 the old replica stops until the replica on `web-2` serves. Clients can retry at once rather than
@@ -110,6 +114,89 @@ Adding a mirror and syncing don't ask.
 
 If a move stops partway or a command is refused, see
 [Troubleshooting volumes](../troubleshooting/volumes.md).
+
+## Servers that enforce device approval
+
+On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a move runs only with your approval. `ployz volume move` from an approved device shows what
+it will sign and asks before it signs:
+
+```
+Approved: move data from web-1 to web-2. web stops on web-1 for the last copy, then starts on web-2.
+Approved web: registry.example.com/web@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  variables DATABASE_HOST=db.internal
+  pull_policy "never"
+Approve the move of data? [y/N]
+```
+
+Below the first line is `web` as it starts on `web-2`, with each setting, as a
+[deploy's approval](../deploy/deployments.md) lists them. Ployz Cloud relays what `web` runs on
+`web-1`, so read these lines before you answer: a setting you didn't make shows here even if
+Cloud put it there. Answer no and nothing is signed or moved.
+
+A script has no terminal to ask in, so the move is refused before it signs and tells you to add
+`--yes`. With `--yes`, or `PLOYZ_AUTO_CONFIRM=1`, it prints the same lines and signs without
+asking. Use `--yes` only where you trust what Ployz Cloud relays.
+
+One approval covers the whole move, its retries, and the release that undoes or finishes it. The
+servers refuse anything else: `web-1` sends the volume only to `web-2`, and `web-2` starts only
+`web` as it runs on `web-1` now.
+
+The move must start within 15 minutes of the approval. If it hasn't, both servers refuse it,
+`web` keeps running on `web-1`, and you run the move again. A move that started finishes, however
+long it takes.
+
+Once `web` stopped on `web-1` and `web-2` holds the last copy, `web-1` decides where the move
+ends, once. It hands the volume to `web-2` and signs a receipt, and then never writes the volume
+again under that move. `web-2` becomes the writer only with that receipt. A release asks `web-1`
+first: if it handed the volume off, the release finishes the move on `web-2`, and if not, `web`
+starts on `web-1` again. What Ployz Cloud recorded of the move doesn't decide it.
+
+- If `web-1` goes down after the handoff, the move still finishes on `web-2`.
+- If `web-2` goes down after the handoff, the volume has no writer until `web-2` comes back.
+  `web-1` refuses to take it back, and the release names the restore that does:
+  `web-2 did not answer for 15m; data still finishes on web-2; ployz volume release data tries again. Restore from web-1's copy: ployz volume restore data --from web-1`
+- Both servers need a Ployz that signs handoffs. If `web-2` has it and `web-1` doesn't, `web-2`
+  refuses to start `web`, and the move goes back to `web-1`. Upgrade `web-1`, then move again.
+
+`web` must run an image pinned by digest. If it doesn't, the CLI refuses before anything stops:
+
+```
+web runs registry.example.com/web:2, which isn't pinned by digest, so this device can't approve starting it on another Server. Deploy it again, then move the Volume.
+```
+
+With enforcement on, Ployz Cloud can't remove `web`'s stopped container on `web-1`. It stays
+there, stopped, and the move's last line names it, like
+`web was stopped 26s; <container id> stays on web-1, which enforces device approval.`
+
+### Approve from Ployz Cloud
+
+With a [passkey your servers approved](../servers/manage-servers.md#add-a-passkey), Ployz Cloud
+runs volume changes on these servers too: **Make primary**, **Use mirror**, adding or removing a
+mirror, deleting an old copy, restoring a point into a new volume, and **Grow**. When you deploy
+or grow, your browser lists what each change approves, line by line as `ployz` prints it, and
+asks for your passkey once per change. A restore's lines name the time after which writes are
+lost. Cancel and nothing changes.
+
+Every server the change names must run a Ployz that takes passkey approvals, and must answer.
+If one doesn't, Ployz Cloud names it and the command to run on an approved device instead.
+
+The volume's **Copies** tab shows which servers took each step, like `web-2 took write`. An
+approval lasts 15 minutes. Once it runs out, the run says `Approval expired. Nothing new can
+start.`, or `Finishing what started.` when a server already took a step. Approve the change again
+to start it.
+
+When an agent, or `ployz` on a computer without an approved device key, asks for a move, mirror,
+restore, removal or resize, Ployz Cloud shows it as an [Approval card](../account/agent-sidebar.md).
+Approving it lists the same lines and asks for your passkey once. The agent's next try runs under
+that approval, once.
+
+A move nobody approved is refused before your service stops. That includes Drain's moves and the
+move Ployz asks for again after a deploy took it over:
+
+```
+web-1 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.
+```
 
 ## Good to know
 

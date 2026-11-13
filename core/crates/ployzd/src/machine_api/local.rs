@@ -7,13 +7,14 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ContainerId,
-    ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
-    LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ClientKey,
+    ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
+    ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
+    LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, ManagementScope,
     OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy,
+    authority::RestartStep, op,
 };
-use serde_json::Value;
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -21,8 +22,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, RecoveryError,
-        SealingError, StoreError,
+        HeldStep, HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord,
+        RecordOwner, RecoveryError, SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -30,8 +31,6 @@ use crate::{
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
     sealed_env::{self, Lines, SealedRecord},
 };
-
-const DEFAULT_OBSERVE_SOCKET: &str = "/run/ployz/observe.sock";
 
 #[derive(Clone)]
 pub struct MachineService {
@@ -47,9 +46,64 @@ pub struct MachineService {
     pub(crate) published_routes: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
     /// This Machine's observation of its mesh path to each peer.
     pub(crate) paths: crate::network::PathBook,
+    /// GitHub as a test fixes it, in place of `api.github.com` and its issuer.
+    #[cfg(test)]
+    pub(crate) github: Option<Arc<crate::machine::local_machine::rule_grant::FixedGithub>>,
 }
 
 impl MachineService {
+    /// Run every check of a rule build's grant against GitHub, or `None` when this daemon
+    /// cannot reach GitHub at all.
+    async fn admit_rule_grant(
+        &self,
+        grant: &ployz_core::RuleGrant,
+        holder: Option<&ployz_core::BuildGrantId>,
+        sealed: Option<&ployz_core::SealedRecord>,
+    ) -> Option<Result<crate::machine::local_machine::rule_grant::AdmittedRule, LocalMachineError>>
+    {
+        let now = ployz_core::authority::Timestamp::now();
+        #[cfg(test)]
+        if let Some(github) = &self.github {
+            return Some(
+                self.local
+                    .admit_rule_grant(grant, holder, sealed, github.as_ref(), github.now(now))
+                    .await,
+            );
+        }
+        let github = crate::machine::local_machine::rule_grant::GithubOnline::shared()?;
+        Some(
+            self.local
+                .admit_rule_grant(grant, holder, sealed, github, now)
+                .await,
+        )
+    }
+
+    /// Run every check of a preview build's grant against GitHub, or `None` when this
+    /// daemon cannot reach GitHub at all.
+    async fn admit_preview_grant(
+        &self,
+        grant: &ployz_core::PreviewGrant,
+        holder: Option<&ployz_core::BuildGrantId>,
+        sealed: Option<&ployz_core::SealedRecord>,
+    ) -> Option<Result<crate::machine::local_machine::rule_grant::AdmittedRule, LocalMachineError>>
+    {
+        let now = ployz_core::authority::Timestamp::now();
+        #[cfg(test)]
+        if let Some(github) = &self.github {
+            return Some(
+                self.local
+                    .admit_preview_grant(grant, holder, sealed, github.as_ref(), github.now(now))
+                    .await,
+            );
+        }
+        let github = crate::machine::local_machine::rule_grant::GithubOnline::shared()?;
+        Some(
+            self.local
+                .admit_preview_grant(grant, holder, sealed, github, now)
+                .await,
+        )
+    }
+
     #[must_use]
     pub fn with_cluster(
         owner: RecordOwner,
@@ -57,7 +111,9 @@ impl MachineService {
     ) -> Self {
         Self {
             local: LocalMachine::new(owner).with_cluster(cluster),
-            observe: crate::observe::ObserveClient::new(PathBuf::from(DEFAULT_OBSERVE_SOCKET)),
+            observe: crate::observe::ObserveClient::new(
+                MachineLayout::production().observe_socket(),
+            ),
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
@@ -67,6 +123,8 @@ impl MachineService {
             grants: Arc::default(),
             endpoint_chooser: None,
             paths: crate::network::PathBook::default(),
+            #[cfg(test)]
+            github: None,
             published_routes: tokio::sync::watch::channel(
                 crate::ingress::PublishedRoutes::default(),
             )
@@ -74,9 +132,24 @@ impl MachineService {
         }
     }
 
-    pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+    pub(super) fn with_management_client(mut self, remote: ClientKey) -> Self {
         self.local = self.local.with_management_client(remote);
         self
+    }
+
+    /// This Machine, marked when `request` came over its own local socket. A routed call
+    /// reaches its target over the mesh, so only the Server the caller sits at is marked.
+    fn caller<T>(&self, request: &Request<T>) -> LocalMachine {
+        let local = self.local.clone();
+        if request
+            .extensions()
+            .get::<tonic::transport::server::UdsConnectInfo>()
+            .is_some()
+        {
+            local.on_local_socket()
+        } else {
+            local
+        }
     }
 
     #[must_use]
@@ -114,6 +187,14 @@ impl MachineService {
         self
     }
 
+    /// This call's Machine, holding `held` for each admitted turn to check again.
+    fn held(&self, held: Option<HeldTeardown>) -> LocalMachine {
+        match held {
+            Some(held) => self.local.clone().with_teardown(held),
+            None => self.local.clone(),
+        }
+    }
+
     /// Local Machine used to construct routing from this Machine's record and store.
     #[must_use]
     pub(crate) fn local(&self) -> LocalMachine {
@@ -138,12 +219,12 @@ impl MachineService {
     fn replicated(&self) -> Result<&ReplicatedStore, RpcError> {
         self.local
             .replicated()
-            .map_err(|_| unavailable("Cluster store is not available"))
+            .map_err(|_| RpcError::unavailable("Cluster store is not available"))
     }
 
     fn ready_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
         if self.local_record().phase() != LocalMachinePhase::Participating {
-            return Err(unavailable("Machine is not participating"));
+            return Err(RpcError::unavailable("Machine is not participating"));
         }
         self.replicated()
     }
@@ -153,17 +234,14 @@ impl MachineService {
     async fn select(&self, request: SelectEndpointRequest) -> Result<EndpointSelected, RpcError> {
         let SelectEndpointRequest { peer, endpoint } = request;
         if peer == self.local_record().id() {
-            return Err(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "a Server does not choose an endpoint for itself".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::invalid_argument(
+                "a Server does not choose an endpoint for itself",
+            ));
         }
         let chooser = self
             .endpoint_chooser
             .as_ref()
-            .ok_or_else(|| unavailable("WireGuard is not running on this Server"))?;
+            .ok_or_else(|| RpcError::unavailable("WireGuard is not running on this Server"))?;
         let (applied, outcome) = tokio::sync::oneshot::channel();
         chooser
             .send(EndpointChoice {
@@ -172,7 +250,7 @@ impl MachineService {
                 applied,
             })
             .await
-            .map_err(|_| unavailable("WireGuard is not running on this Server"))?;
+            .map_err(|_| RpcError::unavailable("WireGuard is not running on this Server"))?;
         match outcome.await {
             Ok(Ok(())) => Ok(EndpointSelected { peer, endpoint }),
             Ok(Err(refused @ ChoiceRefused::UnknownPeer(_))) => {
@@ -181,7 +259,9 @@ impl MachineService {
             Ok(Err(refused @ ChoiceRefused::WireGuard)) => {
                 Err(RpcError::caused(RpcErrorCode::Internal, &refused))
             }
-            Err(_) => Err(unavailable("WireGuard is not running on this Server")),
+            Err(_) => Err(RpcError::unavailable(
+                "WireGuard is not running on this Server",
+            )),
         }
     }
 
@@ -209,7 +289,7 @@ impl MachineService {
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
         self.local
             .containers()
-            .ok_or_else(|| unavailable("Docker is not available"))
+            .ok_or_else(|| RpcError::unavailable("Docker is not available"))
     }
 
     fn require_joined(&self) -> Result<(), RpcError> {
@@ -218,26 +298,41 @@ impl MachineService {
             LocalMachinePhase::Uninitialized
             | LocalMachinePhase::Resetting
             | LocalMachinePhase::Unrecognized(_) => {
-                Err(unavailable("Machine is not participating"))
+                Err(RpcError::unavailable("Machine is not participating"))
             }
         }
     }
 
-    #[allow(clippy::result_large_err)]
-    async fn switch_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
+    /// [`Self::volume_verb`] for a step a Volume approval admitted: once `landed` reads the
+    /// step's effect in the reply, `operation` ends here, so the approval never runs again.
+    /// A reply that fails to end it fails the call, and the resend finds it still open.
+    async fn landing_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
         &self,
-        verb: &'static str,
-        route: &str,
+        (verb, route): (&'static str, &str),
         request: &impl serde::Serialize,
+        operation: Option<ployz_core::OperationId>,
+        landed: impl FnOnce(&T) -> bool,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let _guard = self.switch_mutation.lock().await;
-        self.volume_verb::<T>(verb, route, request).await
+        if let Err(error) = self.require_joined() {
+            return respond(error);
+        }
+        crate::faults::apply(verb, None).await;
+        let reply = match self.local.plugin().call::<T>(route, request).await {
+            Ok(reply) => reply,
+            Err(error) => return respond(error),
+        };
+        if let Some(operation) = operation
+            && landed(&reply)
+            && let Err(error) = self.local.end_volume_operation(operation)
+        {
+            return local_error(error);
+        }
+        respond(reply)
     }
 
     /// A Volume verb that takes no switch lock. A read may land beside a cut's drain: the
     /// write that follows it rechecks the copy under the lock, so a stale view ends in a
     /// refusal, never a wrong flip.
-    #[allow(clippy::result_large_err)]
     async fn volume_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
         &self,
         verb: &'static str,
@@ -284,6 +379,7 @@ impl MachineRpc for MachineService {
             daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
             capabilities,
             sealing: self.local.held_sealing(record.phase()),
+            attest: self.local.held_attest(record.phase()),
         })
     }
 
@@ -352,6 +448,25 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn pending_joins(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::PendingJoins>(request)?;
+        finish(self.local.pending_joins())
+    }
+
+    async fn approve_join(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .approve_join(expect::<op::ApproveJoin>(request)?)
+                .await,
+        )
+    }
+
     async fn register(
         &self,
         request: Request<OpaquePayload>,
@@ -371,9 +486,26 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(local.set_device(expect::<op::SetDevice>(request)?).await)
+    }
+
+    async fn set_passkey(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(local.set_passkey(expect::<op::SetPasskey>(request)?).await)
+    }
+
+    async fn remove_trusted_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
         finish(
-            self.local
-                .set_device(expect::<op::SetDevice>(request)?)
+            local
+                .remove_trusted_key(expect::<op::RemoveTrustedKey>(request)?)
                 .await,
         )
     }
@@ -384,6 +516,14 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetPushTarget>(request)?;
         finish(self.local.set_push_target(request).await)
+    }
+
+    async fn set_device_enforcement(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetDeviceEnforcement>(request)?;
+        finish(self.local.set_device_enforcement(request).await)
     }
 
     async fn select_endpoint(
@@ -470,8 +610,44 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::EnsureContainer>(request)?;
-        finish(self.local.ensure_container(request.want).await)
+        let operator = from_operator(&request);
+        let mut request = expect::<op::EnsureContainer>(request)?;
+        let teardown_only = request.approval.is_none()
+            && request.deploy.is_none()
+            && request.rule.is_none()
+            && request.preview.is_none();
+        let (want, held) = if let (true, true, Some(teardown)) =
+            (operator, teardown_only, request.teardown.take())
+        {
+            match self.local.admit_teardown_step(request.want, teardown).await {
+                Ok((want, held)) => (want, Some(held)),
+                Err(error) => return local_error(error),
+            }
+        } else if operator {
+            // A step that starts nothing, sent with no statement, passes only while this
+            // Machine doesn't enforce: each turn checks that again.
+            let unsigned = (teardown_only
+                && RestartStep::of(&request.want)
+                    .is_some_and(|(step, _)| step != RestartStep::Start))
+            .then(|| HeldTeardown::unsigned(HeldStep::Container(None)));
+            match self
+                .local
+                .admit_operator_restart(
+                    request.want,
+                    request.approval.as_ref(),
+                    request.deploy.as_ref(),
+                    request.rule.as_deref(),
+                    request.preview.as_deref(),
+                )
+                .await
+            {
+                Ok(want) => (want, unsigned),
+                Err(error) => return local_error(error),
+            }
+        } else {
+            (request.want, None)
+        };
+        finish(self.held(held).ensure_container(want).await)
     }
 
     async fn update_container_limits(
@@ -530,8 +706,24 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::RemoveVolume>(request)?;
-        finish(self.local.remove_volume(request.name, request.force).await)
+        let held = if operator {
+            match self
+                .local
+                .admit_operator_volume_removal(&request.name, request.teardown)
+            {
+                Ok(held) => Some(held),
+                Err(error) => return local_error(error),
+            }
+        } else {
+            None
+        };
+        finish(
+            self.held(held)
+                .remove_volume(request.name, request.force)
+                .await,
+        )
     }
 
     async fn inspect_volume_copy(
@@ -551,15 +743,51 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        self.set_copy(request).await
+        let operator = from_operator(&request);
+        let request = expect::<op::SetVolumeCopy>(request)?;
+        // An unapproved start is refused before the switch lock, so nothing is planned
+        // against the copy. One that carries an approval is checked once the plan says the
+        // start can run.
+        if operator
+            && matches!(request.want, WantedCopy::Writer { start: Some(_), .. })
+            && let Err(error) = self
+                .local
+                .refuse_unapproved_volume_start(request.approval.as_ref())
+        {
+            return local_error(error);
+        }
+        self.set_copy(request, operator).await
     }
 
     async fn seed_volume(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::SeedVolume>(request)?;
+        // Admitted under the switch lock, so a resend queued behind the seed that lands
+        // finds its operation ended and only reads.
         let _guard = self.switch_mutation.lock().await;
+        let landing = if operator {
+            match self.local.admit_operator_seed(&request) {
+                Ok(landing) => landing,
+                Err(error) => return local_error(error),
+            }
+        } else {
+            Landing::Run(None)
+        };
+        let Landing::Run(operation) = landing else {
+            let landed = ployz_core::InspectVolumeCopyRequest {
+                name: request.into.clone(),
+            };
+            return self
+                .volume_verb::<ployz_core::VolumeCopyView>(
+                    "InspectVolumeCopy",
+                    "Volume.Inspect",
+                    &landed,
+                )
+                .await;
+        };
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
         // before it would let a Seed admitted at the old floor run after a later run
         // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
@@ -568,19 +796,45 @@ impl MachineRpc for MachineService {
         {
             return local_error(error);
         }
-        self.volume_verb::<ployz_core::VolumeCopyView>("SeedVolume", "Volume.Seed", &request)
-            .await
+        // A seed lands once `into` answers as a root.
+        self.landing_verb::<ployz_core::VolumeCopyView>(
+            ("SeedVolume", "Volume.Seed"),
+            &request,
+            operation,
+            |view| matches!(view.copy, Some(ployz_core::VolumeCopy::Root { .. })),
+        )
+        .await
     }
 
     async fn set_volume_size(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::SetVolumeSize>(request)?;
-        self.switch_verb::<ployz_core::SetVolumeSizeReply>(
-            "SetVolumeSize",
-            "Volume.Size.Set",
+        // Admitted under the switch lock, so a resend queued behind the resize that lands
+        // finds its operation ended and writes nothing.
+        let _guard = self.switch_mutation.lock().await;
+        let landing = if operator {
+            match self.local.admit_operator_resize(&request) {
+                Ok(landing) => landing,
+                Err(error) => return local_error(error),
+            }
+        } else {
+            Landing::Run(None)
+        };
+        let Landing::Run(operation) = landing else {
+            // The recorded outcome, not a read: the operation ended only once ZFS answered
+            // this bound, and answering it again changes nothing.
+            return respond(ployz_core::SetVolumeSizeReply {
+                bound_bytes: request.maximum_bytes,
+            });
+        };
+        self.landing_verb::<ployz_core::SetVolumeSizeReply>(
+            ("SetVolumeSize", "Volume.Size.Set"),
             &request,
+            operation,
+            |reply| reply.bound_bytes == request.maximum_bytes,
         )
         .await
     }
@@ -589,6 +843,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::BuildStream>, Status> {
+        // Refused before the request stream is read, so no source or recipe is taken.
+        if from_operator(&request)
+            && let Err(error) = self
+                .local
+                .admit_operator_build(ployz_core::BUILD_CAPABILITY)
+        {
+            return Err(build_refused(&error, ployz_core::BUILD_CAPABILITY));
+        }
         let containers = self
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
@@ -729,10 +991,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
+        sealing_refused(
             self.local
                 .generate_sealing_key(expect::<op::GenerateSealingKey>(request)?)
                 .await,
+            ployz_core::GENERATE_SEALING_KEY_CAPABILITY,
         )
     }
 
@@ -751,10 +1014,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
+        sealing_refused(
             self.local
                 .install_sealing_key(expect::<op::InstallSealingKey>(request)?)
                 .await,
+            ployz_core::INSTALL_SEALING_KEY_CAPABILITY,
         )
     }
 
@@ -765,9 +1029,18 @@ impl MachineRpc for MachineService {
         let cloud_routed = request
             .metadata()
             .contains_key(ployz_core::CLOUD_ROUTED_HEADER);
+        let scope = if from_operator(&request) {
+            ManagementScope::Operator
+        } else {
+            ManagementScope::Full
+        };
         finish(
             self.local
-                .request_upgrade(expect::<op::RequestMachineUpgrade>(request)?, cloud_routed)
+                .request_upgrade(
+                    expect::<op::RequestMachineUpgrade>(request)?,
+                    cloud_routed,
+                    scope,
+                )
                 .await,
         )
     }
@@ -776,14 +1049,40 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.leave(expect::<op::Leave>(request)?).await)
+        let operator = from_operator(&request);
+        let mut request = expect::<op::Leave>(request)?;
+        let held = if operator {
+            match self
+                .local
+                .admit_operator_departure(None, request.teardown.take())
+            {
+                Ok(held) => Some(held),
+                Err(error) => return local_error(error),
+            }
+        } else {
+            None
+        };
+        finish(self.held(held).leave(request).await)
     }
 
     async fn forget(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.forget(expect::<op::Forget>(request)?).await)
+        let operator = from_operator(&request);
+        let mut request = expect::<op::Forget>(request)?;
+        let held = if operator {
+            match self
+                .local
+                .admit_operator_departure(Some(&request.machine_id), request.teardown.take())
+            {
+                Ok(held) => Some(held),
+                Err(error) => return local_error(error),
+            }
+        } else {
+            None
+        };
+        finish(self.held(held).forget(request).await)
     }
 
     async fn list_images(
@@ -831,12 +1130,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PullImage>(request)?;
         if request.image.is_empty() {
-            return respond(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "image is required".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return respond(RpcError::invalid_argument("image is required"));
         }
         finish(self.local.pull_image(request).await)
     }
@@ -847,12 +1141,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PullImageFromMachine>(request)?;
         if request.pull.image().is_empty() {
-            return respond(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "image is required".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return respond(RpcError::invalid_argument("image is required"));
         }
         finish(self.local.pull_image_from_machine(request).await)
     }
@@ -861,13 +1150,69 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::MintBuildGrant>(request)?;
+        // Refused before `Mint::check`, which opens the Sealed record to check it. A rule
+        // build's grant passes enforcement only once every check of its proof passed.
+        let admitted = match (&request.rule, &request.preview) {
+            (Some(_), Some(_)) => {
+                return respond(RpcError::invalid_argument(
+                    "a Build Grant is under one rule, not a rule and a preview rule",
+                ));
+            }
+            (None, Some(grant)) => {
+                let admitted = self.admit_preview_grant(
+                    grant,
+                    request.holder.as_ref(),
+                    request.sealed.as_ref(),
+                );
+                let Some(admitted) = admitted.await else {
+                    return respond(RpcError::unavailable(
+                        "This Server cannot reach GitHub to check a preview build",
+                    ));
+                };
+                match admitted {
+                    Ok(admitted) => Some(admitted),
+                    Err(error) => return local_error(error),
+                }
+            }
+            (None, None) => {
+                if operator
+                    && let Err(error) = self
+                        .local
+                        .admit_operator_build(ployz_core::MINT_BUILD_GRANT_CAPABILITY)
+                {
+                    return local_error(error);
+                }
+                None
+            }
+            (Some(grant), None) => {
+                let admitted =
+                    self.admit_rule_grant(grant, request.holder.as_ref(), request.sealed.as_ref());
+                let Some(admitted) = admitted.await else {
+                    return respond(RpcError::unavailable(
+                        "This Server cannot reach GitHub to check a rule build",
+                    ));
+                };
+                match admitted {
+                    Ok(admitted) => Some(admitted),
+                    Err(error) => return local_error(error),
+                }
+            }
+        };
         let key_dir = self
             .containers()
             .ok()
             .and_then(|containers| containers.sealing_key_dir());
-        let mint = match crate::management::build_grant::Mint::check(request, key_dir) {
-            Ok(mint) => mint,
+        let scope = if operator {
+            ployz_core::ManagementScope::Operator
+        } else {
+            ployz_core::ManagementScope::Full
+        };
+        let mint = match crate::management::build_grant::Mint::check_admitted(
+            request, key_dir, admitted,
+        ) {
+            Ok(mint) => mint.minted_by(scope),
             Err(refused) => return respond(refused),
         };
         match crate::management::build_grant::mint_for(
@@ -915,15 +1260,10 @@ impl MachineRpc for MachineService {
                 let material = match material {
                     Ok(material) => material,
                     Err(error) => {
-                        return respond(RpcError {
-                            code: RpcErrorCode::InvalidArgument,
-                            message: format!(
-                                "refused Certificate Material for {hostname}: {error}",
-                                error = ployz_core::error_chain::inline(&error),
-                            ),
-                            details: Value::Null,
-                            cause: Vec::new(),
-                        });
+                        return respond(RpcError::invalid_argument(format!(
+                            "refused Certificate Material for {hostname}: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        )));
                     }
                 };
                 replicated
@@ -977,6 +1317,85 @@ impl MachineRpc for MachineService {
             routes: self.published_routes.borrow().addresses.clone(),
         })
     }
+
+    async fn set_ingress_doors(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetIngressDoors>(request)?;
+        finish(self.local.set_ingress_doors(request).await)
+    }
+
+    async fn set_private_access(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
+        let request = expect::<op::SetPrivateAccess>(request)?;
+        if operator && let Err(error) = self.local.admit_operator_private_access(&request) {
+            return local_error(error);
+        }
+        finish(self.local.set_private_access(request).await)
+    }
+
+    async fn read_cluster_name(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::ReadClusterName>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated.cluster_name().await {
+            Ok(name) => respond(ClusterNamed { name }),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
+
+    async fn set_cluster_name(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetClusterName>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated.publish_cluster_name(&request.name).await {
+            Ok(()) => respond(ClusterNamed {
+                name: Some(request.name),
+            }),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
+
+    async fn set_cluster_doors(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetClusterDoors>(request)?;
+        if !request.doors.is_known() {
+            return respond(
+                RpcError::invalid_argument(
+                    "This Server declares only the Public and Tunnel Doors.",
+                )
+                .with_details(serde_json::json!({
+                    "capability": ployz_core::SET_CLUSTER_DOORS_CAPABILITY,
+                })),
+            );
+        }
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated.publish_cluster_doors(&request.doors).await {
+            Ok(()) => respond(ClusterDoorsDeclared {
+                doors: request.doors,
+            }),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
 }
 
 fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
@@ -992,20 +1411,25 @@ fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
         .copied()
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
     respond(local_failure(error)?)
 }
 
 /// `error` as the [`RpcError`] it answers, or the [`Status`] it fails the call with.
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
     match error {
         // A source that fails the call outright has no details to mark.
         LocalMachineError::Departing { server, source } => {
             Ok(local_failure(*source)?.overlapping_leave(&server))
         }
-        LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
             tonic::Code::Unauthenticated,
             &error,
@@ -1013,17 +1437,179 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::OnlyCloudManagesSlots | LocalMachineError::NeedsFullScope => Err(
             ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error),
         ),
-        LocalMachineError::NotParticipating => Ok(unavailable("Machine is not participating")),
+        LocalMachineError::RestartRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
+                "next": "ployz service restart from an approved device",
+            }),
+        )),
+        LocalMachineError::DeployRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY,
+                "next": "ployz deploy from an approved device",
+            }),
+        )),
+        LocalMachineError::RuleDeployRefused(ref refusal) => {
+            let details = match refusal.next() {
+                Some(next) => serde_json::json!({
+                    "capability": ployz_core::DEPLOY_RULE_CAPABILITY,
+                    "next": next,
+                }),
+                None => serde_json::json!({ "capability": ployz_core::DEPLOY_RULE_CAPABILITY }),
+            };
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                details,
+            ))
+        }
+        LocalMachineError::PreviewDeployRefused(ref refusal) => {
+            let details = match refusal.next() {
+                Some(next) => serde_json::json!({
+                    "capability": ployz_core::DEPLOY_PREVIEW_CAPABILITY,
+                    "next": next,
+                }),
+                None => serde_json::json!({ "capability": ployz_core::DEPLOY_PREVIEW_CAPABILITY }),
+            };
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                details,
+            ))
+        }
+        LocalMachineError::PreviewGrantRefused(_) => Err(build_refused(
+            &error,
+            ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY,
+        )),
+        LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
+        LocalMachineError::TeardownRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::TEARDOWN_CAPABILITY,
+                "next": "delete it again with your passkey in the dashboard, or from an approved device",
+            }),
+        )),
+        LocalMachineError::UpgradeChannelRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
+                "next": "ployz server upgrade-policy set --channel stable or beta from an approved device",
+            }),
+        )),
+        LocalMachineError::DepartureRefused { capability, .. } => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": capability,
+                    "next": if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
+                        "ployz server forget from an approved device, or Forget server with your passkey in the dashboard"
+                    } else {
+                        "ployz server rm from an approved device, or Remove server with your passkey in the dashboard"
+                    },
+                }),
+            ))
+        }
+        LocalMachineError::PrivateAccessRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::PRIVATE_ACCESS_APPROVAL_CAPABILITY,
+                "next": "ployz private-access on from an approved device, or Connect in the dashboard with your passkey",
+            }),
+        )),
+        LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": capability,
+                "next": "ployz device enforce --off from an approved device",
+            }),
+        )),
+        LocalMachineError::VolumeStepRefused(ref refusal) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::VOLUME_APPROVAL_CAPABILITY,
+                "next": if matches!(refusal, ployz_core::authority::AuthorityRefusal::Unreceipted) {
+                    // A new approval would not help: only the source's receipt makes this Machine the writer.
+                    "ployz volume release asks the move's source where the move ends"
+                } else {
+                    "approve the Volume change again from an approved device"
+                },
+            }),
+        )),
+        LocalMachineError::RuleGrantRefused(_)
+        | LocalMachineError::RuleProofRefused(_)
+        | LocalMachineError::RuleHeadUnread(_) => Err(build_refused(
+            &error,
+            ployz_core::BUILD_GRANT_RULE_CAPABILITY,
+        )),
+        LocalMachineError::EnforcementRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY,
+                "next": "ployz device enforce from an approved device",
+            }),
+        )),
+        LocalMachineError::JoinConsumed(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::JOIN_APPROVAL_CAPABILITY,
+                "reason": "join_already_admitted",
+                "inspect": ["ployz server ls"],
+            }),
+        )),
+        LocalMachineError::JoinRefused(_)
+        | LocalMachineError::Store(StoreError::JoinRefused(_)) => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({ "capability": ployz_core::JOIN_APPROVAL_CAPABILITY, "next": "ployz device approve --join CODE from an approved device" }),
+            ))
+        }
+        LocalMachineError::Store(error) => Ok(store_error(error)),
+        LocalMachineError::JoinRecord(_) => Err(internal_response(error)),
+        LocalMachineError::ApprovalRecord(_) => Err(internal_response(error)),
+        LocalMachineError::NotParticipating => {
+            Ok(RpcError::unavailable("Machine is not participating"))
+        }
         LocalMachineError::ClusterStoreUnavailable => {
-            Ok(unavailable("Cluster store is not available"))
+            Ok(RpcError::unavailable("Cluster store is not available"))
         }
         LocalMachineError::ClusterNetworkUnpublished | LocalMachineError::ClusterStoreEmpty => {
-            Ok(unavailable(&error.to_string()))
+            Ok(RpcError::unavailable(error.to_string()))
         }
         LocalMachineError::ClusterUnavailable => {
             Err(Status::unavailable("Cluster is not available"))
         }
-        LocalMachineError::DockerUnavailable => Ok(unavailable("Docker is not available")),
+        LocalMachineError::DockerUnavailable => {
+            Ok(RpcError::unavailable("Docker is not available"))
+        }
+        LocalMachineError::PasskeyIsDevice(_)
+        | LocalMachineError::DeviceIsPasskey(_)
+        | LocalMachineError::CredentialHeld { .. } => {
+            Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
+        }
+        LocalMachineError::JoinerCannotFollowDoors { ref joiner } => Ok(RpcError::unsupported(
+            error.to_string(),
+        )
+        .with_details(serde_json::json!({
+            "target": joiner.to_string(),
+            "capability": ployz_core::SET_CLUSTER_DOORS_CAPABILITY,
+            "next": "upgrade ployz where the join runs, then rerun it",
+        }))),
+        LocalMachineError::DeclaredDoorsUnread(_) => {
+            Ok(RpcError::caused(RpcErrorCode::Unavailable, &error))
+        }
         LocalMachineError::MissingAssignment
         | LocalMachineError::DeviceSlot
         | LocalMachineError::InvalidPushTarget(_)
@@ -1031,12 +1617,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Enrollment(error) => {
             Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
         }
-        LocalMachineError::EmptyUpdate => Ok(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: "at least one Machine update is required".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
+        LocalMachineError::EmptyUpdate => Ok(RpcError::invalid_argument(
+            "at least one Machine update is required",
+        )),
         LocalMachineError::RecordOwner(error) => Err(ployz_core::rpc::caused_status(
             tonic::Code::Internal,
             &error,
@@ -1052,30 +1635,52 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::IngressProxyServiceSpec(error) => {
             Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }
+        LocalMachineError::PrivateAccessRouterSpec | LocalMachineError::PrivateAccessKey(_) => {
+            Ok(RpcError::invalid_argument(error.to_string()))
+        }
+        LocalMachineError::PrivateAccessKeyMissing => {
+            Ok(RpcError::invalid_argument(error.to_string()).with_details(
+                serde_json::json!({ "capability": ployz_core::SET_PRIVATE_ACCESS_CAPABILITY }),
+            ))
+        }
+        LocalMachineError::PrivateAccessKeyFile(_)
+        | LocalMachineError::PrivateAccessState(_)
+        | LocalMachineError::PrivateAccessRouterStays { .. } => {
+            Ok(RpcError::caused(RpcErrorCode::Internal, &error))
+        }
         LocalMachineError::Network(error) => Err(ployz_core::rpc::caused_status(
             tonic::Code::Internal,
             &error,
         )),
+        // Both ask the caller for the doors route, so its capability is named.
+        LocalMachineError::UnsupportedDoors
+        | LocalMachineError::Docker(crate::docker::Error::IngressHolderNotRunning) => {
+            Ok(RpcError::invalid_argument(error.to_string()).with_details(
+                serde_json::json!({ "capability": ployz_core::SET_INGRESS_DOORS_CAPABILITY }),
+            ))
+        }
+        LocalMachineError::TunnelTokenMissing => Ok(RpcError::invalid_argument(error.to_string())
+            .with_details(
+                serde_json::json!({ "capability": ployz_core::SET_INGRESS_TUNNEL_CAPABILITY }),
+            )),
+        LocalMachineError::TunnelToken(_) => Ok(RpcError::invalid_argument(error.to_string())),
+        LocalMachineError::DoorNotRunning { .. }
+        | LocalMachineError::TunnelTokenFile(_)
+        | LocalMachineError::TunnelDoorMarker(_) => {
+            Ok(RpcError::caused(RpcErrorCode::Internal, &error))
+        }
         LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),
         LocalMachineError::StoragePreparation(error) | LocalMachineError::FenceRefused(error) => {
             Ok(error)
         }
-        LocalMachineError::Cleanup(message) => Ok(RpcError {
-            code: RpcErrorCode::Internal,
-            message,
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
-        LocalMachineError::Admission(crate::mutation::Error::Busy) => Ok(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "a Ployz installation or upgrade is active".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
+        LocalMachineError::Cleanup(message) => Ok(RpcError::internal(message)),
+        LocalMachineError::Admission(crate::mutation::Error::Busy) => Ok(RpcError::conflict(
+            "a Ployz installation or upgrade is active",
+        )),
         LocalMachineError::Admission(crate::mutation::Error::Io(error)) => Err(
             ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
         ),
-        LocalMachineError::Upgrade(error) => Ok(upgrade_error(error)),
+        LocalMachineError::Upgrade(error) => upgrade_error(error),
         LocalMachineError::Sealing(error) => Ok(sealing_error(error)),
         LocalMachineError::Recovery(error) => Ok(recovery_error(error)),
     }
@@ -1100,9 +1705,34 @@ fn sealing_error(error: SealingError) -> RpcError {
             (RpcErrorCode::InvalidArgument, Refusal::SealedAnother)
         }
     };
-    RpcError {
-        details: refusal.details(),
-        ..RpcError::caused(code, &error)
+    RpcError::caused(code, &error).with_evidence(&refusal)
+}
+
+/// A refusal that keeps a second Sealing Key out of the Cluster also names the route's
+/// capability, as every refusal the coverage table expects does.
+#[expect(
+    clippy::result_large_err,
+    reason = "a handler fails with tonic's Status"
+)]
+fn sealing_refused(
+    result: Result<ployz_core::SealingKeyHeld, LocalMachineError>,
+    capability: &'static str,
+) -> Result<Response<OpaquePayload>, Status> {
+    match result {
+        Err(LocalMachineError::Sealing(
+            error @ (SealingError::Published(_)
+            | SealingError::AwaitsRecovery(_)
+            | SealingError::Unopenable { .. }
+            | SealingError::SealedAnother { .. }),
+        )) => {
+            let refused = sealing_error(error);
+            let mut details = refused.details.clone();
+            if let Some(details) = details.as_object_mut() {
+                details.insert("capability".into(), serde_json::json!(capability));
+            }
+            respond(refused.with_details(details))
+        }
+        result => finish(result),
     }
 }
 
@@ -1123,15 +1753,42 @@ fn recovery_error(error: RecoveryError) -> RpcError {
         RecoveryError::WrongCode => (RpcErrorCode::InvalidArgument, Refusal::WrongCode),
         RecoveryError::HeldAnother { .. } => (RpcErrorCode::Conflict, Refusal::HeldAnother),
     };
-    RpcError {
-        details: refusal.details(),
-        ..RpcError::caused(code, &error)
-    }
+    RpcError::caused(code, &error).with_evidence(&refusal)
 }
 
-fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
+#[expect(
+    clippy::result_large_err,
+    reason = "an off-channel refusal fails the call with a Status, as local_failure does"
+)]
+fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, Status> {
     use crate::{installer::upgrade::Error, mutation};
     let code = match &error {
+        Error::OffChannel { .. } => {
+            return Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": ployz_core::UPGRADE_EXACT_CAPABILITY,
+                    "next": "ployz device request",
+                }),
+            ));
+        }
+        Error::OffApprovedChannel { requested, .. } => {
+            return Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
+                    "next": match ployz_core::ReleaseChannel::of(requested) {
+                        Some(channel) => format!(
+                            "ployz server upgrade-policy set --channel {channel} from an approved device"
+                        ),
+                        None => "ployz server upgrade-policy set --channel stable or beta from an approved device"
+                            .to_owned(),
+                    },
+                }),
+            ));
+        }
         Error::NotFound => RpcErrorCode::NotFound,
         Error::AttemptConflict(_) | Error::Busy | Error::Admission(mutation::Error::Busy) => {
             RpcErrorCode::Conflict
@@ -1150,10 +1807,13 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
         | Error::Upgrade(_)
         | Error::Admission(mutation::Error::Io(_)) => RpcErrorCode::Internal,
     };
-    RpcError::caused(code, &error)
+    Ok(RpcError::caused(code, &error))
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn finish(
     result: Result<impl Into<RpcResponse>, LocalMachineError>,
 ) -> Result<Response<OpaquePayload>, Status> {
@@ -1163,17 +1823,9 @@ fn finish(
     }
 }
 
-fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
-}
-
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
+        StoreError::JoinRefused(_) => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
         | StoreError::NotParticipating
@@ -1208,7 +1860,10 @@ fn cluster_store_error(error: crate::corrosion::Error) -> RpcError {
     RpcError::caused(RpcErrorCode::Internal, &error)
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn respond(response: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, Status> {
     Ok(Response::new(
         response.into().encode().map_err(internal_response)?,
@@ -1219,13 +1874,25 @@ fn invalid_request(error: impl std::error::Error + 'static) -> Status {
     ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Status> {
     request
         .into_inner()
         .decode_request()
         .map(|request| request.body)
         .map_err(invalid_request)
+}
+
+/// The refusal an enforcing Machine answers an Operator's `Build` or `MintBuildGrant` with.
+fn build_refused(error: &LocalMachineError, capability: &'static str) -> Status {
+    ployz_core::rpc::hinted_status(
+        tonic::Code::PermissionDenied,
+        error,
+        serde_json::json!({ "capability": capability }),
+    )
 }
 
 fn from_operator<T>(request: &Request<T>) -> bool {
@@ -1240,7 +1907,10 @@ fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &
     }
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn expect<T: Rpc>(request: Request<OpaquePayload>) -> Result<T::Request, Status> {
     T::from_request_body(request_body(request)?).map_err(invalid_request)
 }
@@ -1249,6 +1919,9 @@ fn internal_response(error: impl std::error::Error + 'static) -> Status {
     ployz_core::rpc::caused_status(tonic::Code::Internal, &error)
 }
 
+#[cfg(test)]
+#[path = "authorization_tests.rs"]
+mod authorization_tests;
 #[cfg(test)]
 #[path = "rotation_fleet_tests.rs"]
 mod rotation_fleet_tests;

@@ -25,11 +25,11 @@ use ployz::{
     context::Connection,
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs, EnrollRequest,
-    ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN, MachineId,
-    MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, ManagementIdentity,
-    OpaquePayload, RpcErrorCode, SetDeviceRequest, SetManagementClientRequest, TUNNEL_ALPN,
-    TUNNEL_FAILED, TUNNEL_OPEN, op,
+    AdvertisedEndpoint, ClientKey, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs,
+    EnrollRequest, ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN,
+    MachineId, MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel,
+    ManagementIdentity, OpaquePayload, RemoveTrustedKeyRequest, RpcErrorCode, SetDeviceRequest,
+    SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_OPEN, TrustedKeyRemoved, op,
 };
 use ployzd::{
     corrosion::ReplicatedStore,
@@ -273,11 +273,11 @@ async fn a_management_proof_admits_only_the_connection_it_was_made_on() {
         .capability
         .unwrap();
     local
-        .activate_management_client(
+        .activate_management_client(ClientKey::from_bytes(
             *SecretKey::from_bytes(capability.client_secret())
                 .public()
                 .as_bytes(),
-        )
+        ))
         .await
         .unwrap();
     let endpoint = management::bind(
@@ -519,9 +519,11 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
         .unwrap()
         .capability
         .unwrap();
-    let old_key = *SecretKey::from_bytes(old.client_secret())
-        .public()
-        .as_bytes();
+    let old_key = ClientKey::from_bytes(
+        *SecretKey::from_bytes(old.client_secret())
+            .public()
+            .as_bytes(),
+    );
     local.activate_management_client(old_key).await.unwrap();
     let endpoint = management::bind(
         local.record().management_secret(),
@@ -590,9 +592,11 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
                 .unwrap()
                 .capability
                 .unwrap();
-            let key = *SecretKey::from_bytes(capability.client_secret())
-                .public()
-                .as_bytes();
+            let key = ClientKey::from_bytes(
+                *SecretKey::from_bytes(capability.client_secret())
+                    .public()
+                    .as_bytes(),
+            );
             local.activate_management_client(key).await.unwrap();
             capability
         }
@@ -685,9 +689,11 @@ async fn only_a_device_execs_or_tunnels() {
                 .unwrap()
                 .capability
                 .unwrap();
-            let key = *SecretKey::from_bytes(capability.client_secret())
-                .public()
-                .as_bytes();
+            let key = ClientKey::from_bytes(
+                *SecretKey::from_bytes(capability.client_secret())
+                    .public()
+                    .as_bytes(),
+            );
             local.activate_management_client(key).await.unwrap();
             capability
         }
@@ -790,6 +796,104 @@ async fn only_a_device_execs_or_tunnels() {
 
     shutdown.cancel();
     server.await.unwrap();
+}
+
+/// A Device that removes itself revokes the connection it asked on, yet still receives
+/// what the removal did, since the removal had already committed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_removing_itself_receives_the_outcome() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let device = SecretKey::generate();
+    let key = DeviceKey::from_bytes(*device.public().as_bytes());
+    local
+        .set_device(SetDeviceRequest::Approve { key })
+        .await
+        .unwrap();
+    let capability = ManagementCapability::new(
+        local.record().management_secret().public_key(),
+        device.to_bytes(),
+    );
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        AnswersAfterRevocation(MachineApi::builder(owner).build()),
+        Arc::default(),
+        None::<ReplicatedStore>,
+        shutdown.clone(),
+    ));
+    let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
+        relay_url,
+        CaTlsConfig::insecure_skip_verify(),
+    ));
+    let channel = connector.connect(&connection(&capability)).await.unwrap();
+
+    let removed = MachineRpcClient::new(channel)
+        .remove_trusted_key(
+            op::RemoveTrustedKey::into_request(RemoveTrustedKeyRequest { code: key.code() })
+                .encode()
+                .unwrap(),
+        )
+        .await
+        .expect("the caller must receive its own removal")
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::RemoveTrustedKey>()
+        .unwrap();
+
+    assert_eq!(
+        removed,
+        TrustedKeyRemoved::RemovedDevice {
+            code: key.code(),
+            approved_passkeys: Vec::new(),
+        }
+    );
+    assert!(matches!(
+        connector.connect(&connection(&capability)).await,
+        Err(ConnectError::ClientCleared)
+    ));
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+/// Holds each RemoveTrustedKey answer until the revocation its removal published has
+/// drained the connection, which an unheld answer would race.
+#[derive(Clone)]
+struct AnswersAfterRevocation(MachineApi);
+
+impl Service<http::Request<Body>> for AnswersAfterRevocation {
+    type Response = http::Response<Body>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.0.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        let held = request.uri().path() == <op::RemoveTrustedKey as ployz_core::Rpc>::PATH;
+        let answer = self.0.call(request);
+        Box::pin(async move {
+            let answer = answer.await;
+            if held {
+                // real-wait: the drain is internal to the connection; no event exposes it.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            answer
+        })
+    }
 }
 
 /// Open a tunnel the way a v0.3.4 CLI does. It prints a close reason only under
@@ -954,11 +1058,11 @@ async fn contract() {
         .await
         .unwrap();
     local
-        .activate_management_client(
+        .activate_management_client(ClientKey::from_bytes(
             *SecretKey::from_bytes(delayed_capability.client_secret())
                 .public()
                 .as_bytes(),
-        )
+        ))
         .await
         .unwrap();
     let delayed = raw_endpoint(&relay_url).await;
@@ -1003,11 +1107,11 @@ async fn contract() {
     activate(activated.clone()).await;
     assert_eq!(
         local.record().accepted_client(&cloud()),
-        Some(
+        Some(ClientKey::from_bytes(
             *SecretKey::from_bytes(capability.client_secret())
                 .public()
                 .as_bytes()
-        )
+        ))
     );
     drop(activated);
     tokio::time::timeout(Duration::from_secs(10), activated_connection.closed())
@@ -1477,6 +1581,90 @@ async fn holder_contract() {
     machine.stop().await;
 }
 
+/// A grant an Operator minted while enforcement was off reaches nothing once it is on:
+/// not on a new connection, and not on one admitted earlier. A Full caller's grant does.
+#[tokio::test(flavor = "multi_thread")]
+async fn enforcement_closes_an_operators_grant_on_new_and_open_connections() {
+    tokio::time::timeout(Duration::from_secs(120), enforcement_contract())
+        .await
+        .expect("build grant test timed out");
+}
+
+async fn enforcement_contract() {
+    use ployz_core::{BuildGrant, BuildGrantId, ManagementScope, MintedKey};
+
+    let machine = GrantMachine::start().await;
+    let http = reqwest::Client::new();
+    let mint = |scope: ManagementScope| {
+        let holder = iroh::SecretKey::generate();
+        let id = BuildGrantId::parse(hex::encode(holder.public().as_bytes())).unwrap();
+        let request = ployz_core::MintBuildGrantRequest {
+            preview: None,
+            repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            holder: Some(id),
+            sealed: None,
+            rule: None,
+        };
+        let minted = machine
+            .grants
+            .mint(
+                machine.local.record().management_secret().public_key(),
+                ployzd::management::Mint::check(request, None)
+                    .unwrap()
+                    .minted_by(scope),
+                machine.ingest,
+            )
+            .unwrap();
+        let MintedKey::Holder { machine: dial } = minted.key else {
+            panic!("a holder mint returns the Machine to dial");
+        };
+        BuildGrant::new(dial, holder.to_bytes())
+    };
+    let sealed_status = async |registry: &ployz::connect::GrantRegistry| {
+        http.get(format!("http://{}/ployz/sealed", registry.address()))
+            .send()
+            .await
+            .map(|response| response.status())
+            .ok()
+    };
+
+    let operator = mint(ManagementScope::Operator);
+    let full = mint(ManagementScope::Full);
+    // Enforcement off: both reach the endpoint, which has no Sealed values to give.
+    let open_operator = open_grant_registry(&operator, &machine.relay)
+        .await
+        .unwrap();
+    assert_eq!(
+        sealed_status(&open_operator).await,
+        Some(reqwest::StatusCode::NOT_FOUND)
+    );
+
+    machine
+        .local
+        .owner()
+        .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
+        .await
+        .unwrap();
+
+    // (b) The connection admitted before enforcement came on is refused its next request.
+    assert_eq!(
+        sealed_status(&open_operator).await,
+        Some(reqwest::StatusCode::FORBIDDEN)
+    );
+    // (a) A new connection on the same grant is refused at admission.
+    let redial = open_grant_registry(&operator, &machine.relay)
+        .await
+        .unwrap();
+    assert_eq!(sealed_status(&redial).await, None);
+    // A Full caller's grant is untouched by enforcement.
+    let open_full = open_grant_registry(&full, &machine.relay).await.unwrap();
+    assert_eq!(
+        sealed_status(&open_full).await,
+        Some(reqwest::StatusCode::NOT_FOUND)
+    );
+    machine.stop().await;
+}
+
 /// A Machine that already holds the image answers the pusher's manifest HEAD, and the
 /// pusher never PUTs it; that HEAD of the grant's own tag is the grant's push.
 #[tokio::test(flavor = "multi_thread")]
@@ -1589,9 +1777,11 @@ impl GrantMachine {
     /// A grant for one push into `ployz-build/web`, held by `holder` when given.
     fn mint_for(&self, holder: Option<ployz_core::BuildGrantId>) -> ployz_core::BuildGrantMinted {
         let request = ployz_core::MintBuildGrantRequest {
+            preview: None,
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder,
             sealed: None,
+            rule: None,
         };
         self.grants
             .mint(

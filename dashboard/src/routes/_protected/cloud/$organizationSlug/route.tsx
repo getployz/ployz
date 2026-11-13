@@ -8,6 +8,8 @@ import { DashboardShell } from "#/components/dashboard-shell";
 import type { DashboardScope } from "#/components/dashboard-navigation-model";
 import { rememberSelectedOrganization, useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
+import { ApprovalPrompt } from "#/modules/approval-session/approval-prompt";
+import { FirstCloudflareRunner } from "./_org/~/servers/-components/first-tunnel";
 import { setPostHogOrganization } from "#/modules/analytics/posthog";
 
 /** `chat` names the open agent thread; it rides along every Organization page so the sidebar stays put. */
@@ -42,6 +44,8 @@ function RouteComponent() {
   return (
     <RuntimeProvider organizationSlug={params.organizationSlug}>
       <OrganizationLayout />
+      <ApprovalPrompt />
+      <FirstCloudflareRunner organizationSlug={params.organizationSlug} />
     </RuntimeProvider>
   );
 }

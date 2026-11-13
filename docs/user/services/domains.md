@@ -83,7 +83,8 @@ New custom domains must be hostnames you own. Ployz refuses IP addresses, names 
 last label is all digits, invalid punycode `xn--` labels, `ployz.app` and its subdomains,
 and names in your organization's Cluster Domain zone. Use generated domains for Ployz's
 reserved zones. Older stored domains remain readable and removable. You can re-add one
-on the same service and environment to change its port. Names in your organization's Cluster Domain zone still require generated domains.
+on the same service and environment to change its port. Names in your organization's Cluster Domain zone still require generated domains, unless your servers are
+[behind a Cloudflare Tunnel](#behind-a-cloudflare-tunnel): the zone is then your own.
 
 For an invalid hostname, `ployz domain add` names the reason and exits with code 2.
 Drop any URL scheme, port or path. A hostname cannot contain underscores or wildcards.
@@ -110,6 +111,29 @@ A CNAME follows your servers as you add and remove them. A records don't, so upd
 your servers change. If your DNS provider supports ALIAS records or CNAME flattening, point the
 root at your organization's domain instead.
 
+### Behind a Cloudflare Tunnel
+
+With a [Cloudflare Tunnel](cloudflare-tunnel.md), no visitor reaches your servers' addresses, so
+**Show DNS records** lists a CNAME to your tunnel instead, like
+`CNAME shop 0a1b2c.cfargotunnel.com`.
+
+| Your domain | What to do |
+| --- | --- |
+| In your Cloudflare zone, like `shop.example.com` | Nothing, unless the name has a record of its own. Then replace that record with the CNAME. |
+| Elsewhere, like `shop.example.org` | Create the CNAME, with **Proxied** on. Delete any other A, AAAA or CNAME record for the name. |
+
+The row turns live once the name reaches your tunnel. Ployz checks every custom domain the same way, by asking it for a page only your servers answer, so it works behind Cloudflare's
+proxy. A name two levels under your zone, like `a.shop.example.com`, shows
+**The free certificate covers one level under example.com**. Use `shop-a.example.com`.
+
+A name in your zone can't be both a custom domain and a generated address. `shop.example.com` as a
+custom domain refuses the generated prefix `shop` for every service, and the other way round.
+A new service production deploys arrives in a branch with the branch's name on its subdomain, like
+`shop-feature`. If any custom domain in your organization starts with that label, like
+`shop-feature.example.com`, the service doesn't arrive on its own: the branch is offered it as
+for a [setting it changed itself](../environments/environments.md#productions-changes-follow-into-staging),
+and taking it checks the name then.
+
 ## Use https
 
 Every domain serves https, and Ployz gets and renews its certificates for you. A custom
@@ -118,6 +142,12 @@ domain gets its certificate once it's deployed and its DNS points at your server
 Keep ports 80 and 443 open on the servers that take web traffic: they use port 80 to get
 certificates. Once a domain has its certificate, `http://` links redirect to `https://` with the
 same path. Until then, plain http shows **Nothing is deployed here**.
+
+Servers that can't open ports can serve every domain through a
+[Cloudflare Tunnel](cloudflare-tunnel.md) instead. Cloudflare then holds the certificate, and the
+DNS records point at the tunnel rather than at your servers. Switching from **Organization → Network**
+also moves your generated addresses from your organization's domain to your Cloudflare zone, one
+level below it, like `web-prod.example.com`.
 
 ## Check a domain's status
 
@@ -132,8 +162,12 @@ A live domain shows no status.
 | **Port 80 is closed on …** (shown only when no server takes the traffic) | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) in that server's firewall, for example `ufw allow 80/tcp`. |
 | **Something else answers on port 80 of …** (shown only when no server takes the traffic) | [Free port 80](../troubleshooting/app-not-reachable.md#something-else-answers-on-port-80) on that server. |
 | **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
+| **Not reaching your tunnel**, **No answer over HTTPS** | [Point the name at your tunnel](../troubleshooting/app-not-reachable.md#my-custom-domain-isnt-reaching-my-cloudflare-tunnel). |
+| **The free certificate covers one level under …** | Use a name one level under that zone, like `shop-a.example.com`. |
+| **Checking DNS** | Nothing. The page asks again within half a minute. **Check** asks now. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |
 | **via proxy** | Nothing. It works behind a proxy like Cloudflare. |
+| **via tunnel** | Nothing. It's served through your [Cloudflare Tunnel](cloudflare-tunnel.md). |
 
 For any other status, see [My app isn't reachable](../troubleshooting/app-not-reachable.md).
 

@@ -278,14 +278,12 @@ fn schema_lists_every_published_entry_under_origin_cloud_with_one_arg_per_proper
     let commands = fixture.schema_commands();
     let entries = entries();
     assert!(!entries.is_empty(), "the fixture publishes something");
+    let mut owned = 0;
     for entry in &entries {
         let listed = commands
             .iter()
             .find(|command| command["command"] == path(entry))
             .unwrap_or_else(|| panic!("schema lists {}", path(entry)));
-        assert_eq!(listed["origin"], "cloud", "{listed}");
-        assert_eq!(listed["surface"], "cloud", "{listed}");
-        assert_eq!(listed["about"], entry["about"], "{listed}");
         let mut args: Vec<String> = listed["args"]
             .as_array()
             .unwrap()
@@ -293,6 +291,22 @@ fn schema_lists_every_published_entry_under_origin_cloud_with_one_arg_per_proper
             .map(|arg| arg["name"].as_str().unwrap().to_owned())
             .collect();
         args.sort();
+        if listed["origin"] == "compiled" {
+            let missing: Vec<String> = expected_args(entry)
+                .into_iter()
+                .filter(|arg| !args.contains(arg))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "compiled {} lacks {missing:?}",
+                path(entry)
+            );
+            owned += 1;
+            continue;
+        }
+        assert_eq!(listed["origin"], "cloud", "{listed}");
+        assert_eq!(listed["surface"], "cloud", "{listed}");
+        assert_eq!(listed["about"], entry["about"], "{listed}");
         assert_eq!(args, expected_args(entry), "{}", path(entry));
         let required: Vec<&str> = listed["args"]
             .as_array()
@@ -321,7 +335,7 @@ fn schema_lists_every_published_entry_under_origin_cloud_with_one_arg_per_proper
     assert!(compiled > 0, "compiled commands keep their origin");
     assert_eq!(
         commands.len(),
-        compiled + entries.len(),
+        compiled + entries.len() - owned,
         "no entry is listed twice"
     );
 }

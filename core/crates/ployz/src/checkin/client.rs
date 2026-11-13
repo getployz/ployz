@@ -11,6 +11,7 @@ use std::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use iroh::SecretKey;
+use ployz_core::cloud_contract::MAX_SKEW_SECONDS;
 use reqwest::{
     StatusCode,
     header::{AUTHORIZATION, CONTENT_TYPE, DATE, RETRY_AFTER},
@@ -30,7 +31,6 @@ pub(super) const OUTDATED_BACKOFF: Duration = Duration::from_secs(60 * 60);
 const FLEET_TOKEN_PREFIX: &str = "pflt_";
 const FLEET_TOKEN_SECRET_CHARS: usize = 43;
 const TOKEN_MODE: u32 = 0o600;
-const MAX_SKEW_SECONDS: i64 = 300;
 const TRUSTED_SKEW_SECONDS: i64 = MAX_SKEW_SECONDS - 60;
 // Cloud's own words. Only these mean Cloud refused the token or held a check-in back; any other
 // 401 or 429 may come from something in between.
@@ -194,10 +194,7 @@ impl CheckinClient {
             .build()?;
         Ok(Self {
             http,
-            url: format!(
-                "{}/api/checkin",
-                crate::cloud_enroll::cloud_origin(cloud_url)
-            ),
+            url: crate::cloud_origin::CloudOrigin::new(cloud_url).checkin_url(),
             token,
         })
     }

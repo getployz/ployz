@@ -1,5 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type {
+  AccessChanged,
+  PrivateAccessOn,
   BackfillSealingKeyReport,
   BackfillSealingKeyRequest,
   Client,
@@ -12,6 +14,7 @@ import type {
   ContainerObservation,
   DataLossConfirmation,
   DeployOutcome,
+  DoorsChanged,
   DrainReport,
   DrainScope,
   ExecutionError,
@@ -26,13 +29,16 @@ import type {
   MetricHistoryInput,
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
+  RequestMachineUpgradeRequest,
   RuntimeWatchView,
+  Signed,
+  TeardownApproval,
   VolumeSwitchReply,
   VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
 import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, SealedNames, setVolumeCopyRefusal } from "@ployz/sdk";
-import { Context, Data, Effect, Fiber, Layer, Option, Schema, type Scope } from "effect";
+import { Context, Data, Effect, Fiber, Layer, Option, Redacted, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
@@ -88,6 +94,7 @@ export interface PloyzSession {
   readonly logHistory: (options: LogHistoryOptions) => Effect.Effect<LogHistoryPage, PloyzSdkError>;
   readonly metricHistory: (input: MetricHistoryInput) => Effect.Effect<MetricHistory, PloyzSdkError>;
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
+  readonly inspectMachine: (machine: string) => Effect.Effect<MachineDetails, PloyzSdkError>;
   /** What the connect confirmed about the entry's Cluster: null when it expected none. */
   readonly cluster: () => SessionCluster;
   /** Resolves to the secret `ployz1:` Management Capability for `label`. */
@@ -95,15 +102,21 @@ export interface PloyzSession {
   readonly clearManagementClient: (label: string) => Effect.Effect<void, PloyzSdkError>;
   /** Where the Machine pushes its observe streams; null stops its pushes. */
   readonly setPushTarget: (url: string | null) => Effect.Effect<void, PloyzSdkError>;
+  /** Name the Cluster through the entry; resolves to the name the entry now holds. */
+  readonly setClusterName: (name: string) => Effect.Effect<string | null, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
   readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
   /** Resolves to why the reset didn't finish, if it didn't: the Server left the Cluster, but may keep its state. */
   readonly removeMachine: (
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
+    teardown?: TeardownApproval | null,
   ) => Effect.Effect<LocalMachineRemoved, PloyzSdkError>;
-  /** Take a Server out of the Cluster without resetting it: it keeps its state and keys. */
-  readonly removeMachineMembership: (machine: MachineTarget) => Effect.Effect<void, PloyzSdkError>;
+  /**
+   * Take a Server out of the Cluster without resetting it: it keeps its state and keys. `teardown`, a person's approval
+   * of the departure, goes to each Server, and one that enforces Device approval takes none without it.
+   */
+  readonly removeMachineMembership: (machine: MachineTarget, teardown?: TeardownApproval | null) => Effect.Effect<void, PloyzSdkError>;
   readonly dataLossIfMachineRemoved: (
     machine: MachineTarget,
   ) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
@@ -126,13 +139,21 @@ export interface PloyzSession {
   readonly startIngress: (machine: MachineTarget) => Effect.Effect<IngressCheck, PloyzSdkError>;
   /** Stop and remove the web server on a Server. */
   readonly stopIngress: (machine: MachineTarget) => Effect.Effect<void, PloyzSdkError>;
+  /** Open `doors` (`public`, `tunnel`, or both) on every Server that takes web traffic. A `token` is sealed to the Cluster here and kept by it, not by Cloud. */
+  readonly setIngressDoors: (doors: readonly string[], token?: Redacted.Redacted<string>) => Effect.Effect<DoorsChanged, PloyzSdkError>;
+  /** Turn Private Access on with `authKey`, sealed to the Cluster here and kept by it, not by Cloud, or off with null. */
+  readonly setPrivateAccess: (on: PrivateAccessOn | null) => Effect.Effect<AccessChanged, PloyzSdkError>;
   /** Bring every Machine of the Cluster to hold its Sealing Key, generating one only on `generator`. */
   readonly backfillSealingKey: (request: BackfillSealingKeyRequest) => Effect.Effect<BackfillSealingKeyReport, PloyzSdkError>;
-  /** Ask one Server to Upgrade; resending it with the same attempt ID is the poll. */
+  /**
+   * Ask one Server to Upgrade; resending it with the same attempt ID is the poll. `channel` is the Release Channel a
+   * person approved, which a Server that enforces device approval needs; null sends none.
+   */
   readonly requestMachineUpgrade: (
     machine: MachineTarget,
     attemptId: MachineUpgradeAttemptId,
     release: string,
+    channel: Signed | null,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
   readonly volumeSwitch: <R extends VolumeSwitchRequest>(
     machine: MachineTarget,
@@ -148,9 +169,9 @@ export interface PloyzSession {
    */
   readonly agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
-  readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
+  readonly stopContainer: (machine: string, container: string, approval: Signed | null) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
-  readonly startContainer: (machine: string, container: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
+  readonly startContainer: (machine: string, container: string, approval: Signed | null) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
   readonly removeContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   readonly copyContainerImage: (
     source: MachineTarget,
@@ -159,8 +180,15 @@ export interface PloyzSession {
   ) => Effect.Effect<void, PloyzSdkError>;
   /** What removing Namespace `namespace`, its Volumes included, deletes. */
   readonly dataLossIfNamespaceDestroyed: (namespace: string) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
-  /** Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`. */
-  readonly destroyNamespace: (namespace: string, confirmDataLoss: DataLossConfirmation) => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
+  /**
+   * Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`, under a
+   * person's `teardown` of it, which a Server that enforces Device approval needs.
+   */
+  readonly destroyNamespace: (
+    namespace: string,
+    confirmDataLoss: DataLossConfirmation,
+    teardown?: TeardownApproval | null,
+  ) => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
   readonly publishCertificateMaterial: (
     request: PublishCertificateMaterialRequest,
   ) => Effect.Effect<void, PloyzSdkError>;
@@ -261,6 +289,12 @@ export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
 }
 
 /** The code of the runtime's RPC error a failure carries, such as "not_found"; undefined for any other failure. */
+/** A Server with device enforcement on refused a stop or start whose approval it can't trust, or that had none. */
+const RefusedApproval = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.restart.device-approval.v2") }) });
+
+export const refusedApproval = (error: PloyzSdkError) =>
+  "cause" in error && Option.isSome(Schema.decodeUnknownOption(RefusedApproval)(error.cause));
+
 export function rpcErrorCode(error: PloyzSdkError) {
   return rpcCode("cause" in error ? error.cause : undefined);
 }
@@ -294,6 +328,16 @@ const LacksClusterKey = Schema.Struct({ message: Schema.String.check(Schema.isIn
 /** Whether a connect failed on a Server that answers but holds no Sealing Key yet, so can't show which Cluster it is in. */
 export function lacksClusterKey(error: PloyzSdkError) {
   return Schema.is(LacksClusterKey)("cause" in error ? error.cause : undefined);
+}
+
+const ManagementClientCleared = Schema.Struct({
+  code: Schema.Literal("unauthenticated"),
+  details: Schema.Struct({ management_client: Schema.Literal("cleared") }),
+});
+
+/** Whether a connect failed on a Server that confirmed the Management Client it was given was cleared. */
+export function managementClientCleared(error: PloyzSdkError) {
+  return error._tag === "PloyzProviderError" && error.operation === "connect" && Schema.is(ManagementClientCleared)(error.cause);
 }
 
 /** The message of the runtime's RPC error a failure carries; undefined for any other failure. */
@@ -332,10 +376,12 @@ function wrapClient(client: Client): PloyzSession {
     logHistory: (options) => sdkPromise("log history", (signal) => client.runtime.logHistory({ ...options, signal })),
     metricHistory: (input) => sdkPromise("metric history", () => client.runtime.metricHistory(input)),
     inspect: () => sdkPromise("inspect", () => client.inspect()),
+    inspectMachine: (machine) => sdkPromise("inspect machine", () => client.inspectMachine(machine)),
     cluster: () => client.cluster(),
     setManagementClient: (label) => sdkPromise("set Management Client", () => client.setManagementClient(label)),
     clearManagementClient: (label) => sdkPromise("clear Management Client", () => client.clearManagementClient(label)),
     setPushTarget: (url) => sdkPromise("set push target", () => client.setPushTarget(url)),
+    setClusterName: (name) => sdkPromise("set cluster name", () => client.setClusterName(name)),
     observeEnrollment: () => Effect.tryPromise({
       try: () => client.observeEnrollment(),
       catch: (cause) => new PloyzProviderError({ operation: "observe enrollment", cause }),
@@ -348,20 +394,20 @@ function wrapClient(client: Client): PloyzSession {
       },
       catch: (cause) => new PloyzProviderError({ operation: "register", cause }),
     }),
-    removeMachine: (machine, confirmDataLoss) =>
+    removeMachine: (machine, confirmDataLoss, teardown = null) =>
       sdkPromise("remove machine", () =>
-        client.removeMachine(machine, confirmDataLoss),
+        client.removeMachine(machine, confirmDataLoss, teardown),
       ),
-    removeMachineMembership: (machine) =>
-      sdkPromise("remove machine membership", () => client.removeMachineMembership(machine)),
+    removeMachineMembership: (machine, teardown = null) =>
+      sdkPromise("remove machine membership", () => client.removeMachineMembership(machine, teardown)),
     dataLossIfMachineRemoved: (machine) =>
       sdkPromise("load machine data loss", () =>
         client.dataLossIfMachineRemoved(machine),
       ),
     dataLossIfNamespaceDestroyed: (namespace) =>
       sdkPromise("load namespace data loss", () => client.dataLossIfNamespaceDestroyed(namespace, true)),
-    destroyNamespace: (namespace, confirmDataLoss) =>
-      sdkPromise("remove namespace", () => client.destroyNamespace(namespace, confirmDataLoss, true)),
+    destroyNamespace: (namespace, confirmDataLoss, teardown = null) =>
+      sdkPromise("remove namespace", () => client.destroyNamespace(namespace, confirmDataLoss, true, teardown)),
     updateMachine: (machine, update) =>
       sdkPromise("update machine", () =>
         client.updateMachine(machine, update).then(() => undefined),
@@ -370,20 +416,26 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("drain machine", () => client.drainMachine(machine, scope)),
     startIngress: (machine) => sdkPromise("start ingress", () => client.startIngress(machine)),
     stopIngress: (machine) => sdkPromise("stop ingress", () => client.stopIngress(machine)),
+    setIngressDoors: (doors, token) =>
+      sdkPromise("set ingress doors", () => client.setIngressDoors([...doors], token === undefined ? undefined : Redacted.value(token))),
+    setPrivateAccess: (on) => sdkPromise("set private access", () => client.setPrivateAccess(on)),
     volumeSwitch: (machine, request) =>
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>
       sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
     agentAsk: (query, readable, sealed) => sdkPromise("agent ask", () => client.agentAsk(query, readable, sealed)),
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
-    stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
-    startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),
+    stopContainer: (machine, container, approval) => sdkPromise("stop container", () => client.stopContainer(machine, container, approval)),
+    startContainer: (machine, container, approval) => sdkPromise("start container", () => client.startContainer(machine, container, approval)),
     removeContainer: (machine, container) => sdkPromise("remove container", () => client.removeContainer(machine, container)),
     copyContainerImage: (source, container, dest) =>
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
     backfillSealingKey: (request) => sdkPromise("backfill sealing key", () => client.backfillSealingKey(request)),
-    requestMachineUpgrade: (machine, attemptId, release) =>
-      sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
+    requestMachineUpgrade: (machine, attemptId, release, channel) => {
+      const request: RequestMachineUpgradeRequest = { attempt_id: attemptId, release };
+      if (channel !== null) request.channel = channel;
+      return sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, request));
+    },
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,

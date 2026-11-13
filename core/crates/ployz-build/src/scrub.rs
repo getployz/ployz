@@ -478,6 +478,7 @@ exit 0
                 image_contexts: &BTreeMap::new(),
                 compose_file: &root.path().join("compose.yaml"),
                 sealed_override: None,
+                cache_scope: None,
                 working_dir: root.path(),
                 environment: &BTreeMap::new(),
                 docker: Some(&docker),

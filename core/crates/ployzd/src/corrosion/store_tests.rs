@@ -231,6 +231,7 @@ async fn publication_guard_rechecks_the_local_phase() {
     );
     let (mut machine, local) = participating_record();
     machine.runtime.management_identity = Some(local.management_secret().public_key());
+    machine.runtime.device_enforcement = Some(local.device_enforcement());
     let publication = store.machine_publication().await;
     assert_eq!(
         publication.publishable_machine(&local, RuntimeOverlay::default()),
@@ -508,6 +509,65 @@ async fn the_first_sealing_key_awaiting_recovery_stays() {
 }
 
 #[tokio::test]
+async fn the_last_cluster_name_written_is_the_one_read() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(store.cluster_name().await.unwrap(), None);
+    for name in ["acme", "beta"] {
+        let name = ployz_core::ClusterName::parse(name).unwrap();
+        store.publish_cluster_name(&name).await.unwrap();
+        assert_eq!(store.cluster_name().await.unwrap(), Some(name));
+    }
+    store
+        .api()
+        .execute([Statement::new(
+            "UPDATE cluster SET value = 'Not A Label' WHERE key = 'name'",
+            [],
+        )])
+        .await
+        .unwrap();
+    assert!(store.cluster_name().await.is_err());
+    task.abort();
+}
+
+#[tokio::test]
+async fn the_declared_doors_read_back_as_written_and_a_bad_value_reads_unreadable() {
+    use super::DeclaredDoors;
+    use ployz_core::IngressDoors;
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(
+        store.cluster_doors().await.unwrap(),
+        DeclaredDoors::Undeclared
+    );
+    for doors in [
+        IngressDoors::closed(),
+        IngressDoors::tunnel(),
+        IngressDoors::both(),
+        IngressDoors::public(),
+    ] {
+        store.publish_cluster_doors(&doors).await.unwrap();
+        assert_eq!(
+            store.cluster_doors().await.unwrap(),
+            DeclaredDoors::Declared(doors)
+        );
+    }
+    for stored in [r#"'["public","warp"]'"#, "'public'", "'{}'", "NULL"] {
+        store
+            .api()
+            .execute([Statement::new(
+                format!("UPDATE cluster SET value = {stored} WHERE key = 'doors'"),
+                [],
+            )])
+            .await
+            .unwrap();
+        let read = store.cluster_doors().await.unwrap();
+        assert_eq!(read, DeclaredDoors::Unreadable, "{stored}");
+        assert_eq!(read.followed(), None);
+    }
+    task.abort();
+}
+
+#[tokio::test]
 async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
     let (store, task) = identity_store(corrosion_db()).await;
     let first = ployz_core::SealingPublicKey::from_bytes([1; 32]);
@@ -620,7 +680,7 @@ fn the_cluster_sealing_decides_by_the_published_key_then_the_marker_then_the_see
         (malformed.clone(), row(None), None, None),
         (malformed.clone(), row(Some(m)), Some(s), None),
         (row(None), malformed.clone(), None, None),
-        (row(None), malformed.clone(), Some(s), None),
+        (row(None), malformed, Some(s), None),
     ] {
         let decided = super::ClusterSealing::decide(&published, &marker, seeded.map(seed).as_ref());
         match expected {
@@ -1045,6 +1105,43 @@ async fn a_store_has_held_another_machine_once_its_key_arrived() {
         .await
         .unwrap();
     assert!(store.held_another_machine(&own).await.unwrap());
+    server.abort();
+}
+
+/// `server rm` deletes the row and leaves its cr-sqlite key, while a row that has not
+/// arrived leaves neither. Only the IDs asked about are answered.
+#[tokio::test]
+async fn a_deleted_machine_row_reads_as_removed() {
+    let present = MachineId::random();
+    let deleted = MachineId::random();
+    let unasked = MachineId::random();
+    let never_held = MachineId::random();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);
+         CREATE TABLE machines (id PRIMARY KEY, info);",
+    )
+    .unwrap();
+    for id in [present, deleted, unasked] {
+        db.execute(
+            "INSERT INTO machines__crsql_pks (id) VALUES (?)",
+            [id.to_string()],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO machines (id, info) VALUES (?, '{}')",
+        [present.to_string()],
+    )
+    .unwrap();
+    let (store, server) = identity_store(db).await;
+    assert_eq!(
+        store
+            .removed_machines(&[present, deleted, never_held])
+            .await
+            .unwrap(),
+        std::collections::BTreeSet::from([deleted])
+    );
     server.abort();
 }
 

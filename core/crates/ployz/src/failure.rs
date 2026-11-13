@@ -1,7 +1,8 @@
+use ployz_core::error_chain;
 use std::{borrow::Cow, error::Error, fmt, io};
 
 use ployz_core::{
-    CapabilityRefusal, CodecError, ContainerSelectorError, DataLoss, MachineSelectorError,
+    CapabilityRefusal, CodecError, ContainerSelectorError, DataLoss, Hint, MachineSelectorError,
     MachineUpdateError, PartialResult, RpcError, RpcErrorCode, ServiceSelectorError,
     StreamProtocolError, UnconfirmedDataLoss, ValueError,
 };
@@ -15,11 +16,10 @@ use crate::{
     deploy::{DeployError, PlanError},
     enrollment::local::Error as EnrollmentHistoryError,
     image::PushError,
-    ingress::IngressImageError,
     namespace::NamespaceError,
     operator::OperatorError,
     provisioning::ProvisionError,
-    ui::{self, Hint},
+    ui,
 };
 
 /// CLI command outcome. `Display` is our sentence; `ui::exit` prints it.
@@ -32,6 +32,19 @@ pub struct Failure {
     diagnostic: Option<Box<ui::progress::Diagnostic>>,
     /// Data its `--json` error carries in `details` beside what the error says.
     added: serde_json::Map<String, Value>,
+    connect_failure: Option<Box<ConnectFailure>>,
+}
+
+/// Why no Server of a Cluster could carry a command: a fact the route found out, kept as a
+/// value so no caller recognises it by the text or the `--json` keys it was reported with.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ConnectFailure {
+    /// Ployz Cloud knows no Server of this Organization.
+    NoServers,
+    /// Servers Cloud knows, none of which answered, named where Cloud holds a name.
+    Unanswered { servers: Vec<String>, relayed: bool },
+    /// A Server refused to give this command access.
+    Refused,
 }
 
 #[derive(Debug)]
@@ -77,6 +90,7 @@ impl Failure {
             outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
+            connect_failure: None,
             inner: Inner::Command {
                 error: Box::new(error),
                 hints: Vec::new(),
@@ -108,6 +122,7 @@ impl Failure {
             outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
+            connect_failure: None,
         }
     }
 
@@ -120,6 +135,7 @@ impl Failure {
             outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
+            connect_failure: None,
         }
     }
 
@@ -180,6 +196,15 @@ impl Failure {
             next = error.source();
         }
         None
+    }
+
+    pub(crate) fn with_connect_failure(mut self, failure: ConnectFailure) -> Self {
+        self.connect_failure = Some(Box::new(failure));
+        self
+    }
+
+    pub(crate) fn connect_failure(&self) -> Option<&ConnectFailure> {
+        self.connect_failure.as_deref()
     }
 
     pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
@@ -265,6 +290,7 @@ impl Failure {
         let interrupted = self.interrupted;
         let outcome = self.outcome;
         let diagnostic = self.diagnostic.take();
+        let connect_failure = self.connect_failure.take();
         let mut contextual = Self::command(Message {
             code,
             text: message.into(),
@@ -274,6 +300,7 @@ impl Failure {
         contextual.interrupted = interrupted;
         contextual.outcome = outcome;
         contextual.diagnostic = diagnostic;
+        contextual.connect_failure = connect_failure;
         contextual
     }
 
@@ -304,7 +331,7 @@ impl Failure {
     pub fn causes(&self) -> Vec<String> {
         match &self.inner {
             Inner::Command { error, .. } if refusal_before_context(error.as_ref()).is_none() => {
-                ui::causes(error.as_ref())
+                error_chain::causes(error.as_ref())
             }
             Inner::Command { .. } | Inner::Partial | Inner::Exit(_) => Vec::new(),
         }
@@ -350,12 +377,9 @@ impl Failure {
                 .expect("error details object")
                 .extend(self.added.clone());
         }
-        RpcError {
-            code,
-            message: self.to_string(),
-            details,
-            cause: self.causes(),
-        }
+        RpcError::new(code, self.to_string())
+            .with_details(details)
+            .with_causes(self.causes())
     }
 
     pub(crate) fn json(&self) -> Value {
@@ -405,7 +429,7 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
     if let Some(MachineSelectorError::NotFound(_)) = error.downcast_ref::<MachineSelectorError>() {
         return (
             RpcErrorCode::NotFound,
-            serde_json::json!({ "inspect": ["ployz server ls"] }),
+            Hint::details(&[Hint::Inspect("ployz server ls".into())]),
         );
     }
     let container = error
@@ -415,10 +439,7 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
             _ => None,
         });
     if let Some(ContainerSelectorError::NotFound { valid, .. }) = container {
-        return (
-            RpcErrorCode::NotFound,
-            serde_json::json!({ "valid_children": valid }),
-        );
+        return (RpcErrorCode::NotFound, Hint::details(&[Hint::valid(valid)]));
     }
     if let Some(OperatorError::StartExec { source, .. }) = error.downcast_ref::<OperatorError>() {
         let RpcError { code, details, .. } = source.to_rpc_error();
@@ -438,7 +459,7 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
     {
         return (
             RpcErrorCode::NotFound,
-            serde_json::json!({ "valid_children": running_in_scope }),
+            Hint::details(&[Hint::valid(running_in_scope)]),
         );
     }
     if let Some(
@@ -448,11 +469,10 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
     ) = error.downcast_ref::<ProvisionError>()
     {
         let mut cleanup_lines = vec![cleanup.to_string()];
-        cleanup_lines.extend(ui::causes(cleanup.as_ref()));
-        return (
-            provision_code(failed),
-            serde_json::json!({ "next": remove, "cleanup": cleanup_lines }),
-        );
+        cleanup_lines.extend(error_chain::causes(cleanup.as_ref()));
+        let mut details = serde_json::json!({ "cleanup": cleanup_lines });
+        Hint::into_details(&[Hint::Next(remove.to_string())], &mut details);
+        return (provision_code(failed), details);
     }
     (code(error), Value::Null)
 }
@@ -519,9 +539,6 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     }
     if let Some(error) = error.downcast_ref::<TransportError>() {
         return error.to_rpc_error().code;
-    }
-    if error.is::<IngressImageError>() {
-        return RpcErrorCode::Unavailable;
     }
     if let Some(error) = error.downcast_ref::<ConfigError>() {
         return config_code(error);
@@ -706,12 +723,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
 
 /// A failed image copy as the SDK reports it.
 pub(crate) fn push_rpc_error(error: PushError) -> RpcError {
-    RpcError {
-        code: push_code(&error),
-        message: error.to_string(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::new(push_code(&error), error.to_string())
 }
 
 fn push_code(error: &PushError) -> RpcErrorCode {
@@ -836,7 +848,7 @@ pub(crate) fn partial_failure_details<T>(
             format!(
                 "{}: {}",
                 server(&failure.machine_id),
-                crate::ui::row(&failure.error)
+                error_chain::row(&failure.error)
             )
         })
         .chain(
@@ -889,39 +901,6 @@ impl Error for Failure {
     }
 }
 
-/// Error lines kept as a source chain, when the errors themselves can't be kept.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct JoinedChain {
-    line: String,
-    next: Option<Box<JoinedChain>>,
-}
-
-impl JoinedChain {
-    /// A chain of `lines`, outermost first; `None` when there are none.
-    pub(crate) fn of(lines: Vec<String>) -> Option<Self> {
-        lines.into_iter().rev().fold(None, |next, line| {
-            Some(Self {
-                line,
-                next: next.map(Box::new),
-            })
-        })
-    }
-}
-
-impl fmt::Display for JoinedChain {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.line)
-    }
-}
-
-impl Error for JoinedChain {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.next
-            .as_deref()
-            .map(|next| next as &(dyn Error + 'static))
-    }
-}
-
 macro_rules! from_error {
     ($($t:ty),+ $(,)?) => {
         $(impl From<$t> for Failure {
@@ -951,7 +930,6 @@ from_error!(
     TransportError,
     CodecError,
     ProvisionError,
-    IngressImageError,
     RpcError,
     NamespaceError,
     cloud_enroll::Error,
@@ -1035,7 +1013,9 @@ impl From<LoginError> for Failure {
             LoginError::TokenRefused => Some(crate::cloud_account::SIGN_IN_PAST_TOKEN),
             LoginError::AgentTokenRefused => Some("ployz mcp login"),
             LoginError::UnknownOrganization(_) => Some("ployz org ls"),
-            LoginError::UnknownCredential(_) => Some("ployz token ls"),
+            LoginError::UnknownCredential(_) | LoginError::AmbiguousCredential { .. } => {
+                Some("ployz token ls")
+            }
             LoginError::Unreachable { .. }
             | LoginError::Unanswered { .. }
             | LoginError::Unsupported(_)
@@ -1072,6 +1052,7 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
             RpcErrorCode::NotFound
         }
+        LoginError::AmbiguousCredential { .. } => RpcErrorCode::Ambiguous,
     }
 }
 
@@ -1132,10 +1113,7 @@ mod tests {
             container: "api-1".into(),
             source: TransportError::from(status).addressed_as("beta"),
         });
-        assert_eq!(
-            failure.hints(),
-            [crate::ui::Hint::Next("ployz device request".into())]
-        );
+        assert_eq!(failure.hints(), [Hint::Next("ployz device request".into())]);
     }
 
     #[test]
@@ -1200,7 +1178,7 @@ mod tests {
         };
         let failure = Failure::caused(RpcErrorCode::Internal, "Could not save the context.", write);
         assert_eq!(
-            crate::ui::chain_text(&failure),
+            error_chain::row(&failure),
             "Could not save the context: Could not write Ployz config /etc/ployz/config.yaml: disk full"
         );
     }
@@ -1397,10 +1375,10 @@ mod tests {
             Some("Connection refused (os error 111)")
         );
         assert!(
-            ui::row(&wrapped)
+            error_chain::row(&wrapped)
                 .ends_with("Corrosion HTTP request failed: Connection refused (os error 111)"),
             "{}",
-            ui::row(&wrapped)
+            error_chain::row(&wrapped)
         );
     }
 

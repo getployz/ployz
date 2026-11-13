@@ -1,3 +1,4 @@
+use ployz_core::labels;
 use std::time::Duration;
 
 use bollard::{
@@ -12,7 +13,6 @@ use ployz_core::{
     ContainerId, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
     MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
 };
-use serde_json::Value;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
@@ -164,7 +164,7 @@ impl ContainerRuntime {
                 service_id: observation.service_id(),
                 service_name: observation.resolved_spec.name.clone(),
                 container_id: observation.container_id,
-                hook: observation.labels.get(super::LABEL_HOOK).cloned(),
+                hook: observation.labels.get(labels::HOOK).cloned(),
             },
             machine_id: *machine_id,
             machine_name: machine_name.clone(),
@@ -172,7 +172,7 @@ impl ContainerRuntime {
         let record = sealed_env::record_from_label(
             observation
                 .labels
-                .get(sealed_env::LABEL_SEALED)
+                .get(labels::SEALED_ENV)
                 .map(String::as_str),
         )
         .map_err(|error| docker_status(error.into()))?;
@@ -186,7 +186,10 @@ impl ContainerRuntime {
         Ok(serve_logs(source, metadata, options.follow))
     }
 
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the RPC error type"
+    )]
     pub fn raw_logs(&self, container: &str, options: &LogsOptions) -> Result<LogSource, Status> {
         let since = options.since_nanos;
         let docker_options = docker_log_options(options)?;
@@ -380,12 +383,7 @@ async fn send_exec_error(
 ) -> Result<(), Status> {
     send_exec(
         sender,
-        ExecResponseFrame::Error(RpcError {
-            code: RpcErrorCode::Internal,
-            message: error.to_string(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
+        ExecResponseFrame::Error(RpcError::internal(error.to_string())),
     )
     .await
 }
@@ -445,7 +443,10 @@ fn split_timestamp(bytes: &[u8]) -> (i64, &[u8]) {
     }
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn docker_log_options(
     options: &LogsOptions,
 ) -> Result<bollard::query_parameters::LogsOptions, Status> {
@@ -475,7 +476,10 @@ fn not_before(ts: i64, since: Option<i64>) -> bool {
     ts == 0 || since.is_none_or(|since| ts >= since)
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn docker_log_timestamp(timestamp: i64) -> Result<i32, Status> {
     i32::try_from(timestamp)
         .map_err(|_| Status::invalid_argument(format!("log time {timestamp} is out of range")))

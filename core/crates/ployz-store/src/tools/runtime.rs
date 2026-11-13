@@ -5,18 +5,17 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use ployz_core::ServiceName;
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::LineCap;
+use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Health, LogsAnswer, OperationsAnswer,
 };
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Stop, Tool, place_of, store};
 use super::refusal::{Call, Refusal};
-use super::release::place;
 use super::status::{Container, ServiceFacts, Watch, service_status};
 use super::step::{
     Action, Ask, CloudQuery, Gate, LogsQuery, RequestKey, ServerName, ServiceVerb, Subject,
@@ -28,10 +27,8 @@ use crate::{
     ProjectName, ServicesQuery, SourceKind,
 };
 
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
-
 /// The deployed Service `service` names, by the runtime name its containers carry.
-fn deployed<'a>(
+pub(super) fn deployed<'a>(
     namespace: &'a NamespaceView,
     service: &ServiceName,
 ) -> Result<&'a ServiceName, Stop> {
@@ -40,15 +37,11 @@ fn deployed<'a>(
         Refusal::not_found("No deployed Service by that name here")
             .with_did_you_mean(did_you_mean(service.as_str(), names()))
             .with_valid(names())
-            .with_next(Call::new("environment_show", json!(place_of(namespace))))
+            .with_next(Call::to(
+                ToolId::EnvironmentShow,
+                place_of(&namespace.environment),
+            ))
             .into()
-    })
-}
-
-fn place_of(namespace: &NamespaceView) -> Value {
-    json!({
-        "project": namespace.environment.project,
-        "environment": namespace.environment.name,
     })
 }
 
@@ -68,26 +61,21 @@ const fn container(report: &ContainerReport) -> Container {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceState {
-    /// Omit for every Service here.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    service: Option<ServiceName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceState {
+        /// Omit for every Service here.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        service: Option<ServiceName>,
+        @place,
+    }
 }
 
 impl Tool for ServiceState {
     const NAME: &'static str = "service_status";
     const DESCRIPTION: &'static str = "A Service's state as the canvas shows it, and its containers per server: health, restarts, image, Deployment, latest restart, start or stop.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
     fn example() -> Value {
         json!({ "service": "web" })
@@ -95,7 +83,7 @@ impl Tool for ServiceState {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let mut answers = cx
             .read(vec![
                 store(&ServicesQuery {
@@ -127,7 +115,10 @@ impl Tool for ServiceState {
                         names.iter().map(String::as_str),
                     ))
                     .with_valid(names.iter().map(String::as_str))
-                    .with_next(Call::new("environment_show", place_of(&namespace)))
+                    .with_next(Call::to(
+                        ToolId::EnvironmentShow,
+                        place_of(&namespace.environment),
+                    ))
                     .into());
             }
             listed
@@ -218,42 +209,39 @@ impl Tool for ServiceState {
                 })
             })
             .collect::<Vec<_>>();
-        Ok(json!({ "at": at(&namespace.environment), "services": services, "seen": seen.seen }))
+        Ok(
+            json!({ "at": namespace.environment.to_string(), "services": services, "seen": seen.seen }),
+        )
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ServiceLogs {
-    #[schemars(with = "String", pattern(NODE_NAME))]
-    service: ServiceName,
-    /// Deployment number.
-    #[serde(default)]
-    #[schemars(range(min = 1))]
-    deployment: Option<u64>,
-    /// Only from this server.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    server: Option<ServerName>,
-    #[serde(default)]
-    #[schemars(with = "u16", range(min = 1, max = 200))]
-    lines: LineCap,
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 10080))]
-    since_minutes: Option<u32>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
+tool_input! {
+    pub(crate) struct ServiceLogs {
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        service: ServiceName,
+        /// Deployment number.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        deployment: Option<u64>,
+        /// Only from this server.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        server: Option<ServerName>,
+        #[serde(default)]
+        #[schemars(with = "u16", range(min = 1, max = 200))]
+        lines: LineCap,
+        #[serde(default)]
+        #[schemars(range(min = 1, max = 10080))]
+        since_minutes: Option<u32>,
+        @place,
+    }
 }
 
 impl Tool for ServiceLogs {
     const NAME: &'static str = "service_logs";
     const DESCRIPTION: &'static str = "A Service's recent logs: at most 200 lines, 16 KB and 500 B a line, secrets shown by name. With deployment, that Deployment's containers, or its build log if the build failed.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<&'static str> = Some("deployment_show");
+    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::DeploymentShow);
 
     fn example() -> Value {
         json!({ "service": "web", "deployment": 12, "lines": 50 })
@@ -261,7 +249,7 @@ impl Tool for ServiceLogs {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let scope = cx.scope(&self);
         let mut asks = vec![store(&NamespaceQuery {
             environment: scope.clone(),
         })?];
@@ -311,7 +299,7 @@ impl Tool for ServiceLogs {
             .into_iter();
         let logs = cx.cloud::<LogsAnswer>(answers.next())?;
         Ok(json!({
-            "at": at(&namespace.environment),
+            "at": namespace.environment.to_string(),
             "untrusted": { "servers": logs.servers },
             "seen": logs.seen,
             "notes": logs.notes,
@@ -320,7 +308,10 @@ impl Tool for ServiceLogs {
 }
 
 /// Restart, start or stop `service`'s containers, on one server or all.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is one field of the agent tool call"
+)]
 fn service_act(
     cx: &mut Cx<'_>,
     verb: ServiceVerb,
@@ -332,7 +323,7 @@ fn service_act(
     environment: Option<&EnvironmentName>,
 ) -> Result<Value, Stop> {
     cx.cloud_only()?;
-    let scope = cx.scope(project, environment);
+    let scope = cx.scope_in(project, environment);
     let mut asks = vec![store(&NamespaceQuery { environment: scope })?];
     if server.is_some() {
         asks.push(servers());
@@ -347,11 +338,11 @@ fn service_act(
         }
         None => None,
     };
-    let mut read = place(cx.call());
+    let mut read = cx.place_args();
     read.insert("service".into(), service.as_str().into());
     let environment = namespace.environment.id.clone();
     let run = Run {
-        at: at(&namespace.environment),
+        at: namespace.environment.to_string(),
         subject: Subject::Service {
             environment: environment.clone(),
             service: service.clone(),
@@ -362,34 +353,25 @@ fn service_act(
             only,
             verb,
         },
-        read: Call::new("service_status", Value::Object(read)),
+        read: Call::to(ToolId::ServiceState, Value::Object(read)),
     };
     operate(cx, run, key, wait_seconds)
 }
 
 macro_rules! service_act_tool {
     ($tool:ident, $name:literal, $verb:expr, $gate:expr, $description:literal) => {
-        #[derive(Deserialize, JsonSchema)]
-        #[serde(deny_unknown_fields)]
-        pub(crate) struct $tool {
-            #[schemars(with = "String", pattern(NODE_NAME))]
-            service: ServiceName,
-            /// Only on this server.
-            #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-            server: Option<ServerName>,
-            #[serde(default)]
-            #[schemars(range(min = 0, max = 300))]
-            wait_seconds: u32,
-            #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
-            request_key: Option<RequestKey>,
-            #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-            project: Option<ProjectName>,
-            #[serde(default)]
-            #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-            environment: Option<EnvironmentName>,
+        tool_input! {
+            pub(crate) struct $tool {
+                #[schemars(with = "String", pattern(NODE_NAME))]
+                service: ServiceName,
+                /// Only on this server.
+                #[serde(default)]
+                #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+                server: Option<ServerName>,
+                @wait,
+                @key,
+                @place,
+            }
         }
 
         impl Tool for $tool {
@@ -397,7 +379,7 @@ macro_rules! service_act_tool {
             const DESCRIPTION: &'static str = $description;
             const EFFECT: Effect = Effect::Change;
             const GATE: Gate = $gate;
-            const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
+            const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
 
             fn example() -> Value {
                 json!({ "service": "web", "wait_seconds": 60 })

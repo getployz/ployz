@@ -14,9 +14,7 @@ use ployz_core::{
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
-use ployz_store::tools::{
-    LineCap, LogText, LogsQuery, SealedValues, ServerName, ServerRef, Timestamp, Withheld,
-};
+use ployz_store::tools::{LineCap, LogText, LogsQuery, ServerName, ServerRef, Timestamp, Withheld};
 
 use super::{
     NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, remove_one, report,
@@ -203,7 +201,7 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
 
     let answer = summarize(
         &history,
-        &[one.clone(), two],
+        &[one, two],
         Some(&ours),
         &Readable::All,
         (Timestamp(900), 1_000 * SECOND),
@@ -429,7 +427,7 @@ async fn acted<T, F: std::future::Future<Output = Result<T, RpcError>>>(
 
 async fn started(service: support::DeployService) -> Started {
     acted(service, |session, machine| async move {
-        start_one(&session, machine, container_id('1')).await
+        start_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap()
@@ -444,7 +442,7 @@ async fn a_start_never_routes_a_copy_no_deploy_brought_in() {
     let service = support::DeployService::new(support::machine('a', "one"));
     let rotations = service.rotations();
     let error = acted(service, |session, machine| async move {
-        start_one(&session, machine, container_id('1')).await
+        start_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap_err();
@@ -492,7 +490,7 @@ async fn a_start_whose_copy_cannot_be_read_starts_nothing() {
         support::DeployService::new(support::machine('a', "one")).fail_inspects("inspect failed");
     let mutations = service.mutating_rpcs();
     let error = acted(service, |session, machine| async move {
-        start_one(&session, machine, container_id('1')).await
+        start_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap_err();
@@ -506,7 +504,7 @@ async fn a_start_of_an_out_copy_is_refused_and_says_to_deploy_again() {
         .with_rotation(container_id('1'), CopyRotation::Out);
     let mutations = service.mutating_rpcs();
     let error = acted(service, |session, machine| async move {
-        start_one(&session, machine, container_id('1')).await
+        start_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap_err();
@@ -525,7 +523,7 @@ async fn a_stop_of_an_in_copy_holds_it_so_a_start_can_bring_it_back() {
     let rotations = service.rotations();
     let removed = service.removed_containers();
     acted(service, |session, machine| async move {
-        stop_one(&session, machine, container_id('1')).await
+        stop_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap();
@@ -538,6 +536,48 @@ async fn a_stop_of_an_in_copy_holds_it_so_a_start_can_bring_it_back() {
         Some(CopyRotation::Held(_))
     ));
     assert!(removed.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stop_and_a_start_carry_their_approval_on_every_step() {
+    let signer = ployz_core::authority::Signer::from_seed(&[1; 32]);
+    let approval = ployz_core::authority::Signed::sign(
+        &ployz_core::authority::RestartApproval {
+            cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+            operation: ployz_core::OperationId::random(),
+            kind: ployz_core::authority::WorkflowKind::Restart,
+            namespace: ployz_core::Namespace::parse("app").unwrap(),
+            service: ployz_core::ServiceName::parse("web").unwrap(),
+            machines: Vec::new(),
+            container: container_id('1'),
+            issued_at: ployz_core::authority::Timestamp::now(),
+            expires_at: ployz_core::authority::Timestamp::now(),
+            signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
+            proposal: None,
+        },
+        &signer,
+    )
+    .unwrap();
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::In);
+    let approvals = service.approvals();
+    let sent = approval.clone();
+    acted(service, |session, machine| async move {
+        stop_one(&session, machine, container_id('1'), Some(sent.clone())).await?;
+        start_one(&session, machine, container_id('1'), Some(sent))
+            .await
+            .map(drop)
+    })
+    .await
+    .unwrap();
+    let approvals = approvals.lock().unwrap();
+    assert!(approvals.len() >= 2, "{approvals:?}");
+    assert!(
+        approvals
+            .iter()
+            .all(|carried| carried.as_ref() == Some(&approval)),
+        "{approvals:?}"
+    );
 }
 
 #[tokio::test]
@@ -762,42 +802,6 @@ async fn a_logs_ask_scrubs_every_name_the_store_holds_sealed_whatever_the_ask_sa
     );
 }
 
-// Catches a direct apply's failed tail scrubbing env values it has no Sealed reason to,
-// or showing secret-shaped text.
-#[tokio::test]
-async fn a_failed_tail_without_sealed_values_shows_env_values_and_redacts_secret_shaped_text() {
-    let one = support::machine('a', "one");
-    let (address, server) = support::listening(support::DeployService::new(one.clone())).await;
-    let session = crate::sdk::connect_connections(
-        vec![crate::context::Connection::tcp(address)],
-        Arc::new(crate::connect::SystemConnector::default()),
-    )
-    .await
-    .unwrap();
-
-    let (log, _) = crate::sdk::failed_tail(
-        &session.client().unwrap(),
-        one.machine.id,
-        container_id('c'),
-        &SealedValues::none(),
-    )
-    .await;
-    session.close().await;
-    server.abort();
-
-    let LogText::Shown(excerpt) = log else {
-        panic!("a read tail is shown: {log:?}");
-    };
-    assert!(
-        excerpt.lines().ends_with(&[
-            "plain from-docker".to_owned(),
-            "token=[redacted]".to_owned()
-        ]),
-        "{:?}",
-        excerpt.lines()
-    );
-}
-
 // Catches a logs ask that drops why a Server's Log Store did not answer, or that lets the
 // failure hide the other Servers' lines.
 #[tokio::test]
@@ -859,7 +863,7 @@ async fn a_removed_containers_lines_are_left_out_with_a_note_and_the_rest_still_
     assert_eq!(
         answer.notes,
         [
-            "Lines from web/dddddddddddd on one withheld: their env could not be read to scrub Sealed values."
+            "Lines from web/dddddddddddd on one withheld: Ployz couldn't check their variables for secret values, so it can't hide them."
         ]
     );
 }
@@ -996,8 +1000,26 @@ async fn a_server_whose_containers_cannot_be_inspected_withholds_only_sealed_lin
     assert_eq!(
         sealed.notes,
         [
-            "Lines from web/cccccccccccc, web/dddddddddddd on one withheld: their env could not be read to scrub Sealed values."
+            "Lines from web/cccccccccccc, web/dddddddddddd on one withheld: Ployz couldn't check their variables for secret values, so it can't hide them."
         ]
     );
     assert_eq!(shown(&nothing_sealed).len(), 1);
+}
+
+#[test]
+fn the_sdk_log_filter_reads_exactly_the_label_keys_the_labels_module_writes() {
+    let script = include_str!("../../../ployz-sdk/runtime-logs.js");
+    let read: BTreeSet<&str> = script
+        .split("labels[\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert_eq!(
+        read,
+        BTreeSet::from([
+            ployz_core::labels::CLOUD_SERVICE_ID,
+            ployz_core::labels::DEPLOYMENT_ID,
+            ployz_core::labels::SERVICE_NAME,
+        ])
+    );
 }

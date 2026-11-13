@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::PartialResult;
-use crate::{DockerVolumeId, LocalMachineRemoved, Namespace, RpcError, RpcErrorCode};
+use crate::{
+    CodedRefusal, DockerVolumeId, Evidence, LocalMachineRemoved, Namespace, RpcError, RpcErrorCode,
+};
 
 /// One named thing an operation will destroy.
 ///
@@ -115,12 +117,7 @@ impl UnconfirmedDataLoss {
     /// Refusal when execute-time Data Loss is not covered by the confirmation.
     #[must_use]
     pub fn into_rpc_error(self) -> RpcError {
-        RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: self.to_string(),
-            details: serde_json::to_value(&self).expect("UnconfirmedDataLoss is JSON"),
-            cause: Vec::new(),
-        }
+        RpcError::refused(&self, self.to_string())
     }
 
     /// Execute-time refusal payload, when `error` carries one.
@@ -129,7 +126,17 @@ impl UnconfirmedDataLoss {
         if error.code != RpcErrorCode::InvalidArgument {
             return None;
         }
-        Self::deserialize(&error.details).ok()
+        error.evidence()
+    }
+}
+
+impl Evidence for UnconfirmedDataLoss {
+    const KEY: Option<&'static str> = None;
+}
+
+impl CodedRefusal for UnconfirmedDataLoss {
+    fn code(&self) -> RpcErrorCode {
+        RpcErrorCode::InvalidArgument
     }
 }
 

@@ -3,6 +3,8 @@ import type { DestructiveEffect, QualifiedService, RuntimeWatchView } from "@plo
 import { Effect } from "effect";
 import { getApproval, operationDigest, type OperationDigest, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
+import { freshSwitchDigest } from "#/modules/ingress/doors.server";
+import { freshRenameDigest } from "#/modules/cluster-name/cluster-name.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
@@ -18,6 +20,7 @@ import {
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
+import type { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 
 export const UNREACHABLE_MESSAGE = "Your servers aren't answering. Try again once they are.";
@@ -106,8 +109,8 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
 }
 
 const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine.accepts_ingress && machine.public_ip !== null;
-const online = ({ machine, membership }: RuntimeWatchView["machines"][number]) =>
-  !needsAttention(serverStatus({ membership, runningBuilds: machine.runtime.running_builds }));
+const online = ({ machine, membership }: RuntimeWatchView["machines"][number], unanswered: readonly string[]) =>
+  !needsAttention(serverStatus({ membership, runningBuilds: machine.runtime.running_builds, unanswered: unanswered.includes(machine.id) }));
 
 /**
  * What turning web traffic off on `machineId` loses: every domain the Cluster serves, when no other online Server with
@@ -118,7 +121,7 @@ export function ingressOffPlan(frame: RuntimeWatchView, machineId: string, chang
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
   const last = frame.machines.some((observed) => observed.machine.id === machineId && servesWeb(observed))
-    && !frame.machines.some((observed) => observed.machine.id !== machineId && servesWeb(observed) && online(observed));
+    && !frame.machines.some((observed) => observed.machine.id !== machineId && servesWeb(observed) && online(observed, frame.unanswered));
   const domains = last ? [...new Set(frame.certificates.map(({ hostname }) => hostname))].sort(byName) : [];
   return {
     subject: `server:${machineId}`,
@@ -339,7 +342,7 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
  * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read within 5 seconds of Cluster
  * time, the stored preview stands.
  */
-export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored, preview) => {
+export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>> | Database> = (organizationId, subject, verb, stored, preview) => {
   const separator = subject.indexOf(":");
   const key = subject.slice(separator + 1);
   // A member, invite, Service, Project, Environment, Organization or forget-every-Server approval is planned again when
@@ -365,6 +368,8 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
         return frame.machines.some(({ machine }) => machine.id === key) ? stored : null;
       }
       case "release":
+      case "mirror":
+      case "sync":
       case "remove_mirror":
       case "move":
       case "restore":
@@ -372,7 +377,12 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
       case "stop":
       case "restart":
       case "unprotect":
+      case "set_private_access":
         return stored;
+      case "set_cluster_name":
+        return yield* freshRenameDigest(organizationId, stored, preview);
+      case "set_ingress_doors":
+        return yield* freshSwitchDigest(organizationId, stored, preview);
     }
   });
   return fresh.pipe(withClusterBudget(5_000), Effect.orElseSucceed(() => stored));

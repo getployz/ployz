@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use axum::http::Method;
+use ployz_core::RpcErrorCode;
 
 use super::*;
 use crate::docker::test_support::*;
@@ -880,4 +881,100 @@ async fn preparation_rejects_conflicting_definitions_without_creating_a_volume()
         Err(Error::VolumeShapeMismatch { .. })
     ));
     assert!(fake.volumes.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_volume_planted_under_an_approved_name_is_refused_at_use() {
+    let (runtime, fake) = fake_runtime().await;
+    let approved = ordinary_source("data");
+    fake.volumes.lock().unwrap().insert(
+        "app_data".into(),
+        serde_json::json!({
+            "Name":"app_data","Driver":"local","Mountpoint":"/volumes/app_data",
+            "Options":{"type":"none","o":"bind","device":"/"},
+            "Labels":{"backup":"daily","ployz.managed":"","ployz.namespace":"app"}
+        }),
+    );
+    assert!(matches!(
+        runtime
+            .ensure_volume_source(&MachineId::random(), &approved)
+            .await,
+        Err(Error::VolumeShapeMismatch { .. })
+    ));
+
+    let name = DockerVolumeName::parse("shared").unwrap();
+    let external = spec_with_sources(vec![
+        ployz_core::RawVolumeSource::External { name: name.clone() }
+            .admit()
+            .unwrap(),
+    ]);
+    fake.volumes.lock().unwrap().insert(
+        name.to_string(),
+        serde_json::json!({"Name":"shared","Driver":"local","Mountpoint":"/volumes/shared",
+            "Options":{"type":"none","o":"bind","device":"/"},
+            "Labels":{"ployz.managed":"","ployz.namespace":"other"}}),
+    );
+    assert!(matches!(
+        runtime
+            .refuse_managed_external(&MachineId::random(), &external)
+            .await,
+        Err(Error::VolumeShapeMismatch { name: refused, .. }) if refused == name
+    ));
+    fake.volumes.lock().unwrap().insert(
+        name.to_string(),
+        serde_json::json!({"Name":"shared","Driver":"local","Mountpoint":"/volumes/shared"}),
+    );
+    runtime
+        .refuse_managed_external(&MachineId::random(), &external)
+        .await
+        .unwrap();
+    // A missing External Volume passes here, so the mount check names it as it always did.
+    fake.volumes.lock().unwrap().remove(name.as_str());
+    runtime
+        .refuse_managed_external(&MachineId::random(), &external)
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime
+            .ensure_mounted_volumes(&MachineId::random(), &external)
+            .await,
+        Err(Error::ExternalVolumeNotFound(missing)) if missing == name
+    ));
+}
+
+#[test]
+fn unverified_create_returns_named_observation_failure() {
+    let id = DockerVolumeId {
+        machine_id: MachineId::random(),
+        name: DockerVolumeName::parse("data").unwrap(),
+    };
+    let error = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "inspect failed".into(),
+        details: Value::Null,
+        cause: Vec::new(),
+    };
+
+    let failure = CreateVolumeReport::Unverified {
+        id: id.clone(),
+        error: error.clone(),
+    }
+    .into_observation()
+    .unwrap_err();
+    let message = failure.to_string();
+    for hint in [
+        "data",
+        &id.machine_id.to_string(),
+        "inspect failed",
+        "resolve the reported Docker or storage error",
+        "inspect the Volume again",
+    ] {
+        assert!(message.contains(hint), "{message}");
+    }
+    let encoded = serde_json::to_value(&failure).unwrap();
+    assert_eq!(
+        serde_json::from_value::<VolumeObservationFailure>(encoded).unwrap(),
+        failure
+    );
+    assert_eq!(failure, VolumeObservationFailure { id, error });
 }

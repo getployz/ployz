@@ -12,17 +12,18 @@ use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
-    EnvironmentRef, ObservationFailure, OrganizationId, ProjectName, Publish, Published, Removal,
-    RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation,
-    Written,
+    EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId, ProjectName, Publish,
+    Published, Removal, RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View,
+    VolumeObservation, Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::approval::{self, Asked};
-use crate::cli::{env, value};
+use crate::cli::value;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::ui::Hint;
+use crate::env;
+use ployz_core::Hint;
 
 impl From<StoreCallError> for Error {
     fn from(error: StoreCallError) -> Self {
@@ -273,7 +274,7 @@ impl<'m> Store<'m> {
                 .and_then(serde_json::Value::as_str)
             {
                 Some("publish") => approval::Verb::Publish,
-                Some("remove") => approval::Verb::Remove,
+                Some("remove") => OperationVerb::Remove.into(),
                 _ => approval::Verb::Deploy,
             };
             let retry = self.approving(&asked.id);
@@ -413,7 +414,7 @@ impl<'m> Store<'m> {
             .flatten()
             .cloned();
         runtime.block_on(async {
-            let mut client = match super::server::connect(self.matches, context).await {
+            let mut client = match super::route::connect(self.matches, context).await {
                 Ok(client) => client,
                 Err(error)
                     if matches!(
@@ -812,7 +813,7 @@ pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
             .filter(|path| *path != ":memory:")
         {
             Some(path) => format!("{path}.key").into(),
-            None => config.with_file_name("store.key"),
+            None => crate::config_dir::ConfigDir::new(config).store_key(),
         };
         let key = SealingKey::from_file(&key)?;
         let store = ConfigStore::open(url, key)?;
@@ -898,21 +899,6 @@ pub(crate) fn store_with_edits(matches: &ArgMatches) -> (Store<'_>, impl Fn()) {
 /// Mint the ID a create is keyed by, so a retried request replays instead of repeating.
 pub(crate) fn mint() -> String {
     uuid::Uuid::new_v4().to_string()
-}
-
-/// A command's result and, when there is one, the command to run next.
-#[derive(serde::Serialize)]
-pub(crate) struct Next<'a, T> {
-    #[serde(flatten)]
-    value: &'a T,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<String>,
-}
-
-impl<'a, T> Next<'a, T> {
-    pub(crate) fn new(value: &'a T, next: Option<String>) -> Self {
-        Self { value, next }
-    }
 }
 
 /// `ployz WORDS…` in the same Project and Environment as this command.

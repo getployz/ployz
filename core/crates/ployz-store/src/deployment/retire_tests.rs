@@ -151,6 +151,7 @@ fn admit(
     choose: impl FnOnce(&mut Deploy),
 ) -> Result<DeploymentSummary, ployz_core::RpcError> {
     let mut deploy = Deploy {
+        teardown: None,
         id: deployment(n),
         environment: EnvironmentRef::default(),
         services: services.iter().map(|service| name(service)).collect(),
@@ -160,6 +161,7 @@ fn admit(
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     };
     choose(&mut deploy);
     store.write(who, &Admit::Deploy(deploy))
@@ -260,11 +262,15 @@ fn redeploy(store: &ConfigStore, who: &Actor, n: u8, source: &DeploymentId) {
         .write(
             who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: deployment(n),
                 deployment: source.clone(),
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                approvals: Vec::new(),
+                awaits_approval: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -390,12 +396,7 @@ fn a_full_deploy_removes_the_whole_namespace() {
     // The choice outlives a read of the row.
     assert!(
         store
-            .read(
-                &who,
-                &crate::DeploymentQuery {
-                    id: admitted.id.clone()
-                }
-            )
+            .read(&who, &crate::DeploymentQuery { id: admitted.id })
             .unwrap()
             .deployment
             .prune
@@ -823,12 +824,7 @@ fn a_targeted_deploy_superseding_a_teardown_keeps_it() {
     assert_eq!(replacement.services, [name("web"), name("api")]);
     assert_eq!(
         store
-            .read(
-                &who,
-                &crate::DeploymentQuery {
-                    id: admitted.id.clone()
-                }
-            )
+            .read(&who, &crate::DeploymentQuery { id: admitted.id })
             .unwrap()
             .deployment
             .status,

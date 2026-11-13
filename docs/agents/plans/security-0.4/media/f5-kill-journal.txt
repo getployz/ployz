@@ -1,0 +1,23 @@
+== machine-1
+2026-11-12T08:23:45+00:00 machine-1 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:23:45+00:00 machine-1 ployzd:  INFO teardown step on shop-other/api admitted step=Out
+2026-11-12T08:23:48+00:00 machine-1 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:23:48+00:00 machine-1 ployzd:  INFO teardown step on shop-other/api admitted step=Remove
+== machine-2
+2026-11-12T08:23:45+00:00 machine-2 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:23:45+00:00 machine-2 ployzd:  INFO teardown step on shop-other/redis admitted step=Out
+2026-11-12T08:23:48+00:00 machine-2 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:23:48+00:00 machine-2 ployzd:  INFO teardown step on shop-other/redis admitted step=Remove
+2026-11-12T08:23:51+00:00 machine-2 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:23:51+00:00 machine-2 ployzd:  INFO teardown removal of Volume shop-other_vol-c67469c0-7c89-4e2f-9046-21868919c876 admitted
+== machine-3
+2026-11-12T08:23:45+00:00 machine-3 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:23:45+00:00 machine-3 ployzd:  INFO teardown step on shop-other/worker admitted step=Out
+2026-11-12T08:23:45+00:00 machine-3 systemd[1]: ployz.service: Sent signal SIGKILL to main process 19071 (ployzd) on client request.
+2026-11-12T08:23:45+00:00 machine-3 systemd[1]: ployz.service: Main process exited, code=killed, status=9/KILL
+2026-11-12T08:23:48+00:00 machine-3 ployzd:  INFO started phase="participating" version="0.3.17"
+2026-11-12T08:23:48+00:00 machine-3 systemd[1]: Started ployz.service - Ployz Machine daemon.
+2026-11-12T08:23:48+00:00 machine-3 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:23:48+00:00 machine-3 ployzd:  INFO teardown step on shop-other/worker admitted step=Out
+2026-11-12T08:23:49+00:00 machine-3 ployzd:  INFO teardown approved by=passkey 2c22p4hpep
+2026-11-12T08:23:49+00:00 machine-3 ployzd:  INFO teardown step on shop-other/worker admitted step=Remove

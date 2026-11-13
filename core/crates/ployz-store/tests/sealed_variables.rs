@@ -121,6 +121,7 @@ fn try_deploy(store: &ConfigStore) -> Result<ployz_store::Claimed, RpcError> {
     store.write_trusted(
         &who(),
         &Admit::Deploy(Deploy {
+            teardown: None,
             id: id.clone(),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
@@ -130,6 +131,7 @@ fn try_deploy(store: &ConfigStore) -> Result<ployz_store::Claimed, RpcError> {
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         }),
         &ployz_store::Trusted::default(),
     )?;
@@ -583,7 +585,11 @@ fn an_old_cli_s_plain_text_secret_is_told_to_update_and_everything_else_passes()
         );
         assert_eq!(
             error.details,
-            json!({ "variable": key, "next": "curl -fsSL https://ployz.sh | sh" })
+            json!({
+                "variable": key,
+                "next": "curl -fsSL https://ployz.sh | sh",
+                "follow_up": { "kind": "update_client", "beta": false },
+            })
         );
         assert!(!format!("{error:?}").contains(SECRET), "{error:?}");
     };
@@ -927,7 +933,7 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
         }),
         (true, |leaf| {
             vec![
-                patch_change("web", json!({ "env": { "A": leaf.clone() } })),
+                patch_change("web", json!({ "env": { "A": leaf } })),
                 set_change("web.env.B", leaf),
             ]
         }),
@@ -1001,4 +1007,45 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
     // Most shapes put a secret's text in a variable's value, whether or not the Store
     // reaches its old-CLI refusal before refusing the edit for something else.
     assert!(held >= 240, "{held}");
+}
+
+#[test]
+fn the_refusal_of_a_secret_s_plain_text_is_pinned_for_the_cli_and_for_anyone_else() {
+    let store = backend::open();
+    shop(&store);
+    let cli = Trusted {
+        from_cli: true,
+        ..Trusted::default()
+    };
+    for (value, key) in [
+        (json!({ "secret": SECRET }), "TOKEN"),
+        (
+            json!({ "value": { "secret": SECRET }, "exported": true }),
+            "TOKEN",
+        ),
+    ] {
+        let path = format!("web.env.{key}");
+        let error = edit_trusted(&store, &path, value.clone(), &cli).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str(), error.details),
+            (
+                RpcErrorCode::Unsupported,
+                "TOKEN: update ployz to set a Sealed value.",
+                json!({
+                    "variable": "TOKEN",
+                    "next": "curl -fsSL https://ployz.sh | sh",
+                    "follow_up": { "kind": "update_client", "beta": false },
+                }),
+            )
+        );
+        let error = edit(&store, &path, value).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str(), error.details),
+            (
+                RpcErrorCode::InvalidArgument,
+                "TOKEN: secrets are sealed on your device",
+                json!({ "variable": "TOKEN" }),
+            )
+        );
+    }
 }

@@ -14,8 +14,10 @@ use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
+use crate::followup::FollowUp;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision, VolumeName};
 use crate::storage::Tx;
+use crate::trusted::Evidence;
 
 /// Which Environment a request addresses. An omitted Project means the
 /// Organization's only Project; an omitted Environment means the Project's
@@ -40,6 +42,20 @@ pub struct EnvironmentSummary {
     pub name: EnvironmentName,
     /// Working State's revision after the request.
     pub revision: Revision,
+}
+
+impl std::fmt::Display for EnvironmentSummary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&environment_label(&self.project, &self.name))
+    }
+}
+
+/// How a person names an Environment: `project/environment`.
+pub(crate) fn environment_label(
+    project: &impl std::fmt::Display,
+    name: &impl std::fmt::Display,
+) -> String {
+    format!("{project}/{name}")
 }
 
 pub(crate) struct Project {
@@ -513,7 +529,7 @@ pub(crate) fn project(
             Some(name) => error::not_found(format!("No Project named {name}"), json!({})),
             None => error::not_found(
                 "This Organization has no Project yet",
-                json!({ "next": "ployz project new NAME" }),
+                FollowUp::ProjectNew.details(),
             ),
         }),
         rows => Err(error::ambiguous(
@@ -653,16 +669,12 @@ pub(crate) fn resolve(
             .iter()
             .map(|row| row.text(0))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut details = error::suggest(name.as_str(), names.iter().copied());
-        if let Some(details) = details.as_object_mut() {
-            details.insert(
-                "next".into(),
-                format!("ployz env ls --project {}", project.name).into(),
-            );
-        }
         return Err(error::not_found(
             format!("No Environment named {name} in Project {}", project.name),
-            details,
+            FollowUp::EnvironmentList {
+                project: project.name.clone(),
+            }
+            .within(error::suggest(name.as_str(), names.iter().copied())),
         ));
     };
     Ok((project.name, row.parse::<EnvironmentId>(0, "identity")?))
@@ -761,9 +773,14 @@ fn inherited(
 /// Persist changed Working State as the next revision. The document is validated
 /// whole first, so the Store never holds one it cannot read back, and must break no
 /// rule of [`crate::rules`] that the Working State it replaces didn't. Refreshes
-/// `environment.live` for the new Working State.
-pub(crate) fn save_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
-    save_working_from(tx, environment, None)
+/// `environment.live` for the new Working State. `trusted` carries the Cluster Domain
+/// the names it introduces are checked under.
+pub(crate) fn save_working(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+    trusted: &crate::Trusted,
+) -> Result<(), RpcError> {
+    save_working_from(tx, environment, None, trusted)
 }
 
 /// [`save_working`] for Working State copied or restored from `from`: what `from`
@@ -772,13 +789,64 @@ pub(crate) fn save_working_from(
     tx: &mut dyn Tx,
     environment: &mut Environment,
     from: Option<&SavedEnvironmentIntent>,
+    trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
-    validate_and_refresh_working_from(tx, environment, from)?;
-    persist_working(tx, environment)
+    validate_and_refresh_working_from(tx, environment, from, trusted)?;
+    write_working(
+        tx,
+        Evidence::Caller(trusted),
+        environment,
+        WorkingWrite::Validated(Checked(())),
+    )
 }
 
-pub(crate) fn persist_working(
+/// Proof that the Working State about to be written passed
+/// [`validate_and_refresh_working_from`]; only this module makes one.
+pub(crate) struct Checked(());
+
+/// Why a write of Working State skips validation: the document is one the Store
+/// already holds in another place, or one it just wrote.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Reason {
+    /// A merge landing its Working State in the Destination.
+    Landing,
+    /// A publish or discard that ends the draft's proposals.
+    Publish,
+    /// An Inherit sealing a value in a Branch.
+    Inherit,
+}
+
+/// What a write of Working State vouches for.
+pub(crate) enum WorkingWrite {
+    /// The document was validated whole just before.
+    Validated(Checked),
+    /// Skips validation, for the `Reason`. Still re-runs [`crate::variables::make_generated`]
+    /// and meets the Protected fence.
+    Trusted(Reason),
+    /// Only the removals `environment` records; Working State stays as it is.
+    Removed,
+}
+
+/// Write `environment` as `write` says, meeting the Protected Environment fence as
+/// `evidence` says.
+pub(crate) fn write_working(
     tx: &mut dyn Tx,
+    evidence: Evidence<'_>,
+    environment: &mut Environment,
+    write: WorkingWrite,
+) -> Result<(), RpcError> {
+    match write {
+        WorkingWrite::Validated(Checked(()))
+        | WorkingWrite::Trusted(Reason::Landing | Reason::Publish | Reason::Inherit) => {
+            persist_working(tx, evidence, environment)
+        }
+        WorkingWrite::Removed => persist_removed(tx, environment),
+    }
+}
+
+fn persist_working(
+    tx: &mut dyn Tx,
+    evidence: Evidence<'_>,
     environment: &mut Environment,
 ) -> Result<(), RpcError> {
     let rows = tx.query(
@@ -790,7 +858,7 @@ pub(crate) fn persist_working(
     let mut removed: RemovedServices = row.json(1, "removed Services")?;
     // A write that skipped validation still never stores a value it owes.
     crate::variables::make_generated(&mut environment.working)?;
-    crate::storage::admit_protect(tx, |tx| {
+    crate::storage::admit_protect(tx, evidence, |tx| {
         crate::review::touches_source(
             tx,
             &environment.summary.id,
@@ -832,23 +900,18 @@ pub(crate) fn persist_working(
             environment.summary.id.as_str().into(),
         ],
     )?;
-    crate::review::sealed::SealLedger::record(
+    crate::seal_scrub::write::after_working_write(
         tx,
         environment.summary.id.as_str(),
+        &before,
         &environment.working,
     )?;
-    let sealed = crate::review::sealed::newly_sealed(&before, &environment.working);
-    crate::branch::empty_in_bases(tx, environment.summary.id.as_str(), &sealed)?;
-    crate::branch::empty_sealed_below(tx, environment.summary.id.as_str(), &sealed, Some(&before))?;
     // A row the draft changed is its own now, whatever proposal brought it.
     crate::branch::release_changed(tx, environment)
 }
 
 /// Persist the removals `environment` records, leaving its Working State as it is.
-pub(crate) fn persist_removed(
-    tx: &mut dyn Tx,
-    environment: &mut Environment,
-) -> Result<(), RpcError> {
+fn persist_removed(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
     let mut removed = removed_of(tx, &environment.summary.id)?;
     removed.adopt(&environment.removed);
     environment.removed = removed;
@@ -873,8 +936,17 @@ impl ValidatedWorking {
     pub(crate) fn environment(&self) -> &Environment {
         &self.environment
     }
-    pub(crate) fn persist(mut self, tx: &mut dyn Tx) -> Result<EnvironmentSummary, RpcError> {
-        persist_working(tx, &mut self.environment)?;
+    pub(crate) fn persist(
+        mut self,
+        tx: &mut dyn Tx,
+        evidence: Evidence<'_>,
+    ) -> Result<EnvironmentSummary, RpcError> {
+        write_working(
+            tx,
+            evidence,
+            &mut self.environment,
+            WorkingWrite::Validated(Checked(())),
+        )?;
         Ok(self.environment.summary)
     }
 }
@@ -883,8 +955,9 @@ pub(crate) fn validated_working_from(
     tx: &mut dyn Tx,
     mut environment: Environment,
     from: Option<&SavedEnvironmentIntent>,
+    trusted: &crate::Trusted,
 ) -> Result<ValidatedWorking, RpcError> {
-    validate_and_refresh_working_from(tx, &mut environment, from)?;
+    validate_and_refresh_working_from(tx, &mut environment, from, trusted)?;
     environment.working = ployz_core::config::canonicalize_environment_intent(environment.working);
     Ok(ValidatedWorking { environment })
 }
@@ -893,6 +966,7 @@ pub(crate) fn validate_and_refresh_working_from(
     tx: &mut dyn Tx,
     environment: &mut Environment,
     from: Option<&SavedEnvironmentIntent>,
+    trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
     // What is stored now is what this write replaces: the rules compare the two.
     let rows = tx.query(
@@ -906,6 +980,12 @@ pub(crate) fn validate_and_refresh_working_from(
     // Every write of Working State, whole or not, comes through here.
     crate::variables::make_generated(&mut environment.working)?;
     crate::names::refuse_new_reserved(&before, &environment.working)?;
+    crate::domain::refuse_new_shared_hostnames(
+        tx,
+        environment,
+        crate::domain::Under::Cloud(trusted.cluster_domain()),
+        (&before, &environment.working),
+    )?;
     crate::client_sealed::refuse_port(&environment.working)?;
     let (working, live) = checked(
         tx,
@@ -982,3 +1062,70 @@ pub(crate) fn empty(name: &str) -> SavedEnvironmentIntent {
         configs: Vec::new(),
     }
 }
+
+/// One Environment of a Project, as teardown orders them.
+pub(crate) struct Member {
+    pub(crate) id: EnvironmentId,
+    pub(crate) name: EnvironmentName,
+    pub(crate) parent: Option<EnvironmentId>,
+}
+
+/// A Project's Environments with their Parents, in ID order.
+pub(crate) fn members(tx: &mut dyn Tx, project: &ProjectId) -> Result<Vec<Member>, RpcError> {
+    let rows = tx.query(
+        "SELECT e.id, e.name, b.parent_id FROM config_environment e \
+         LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
+         WHERE e.project_id = ?1 ORDER BY e.id",
+        &[project.as_str().into()],
+    )?;
+    rows.iter()
+        .map(|row| {
+            Ok(Member {
+                id: row.parse::<EnvironmentId>(0, "Environment")?,
+                name: row.parse::<EnvironmentName>(1, "Environment")?,
+                parent: row.parse_optional::<EnvironmentId>(2, "Environment")?,
+            })
+        })
+        .collect()
+}
+
+/// The Parent of `environment`, its Parent's Parent, and so on.
+pub(crate) fn ancestors_among(
+    members: &[Member],
+    environment: &EnvironmentId,
+) -> Vec<EnvironmentId> {
+    let mut chain = Vec::new();
+    let mut at = environment;
+    while let Some(parent) = members
+        .iter()
+        .find(|member| &member.id == at)
+        .and_then(|member| member.parent.as_ref())
+        .filter(|parent| !chain.contains(*parent))
+    {
+        chain.push(parent.clone());
+        at = parent;
+    }
+    chain
+}
+
+/// Delete `environment` and everything it owns: its rows go with it.
+pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
+    // Branch rows, then arrivals, then bases: the order the seal scrub takes them in
+    // under the other side's lock alone. The cascade below would take bases first.
+    tx.execute(
+        "DELETE FROM config_environment_branch WHERE environment_id = ?1 OR parent_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    tx.execute(
+        "DELETE FROM config_sync_arrival WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    tx.execute(
+        "DELETE FROM config_environment WHERE id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

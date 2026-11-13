@@ -12,10 +12,10 @@ use std::{
     io::{self, IsTerminal, Write},
 };
 
-use ployz_core::{MachineFailure, MachineId, MachineName, PartialResult, RpcError};
+use ployz_core::{Hint, MachineFailure, MachineId, MachineName, PartialResult, RpcError};
 use serde::Serialize;
 
-use super::{Fields, Hint, Mode, Table, Tone, escaped_lines};
+use super::{Fields, Mode, Table, Tone, escaped_lines};
 use crate::failure::Failure;
 
 thread_local! {
@@ -69,7 +69,30 @@ pub(crate) fn note_inline(text: impl Display) {
 /// A hint line on stderr. `--json` carries hints as result keys instead.
 pub(crate) fn hint(hint: &Hint) {
     if !json() {
-        let _ = hint.write(&mut anstream::stderr());
+        let _ = super::error::write_hint(&mut anstream::stderr(), hint);
+    }
+}
+
+/// A command's result and, when there is one, the command to run next. The one string is
+/// the JSON result's `next` key and, through [`Next::say`], the human `next:` line.
+#[derive(Serialize)]
+pub(crate) struct Next<'a, T> {
+    #[serde(flatten)]
+    value: &'a T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<String>,
+}
+
+impl<'a, T> Next<'a, T> {
+    pub(crate) fn new(value: &'a T, next: Option<String>) -> Self {
+        Self { value, next }
+    }
+
+    /// The `next:` line for a person; `--json` carries the key instead.
+    pub(crate) fn say(&self) {
+        if let Some(next) = &self.next {
+            hint(&Hint::Next(next.clone()));
+        }
     }
 }
 
@@ -353,7 +376,7 @@ impl Gaps {
             return (refusal.naming(name).to_string(), None);
         }
         // It answered, refusing the caller's access: its reason, never "did not answer".
-        if failure.error.code.as_str() == crate::connect::FORBIDDEN {
+        if failure.error.code.as_str() == ployz_core::FORBIDDEN_CODE {
             let next = failure
                 .error
                 .details
@@ -367,6 +390,16 @@ impl Gaps {
                 next.map(|next| Under::Next(next.to_owned())),
             );
         }
+        // It answered that its router isn't serving, which its message says whole.
+        if crate::private_access::router_not_serving(&failure.error) {
+            return (
+                failure.error.message.clone(),
+                ployz_core::error_chain::causes(&failure.error)
+                    .last()
+                    .cloned()
+                    .map(Under::Cause),
+            );
+        }
         // The entry Machine stopped listing it between our membership read and this
         // call, as `ployz server rm` does. Its id would only repeat the name.
         if failure.error.server_unlisted(&failure.machine_id) {
@@ -377,7 +410,7 @@ impl Gaps {
         }
         (
             missing_rows(&name),
-            super::causes(&failure.error)
+            ployz_core::error_chain::causes(&failure.error)
                 .last()
                 .cloned()
                 .map(Under::Cause),
@@ -465,6 +498,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_result_carries_its_next_command_beside_its_own_keys() {
+        let saved = serde_json::json!({ "version": 4 });
+        assert_eq!(
+            serde_json::to_value(Next::new(&saved, Some("ployz deploy".to_owned()))).unwrap(),
+            serde_json::json!({ "version": 4, "next": "ployz deploy" })
+        );
+        assert_eq!(
+            serde_json::to_value(Next::new(&saved, None)).unwrap(),
+            serde_json::json!({ "version": 4 })
+        );
+    }
+
+    #[test]
     fn warnings_land_in_the_next_json_result_once() {
         warn("Docker volume (not recommended)");
         let (_, first) = captured(|| show(&serde_json::json!({ "volume": "data" })));
@@ -516,6 +562,35 @@ mod tests {
             (
                 "machine-4 did not answer; its rows are missing.".to_owned(),
                 Some(Under::Cause("deadline has elapsed".to_owned()))
+            )
+        );
+    }
+
+    /// A Server whose router isn't serving answered: its message and the router's last
+    /// word stand, never "did not answer".
+    #[test]
+    fn a_server_whose_router_is_not_serving_says_so() {
+        use ployz_core::RpcErrorCode;
+
+        let machine_id = MachineId::parse("4".repeat(32)).unwrap();
+        let name = MachineName::parse("machine-4").unwrap();
+        let error = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Tailscale refused the auth key on machine-4. It may be revoked or expired."
+                .into(),
+            details: serde_json::json!({ "problem": "key_refused" }),
+            cause: vec!["invalid key: unable to validate API key".into()],
+        };
+        let gaps = Gaps::default().named([(machine_id, &name)]);
+
+        assert_eq!(
+            gaps.warning(&MachineFailure { machine_id, error }),
+            (
+                "Tailscale refused the auth key on machine-4. It may be revoked or expired."
+                    .to_owned(),
+                Some(Under::Cause(
+                    "invalid key: unable to validate API key".to_owned()
+                ))
             )
         );
     }

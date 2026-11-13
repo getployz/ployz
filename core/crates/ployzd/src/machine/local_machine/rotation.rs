@@ -3,7 +3,10 @@
 //! the exclusive admission turn right before the write, against the rotation this
 //! Machine recorded. Replicated rows from other Machines are read before the turn
 //! and only narrow what it does, but they lag: an Out written on another Machine is
-//! invisible here until it replicates, so `LastIn` can count a sibling that just left.
+//! invisible here until it replicates. So `LastIn` marks its copy leaving under
+//! exclusive admission, just before the turn, then asks each remote sibling's owner, and counts a sibling only if its owner
+//! answers that it is In and not leaving. Of two Outs racing on the last two copies,
+//! each marks before it asks, so at least one sees the other's mark and refuses.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -89,6 +92,15 @@ enum GuardReads {
         BTreeMap<ContainerId, ResolvedServiceSpec>,
     ),
     LastIn(Routed),
+    /// The LastIn guard as decided under exclusive admission, before the turn.
+    Decided(LastInDecision),
+}
+
+enum LastInDecision {
+    /// The copy was In, and the guard ran with it marked leaving.
+    WhileIn(Option<ContainerRefusal>),
+    /// The copy wasn't In, so no guard ran.
+    NotIn,
 }
 
 enum Written {
@@ -269,6 +281,33 @@ impl LocalMachine {
                 let locator = locator.clone();
                 async move {
                     let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                    // Only admitted work takes a copy away from In, so a copy read In here is
+                    // In at the turn. Adoption can give In to a copy with no record without
+                    // admission; `check` refuses if the turn finds In where this read didn't.
+                    // Marking and asking before the turn keeps the peer round trips off the
+                    // config lock that observation syncs and creates take.
+                    let (_leaving, reads) = match reads {
+                        GuardReads::LastIn(routed) => {
+                            let recorded = containers
+                                .rotations(vec![id])
+                                .await?
+                                .remove(&id)
+                                .unwrap_or_default();
+                            if recorded == CopyRotation::In {
+                                let leaving = containers.leave(id);
+                                let refusal = local.last_in(&copy, routed).await?;
+                                (
+                                    Some(leaving),
+                                    GuardReads::Decided(LastInDecision::WhileIn(refusal)),
+                                )
+                            } else {
+                                (None, GuardReads::Decided(LastInDecision::NotIn))
+                            }
+                        }
+                        reads @ (GuardReads::None
+                        | GuardReads::NewerIn(..)
+                        | GuardReads::Decided(_)) => (None, reads),
+                    };
                     let turn = match containers.rotation_turn(&id).await {
                         Ok(turn) => turn,
                         Err(crate::docker::Error::ContainerNotFound(_)) => {
@@ -353,8 +392,18 @@ impl LocalMachine {
                 };
                 self.newer_in(copy, run, observed, &confirmed).await?
             }
-            (GuardReads::LastIn(routed), CopyRotation::In) => self.last_in(copy, routed).await?,
-            (GuardReads::LastIn(_), _) | (GuardReads::None, _) => None,
+            (GuardReads::Decided(LastInDecision::WhileIn(refusal)), CopyRotation::In) => refusal,
+            // `write` decides every LastIn read before the turn, with the copy marked. One
+            // that reaches the turn undecided, or finds the copy In when the decision
+            // didn't, is refused rather than guarded without the mark.
+            (
+                GuardReads::LastIn(_) | GuardReads::Decided(LastInDecision::NotIn),
+                CopyRotation::In,
+            ) => Some(refuse(
+                ContainerRefusalReason::LastIn,
+                "the copy came In while this Out waited; send the Out again".to_owned(),
+            )),
+            (GuardReads::LastIn(_) | GuardReads::Decided(_) | GuardReads::None, _) => None,
         };
         Ok(guard.map_or(Checked::Allowed(to), Checked::Refused))
     }
@@ -445,7 +494,10 @@ impl LocalMachine {
                 && !supersedes(&observed.resolved_spec, &published)
         });
         join_all(unseen.map(|row| async {
-            let answer = self.inspect_peer(row.machine_id, row.container_id).await?;
+            let answer = self
+                .inspect_peer(row.machine_id, row.container_id)
+                .await?
+                .container;
             (answer.machine_id == row.machine_id
                 && *answer.rotation() == CopyRotation::In
                 && answer.copy_gen() == row.copy_gen())
@@ -490,7 +542,9 @@ impl LocalMachine {
 
     /// Refuse In to Out unless another In copy of the Service is acked by every live
     /// proxy. A Machine list that is only partly replicated never passes, and a copy
-    /// on a Down Machine serves no one.
+    /// on a Down Machine serves no one. A copy on another Machine counts only if its
+    /// owner answers that it is In and not leaving; one that doesn't answer counts as
+    /// gone, so the copy stays In.
     async fn last_in(
         &self,
         copy: &CopyState,
@@ -500,18 +554,47 @@ impl LocalMachine {
             named,
         }: Routed,
     ) -> Result<Option<ContainerRefusal>, Error> {
-        let siblings = self
+        let machine_id = self.record().id();
+        let live = self
             .in_siblings(copy, named)
             .await?
             .into_iter()
-            .filter(|sibling| !membership.down.contains(&sibling.machine_id))
-            .map(|sibling| sibling.container_id)
+            .filter(|sibling| !membership.down.contains(&sibling.machine_id));
+        let asked = join_all(live.map(|sibling| async move {
+            let id = sibling.container_id;
+            if sibling.machine_id == machine_id {
+                return Ok(id);
+            }
+            let Some(answer) = self.inspect_peer(sibling.machine_id, id).await else {
+                return Err(format!("couldn't confirm copy {id} with its owner"));
+            };
+            if answer.container.machine_id != sibling.machine_id
+                || *answer.container.rotation() != CopyRotation::In
+            {
+                return Err(format!("copy {id} is no longer In on its owner"));
+            }
+            if answer.leaving {
+                return Err(format!("copy {id} is being taken out too"));
+            }
+            Ok(id)
+        }))
+        .await;
+        let (siblings, doubts): (Vec<_>, Vec<_>) = asked.into_iter().partition(Result::is_ok);
+        let siblings = siblings.into_iter().flatten().collect::<Vec<_>>();
+        let doubts = doubts
+            .into_iter()
+            .filter_map(Result::err)
             .collect::<Vec<_>>();
+        let why = if doubts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", doubts.join("; "))
+        };
         if siblings.is_empty() {
             return Ok(Some(refuse(
                 ContainerRefusalReason::LastIn,
                 format!(
-                    "no other copy of {} is In and routed; send allow_empty to empty the Service",
+                    "no other copy of {} is In and routed{why}; send allow_empty to empty the Service",
                     copy.service
                 ),
             )));
@@ -539,7 +622,7 @@ impl LocalMachine {
         Ok(Some(refuse(
             ContainerRefusalReason::LastIn,
             format!(
-                "no other In copy of {} is acked by every live proxy: {waiting}",
+                "no other In copy of {} is acked by every live proxy: {waiting}{why}",
                 copy.service
             ),
         )))

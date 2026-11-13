@@ -1,15 +1,17 @@
 //! Running Cloud's enroll instruction in-process, as `ployz server add` does, while the
 //! loop keeps reporting the attempt's stage on each check-in.
 
+use ployz_core::error_chain;
 use std::{fs, path::Path, time::Duration};
 
+use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
 use tokio::sync::watch;
 
 use super::{Attempt, EnrollInstruction, Prep};
 use super::{
     CheckinClient, CheckinEnd, CheckinKey, CheckinRequest, Host, LocalCheckin, Next, Paths, Seen,
     System, ZfsPrep, client, read_prep_state, record, unit,
-    wire::{self, Answer, AttemptFailure, EnrollStorage, HostReport, StopReason},
+    wire::{Answer, AttemptFailure, EnrollStorage, HostReport, PrepRecord, StopReason},
 };
 use crate::cloud_enroll::EnrollStage;
 
@@ -158,7 +160,7 @@ pub(super) async fn attempt<H: Host>(
         }
         Err(message) => {
             let line = failure_line(attempt.fail(*moved.borrow(), message));
-            crate::ui::note(crate::ui::then_sentence(&line, "Waiting for Cloud."));
+            crate::ui::note(error_chain::then_sentence(&line, "Waiting for Cloud."));
             status.answer = Seen::Wait;
             status.message = Some(line);
             status.attempt = Some(attempt);
@@ -182,9 +184,10 @@ async fn heartbeat(
     status.attempt = Some(attempt.clone());
     record(status, paths);
     let request = CheckinRequest {
-        protocol_version: wire::PROTOCOL_VERSION,
+        protocol_version: CHECKIN_PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
         cli_version: env!("CARGO_PKG_VERSION"),
+        enroll_options: ENROLL_OPTIONS,
         report: report.report,
         prep: Some(report.prep),
         attempt: Some(attempt),
@@ -304,7 +307,10 @@ pub(super) fn add_arguments(
         "add",
         "--yes",
         "--connect",
-        &format!("unix://{}", crate::connect::DEFAULT_LOCAL_SOCKET),
+        &format!(
+            "unix://{}",
+            ployz_core::MachineLayout::production().socket().display()
+        ),
         "--storage",
         &storage,
         "--cloud-url",
@@ -314,6 +320,12 @@ pub(super) fn add_arguments(
     .into();
     if !instruction.name.is_empty() {
         arguments.extend(["--name".to_owned(), instruction.name.clone()]);
+    }
+    if let Some(cluster_name) = &instruction.founding_cluster_name {
+        arguments.extend(["--cluster-name".to_owned(), cluster_name.clone()]);
+    }
+    if instruction.founding_ingress_closed {
+        arguments.push("--ingress-closed".to_owned());
     }
     arguments.extend([
         format!("--accepts-builds={}", policy.accepts_builds),

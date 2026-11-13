@@ -25,8 +25,9 @@ use defguard_wireguard_rs::{
 use ipnet::IpNet;
 use ployz_core::{
     DOCKER_NETWORK_CONFLICT_RECOVERY, LargePackets, LocalMachinePhase, Machine, MachineId,
-    MachineSubnet, SelectedEndpoint, WireGuardPublicKey,
+    MachineSubnet, SelectedEndpoint, WireGuardPublicKey, labels,
 };
+use ployz_decide::bridge::{self, Settle};
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -38,7 +39,7 @@ use super::{
     WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
     attach_peer_selections, checked_command, choose_endpoint,
     docker_firewall::Ipv6Off,
-    firewall::{docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
+    firewall::{Installed, docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
     path::{self, MIN_MTU, PathBook, PathReport, ProbedPeer},
     peers_for, port_held_elsewhere,
 };
@@ -48,7 +49,9 @@ use crate::{
 };
 
 const NETWORK_MTU: u32 = 1420;
-const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
+/// How long another tool's firewall change may shadow the mesh before the
+/// rules are applied again.
+const FIREWALL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A peer's routes and the MTU set on them, kept while those routes are installed:
 /// a bootstrap apply keeps routes of peers it no longer plans.
@@ -116,6 +119,8 @@ pub struct NetworkPlane {
     lowered: BTreeMap<MachineId, Lowered>,
     paths: PathBook,
     probed: watch::Sender<Vec<ProbedPeer>>,
+    /// `None` until start installs it, and on a plane built only to clean up.
+    firewall: Option<Installed>,
 }
 
 impl NetworkPlane {
@@ -149,7 +154,7 @@ impl NetworkPlane {
         }
         let now = SystemTime::now();
         let (peers, _) = attach_peer_selections(
-            peers_for(&machine.id, bootstrap),
+            peers_for(&machine.id, &bootstrap),
             Vec::new(),
             &record.selected_endpoints,
             now,
@@ -169,6 +174,7 @@ impl NetworkPlane {
             lowered: BTreeMap::new(),
             paths: PathBook::default(),
             probed: watch::Sender::new(Vec::new()),
+            firewall: None,
         };
         // Boxed: settling the bridge is a large future, and inline it overflows the
         // stack of a daemon start.
@@ -183,20 +189,22 @@ impl NetworkPlane {
         };
         if let Err(error) = plane
             .configure_device(&private_key, initialize)
-            .and_then(|()| plane.apply_peers(&peers, PeerSet::Bootstrap))
+            .and_then(|()| plane.apply_peers(&peers, PeerSet::Bootstrap, record, None))
         {
             plane
                 .rollback_start(docker_created, wireguard_created)
                 .await;
             return Err(error);
         }
-        if let Err(error) =
-            super::apply_firewall_rules(plane.machine.subnet, plane.machine.management_address())
+        match super::apply_firewall_rules(plane.machine.subnet, plane.machine.management_address())
         {
-            plane
-                .rollback_start(docker_created, wireguard_created)
-                .await;
-            return Err(error);
+            Ok(installed) => plane.firewall = Some(installed),
+            Err(error) => {
+                plane
+                    .rollback_start(docker_created, wireguard_created)
+                    .await;
+                return Err(error);
+            }
         }
         Ok(Some(plane))
     }
@@ -205,7 +213,9 @@ impl NetworkPlane {
     ///
     /// Peers are rebuilt when the view publishes a different snapshot. The device
     /// is polled every second: handshakes and endpoint roaming have no event. An
-    /// operator's endpoint from `choices` goes to WireGuard at once.
+    /// operator's endpoint from `choices` goes to WireGuard at once. The firewall
+    /// is applied again every [`FIREWALL_INTERVAL`], since ufw-docker, a
+    /// firewalld reload or a security agent can rewrite iptables at any time.
     pub async fn run(
         &mut self,
         machines: Option<(ReplicatedStore, MachineView)>,
@@ -213,6 +223,11 @@ impl NetworkPlane {
         mut choices: mpsc::Receiver<EndpointChoice>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
+        let reapplying = shutdown.child_token();
+        let _stop_reapplying = reapplying.clone().drop_guard();
+        if let Some(firewall) = self.firewall {
+            tokio::spawn(keep_firewall(firewall, reapplying));
+        }
         let Some((replicated, machines)) = machines else {
             drop(choices);
             shutdown.cancelled().await;
@@ -396,6 +411,7 @@ impl NetworkPlane {
             lowered: BTreeMap::new(),
             paths: PathBook::default(),
             probed: watch::Sender::new(Vec::new()),
+            firewall: None,
         }
         .cleanup()
         .await
@@ -403,7 +419,7 @@ impl NetworkPlane {
 
     pub async fn cleanup(&mut self) -> Result<(), NetworkError> {
         let mut failures = Vec::new();
-        if let Err(error) = remove_firewall_rules(self.machine.subnet) {
+        if let Err(error) = remove_firewall(self.machine.subnet).await {
             failures.push(ployz_core::error_chain::inline(&error));
         }
         if let Err(error) = self.remove_docker_network().await {
@@ -472,7 +488,7 @@ impl NetworkPlane {
     }
 
     /// Whether the snapshot is settled. `false` when the store couldn't be read, or when
-    /// only adding kept peers the store can't yet vouch for, so a later tick reads again.
+    /// the device keeps a peer the snapshot doesn't list, so a later tick reads again.
     async fn rebuild(
         &mut self,
         replicated: &ReplicatedStore,
@@ -490,6 +506,13 @@ impl NetworkPlane {
             }
         };
         let record = local.record();
+        let accepted: BTreeSet<MachineId> = record
+            .bootstrap()
+            .iter()
+            .map(|machine| machine.id)
+            .collect();
+        self.bootstrap_peers
+            .retain(|peer| accepted.contains(&peer.machine_id));
         let Some((planned, set)) = snapshot_peers(
             &self.machine.id,
             snapshot,
@@ -499,14 +522,38 @@ impl NetworkPlane {
         ) else {
             return Ok(true);
         };
+        let host = self.wireguard.read_interface_data()?;
+        let answered = match set {
+            PeerSet::Bootstrap => None,
+            PeerSet::Snapshot => {
+                let mut answered = snapshot
+                    .observations
+                    .iter()
+                    .map(|machine| machine.id)
+                    .collect::<BTreeSet<_>>();
+                let unlisted = record.unlisted_trusted_machines(
+                    |key| host.peers.contains_key(&Key::new(key.0)),
+                    &answered,
+                );
+                match replicated.removed_machines(&unlisted).await {
+                    Ok(removed) => answered.extend(removed),
+                    Err(error) => {
+                        eprintln!(
+                            "failed to read which Machines this Corrosion store removed: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                        return Ok(false);
+                    }
+                }
+                Some(answered)
+            }
+        };
         let selected = &record.selected_endpoints;
         let now = SystemTime::now();
         let mut previous = std::mem::take(&mut self.endpoint_peers);
-        let host = self.wireguard.read_interface_data()?;
         seed_retained_selections(&planned, &mut previous, &host.peers, now);
         let (planned, _) = attach_peer_selections(planned, previous, selected, now);
-        let settled = set == PeerSet::Snapshot || host.peers.is_empty() && planned.is_empty();
-        self.apply_peers(&planned, set)?;
+        let settled = self.apply_peers(&planned, set, &record, answered.as_ref())?;
         self.endpoint_peers = planned;
         // Only an installed selection is worth remembering across a restart.
         for peer in &self.endpoint_peers {
@@ -566,13 +613,22 @@ impl NetworkPlane {
         port_held_elsewhere(WIREGUARD_PORT, failure)
     }
 
-    fn apply_peers(&mut self, peers: &[MeshPeer], set: PeerSet) -> Result<(), NetworkError> {
+    /// Whether the plan settled, as [`PeerChanges::settled`] says.
+    fn apply_peers(
+        &mut self,
+        peers: &[MeshPeer],
+        set: PeerSet,
+        record: &LocalMachineRecord,
+        answered: Option<&BTreeSet<MachineId>>,
+    ) -> Result<bool, NetworkError> {
         let wg_peers = peers
             .iter()
             .map(|peer| wireguard_peer(peer, peer.selected()))
             .collect::<Vec<_>>();
         let host = self.wireguard.read_interface_data()?;
-        let changes = peer_changes(&host.peers, &wg_peers, set)?;
+        let changes = peer_changes(&host.peers, &wg_peers, set, |key| {
+            record.keeps_unlisted_peer(&WireGuardPublicKey(key.as_array()), answered)
+        })?;
         for peer in changes.updates {
             self.wireguard.configure_peer(peer)?;
         }
@@ -609,7 +665,7 @@ impl NetworkPlane {
                 })
                 .collect(),
         );
-        Ok(())
+        Ok(changes.settled)
     }
 
     async fn poll_endpoints(&mut self, local: &RecordOwner) {
@@ -676,7 +732,7 @@ impl NetworkPlane {
 
     async fn rollback_start(&mut self, docker_created: bool, wireguard_created: bool) {
         if wireguard_created {
-            let _ = remove_firewall_rules(self.machine.subnet);
+            let _ = remove_firewall(self.machine.subnet).await;
             let _ = self.wireguard.remove_interface();
         }
         if docker_created {
@@ -1143,46 +1199,29 @@ fn report_stop(id: &str, error: &(dyn std::error::Error + 'static)) {
     );
 }
 
-/// Docker still counts a container between restarts as running, but it holds no
-/// sandbox, so Docker refuses to detach it from the bridge or attach it.
+/// Whether Docker refused `error` because the container is between restarts.
 fn between_restarts(error: &bollard::errors::Error) -> bool {
     let bollard::errors::Error::DockerResponseServerError { message, .. } = error else {
         return false;
     };
-    let not_connected = format!("is not connected to network {DOCKER_NETWORK_NAME}");
-    message.ends_with(&not_connected)
-        || (message.starts_with("network sandbox for container ")
-            && message.ends_with(" not found"))
+    bridge::between_restarts(message, DOCKER_NETWORK_NAME)
 }
 
-/// What to do with a member Docker refused as being between restarts.
-#[derive(Debug, PartialEq, Eq)]
-enum Settle {
-    /// Docker would run it again, so Ployz starts it again once it has moved.
-    StopAndNote,
-    /// It is exiting for good, so it stays stopped, as Docker would leave it.
-    Stop,
-    /// Whether Docker runs it again can't be told yet, or it has exited already:
-    /// the refused operation is only retried.
-    Leave,
-}
-
-/// Docker restarts a container it is restarting, and one exiting under `always`
-/// or `unless-stopped`. One exiting under `on-failure` restarts only on a failing
-/// exit code, which Docker records once it has exited, so Ployz doesn't stop it.
 fn settle(running: bool, restarting: bool, policy: Option<RestartPolicyNameEnum>) -> Settle {
-    if restarting {
-        return Settle::StopAndNote;
-    }
-    if !running {
-        return Settle::Leave;
-    }
-    match policy {
-        Some(RestartPolicyNameEnum::ALWAYS | RestartPolicyNameEnum::UNLESS_STOPPED) => {
-            Settle::StopAndNote
-        }
-        Some(RestartPolicyNameEnum::ON_FAILURE) => Settle::Leave,
-        None | Some(RestartPolicyNameEnum::NO | RestartPolicyNameEnum::EMPTY) => Settle::Stop,
+    bridge::settle(running, restarting, restart_policy(policy))
+}
+
+/// The policy Docker holds for a container, or `None` when it reports none. An empty name is
+/// no policy, as Docker treats it. Only the name tells whether Docker runs the container again.
+fn restart_policy(name: Option<RestartPolicyNameEnum>) -> Option<ployz_core::RestartPolicy> {
+    match name? {
+        RestartPolicyNameEnum::EMPTY => None,
+        RestartPolicyNameEnum::NO => Some(ployz_core::RestartPolicy::No),
+        RestartPolicyNameEnum::ALWAYS => Some(ployz_core::RestartPolicy::Always),
+        RestartPolicyNameEnum::UNLESS_STOPPED => Some(ployz_core::RestartPolicy::UnlessStopped),
+        RestartPolicyNameEnum::ON_FAILURE => Some(ployz_core::RestartPolicy::OnFailure {
+            maximum_retry_count: None,
+        }),
     }
 }
 
@@ -1199,7 +1238,7 @@ struct BridgeMember {
 impl BridgeMember {
     /// Detached, or still on a dynamic address.
     fn needs_pin(&self) -> bool {
-        !self.attached || !self.pinned
+        bridge::needs_pin(self.attached, self.pinned)
     }
 }
 
@@ -1309,6 +1348,53 @@ fn router_advertised_interfaces(routes: &str, addresses: &str) -> BTreeSet<Strin
 /// fence would need it, since without the fence no later check runs (#3377). It
 /// names the cause Ployz saw (bet 8). A host without IPv6 never had it to lose, so
 /// says nothing.
+/// Apply `firewall` again every [`FIREWALL_INTERVAL`] until `stop`, or until a
+/// teardown retires it. Each apply runs off the runtime, so a slow iptables never
+/// holds up the mesh.
+async fn keep_firewall(firewall: Installed, stop: CancellationToken) {
+    let mut ticks = tokio::time::interval_at(
+        tokio::time::Instant::now() + FIREWALL_INTERVAL,
+        FIREWALL_INTERVAL,
+    );
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => return,
+            _ = ticks.tick() => {}
+        }
+        match tokio::task::spawn_blocking(move || firewall.reapply()).await {
+            Ok(Ok(None)) => return,
+            Ok(Ok(Some(restored))) => {
+                if !restored.displaced.is_empty() {
+                    eprintln!(
+                        "restored firewall rules that were missing or no longer first: {}",
+                        restored.displaced.join("; "),
+                    );
+                }
+                if !restored.behind_docker_nat.is_empty() {
+                    tracing::debug!(
+                        rules = restored.behind_docker_nat.join("; "),
+                        "moved the mesh's nat rule back ahead of Docker's",
+                    );
+                }
+            }
+            Ok(Err(error)) => eprintln!(
+                "failed to reapply firewall rules: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ),
+            Err(error) => eprintln!("failed to reapply firewall rules: {error}"),
+        }
+    }
+}
+
+/// Off the runtime: removal waits for the firewall writer and the xtables lock.
+async fn remove_firewall(subnet: MachineSubnet) -> Result<(), NetworkError> {
+    tokio::task::spawn_blocking(move || remove_firewall_rules(subnet))
+        .await
+        .map_err(|error| NetworkError::Io(io::Error::other(error)))?
+}
+
 fn ipv6_firewall_off(host_has_ipv6: bool, firewall: &Result<(), Ipv6Off>) -> Option<String> {
     let Err(off) = firewall else {
         return None;
@@ -1371,10 +1457,7 @@ fn docker_network_request(
             ..Default::default()
         }),
         options: Some(options.clone()),
-        labels: Some(HashMap::from([(
-            DOCKER_NETWORK_MANAGED_LABEL.into(),
-            String::new(),
-        )])),
+        labels: Some(labels::system_labels()),
         ..Default::default()
     }
 }
@@ -1526,8 +1609,9 @@ fn seed_retained_selections(
 
 /// The peers a snapshot plans, and whether they replace the installed set. A store that
 /// never held a row for another Machine, such as one recreated after its `store.db` was
-/// lost, can't say who left: it only adds, so the peers that carry its gossip stay. A
-/// removed Machine's row leaves its key behind, so a removal still prunes.
+/// lost, can't say who left: it only adds, so the peers that carry its gossip stay, unless
+/// Device enforcement refuses them. A removed Machine's row leaves its key behind, so a
+/// removal still prunes.
 fn snapshot_peers(
     machine_id: &MachineId,
     snapshot: &ReplicatedObservations<Machine, MachineId>,
@@ -1563,12 +1647,16 @@ struct PeerChanges<'peers> {
     updates: Vec<&'peers Peer>,
     removals: Vec<&'peers Key>,
     routes: BTreeSet<IpNet>,
+    /// `false` while the device keeps a peer the plan doesn't list, or while a bootstrap
+    /// plan has peers on either side, so the caller applies a later read again.
+    settled: bool,
 }
 
 fn peer_changes<'peers>(
     installed: &'peers HashMap<Key, Peer>,
     planned: &'peers [Peer],
     set: PeerSet,
+    keeps_unlisted: impl Fn(&Key) -> bool,
 ) -> Result<PeerChanges<'peers>, NetworkError> {
     let updates = planned
         .iter()
@@ -1588,22 +1676,28 @@ fn peer_changes<'peers>(
                     || current.persistent_keepalive_interval != peer.persistent_keepalive_interval)
         })
         .collect::<Vec<_>>();
-    let removals = if set == PeerSet::Snapshot {
+    let (kept, removals): (Vec<_>, Vec<_>) = installed
+        .keys()
+        .filter(|key| !planned.iter().any(|peer| &peer.public_key == *key))
+        .partition(|key| keeps_unlisted(key));
+    let settled =
+        kept.is_empty() && (set == PeerSet::Snapshot || installed.is_empty() && planned.is_empty());
+    let routes = peer_routes(
         installed
-            .keys()
-            .filter(|key| !planned.iter().any(|peer| &peer.public_key == *key))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let routes = match set {
-        PeerSet::Bootstrap => peer_routes(installed.values().chain(updates.iter().copied()))?,
-        PeerSet::Snapshot => peer_routes(planned.iter())?,
-    };
+            .values()
+            .filter(|peer| {
+                !removals.contains(&&peer.public_key)
+                    && !updates
+                        .iter()
+                        .any(|update| update.public_key == peer.public_key)
+            })
+            .chain(updates.iter().copied()),
+    )?;
     Ok(PeerChanges {
         updates,
         removals,
         routes,
+        settled,
     })
 }
 
@@ -1670,7 +1764,7 @@ fn docker_network_owned(network: &NetworkInspect) -> bool {
         && network
             .labels
             .as_ref()
-            .and_then(|labels| labels.get(DOCKER_NETWORK_MANAGED_LABEL))
+            .and_then(|labels| labels.get(labels::SYSTEM_MANAGED))
             .is_some_and(String::is_empty)
 }
 
@@ -1858,7 +1952,8 @@ fn docker_network_conflict(
     NetworkError::DockerNetworkConflict {
         reason: reason.into(),
         expected: format!(
-            "name={DOCKER_NETWORK_NAME}, driver=bridge, scope=local, label={DOCKER_NETWORK_MANAGED_LABEL}=\"\", subnet={subnet}, gateway={gateway}, options={}",
+            "name={DOCKER_NETWORK_NAME}, driver=bridge, scope=local, label={}=\"\", subnet={subnet}, gateway={gateway}, options={}",
+            labels::SYSTEM_MANAGED,
             options(required_options)
         ),
         observed: format!(

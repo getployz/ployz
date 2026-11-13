@@ -1,3 +1,4 @@
+use ployz_core::error_chain;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -7,33 +8,28 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RowStanding, RpcError, RpcErrorCode,
-    ServiceName, ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RowStanding, RpcError, ServiceName,
+    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
-mod apply;
 pub(crate) mod cleanup;
-mod convergence;
 mod exec;
-pub(crate) use exec::MachineOperations;
+pub(crate) use exec::{
+    CopyLifecycle, MachineOperations, MoveEnd, MoveError, ProxyPlacement, RestartTolerant,
+    health_error, move_container,
+};
 #[cfg(test)]
-pub(crate) use exec::RedialFailure;
+pub(crate) use exec::{RedialFailure, Session};
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
-mod render;
 mod report;
 mod schedule;
 
-pub(crate) use apply::{ApplyError, Outcome, apply_requested};
-pub(crate) use convergence::{Converged, LastIn, Moving, can_move, converge, named};
-pub use convergence::{
-    DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
-};
 pub use pipeline::DeployError;
-pub(crate) use pipeline::plan_options;
 pub(crate) use planning::capacity::endpoint_capacity_error;
+pub(crate) use planning::place_one;
 pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
     plan_ingress_repairs, plan_namespace_removal, preview_deploy, without_departed,
@@ -44,7 +40,7 @@ pub use ployz_core::{
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
     ReplacementCompensation, ReplacementOperation, RestoreAttempt, ServiceAttempt, StopAttempt,
 };
-pub use schedule::{ServiceGroup, Step};
+pub use schedule::{ServiceGroup, Stage};
 
 pub(crate) use progress::pending_rows;
 pub(crate) use report::{Replica, service_row, starts, updates};
@@ -58,7 +54,7 @@ fn is_at_rest(runtime: &ContainerRuntimeObservation) -> bool {
     )
 }
 
-fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
+pub(crate) fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
         runtime,
         ContainerRuntimeObservation::Running { .. }
@@ -92,11 +88,12 @@ impl VolumeSnapshot {
             named_failures.extend(success.value.failures);
         }
         Self::try_from_parts(observations, named_failures, machine_failures, omissions).map_err(
-            |error| RpcError {
-                code: RpcErrorCode::Internal,
-                message: format!("invalid Docker Volume snapshot: {}", crate::ui::row(&error)),
-                details: error.details,
-                cause: Vec::new(),
+            |error| {
+                RpcError::internal(format!(
+                    "invalid Docker Volume snapshot: {}",
+                    error_chain::row(&error)
+                ))
+                .with_details(error.details)
             },
         )
     }
@@ -139,12 +136,7 @@ impl VolumeSnapshot {
     }
 
     fn validate(&self) -> Result<(), RpcError> {
-        let invalid = |message| RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message,
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        };
+        let invalid = |message| RpcError::invalid_argument(message);
         let mut ids = BTreeSet::new();
         for volume in &self.observations {
             if !ids.insert(&volume.id) {
@@ -241,7 +233,7 @@ impl VolumeSnapshot {
             .map(|failure| {
                 format!(
                     "Docker Volume inventory failed: {}",
-                    crate::ui::row(&failure.error)
+                    error_chain::row(&failure.error)
                 )
             })
             .or_else(|| {
@@ -263,7 +255,7 @@ impl VolumeSnapshot {
             .map(|failure| {
                 format!(
                     "inspect of Docker Volume {name} failed: {}",
-                    crate::ui::row(&failure.error)
+                    error_chain::row(&failure.error)
                 )
             })
     }
@@ -276,7 +268,7 @@ impl VolumeSnapshot {
                 kind: ObservationKind::Volume,
                 machine_id: failure.machine_id,
                 machine_name: None,
-                message: crate::ui::row(&failure.error),
+                message: error_chain::row(&failure.error),
             })
             .chain(
                 self.omissions
@@ -304,15 +296,6 @@ impl VolumeSnapshot {
     }
 }
 
-fn newest(containers: Vec<&ContainerObservation>) -> Option<&ContainerObservation> {
-    containers.into_iter().max_by_key(|container| {
-        (
-            container.created_at_unix_nanos,
-            container.container_id.as_str(),
-        )
-    })
-}
-
 /// An ingress Server with no running Ingress Proxy.
 #[derive(Clone, Copy, Debug)]
 pub struct EmptyIngress<'snapshot> {
@@ -327,8 +310,8 @@ pub enum HeldIngress<'snapshot> {
     None,
     /// The newest one Docker can start again, which starts with its own spec.
     Stopped(&'snapshot ContainerObservation),
-    /// Only dead ones, the newest given: Docker starts none of them, and one may still
-    /// hold the name a created one needs.
+    /// Only dead ones, the newest given: Docker starts none of them, so the daemon
+    /// retires them and creates its own.
     Dead(&'snapshot ContainerObservation),
     /// The newest one crash-looping under Docker's restart policy, which keeps retrying
     /// it, with none running beside it.
@@ -362,7 +345,7 @@ pub(crate) fn dropped_large_packets(machine: &MachineObservation, error: &RpcErr
 /// [`large_packets_note`]. Planning and execution word the same failure alike, so its
 /// notice shows once.
 pub(crate) fn unanswered_message(machine: &MachineObservation, error: &RpcError) -> String {
-    let message = crate::ui::row(error);
+    let message = error_chain::row(error);
     match large_packets_note(machine, error) {
         Some(note) => format!("{message}{note}"),
         None => message,
@@ -423,7 +406,7 @@ impl DeploySnapshot {
                 if !held.iter().all(|container| is_at_rest(&container.runtime)) {
                     return None;
                 }
-                if let Some(restarting) = newest(restarting) {
+                if let Some(restarting) = ployz_core::newest(restarting) {
                     return Some(EmptyIngress {
                         machine,
                         held: HeldIngress::Restarting(restarting),
@@ -432,7 +415,7 @@ impl DeploySnapshot {
                 let (dead, startable): (Vec<_>, Vec<_>) = held
                     .into_iter()
                     .partition(|container| container.runtime == ContainerRuntimeObservation::Dead);
-                let held = match (newest(startable), newest(dead)) {
+                let held = match (ployz_core::newest(startable), ployz_core::newest(dead)) {
                     (Some(stopped), _) => HeldIngress::Stopped(stopped),
                     (None, Some(dead)) => HeldIngress::Dead(dead),
                     (None, None) => HeldIngress::None,
@@ -515,33 +498,9 @@ impl DeploySnapshot {
     pub fn ingress_returning(&self) -> Vec<Option<std::net::IpAddr>> {
         self.empty_ingress()
             .into_iter()
-            .filter(|empty| {
-                !matches!(
-                    empty.held,
-                    HeldIngress::Dead(_) | HeldIngress::Restarting(_)
-                )
-            })
+            .filter(|empty| !matches!(empty.held, HeldIngress::Restarting(_)))
             .map(|empty| empty.machine.machine.public_ip)
             .collect()
-    }
-
-    /// This snapshot as seen from `machine` alone, so planning there cannot fail on
-    /// another Machine.
-    fn only(&self, machine: &MachineObservation) -> Self {
-        Self {
-            machines: vec![machine.clone()],
-            storage_capacity: self.storage_capacity.clone(),
-            containers: self
-                .containers
-                .iter()
-                .filter(|container| container.machine_id == machine.machine.id)
-                .cloned()
-                .collect(),
-            volume_snapshot: self.volume_snapshot.clone(),
-            container_failures: Vec::new(),
-            container_omissions: Vec::new(),
-            capacity: self.capacity.clone(),
-        }
     }
 
     /// Observer-derived Services owned by `namespace`. Other Namespaces are excluded.
@@ -764,7 +723,7 @@ pub enum PlanError {
         service: ServiceName,
     },
     /// Every copy of a Managed Volume is a slot or mid-switch; nothing can mount it.
-    #[error("{}", ployz_core::no_writer_message(.name, .copies, *.operator))]
+    #[error("{}", crate::volume_recovery::no_writer_message(.name, .copies, *.operator))]
     NoWriter {
         /// The Volume without a writer, as its owner named it.
         name: String,
@@ -1021,18 +980,13 @@ impl PlanError {
             error @ Self::NoWriter { .. } => {
                 ployz_core::SwitchError::NoWriter.rpc_error(error.to_string())
             }
-            error @ Self::VolumeServerTakesNoServices { .. } => RpcError {
-                code: RpcErrorCode::Conflict,
-                message: error.to_string(),
-                details: serde_json::json!({ "reason": "volume_server_takes_no_services" }),
-                cause: Vec::new(),
-            },
-            error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error @ Self::VolumeServerTakesNoServices { .. } => RpcError::conflict(
+                error.to_string(),
+            )
+            .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
+            error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
+                RpcError::unavailable(error.to_string())
+            }
             error @ (Self::ConflictingHostPublications { .. }
             | Self::HostPortConflict { .. }
             | Self::CapacityUnknown
@@ -1051,16 +1005,16 @@ impl PlanError {
             | Self::HostnameConflict { .. }
             | Self::RemovalInTarget { .. }
             | Self::RemovalNotSelected { .. }
-            | Self::RemovalInReservedNamespace { .. }) => RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: error.to_string(),
-                details: if error.same_again() {
-                    serde_json::json!({"same_again": true})
+            | Self::RemovalInReservedNamespace { .. }) => {
+                let refusal = RpcError::invalid_argument(error.to_string());
+                if error.same_again() {
+                    refusal.with_evidence(
+                        &crate::sdk::preparation_failure::PreparationFailure::same_again(),
+                    )
                 } else {
-                    serde_json::Value::Null
-                },
-                cause: Vec::new(),
-            },
+                    refusal
+                }
+            }
         }
     }
 
@@ -1083,7 +1037,7 @@ pub(super) fn observation_warnings(
             kind,
             machine_id: failure.machine_id,
             machine_name: None,
-            message: crate::ui::row(&failure.error),
+            message: error_chain::row(&failure.error),
         })
         .chain(
             omissions

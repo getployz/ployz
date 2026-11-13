@@ -17,10 +17,19 @@
       "types": "./config.d.ts",
       "default": "./config.mjs"
     },
+    "./authority": {
+      "types": "./authority.d.ts",
+      "default": "./authority.mjs"
+    },
     "./capabilities": {
       "types": "./generated/capabilities.d.ts",
       "import": "./generated/capabilities.mjs",
       "default": "./generated/capabilities.js"
+    },
+    "./cloud-contract": {
+      "types": "./generated/cloud-contract.d.ts",
+      "import": "./generated/cloud-contract.mjs",
+      "default": "./generated/cloud-contract.js"
     }
   },
   "files": [
@@ -31,7 +40,9 @@
     "browser.mjs",
     "generated",
     "config.mjs",
-    "config.d.ts"
+    "config.d.ts",
+    "authority.mjs",
+    "authority.d.ts"
   ],
   "devDependencies": {
     "typescript": "^5.9.2"

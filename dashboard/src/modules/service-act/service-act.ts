@@ -1,4 +1,5 @@
-import type { ContainerState, Leg, Receipt, RunState, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { ContainerState, Leg, Receipt, RunState, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 
 export const SERVICE_ACT_STATES = ["accepted", "running", "done", "failed", "unknown"] as const satisfies readonly RunState[];
 export type ServiceActState = (typeof SERVICE_ACT_STATES)[number];
@@ -41,6 +42,24 @@ export const alreadyThere = (verb: ServiceVerb, side: "stop" | "start", state: C
 export type ServiceActEnd = { state: Exclude<ServiceActState, ActiveServiceActState>; reason: string | null };
 
 const confirmed = (step: LegStep | null) => step === "done" || step === "already_there";
+
+/** A copy a run stopped, or found stopped, and hasn't confirmed started again: what the person has to start now. */
+export const leftStopped = (leg: ServiceActLeg) => confirmed(leg.stop) && takes(leg, "start") && !confirmed(leg.start);
+
+export const APPROVAL_RAN_OUT = "The approval ran out.";
+
+const ApprovalWindow = Schema.fromJsonString(Schema.Struct({ expires_at: Schema.Number }));
+
+/**
+ * Whether the approval a leg would carry has run out at `now`: a proposal step's by its bundle, a single act's by its
+ * own body, so a Server is never asked to move a copy past what the person was shown. One Cloud can't read goes, and
+ * the Server judges it.
+ */
+export const ranOut = (approval: Signed | undefined, now: number) => {
+  if (approval === undefined) return false;
+  const window = Schema.decodeUnknownOption(ApprovalWindow)(approval.proposal?.body ?? approval.body);
+  return Option.isSome(window) && now > window.value.expires_at;
+};
 
 /** A restart rolls on only once the copy it just restarted is confirmed started again. */
 export const cameBack = (legs: readonly ServiceActLeg[], copy: Pick<ServiceActLeg, "machine" | "container">) =>
@@ -109,3 +128,52 @@ export const legOf = (leg: ServiceActLeg): Leg => ({
   started: leg.start === null ? null : RECEIPTS[leg.start],
   reason: leg.reason,
 });
+
+type FrameContainer = { readonly container_id: string; readonly machine_id: string };
+
+/** The parts of a Runtime Watch frame that say which Servers run a Service and whether they enforce. */
+export type EnforcementFrame = {
+  readonly services: readonly { readonly identity: string; readonly containers: readonly FrameContainer[]; readonly hook_containers: readonly FrameContainer[] }[];
+  readonly machines: readonly { readonly machine: { readonly id: string; readonly runtime: { readonly device_enforcement?: boolean | null } } }[];
+};
+
+/** The copies the Servers report of the Service `identity` (`namespace/runtime`), its hooks included and marked. */
+export function copiesIn(frame: Pick<EnforcementFrame, "services">, identity: string) {
+  const service = frame.services.find((candidate) => candidate.identity === identity);
+  return service === undefined ? [] : [
+    ...service.containers.map((copy) => ({ ...copy, hook: false })),
+    ...service.hook_containers.map((copy) => ({ ...copy, hook: true })),
+  ];
+}
+
+export const START_APPROVAL_CAPABILITY = "ployz.restart.start-approval.v1";
+
+const NEEDS_NEWER = "needs a newer Ployz to";
+
+/** Why a Server can't take a run's step: its Ployz is too old. No retry helps until it is upgraded. */
+export const needsNewerPloyz = (server: string, side: ServiceVerb) => `${server} ${NEEDS_NEWER} ${side} it.`;
+
+export const needsUpgrade = (reason: string | null) => reason?.includes(` ${NEEDS_NEWER} `) === true;
+
+/**
+ * The Server a stop would strand: it runs a copy of the Service and enforces, but can't take a start approval, so
+ * nothing in Ployz Cloud could start the copy again. Null when every such Server can. A hook never starts again, so
+ * a Server that holds only hooks strands nothing.
+ */
+export function strandedByStop(
+  copies: readonly { readonly machineId: string; readonly hook: boolean }[],
+  machines: readonly { readonly id: string; readonly name: string; readonly capabilities: readonly string[]; readonly deviceEnforcement?: boolean | null }[],
+) {
+  const hosts = new Set(copies.filter((copy) => !copy.hook).map((copy) => copy.machineId));
+  return machines.find((machine) => hosts.has(machine.id) && machine.deviceEnforcement === true
+    && !machine.capabilities.includes(START_APPROVAL_CAPABILITY))?.name ?? null;
+}
+
+/**
+ * Whether a Server running a copy of the Service `identity` reports that it enforces, as the browser decides before it
+ * prompts. Servers that run only other Services, and absent reports, claim nothing.
+ */
+export function enforcesIn(frame: EnforcementFrame, identity: string) {
+  const hosts = new Set(copiesIn(frame, identity).map((copy) => copy.machine_id));
+  return frame.machines.some(({ machine }) => hosts.has(machine.id) && machine.runtime.device_enforcement === true);
+}

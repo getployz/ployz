@@ -9,7 +9,7 @@ use tokio::{
     process::Command,
 };
 
-use super::Error;
+use super::{Error, images::retention_tag};
 
 /// Pull an image from a peer Machine's ingest TCP destination into local Docker.
 ///
@@ -37,7 +37,7 @@ pub(crate) async fn pull_from_ingest(
         {
             return Err(Error::UnsupportedImageStore);
         }
-        Some(image.replace("@sha256:", ":ployz-sha256-"))
+        retention_tag(image)
     } else {
         None
     };

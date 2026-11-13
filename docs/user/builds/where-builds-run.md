@@ -47,6 +47,11 @@ through the Ployz GitHub App.
 The repository shows **Waiting for commit**, then a check mark. If it shows **Installation
 lacks permission**, approve **Actions: Read and write** for the Ployz GitHub App in GitHub.
 
+A repository that shows **Uses an older workflow** has a different file, such as one that calls
+`getployz/build@v1`. Click **Update workflow**, copy the file, then **Open in GitHub ↗** and replace
+yours with it. The new file runs the builder at a fixed commit, so a change to the builder can't
+reach your builds until Ployz offers a new file.
+
 <details>
 <summary>The workflow file</summary>
 
@@ -65,7 +70,7 @@ jobs:
   build:
     runs-on: ${{ inputs.runner }}
     steps:
-      - uses: getployz/build@v1
+      - uses: getployz/build@a19b4fca3adea371c25ec29f181e8c7d21037d1e
         with:
           build: ${{ inputs.build }}
           cloud: ${{ inputs.cloud }}
@@ -77,6 +82,9 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 
 - **The workflow is missing, disabled or not on the default branch**, or the repository shows
   **Installation lacks permission**. Fix it in GitHub, as above.
+- **The workflow file on the default branch isn't the one Ployz offers**, on hosted Ployz Cloud.
+  It runs only that exact file, whatever its line endings. Replace yours with the file above. A
+  Self-hosted Cloud runs the file you have.
 - **The service deploys a public repository without the GitHub App**, or **runs on both x86 and
   ARM servers.** These build on your servers. With **GitHub only**, they fail, so keep your
   servers in the order for them.
@@ -124,6 +132,24 @@ builds, another of your servers takes the build. **Auto** follows the build orde
 A deploy names the server each service built on. When GitHub came first and couldn't take
 the build, for example because the repository has no Ployz build workflow, the deploy says so
 and why.
+
+## Builds on servers that enforce device approval
+
+A build runs steps from your repository and opens your service's sealed values. A server with
+[device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on refuses a build Ployz Cloud starts, so Ployz Cloud can't run steps of its choosing there. The
+deployment fails with:
+
+```text
+No eligible Build Machine was selected; no build was started: Server web-1 (…): This server runs only builds an approved device starts.
+```
+
+This covers builds on your servers, builds on GitHub Actions, and builds in a preview. A GitHub
+build checks in, is refused, and moves to your servers, which refuse it too, so the deploy
+stops before anything changes. A build an approved device starts over its own connection still
+runs. A build already under way when you turn enforcement on can't start another request for
+sealed values or another image push, though a request it started before then may still finish.
+Turn enforcement off to build through Ployz Cloud again.
 
 ## When a build fails
 

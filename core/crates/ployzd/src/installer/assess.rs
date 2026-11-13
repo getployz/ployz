@@ -6,168 +6,50 @@ use std::{
 };
 
 use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API, MINIMUM_DOCKER_RELEASE};
-use serde::Serialize;
+use ployz_core::probe_document::{
+    Assessment, Blocker, BlockerCode, CgroupVersion, Disk, DiskRole, DockerFacts, Filesystem,
+    HostFacts, OsRelease, ProbeDocument, Virtualization, ZfsEligibility, ZfsTarget,
+};
 use serde_json::Value;
 
-use super::os_release::OsRelease;
-use super::storage::ZfsRoute;
+use super::os_release;
+use super::zfs_route::ZfsRoute;
 use super::{Error, InstallPaths, command_exists, run_command, run_host};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const MINIMUM_DISK_BYTES: u64 = 30 * GIB;
 pub(super) const ZFS_SMOKE_BYTES: u64 = 128 * 1024 * 1024;
-const ROOT_RESERVE: &str = "root_reserve";
 const DOCKER_STAGE: &str = "checking Docker";
 const ROOT_STAGE: &str = "inspect host-root capacity for ZFS storage preparation";
 const DISKS_STAGE: &str = "list disks";
 
-#[derive(Debug, Serialize)]
-pub(super) struct HostFacts {
-    pub(super) os: OsRelease,
-    pub(super) kernel: String,
-    pub(super) arch: String,
-    pub(super) virt: Virtualization,
-    /// `None` when the EFI variable couldn't be read.
-    pub(super) secure_boot: Option<bool>,
-    pub(super) cgroup: Option<CgroupVersion>,
-    pub(super) systemd: bool,
-    pub(super) cpu_count: Option<u32>,
-    pub(super) memory_total_bytes: Option<u64>,
-    pub(super) root_filesystem: Filesystem,
-    /// The root disk and every whole disk with nothing on it; `None` when `lsblk` failed.
-    pub(super) disks: Option<Vec<Disk>>,
-    pub(super) docker: DockerFacts,
-    /// `None` when the ZFS module is loaded but `zpool list` failed.
-    pub(super) zpool_present: Option<bool>,
-    /// Why a fact above that could have been read is `null` or cut short.
-    pub(super) unread: Vec<String>,
+pub(super) fn read_root_filesystem() -> Result<Filesystem, Error> {
+    let (size_bytes, available_bytes) = crate::host_capacity::filesystem_space(Path::new("/"))
+        .map_err(|source| Error::Io {
+            stage: ROOT_STAGE,
+            source,
+        })?;
+    Ok(Filesystem {
+        size_bytes,
+        available_bytes,
+    })
 }
 
-#[derive(Debug, Serialize)]
-pub(super) enum Virtualization {
-    BareMetal,
-    Vm {
-        kind: String,
-    },
-    OpenVz,
-    /// `privileged` is `None` when the container's user namespace map couldn't be read.
-    Lxc {
-        privileged: Option<bool>,
-    },
-    Container {
-        kind: String,
-    },
-    Unknown,
-}
-
-#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CgroupVersion {
-    V1,
-    V2,
-    Hybrid,
-}
-
-#[derive(Debug, Serialize, Clone, Copy)]
-pub(super) struct Filesystem {
-    pub(super) size_bytes: u64,
-    pub(super) available_bytes: u64,
-}
-
-impl Filesystem {
-    pub(super) fn read_root() -> Result<Self, Error> {
-        let (size_bytes, available_bytes) = crate::host_capacity::filesystem_space(Path::new("/"))
-            .map_err(|source| Error::Io {
-                stage: ROOT_STAGE,
-                source,
-            })?;
-        Ok(Self {
-            size_bytes,
-            available_bytes,
-        })
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct Disk {
-    pub(super) path: String,
-    pub(super) by_id: Option<String>,
-    pub(super) size_bytes: u64,
-    pub(super) role: DiskRole,
-}
-
-#[derive(Debug, Serialize)]
-pub(super) enum DiskRole {
-    Root { available: u64 },
-    Empty,
-}
-
-/// Docker as the installer sees it. Reading stops at the first check Docker fails or can't
-/// answer, so a later field stays `None` exactly when the installer never got to ask.
-#[derive(Debug, Serialize)]
-pub(super) enum DockerFacts {
-    Absent,
-    /// Docker doesn't answer.
-    Stopped,
-    /// `docker.socket` listens while `docker.service` isn't running. The first `docker` command
-    /// starts the daemon, so the probe asks nothing more and `unread` says why.
-    SocketActivated,
-    Present {
-        version: String,
-        api: String,
-        buildx: Option<String>,
-        containerd_store: Option<bool>,
-        /// The failed command that stopped reading, as the installer would refuse with it.
-        error: Option<String>,
-    },
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct Assessment {
-    pub(super) blockers: Vec<Blocker>,
-    pub(super) warnings: Vec<Blocker>,
-    pub(super) zfs: ZfsEligibility,
-}
-
-/// A stable `code` for machines and an English `message` for people.
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
-pub(super) struct Blocker {
-    pub(super) code: &'static str,
-    pub(super) message: String,
-}
-
-impl Blocker {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub(super) enum ZfsEligibility {
-    Eligible {
-        targets: Vec<ZfsTarget>,
-        prepare_minutes: u32,
-    },
-    Ineligible {
-        reason: Blocker,
-    },
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-pub(super) enum ZfsTarget {
-    MainDisk,
-    Disk { by_id: String },
+/// The document `ployzd install --probe --json` prints and the check-in reads.
+pub(super) fn probe_json(document: &ProbeDocument) -> Result<String, Error> {
+    document.to_json().map_err(|error| Error::Io {
+        stage: "print host probe",
+        source: io::Error::other(error),
+    })
 }
 
 pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
-    let os = OsRelease::read(&paths.os_release)?;
+    let os = os_release::read(&paths.os_release)?;
     let uts = nix::sys::utsname::uname().map_err(|errno| Error::Io {
         stage: "read kernel and architecture",
         source: io::Error::from(errno),
     })?;
-    let root_filesystem = Filesystem::read_root()?;
+    let root_filesystem = read_root_filesystem()?;
     let mut unread = Vec::new();
     let mut keep = |error: Option<Error>| unread.extend(error.as_ref().map(error_text));
     let (virt, error) = read_virtualization(&paths.proc_dir);
@@ -522,7 +404,7 @@ pub(super) fn empty_device(device: &Path) -> Result<PathBuf, Error> {
             format!("{} is not a block device", device.display()),
         ));
     }
-    let (disks, errors) = read_disks(Filesystem::read_root()?);
+    let (disks, errors) = read_disks(read_root_filesystem()?);
     if let Some(error) = errors.into_iter().next() {
         return Err(error);
     }
@@ -534,7 +416,7 @@ pub(super) fn empty_device(device: &Path) -> Result<PathBuf, Error> {
 
 fn device_blocker(disks: &[Disk], device: &Path) -> Option<Blocker> {
     (!disks.iter().any(|disk| Path::new(&disk.path) == device && matches!(disk.role, DiskRole::Empty)))
-        .then(|| Blocker::new("device_not_empty", format!("{} is not an empty whole disk; partitions, filesystems and mounted disks cannot be used", device.display())))
+        .then(|| Blocker::new(BlockerCode::DeviceNotEmpty, format!("{} is not an empty whole disk; partitions, filesystems and mounted disks cannot be used", device.display())))
 }
 
 /// `mountpoints` from util-linux 2.37 on, `mountpoint` before it.
@@ -640,7 +522,7 @@ pub(super) fn assess(facts: &HostFacts) -> Assessment {
     blockers.extend(docker_blocker(&facts.docker));
     if !facts.systemd {
         blockers.push(Blocker::new(
-            "no_systemd",
+            BlockerCode::NoSystemd,
             Error::SystemdRequired.to_string(),
         ));
     }
@@ -651,7 +533,7 @@ pub(super) fn assess(facts: &HostFacts) -> Assessment {
         .find(|disk| matches!(disk.role, DiskRole::Root { .. }));
     if let Some(disk) = root_disk.filter(|disk| disk.size_bytes < MINIMUM_DISK_BYTES) {
         blockers.push(Blocker::new(
-            "disk_too_small",
+            BlockerCode::DiskTooSmall,
             format!(
                 "Disk is {} GiB. Ployz needs {} GiB.",
                 disk.size_bytes / GIB,
@@ -665,7 +547,7 @@ pub(super) fn assess(facts: &HostFacts) -> Assessment {
         Some(CgroupVersion::V1 | CgroupVersion::Hybrid)
     ) {
         warnings.push(Blocker::new(
-            "cgroup_v1",
+            BlockerCode::CgroupV1,
             "This Server uses cgroup v1. Ployz expects cgroup v2, so container limits may not apply.",
         ));
     }
@@ -688,28 +570,28 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
         // Install starts a socket-activated Docker with its first command.
         return matches!(docker, DockerFacts::Stopped).then(|| {
             Blocker::new(
-                "docker_stopped",
+                BlockerCode::DockerStopped,
                 "Docker is installed but not running. Start it (systemctl start docker) and run this again.",
             )
         });
     };
     if !at_least(api, MINIMUM_DOCKER_API) {
         return Some(Blocker::new(
-            "docker_too_old",
+            BlockerCode::DockerTooOld,
             format!(
                 "Docker {version} is too old: Ployz needs Docker {MINIMUM_DOCKER_RELEASE} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one."
             ),
         ));
     }
     if let Some(error) = error {
-        return Some(Blocker::new("docker_unreadable", error.clone()));
+        return Some(Blocker::new(BlockerCode::DockerUnreadable, error.clone()));
     }
     if let Some(buildx) = buildx.as_deref()
         && !at_least(buildx.trim_start_matches('v'), MINIMUM_BUILDX)
     {
         let (major, minor) = MINIMUM_BUILDX;
         return Some(Blocker::new(
-            "buildx_too_old",
+            BlockerCode::BuildxTooOld,
             format!(
                 "Docker Buildx {buildx} is too old: Ployz needs Buildx {major}.{minor} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one."
             ),
@@ -717,7 +599,7 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
     }
     (*containerd_store == Some(false)).then(|| {
         Blocker::new(
-            "docker_containerd_store_off",
+            BlockerCode::DockerContainerdStoreOff,
             r#"Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
         )
     })
@@ -759,7 +641,7 @@ pub(super) fn zfs_route(facts: &HostFacts) -> Result<ZfsRoute, Blocker> {
 pub(super) fn zfs_os_route(os: &OsRelease) -> Result<ZfsRoute, Blocker> {
     ZfsRoute::for_os(os).ok_or_else(|| {
         Blocker::new(
-            "unsupported_os",
+            BlockerCode::UnsupportedOs,
             format!(
                 "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs {}. Use one of those, or add `--storage none`.",
                 os.display()
@@ -780,14 +662,14 @@ pub(super) fn secure_boot_blocker(
     match secure_boot {
         Some(false) => None,
         Some(true) => Some(Blocker::new(
-            "secure_boot",
+            BlockerCode::SecureBoot,
             format!(
                 "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
                 os.name
             ),
         )),
         None => Some(Blocker::new(
-            "secure_boot_unknown",
+            BlockerCode::SecureBootUnknown,
             format!(
                 "Couldn't tell whether Secure Boot is on, and under it this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
                 os.name
@@ -799,17 +681,17 @@ pub(super) fn secure_boot_blocker(
 pub(super) fn virtualization_blocker(virt: &Virtualization) -> Option<Blocker> {
     match virt {
         Virtualization::OpenVz => Some(Blocker::new(
-            "openvz",
+            BlockerCode::OpenVz,
             "OpenVZ does not allow this Machine to load the host ZFS kernel module",
         )),
         Virtualization::Lxc {
             privileged: Some(false),
         } => Some(Blocker::new(
-            "unprivileged_lxc",
+            BlockerCode::UnprivilegedLxc,
             "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module",
         )),
         Virtualization::Lxc { privileged: None } => Some(Blocker::new(
-            "lxc_privilege_unknown",
+            BlockerCode::LxcPrivilegeUnknown,
             "Couldn't read this LXC container's user namespace, so Ployz can't tell whether it may load the host ZFS kernel module",
         )),
         Virtualization::BareMetal
@@ -830,7 +712,7 @@ pub(super) fn root_reserve_blocker(root: Filesystem) -> Option<Blocker> {
     let reserve = ployz_core::storage_host_reserve(size_bytes);
     (available_bytes < reserve.saturating_add(ZFS_SMOKE_BYTES)).then(|| {
         Blocker::new(
-            ROOT_RESERVE,
+            BlockerCode::RootReserve,
             format!(
                 "Host root has {available_bytes} bytes available; ZFS validation needs {ZFS_SMOKE_BYTES} bytes while preserving the {reserve}-byte host-root reserve"
             ),

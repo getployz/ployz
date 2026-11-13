@@ -173,30 +173,62 @@ impl Service<http::Request<Body>> for MachineApi {
         self.proxy.poll_ready(context)
     }
 
-    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+    fn call(&mut self, mut request: http::Request<Body>) -> Self::Future {
         let Some(connection) = request
             .extensions()
             .get::<iroh::endpoint::WeakConnectionHandle>()
         else {
-            let scope = if request
-                .headers()
-                .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
+            let local = request
+                .extensions()
+                .get::<tonic::transport::server::UdsConnectInfo>()
+                .is_some();
+            let enforced = self.service.local().record().device_enforcement();
+            let scope = if (local || !enforced)
+                && !request
+                    .headers()
+                    .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
             {
-                ManagementScope::Operator
-            } else {
                 ManagementScope::Full
+            } else {
+                ManagementScope::Operator
             };
+            if enforced && !local && request.uri().path() == op::SetManagementClient::PATH {
+                return Box::pin(async {
+                    Ok(ployz_core::rpc::hinted_status(
+                        tonic::Code::PermissionDenied,
+                        &NeedsManagementConnection,
+                        serde_json::json!({ "capability": ployz_core::SET_MANAGEMENT_CLIENT_CAPABILITY }),
+                    ).into_http())
+                });
+            }
+            if scope == ManagementScope::Operator {
+                request.headers_mut().insert(
+                    ployz_core::OPERATOR_SCOPE_HEADER,
+                    http::HeaderValue::from_static("1"),
+                );
+            }
+            if enforced
+                && !local
+                && ployz_core::scope_of(request.uri().path()) == Some(ManagementScope::Full)
+            {
+                let capability =
+                    ployz_core::capability_of(request.uri().path()).expect("catalogued Full route");
+                return Box::pin(async move {
+                    Ok(ployz_core::rpc::hinted_status(
+                    tonic::Code::PermissionDenied,
+                    &NeedsDirectDevice,
+                    serde_json::json!({ "capability": capability, "next": "Connect directly to the target Server as an approved Device, or over SSH." }),
+                ).into_http())
+                });
+            }
             if let Some(refused) = refuse_scope(request.uri().path(), scope) {
                 return Box::pin(async { Ok(refused) });
             }
             return self.proxy.call(request);
         };
-        let remote = connection.upgrade().and(
-            request
-                .extensions()
-                .get::<crate::management::ProvenClient>()
-                .map(|client| client.0),
-        );
+        let remote = connection
+            .upgrade()
+            .and(request.extensions().get::<ployz_core::ClientKey>().copied());
         let service = self.service.clone();
         let proxy = self.proxy.clone();
         Box::pin(async move {
@@ -284,6 +316,16 @@ const FULL_ACCESS_NEXT: &str =
 struct NeedsFullAccess {
     capability: &'static str,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Management slots require a local or authenticated management connection")]
+struct NeedsManagementConnection;
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "This Server enforces Device approval. Connect directly as an approved Device, or over SSH."
+)]
+struct NeedsDirectDevice;
 
 fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Body>> {
     if ployz_core::scope_of(path).is_none_or(|needed| scope >= needed) {

@@ -1,4 +1,4 @@
-import type { ConfigStore, DataLossConfirmation, DeployOutcome, ExecutionError, MachineId } from "@ployz/sdk";
+import type { ConfigStore, DataLossConfirmation, DeployOutcome, ExecutionError, MachineId, TeardownApproval } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
@@ -30,6 +30,7 @@ const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 describe("clean-namespace", () => {
   let harness: PostgresTestHarness;
   let destroyCalls: Array<[string, DataLossConfirmation]>;
+  let teardowns: Array<TeardownApproval | null | undefined>;
   let destroyAnswer: () => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
   let connected: boolean;
   let owned: string[];
@@ -46,8 +47,9 @@ describe("clean-namespace", () => {
         cancel: () => Effect.void,
         open: () => Effect.succeed(connected
           ? { status: "connected" as const, connected: asTestDouble<PloyzSession>()({
-            destroyNamespace: (namespace: string, confirmation: DataLossConfirmation) => {
+            destroyNamespace: (namespace: string, confirmation: DataLossConfirmation, teardown?: TeardownApproval | null) => {
               destroyCalls.push([namespace, confirmation]);
+              teardowns.push(teardown);
               return destroyAnswer();
             },
           }) }
@@ -55,8 +57,8 @@ describe("clean-namespace", () => {
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (approvalId: string | null = null, attemptId: string = crypto.randomUUID()) =>
-    runEffect(requestNamespaceCleanup(caller, { attemptId, namespace: "left-behind", confirmDataLoss: [data, cache], approvalId }));
+  const request = (approvalId: string | null = null, attemptId: string = crypto.randomUUID(), teardown: TeardownApproval | null = null) =>
+    runEffect(requestNamespaceCleanup(caller, { attemptId, namespace: "left-behind", confirmDataLoss: [data, cache], approvalId, teardown }));
   const clean = (cleanupId: string, runId = "run-clean") => new InngestTestEngine({
     function: createCleanNamespace(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "namespace/cleanup.requested", data: { cleanupId, organizationId } }],
@@ -85,6 +87,7 @@ describe("clean-namespace", () => {
 
   beforeEach(async () => {
     destroyCalls = [];
+    teardowns = [];
     destroyAnswer = () => Effect.succeed({ type: "success", completed: [], services: [] });
     connected = true;
     owned = [];
@@ -95,6 +98,14 @@ describe("clean-namespace", () => {
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
       insert into "user" (id, email, name) values ('${userId}', 'member@example.com', 'Member');
     `);
+  });
+
+  it("hands every Server the teardown the CLI's Device signed, as it was sent", async () => {
+    const teardown: TeardownApproval = { signed: { body: '{"kind":"namespace"}', signatures: [{ key: "d".repeat(64), signature: "e".repeat(128) }] } };
+    const cleanupId = await request(null, crypto.randomUUID(), teardown);
+
+    expect((await clean(cleanupId)).result).toEqual({ cleanupId, state: "finished" });
+    expect(teardowns).toEqual([teardown]);
   });
 
   it("deletes exactly the confirmed Volumes once, and a second run of the same event never asks again", async () => {

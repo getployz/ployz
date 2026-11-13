@@ -773,8 +773,8 @@ fn shares_a_service(
 }
 
 impl VolumePlan<'_> {
-    /// Reserve shared placement and its full mounted commitments together. With
-    /// `options.block_unmountable`, a shared Volume nobody can mount blocks every Service
+    /// Reserve shared placement and its full mounted commitments together. In
+    /// `PlanMode::Runner`, a shared Volume nobody can mount blocks every Service
     /// of its component instead of failing, and those are returned.
     ///
     /// # Errors
@@ -800,7 +800,7 @@ impl VolumePlan<'_> {
                 options,
             ) {
                 Ok(anchor) => anchor,
-                Err(error) if options.block_unmountable => {
+                Err(error) if options.mode().blocks_unmountable() => {
                     let error = unmountable(error, snapshot, requested)?.into_rpc_error();
                     blocked.extend(component.service_names().map(|service| BlockedService {
                         service: service.clone(),

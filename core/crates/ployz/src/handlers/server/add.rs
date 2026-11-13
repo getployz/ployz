@@ -1,7 +1,8 @@
+use crate::cluster::{Call, Wait};
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollAs, EnrollRequest, EnrollmentSnapshot, InspectRequest, LocalMachinePhase, MachineId,
-    MachineName, RegisterRequest, WireGuardPublicKey, op,
+    EnrollAs, EnrollRequest, EnrollmentSnapshot, Hint, InspectRequest, LocalMachinePhase,
+    MachineId, MachineName, RegisterRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_context, runtime};
@@ -9,7 +10,6 @@ use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
 use crate::handlers::{Error, leaf_matches};
-use crate::ui::Hint;
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -37,7 +37,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let mut entry = connect_context(matches, options.context()).await?;
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let entry_id = entry
-            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+            .call::<op::Inspect>(
+                InspectRequest::default(),
+                Call::read().waiting(Wait::standard()),
+            )
             .await?
             .id;
         let mut target_client = if no_install {
@@ -52,7 +55,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let name = helpers::machine_name(requested_name, &token);
         require_free_name(&snapshot, token.id, &name, destination)?;
         let history = config.path().with_extension("enrollment");
+        // A Server still joining under this identity resumes: an approved join stays unlisted
+        // until its confirmation is relayed below.
+        let joining = details.phase == LocalMachinePhase::Joining
+            && details.machine.as_ref().is_some_and(|machine| {
+                machine.id == token.id && machine.public_key == token.public_key
+            });
         if details.phase != LocalMachinePhase::Uninitialized
+            && !joining
             && !resumes(&snapshot, token.id, token.public_key)
         {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
@@ -66,6 +76,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let assignment = crate::enrollment::local::save_assignment(
             &history,
             &RegisterRequest {
+                join_approval: None,
+                join_confirmation: None,
                 machine_id: token.id,
                 assigned_subnet: None,
                 initial_policy: policy,
@@ -75,12 +87,46 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 public_ip: token.public_ip,
                 advertised_endpoints: token.advertised_endpoints,
                 runtime: token.runtime,
+                capabilities: Vec::new(),
             },
             &snapshot,
         )?;
+        // This CLI runs the joiner's catch-up, so it claims what it honors. The saved
+        // assignment never holds a claim, so it is set on the copy Register carries.
+        let mut assignment = assignment;
+        assignment.request.capabilities = vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY.to_owned()];
         let assigned = assignment.machine.clone();
-        let registration = crate::enrollment::publish_enrollment(&mut entry, &assignment).await?;
-        helpers::enroll(
+        let registration = match crate::enrollment::publish_enrollment(&mut entry, &assignment)
+            .await
+        {
+            Err(error)
+                if error.code == ployz_core::RpcErrorCode::from("forbidden")
+                    && error
+                        .details
+                        .get("capability")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
+            {
+                if !crate::handlers::device::sign_waiting_join(
+                    &mut entry,
+                    config.path(),
+                    &ployz_core::RegisterRequest {
+                        assigned_subnet: Some(assigned.subnet),
+                        ..assignment.request.clone()
+                    },
+                )
+                .await?
+                {
+                    let code = ployz_core::authority::join::code(assigned.id, assigned.public_key);
+                    return Err(Error::from(error)
+                        .hint(Hint::Next(format!("ployz device approve --join {code}"))));
+                }
+                crate::enrollment::publish_enrollment(&mut entry, &assignment).await?
+            }
+            result => result?,
+        };
+        let approved = registration.assigned_machine.join_approval.is_some();
+        let (_, join_confirmation) = helpers::enroll_member(
             &mut target_client,
             EnrollRequest {
                 role: EnrollAs::Member { registration },
@@ -89,6 +135,12 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             },
         )
         .await?;
+        if approved {
+            let mut confirmed = assignment.clone();
+            confirmed.request.join_confirmation =
+                Some(join_confirmation.ok_or_else(helpers::confirmation_missing)?);
+            crate::enrollment::publish_enrollment(&mut entry, &confirmed).await?;
+        }
 
         Ok::<_, Error>(assigned)
     })?;
@@ -207,7 +259,7 @@ mod tests {
         let failure = crate::global_catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
                 crate::failure::Failure::usage("deploy timed out".to_owned())
-                    .hint(crate::ui::Hint::Next("ployz deploy".into())),
+                    .hint(Hint::Next("ployz deploy".into())),
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
             &assigned,
@@ -220,12 +272,12 @@ mod tests {
         let command = hints
             .iter()
             .find_map(|hint| match hint {
-                crate::ui::Hint::Retry(command) => Some(command),
-                crate::ui::Hint::Next(_)
-                | crate::ui::Hint::Inspect(_)
-                | crate::ui::Hint::Undo(_)
-                | crate::ui::Hint::Closest(_)
-                | crate::ui::Hint::Valid(_) => None,
+                Hint::Retry(command) => Some(command),
+                Hint::Next(_)
+                | Hint::Inspect(_)
+                | Hint::Undo(_)
+                | Hint::Closest(_)
+                | Hint::Valid(_) => None,
             })
             .unwrap();
         assert_eq!(
@@ -243,7 +295,7 @@ mod tests {
             failure.report().code,
             ployz_core::RpcErrorCode::InvalidArgument
         );
-        assert!(hints.contains(&crate::ui::Hint::Next("ployz deploy".into())));
+        assert!(hints.contains(&Hint::Next("ployz deploy".into())));
     }
 
     #[test]
@@ -254,11 +306,14 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![survivor.clone()],
             target_versions: Default::default(),
+            doors: None,
         };
         let returning = assigned_machine("machine-3", 'c');
         let saved = crate::enrollment::local::save_assignment(
             history.path(),
             &RegisterRequest {
+                join_approval: None,
+                join_confirmation: None,
                 machine_id: returning.id,
                 assigned_subnet: None,
                 initial_policy: Default::default(),
@@ -270,11 +325,12 @@ mod tests {
                     "192.0.2.3:51820".parse().unwrap(),
                 )],
                 runtime: Default::default(),
+                capabilities: Vec::new(),
             },
             &joined,
         )
         .unwrap();
-        joined.machines.push(saved.machine.clone());
+        joined.machines.push(saved.machine);
         assert!(
             resumes(&joined, returning.id, returning.public_key),
             "a Server the Cluster lists resumes its join"
@@ -315,6 +371,7 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![live.clone(), joining.clone()],
             target_versions: Default::default(),
+            doors: None,
         };
         let refusal =
             require_free_name(&snapshot, joining.id, &live.name, "root@machine-3").unwrap_err();
@@ -340,7 +397,7 @@ mod tests {
             ..joining.clone()
         };
         let duplicated = EnrollmentSnapshot {
-            machines: vec![live.clone(), twin.clone()],
+            machines: vec![live, twin.clone()],
             ..snapshot.clone()
         };
         assert!(
@@ -371,6 +428,7 @@ mod tests {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }

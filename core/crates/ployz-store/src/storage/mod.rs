@@ -8,11 +8,14 @@
 mod convert;
 mod pg;
 mod sqlite;
+mod steps;
+pub(crate) mod tables;
 
 pub use convert::Converted;
 use ployz_core::RpcError;
 
 use crate::error;
+use crate::followup::FollowUp;
 
 /// Migrations, applied once, in order: each a batch of SQL or a step in Rust.
 const MIGRATIONS: &[(&str, Step)] = &[
@@ -158,33 +161,15 @@ const MIGRATIONS: &[(&str, Step)] = &[
     ),
     (
         "0029_scrub_sealed_bases",
-        Step::Rust(|tx, _| {
-            for row in tx.query("SELECT id FROM config_environment", &[])? {
-                crate::branch::scrub_bases(tx, row.text(0)?)?;
-            }
-            Ok(None)
-        }),
+        Step::Rust(|tx, _| crate::seal_scrub::backfill::scrub_every_base(tx).map(|()| None)),
     ),
     (
         "0030_scrub_sealed_arrivals",
-        Step::Rust(|tx, _| {
-            for row in tx.query("SELECT id FROM config_environment", &[])? {
-                crate::branch::scrub_bases(tx, row.text(0)?)?;
-            }
-            Ok(None)
-        }),
+        Step::Rust(|tx, _| crate::seal_scrub::backfill::scrub_every_base(tx).map(|()| None)),
     ),
     (
         "0031_scrub_sealed_history",
-        Step::Rust(|tx, _| {
-            for row in tx.query("SELECT id FROM config_environment", &[])? {
-                crate::review::scrub_sealed(
-                    tx,
-                    &row.parse::<crate::EnvironmentId>(0, "Environment")?,
-                )?;
-            }
-            Ok(None)
-        }),
+        Step::Rust(|tx, _| crate::seal_scrub::backfill::scrub_every_history(tx).map(|()| None)),
     ),
     (
         "0032_node_copied_from",
@@ -259,7 +244,7 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0037_arrival_checks",
         Step::Rust(|tx, backend| {
             // First: once a CHECK holds, a repair that leaves a row illegal fails.
-            crate::branch::repair_arrivals(tx)?;
+            steps::repair_arrivals(tx)?;
             match backend {
                 Backend::Postgres => {
                     tx.batch(include_str!("migrations/0037_arrival_checks_postgres.sql"))?
@@ -277,6 +262,58 @@ const MIGRATIONS: &[(&str, Step)] = &[
             }
             Ok(None)
         }),
+    ),
+    (
+        // Seals a Store from before 0033 saved after 0033 ran, during that rolling
+        // deploy: a review reads the ledger alone from here on.
+        "0038_record_late_saved_seals",
+        Step::Rust(|tx, _| crate::review::sealed::SealLedger::record_saved(tx).map(|()| None)),
+    ),
+    (
+        // Each pull request's phase, from the facts, merge, landing and standing a
+        // Store before it read the phase from (`pull_request::record_phases`). One
+        // statement per pull request.
+        "0040_pull_request_phase",
+        Step::Rust(|tx, _| {
+            tx.batch(include_str!("migrations/0040_pull_request_phase.sql"))?;
+            crate::pull_request::record_phases(tx).map(|()| None)
+        }),
+    ),
+    (
+        // Where a Device's approval of a Deploy is kept, for the runner to send each Server.
+        "0041_deployment_deploy_approval",
+        Step::Sql(include_str!(
+            "migrations/0041_deployment_deploy_approval.sql"
+        )),
+    ),
+    (
+        // Each Environment's automatic deploy rule, signed by a Device.
+        "0042_auto_deploy_rule",
+        Step::Sql(include_str!("migrations/0042_auto_deploy_rule.sql")),
+    ),
+    (
+        // Each Environment's preview rule, signed by a Device.
+        "0043_preview_rule",
+        Step::Sql(include_str!("migrations/0043_preview_rule.sql")),
+    ),
+    (
+        // The review a person signed for a preview Deployment's commit.
+        "0044_deployment_preview_review",
+        Step::Sql(include_str!(
+            "migrations/0044_deployment_preview_review.sql"
+        )),
+    ),
+    (
+        // A build's receipt, image token and a person's approval of its commit, and a
+        // Deployment that waits for that approval again once its builds end.
+        "0045_commit_approvals",
+        Step::Sql(include_str!("migrations/0045_commit_approvals.sql")),
+    ),
+    (
+        // The teardown a person signed for what a Deployment or a removal takes off the
+        // Servers.
+        "0046_deployment_teardown",
+        Step::Sql(include_str!("migrations/0046_deployment_teardown.sql")),
     ),
 ];
 
@@ -380,12 +417,6 @@ impl Storage {
     }
 }
 
-/// The highest published release on either channel: Publish only moves a pointer
-/// forward, and a stable Publish moves `beta` too (`core/scripts/promote-release.sh`).
-/// So it reaches whichever published Ployz upgraded the Store. The stable line
-/// reinstalls this same release when a beta did.
-const INSTALL_NEWEST: &str = "curl -fsSL https://ployz.sh | sh -s -- beta";
-
 /// A SQLite schema failure as `unsupported` when `config_migration` names a
 /// migration this binary doesn't know: a newer Ployz changed the schema its SQL
 /// expects. The failure stays the cause. Every other failure is returned as it was.
@@ -414,12 +445,25 @@ fn newer_store(sqlite: &sqlite::Sqlite, failed: sqlite::Failed, verb: &str) -> R
             "A newer Ployz upgraded this Config Store, and ployz {} could not {verb} it.",
             env!("CARGO_PKG_VERSION")
         ),
-        serde_json::json!({ "next": INSTALL_NEWEST, "migrations": newer }),
+        FollowUp::UpdateClient { beta: true }.within(serde_json::json!({ "migrations": newer })),
     );
     refused.cause = std::iter::once(failed.message)
         .chain(failed.cause)
         .collect();
     refused
+}
+
+/// Run `work` inside a savepoint and undo everything it wrote, whatever it returns: a
+/// rehearsal of writes whose only product is what `work` reads back.
+pub(crate) fn rehearse<T>(
+    tx: &mut dyn Tx,
+    work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
+) -> Result<T, RpcError> {
+    tx.execute("SAVEPOINT rehearsal", &[])?;
+    let result = work(tx);
+    tx.execute("ROLLBACK TO SAVEPOINT rehearsal", &[])?;
+    tx.execute("RELEASE SAVEPOINT rehearsal", &[])?;
+    result
 }
 
 /// Run `work` inside a savepoint: when it fails, everything it wrote is undone and
@@ -455,11 +499,6 @@ pub(crate) trait Tx {
     fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError>;
     /// Run a script of parameterless statements, as the driver splits it.
     fn batch(&mut self, sql: &str) -> Result<(), RpcError>;
-    /// The evidence of the caller this transaction acts for. The Store's own work acts
-    /// for nobody. Read only by [`admit_protect`].
-    fn acting_for(&self) -> Option<&crate::Trusted> {
-        None
-    }
     /// Wait at most `at_most` for a row lock from here on in this transaction, or as
     /// long as any other statement when None. A savepoint rolled back drops it. SQLite
     /// never waits for a row: its writer holds the whole database from BEGIN.
@@ -472,16 +511,14 @@ pub(crate) trait Tx {
 /// The one Protected Environment fence: a caller without
 /// [`EnvironmentsProtect`](crate::Permission::EnvironmentsProtect) is refused when
 /// `touches` says this write reaches into a Protected Environment, and the refusal's
-/// details name what it reaches. It runs in the write's own transaction, so a protect
-/// that lands first still fences the write.
+/// details name what it reaches. `evidence` says whose permissions it checks. It runs in
+/// the write's own transaction, so a protect that lands first still fences the write.
 pub(crate) fn admit_protect(
     tx: &mut dyn Tx,
+    evidence: crate::trusted::Evidence<'_>,
     touches: impl FnOnce(&mut dyn Tx) -> Result<Option<serde_json::Value>, RpcError>,
 ) -> Result<(), RpcError> {
-    let Some(Err(mut refused)) = tx
-        .acting_for()
-        .map(|trusted| trusted.admit(crate::Permission::EnvironmentsProtect))
-    else {
+    let Err(mut refused) = evidence.admit(crate::Permission::EnvironmentsProtect) else {
         return Ok(());
     };
     let Some(reached) = touches(tx)? else {
@@ -493,30 +530,6 @@ pub(crate) fn admit_protect(
         details.extend(reached);
     }
     Err(refused)
-}
-
-/// A transaction acting for the caller `trusted` describes: see [`admit_protect`].
-pub(crate) struct Acting<'tx, 'trusted> {
-    pub(crate) tx: &'tx mut dyn Tx,
-    pub(crate) trusted: &'trusted crate::Trusted,
-}
-
-impl Tx for Acting<'_, '_> {
-    fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
-        self.tx.execute(sql, params)
-    }
-    fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError> {
-        self.tx.query(sql, params)
-    }
-    fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
-        self.tx.batch(sql)
-    }
-    fn acting_for(&self) -> Option<&crate::Trusted> {
-        Some(self.trusted)
-    }
-    fn wait_for_locks(&mut self, at_most: Option<std::time::Duration>) -> Result<(), RpcError> {
-        self.tx.wait_for_locks(at_most)
-    }
 }
 
 /// A bound parameter. Only the column types the schema uses exist.
@@ -751,7 +764,11 @@ mod mixed_version_tests {
         );
         assert_eq!(
             refused.details,
-            serde_json::json!({ "migrations": ["9999_required_column"], "next": NEXT })
+            serde_json::json!({
+                "migrations": ["9999_required_column"],
+                "next": NEXT,
+                "follow_up": { "kind": "update_client", "beta": true },
+            })
         );
         assert_eq!(
             refused.cause,
@@ -775,7 +792,11 @@ mod mixed_version_tests {
         );
         assert_eq!(
             refused.details,
-            serde_json::json!({ "migrations": ["9999_dropped_column"], "next": NEXT })
+            serde_json::json!({
+                "migrations": ["9999_dropped_column"],
+                "next": NEXT,
+                "follow_up": { "kind": "update_client", "beta": true },
+            })
         );
         let cause = "Config Store storage failed: no such column: written in \
                      SELECT written FROM config_create at offset 7";

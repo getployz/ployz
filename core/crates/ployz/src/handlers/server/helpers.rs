@@ -1,14 +1,15 @@
+use crate::cluster::{Call, Deadline, Wait};
+use ployz_core::error_chain;
 use std::{net::IpAddr, sync::Arc};
 
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollForRecoveryRequest, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
+    EnrollForRecoveryRequest, EnrollRequest, Enrolled, Hint, InspectRequest, LeaveRequest, Left,
     LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken,
     PinnedAddresses, PublicIpDiscovery, RecoverySeed, Rpc, RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
-use crate::ui::Hint;
 use crate::{
     connect::{Client, ConnectError, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections, Transport},
@@ -100,7 +101,9 @@ pub(in crate::handlers) async fn inspect_token(
     client: &mut Client,
     request: InspectRequest,
 ) -> Result<(MachineDetails, MachineToken), Error> {
-    let mut details = client.call_repeatable::<op::Inspect>(request, None).await?;
+    let mut details = client
+        .call::<op::Inspect>(request, Call::read().waiting(Wait::standard()))
+        .await?;
     let token = details.token.take().ok_or_else(|| {
         Error::coded(
             RpcErrorCode::Unsupported,
@@ -183,6 +186,7 @@ pub(super) async fn reconnect_direct(
 ) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         &format!("Reconnecting to {connection}"),
         crate::setup_retry::WAIT,
         ConnectError::is_setup_retryable,
@@ -205,6 +209,7 @@ pub(super) async fn wait_direct_participating(
     let mut joining = Joining::default();
     crate::setup_retry::run_expecting(
         &mut joining,
+        &crate::ui::WaitNotices,
         &format!("Waiting for {connection} to participate"),
         Some(STARTING),
         MACHINE_START_WAIT,
@@ -282,7 +287,10 @@ pub(in crate::handlers) async fn check_listed(
     joining: &mut Joining,
 ) -> Result<(), ConnectError> {
     let details = client
-        .read_once::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::once().within(Deadline::SetupRead),
+        )
         .await?;
     joining.seen(&details.phase);
     if details.phase != LocalMachinePhase::Participating {
@@ -314,6 +322,29 @@ pub(in crate::handlers) async fn enroll(
     client: &mut Client,
     request: EnrollRequest,
 ) -> Result<Machine, Error> {
+    Ok(enroll_with::<op::Enroll>(client, request).await?.0)
+}
+
+/// An approved join whose Server sent no confirmation. Its daemon predates confirmations, so
+/// the admitting Server would never publish it.
+pub(in crate::handlers) fn confirmation_missing() -> Error {
+    Error::conflict(
+        "The joining Server's ployz is too old to finish an approved join. Update ployz on it, then rerun the same command.",
+    )
+}
+
+/// Enroll as a member, with the confirmation an approved join returns for its driver to
+/// relay in Register.
+pub(in crate::handlers) async fn enroll_member(
+    client: &mut Client,
+    request: EnrollRequest,
+) -> Result<
+    (
+        Machine,
+        Option<ployz_core::authority::join::JoinConfirmation>,
+    ),
+    Error,
+> {
     enroll_with::<op::Enroll>(client, request).await
 }
 
@@ -324,23 +355,31 @@ pub(in crate::handlers) async fn enroll_for_recovery(
     enroll: EnrollRequest,
     recovery: RecoverySeed,
 ) -> Result<Machine, Error> {
-    enroll_with::<op::EnrollForRecovery>(client, EnrollForRecoveryRequest { enroll, recovery })
-        .await
+    Ok(
+        enroll_with::<op::EnrollForRecovery>(client, EnrollForRecoveryRequest { enroll, recovery })
+            .await?
+            .0,
+    )
 }
 
 async fn enroll_with<T: Rpc<Response = Enrolled>>(
     client: &mut Client,
     request: T::Request,
-) -> Result<Machine, Error> {
+) -> Result<
+    (
+        Machine,
+        Option<ployz_core::authority::join::JoinConfirmation>,
+    ),
+    Error,
+> {
     let enrolled = client
-        .call_repeatable_for::<T>(request, None, None, None, MACHINE_START_WAIT)
-        .await
-        .map_err(|error| match error {
-            crate::setup_retry::Error::Permanent(error) => error,
-            exhausted => ConnectError::Exhausted(Box::new(exhausted)),
-        })?;
+        .call::<T>(request, Call::keyed().waiting(Wait::of(MACHINE_START_WAIT)))
+        .await?;
     match enrolled {
-        Enrolled::Enrolled { machine } => Ok(machine),
+        Enrolled::Enrolled {
+            machine,
+            join_confirmation,
+        } => Ok((machine, join_confirmation)),
         Enrolled::Refused { error, .. } => Err(ConnectError::Remote(error).into()),
     }
 }
@@ -353,12 +392,11 @@ pub(in crate::handlers) async fn leave(
     departing: &MachineDetails,
 ) -> Result<(), Error> {
     let left = client
-        .call_repeatable_for::<op::Leave>(LeaveRequest {}, None, None, None, MACHINE_START_WAIT)
-        .await
-        .map_err(|error| match error {
-            crate::setup_retry::Error::Permanent(error) => error,
-            exhausted => ConnectError::Exhausted(Box::new(exhausted)),
-        })?;
+        .call::<op::Leave>(
+            LeaveRequest { teardown: None },
+            Call::keyed().waiting(Wait::of(MACHINE_START_WAIT)),
+        )
+        .await?;
     match left {
         Left::Left { reset_warning, .. } => {
             if let Some(reason) = reset_warning {
@@ -378,8 +416,8 @@ fn unconfirmed_removal(departing: &MachineDetails, reason: &str) -> String {
         Some(machine) => format!("Server {} ({id})", machine.name),
         None => format!("Server {id}"),
     };
-    crate::ui::then_sentence(
-        &crate::ui::with_reason(
+    error_chain::then_sentence(
+        &error_chain::with_reason(
             format_args!("{server} reset, but couldn't confirm that its old Cluster removed it"),
             reason,
         ),
@@ -532,7 +570,7 @@ mod tests {
             ployz_core::STARTUP_REFUSED
         )));
         let error = joining.failed(crate::setup_retry::Error::Permanent(refused), "not ready");
-        let text = crate::ui::chain_text(&error);
+        let text = error_chain::row(&error);
         assert!(!text.contains("stayed joining"), "{text}");
         assert!(text.contains("ployzd refused to start"), "{text}");
     }

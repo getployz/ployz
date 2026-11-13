@@ -32,8 +32,12 @@ import { NotificationsSection } from "./notifications-section";
 import { calendarDay, useTimeZone } from "#/utils/time-zone";
 
 export function prefetchAccount(scope: CollectionScope) {
-  return prefetchRemote(scope, notificationSettingsQueryOptions(), accountSessionsRead(scope), linkedAccountsRead(scope), connectedAgentsRead(scope));
+  return prefetchRemote(scope, ...accountReads(scope));
 }
+
+/** The reads every Account page shows, for a page that prefetches them with its own. */
+export const accountReads = (scope: CollectionScope) =>
+  [notificationSettingsQueryOptions(), accountSessionsRead(scope), linkedAccountsRead(scope), connectedAgentsRead(scope)] as const;
 
 /** The whole Account page: inside an Organization, or on its own for a user in none. */
 export function AccountSections() {

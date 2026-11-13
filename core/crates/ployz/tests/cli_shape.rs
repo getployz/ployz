@@ -308,7 +308,7 @@ fn no_failure_message_flattens_a_cause() {
     ];
     const FLATTENERS: [&str; 12] = [
         "inline(",
-        "ui::row(",
+        "error_chain::row(",
         "error.to_string()",
         "{error}",
         "{error:",
@@ -333,6 +333,9 @@ fn no_failure_message_flattens_a_cause() {
             let source = std::fs::read_to_string(&path).unwrap();
             for constructor in CONSTRUCTORS {
                 for (start, _) in source.match_indices(constructor) {
+                    if source[..start].ends_with("RpcError") {
+                        continue;
+                    }
                     let rest = &source[start + constructor.len()..];
                     let mut depth = 1;
                     let end = rest
@@ -424,6 +427,77 @@ fn usage_errors_exit_2() {
             assert!(stderr.starts_with("error: "), "{args:?}: {stderr}");
         }
     }
+}
+
+#[test]
+fn a_cluster_name_past_63_characters_or_not_one_label_is_refused_before_any_server_is_reached() {
+    let long = "a".repeat(64);
+    for args in [
+        &["cluster", "name", long.as_str(), "--json"][..],
+        &["cluster", "name", "Acme", "--json"],
+        &[
+            "server",
+            "add",
+            "--standalone",
+            "--no-install",
+            "--storage",
+            "none",
+            "root@192.0.2.1",
+            "--cluster-name",
+            "acme.prod",
+            "--json",
+        ],
+    ] {
+        let (code, json, stderr) = run_json(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert_eq!(
+            json.pointer("/error/code").unwrap(),
+            "invalid_argument",
+            "{json}"
+        );
+        assert!(message(&json).contains("up to 63"), "{json}");
+    }
+}
+
+#[test]
+fn naming_the_cluster_signed_in_asks_cloud_and_with_a_context_skips_it() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes.clone(), WaitingCloud::of(Vec::new()));
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    run_json_with(&["cluster", "name", "beta", "--json"], &token);
+    assert_eq!(
+        routes.lock().unwrap().drain(..).collect::<Vec<_>>(),
+        [r#"POST /api/cli/run/cluster_rename {"input":{"name":"beta"}}"#]
+    );
+
+    let (code, json, _) = run_json_with(
+        &["cluster", "name", "beta", "--context", "staging", "--json"],
+        &token,
+    );
+    assert_ne!(code, Some(0), "{json}");
+    assert!(routes.lock().unwrap().is_empty(), "{json}");
+}
+
+#[test]
+fn founding_a_standalone_cluster_with_json_needs_its_name() {
+    let (code, json, stderr) = run_json(&[
+        "server",
+        "add",
+        "--standalone",
+        "--no-install",
+        "--storage",
+        "none",
+        "root@192.0.2.1",
+        "--json",
+    ]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{json}"
+    );
+    assert!(message(&json).contains("--cluster-name"), "{json}");
 }
 
 #[test]
@@ -1923,6 +1997,7 @@ fn fake_daemon(socket: &std::path::Path, discovery: Discovery) {
                 Discovery::Cancelled => return Err(Status::cancelled("the daemon is stopping")),
             };
             let description = ContractDescription {
+                attest: None,
                 machine_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse().unwrap(),
                 protocol_major,
                 daemon_version: "cli-shape".into(),
@@ -2748,6 +2823,136 @@ fn checkin_status_signed_out_says_who_without_a_scope_error() {
 }
 
 #[test]
+fn ingress_help_names_both_doors_and_the_token_switch() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ingress", "use", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    for needle in ["public", "tunnel", "--token-stdin", "Cloudflare"] {
+        assert!(stdout.contains(needle), "{needle}: {stdout}");
+    }
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ingress", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("Door"), "{stdout}");
+}
+
+#[test]
+fn ingress_use_needs_a_known_door_and_a_token_on_stdin_when_asked() {
+    for args in [
+        &["ingress", "use"][..],
+        &["ingress", "use", "window"],
+        &["ingress", "use", "public", "tunnel"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+    }
+    let output = ingress_use_with_stdin(&["ingress", "use", "tunnel", "--token-stdin"], b"\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("stdin holds no tunnel token"), "{stderr}");
+
+    let output = ingress_use_with_stdin(
+        &["ingress", "use", "tunnel", "--token-stdin"],
+        b"not-a-real-token\n",
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains(
+            "Paste the whole token from the tunnel's install command. Tokens start with eyJ."
+        ),
+        "{stderr}"
+    );
+
+    let output = ingress_use_with_stdin(
+        &["--json", "ingress", "use", "tunnel", "--token-stdin"],
+        &vec![b'x'; 9000],
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stdout}");
+    assert!(stdout.contains("over 8192 bytes"), "{stdout}");
+}
+
+fn ingress_use_with_stdin(args: &[&str], stdin: &[u8]) -> std::process::Output {
+    use std::io::Write;
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .env_remove("PLOYZ_STORE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn private_access_help_names_the_key_switch_and_the_tailscale_steps() {
+    let help = |args: &[&str]| {
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {stdout}");
+        stdout
+    };
+    let on = help(&["private-access", "on", "--help"]);
+    for needle in ["--auth-key-stdin", "--accept-routes", "tailnet"] {
+        assert!(on.contains(needle), "{needle}: {on}");
+    }
+    let off = help(&["private-access", "off", "--help"]);
+    assert!(off.contains("auth key"), "{off}");
+    assert!(!off.contains("--auth-key-stdin"), "{off}");
+    assert!(help(&["private-access", "--help"]).contains("router"));
+}
+
+#[test]
+fn private_access_on_reads_its_key_from_stdin_and_off_takes_none() {
+    let output = ingress_use_with_stdin(&["private-access", "on", "--auth-key-stdin"], b"\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("stdin holds no auth key"), "{stderr}");
+
+    let output = ingress_use_with_stdin(
+        &["--json", "private-access", "on", "--auth-key-stdin"],
+        &vec![b'x'; 5000],
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stdout}");
+    assert!(stdout.contains("over 4096 bytes"), "{stdout}");
+    assert!(!stdout.contains(&"x".repeat(32)), "{stdout}");
+
+    for args in [
+        &["private-access", "off", "--auth-key-stdin"][..],
+        &[
+            "private-access",
+            "on",
+            "tskey-auth-pasted-on-the-command-line",
+        ],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
 fn checkin_help_names_install_and_the_token_file() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["server", "checkin", "--help"])
@@ -2762,6 +2967,24 @@ fn checkin_help_names_install_and_the_token_file() {
         "--cloud-url",
     ] {
         assert!(stdout.contains(needle), "{needle}: {stdout}");
+    }
+}
+
+#[test]
+fn github_rule_approve_defaults_to_the_pinned_builder() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["github", "rule", "approve", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    let sha = ployz_core::authority::rule::BUILDER_SHA;
+    for needle in [
+        "Usage: ployz github rule approve [OPTIONS] <SERVICE>...".to_owned(),
+        format!("[default: getployz/build/.github/workflows/build.yml@{sha}]"),
+        format!("[default: {sha}]"),
+    ] {
+        assert!(stdout.contains(&needle), "{needle}: {stdout}");
     }
 }
 

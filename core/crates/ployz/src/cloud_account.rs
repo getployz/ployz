@@ -7,19 +7,21 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use ployz_core::{MachineId, MachineName, RpcError};
+use ployz_core::{Departed, MachineId, MachineName, RpcError, cloud_contract};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::cloud_enroll::cloud_origin;
-use crate::cloud_login::{
-    self, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Secret, SignedIn,
-};
+use crate::cloud_login::{self, CredentialStore, LoginError, Organization, Secret, SignedIn};
+use crate::cloud_origin::CloudOrigin;
 
 /// How long a call Cloud answers only after reading the Servers waits for that answer.
 /// Cloud may spend up to 50s reading them to plan a clean, so the client's 15s default
 /// would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Outlasts the longest wait a tool may ask for and matches the default build limit. A
+/// Deployment or a Cloud operation goes on after ployz mcp stops waiting for it.
+pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Via {
@@ -93,7 +95,8 @@ pub(crate) async fn credential(
         return Err(LoginError::TokenMalformed);
     }
     Ok(Credential::Token {
-        cloud: named_cloud(store, true, cloud)?.unwrap_or_else(|| cloud_origin(DEFAULT_CLOUD)),
+        cloud: named_cloud(store, true, cloud)?
+            .unwrap_or_else(|| CloudOrigin::default_cloud().into_string()),
         token: Secret::new(token),
         from: TokenFrom::Env,
     })
@@ -102,7 +105,7 @@ pub(crate) async fn credential(
 /// `PLOYZ_TOKEN` as set, without the whitespace a paste into a CI secret or
 /// `.env` file leaves around it; a token never holds any.
 pub(crate) fn env_token() -> Option<String> {
-    pasted(std::env::var(crate::cli::env::TOKEN).ok())
+    pasted(std::env::var(crate::env::TOKEN).ok())
 }
 
 fn pasted(token: Option<String>) -> Option<String> {
@@ -135,7 +138,7 @@ pub(crate) fn named_cloud(
         },
         cloud => store.cloud()?.or(cloud),
     };
-    Ok(named.map(|cloud| cloud_origin(&cloud)))
+    Ok(named.map(|cloud| CloudOrigin::new(&cloud).into_string()))
 }
 
 /// [`credential`] from `PLOYZ_TOKEN` and `PLOYZ_CLOUD_URL`: the one way commands
@@ -145,12 +148,7 @@ pub(crate) fn named_cloud(
 ///
 /// Returns the stored sign-in's [`LoginError`] when there is no token.
 pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, LoginError> {
-    credential(
-        store,
-        env_token(),
-        std::env::var(crate::cli::env::CLOUD_URL).ok(),
-    )
-    .await
+    credential(store, env_token(), CloudOrigin::named_by_env()).await
 }
 
 /// The Organization `credential` acts in: the device's, or the token's own.
@@ -515,6 +513,49 @@ pub(crate) async fn new_token(
     Ok(reply.token)
 }
 
+/// The ID `target` names in `ployz token rm`. Cloud revokes only by ID, a hyphenated
+/// UUID, and refuses every token caller, so such a UUID or a token caller's target goes
+/// as given: an ID Cloud no longer lists, such as a fully revoked one, never resolves to
+/// a token named like it. Otherwise it is the one token named exactly `target`, else as
+/// given.
+///
+/// # Errors
+///
+/// Returns [`LoginError::AmbiguousCredential`] when several tokens have that name, or a
+/// Cloud failure listing them.
+pub(crate) async fn credential_id(
+    credential: &Credential,
+    target: &str,
+) -> Result<String, LoginError> {
+    if matches!(credential, Credential::Token { .. }) || cloud_id(target) {
+        return Ok(target.to_owned());
+    }
+    named_credential(&credentials(credential).await?, target)
+}
+
+/// Cloud's ID shape: the 36-character hyphenated UUID. The uuid crate parses no other
+/// form at that length, so a 32-hex, braced or URN name still resolves as a name.
+fn cloud_id(target: &str) -> bool {
+    target.len() == 36 && uuid::Uuid::try_parse(target).is_ok()
+}
+
+fn named_credential(listed: &Credentials, target: &str) -> Result<String, LoginError> {
+    let mut named: Vec<String> = listed
+        .tokens
+        .iter()
+        .filter(|token| token.name == target)
+        .map(|token| token.id.clone())
+        .collect();
+    match named.len() {
+        0 => Ok(target.to_owned()),
+        1 => Ok(named.remove(0)),
+        _ => Err(LoginError::AmbiguousCredential {
+            name: target.to_owned(),
+            ids: named,
+        }),
+    }
+}
+
 /// Revoke a token of the Organization, or sign out one of the caller's devices, then clear
 /// its Management Client on each Server. Rerun on a revoked id, it retries unconfirmed Servers.
 ///
@@ -664,13 +705,13 @@ fn approved_request(
 ) -> Result<reqwest::RequestBuilder, LoginError> {
     let mut request = request(credential, method, url, Some(body))?.timeout(OPERATION_TIMEOUT);
     if via == Via::Agent {
-        request = request.header("x-ployz-via", "agent");
+        request = request.header(cloud_contract::VIA_HEADER, "agent");
     }
     if let Some(approval) = approval {
-        request = request.header("x-ployz-approval", approval);
+        request = request.header(cloud_contract::APPROVAL_HEADER, approval);
     }
     if let Some(key) = request_key {
-        request = request.header("x-ployz-request-key", key);
+        request = request.header(cloud_contract::REQUEST_KEY_HEADER, key);
     }
     Ok(request)
 }
@@ -821,7 +862,7 @@ pub(crate) async fn follow_operation<T: DeserializeOwned>(
         credential,
         path,
         doing,
-        tokio::time::Instant::now() + crate::handlers::mcp::CALL_DEADLINE,
+        tokio::time::Instant::now() + CALL_DEADLINE,
     )
     .await
 }
@@ -835,16 +876,11 @@ async fn follow_operation_until<T: DeserializeOwned>(
     follow_run(credential, path, doing, Some(deadline))
         .await?
         .ok_or_else(|| {
-            StoreCallError::Refused(RpcError {
-                code: ployz_core::RpcErrorCode::Unavailable,
-                message: format!(
-                    "Stopped waiting after {} minutes. {doing} keeps running in Ployz Cloud and \
+            StoreCallError::Refused(RpcError::unavailable(format!(
+                "Stopped waiting after {} minutes. {doing} keeps running in Ployz Cloud and \
                      finishes on its own; this command no longer reports it.",
-                    crate::handlers::mcp::CALL_DEADLINE.as_secs() / 60
-                ),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            })
+                CALL_DEADLINE.as_secs() / 60
+            )))
         })
 }
 
@@ -1010,9 +1046,21 @@ pub(crate) async fn remove_organization(
 /// What Cloud's removal of a Server did.
 #[derive(Debug, Deserialize)]
 pub(crate) struct CloudRemoval {
-    /// Why the reset didn't finish, if it didn't: Cloud keeps its hold on the last Server, else drops the row.
+    /// `departed` as prose, and all an older Cloud says.
     pub(crate) reset_warning: Option<String>,
+    /// How the Server left. None from an older Cloud, for an attempt row older than the tag, for
+    /// a removal without a reset, or for a kind of departure newer than this CLI.
+    #[serde(default, deserialize_with = "known_departed")]
+    pub(crate) departed: Option<Departed>,
     pub(crate) release: Release,
+}
+
+/// A departure this CLI knows, or none: a newer Cloud may send a kind it doesn't.
+fn known_departed<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Departed>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?
+        .and_then(|departed| serde_json::from_value(departed).ok()))
 }
 
 /// What became of Cloud's hold once the Server was gone.
@@ -1116,15 +1164,14 @@ pub(crate) async fn follow_removal(
         {
             // Any step after the reset was sent may be the one that ran out: the Server may
             // have reset and Cloud dropped it, or neither.
-            Err(StoreCallError::Refused(RpcError {
-                code: ployz_core::RpcErrorCode::Unavailable,
-                message: format!(
+            Err(StoreCallError::Refused(
+                RpcError::unavailable(format!(
                     "Cloud's removal of Server {name} didn't finish: it ran out of retries. If \
                      the Server is gone but `ployz server ls` still lists it, forget it."
-                ),
-                details: serde_json::json!({ "next": "ployz server ls" }),
-                cause: vec![refused.message],
-            }))
+                ))
+                .with_details(serde_json::json!({ "next": "ployz server ls" }))
+                .with_causes(vec![refused.message]),
+            ))
         }
         Err(error) => Err(error),
     }
@@ -1150,16 +1197,11 @@ async fn removal_progress(verb: &str, name: &MachineName, mut say: impl FnMut(St
 /// Stopped watching a removal that is still running. It may yet fail unfinished, as
 /// [`follow_removal`] says when it does. No `next`: nothing is to run while it runs.
 fn removal_unsettled(name: &MachineName) -> RpcError {
-    RpcError {
-        code: ployz_core::RpcErrorCode::Unavailable,
-        message: format!(
-            "Cloud is still removing Server {name}; it finishes on its own. \
+    RpcError::unavailable(format!(
+        "Cloud is still removing Server {name}; it finishes on its own. \
              The dashboard's Servers page shows when it's done. If it fails and the Server \
              is gone but `ployz server ls` still lists it, forget it."
-        ),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    ))
 }
 
 /// Call `/api/cli/<path>`, answered as its reply or as Cloud's refusal, verbatim.
@@ -1213,15 +1255,12 @@ fn operation_request(
     Ok(request(credential, method, &url, body)?.timeout(OPERATION_TIMEOUT))
 }
 
-/// The most compressed source one upload may hold, the same as Cloud's cap. It stays
-/// under the 100 MB request body Cloudflare passes, in front of ployz.dev or a Tunnel.
-pub(crate) const UPLOAD_LIMIT: usize = 95 * 1024 * 1024;
 /// How long one upload may take, sending included: 95 MiB at about 1.3 Mbit/s.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Keep `archive`, a gzipped tar of a source directory, in Cloud as the upload of
 /// Deployment `deployment`, which the CLI admits next. An archive over
-/// [`UPLOAD_LIMIT`] is refused here, before it is sent.
+/// [`cloud_contract::UPLOAD_LIMIT`] is refused here, before it is sent.
 ///
 /// # Errors
 ///
@@ -1233,10 +1272,10 @@ pub(crate) async fn upload(
     archive: Vec<u8>,
 ) -> Result<(), StoreCallError> {
     let mib = archive.len().div_ceil(1024 * 1024);
-    if archive.len() > UPLOAD_LIMIT {
+    if archive.len() > cloud_contract::UPLOAD_LIMIT {
         return Err(StoreCallError::Refused(too_big(&format!(
             "The source is {mib} MiB compressed, over the {} MiB upload limit.",
-            UPLOAD_LIMIT / 1024 / 1024
+            cloud_contract::UPLOAD_LIMIT / 1024 / 1024
         ))));
     }
     let url = format!("{}/api/config/upload/{deployment}", credential.cloud());
@@ -1261,14 +1300,9 @@ pub(crate) async fn upload(
 
 /// The refusal of a source too large to upload: `why`, then how to deploy it anyway.
 fn too_big(why: &str) -> RpcError {
-    RpcError {
-        code: ployz_core::RpcErrorCode::InvalidArgument,
-        message: format!(
-            "{why} Deploy from GitHub instead, or remove large files from the directory. In a Git checkout, ployz up leaves out files Git ignores, so add ones such as node_modules to .gitignore."
-        ),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::invalid_argument(format!(
+        "{why} Deploy from GitHub instead, or remove large files from the directory. In a Git checkout, ployz up leaves out files Git ignores, so add ones such as node_modules to .gitignore."
+    ))
 }
 
 /// Call `/api/cli/<path>`. A 404 on a read means Cloud doesn't offer the CLI surface,
@@ -1298,8 +1332,6 @@ pub(crate) async fn call<T: DeserializeOwned>(
 static REVISION: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-pub(crate) const REVISION_HEADER: &str = "x-ployz-manifest";
-
 /// Keep the revision a reply names, so a command can refresh the published
 /// commands after it prints when Cloud moved on.
 pub(crate) fn notice_revision(response: &reqwest::Response) {
@@ -1313,7 +1345,7 @@ pub(crate) fn notice_revision(response: &reqwest::Response) {
 
 fn revision_of(headers: &reqwest::header::HeaderMap) -> Option<String> {
     headers
-        .get(REVISION_HEADER)
+        .get(cloud_contract::REVISION_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned)
 }
@@ -1399,12 +1431,7 @@ pub(crate) fn public_error(body: &[u8]) -> Option<RpcError> {
         "RATE_LIMITED" => ployz_core::RpcErrorCode::Unavailable,
         _ => ployz_core::RpcErrorCode::Internal,
     };
-    Some(RpcError {
-        code,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    })
+    Some(RpcError::new(code, message))
 }
 
 async fn send(
@@ -1472,6 +1499,39 @@ fn answer<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
+
+    #[test]
+    fn a_removal_reads_its_departure_and_an_older_or_newer_cloud_reads_without_one() {
+        let departed = |body: &str| serde_json::from_str::<CloudRemoval>(body).unwrap().departed;
+        let release = r#""release":{"kind":"others_remain"}"#;
+        assert_eq!(
+            departed(&format!(
+                r#"{{"reset_warning":"replicated delete failed","departed":{{"kind":"reset","row_warning":"replicated delete failed"}},{release}}}"#
+            )),
+            Some(Departed::Reset {
+                row_warning: Some("replicated delete failed".into())
+            })
+        );
+        assert_eq!(
+            departed(&format!(r#"{{"reset_warning":null,{release}}}"#)),
+            None,
+            "an older Cloud"
+        );
+        assert_eq!(
+            departed(&format!(
+                r#"{{"reset_warning":null,"departed":null,{release}}}"#
+            )),
+            None,
+            "a row older than the tag"
+        );
+        assert_eq!(
+            departed(&format!(
+                r#"{{"reset_warning":"moved","departed":{{"kind":"moved"}},{release}}}"#
+            )),
+            None,
+            "a newer Cloud"
+        );
+    }
 
     #[test]
     fn a_removal_the_cli_stopped_waiting_on_says_when_to_forget_but_not_to_now() {
@@ -1720,6 +1780,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_rm_finds_a_token_by_its_exact_name_and_refuses_a_shared_one() {
+        const CI: &str = "00000000-0000-4000-8000-00000000000a";
+        const HEX: &str = "00000000-0000-4000-8000-00000000000f";
+        let entry = |id: &str, name: &str| {
+            serde_json::json!({
+                "id": id, "name": name, "created_at": "2026-11-01", "expires_at": "2027-01-30",
+                "expired": false, "current": false, "kind": "cli", "scope": "full",
+            })
+        };
+        let listed = serde_json::json!({
+            "tokens": [
+                entry(CI, "ci"),
+                entry("00000000-0000-4000-8000-00000000000b", "shared"),
+                entry("00000000-0000-4000-8000-00000000000c", "shared"),
+                // Names in UUID forms Cloud never uses as an ID.
+                entry(HEX, "0000000000004000800000000000000a"),
+                entry("00000000-0000-4000-8000-000000000010", "{00000000-0000-4000-8000-00000000000a}"),
+            ],
+            "devices": [],
+            "revoking": [],
+        });
+        let cloud = fake_cloud(move |route, _| match route {
+            "GET /api/cli/tokens" => (200, listed.clone()),
+            _ => (404, serde_json::json!({ "code": "NOT_FOUND" })),
+        });
+        let (_dir, store) = signed_in_store(&cloud);
+        let device = credential(&store, None, None).await.unwrap();
+
+        assert_eq!(credential_id(&device, "ci").await.unwrap(), CI);
+        assert_eq!(
+            credential_id(&device, "0000000000004000800000000000000a")
+                .await
+                .unwrap(),
+            HEX
+        );
+        assert_eq!(
+            credential_id(&device, "{00000000-0000-4000-8000-00000000000a}")
+                .await
+                .unwrap(),
+            "00000000-0000-4000-8000-000000000010"
+        );
+        assert_eq!(
+            credential_id(&device, "Ci").await.unwrap(),
+            "Ci",
+            "names match exactly"
+        );
+        assert_eq!(
+            credential_id(&device, "d1").await.unwrap(),
+            "d1",
+            "an unknown target goes as given"
+        );
+        let error = credential_id(&device, "shared").await.unwrap_err();
+        assert!(
+            matches!(&error, LoginError::AmbiguousCredential { name, ids } if name == "shared" && ids.len() == 2),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("00000000-0000-4000-8000-00000000000b"),
+            "{error}"
+        );
+        assert_eq!(
+            crate::failure::login_code(&error),
+            ployz_core::RpcErrorCode::Ambiguous
+        );
+    }
+
+    #[tokio::test]
+    async fn token_rm_sends_an_id_or_a_token_caller_s_target_without_listing() {
+        // A fully revoked ID that a live token is named like, as Cloud no longer lists it.
+        const GONE: &str = "00000000-0000-4000-8000-0000000000aa";
+        let cloud = fake_cloud(|route, _| match route {
+            "GET /api/cli/tokens" => (500, serde_json::json!({ "code": "INTERNAL" })),
+            _ => (404, serde_json::json!({ "code": "NOT_FOUND" })),
+        });
+        let (_dir, store) = signed_in_store(&cloud);
+        let device = credential(&store, None, None).await.unwrap();
+
+        assert_eq!(credential_id(&device, GONE).await.unwrap(), GONE);
+        assert_eq!(credential_id(&token(&cloud), "ci").await.unwrap(), "ci");
+        assert!(
+            credential_id(&device, "ci").await.is_err(),
+            "a name needs the list"
+        );
+        assert!(
+            credential_id(&device, "0000000000004000800000000000000a")
+                .await
+                .is_err(),
+            "a 32-hex target is a name: Cloud's IDs are hyphenated"
+        );
+    }
+
+    #[tokio::test]
     async fn a_refused_credential_names_its_fix() {
         let cloud = fake_cloud(|route, _| match route {
             "GET /api/cli/tokens" => (401, serde_json::json!({ "code": "UNAUTHORIZED" })),
@@ -1866,7 +2020,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let cloud = format!("http://{}", listener.local_addr().unwrap());
-        let archive = vec![0; UPLOAD_LIMIT + 1];
+        let archive = vec![0; cloud_contract::UPLOAD_LIMIT + 1];
         let error = upload(&token(&cloud), "d1", archive).await.unwrap_err();
         let StoreCallError::Refused(refused) = error else {
             panic!("expected the size refusal");

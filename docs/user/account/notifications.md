@@ -9,7 +9,9 @@ every organization you belong to.
 
 Each kind of email has a row, set to **Email** or **None**:
 
-- **Uptime incidents**: when a check goes down, and when it recovers.
+- **Uptime incidents**: when a check goes down, and when it recovers. An Organization sends these
+  once it has [Production](organizations.md#billing). Without it, Ployz still records the
+  incident and sends no email.
 - **Failed GitHub deploys**: when a deploy from a push or pull request fails, or Cloud loses
   track of it partway. The email names the service that failed and the commit GitHub deployed
   when it can tell, and links to the logs. A deploy you start yourself doesn't send one.

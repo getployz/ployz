@@ -3,6 +3,7 @@
 //! evidence, so the Deploy Intent with its unsealed secrets, the session and the raw
 //! SDK evidence never leave it: the caller gets only the Deployment's summary.
 
+use ployz_core::error_chain;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,14 +12,15 @@ use std::time::Duration;
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
     HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
-    RemoveContainerPurpose, RpcError, RpcErrorCode, ServiceName,
+    RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceName,
 };
+use ployz_decide::standing::{Latch, Over, Read, Standing, standing};
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
     Actor, BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeployedNode,
     DeploymentId, DeploymentQuery, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentWarning, EnvironmentId, Failure, NodeStatus, ObservationFailure, RowState,
-    RowTracker, RunEvidence, RunnerId, VolumeObservation,
+    DeploymentWarning, EnvironmentId, Failure, NodeStatus, RowState, RowTracker, RunEvidence,
+    RunnerId,
 };
 use serde::{Deserialize as _, Serialize};
 use serde_json::Value;
@@ -33,8 +35,8 @@ use super::{
 };
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
-use crate::deploy::MachineOperations;
-use crate::deploy::cleanup::{self, Copy, Step};
+use crate::deploy::CopyLifecycle;
+use crate::deploy::cleanup::{self, Copy, Rotated, RotationFailure};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -55,6 +57,10 @@ pub struct Sources {
     /// The Deployment's uploaded directory. Without it, uploaded Services reuse
     /// their latest usable image or need a new upload.
     pub upload: Option<PathBuf>,
+    /// A token that reads the branch head of the repository an automatic deploy rule
+    /// builds, which each Server reads before it creates under the rule. None reads a
+    /// public repository.
+    pub reader: Option<ployz_core::GithubToken>,
 }
 
 /// Why a Deployment's builds didn't all succeed.
@@ -173,14 +179,13 @@ pub async fn run_deployment_expecting(
         store,
         deployment,
         runner,
+        over: Latch::new(),
+        reader: checkouts
+            .as_ref()
+            .ok()
+            .and_then(|sources| sources.reader.clone()),
     };
-    let mut claimed = {
-        let (deployment, runner) = (run.deployment.clone(), run.runner.clone());
-        super::store_call(&run.store, move |store| store.claim(&deployment, &runner)).await?
-    };
-    // The Store lowers the Intent without knowing who will run it.
-    claimed.intent.options.operator = operator;
-    claimed.intent.options.block_unmountable = true;
+    let claimed = run.claim(operator).await?;
     let (targets, built) = match checkouts
         .map_err(Unbuilt::Failed)
         .and_then(|sources| targets(&claimed, sources))
@@ -202,6 +207,8 @@ pub async fn run_deployment_expecting(
         .await
     {
         Ok(Some(session)) => session,
+        // A run the store no longer holds stops here too. The store refuses this record
+        // from it, and that refusal is what the run returns.
         Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
         // Users read it on the Deployment: the connection's own sentence first, naming the
         // Server where it knows which and saying whether a daemon answered, then what the
@@ -219,153 +226,6 @@ pub async fn run_deployment_expecting(
     let recorded = run.execute(&session, claimed, targets, built).await;
     session.close().await;
     recorded
-}
-
-/// Which of `connections`' Servers hold each Docker Volume in `sought`: the
-/// evidence a Deploy that removes deployed Volumes is admitted with. A check that
-/// fails names each of `connections`' Servers unanswered, and says whether none
-/// could be reached or one answered with an error, naming that one only once its
-/// daemon confirmed which Server it is.
-///
-/// # Errors
-/// Returns `invalid_argument` when `connections` is empty.
-pub async fn observe_volumes(
-    connections: Vec<Connection>,
-    sought: Vec<ployz_core::DockerVolumeName>,
-) -> Result<ployz_store::VolumeObservation, RpcError> {
-    observe_volumes_expecting(connections, sought, None).await
-}
-
-/// [`observe_volumes`] through an entry of `expect`'s Cluster only, when given.
-///
-/// # Errors
-/// As [`observe_volumes`].
-pub async fn observe_volumes_expecting(
-    connections: Vec<Connection>,
-    sought: Vec<ployz_core::DockerVolumeName>,
-    expect: Option<crate::connect::ClusterExpectation>,
-) -> Result<ployz_store::VolumeObservation, RpcError> {
-    if connections.is_empty() {
-        return Err(super::invalid_argument(
-            "connections must not be empty".into(),
-        ));
-    }
-    let servers: Vec<MachineId> = connections
-        .iter()
-        .filter_map(Connection::machine_id)
-        .copied()
-        .collect();
-    let session = match super::dial(connections, Arc::new(SystemConnector::default()), expect).await
-    {
-        Ok(session) => session,
-        Err(error) => {
-            let failure = if error.unreached() {
-                ObservationFailure::unreachable(error.into())
-            } else {
-                // The daemon that refused never confirmed which Server it is.
-                ObservationFailure::answered(None, error.into())
-            };
-            return Ok(VolumeObservation::failed(sought, servers, failure));
-        }
-    };
-    let observed = match session.observe_volumes(sought.clone()).await {
-        Ok(observed) => observed,
-        Err(error) => {
-            let server = session
-                .client()
-                .ok()
-                .and_then(|client| client.entry_machine());
-            let failure = ObservationFailure::answered(server, error);
-            VolumeObservation::failed(sought, servers, failure)
-        }
-    };
-    session.close().await;
-    Ok(observed)
-}
-
-/// Which Services run on `connections`' Servers, by Namespace: the evidence a full
-/// Deploy's prune is admitted with, naming each Service it removes. A check that
-/// fails names each of `connections`' Servers unanswered and says why, as
-/// [`observe_volumes`] does.
-///
-/// # Errors
-/// Returns `invalid_argument` when `connections` is empty.
-pub async fn observe_running(
-    connections: Vec<Connection>,
-) -> Result<ployz_store::RunningObservation, RpcError> {
-    observe_running_expecting(connections, None).await
-}
-
-/// [`observe_running`] through an entry of `expect`'s Cluster only, when given.
-///
-/// # Errors
-/// As [`observe_running`].
-pub async fn observe_running_expecting(
-    connections: Vec<Connection>,
-    expect: Option<crate::connect::ClusterExpectation>,
-) -> Result<ployz_store::RunningObservation, RpcError> {
-    if connections.is_empty() {
-        return Err(super::invalid_argument(
-            "connections must not be empty".into(),
-        ));
-    }
-    let servers: Vec<MachineId> = connections
-        .iter()
-        .filter_map(Connection::machine_id)
-        .copied()
-        .collect();
-    let failed = |failure| ployz_store::RunningObservation {
-        services: Vec::new(),
-        unanswered: servers.clone(),
-        failure: Some(failure),
-        dropped: Vec::new(),
-    };
-    let session = match super::dial(connections, Arc::new(SystemConnector::default()), expect).await
-    {
-        Ok(session) => session,
-        Err(error) => {
-            let failure = if error.unreached() {
-                ObservationFailure::unreachable(error.into())
-            } else {
-                ObservationFailure::answered(None, error.into())
-            };
-            return Ok(failed(failure));
-        }
-    };
-    let observed = match session.observe_running().await {
-        Ok(observed) => observed,
-        Err(error) => {
-            let server = session
-                .client()
-                .ok()
-                .and_then(|client| client.entry_machine());
-            failed(ObservationFailure::answered(server, error))
-        }
-    };
-    session.close().await;
-    Ok(observed)
-}
-
-/// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep
-/// finds orphaned mirror slots with. With `expect`, only through an entry of its
-/// Cluster, naming the Machines it left.
-///
-/// # Errors
-/// Returns the connection's error when no Server can be reached, or listing the
-/// Machines fails.
-pub async fn observe_copies(
-    connections: Vec<Connection>,
-    expect: Option<crate::connect::ClusterExpectation>,
-) -> Result<Dialed<super::CopyObservation>, RpcError> {
-    let connector = Arc::new(SystemConnector::default());
-    let session = connect_expecting(connections, connector, expect).await?;
-    let foreign = session.foreign();
-    let observed = session.observe_copies().await;
-    session.close().await;
-    Ok(Dialed {
-        outcome: observed?,
-        foreign,
-    })
 }
 
 /// The old copies a Deployment's retire left running.
@@ -568,7 +428,7 @@ fn kept_copies(view: &DeploymentView) -> Vec<RetireLeft> {
         .collect()
 }
 
-async fn retire_copies<C: MachineOperations>(
+async fn retire_copies<C: CopyLifecycle>(
     client: &C,
     machines: &[MachineObservation],
     copies: Vec<LeftCopy>,
@@ -612,7 +472,7 @@ async fn retire_copies<C: MachineOperations>(
         .collect()
 }
 
-async fn retire_copy<C: MachineOperations>(
+async fn retire_copy<C: CopyLifecycle>(
     client: &C,
     names: &BTreeMap<MachineId, String>,
     machine_id: MachineId,
@@ -629,18 +489,18 @@ async fn retire_copy<C: MachineOperations>(
     let step = cleanup::retire(
         client,
         &Copy::observed(&observed),
-        matches!(copy.purpose, RemoveContainerPurpose::Retire),
+        copy.purpose.into(),
         copy.purpose.into(),
         &CancellationToken::new(),
     )
     .await;
-    match step {
-        Ok(Step::Done) => None,
-        Ok(Step::Refused(refusal)) => Some(refusal.message),
-        Ok(Step::NotConfirmed(unconfirmed)) if unconfirmed.machines.is_empty() => {
+    match step.map(Rotated::failure) {
+        Ok(Ok(())) => None,
+        Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
+        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) if unconfirmed.machines.is_empty() => {
             Some("the route set did not name every live Machine".into())
         }
-        Ok(Step::NotConfirmed(unconfirmed)) => {
+        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) => {
             let proxies: Vec<String> = unconfirmed
                 .machines
                 .iter()
@@ -648,7 +508,7 @@ async fn retire_copy<C: MachineOperations>(
                 .collect();
             Some(format!("proxy on {} did not confirm", proxies.join(", ")))
         }
-        Ok(Step::Cancelled) => Some("interrupted".into()),
+        Ok(Err(RotationFailure::Cancelled)) => Some("interrupted".into()),
         Err(error) => Some(machine_failure_reason(&copy.machine, error)),
     }
 }
@@ -703,6 +563,29 @@ struct Run {
     store: Arc<ConfigStore>,
     deployment: DeploymentId,
     runner: RunnerId,
+    over: Latch,
+    /// Handed to each Server with a rule's proof.
+    reader: Option<ployz_core::GithubToken>,
+}
+
+/// What `read`, the store's answer to one of this run's records, says about the Deployment.
+fn read_of(read: &Result<DeploymentSummary, RpcError>) -> Read {
+    match read {
+        Ok(summary) => match summary.status {
+            DeploymentStatus::Running => Read::Running,
+            DeploymentStatus::Cancelling => Read::Cancelling,
+            DeploymentStatus::Unknown => Read::Unknown,
+            DeploymentStatus::Applied
+            | DeploymentStatus::Failed
+            | DeploymentStatus::Cancelled
+            | DeploymentStatus::WaitingForCi
+            | DeploymentStatus::Queued
+            | DeploymentStatus::Superseded => Read::Ended,
+        },
+        // `record` refuses an ended Deployment, or another runner's, as a conflict.
+        Err(refused) if refused.code == RpcErrorCode::Conflict => Read::Ended,
+        Err(_) => Read::Unavailable,
+    }
 }
 
 fn ingress_failure_message<'a>(
@@ -720,16 +603,38 @@ fn ingress_failure_message<'a>(
 }
 
 impl Run {
+    /// Claim the Deployment, with the Intent's options this runner plans it with,
+    /// driving it as `operator`.
+    async fn claim(&self, operator: Operator) -> Result<Claimed, RpcError> {
+        let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
+        let mut claimed =
+            super::store_call(&self.store, move |store| store.claim(&deployment, &runner)).await?;
+        // The Store lowers the Intent without knowing who will run it, so the runner
+        // sets who does. Each ended run labels its copies with its Deployment's id,
+        // as this run does.
+        let ended_runs = claimed
+            .ended_runs
+            .iter()
+            .filter_map(|ended| ended.as_str().parse().ok())
+            .collect();
+        claimed.intent.options = claimed.intent.options.as_runner(operator, ended_runs);
+        Ok(claimed)
+    }
+
     async fn execute(
         &self,
         session: &Session,
-        claimed: Claimed,
+        mut claimed: Claimed,
         targets: Vec<Target>,
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
+        let approval = claimed.approval.clone();
+        let teardown = claimed.teardown.clone();
+        pin_approved(&mut claimed.intent.target, approval.as_ref());
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
+        let mut rules = crate::cluster::RuleProofs::default();
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -739,6 +644,7 @@ impl Run {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
                     receipts.extend(built);
+                    rules = rule_proofs(session, &claimed, &receipts, self.reader.as_ref()).await;
                     self.prepare(session, claimed, targets, receipts).await
                 }
                 Err(unbuilt) => return self.unbuilt(unbuilt).await,
@@ -748,16 +654,26 @@ impl Run {
             Ok(prepared) => prepared,
             Err(unprepared) => return self.unprepared(&earlier, &deletes, unprepared).await,
         };
-        let summary = self
+        let recorded = self
             .record(RunEvidence::Prepared(prepared.preview().clone()))
-            .await?;
-        if summary.status == DeploymentStatus::Cancelling {
-            return self
-                .not_executed("Cancelled before it executed".into())
-                .await;
+            .await;
+        match standing(read_of(&recorded)) {
+            Standing::Keep => {}
+            Standing::Cancel => {
+                return self
+                    .not_executed("Cancelled before it executed".into())
+                    .await;
+            }
+            Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_with_log_id(log_id, ImageCleanup::Auto) {
+        let running = match prepared.confirm_approved(
+            log_id,
+            ImageCleanup::Auto,
+            approval,
+            rules,
+            teardown.clone(),
+        ) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
@@ -768,27 +684,33 @@ impl Run {
             .await;
         match outcome {
             Ok((outcome, progress, mut warnings)) => {
-                if self.lost_to_another_runner().await {
-                    return self.interrupted(outcome, progress).await;
+                match self.standing().await {
+                    Standing::Over(Over::Lost) => {
+                        return self.interrupted(outcome, progress).await;
+                    }
+                    // The store refuses the outcome, and nothing more is deleted.
+                    Standing::Over(Over::Ended) => {
+                        return self.executed(outcome, progress, Vec::new()).await;
+                    }
+                    Standing::Keep | Standing::Cancel | Standing::Unread => {}
                 }
                 // The last chance: the store takes warnings only while the Deployment runs.
                 self.record_warnings(&mut warnings).await;
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
-                    self.renewing(remove_volumes(session, deletes), || ()).await
+                    self.renewing(remove_volumes(session, deletes, teardown), || ())
+                        .await
                 } else {
                     Vec::new()
                 };
-                if self.status().await.ok() != Some(DeploymentStatus::Cancelling) {
-                    self.fill_ingress(session, prepared.preview.machine_names())
-                        .await;
+                match self.standing().await {
+                    Standing::Keep | Standing::Unread => {
+                        self.fill_ingress(session, prepared.preview.machine_names())
+                            .await;
+                    }
+                    Standing::Cancel | Standing::Over(_) => {}
                 }
-                self.record(RunEvidence::Executed {
-                    progress,
-                    outcome: Box::new(outcome),
-                    removed,
-                })
-                .await
+                self.executed(outcome, progress, removed).await
             }
             // The session ended mid-execution: what ran is unknown.
             Err(_) => self.record(RunEvidence::Abandoned).await,
@@ -810,7 +732,7 @@ impl Run {
                 .await
                 .map_err(message)
             }
-            Err(error) => Err(crate::ui::row(&error)),
+            Err(error) => Err(error_chain::row(&error)),
         };
         let evidence: Vec<_> = match filled {
             Ok(check) => (!check.repairs.is_empty())
@@ -895,7 +817,9 @@ impl Run {
                 }
                 Err(error) => match needs_upload(&error) {
                     Some(services) => uploads.extend(services),
-                    None => failed.push(format!("{}: {}", target.service, crate::ui::row(&error))),
+                    None => {
+                        failed.push(format!("{}: {}", target.service, error_chain::row(&error)))
+                    }
                 },
             }
         }
@@ -974,16 +898,16 @@ impl Run {
                 (status, None, Ok(receipt))
             }
             Ok(BuildOutcome::Queued) => {
-                let error = internal("No Server started the build");
+                let error = RpcError::internal("No Server started the build");
                 (
                     BuildStatus::Failed,
-                    Some(crate::ui::row(&error)),
+                    Some(error_chain::row(&error)),
                     Err(error),
                 )
             }
             Err(error) => (
                 BuildStatus::Failed,
-                Some(crate::ui::row(&error)),
+                Some(error_chain::row(&error)),
                 Err(error),
             ),
         };
@@ -1036,7 +960,10 @@ impl Run {
         let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
             claimed.intent.registry_auth,
-            Some(claimed.intent.options.operator),
+            Some((
+                claimed.intent.options.operator,
+                claimed.intent.options.ended_runs,
+            )),
         )?;
         self.renewing(running.finished(), || running.abort()).await
     }
@@ -1191,33 +1118,28 @@ impl Run {
         loop {
             tokio::select! {
                 biased;
-                _ = poll.tick() => {
-                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
-                        return Ok(None);
-                    }
-                }
+                _ = poll.tick() => match self.standing().await {
+                    Standing::Keep | Standing::Unread => {}
+                    Standing::Cancel | Standing::Over(_) => return Ok(None),
+                },
                 done = &mut work => return done.map(Some),
             }
         }
     }
 
     /// Await `work` while renewing this runner's lease on the Deployment; a cancel, or
-    /// the store handing the environment to another runner, calls `abort`.
+    /// the store no longer holding the run, calls `abort`.
     async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
         loop {
             tokio::select! {
                 done = &mut work => return done,
-                _ = poll.tick() => {
+                _ = poll.tick() => match self.standing().await {
                     // ponytail: a failed read skips one check; the next tick reads again.
-                    if matches!(
-                        self.status().await.ok(),
-                        Some(DeploymentStatus::Cancelling | DeploymentStatus::Unknown)
-                    ) {
-                        abort();
-                    }
-                }
+                    Standing::Keep | Standing::Unread => {}
+                    Standing::Cancel | Standing::Over(_) => abort(),
+                },
             }
         }
     }
@@ -1249,7 +1171,8 @@ impl Run {
         }
     }
 
-    /// Records what ran before the store handed the Environment to another runner.
+    /// Records what ran before the store set the Deployment Unknown: Interrupted is the
+    /// one outcome it takes from the run then.
     async fn interrupted(
         &self,
         outcome: DeployOutcome<ExecutionError>,
@@ -1261,6 +1184,37 @@ impl Run {
             removed: Vec::new(),
         })
         .await
+    }
+
+    /// Record what executing did. The store refuses any outcome but Interrupted from a
+    /// run it set Unknown, so a refused one is sent again as Interrupted. Its other
+    /// refusals turn on what it holds, not on the outcome sent, so the resend meets them
+    /// again. The one exception changes nothing: a store that already holds this same
+    /// Interrupted outcome accepts the resend as a replay. Not when the run tried to
+    /// delete a Volume: the store reads an Interrupted outcome's removed Volumes as never
+    /// attempted, and the refusal claims nothing.
+    async fn executed(
+        &self,
+        outcome: DeployOutcome<ExecutionError>,
+        progress: Vec<ployz_store::ServerProgress>,
+        removed: Vec<ployz_core::VolumeRemoval>,
+    ) -> Result<DeploymentSummary, RpcError> {
+        let deleted = removed
+            .iter()
+            .any(|removal| !matches!(removal.outcome, ployz_core::VolumeRemovalOutcome::Omitted));
+        let recorded = self
+            .record(RunEvidence::Executed {
+                progress: progress.clone(),
+                outcome: Box::new(outcome.clone()),
+                removed,
+            })
+            .await;
+        match recorded {
+            Err(refused) if refused.code == RpcErrorCode::Conflict && !deleted => {
+                self.interrupted(outcome, progress).await.or(Err(refused))
+            }
+            recorded => recorded,
+        }
     }
 
     async fn not_executed(&self, failure: Failure) -> Result<DeploymentSummary, RpcError> {
@@ -1362,18 +1316,15 @@ impl Run {
         .await
     }
 
-    /// One bounded read after execution: the store may have handed the environment
-    /// to another runner meanwhile, and then takes no outcome from this run.
-    async fn lost_to_another_runner(&self) -> bool {
-        self.status().await.ok() == Some(DeploymentStatus::Unknown)
-    }
-
-    /// Renew this runner's lease on the Deployment and read its status back, which
-    /// says whether it was cancelled or handed to another runner.
-    async fn status(&self) -> Result<DeploymentStatus, RpcError> {
-        self.record(RunEvidence::Alive)
-            .await
-            .map(|summary| summary.status)
+    /// Renew this runner's lease on the Deployment and read what the run may do. Once a
+    /// read found the store no longer holding the run, it reads nothing more and says
+    /// the same: a read that fails after a takeover still leaves the run lost.
+    async fn standing(&self) -> Standing {
+        if let Some(over) = self.over.latched() {
+            return Standing::Over(over);
+        }
+        self.over
+            .settle(read_of(&self.record(RunEvidence::Alive).await))
     }
 }
 
@@ -1477,7 +1428,7 @@ fn targets(
             failed.push(format!(
                 "{}: {}",
                 source.service,
-                crate::ui::then_sentence(why, "No other Builder in your Build Order can take it")
+                error_chain::then_sentence(why, "No other Builder in your Build Order can take it")
             ));
             continue;
         }
@@ -1536,6 +1487,130 @@ fn targets(
         })
     }));
     Ok((targets, built))
+}
+
+/// The proof each Service built under `claimed`'s automatic deploy rule or preview rule
+/// creates with: the rule, its image token, and the claim the token's audience names,
+/// rebuilt from the rule, the pinned commit, the image the Machine received, the
+/// Cluster's keys, and the generation and authority the token was built under. A
+/// person's approval of the commit rides along. A Service without all of them gets
+/// none, and an enforcing Server refuses it.
+async fn rule_proofs(
+    session: &Session,
+    claimed: &Claimed,
+    receipts: &BTreeMap<ServiceName, BuildReceipt>,
+    reader: Option<&ployz_core::GithubToken>,
+) -> crate::cluster::RuleProofs {
+    use ployz_core::authority::{
+        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, PreviewProof, RuleProof,
+    };
+    let mut proofs = crate::cluster::RuleProofs::default();
+    // Each rule's ID, generation and the policy it approves for a Service.
+    let rule = claimed.rule.as_ref().and_then(|signed| signed.open().ok());
+    let preview = claimed
+        .preview
+        .as_ref()
+        .and_then(|signed| signed.open().ok());
+    let approved = |service: &ServiceName| match (&rule, &preview) {
+        (Some(rule), _) => rule
+            .service(service)
+            .map(|approved| (rule.rule, &approved.policy)),
+        (None, Some(preview)) => preview
+            .service(service)
+            .map(|approved| (preview.rule, &approved.policy)),
+        (None, None) => None,
+    };
+    if (rule.is_none() && preview.is_none()) || claimed.image_tokens.is_empty() {
+        return proofs;
+    }
+    let contract = match session.about().await {
+        Ok(contract) => contract,
+        Err(error) => {
+            tracing::warn!(%error, "could not read the Cluster's keys for a rule's proof");
+            return proofs;
+        }
+    };
+    let (Some(ployz_core::Sealing::Held { public_key }), Some(attest)) =
+        (contract.sealing, contract.attest)
+    else {
+        return proofs;
+    };
+    for (service, token) in &claimed.image_tokens {
+        let approved = approved(service);
+        let receipt = receipts.get(service);
+        let commit = claimed
+            .sources
+            .iter()
+            .find(|source| source.service == *service)
+            .and_then(|source| source.commit.as_ref())
+            .and_then(|commit| CommitSha::parse(commit.as_str()).ok());
+        let (Some(approved), Some(receipt), Some(commit)) = (approved, receipt, commit) else {
+            continue;
+        };
+        let (id, approved) = approved;
+        let (Ok(image), Ok(policy)) = (
+            ImageDigest::parse(&receipt.image.reference),
+            PolicyDigest::of(approved),
+        ) else {
+            continue;
+        };
+        // The generation and authority the token was built under: the Machine checks
+        // each against the rule and, for a reviewed or approved build, the person's word.
+        let claim = BuildClaim {
+            cluster: public_key,
+            rule: id,
+            generation: token.generation,
+            service: service.clone(),
+            policy,
+            commit,
+            authority: token.authority,
+            stage: BuildStage::Built { image, attest },
+        };
+        let token = ployz_core::GithubToken::new(token.token.clone());
+        match (&claimed.rule, &claimed.preview) {
+            (Some(signed), _) => {
+                proofs.rules.insert(
+                    service.clone(),
+                    RuleProof {
+                        rule: signed.clone(),
+                        token,
+                        claim,
+                        approval: claimed.approvals.get(service).cloned(),
+                        reader: reader.cloned(),
+                    },
+                );
+            }
+            (None, Some(signed)) => {
+                proofs.previews.insert(
+                    service.clone(),
+                    PreviewProof {
+                        rule: signed.clone(),
+                        review: claimed.review.clone(),
+                        token,
+                        claim,
+                        reader: reader.cloned(),
+                    },
+                );
+            }
+            (None, None) => {}
+        }
+    }
+    proofs
+}
+
+/// Write the image each Service's approval pinned into its spec, so the Servers are asked
+/// to create the spec the approval's digest covers. The Saved State keeps the tag. A
+/// Server refuses a spec the approval doesn't match, so a runner can't choose the image.
+fn pin_approved(
+    target: &mut [RequestedServiceSpec],
+    approval: Option<&ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+) {
+    let Some(approved) = approval.and_then(|approval| approval.open().ok()) else {
+        return;
+    };
+    for spec in target {
+        approved.pin(spec);
+    }
 }
 
 /// The uploaded Services among `targets` that build from an earlier upload than
@@ -1656,26 +1731,19 @@ fn refused_before_deletes(
 async fn remove_volumes(
     session: &Session,
     volumes: Vec<ployz_core::DockerVolumeId>,
+    teardown: Option<ployz_core::authority::TeardownApproval>,
 ) -> Vec<ployz_core::VolumeRemoval> {
     if volumes.is_empty() {
         return Vec::new();
     }
     session
         .remove_volumes(ployz_core::RemoveVolumesRequest {
+            teardown: teardown.map(Box::new),
             volumes,
             force: false,
         })
         .await
         .unwrap_or_default()
-}
-
-pub(super) fn internal(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Internal,
-        message: message.to_owned(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
 }
 
 #[cfg(test)]

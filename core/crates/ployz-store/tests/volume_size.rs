@@ -145,6 +145,7 @@ fn admit_only(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Res
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
+                teardown: None,
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -157,6 +158,7 @@ fn admit_only(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Res
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -389,11 +391,15 @@ fn redeploy(store: &ConfigStore, who: &Actor, source: u8, n: u8) -> Result<(), R
         .write_trusted(
             who,
             &Admit::Retry(Retry {
+                teardown: None,
                 id: id(n),
                 deployment: id(source),
                 rolls_back: Some(rolls_back),
                 version: None,
                 accept_volume_loss: Vec::new(),
+                approvals: Vec::new(),
+                awaits_approval: false,
+                approval: None,
             }),
             &Trusted::default(),
         )

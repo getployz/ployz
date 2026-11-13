@@ -94,9 +94,11 @@ export const serverEnrollmentRequestedEvent = "server/enrollment.requested";
 export const serverEnrollmentReportedEvent = "server/enrollment.reported";
 export const serverEnrollmentCancelEvent = "server/enrollment.cancel";
 export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
+export const ingressDoorsRequestedEvent = "ingress/doors.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
+export const clusterNameRequestedEvent = "cluster/name.requested";
 export const sealingKeyEnsureRequestedEvent = "sealing-key/ensure.requested";
 export const variablesResealRequestedEvent = "variables/reseal.requested";
 export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
@@ -180,6 +182,12 @@ export type ServerWebTrafficRequestedEventData = {
   machineId: MachineId;
 };
 
+/** A switch of the Cluster's web traffic between its public ports and Cloudflare was requested: its row is written. */
+export type IngressDoorsRequestedEventData = {
+  attemptId: string;
+  organizationId: string;
+};
+
 /** A clean of a Namespace no Environment owns was requested: its row is written. */
 export type NamespaceCleanupRequestedEventData = {
   cleanupId: string;
@@ -192,6 +200,10 @@ export type ServiceActRequestedEventData = {
 };
 
 export type ClusterDomainSyncRequestedEventData = {
+  organizationId: string;
+};
+
+export type ClusterNameRequestedEventData = {
   organizationId: string;
 };
 
@@ -359,6 +371,10 @@ export const serverWebTrafficRequestedEventType = eventType(
   serverWebTrafficRequestedEvent,
   { schema: staticSchema<ServerWebTrafficRequestedEventData>() },
 );
+export const ingressDoorsRequestedEventType = eventType(
+  ingressDoorsRequestedEvent,
+  { schema: staticSchema<IngressDoorsRequestedEventData>() },
+);
 export const namespaceCleanupRequestedEventType = eventType(
   namespaceCleanupRequestedEvent,
   { schema: staticSchema<NamespaceCleanupRequestedEventData>() },
@@ -398,6 +414,10 @@ export const anonymousTeardownRequestedEventType = eventType(
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
+);
+export const clusterNameRequestedEventType = eventType(
+  clusterNameRequestedEvent,
+  { schema: staticSchema<ClusterNameRequestedEventData>() },
 );
 export const sealingKeyEnsureRequestedEventType = eventType(
   sealingKeyEnsureRequestedEvent,
@@ -530,6 +550,11 @@ export function createServerEnrollmentFoundedEvent(founderAttemptId: string, att
   return { id: `organization-founded-${founderAttemptId}-${attemptId}`, name: serverEnrollmentReportedEvent, data: { attemptId, founded: true } } as const;
 }
 
+/** Keyed by the switch's row: sending it again for the same request runs nothing new. */
+export function createIngressDoorsRequestedEvent(data: IngressDoorsRequestedEventData) {
+  return { id: `ingress-doors-${data.attemptId}`, name: ingressDoorsRequestedEvent, data } as const;
+}
+
 /** Keyed by the change's row: sending it again for the same request runs nothing new. */
 export function createServerWebTrafficRequestedEvent(data: ServerWebTrafficRequestedEventData) {
   return { id: `server-web-traffic-${data.attemptId}`, name: serverWebTrafficRequestedEvent, data } as const;
@@ -571,6 +596,11 @@ export function createClusterDomainSyncRequestedEvent(
   data: ClusterDomainSyncRequestedEventData,
 ) {
   return { name: clusterDomainSyncRequestedEvent, data } as const;
+}
+
+/** Set the Organization's saved Cluster Name on its Cluster. `id` names one request, so the outbox sends it once. */
+export function createClusterNameRequestedEvent({ id, ...data }: ClusterNameRequestedEventData & { id: string }) {
+  return { id, name: clusterNameRequestedEvent, data } as const;
 }
 
 export function createSealingKeyEnsureRequestedEvent(data: SealingKeyEnsureRequestedEventData) {
@@ -756,12 +786,14 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerEnrollmentCancelEvent>
   | ReturnType<typeof createServerEnrollmentFoundedEvent>
   | ReturnType<typeof createServerWebTrafficRequestedEvent>
+  | ReturnType<typeof createIngressDoorsRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>
   | ReturnType<typeof createMailSendRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
+  | ReturnType<typeof createClusterNameRequestedEvent>
   | ReturnType<typeof createSealingKeyEnsureRequestedEvent>
   | ReturnType<typeof createVariablesResealRequestedEvent>
   | ReturnType<typeof createClusterResealRequestedEvent>
@@ -780,6 +812,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
   | ReturnType<typeof createGithubPullRequestReceivedEvent>
   | ReturnType<typeof createGithubBuildRunCompletedEvent>
+  | ReturnType<typeof createConfigDeploymentApprovedEvent>
   | ReturnType<typeof createAnonymousTeardownRequestedEvent>;
 
 /**
@@ -789,4 +822,10 @@ export type InngestSendableEvent =
 export const githubBuildRunCompletedEvent = "github/build-run.completed";
 export function createGithubBuildRunCompletedEvent(data: { id: string; runId: number }) {
   return { id: data.id, name: githubBuildRunCompletedEvent, data: { runId: data.runId } };
+}
+
+/** A person approved again the commits of a Deployment that waited once its builds ended: its run goes on. */
+export const configDeploymentApprovedEvent = "config/deployment.approved";
+export function createConfigDeploymentApprovedEvent(data: { deploymentId: string }) {
+  return { id: `config-deployment-approved-${data.deploymentId}`, name: configDeploymentApprovedEvent, data } as const;
 }

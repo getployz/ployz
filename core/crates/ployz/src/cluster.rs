@@ -1,3 +1,4 @@
+use ployz_core::error_chain;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
@@ -5,19 +6,20 @@ use std::{
 };
 
 use futures_util::future::join_all;
+pub(crate) use ployz_core::global_creation_key;
 use ployz_core::{
     BridgeEndpointCapacity, ByteCapacity, ContainerAction, ContainerId, ContainerNow,
-    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation,
+    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation, Departed,
     DescribeContractRequest, DockerVolumeId, DockerVolumeName, EnsureContainerRequest,
-    EnvironmentValues, ForgetRequest, Forgotten, InspectRequest, InspectStorageRequest,
-    InspectTelemetry, LeaveRequest, Left, ListContainersRequest, ListImagesRequest,
-    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    EnvironmentValues, ForgetRequest, Forgotten, IngressDoorsSet, InspectRequest,
+    InspectStorageRequest, InspectTelemetry, LeaveRequest, Left, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
-    MachineLabelKey, MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation,
-    MachineSuccess, MachineTarget, MachineUpdate, NameMatches, Namespace, ObservedDataLoss,
-    OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest,
-    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    RuntimeWatchFrame, RuntimeWatchRequest, StopOptions, StorageCapacity, TelemetryObservation,
+    MachineLabelKey, MachineName, MachineObservation, MachineStorageObservation, MachineSuccess,
+    MachineTarget, MachineUpdate, NameMatches, Namespace, ObservedDataLoss, OpaquePayload,
+    PartialResult, PrivateAccessSet, RemoveVolumeRequest, RemoveVolumesRequest, Rpc, RpcError,
+    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, SetIngressDoorsRequest,
+    SetPrivateAccessRequest, StopOptions, StorageCapacity, TelemetryObservation,
     UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
     decode_runtime_watch_frame, derive_live_services, op,
 };
@@ -25,17 +27,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tonic::{
-    Streaming,
-    codec::{CompressionEncoding, ProstCodec},
-    codegen::http::uri::PathAndQuery,
-    transport::Channel,
-};
+use tonic::{Streaming, transport::Channel};
 
 use crate::{
     connect::{
         BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
-        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, target_request,
+        TransportError, apply_timeout, rpc_error, target_request,
     },
     context::{Connection, ConnectionSource},
     deploy::{
@@ -45,66 +42,52 @@ use crate::{
     service::ContainerOperationFailure,
 };
 
+mod call;
+#[cfg(test)]
+mod call_audit;
 mod capacity;
 mod container_health;
+mod deploy_context;
+mod fan_out;
+#[cfg(test)]
+mod retry;
+mod routes;
+#[cfg(test)]
+mod routing_tests;
+mod session;
 
+pub(crate) use call::setup_outcome;
+pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
 pub(crate) use container_health::HealthWaitError;
+pub use deploy_context::RuleProofs;
+use deploy_context::{Carried, DeployContext};
+pub(crate) use fan_out::{fan_out, fan_out_entry_last};
+pub(crate) use routes::FullRoutes;
+pub(crate) use session::Refusal;
+use session::Session;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// What an `EnsureContainer` carries to the Machine beside its want.
+#[derive(Clone, Copy)]
+enum Carry {
+    /// The approvals and proofs this client's Deploy holds.
+    Approvals,
+    Nothing,
+}
+
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
 /// answer only once that work lets it through.
 pub(crate) const LIVE_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct Client {
-    pub(crate) deployment_id: Option<ployz_core::DeploymentLogId>,
-    /// Pull credentials by Service for the Deploy this client executes.
-    pub(crate) registry_auth:
-        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
-    /// Shared by every clone, so a redial on any of them reaches the rest.
-    channel: Arc<std::sync::RwLock<Channel>>,
-    connection: Connection,
-    source: ConnectionSource,
-    connector: Arc<dyn Connector>,
-    /// The Machine the entry described itself as when it was last confirmed.
-    entry: Option<MachineId>,
-    /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
-    /// keeps it, so a later one can tell the endpoint now reaches another Machine.
-    confirmed: Option<MachineId>,
-    /// The Cluster the dial expected and what the first dial confirmed about it; None when
-    /// it expected none. Boxed so a client stays small beside the enums that carry it.
-    pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
-    /// Set once a redial finds the entry in another Cluster. Every clone shares it.
-    refused: Refusal,
-}
-
-/// The entry a redial found in another Cluster, shared by every clone of a client and
-/// the streams it opened. The client ends then: no new call, stream or dial starts on any
-/// clone. Work already started may still complete:
-/// - a dial or tunnel in progress;
-/// - a request already handed to the channel, including one waiting for its connection,
-///   which tonic's own Tcp/Unix reconnect may carry;
-/// - a send racing the refusal on another thread.
-///
-/// A dial, or a Watch or exec output read, that finishes afterwards returns the refusal
-/// instead; a unary call or a stream open already under way returns what the daemon
-/// answered. A request the daemon received isn't undone.
-#[derive(Clone, Default)]
-pub(crate) struct Refusal(Arc<std::sync::OnceLock<MachineId>>);
-
-impl Refusal {
-    /// Fails once a redial found the entry in another Cluster.
-    pub(crate) fn check(&self) -> Result<(), ConnectError> {
-        match self.0.get() {
-            Some(&machine_id) => Err(ConnectError::ClusterMismatch { machine_id }),
-            None => Ok(()),
-        }
-    }
-
-    /// End the client. True for the first refusal only.
-    fn set(&self, machine_id: MachineId) -> bool {
-        self.0.set(machine_id).is_ok()
-    }
+    /// The Deploy this client executes: its log, pull credentials and approvals.
+    pub(crate) deploy: DeployContext,
+    /// The connection to the entry and what was confirmed behind it.
+    session: Session,
+    /// The Full-scope connections a Full call may dial.
+    routes: FullRoutes,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -121,24 +104,120 @@ impl Client {
         connector: Arc<dyn Connector>,
     ) -> Self {
         Self {
-            deployment_id: None,
-            registry_auth: std::collections::BTreeMap::new(),
-            channel: Arc::new(std::sync::RwLock::new(channel)),
-            connection,
-            source,
-            connector,
-            entry: None,
-            confirmed: None,
-            cluster: None,
-            refused: Refusal::default(),
+            deploy: DeployContext::default(),
+            session: Session::new(channel, connection, source, connector),
+            routes: FullRoutes::default(),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_full_routes(mut self, routes: FullRoutes) -> Self {
+        self.routes = routes;
+        self
+    }
+
+    /// The Full-scope connections a Full call may dial.
+    pub(crate) fn full_routes(&self) -> &FullRoutes {
+        &self.routes
+    }
+
+    pub(crate) fn full_machines(&self) -> BTreeSet<MachineId> {
+        self.routes.machines(self.session.entry)
+    }
+
+    /// Whether this client reaches `machine` with Full scope: over SSH or the local
+    /// socket, or over a Management connection dialled as a Device when `device` says one
+    /// is held. Only a client [`Self::with_full_routes`] built can.
+    pub(crate) fn reaches_full(&self, machine: &MachineId, device: bool) -> bool {
+        self.routes.reach(
+            machine,
+            device,
+            self.session.entry.as_ref(),
+            self.session.connection(),
+        )
+    }
+
+    async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
+        self.session.ended()?;
+        if self.routes.is_empty()
+            || self
+                .session
+                .entry
+                .is_some_and(|id| id.as_str() == target.as_str())
+        {
+            return Ok(None);
+        }
+        let Some(connection) = self.routes.to(target.as_str()) else {
+            return Ok(None);
+        };
+        let mut client = Box::pin(crate::connect::connect_one(
+            connection,
+            self.session.source(),
+            self.session.connector(),
+            false,
+            self.session.cluster.as_ref().map(|cluster| &cluster.expect),
+        ))
+        .await?;
+        client.session.ending_with(&self.session);
+        self.session.ended()?;
+        Ok(Some(client))
+    }
+
+    #[must_use]
+    pub(crate) fn with_restart_approval(
+        mut self,
+        approval: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
+    ) -> Self {
+        self.deploy.set_restart(approval);
+        self
+    }
+
+    /// Hand every Server the approval of the Deploy this client runs.
+    #[must_use]
+    pub(crate) fn with_deploy_approval(
+        mut self,
+        approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+    ) -> Self {
+        self.deploy.set_deploy(approval);
+        self
+    }
+
+    /// Hand every Server the rule's proof for the Service each change belongs to, in
+    /// place of a person's deploy approval.
+    #[must_use]
+    pub(crate) fn with_rule_proofs(mut self, proofs: RuleProofs) -> Self {
+        self.deploy.set_proofs(proofs);
+        self
+    }
+
+    /// Hand every Server the teardown of what this client's Deploy takes off it.
+    #[must_use]
+    pub(crate) fn with_teardown(
+        mut self,
+        teardown: Option<ployz_core::authority::TeardownApproval>,
+    ) -> Self {
+        self.deploy.set_teardown(teardown);
+        self
     }
 
     /// What the first dial confirmed about the entry's Cluster; None when it expected none.
     /// A redial checks the Cluster again but leaves this as the first dial found it.
     #[must_use]
     pub fn cluster(&self) -> Option<&crate::connect::ClusterCheck> {
-        self.cluster.as_ref().map(|cluster| &cluster.check)
+        self.session.cluster.as_ref().map(|cluster| &cluster.check)
+    }
+
+    /// Record the Cluster the dial expected and what it confirmed about it.
+    pub(crate) fn expect_cluster(&mut self, cluster: crate::connect::ExpectedCluster) {
+        self.session.cluster = Some(Box::new(cluster));
+    }
+
+    /// What the dial confirmed about the Cluster, for the connection walk to complete.
+    pub(crate) fn cluster_check_mut(&mut self) -> Option<&mut crate::connect::ClusterCheck> {
+        self.session
+            .cluster
+            .as_deref_mut()
+            .map(|cluster| &mut cluster.check)
     }
 
     /// Whether the confirmed entry holds `expect`'s Sealing Key. Inspect is a read every
@@ -153,206 +232,98 @@ impl Client {
         // A confirmation that carried the held key answers without Inspect.
         let (sealing, machine_id, predates) =
             if let (Some(held @ ployz_core::Sealing::Held { .. }), Some(id)) =
-                (confirmed, self.entry)
+                (confirmed, self.session.entry)
             {
                 (Some(held), id, None)
             } else {
                 let inspect = async {
                     let payload = op::Inspect::into_request(ployz_core::InspectRequest::default())
                         .encode()?;
-                    self.call_once::<op::Inspect>(payload, None).await
+                    self.session.call_once::<op::Inspect>(payload).await
                 };
                 let details = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, inspect)
                     .await
                     .map_err(|_| ConnectError::EntryNotReady)??;
                 let predates = crate::connect::predates_sealing(&details);
-                (details.sealing, self.entry.unwrap_or(details.id), predates)
+                (
+                    details.sealing,
+                    self.session.entry.unwrap_or(details.id),
+                    predates,
+                )
             };
         expect.check(machine_id, sealing, predates)
     }
 
     #[must_use]
     pub fn connection(&self) -> &Connection {
-        &self.connection
+        self.session.connection()
     }
 
     #[must_use]
     pub fn connection_source(&self) -> &ConnectionSource {
-        &self.source
+        self.session.source()
     }
 
     /// The entry Machine this client reaches, as the daemon on its current channel
     /// described itself when confirmed. None when it didn't.
     pub(crate) fn entry_machine(&self) -> Option<MachineId> {
-        self.entry
+        self.session.entry
     }
 
     /// The Server this client enters, as people read it: its connection's name, else its
     /// Machine ID.
     pub(crate) fn server(&self) -> Option<String> {
-        self.connection
+        self.session
+            .connection()
             .server()
-            .or_else(|| self.entry.map(|machine| machine.to_string()))
+            .or_else(|| self.session.entry.map(|machine| machine.to_string()))
     }
 
-    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one. An
-    /// entry that now describes itself as another Machine, as after a reset, moves only
-    /// this client: its clones, a Deploy's among them, keep the Machine they confirmed.
-    async fn redial(&mut self) -> Result<(), ConnectError> {
-        self.entry = None;
-        let (channel, entry) = self.dial_confirmed().await?;
-        match (self.confirmed, entry) {
-            (Some(confirmed), Some(entry)) if confirmed != entry => {
-                self.channel = Arc::new(std::sync::RwLock::new(channel));
-            }
-            _ => self.share(channel),
-        }
-        self.confirmed = entry.or(self.confirmed);
-        self.entry = entry;
-        Ok(())
-    }
-
-    /// [`Self::redial`] for a client shared by reference, as a Deploy's is. Its entry
-    /// stays the Machine it confirmed, so an endpoint that now reaches another is refused,
-    /// even after a failed redial made this client forget its entry.
+    /// The transition a Deploy's shared client makes: see [`Session::redial_shared`].
     ///
     /// # Errors
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`], when the
     /// entry doesn't answer on the new channel.
     pub(crate) async fn redial_shared(&self) -> Result<(), ConnectError> {
-        let (channel, entry) = self.dial_confirmed().await?;
-        if let (Some(expected), Some(actual)) = (self.entry.or(self.confirmed), entry)
-            && expected != actual
-        {
-            return Err(ConnectError::IdentityMismatch { expected, actual });
-        }
-        self.share(channel);
-        Ok(())
-    }
-
-    /// Dial the connection again and confirm its entry on the new channel. Returns the
-    /// channel unshared, with the entry it confirmed.
-    /// Fails with the refusal when the client ended while it dialed, whatever the dial found.
-    async fn dial_confirmed(&self) -> Result<(Channel, Option<MachineId>), ConnectError> {
-        self.ended()?;
-        let dialed = async {
-            let candidate = Self {
-                channel: Arc::new(std::sync::RwLock::new(
-                    self.connector.connect(&self.connection).await?,
-                )),
-                ..self.clone()
-            };
-            let entry = candidate.confirmed_entry().await?;
-            Ok((candidate.channel(), entry))
-        }
-        .await;
-        self.ended()?;
-        dialed
-    }
-
-    /// Fails once a redial found the entry in another Cluster.
-    fn ended(&self) -> Result<(), ConnectError> {
-        self.refused.check()
+        self.session.redial_shared().await
     }
 
     /// What ends this client, for a stream it opened to check as it reads.
     pub(crate) fn refusal(&self) -> Refusal {
-        self.refused.clone()
+        self.session.refusal()
     }
 
-    /// Replace the channel every clone shares.
-    fn share(&self, channel: Channel) {
-        *self
-            .channel
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = channel;
-    }
-
-    /// One-shot check that this channel reaches a daemon. No unary retry — a
-    /// down daemon must not stall the connection walk.
+    /// One-shot check that this channel reaches a daemon, as [`Session::confirm_entry`].
     ///
     /// # Errors
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
-    /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`]. Resolves to the
-    /// Sealing Key the confirmation said the entry holds, None when it said nothing.
+    /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
     pub(crate) async fn confirm_entry(
         &mut self,
     ) -> Result<Option<ployz_core::Sealing>, ConnectError> {
-        let (entry, sealing) = self.confirmation().await?;
-        self.entry = entry;
-        self.confirmed = self.entry.or(self.confirmed);
-        Ok(sealing)
+        self.session.confirm_entry().await
     }
 
-    /// The Machine this channel's daemon describes itself as, checked against the
-    /// connection and, when the confirmation tells the key it holds, the Cluster this
-    /// client's dial expected. None when neither the connection nor a Machine this client
-    /// confirmed names one and the daemon doesn't say.
-    async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
-        let (entry, sealing) = self.confirmation().await?;
-        // Only a key tells the Cluster without Inspect; a confirmation without one leaves the
-        // redial to the Machine ID, as before.
-        if let (
-            Some(cluster),
-            Some(machine_id),
-            Some(
-                key @ (ployz_core::Sealing::Held { .. }
-                | ployz_core::Sealing::AwaitsRecovery { .. }),
-            ),
-        ) = (&self.cluster, entry, sealing)
-            && let Err(error) = cluster.expect.check(machine_id, Some(key), None)
-        {
-            if self.refused.set(machine_id) {
-                tracing::warn!(
-                    %machine_id,
-                    "the entry now belongs to another Cluster; the session ends"
-                );
-            }
-            return Err(error);
-        }
-        Ok(entry)
-    }
-
-    /// [`Self::confirmed_entry`], with the Sealing Key the daemon said it holds.
-    async fn confirmation(
+    /// Whether the Machine at `target`, the entry when there is none, promises `capability` in
+    /// the contract it describes. A caller words what a Machine that doesn't means to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport or remote error the describe met.
+    pub(crate) async fn supports(
         &self,
-    ) -> Result<(Option<MachineId>, Option<ployz_core::Sealing>), ConnectError> {
-        let confirm = async {
-            let payload =
-                op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
-            match self.call_once::<op::DescribeContract>(payload, None).await {
-                Ok(description) => {
-                    if let Some(expected) = self.connection.machine_id()
-                        && *expected != description.machine_id
-                    {
-                        return Err(ConnectError::IdentityMismatch {
-                            expected: *expected,
-                            actual: description.machine_id,
-                        });
-                    }
-                    if description.protocol_major != ployz_core::PROTOCOL_MAJOR {
-                        return Err(ConnectError::Codec(
-                            ployz_core::CodecError::UnsupportedProtocolMajor {
-                                requested: description.protocol_major,
-                                supported: ployz_core::PROTOCOL_MAJOR,
-                            },
-                        ));
-                    }
-                    Ok((Some(description.machine_id), description.sealing))
-                }
-                Err(ConnectError::Remote(_))
-                    if self.connection.machine_id().is_none() && self.confirmed.is_none() =>
-                {
-                    Ok((None, None))
-                }
-                Err(error) => Err(error),
-            }
-        };
-        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
-            .await
-            .map_err(|_| ConnectError::EntryNotReady)?
+        target: Option<&MachineTarget>,
+        capability: &str,
+    ) -> Result<bool, ConnectError> {
+        Ok(self
+            .call_shared::<op::DescribeContract>(
+                DescribeContractRequest {},
+                Call::once().toward(target),
+            )
+            .await?
+            .supports(capability))
     }
 
     /// The id of the Machine this client enters by.
@@ -361,444 +332,48 @@ impl Client {
     ///
     /// Returns a transport or remote error when the entry does not describe itself.
     pub(crate) async fn entry_id(&self) -> Result<MachineId, ConnectError> {
-        let payload = op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
-        apply_timeout(
-            Some(CONNECT_CONFIRM_TIMEOUT),
-            self.call_once::<op::DescribeContract>(payload, None),
-        )
-        .await
-        .map(|description| description.machine_id)
+        self.session.entry_id().await
     }
 
-    /// Issue one unary RPC. The response type is derived from the RPC, so a request
-    /// cannot be paired with the wrong response.
+    /// Open the stream `Op` names, on the connection its scope routes to.
     ///
-    /// Transient transport drops (`Attempt`, tonic `Unavailable` / `DeadlineExceeded`)
-    /// redial the same connection and retry up to four times; a failure the entry's router
-    /// reported retries on the channel it came back on. Domain `Remote` errors and other gRPC
-    /// status codes are not retried.
+    /// A Full RPC with a target dials that target directly, as [`Self::send`] does for a
+    /// unary one; the rest go through the entry with the target named. `input` is the one
+    /// request of a server stream, or the whole feed of a client stream. A client stream
+    /// stops reading its feed once this client ends.
     ///
     /// # Errors
     ///
-    /// Returns an encoding, transport, or remote RPC error when the call does
-    /// not succeed within the bounded retry policy.
-    pub async fn call<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request).encode()?;
-        self.call_retried::<T>(payload, target, None).await
-    }
-
-    /// Retry only reads or known-idempotent setup RPCs with short attempts.
-    /// Callers must use `call_unretried` for mutations with uncertain outcomes.
-    pub(crate) async fn call_repeatable<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-    ) -> Result<T::Response, ConnectError> {
-        self.call_repeatable_for::<T>(request, target, None, None, crate::setup_retry::WAIT)
-            .await
-            .map_err(|error| match error {
-                crate::setup_retry::Error::Permanent(error) => error,
-                exhausted => ConnectError::Exhausted(Box::new(exhausted)),
-            })
-    }
-
-    /// Retry a read or stable-identity request for the caller's remaining time budget.
-    /// `server` names the target in the connectivity warning; `expected` announces an
-    /// anticipated outage in its place.
-    pub(crate) async fn call_repeatable_for<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-        server: Option<&str>,
-        expected: Option<crate::setup_retry::Expected>,
-        wait: Duration,
-    ) -> Result<T::Response, crate::setup_retry::Error<ConnectError>> {
-        let payload = T::into_request(request)
-            .encode()
-            .map_err(ConnectError::from)
-            .map_err(crate::setup_retry::Error::Permanent)?;
-        let mut redial = false;
-        let progress = match (server, target) {
-            (Some(server), _) => format!("Could not reach Server {server}"),
-            (None, Some(target)) => format!(
-                "Could not reach Server {} via {}",
-                target.as_str().escape_debug(),
-                self.connection
-            ),
-            (None, None) => format!("Could not reach {}", self.connection),
-        };
-        crate::setup_retry::run_expecting(
-            self,
-            &progress,
-            expected,
-            wait,
-            ConnectError::is_setup_retryable,
-            async |client| {
-                let reconnect = redial;
-                redial = true;
-                client
-                    .setup_read_attempt::<T>(payload.clone(), target, reconnect)
-                    .await
-            },
-        )
-        .await
-    }
-
-    /// One read with no retry or notice of its own, for a readiness check whose
-    /// caller's wait retries it and owns what the user sees (#3620).
-    pub(crate) async fn read_once<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request).encode()?;
-        self.setup_read_attempt::<T>(payload, target, false).await
-    }
-
-    async fn setup_read_attempt<T: Rpc>(
-        &mut self,
-        payload: OpaquePayload,
-        target: Option<&MachineTarget>,
-        redial: bool,
-    ) -> Result<T::Response, ConnectError> {
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            self.unary_attempt::<T>(payload, target, redial),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(tonic::Status::deadline_exceeded("Machine setup read timed out").into())
-        })
-    }
-
-    /// Mutations that must not be replayed after a lost response. `reply_timeout` is
-    /// usually [`LIVE_MUTATION_REPLY_TIMEOUT`].
-    pub(crate) async fn call_unretried<T: Rpc>(
+    /// Returns the transport error the open met, naming `target` when the Server refused it.
+    pub(crate) async fn open_stream<Op: StreamRpc>(
         &self,
-        request: T::Request,
         target: Option<&MachineTarget>,
-        reply_timeout: Duration,
-    ) -> Result<T::Response, ConnectError> {
-        tokio::time::timeout(
-            reply_timeout,
-            self.call_once::<T>(T::into_request(request).encode()?, target),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(tonic::Status::deadline_exceeded("Machine setup mutation reply timed out").into())
-        })
-    }
-
-    /// Issue a retryable read-only targeted RPC with a deadline per attempt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an RPC error when request encoding fails or the targeted read
-    /// does not succeed within the bounded retry policy.
-    pub(crate) async fn read<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: &MachineTarget,
-    ) -> Result<T::Response, RpcError> {
-        self.try_read::<T>(request, target).await.map_err(rpc_error)
-    }
-
-    pub(crate) async fn try_read<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: &MachineTarget,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request)
-            .encode()
-            .map_err(ConnectError::Codec)?;
-        let timeout = crate::connect::target_read_timeout();
-        self.call_retried::<T>(payload, Some(target), Some(timeout))
-            .await
-    }
-
-    async fn call_retried<T: Rpc>(
-        &mut self,
-        payload: OpaquePayload,
-        target: Option<&MachineTarget>,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, ConnectError> {
-        let mut delays = UNARY_RETRY_DELAYS.iter().copied();
-        let mut redial = false;
-        // One budget across retries: fast failures retry inside it, and a vanished
-        // Machine costs the budget once instead of once per attempt.
-        let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
-        // A reply on an earlier attempt means the target was not silent throughout.
-        let mut reply: Option<ConnectError> = None;
-        // An earlier attempt that went out and lost its answer may have been done.
-        let mut lost: Option<ConnectError> = None;
-        loop {
-            let outcome = match deadline {
-                Some(deadline) => {
-                    self.bounded_attempt::<T>(&payload, target, redial, deadline)
-                        .await
-                }
-                None => {
-                    self.unary_attempt::<T>(payload.clone(), target, redial)
-                        .await
-                }
-            };
-            let error = match outcome {
-                Ok(response) => return Ok(response),
-                Err(error) => error,
-            };
-            // The entry's router made this failure, so the channel to the entry works.
-            let entry_answered = error.routed_by_entry();
-            let error = crate::connect::keep_target_reply(&mut reply, error);
-            if error.retry() != ployz_core::Retry::Now {
-                return Err(crate::connect::keep_lost_call(lost, error));
-            }
-            let Some(delay) = delays.next() else {
-                return Err(crate::connect::keep_lost_call(lost, error));
-            };
-            if deadline.is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline) {
-                return Err(crate::connect::keep_lost_call(lost, error));
-            }
-            tokio::time::sleep(delay).await;
-            redial = !entry_answered;
-            if error.target_replied() {
-                // The target answered after the loss: that answer is the news now.
-                lost = None;
-                reply = Some(error);
-            } else if error.unreplied() {
-                lost = Some(error);
-            }
-        }
-    }
-
-    /// Only a deadline spent waiting on a confirmed entry is evidence the target is silent;
-    /// one spent reconnecting to the entry says nothing about it. An entry that just reported
-    /// the target silent on this channel counts as confirmed, as one a redial checked does.
-    async fn bounded_attempt<T: Rpc>(
-        &mut self,
-        payload: &OpaquePayload,
-        target: Option<&MachineTarget>,
-        redial: bool,
-        deadline: tokio::time::Instant,
-    ) -> Result<T::Response, ConnectError> {
-        if redial {
-            match tokio::time::timeout_at(deadline, self.redial()).await {
-                Ok(confirmed) => confirmed?,
-                Err(_) => {
-                    return Err(tonic::Status::deadline_exceeded(
-                        "entry Machine reconnect timed out",
-                    )
-                    .into());
-                }
-            }
-        }
-        match tokio::time::timeout_at(deadline, self.call_once::<T>(payload.clone(), target)).await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => Err(ConnectError::Rpc(TransportError::budget_expired(
-                "target Machine RPC timed out",
-            ))),
-        }
-    }
-
-    async fn unary_attempt<T: Rpc>(
-        &mut self,
-        payload: OpaquePayload,
-        target: Option<&MachineTarget>,
-        redial: bool,
-    ) -> Result<T::Response, ConnectError> {
-        if redial {
-            self.redial().await?;
-        }
-        self.call_once::<T>(payload, target).await
-    }
-
-    /// One-shot targeted RPC. No retry: a mutating operation that is not keyed
-    /// must not be re-issued after a dropped response.
-    pub(crate) async fn invoke<T: Rpc>(
-        &self,
-        request: T::Request,
-        target: &MachineTarget,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, RpcError> {
-        self.invoke_answered::<T>(request, target, timeout)
-            .await
-            .map_err(rpc_error)
-    }
-
-    /// [`Self::invoke`] on the entry Machine itself, which this client always reaches.
-    pub(crate) async fn invoke_entry<T: Rpc>(
-        &self,
-        request: T::Request,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, RpcError> {
-        let call = async {
-            let payload = T::into_request(request).encode()?;
-            apply_timeout(timeout, self.call_once::<T>(payload, None)).await
-        };
-        call.await.map_err(rpc_error)
-    }
-
-    /// [`Self::invoke`], keeping whether the failure came back from a daemon or no reply came.
-    pub(crate) async fn invoke_answered<T: Rpc>(
-        &self,
-        request: T::Request,
-        target: &MachineTarget,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request).encode()?;
-        apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
-    }
-
-    /// One unary RPC from an already-shaped request body. No retry, as [`Self::invoke`].
-    pub(crate) async fn invoke_raw(
-        &self,
-        request: &ployz_core::RpcRequest,
-        path: &'static str,
-        target: Option<&MachineTarget>,
-        timeout: Option<Duration>,
-    ) -> Result<ployz_core::RpcResponse, ConnectError> {
-        let payload = request.encode().map_err(ConnectError::Codec)?;
-        apply_timeout(timeout, async {
-            let mut grpc = self.grpc().await?;
-            Ok(grpc
-                .unary(
-                    target_request(payload, target),
-                    PathAndQuery::from_static(path),
-                    ProstCodec::<OpaquePayload, OpaquePayload>::default(),
-                )
+        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
+        let direct = if Op::ENTRY_ONLY {
+            None
+        } else {
+            self.direct_client(Op::PATH, target)
                 .await
-                .map_err(|status| status_error(status, path, target))?
-                .into_inner()
-                .decode_response()?)
-        })
-        .await
-    }
-
-    /// The channel the latest dial opened.
-    fn channel(&self) -> Channel {
-        self.channel
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Specs carry Config bytes as JSON number arrays, so a 1 MB Config alone nears
-    /// tonic's 4 MiB default, and stored log lines reach 8 MiB.
-    /// Ready to send. Fails once the client has ended, also while it waited to be ready.
-    async fn grpc(&self) -> Result<tonic::client::Grpc<Channel>, ConnectError> {
-        Ok(tonic::client::Grpc::new(self.ready_channel().await?)
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
-    }
-
-    /// [`Self::grpc`] for streams, with the status [`rpc_error`] gives the refusal. The
-    /// channel stays ready, so the stream opens with no wait after the check.
-    async fn machine_rpc(&self) -> Result<MachineRpcClient<Channel>, TransportError> {
-        let channel = self.ready_channel().await.map_err(|error| {
-            if let ConnectError::Dial(error) = error {
-                // Worded as the generated client words a channel that isn't ready.
-                TransportError::from(tonic::Status::unknown(format!(
-                    "Service was not ready: {error}"
-                )))
+                .map_err(TransportError::client_ended)?
+        };
+        let sent_to = if direct.is_some() { None } else { target };
+        let input: std::pin::Pin<Box<dyn tokio_stream::Stream<Item = OpaquePayload> + Send>> =
+            if Op::CLIENT_STREAM {
+                Box::pin(self.session.until_ended(input))
             } else {
-                TransportError::client_ended(error)
-            }
-        })?;
-        Ok(MachineRpcClient::new(channel)
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
-    }
-
-    /// `input` until the client ends, so a stream it opened takes no more input after that.
-    fn until_ended(
-        &self,
-        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static {
-        let refused = self.refusal();
-        tokio_stream::StreamExt::take_while(input, move |_| refused.check().is_ok())
-    }
-
-    /// The latest channel, once it can take a call, unless the client ended meanwhile.
-    async fn ready_channel(&self) -> Result<Channel, ConnectError> {
-        self.ended()?;
-        let mut channel = self.channel();
-        tower::ServiceExt::<http::Request<tonic::body::Body>>::ready(&mut channel).await?;
-        self.ended()?;
-        Ok(channel)
-    }
-
-    pub(crate) async fn build_stream(
-        &self,
-        target: &MachineTarget,
-        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        // Submission is one-shot. A lost response must never replay a Build.
-        Ok(self
-            .machine_rpc()
-            .await?
-            .build(target_request(self.until_ended(input), Some(target)))
-            .await
-            .map_err(|status| TransportError::from(status).name_refusal(op::Build::PATH, target))?
-            .into_inner())
-    }
-
-    pub(crate) async fn exec_stream(
-        &self,
-        target: &MachineTarget,
-        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc().await?;
-        Ok(rpc
-            .exec(target_request(self.until_ended(input), Some(target)))
-            .await
-            .map_err(|status| TransportError::from(status).name_refusal(op::Exec::PATH, target))?
-            .into_inner())
-    }
-
-    pub(crate) async fn tail_logs_stream(
-        &self,
-        target: &MachineTarget,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc().await?;
-        Ok(rpc
-            .tail_logs(target_request(request, Some(target)))
-            .await
-            .map_err(|status| {
-                TransportError::from(status).name_refusal(op::TailLogs::PATH, target)
-            })?
-            .into_inner())
-    }
-
-    pub(crate) async fn log_history_stream(
-        &self,
-        target: &MachineTarget,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc().await?;
-        Ok(rpc
-            .log_history(target_request(request, Some(target)))
-            .await
-            .map_err(|status| {
-                TransportError::from(status).name_refusal(op::LogHistory::PATH, target)
-            })?
-            .into_inner())
-    }
-
-    pub(crate) async fn runtime_watch_stream(
-        &self,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self
-            .machine_rpc()
-            .await?
-            .accept_compressed(CompressionEncoding::Gzip);
-        Ok(rpc
-            .runtime_watch(tonic::Request::new(request))
-            .await?
-            .into_inner())
+                Box::pin(input)
+            };
+        let opened = direct
+            .as_ref()
+            .unwrap_or(self)
+            .session
+            .open(Op::PATH, Op::GZIP, target_request(input, sent_to))
+            .await;
+        match target {
+            Some(target) => opened.map_err(|error| error.name_refusal(Op::PATH, target)),
+            None => opened,
+        }
     }
 
     /// The Cluster as the first Runtime Watch frame shows it.
@@ -807,7 +382,7 @@ impl Client {
             .encode()
             .map_err(|error| RpcError::from(ConnectError::from(error)))?;
         let mut stream = self
-            .runtime_watch_stream(payload)
+            .open_stream::<op::RuntimeWatch>(None, tokio_stream::once(payload))
             .await
             .map_err(|error| error.to_rpc_error())?;
         let Some(frame) = stream
@@ -815,37 +390,56 @@ impl Client {
             .await
             .map_err(|status| TransportError::from_stream_status(status).to_rpc_error())?
         else {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "Runtime Watch ended before its first frame".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::unavailable(
+                "Runtime Watch ended before its first frame",
+            ));
         };
         decode_runtime_watch_frame(&frame)
-            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
+            .map_err(|error| error_chain::rpc_error(RpcErrorCode::Internal, &error))
     }
 
-    async fn call_once<T: Rpc>(
+    /// [`Self::send_path`] for an RPC of the catalog.
+    async fn send<T: Rpc>(
         &self,
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let mut grpc = self.grpc().await?;
-        let response = grpc
-            .unary(
-                target_request(payload, target),
-                PathAndQuery::from_static(T::PATH),
-                ProstCodec::<OpaquePayload, OpaquePayload>::default(),
-            )
+        self.send_path(T::PATH, payload, target)
+            .await?
+            .decode::<T>()
+            .map_err(ConnectError::Codec)
+    }
+
+    /// The one attempt every unary call makes, answered by the daemon's own error when it
+    /// sent one. A Full RPC with a target goes straight to it; the rest enter by this
+    /// client's own channel with the target named.
+    async fn send_path(
+        &self,
+        path: &'static str,
+        payload: OpaquePayload,
+        target: Option<&MachineTarget>,
+    ) -> Result<ployz_core::RpcResponse, ConnectError> {
+        let direct = self.direct_client(path, target).await?;
+        let target = if direct.is_some() { None } else { target };
+        direct
+            .as_ref()
+            .unwrap_or(self)
+            .session
+            .unary(path, payload, target)
             .await
-            .map_err(|status| status_error(status, T::PATH, target))?
-            .into_inner()
-            .decode_response()?;
-        if let RpcResponseBody::Error(error) = &response.body {
-            return Err(ConnectError::Remote(error.clone()));
+    }
+
+    /// The client that dials `target` itself, when `path` is an RPC only a Full connection
+    /// may send and one is held for it.
+    async fn direct_client(
+        &self,
+        path: &str,
+        target: Option<&MachineTarget>,
+    ) -> Result<Option<Self>, ConnectError> {
+        match target {
+            Some(target) if dials_direct(path) => self.full_client(target).await,
+            _ => Ok(None),
         }
-        response.decode::<T>().map_err(ConnectError::Codec)
     }
 
     /// List Docker Volumes on each Machine that invites an RPC.
@@ -857,29 +451,15 @@ impl Client {
         &self,
         machines: &[MachineObservation],
     ) -> PartialResult<VolumeInventory, RpcError> {
-        let mut requests = Vec::new();
-        let mut omissions = Vec::new();
-        for machine in machines {
-            if !machine.invites_rpc() {
-                omissions.push(machine.machine.id);
-                continue;
-            }
-            let machine_id = machine.machine.id;
+        fan_out(machines, |machine| {
             let client = self.clone();
-            requests.push(async move { list_volumes_on_machine(client, machine_id).await });
-        }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions,
-        };
-        for outcome in join_all(requests).await {
-            match outcome {
-                Ok(success) => result.successes.push(success),
-                Err(failure) => result.failures.push(failure),
+            async move {
+                list_volumes_on_machine(client, machine.machine.id)
+                    .await
+                    .map(Some)
             }
-        }
-        result
+        })
+        .await
     }
 
     /// Inspect storage on each Machine that invites an RPC.
@@ -887,37 +467,22 @@ impl Client {
         &self,
         machines: &[MachineObservation],
     ) -> PartialResult<StorageCapacity, RpcError> {
-        let mut requests = Vec::new();
-        let mut omissions = Vec::new();
-        for machine in machines {
-            if !machine.invites_rpc() {
-                omissions.push(machine.machine.id);
-                continue;
-            }
+        fan_out(machines, |machine| {
             let mut client = self.clone();
-            let machine_id = machine.machine.id;
-            requests.push(async move {
-                let result = client
-                    .read::<op::InspectStorage>(
+            async move {
+                client
+                    .call::<op::InspectStorage>(
                         InspectStorageRequest {},
-                        &MachineTarget::from(&machine_id),
+                        Call::read()
+                            .to(&MachineTarget::from(&machine.machine.id))
+                            .budget(crate::connect::target_read_timeout()),
                     )
-                    .await;
-                (machine_id, result)
-            });
-        }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions,
-        };
-        for (machine_id, outcome) in join_all(requests).await {
-            match outcome {
-                Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
-                Err(error) => result.failures.push(MachineFailure { machine_id, error }),
+                    .await
+                    .map(Some)
+                    .map_err(crate::connect::rpc_error)
             }
-        }
-        result
+        })
+        .await
     }
 
     /// Destroy named Docker Volumes. The list is the confirmation.
@@ -935,10 +500,11 @@ impl Client {
         request: RemoveVolumesRequest,
     ) -> Result<Vec<VolumeRemoval>, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .machine_list_uncapped()
             .await
-            .map_err(RpcError::from)?;
-        Ok(remove_volumes_on(self, &machines.machines, request).await)
+            .map_err(RpcError::from)?
+            .machines;
+        Ok(remove_volumes_on(self, &machines, request).await)
     }
 
     /// Which Machines hold each of the Docker Volumes `sought`, as the Docker Volume
@@ -954,17 +520,18 @@ impl Client {
         sought: Vec<DockerVolumeName>,
     ) -> Result<ployz_store::VolumeObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .machine_list_uncapped()
             .await
-            .map_err(RpcError::from)?;
+            .map_err(RpcError::from)?
+            .machines;
         let inspector = self.clone();
         // Seeking nothing asks only who answers: storage holds nothing sought.
         let storage: &[MachineObservation] = match sought.is_empty() {
             true => &[],
-            false => &machines.machines,
+            false => &machines,
         };
         let (listed, inspected) = tokio::join!(
-            self.list_volumes(&machines.machines),
+            self.list_volumes(&machines),
             inspector.inspect_storage(storage)
         );
         let mut unanswered: BTreeSet<MachineId> = listed
@@ -1019,11 +586,12 @@ impl Client {
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_running(&mut self) -> Result<ployz_store::RunningObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .machine_list_uncapped()
             .await
-            .map_err(RpcError::from)?;
+            .map_err(RpcError::from)?
+            .machines;
         let live = self
-            .live_services_from(&machines.machines, EnvironmentValues::Redacted)
+            .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
             .map_err(RpcError::from)?;
         let services: BTreeSet<_> = live
@@ -1044,7 +612,6 @@ impl Client {
         // packets to it are dropped (#3490). A failed dial sends only small packets, so
         // a Server the entry couldn't reach is left out, as the router leaves it.
         let dropped = machines
-            .machines
             .iter()
             .filter(|machine| {
                 machine
@@ -1074,10 +641,11 @@ impl Client {
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_copies(&mut self) -> Result<crate::sdk::CopyObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .machine_list_uncapped()
             .await
-            .map_err(RpcError::from)?;
-        let inspected = self.inspect_storage(&machines.machines).await;
+            .map_err(RpcError::from)?
+            .machines;
+        let inspected = self.inspect_storage(&machines).await;
         let unanswered: BTreeSet<MachineId> = inspected
             .failures
             .iter()
@@ -1152,25 +720,18 @@ impl Client {
     ) -> Result<LocalMachineRemoved, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let Some(observation) = listed_unless_forgotten(machine, &machines)? else {
-            return Ok(LocalMachineRemoved {
-                reset_warning: Some(RESET_UNCONFIRMED.into()),
-            });
+            return Ok(Departed::AlreadyForgotten.into());
         };
         let selected = observation.machine.id;
         let current = self
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .map_err(RpcError::from)?
             .machine_id;
         if selected == current && machines.len() > 1 {
-            return Err(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message:
-                    "the current entry Machine cannot be removed while another Machine is visible"
-                        .into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::invalid_argument(
+                "the current entry Machine cannot be removed while another Machine is visible",
+            ));
         }
         let hold = refuse_last_managed(self, &machines, selected).await?;
         if hold == CloudHold::Last && remover == Remover::Operator {
@@ -1244,9 +805,11 @@ impl Client {
         }
         let mut client = self.clone();
         match client
-            .try_read::<op::InspectStorage>(
+            .call::<op::InspectStorage>(
                 InspectStorageRequest {},
-                &MachineTarget::from(&machine.machine.id),
+                Call::read()
+                    .to(&MachineTarget::from(&machine.machine.id))
+                    .budget(crate::connect::target_read_timeout()),
             )
             .await
         {
@@ -1257,17 +820,13 @@ impl Client {
             Err(error) => {
                 let error = rpc_error(error);
                 let unlisted = error.server_unlisted(&machine.machine.id);
-                let unchecked = RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    // Often only the entry was busy, as when several forgets share it.
-                    message: format!(
-                        "Couldn't check whether Server {} holds Volume copies. No changes made. \
-                         Run the command again, one Server at a time if you're forgetting several.",
-                        machine.machine.name
-                    ),
-                    details: Value::Null,
-                    cause: std::iter::once(error.message).chain(error.cause).collect(),
-                };
+                // Often only the entry was busy, as when several forgets share it.
+                let unchecked = RpcError::unavailable(format!(
+                    "Couldn't check whether Server {} holds Volume copies. No changes made. \
+                     Run the command again, one Server at a time if you're forgetting several.",
+                    machine.machine.name
+                ))
+                .with_causes(std::iter::once(error.message).chain(error.cause).collect());
                 if unlisted {
                     Ok(HeldCopies::Gone(unchecked))
                 } else {
@@ -1283,42 +842,29 @@ impl Client {
         reference: Option<String>,
         targets: &[Machine],
     ) -> PartialResult<MachineImagesObservation, RpcError> {
-        let tasks = targets.iter().map(|machine| {
+        fan_out(targets, |machine| {
             let mut client = self.clone();
-            let machine_id = machine.id;
-            let machine_name = machine.name.clone();
             let reference = reference.clone();
             async move {
-                let response = client
-                    .read::<op::ListImages>(
+                let images = client
+                    .call::<op::ListImages>(
                         ListImagesRequest {
                             reference,
                             last_tagged: false,
                         },
-                        &MachineTarget::from(&machine_id),
+                        Call::read()
+                            .to(&MachineTarget::from(&machine.id))
+                            .budget(crate::connect::target_read_timeout()),
                     )
-                    .await;
-                (machine_id, machine_name, response)
+                    .await
+                    .map_err(crate::connect::rpc_error)?;
+                Ok(Some(MachineImagesObservation {
+                    machine_name: machine.name.clone(),
+                    images,
+                }))
             }
-        });
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
-        for (machine_id, machine_name, outcome) in join_all(tasks).await {
-            match outcome {
-                Ok(images) => result.successes.push(MachineSuccess {
-                    machine_id,
-                    value: MachineImagesObservation {
-                        machine_name,
-                        images,
-                    },
-                }),
-                Err(error) => result.failures.push(MachineFailure { machine_id, error }),
-            }
-        }
-        result
+        })
+        .await
     }
 
     pub async fn dial_proxy(
@@ -1326,12 +872,13 @@ impl Client {
         network: &str,
         address: &str,
     ) -> Result<BoxProxyStream, ConnectError> {
-        self.ended()?;
+        self.session.ended()?;
         let stream = self
-            .connector
-            .dial_proxy(&self.connection, network, address)
+            .session
+            .connector()
+            .dial_proxy(self.session.connection(), network, address)
             .await;
-        self.ended()?;
+        self.session.ended()?;
         stream
     }
 
@@ -1343,15 +890,25 @@ impl Client {
     /// call, including unary retries, is capped at 10 seconds and surfaces as
     /// deadline exceeded when that cap elapses.
     pub async fn machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
-        match tokio::time::timeout(
-            TARGET_RPC_TIMEOUT,
-            self.call::<op::ListMachines>(ListMachinesRequest {}, None),
-        )
-        .await
-        {
-            Ok(result) => result.map(|list| list.machines),
+        self.machine_list().await.map(|list| list.machines)
+    }
+
+    /// The entry Machine's listing of the Cluster, with the enrollment snapshot it carries.
+    pub async fn machine_list(&mut self) -> Result<ployz_core::MachineList, ConnectError> {
+        match tokio::time::timeout(TARGET_RPC_TIMEOUT, self.machine_list_uncapped()).await {
+            Ok(result) => result,
             Err(_) => Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into()),
         }
+    }
+
+    /// [`Self::machine_list`] with only the unary retries to bound it. The reads that listed
+    /// Machines this way before the Machine list had a deadline keep it: a slow daemon still
+    /// answers them.
+    pub(crate) async fn machine_list_uncapped(
+        &mut self,
+    ) -> Result<ployz_core::MachineList, ConnectError> {
+        self.call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
+            .await
     }
 
     /// Fill in each reachable Machine's storage; returns the Machines left without it.
@@ -1359,30 +916,23 @@ impl Client {
         &self,
         machines: &mut [MachineObservation],
     ) -> StorageGaps {
-        let mut tasks = JoinSet::new();
-        for (index, machine) in machines.iter().enumerate() {
-            if machine.invites_rpc() {
-                tasks.spawn(observe_machine_storage(
-                    self.clone(),
-                    index,
-                    machine.machine.id,
-                ));
+        let observed = fan_out(
+            machines.iter().filter(|machine| machine.invites_rpc()),
+            |machine| observe_machine_storage(self.clone(), machine.machine.id),
+        )
+        .await;
+        for success in observed.successes {
+            if let Some(machine) = machines
+                .iter_mut()
+                .find(|machine| machine.machine.id == success.machine_id)
+            {
+                machine.storage = success.value;
             }
         }
-        let mut result = StorageGaps::default();
-        while let Some(observed) = tasks.join_next().await {
-            let (index, observed) = observed.expect("Machine storage observation does not panic");
-            let Some(machine) = machines.get_mut(index) else {
-                continue;
-            };
-            let machine_id = machine.machine.id;
-            match observed {
-                Some(Ok(storage)) => machine.storage = storage,
-                Some(Err(error)) => result.failures.push(MachineFailure { machine_id, error }),
-                None => result.omissions.push(machine_id),
-            }
+        StorageGaps {
+            failures: observed.failures,
+            omissions: observed.omissions,
         }
-        result
     }
 
     /// Read the space under each reachable Machine's Docker root. A Machine that fails or is
@@ -1391,28 +941,28 @@ impl Client {
         &self,
         machines: &[MachineObservation],
     ) -> Vec<(MachineId, ByteCapacity)> {
-        let reads = machines
-            .iter()
-            .filter(|observed| observed.invites_rpc())
-            .map(|observed| async move {
-                let machine = observed.machine.id;
-                let request = InspectRequest {
-                    telemetry: InspectTelemetry::Full,
-                    ..Default::default()
-                };
-                let target = MachineTarget::from(&machine);
-                let read = self.invoke::<op::Inspect>(request, &target, None);
+        let read = fan_out(machines, |observed| async move {
+            let request = InspectRequest {
+                telemetry: InspectTelemetry::Full,
+                ..Default::default()
+            };
+            let target = MachineTarget::from(&observed.machine.id);
+            let read = self.call_shared::<op::Inspect>(request, Call::once().to(&target));
+            Ok::<_, ()>(
                 match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, read).await {
                     Ok(Ok(details)) => match details.telemetry {
-                        Some(TelemetryObservation::Full { host, .. }) => {
-                            Some((machine, host.docker_root()))
-                        }
+                        Some(TelemetryObservation::Full { host, .. }) => Some(host.docker_root()),
                         _ => None,
                     },
                     Ok(Err(_)) | Err(_) => None,
-                }
-            });
-        join_all(reads).await.into_iter().flatten().collect()
+                },
+            )
+        })
+        .await;
+        read.successes
+            .into_iter()
+            .map(|success| (success.machine_id, success.value))
+            .collect()
     }
 
     /// List Containers on every visible Machine and derive the observed Services.
@@ -1493,6 +1043,50 @@ impl Client {
             .map(|(now, _)| now)
     }
 
+    /// Bring `machine`'s Ingress Proxy, its holder and Caddy, to its daemon's pinned
+    /// wiring for `request`'s Doors. The daemon may pull both images first, so no client
+    /// deadline applies, as for a Deploy's create. A daemon from before the route
+    /// answers Unsupported, naming `machine`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the daemon's refusal, or the transport failure naming `machine`. A Docker
+    /// stage that failed after an earlier one completed answers in the result's `failure`.
+    pub async fn set_ingress_doors(
+        &self,
+        machine: &MachineId,
+        request: SetIngressDoorsRequest,
+    ) -> Result<IngressDoorsSet, RpcError> {
+        self.call_shared::<op::SetIngressDoors>(
+            request,
+            Call::once().to(&MachineTarget::from(machine)),
+        )
+        .await
+        .map_err(|error| answered_by(machine, error))
+    }
+
+    /// Turn Private Access on or off on `machine`: place the Tailscale router with the
+    /// sealed auth key, or remove it. The router's start is awaited, with no deadline
+    /// beyond the daemon's own settle window. A daemon from before the route answers
+    /// Unsupported, naming `machine`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the daemon's refusal, or the transport failure naming `machine`. A router
+    /// that was placed and did not serve answers in the result's `failure`.
+    pub async fn set_private_access(
+        &self,
+        machine: &MachineId,
+        request: SetPrivateAccessRequest,
+    ) -> Result<PrivateAccessSet, RpcError> {
+        self.call_shared::<op::SetPrivateAccess>(
+            request,
+            Call::once().to(&MachineTarget::from(machine)),
+        )
+        .await
+        .map_err(|error| answered_by(machine, error))
+    }
+
     pub(crate) async fn ensure_settled(
         &self,
         machine_id: &MachineId,
@@ -1513,16 +1107,52 @@ impl Client {
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
-        crate::sealed_compat::admit(self, &target, &want).await?;
-        let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
+        let request = self.ensure_request(&target, want, Carry::Approvals).await?;
+        let payload = op::EnsureContainer::into_request(request)
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         apply_timeout(
             timeout,
-            self.call_once::<op::EnsureContainer>(payload, Some(&target)),
+            self.send::<op::EnsureContainer>(payload, Some(&target)),
         )
         .await
         .map_err(|error| answered_by(machine_id, error))
+    }
+
+    /// Converge one Container as a joiner's catch-up does, which carries no Deploy's
+    /// approvals and resends the keyed call until it answers.
+    pub(crate) async fn ensure_retried(
+        &mut self,
+        target: &MachineTarget,
+        want: ContainerWant,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        let request = self.ensure_request(target, want, Carry::Nothing).await?;
+        self.call::<op::EnsureContainer>(request, Call::keyed().to(target))
+            .await
+            .map_err(RpcError::from)
+    }
+
+    /// The one place an `EnsureContainer` is built: it admits `want` first, so no Sealed
+    /// value reaches a Machine that can't keep it sealed.
+    async fn ensure_request(
+        &self,
+        target: &MachineTarget,
+        want: ContainerWant,
+        carry: Carry,
+    ) -> Result<EnsureContainerRequest, RpcError> {
+        crate::sealed_compat::admit(self, target, &want).await?;
+        let carried = match carry {
+            Carry::Approvals => self.deploy.carried(&want),
+            Carry::Nothing => Carried::none(),
+        };
+        Ok(EnsureContainerRequest {
+            teardown: carried.teardown,
+            preview: carried.preview,
+            want,
+            approval: carried.restart,
+            deploy: carried.deploy,
+            rule: carried.rule,
+        })
     }
 
     pub async fn change_observed_service(
@@ -1531,6 +1161,10 @@ impl Client {
         action: ContainerAction,
         signal: Option<String>,
         grace_period_seconds: Option<u16>,
+        approvals: &HashMap<
+            ContainerId,
+            ployz_core::authority::Signed<ployz_core::authority::RestartApproval>,
+        >,
         cancellation: &CancellationToken,
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
@@ -1546,7 +1180,8 @@ impl Client {
             let machine_id = observation.machine_id;
             let container_id = observation.container_id;
             let handle = tasks.spawn(change_on_machine(
-                self.clone(),
+                self.clone()
+                    .with_restart_approval(approvals.get(&container_id).cloned()),
                 machine_id,
                 container_id,
                 action,
@@ -1580,12 +1215,7 @@ impl Client {
                             machine_id,
                             error: ContainerOperationFailure {
                                 container_id,
-                                error: RpcError {
-                                    code: RpcErrorCode::Unavailable,
-                                    message: error.to_string(),
-                                    details: Value::Null,
-                                    cause: Vec::new(),
-                                },
+                                error: RpcError::unavailable(error.to_string()),
                             },
                         });
                     }
@@ -1692,21 +1322,30 @@ async fn remove_volumes_on(
     machines: &[MachineObservation],
     request: RemoveVolumesRequest,
 ) -> Vec<VolumeRemoval> {
-    join_all(request.volumes.into_iter().map(|id| async move {
+    let RemoveVolumesRequest {
+        volumes,
+        force,
+        teardown,
+    } = request;
+    let teardown = &teardown;
+    join_all(volumes.into_iter().map(|id| async move {
         let outcome = if machines
             .iter()
             .any(|machine| machine.machine.id == id.machine_id && machine.invites_rpc())
         {
             match client
-                .invoke::<op::RemoveVolume>(
+                .call_shared::<op::RemoveVolume>(
                     RemoveVolumeRequest {
+                        teardown: teardown.clone(),
                         name: id.name.clone(),
-                        force: request.force,
+                        force,
                     },
-                    &MachineTarget::from(&id.machine_id),
-                    Some(TARGET_RPC_TIMEOUT),
+                    Call::once()
+                        .to(&MachineTarget::from(&id.machine_id))
+                        .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
                 )
                 .await
+                .map_err(crate::connect::rpc_error)
             {
                 Ok(_)
                 | Err(RpcError {
@@ -1730,18 +1369,13 @@ pub(crate) enum DeadConfirmed {
 }
 
 fn stopped_answering(machine: &Machine) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::ConfirmationRequired,
-        message: format!(
+    RpcError::confirmation_required(format!(
             "Server {} stopped answering after its name was typed. Forgetting it leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
             machine.name
-        ),
-        details: json!({
+        )).with_details(json!({
             "server": { "id": machine.id, "name": machine.name },
             "answered": false,
-        }),
-        cause: Vec::new(),
-    }
+        }))
 }
 
 #[derive(Debug)]
@@ -1778,30 +1412,20 @@ pub(crate) fn copies_left_behind<'a>(
     machine: &MachineName,
     volumes: impl IntoIterator<Item = &'a str>,
 ) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "Server {machine} answers and holds copies of Volumes {}; forgetting it leaves them \
+    RpcError::conflict(format!(
+        "Server {machine} answers and holds copies of Volumes {}; forgetting it leaves them \
              behind. No changes made. Remove it with ployz server rm so its reset demotes them.",
-            volumes.into_iter().collect::<Vec<_>>().join(", ")
-        ),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+        volumes.into_iter().collect::<Vec<_>>().join(", ")
+    ))
 }
 
 /// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
 /// with a Cluster that no longer exists.
 fn cloud_holds_last(machine: MachineId) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "Machine {machine} is the last Machine and Cloud manages it; only Cloud's removal \
+    RpcError::conflict(format!(
+        "Machine {machine} is the last Machine and Cloud manages it; only Cloud's removal \
              lets go of it too. No changes made."
-        ),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    ))
 }
 
 /// Refuse removing the last Machine while a Management Client other than Cloud still
@@ -1822,30 +1446,35 @@ pub(crate) async fn refuse_last_managed(
         return Ok(CloudHold::None);
     }
     let holders = client
-        .invoke::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             InspectRequest::default(),
-            &MachineTarget::from(&selected),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&selected))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
-        .map_err(|error| RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: crate::ui::then_sentence(
+        .map_err(crate::connect::rpc_error)
+        .map_err(|error| {
+            RpcError::unavailable(error_chain::then_sentence(
                 &format!(
                     "cannot read who manages Machine {selected}, the last Machine: {}",
-                    crate::ui::row(&error)
+                    error_chain::row(&error)
                 ),
                 "No changes made.",
-            ),
-            details: Value::Null,
-            cause: Vec::new(),
+            ))
         })?
         .management_clients;
-    let cloud = holders.iter().any(|label| label.as_str() == "cloud");
+    let cloud = holders
+        .iter()
+        .any(ployz_core::ManagementClientLabel::is_cloud);
     let names: Vec<String> = holders
         .iter()
         .filter(|label| {
-            !cloud || (label.as_str() != "cloud" && !label.as_str().starts_with("cli-"))
+            !cloud
+                || !matches!(
+                    label.kind(),
+                    ployz_core::ManagementClientKind::Cloud | ployz_core::ManagementClientKind::Cli
+                )
         })
         .map(|label| format!("`{label}`"))
         .collect();
@@ -1855,16 +1484,11 @@ pub(crate) async fn refuse_last_managed(
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
     };
-    Err(RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "this is the last Machine in the Cluster and it is still managed by {who}; \
+    Err(RpcError::conflict(format!(
+        "this is the last Machine in the Cluster and it is still managed by {who}; \
              removing it would leave {who} managing a Cluster that no longer exists. \
              No changes made. Disconnect {who} from this Machine first."
-        ),
-        details: Value::Null,
-        cause: Vec::new(),
-    })
+    )))
 }
 
 /// Resolve a Machine Target without hiding Name Ambiguity in the visible observations.
@@ -1877,28 +1501,21 @@ pub(crate) fn visible_machine<'list>(
 ) -> Result<&'list MachineObservation, RpcError> {
     let selected = match machine.resolve(machines.iter().map(|entry| &entry.machine)) {
         NameMatches::None => {
-            return Err(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: format!("Server {} was not found", machine.as_str().escape_debug()),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::not_found(format!(
+                "Server {} was not found",
+                machine.as_str().escape_debug()
+            )));
         }
         matches @ NameMatches::Ambiguous { .. } => {
-            return Err(RpcError {
-                code: RpcErrorCode::Ambiguous,
-                message: format!(
-                    "Server name {} is ambiguous: {}",
-                    machine.as_str().escape_debug(),
-                    matches
-                        .iter()
-                        .map(|row| row.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::ambiguous(format!(
+                "Server name {} is ambiguous: {}",
+                machine.as_str().escape_debug(),
+                matches
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
         }
         NameMatches::One(row) => row.id,
     };
@@ -1907,11 +1524,6 @@ pub(crate) fn visible_machine<'list>(
         .find(|entry| entry.machine.id == selected)
         .expect("resolved Machine came from this list"))
 }
-
-/// The reset warning of a removal that found its Machine already gone: a missing row proves
-/// Forget ran, not that the reset did.
-const RESET_UNCONFIRMED: &str =
-    "its reset couldn't be confirmed: it was already gone from the Cluster";
 
 /// `machine`'s listed observation, or `None` when it is a Machine ID the list no longer
 /// holds: an earlier removal already forgot it. A name that doesn't resolve stays NotFound.
@@ -2112,9 +1724,57 @@ pub(crate) async fn evict_machine(
     depart(client, selected, current).await
 }
 
+/// A streaming RPC of the catalog, as [`Client::open_stream`] opens it.
+pub(crate) trait StreamRpc {
+    const PATH: &'static str;
+    /// Whether the caller feeds many requests, not one.
+    const CLIENT_STREAM: bool;
+    /// Whether the stream is submitted through the entry even where a Full connection to
+    /// its target is held: a Build's submission is one-shot.
+    const ENTRY_ONLY: bool = false;
+    /// Whether the frames come gzip-compressed.
+    const GZIP: bool = false;
+}
+
+impl StreamRpc for op::Build {
+    const PATH: &'static str = op::Build::PATH;
+    const CLIENT_STREAM: bool = true;
+    const ENTRY_ONLY: bool = true;
+}
+
+impl StreamRpc for op::Exec {
+    const PATH: &'static str = op::Exec::PATH;
+    const CLIENT_STREAM: bool = true;
+}
+
+impl StreamRpc for op::TailLogs {
+    const PATH: &'static str = op::TailLogs::PATH;
+    const CLIENT_STREAM: bool = false;
+}
+
+impl StreamRpc for op::LogHistory {
+    const PATH: &'static str = op::LogHistory::PATH;
+    const CLIENT_STREAM: bool = false;
+}
+
+impl StreamRpc for op::RuntimeWatch {
+    const PATH: &'static str = op::RuntimeWatch::PATH;
+    const CLIENT_STREAM: bool = false;
+    const GZIP: bool = true;
+}
+
+/// Whether a call on `path` to a named target goes to that target itself when a Full
+/// connection reaches it: a Full route, or one an enforcing Machine refuses every Operator,
+/// such as Leave. A call forwarded over the mesh arrives as an Operator's.
+fn dials_direct(path: &str) -> bool {
+    ployz_core::scope_of(path) == Some(ployz_core::ManagementScope::Full)
+        || ployz_core::capability_of(path)
+            .is_some_and(ployz_core::authority::coverage::needs_full_caller)
+}
+
 /// Leave on `machine`, then Forget its row through the entry unless it is the entry. Both
 /// are idempotent. A Leave the entry can't route finds no row: Forget already ran, and
-/// whether the reset did is unknown, so the reply carries a warning saying so.
+/// whether the reset did is unknown, so it departed [`Departed::AlreadyForgotten`].
 ///
 /// A Forget that fails after the target answered Left carries that reply as
 /// [`LeftNotForgotten`]: a retry can no longer reach the target, and the reply is the only
@@ -2124,34 +1784,36 @@ async fn depart(
     machine: MachineId,
     current: MachineId,
 ) -> Result<LocalMachineRemoved, RpcError> {
-    let (reset_warning, left) = match client
-        .call::<op::Leave>(LeaveRequest {}, Some(&MachineTarget::from(&machine)))
+    let departed = match client
+        .call::<op::Leave>(
+            LeaveRequest {
+                teardown: client.deploy.teardown(),
+            },
+            Call::keyed().to(&MachineTarget::from(&machine)),
+        )
         .await
     {
-        Ok(Left::Left { reset_warning, .. }) => (reset_warning, true),
+        Ok(Left::Left { reset_warning, .. }) => Departed::Reset {
+            row_warning: reset_warning,
+        },
         Ok(Left::Refused { error, .. }) => return Err(error),
-        Err(error) if error.is_unreachable() => (
-            Some(format!(
-                "target is unreachable; removing shared rows: {}",
-                crate::ui::row(&error)
-            )),
-            false,
-        ),
+        Err(error) if error.is_unreachable() => Departed::Unreachable {
+            cause: error_chain::row(&error),
+        },
         Err(error) => match RpcError::from(error) {
-            gone if gone.code == RpcErrorCode::NotFound => (Some(RESET_UNCONFIRMED.into()), false),
+            gone if gone.code == RpcErrorCode::NotFound => Departed::AlreadyForgotten,
             error => return Err(error),
         },
     };
     if machine != current
         && let Err(error) = forget(client, machine).await
     {
-        return Err(if left {
-            LeftNotForgotten::carried_by(error, reset_warning)
-        } else {
-            error
+        return Err(match departed {
+            Departed::Reset { row_warning } => LeftNotForgotten::carried_by(error, row_warning),
+            Departed::Unreachable { .. } | Departed::AlreadyForgotten => error,
         });
     }
-    Ok(LocalMachineRemoved { reset_warning })
+    Ok(departed.into())
 }
 
 /// A Forget that failed after its target answered Left. The failed Forget's error carries
@@ -2164,14 +1826,13 @@ pub(crate) struct LeftNotForgotten {
 
 impl LeftNotForgotten {
     fn carried_by(error: RpcError, reset_warning: Option<String>) -> RpcError {
-        RpcError {
-            details: serde_json::to_value(Self {
+        error.with_details(
+            serde_json::to_value(Self {
                 left: true,
                 reset_warning,
             })
             .expect("LeftNotForgotten is JSON"),
-            ..error
-        }
+        )
     }
 
     /// The Leave reply a failed removal carries, when it carries one.
@@ -2182,10 +1843,17 @@ impl LeftNotForgotten {
     }
 }
 
-/// Delete `machine_id`'s shared row through the entry Machine.
+/// Delete `machine_id`'s shared row through the entry Machine, under the teardown the
+/// client carries.
 pub(crate) async fn forget(client: &mut Client, machine_id: MachineId) -> Result<(), RpcError> {
     match client
-        .call::<op::Forget>(ForgetRequest { machine_id }, None)
+        .call::<op::Forget>(
+            ForgetRequest {
+                teardown: client.deploy.teardown(),
+                machine_id,
+            },
+            Call::keyed(),
+        )
         .await
         .map_err(RpcError::from)?
     {
@@ -2205,12 +1873,12 @@ async fn data_loss_on_machine(
     }
     let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
-        .map_err(|failure| RpcError {
-            message: format!("Server {name}: {}", crate::ui::row(&failure.error)),
-            ..failure.error
+        .map_err(|error| {
+            let message = format!("Server {name}: {}", error_chain::row(&error));
+            error.with_message(message)
         })?;
     Ok(ObservedDataLoss {
-        data_loss: volumes_lost(volumes.value),
+        data_loss: volumes_lost(volumes),
     })
 }
 
@@ -2228,12 +1896,7 @@ fn volumes_lost(inventory: VolumeInventory) -> Vec<DataLoss> {
 }
 
 fn server_did_not_respond(name: &MachineName) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: format!("Server {name} did not respond"),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(format!("Server {name} did not respond"))
 }
 
 /// Machines whose storage observation failed (`failures`) or did not answer in
@@ -2244,54 +1907,56 @@ pub(crate) struct StorageGaps {
     pub omissions: Vec<MachineId>,
 }
 
-/// `None` when the Machine did not answer within the storage budget.
+/// `Ok(None)` when the Machine did not answer within the storage budget, and `Some(None)`
+/// when it answered that it cannot report storage.
 async fn observe_machine_storage(
     client: Client,
-    index: usize,
     machine_id: MachineId,
-) -> (
-    usize,
-    Option<Result<Option<MachineStorageObservation>, RpcError>>,
-) {
+) -> Result<Option<Option<MachineStorageObservation>>, RpcError> {
     let target = MachineTarget::from(&machine_id);
     let observation = async {
         let description = client
-            .invoke::<op::DescribeContract>(DescribeContractRequest {}, &target, None)
-            .await?;
+            .call_shared::<op::DescribeContract>(
+                DescribeContractRequest {},
+                Call::once().to(&target),
+            )
+            .await
+            .map_err(crate::connect::rpc_error)?;
         if !description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) {
             return Ok(None);
         }
         Ok(client
-            .invoke::<op::Inspect>(
+            .call_shared::<op::Inspect>(
                 InspectRequest {
                     include_storage: true,
                     ..Default::default()
                 },
-                &target,
-                None,
+                Call::once().to(&target),
             )
-            .await?
+            .await
+            .map_err(crate::connect::rpc_error)?
             .storage)
     };
-    let storage = tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation)
-        .await
-        .ok();
-    (index, storage)
+    match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation).await {
+        Ok(observed) => observed.map(Some),
+        Err(_) => Ok(None),
+    }
 }
 
 async fn list_volumes_on_machine(
     mut client: Client,
     machine_id: MachineId,
-) -> Result<MachineSuccess<VolumeInventory>, MachineFailure<RpcError>> {
+) -> Result<VolumeInventory, RpcError> {
     client
-        .read::<op::ListVolumes>(ListVolumesRequest {}, &MachineTarget::from(&machine_id))
+        .call::<op::ListVolumes>(
+            ListVolumesRequest {},
+            Call::read()
+                .to(&MachineTarget::from(&machine_id))
+                .budget(crate::connect::target_read_timeout()),
+        )
         .await
+        .map_err(crate::connect::rpc_error)
         .and_then(|inventory| validate_volume_inventory(machine_id, inventory))
-        .map(|list| MachineSuccess {
-            machine_id,
-            value: list,
-        })
-        .map_err(|error| MachineFailure { machine_id, error })
 }
 
 fn validate_volume_inventory(
@@ -2306,26 +1971,16 @@ fn validate_volume_inventory(
         .chain(inventory.failures.iter().map(|failure| &failure.id))
     {
         if id.machine_id != machine_id {
-            return Err(RpcError {
-                code: RpcErrorCode::Internal,
-                message: format!(
-                    "targeted ListVolumes response from Machine {machine_id} contained Docker Volume '{}' for Machine {}",
-                    id.name, id.machine_id
-                ),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::internal(format!(
+                "targeted ListVolumes response from Machine {machine_id} contained Docker Volume '{}' for Machine {}",
+                id.name, id.machine_id
+            )));
         }
         if !names.insert(&id.name) {
-            return Err(RpcError {
-                code: RpcErrorCode::Internal,
-                message: format!(
-                    "targeted ListVolumes response from Machine {machine_id} repeated Docker Volume '{}'",
-                    id.name
-                ),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::internal(format!(
+                "targeted ListVolumes response from Machine {machine_id} repeated Docker Volume '{}'",
+                id.name
+            )));
         }
     }
     Ok(inventory)
@@ -2337,9 +1992,11 @@ async fn list_on_machine(
     environment: EnvironmentValues,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
     client
-        .try_read::<op::ListContainers>(
+        .call::<op::ListContainers>(
             ListContainersRequest { environment },
-            &MachineTarget::from(&machine_id),
+            Call::read()
+                .to(&MachineTarget::from(&machine_id))
+                .budget(crate::connect::target_read_timeout()),
         )
         .await
         .map(|list| MachineSuccess {
@@ -2355,16 +2012,13 @@ async fn list_on_machine(
 /// [`rpc_error`] in its own words, marked unanswered when the router or this client's
 /// deadline shows the target never answered, and undialed as well when the router
 /// couldn't dial it.
-fn unanswered_kept(error: ConnectError) -> RpcError {
+pub(crate) fn unanswered_kept(error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
         return rpc_error(error);
     }
     let unreached = error.target_unreached();
     let error = rpc_error(error);
-    let kept = RpcError {
-        cause: error.cause,
-        ..RpcError::unanswered_target(error.code, error.message)
-    };
+    let kept = RpcError::unanswered_target(error.code, error.message).with_causes(error.cause);
     match unreached {
         true => kept.undialed_target(),
         false => kept,
@@ -2435,26 +2089,12 @@ async fn change_container_rpc(
 fn admitted(started: UserStarted) -> Result<(), RpcError> {
     match started {
         UserStarted::In | UserStarted::Running => Ok(()),
-        UserStarted::NotIn(health) => Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "The Container started but did not pass its healthcheck, so proxies do not route to it.".into(),
-            details: health
+        UserStarted::NotIn(health) => Err(RpcError::unavailable("The Container started but did not pass its healthcheck, so proxies do not route to it.").with_details(health
                 .and_then(ployz_core::HealthVerdict::into_failure)
-                .map_or(Value::Null, |failure| json!(failure)),
-            cause: Vec::new(),
-        }),
+                .map_or(Value::Null, |failure| json!(failure)))),
     }
 }
 
 #[cfg(test)]
 #[path = "cluster_tests.rs"]
 mod tests;
-
-/// One Global revision per target; Namespace and kind are scoped by the SlotKey.
-pub(crate) fn global_creation_key(spec: &ResolvedServiceSpec) -> String {
-    format!(
-        "global:{}:{}",
-        spec.service_id,
-        spec.serving_shape().token()
-    )
-}

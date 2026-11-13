@@ -61,6 +61,7 @@ pub struct RecordOwner {
 
 /// Values fixed for the lifetime of the store, readable without a mutation.
 struct Shared {
+    approvals: Arc<super::local_machine::restart_approval::ConsumptionLog>,
     data_dir: std::path::PathBuf,
     run_dir: std::path::PathBuf,
     admission_lock: Arc<tokio::sync::RwLock<()>>,
@@ -71,6 +72,11 @@ struct Shared {
 }
 
 impl RecordOwner {
+    pub(super) fn restart_approvals(
+        &self,
+    ) -> Arc<super::local_machine::restart_approval::ConsumptionLog> {
+        Arc::clone(&self.shared.approvals)
+    }
     /// Take ownership of an opened store on a dedicated thread.
     ///
     /// # Errors
@@ -118,6 +124,7 @@ impl RecordOwner {
             sealing,
             restart,
             shared: Arc::new(Shared {
+                approvals: super::local_machine::restart_approval::ConsumptionLog::new(&data_dir),
                 data_dir,
                 run_dir,
                 admission_lock,
@@ -198,6 +205,7 @@ impl RecordOwner {
     /// # Errors
     ///
     /// Returns [`RecordOwnerStopped`] when the owner thread has stopped.
+    #[cfg(test)]
     pub fn mutate_blocking<R>(
         &self,
         mutation: impl FnOnce(&mut LocalMachineStore) -> R + Send + 'static,
@@ -463,7 +471,7 @@ mod tests {
         let (_dir, owner) = owner();
         let observed = owner.restart_requested();
         assert!(!*observed.borrow());
-        owner.clone().request_restart();
+        owner.request_restart();
         assert!(*observed.borrow());
     }
 }

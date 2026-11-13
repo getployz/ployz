@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# shellcheck source=scripts/release-archives.sh
+source "$ROOT/scripts/release-archives.sh"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/dist" "$TMP/bin"
@@ -8,26 +10,24 @@ for binary in ployz ployzd ployz-uninstall; do
     printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$binary"
     chmod 0755 "$TMP/bin/$binary"
 done
-for platform in linux_amd64 linux_arm64 macos_amd64 macos_arm64; do
-    tar -czf "$TMP/dist/ployz_$platform.tar.gz" -C "$TMP/bin" ployz
-done
-for arch in amd64 arm64; do
-    tar -czf "$TMP/dist/ployzd_linux_$arch.tar.gz" -C "$TMP/bin" ployzd ployz-uninstall
+for archive in $(release_archives); do
+    # shellcheck disable=SC2046
+    tar -czf "$TMP/dist/$archive" -C "$TMP/bin" $(release_archive_binaries "$archive")
 done
 bash "$ROOT/scripts/pack-release.sh" "$TMP/dist"
 DIST="$TMP/dist" bash "$ROOT/scripts/verify-release.sh" artifacts
 # Archive members are exact: the CLI ships alone, the daemon ships with its uninstaller.
-for archive in ployz_linux_amd64:ployz,ployz-uninstall ployzd_linux_amd64:ployzd; do
+for archive in "$(release_archive ployz linux amd64):ployz,ployz-uninstall" "$(release_archive ployzd linux amd64):ployzd"; do
     members=${archive#*:}
     archive=${archive%%:*}
-    cp "$TMP/dist/$archive.tar.gz" "$TMP/original.tar.gz"
-    tar -czf "$TMP/dist/$archive.tar.gz" -C "$TMP/bin" ${members//,/ }
+    cp "$TMP/dist/$archive" "$TMP/original.tar.gz"
+    tar -czf "$TMP/dist/$archive" -C "$TMP/bin" ${members//,/ }
     if DIST="$TMP/dist" bash "$ROOT/scripts/verify-release.sh" artifacts > "$TMP/error" 2>&1; then
         echo "accepted $archive with members $members" >&2
         exit 1
     fi
     grep -Fq 'members are' "$TMP/error"
-    mv "$TMP/original.tar.gz" "$TMP/dist/$archive.tar.gz"
+    mv "$TMP/original.tar.gz" "$TMP/dist/$archive"
 done
 # Publication must accept exactly these six archives with signed checksums and stop before gh on extras.
 cat > "$TMP/bin/gh" <<'SH'
@@ -47,6 +47,29 @@ PATH="$TMP/bin:$PATH" DIST="$TMP/dist" bash "$ROOT/scripts/publish-github-releas
 grep -Fq 'checksums.txt.minisig' "$GH_CALLS"
 grep -Fq 'release create v1.2.3 --draft' "$GH_CALLS"
 rm "$GH_CALLS"
+# Every script reads the manifest: a row whose archive the release lacks is refused by each of them.
+cp "$RELEASE_ARCHIVES_FILE" "$TMP/release-archives.txt"
+echo 'ployz  freebsd  amd64  ployz_freebsd_amd64.tar.gz  ployz' >> "$TMP/release-archives.txt"
+if RELEASE_ARCHIVES_FILE="$TMP/release-archives.txt" bash "$ROOT/scripts/pack-release.sh" "$TMP/dist" > "$TMP/error" 2>&1; then
+    echo 'packed a release that lacks a manifest archive' >&2
+    exit 1
+fi
+grep -Fq 'missing ployz_freebsd_amd64.tar.gz' "$TMP/error"
+if RELEASE_ARCHIVES_FILE="$TMP/release-archives.txt" DIST="$TMP/dist" bash "$ROOT/scripts/verify-release.sh" artifacts > "$TMP/error" 2>&1; then
+    echo 'verified a release that lacks a manifest archive' >&2
+    exit 1
+fi
+grep -Fq 'archive set differs' "$TMP/error"
+if RELEASE_ARCHIVES_FILE="$TMP/release-archives.txt" PATH="$TMP/bin:$PATH" DIST="$TMP/dist" bash "$ROOT/scripts/publish-github-release.sh" v1.2.3 > "$TMP/error" 2>&1; then
+    echo 'published a release that lacks a manifest archive' >&2
+    exit 1
+fi
+grep -Fq 'release asset set differs' "$TMP/error"
+[ ! -e "$GH_CALLS" ]
+# The manifest is found from any working directory, as the release CI runs the scripts from core/.
+for directory in / "$ROOT" "$ROOT/scripts"; do
+    [ "$(cd "$directory" && bash -c 'source "$1"; release_archives | wc -l' _ "$ROOT/scripts/release-archives.sh")" -eq 6 ]
+done
 touch "$TMP/dist/retired_linux_amd64.tar.gz"
 if DIST="$TMP/dist" bash "$ROOT/scripts/verify-release.sh" artifacts > "$TMP/error" 2>&1; then
     echo 'accepted an extra release archive' >&2

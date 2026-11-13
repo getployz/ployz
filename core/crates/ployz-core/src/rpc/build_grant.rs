@@ -19,6 +19,95 @@ pub struct MintBuildGrantRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub sealed: Option<crate::SealedRecord>,
+    /// A build under an automatic deploy rule: the signed rule and the GitHub token
+    /// whose audience names this grant. Sent only to a daemon advertising
+    /// [`crate::BUILD_GRANT_RULE_CAPABILITY`]. Such a daemon checks the token and the
+    /// commit's authority before it opens `sealed`, and serves the opened values sealed
+    /// to the build's recipient key only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rule: Option<RuleGrant>,
+    /// A build under a preview rule: the signed rule, the GitHub token whose audience names
+    /// this grant, and for a reviewed build the review. Sent only to a daemon advertising
+    /// [`crate::BUILD_GRANT_PREVIEW_CAPABILITY`], which checks them as it checks `rule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<PreviewGrant>,
+}
+
+/// What a builder under a preview rule asks a grant with. As for [`RuleGrant`], all but
+/// the rule, the token and the review is the builder's own word, which the Machine checks
+/// by recomputing the token's audience from it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewGrant {
+    #[ts(type = "unknown")]
+    pub rule: crate::authority::Signed<crate::authority::PreviewRule>,
+    /// The review a reviewed build's authority names. `None` for a trusted push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review: Option<crate::authority::Review>,
+    pub proof: GithubToken,
+    pub service: crate::ServiceName,
+    pub commit: crate::authority::CommitSha,
+    pub authority: crate::authority::CommitAuthority,
+    pub recipient: crate::authority::RecipientKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reader: Option<GithubToken>,
+}
+
+/// What a builder under a rule asks a grant with. Everything but the rule and the token
+/// is the builder's own word, which the Machine checks by recomputing the token's
+/// audience from it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuleGrant {
+    #[ts(type = "unknown")]
+    pub rule: crate::authority::Signed<crate::authority::AutoDeployRule>,
+    /// The raw GitHub Actions OIDC token.
+    pub proof: GithubToken,
+    pub service: crate::ServiceName,
+    /// The commit the builder checked out.
+    pub commit: crate::authority::CommitSha,
+    pub authority: crate::authority::CommitAuthority,
+    /// The person's approval `authority` names, for a build of a commit that is not the
+    /// branch head. Sent only to a daemon advertising
+    /// [`crate::COMMIT_APPROVAL_CAPABILITY`]; an older one refuses the grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown", optional)]
+    pub approval: Option<crate::authority::Signed<crate::authority::CommitApproval>>,
+    /// The key the build secrets are sealed to.
+    pub recipient: crate::authority::RecipientKey,
+    /// A token that may read the repository's branch head, such as an installation
+    /// token narrowed to `contents: read`. `None` reads a public repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reader: Option<GithubToken>,
+}
+
+/// A GitHub token. Its Debug never prints it.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+#[ts(type = "string")]
+pub struct GithubToken(String);
+
+impl GithubToken {
+    #[must_use]
+    pub const fn new(token: String) -> Self {
+        Self(token)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for GithubToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GithubToken(..)")
+    }
 }
 
 /// A minted grant. The Machine keeps it in memory only; a restart ends it.
@@ -101,7 +190,7 @@ mod tests {
             "id": id, "grant": grant.to_secret_string(), "expires_in_seconds": 10,
         });
         assert_eq!(
-            serde_json::from_value::<BuildGrantMinted>(legacy.clone()).unwrap(),
+            serde_json::from_value::<BuildGrantMinted>(legacy).unwrap(),
             BuildGrantMinted {
                 id,
                 key: MintedKey::Grant { grant },
@@ -132,9 +221,11 @@ mod tests {
         assert_eq!(
             request,
             MintBuildGrantRequest {
+                preview: None,
                 repository,
                 holder: None,
                 sealed: None,
+                rule: None,
             }
         );
         assert_eq!(
