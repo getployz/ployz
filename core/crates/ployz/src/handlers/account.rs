@@ -2,7 +2,7 @@
 //! sign-in or `PLOYZ_TOKEN`. None of them needs a Server.
 
 use crate::ui::Next;
-use clap::{ArgMatches, Command};
+use clap::{ArgMatches, Command, builder::PossibleValuesParser};
 use serde::Serialize;
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -93,13 +93,9 @@ pub(super) fn org_build_order_command(command: Command) -> Command {
     command
                 .about("Show or set which Builders build Git Services, in turn")
                 .long_about("Show or set the Organization's Build Order: which Builders a Git Service's build tries, in turn, after its Preferred Builder (SERVICE.preferredBuilder). A change applies to the next build. auto tries GitHub first, skipping it at once where the repository has no ployz-build.yml workflow.")
-                .arg(positional("order", false).value_parser([
-                    "auto",
-                    "servers-only",
-                    "github-then-servers",
-                    "servers-then-github",
-                    "github-only",
-                ]).help("The Build Order to set; without it, shows the current one"))
+                .arg(positional("order", false).value_parser(PossibleValuesParser::new(
+                    std::iter::once("auto").chain(ployz_store::BuildOrder::ALL.map(ployz_store::BuildOrder::as_str)),
+                )).help("The Build Order to set; without it, shows the current one"))
                 .arg(crate::cli::approval())
 }
 
@@ -338,10 +334,7 @@ pub(super) fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
     let view = match order {
         None => store.read(&ployz_store::BuildOrderQuery {})?,
         Some(order) => {
-            let build_order = (order != "auto")
-                .then(|| serde_json::from_value(serde_json::json!(order)))
-                .transpose()
-                .expect("clap accepts only Build Orders");
+            let build_order = ployz_store::BuildOrder::named(order);
             store.write(&ployz_store::SetBuildOrder { build_order })?
         }
     };
@@ -464,19 +457,7 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
         )
         .await
         .0?;
-        let acting = match others.first() {
-            Some(other) => Some(
-                cloud_account::use_organization(
-                    &store,
-                    &credential,
-                    cloud_account::Target::Listed(other),
-                )
-                .await
-                .map(|organization| organization.slug)
-                .map_err(|error| (other.slug.clone(), error)),
-            ),
-            None => None,
-        };
+        let acting = move_to_first(&store, &credential, &others).await;
         Ok::<_, Error>((acting, organization.slug))
     })?;
     let value = serde_json::json!({
@@ -485,20 +466,42 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
     });
     ui::finish(&value, || {
         ui::stream(format_args!("Left Organization {organization}."));
-        match &acting {
-            Some(Ok(slug)) => {
-                ui::note(format_args!("This device now acts in Organization {slug}."))
-            }
-            Some(Err((slug, error))) => {
-                ui::warn_cause(
-                    format_args!("Could not move this device to Organization {slug}"),
-                    error,
-                );
-                ui::hint(&Hint::Next(format!("ployz org use {slug}")));
-            }
-            None => {}
-        }
+        report_move(&acting);
     })
+}
+
+/// Where a device that stopped acting in an Organization acts now: the one it moved
+/// to, or the one it could not move to and why. None when it had no other to go to.
+type Moved = Option<Result<String, (String, LoginError)>>;
+
+/// Move this device to the first of `others`, the Organizations the user still has.
+async fn move_to_first(
+    store: &CredentialStore,
+    credential: &Credential,
+    others: &[cloud_account::OrganizationEntry],
+) -> Moved {
+    let other = others.first()?;
+    Some(
+        cloud_account::use_organization(store, credential, cloud_account::Target::Listed(other))
+            .await
+            .map(|organization| organization.slug)
+            .map_err(|error| (other.slug.clone(), error)),
+    )
+}
+
+/// Say where the device acts now, or that it did not move and the command that moves it.
+fn report_move(acting: &Moved) {
+    match acting {
+        Some(Ok(slug)) => ui::note(format_args!("This device now acts in Organization {slug}.")),
+        Some(Err((slug, error))) => {
+            ui::warn_cause(
+                format_args!("Could not move this device to Organization {slug}"),
+                error,
+            );
+            ui::hint(&Hint::Next(format!("ployz org use {slug}")));
+        }
+        None => {}
+    }
 }
 
 /// Delete the Organization: Cloud refuses while it has a Project, then unpairs its
@@ -579,21 +582,11 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             cloud_account::remove_organization(&credential, &removing, approval).await
         },
     )?;
-    let acting = runtime.block_on(async {
-        match others.first() {
-            Some(other) if removal.removed => Some(
-                cloud_account::use_organization(
-                    &store,
-                    &credential,
-                    cloud_account::Target::Listed(other),
-                )
-                .await
-                .map(|organization| organization.slug)
-                .map_err(|error| (other.slug.clone(), error)),
-            ),
-            _ => None,
-        }
-    });
+    let acting = if removal.removed {
+        runtime.block_on(move_to_first(&store, &credential, &others))
+    } else {
+        None
+    };
     let next = (!removal.removed).then(|| match &approved {
         Some(id) => super::server::approved_rerun(matches, &again, id),
         None => retry,
@@ -618,19 +611,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                     "Removed Organization {}.",
                     removal.organization
                 ));
-                match &acting {
-                    Some(Ok(slug)) => {
-                        ui::note(format_args!("This device now acts in Organization {slug}."));
-                    }
-                    Some(Err((slug, error))) => {
-                        ui::warn_cause(
-                            format_args!("Could not move this device to Organization {slug}"),
-                            error,
-                        );
-                        ui::hint(&Hint::Next(format!("ployz org use {slug}")));
-                    }
-                    None => {}
-                }
+                report_move(&acting);
             }
             Some(next) => {
                 ui::stream(format_args!(

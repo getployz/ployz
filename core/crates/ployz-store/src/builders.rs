@@ -28,6 +28,32 @@ impl BuildOrder {
     /// this builds on the servers only.
     pub const AUTO: Self = Self::GithubThenServers;
 
+    /// Every Build Order that is set by name; an Organization that never chose one
+    /// has [`BuildOrder::AUTO`].
+    pub const ALL: [Self; 4] = [
+        Self::ServersOnly,
+        Self::GithubThenServers,
+        Self::ServersThenGithub,
+        Self::GithubOnly,
+    ];
+
+    /// The name it is typed and stored by.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ServersOnly => "servers-only",
+            Self::GithubThenServers => "github-then-servers",
+            Self::ServersThenGithub => "servers-then-github",
+            Self::GithubOnly => "github-only",
+        }
+    }
+
+    /// The Build Order `name` names.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|order| order.as_str() == name)
+    }
+
     const fn builders(self) -> &'static [Builder] {
         match self {
             Self::ServersOnly => &[Builder::Servers],
@@ -136,4 +162,22 @@ pub(crate) fn walk(
         .copied()
         .filter(|builder| Some(*builder) != first);
     Ok((first.into_iter().chain(rest).collect(), machine))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuildOrder;
+
+    #[test]
+    fn a_build_order_is_named_as_it_is_stored() {
+        for order in BuildOrder::ALL {
+            assert_eq!(
+                serde_json::to_value(order).unwrap(),
+                serde_json::json!(order.as_str())
+            );
+            assert_eq!(BuildOrder::named(order.as_str()), Some(order));
+        }
+        assert_eq!(BuildOrder::named("auto"), None);
+        assert_eq!(BuildOrder::named("Github-Only"), None);
+    }
 }
