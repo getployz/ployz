@@ -157,10 +157,88 @@ fn drop_null(object: &mut Map<String, Value>) {
     }
 }
 
-/// What fits at `field`, a dotted path through properties, stopping where the
-/// path leads nowhere. An object shows its keys and their types, not their
-/// schemas.
-pub(crate) fn at(schema: &Value, field: &str) -> Value {
+/// A place in a call's input: the keys and array positions that lead to it. It
+/// reads `a.b`, `files[0].x` and `files.0.x` alike, and writes `files[0].x`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FieldPath(Vec<Segment>);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Segment {
+    Key(String),
+    Index(usize),
+}
+
+impl FieldPath {
+    pub(crate) fn parse(path: &str) -> Self {
+        let mut segments = Vec::new();
+        for part in path.split('.').filter(|part| !part.is_empty()) {
+            let (key, brackets) = part.find('[').map_or((part, ""), |at| part.split_at(at));
+            let Some(positions) = positions(brackets) else {
+                segments.push(Segment::Key(part.to_owned()));
+                continue;
+            };
+            if !key.is_empty() {
+                segments.push(match key.parse::<usize>() {
+                    Ok(position) if key.bytes().all(|byte| byte.is_ascii_digit()) => {
+                        Segment::Index(position)
+                    }
+                    _ => Segment::Key(key.to_owned()),
+                });
+            }
+            segments.extend(positions.into_iter().map(Segment::Index));
+        }
+        Self(segments)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn push_key(&mut self, key: &str) {
+        self.0.push(Segment::Key(key.to_owned()));
+    }
+
+    pub(crate) fn push_index(&mut self, position: usize) {
+        self.0.push(Segment::Index(position));
+    }
+
+    fn under(mut self, segment: Segment) -> Self {
+        self.0.insert(0, segment);
+        self
+    }
+}
+
+/// The positions in `brackets`, such as `[0][1]`; none when it is anything else.
+fn positions(mut brackets: &str) -> Option<Vec<usize>> {
+    let mut found = Vec::new();
+    while let Some(after) = brackets.strip_prefix('[') {
+        let (digits, rest) = after.split_once(']')?;
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        found.push(digits.parse().ok()?);
+        brackets = rest;
+    }
+    brackets.is_empty().then_some(found)
+}
+
+impl std::fmt::Display for FieldPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (at, segment) in self.0.iter().enumerate() {
+            match segment {
+                Segment::Key(key) if at == 0 => f.write_str(key)?,
+                Segment::Key(key) => write!(f, ".{key}")?,
+                Segment::Index(position) => write!(f, "[{position}]")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What fits at `field`, a path through properties and array items, stopping
+/// where the path leads nowhere. An object shows its keys and their types, not
+/// their schemas.
+pub(crate) fn at(schema: &Value, field: &FieldPath) -> Value {
     let mut here = reach(schema, field).clone();
     for list in ["properties", "patternProperties"] {
         if let Some(Value::Object(named)) = here.get_mut(list) {
@@ -195,12 +273,16 @@ fn outline(schema: &Value) -> Value {
     Value::Object(kept)
 }
 
-fn reach<'schema>(schema: &'schema Value, field: &str) -> &'schema Value {
+fn reach<'schema>(schema: &'schema Value, field: &FieldPath) -> &'schema Value {
     let mut here = schema;
-    for part in field.split('.').filter(|part| !part.is_empty()) {
+    for segment in &field.0 {
+        let part = match segment {
+            Segment::Key(key) => key.clone(),
+            Segment::Index(position) => position.to_string(),
+        };
         let next = here
             .get("properties")
-            .and_then(|properties| properties.get(part))
+            .and_then(|properties| properties.get(part.as_str()))
             .or_else(|| {
                 here.get("patternProperties")
                     .and_then(Value::as_object)
@@ -210,7 +292,11 @@ fn reach<'schema>(schema: &'schema Value, field: &str) -> &'schema Value {
                 here.get("additionalProperties")
                     .filter(|value| value.is_object())
             })
-            .or_else(|| part.parse::<usize>().ok().and(here.get("items")));
+            .or_else(|| {
+                matches!(segment, Segment::Index(_))
+                    .then(|| here.get("items"))
+                    .flatten()
+            });
         match next {
             Some(next) => here = next,
             None => return here,
@@ -219,35 +305,31 @@ fn reach<'schema>(schema: &'schema Value, field: &str) -> &'schema Value {
     here
 }
 
-/// The first number in `input` past a bound `schema` declares, as its dotted
-/// path and the bound.
-pub(crate) fn out_of_range(schema: &Value, input: &Value) -> Option<(String, String)> {
+/// The first number in `input` past a bound `schema` declares, as its path and
+/// the bound.
+pub(crate) fn out_of_range(schema: &Value, input: &Value) -> Option<(FieldPath, String)> {
     match input {
         Value::Object(fields) => fields.iter().find_map(|(name, value)| {
             let inner = schema.get("properties")?.get(name)?;
-            out_of_range(inner, value).map(|(path, reason)| match path.is_empty() {
-                true => (name.clone(), reason),
-                false => (format!("{name}.{path}"), reason),
-            })
+            out_of_range(inner, value)
+                .map(|(path, reason)| (path.under(Segment::Key(name.clone())), reason))
         }),
         Value::Array(items) => {
             let inner = schema.get("items")?;
             items.iter().enumerate().find_map(|(index, value)| {
-                out_of_range(inner, value).map(|(path, reason)| match path.is_empty() {
-                    true => (index.to_string(), reason),
-                    false => (format!("{index}.{path}"), reason),
-                })
+                out_of_range(inner, value)
+                    .map(|(path, reason)| (path.under(Segment::Index(index)), reason))
             })
         }
         Value::Number(number) => {
             let number = number.as_f64()?;
             let bound = |key: &str| schema.get(key).and_then(Value::as_f64);
             if let Some(minimum) = bound("minimum").filter(|minimum| number < *minimum) {
-                return Some((String::new(), format!("at least {minimum}")));
+                return Some((FieldPath::default(), format!("at least {minimum}")));
             }
             bound("maximum")
                 .filter(|maximum| number > *maximum)
-                .map(|maximum| (String::new(), format!("at most {maximum}")))
+                .map(|maximum| (FieldPath::default(), format!("at most {maximum}")))
         }
         Value::Null | Value::Bool(_) | Value::String(_) => None,
     }
@@ -296,5 +378,84 @@ fn walk(schema: &Value, path: &str, problems: &mut Vec<String>) {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{FieldPath, at, out_of_range};
+
+    fn input() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": { "x": { "type": "integer", "maximum": 3 } },
+                    },
+                },
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                },
+            },
+        })
+    }
+
+    #[test]
+    fn a_path_reads_every_spelling_and_writes_one() {
+        for (read, written) in [
+            ("a.b", "a.b"),
+            ("files[0].x", "files[0].x"),
+            ("files.0.x", "files[0].x"),
+            ("a[0][1]", "a[0][1]"),
+            ("[2].x", "[2].x"),
+            ("a[x]", "a[x]"),
+            ("", ""),
+        ] {
+            assert_eq!(FieldPath::parse(read).to_string(), written, "{read}");
+        }
+    }
+
+    #[test]
+    fn an_array_element_resolves_the_same_in_every_spelling() {
+        let schema = input();
+        for field in ["files[0]", "files.0"] {
+            assert_eq!(
+                at(&schema, &FieldPath::parse(field)),
+                json!({ "type": "object", "properties": { "x": { "type": "integer" } } }),
+                "{field}"
+            );
+        }
+        for field in ["files[0].x", "files.0.x"] {
+            assert_eq!(
+                at(&schema, &FieldPath::parse(field)).get("maximum"),
+                Some(&json!(3)),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_numeric_key_of_a_map_still_reaches_the_map_values() {
+        assert_eq!(
+            at(&input(), &FieldPath::parse("labels.0")),
+            json!({ "type": "string" })
+        );
+    }
+
+    #[test]
+    fn a_range_error_in_an_array_names_the_element_as_a_decode_error_does() {
+        let (path, reason) =
+            out_of_range(&input(), &json!({ "files": [{ "x": 1 }, { "x": 9 }] })).unwrap();
+        assert_eq!(
+            (path.to_string().as_str(), reason.as_str()),
+            ("files[1].x", "at most 3")
+        );
+        assert_eq!(at(&input(), &path).get("maximum"), Some(&json!(3)));
     }
 }
