@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
-import { beginPasskeyRegistration, finishPasskeyRegistration, listPasskeys } from "#/modules/passkeys/passkeys.server";
+import { beginPasskeyRegistration, finishPasskeyRegistration, listPasskeys, serversWithoutPasskey } from "#/modules/passkeys/passkeys.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
@@ -23,3 +23,8 @@ export const finishPasskeyServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, response: Schema.String.check(Schema.isMaxLength(64_000)) })))
   .handler(({ context, data }) =>
     runActor(context, finishPasskeyRegistration(context.actor, data.organizationSlug, data.response)));
+
+export const serversWithoutPasskeyServerFn = createServerFn({ method: "GET" })
+  .middleware(middleware)
+  .validator(strictValidator(InOrganization))
+  .handler(({ context, data }) => runActor(context, serversWithoutPasskey(context.actor, data.organizationSlug)));

@@ -1,5 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
-import { listPasskeysServerFn } from "#/modules/passkeys/passkeys.functions";
+import { listPasskeysServerFn, serversWithoutPasskeyServerFn } from "#/modules/passkeys/passkeys.functions";
 
 export type PasskeysView = Awaited<ReturnType<typeof listPasskeysServerFn>>;
 export type PasskeyRow = PasskeysView["passkeys"][number];
@@ -22,5 +22,18 @@ export function passkeysQueryOptions(organizationSlug: string) {
     staleTime: 0,
     refetchInterval: (query) =>
       query.state.data?.passkeys.some((passkey) => !trustedEverywhere(passkey)) ? WAITING_POLL_MS : false,
+  });
+}
+
+/**
+ * The IDs of the Servers that trust no passkey yet. Approval happens on a Server's terminal, so the list asks again
+ * every few seconds while one is waiting.
+ */
+export function serversWithoutPasskeyQueryOptions(organizationSlug: string) {
+  return queryOptions({
+    queryKey: ["passkeys", organizationSlug, "servers-without"],
+    queryFn: ({ signal }) => serversWithoutPasskeyServerFn({ data: { organizationSlug }, signal }),
+    staleTime: 0,
+    refetchInterval: (query) => (query.state.data?.length ?? 0) > 0 ? WAITING_POLL_MS : false,
   });
 }

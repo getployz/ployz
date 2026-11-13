@@ -157,6 +157,16 @@ export const listPasskeys = Effect.fn("Passkeys.list")(function* (actor: Actor, 
   };
 });
 
+/**
+ * The Servers that answered and trust no passkey at all, by ID. A Cluster founded on Ployz 0.4 trusts no key until a
+ * person approves one on a Server itself, so Ployz Cloud can change nothing there until then.
+ */
+export const serversWithoutPasskey = Effect.fn("Passkeys.serversWithout")(function* (actor: Actor, organizationSlug: string) {
+  const { organizationId } = yield* member(actor, organizationSlug);
+  const servers = yield* trustedPasskeys(organizationId);
+  return servers.flatMap(({ id, passkeys }) => id !== null && passkeys !== null && passkeys.length === 0 ? [id] : []);
+});
+
 export const approvalOf = (passkeys: readonly { code: string; trusted: TrustedPasskey }[], code: string): PasskeyApproval => {
   const held = passkeys.find((passkey) => passkey.code === code);
   if (held === undefined) return null;
@@ -165,7 +175,7 @@ export const approvalOf = (passkeys: readonly { code: string; trusted: TrustedPa
   return { by: by.by === "server" ? "server" : "trusted" };
 };
 
-type ServerPasskeys = { readonly server: string; readonly passkeys: readonly { code: string; trusted: TrustedPasskey }[] | null };
+type ServerPasskeys = { readonly id: string | null; readonly server: string; readonly passkeys: readonly { code: string; trusted: TrustedPasskey }[] | null };
 
 /**
  * Each Server's own list of trusted passkeys, read from it directly through one entry. A Server that doesn't answer reads
@@ -184,11 +194,11 @@ const trustedPasskeys = Effect.fn("Passkeys.trusted")(function* (organizationId:
     const machines = frame?.machines.map(({ machine }) => ({ id: machine.id, name: machine.name })) ?? [];
     if (machines.length === 0) {
       const details = yield* session.inspect();
-      return [{ server: details.machine?.name ?? details.id, passkeys: listed(details) }] satisfies ServerPasskeys[];
+      return [{ id: details.machine?.id ?? null, server: details.machine?.name ?? details.id, passkeys: listed(details) }] satisfies ServerPasskeys[];
     }
     return yield* Effect.forEach(machines, ({ id, name }) => session.inspectMachine(id).pipe(
-      Effect.map((details): ServerPasskeys => ({ server: name, passkeys: listed(details) })),
-      Effect.orElseSucceed((): ServerPasskeys => ({ server: name, passkeys: null })),
+      Effect.map((details): ServerPasskeys => ({ id, server: name, passkeys: listed(details) })),
+      Effect.orElseSucceed((): ServerPasskeys => ({ id, server: name, passkeys: null })),
     ), { concurrency: "unbounded" });
   })).pipe(clusterRead, Effect.orElseSucceed((): ServerPasskeys[] => []));
 });
