@@ -735,6 +735,28 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
 }
 
 #[test]
+fn token_new_takes_the_three_presets_and_env_only_with_deploy() {
+    for (args, wants) in [
+        (
+            &["--preset", "admin"][..],
+            "invalid value 'admin' for '--preset <preset>'",
+        ),
+        (&["--preset", "deploy"], "--env"),
+        (
+            &["--preset", "read", "--env", "staging"],
+            "only --preset deploy takes --env",
+        ),
+    ] {
+        let mut full = vec!["token", "new", "ci"];
+        full.extend_from_slice(args);
+        full.push("--json");
+        let (code, json, _) = run_json(&full);
+        assert_eq!(code, Some(2), "{args:?}: {json}");
+        assert!(message(&json).contains(wants), "{args:?}: {json}");
+    }
+}
+
+#[test]
 fn server_clean_signed_in_refuses_another_clusters_servers() {
     let token = [
         ("PLOYZ_TOKEN", "ployz_secret"),
