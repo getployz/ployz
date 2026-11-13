@@ -117,7 +117,8 @@ function RouteComponent() {
           <AlertDescription>Upgrade it under Ployz below. Its services keep running.</AlertDescription>
         </Alert>
       ) : null}
-      <FirstKeyAlert organizationSlug={organizationSlug} servers={[{ id: machine.id, name: server.name, capabilities: machine.capabilities }]} />
+      <FirstKeyAlert organizationSlug={organizationSlug} servers={[{ id: machine.id, name: server.name, capabilities: machine.capabilities }]}
+        reach={servers.map(({ name, machine: each }) => ({ name, publicIp: each.publicIp }))} />
       {server.status === "offline" ? null : <ServerResources organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name, version: machine.daemonVersion }} />}
       <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
       <Suspense fallback={null}>

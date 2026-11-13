@@ -6,6 +6,7 @@ import { listNames } from "#/lib/plural";
 import { passkeysQueryOptions, serversWithoutPasskeyQueryOptions } from "#/modules/passkeys/passkeys.queries";
 import { runsOlderPloyz } from "#/modules/runtime/daemon-compat";
 import { useActivation } from "#/modules/server-upgrade/activation.queries";
+import { type EnforceTarget, enforceCommand } from "#/modules/server-upgrade/enforce-command";
 import { CopyBlock } from "./copy-block";
 
 type Shown = { readonly id: string; readonly name: string; readonly capabilities: readonly string[] };
@@ -19,7 +20,12 @@ export const firstKeyCommands = (code: string | null) => `sudo ployz login\nsudo
  * isn't named: it takes only an upgrade. One awaiting its Cluster's activation deploys nothing until then either, so
  * there the passkey is only what activating from the dashboard needs, and one activating needs nothing more.
  */
-export function FirstKeyAlert({ organizationSlug, servers }: { organizationSlug: string; servers: readonly Shown[] }) {
+export function FirstKeyAlert({ organizationSlug, servers, reach }: {
+  organizationSlug: string;
+  servers: readonly Shown[];
+  /** Every Server of the Cluster, which activating from a computer reaches over its own SSH. */
+  reach: readonly EnforceTarget[];
+}) {
   const without = useQuery(serversWithoutPasskeyQueryOptions(organizationSlug));
   const own = useQuery(passkeysQueryOptions(organizationSlug));
   const lacking = servers.filter((server) => without.data?.includes(server.id) === true && !runsOlderPloyz(server));
@@ -48,7 +54,12 @@ export function FirstKeyAlert({ organizationSlug, servers }: { organizationSlug:
           ) : names.length === 1 ? "Run this on it:" : "Run this on each:"}
         </p>
         <CopyBlock value={firstKeyCommands(code)} />
-        {awaiting ? <p>Or activate from your computer with <span className="font-mono">ployz device enforce</span>.</p> : null}
+        {awaiting ? (
+          <>
+            <p>Or activate from an approved device, reaching each server over its own SSH:</p>
+            <CopyBlock value={enforceCommand(reach)} />
+          </>
+        ) : null}
       </AlertDescription>
     </Alert>
   );
