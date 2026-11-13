@@ -639,6 +639,8 @@ export const enforcedAsk = Effect.fn("VolumeRun.enforcedAsk")(function* (
   const verb = ENFORCED_VERBS[input.kind];
   if (verb === null) return null;
   const volume = yield* resolveVolume(organizationId, input.environment, input.volumeId);
+  // A grow is approved from the size the Servers hold, so a change of it asks again.
+  const sizes = input.kind === "resize" ? requestPreview(volume, input, []) : {};
   const asked: OperationAsked = {
     subject: `volume:${input.volumeId}`,
     verb,
@@ -647,8 +649,7 @@ export const enforcedAsk = Effect.fn("VolumeRun.enforcedAsk")(function* (
       volume: input.volumeId,
       environment: { project: input.environment.project, environment: input.environment.environment },
       run: { kind: input.kind, args: unapproved(input).args },
-      // A grow is approved from the size the Servers hold, so a change of it asks again.
-      ...(input.kind === "resize" ? requestPreview(volume, input, []) : {}),
+      ...sizes,
     },
     // A restore loses the writes after its restore point; the approver's browser names that point from what it signs.
     effects: input.kind === "restore"

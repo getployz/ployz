@@ -140,11 +140,12 @@ web-1 records the removal, it still sends data to web-2 if asked. To make it rec
 mirror the volume to web-2 again and remove that mirror. A copy that holds no data yet,
 from a mirror whose first copy never finished, is deleted without an approval.
 
-Ployz Cloud can't delete a copy that holds data on these servers on its own. **Remove** under
-**Copies**, and a deploy that drops a mirror or an old copy, fail before they change anything and
-name the command to run from an approved device. When you delete a volume, Ployz Cloud leaves its
-mirrors' copies on servers that enforce. Remove each mirror with `ployz volume mirror rm` from an
-approved device before you delete the volume.
+Ployz Cloud deletes a copy that holds data on these servers only under your passkey. **Remove**
+under **Copies**, × on an old copy and a deploy that drops a mirror or an old copy each ask for it.
+An agent's or `ployz`'s removal without an approved device waits as an
+[Approval card](../account/agent-sidebar.md). When you delete a volume, Ployz Cloud leaves its
+mirrors' copies on servers that enforce. Remove each mirror first, under **Copies** or with
+`ployz volume mirror rm` on an approved device, then delete the volume.
 
 If `ployz volume mirror` can't reach your servers to ask whether they enforce, it warns and runs
 without signing, and servers that enforce refuse it. A server from before Ployz 0.4 ignores the

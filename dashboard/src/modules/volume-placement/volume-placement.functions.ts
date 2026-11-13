@@ -84,7 +84,9 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
     refusedPublicly,
   )));
 
+const DeleteCopyApprovedInput = Schema.Struct({ ...DeleteCopyInput.fields, approval: Schema.optional(VolumeApproval) });
+
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(DeleteCopyInput))
+  .validator(strictValidator(DeleteCopyApprovedInput))
   .handler(({ context, data }) => runActor(context, refusedPublicly(deleteCopy(context.actor, data))));

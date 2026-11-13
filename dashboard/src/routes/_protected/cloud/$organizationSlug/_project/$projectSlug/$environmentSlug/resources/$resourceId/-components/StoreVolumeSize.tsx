@@ -63,9 +63,11 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
       return writer.commit({ command: "set_volume_storage", environment, volume: volume.name, storage: { kind: "provisioned", maximumBytes: recorded } });
     }
     if (next?.kind !== "grow") return Promise.resolve();
-    // A Server grows only under the person's passkey; its review is the confirmation.
+    // A Server grows only under a passkey. Yours answers it, unless an owner or admin has to approve it first, who
+    // sign it where it lands.
     return new Promise<void>((resolve, reject) => {
-      void growApproved({ grow: next, settle: (error) => (error ? reject(error) : resolve()) });
+      const asked = { grow: next, settle: (error?: Error) => (error ? reject(error) : resolve()) };
+      void (asks ? grow(asked) : growApproved(asked));
     });
   }
 
@@ -81,10 +83,11 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
     }
   }
 
-  async function grow(asked: Asking, approval: Signed) {
+  async function grow(asked: Asking, approval?: Signed) {
     try {
       const admitted = await resizeVolumeServerFn({ data: {
-        organizationSlug, volumeId: volume.id, environment, maximumBytes: asked.grow.to, requestId: crypto.randomUUID(), approval,
+        organizationSlug, volumeId: volume.id, environment, maximumBytes: asked.grow.to, requestId: crypto.randomUUID(),
+        ...(approval !== undefined && { approval }),
       } });
       if ("requested" in admitted) {
         toast("Requested");

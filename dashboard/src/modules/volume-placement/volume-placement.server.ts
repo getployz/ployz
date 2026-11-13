@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
+import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId, Signed } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Semaphore } from "effect";
 import { callStoreBy, readStore } from "#/modules/config-store/config-store.server";
@@ -419,7 +419,7 @@ const NOT_OLD = { message: "Not an old copy" };
 export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function* (
   organizationId: string,
   userId: string | null,
-  input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string },
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string; readonly approval?: Signed },
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
   const row = yield* readRow(organizationId, input.volumeId);
@@ -428,7 +428,11 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   const members = yield* inspect(organizationId, input.environment, input.volumeId);
   const old = oldCopies(observePlacement(members), row === undefined ? null : view(row)).find((copy) => copy.server.name === input.server);
   if (old === undefined) return { ok: false, refusal: NOT_OLD } as const;
-  const run = { volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror", args: { slot: input.server, confirmed_name: null, role: "old_copy" } } as const;
+  // A Server deletes a copy that holds data only under the person's passkey, which the drawer asks for and Cloud only carries.
+  const run = {
+    volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror",
+    args: { slot: input.server, confirmed_name: null, role: "old_copy", ...(input.approval !== undefined && { approval: input.approval }) },
+  } as const;
   const planned = yield* planVolumeRun(organizationId, run);
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
   const held = members.find((member) => member.machine.id === old.server.id);

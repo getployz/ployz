@@ -194,15 +194,17 @@ it("grows nothing when the person cancels the passkey review", async () => {
   expect(limit().hasAttribute("disabled")).toBe(false);
 });
 
-it("in a Protected environment a member's grow is a request an owner or admin approves, with no run to watch", async () => {
+it("in a Protected environment a member's grow is a request an owner or admin signs for, with no passkey review and no run to watch", async () => {
   vi.spyOn(protectedAsk, "useProtectedAsk").mockReturnValue(true);
   await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
   screen.getByText("Grows live on every server that holds a copy, once an owner or admin approves it. Can't shrink yet.");
-  passkeyReview();
+  const review = passkeyReview();
   const resize = vi.spyOn(runs, "resizeVolumeServerFn").mockResolvedValue({ requested: true });
   const read = vi.spyOn(runs, "getVolumeRunServerFn");
   enter("20");
   await waitFor(() => expect(resize).toHaveBeenCalledTimes(1));
+  expect(review).not.toHaveBeenCalled();
+  expect(resize.mock.calls[0]?.[0]?.data).not.toHaveProperty("approval");
   expect(read).not.toHaveBeenCalled();
   expect(limit().hasAttribute("disabled")).toBe(false);
   expect((limit() as HTMLInputElement).value).toBe("10");
