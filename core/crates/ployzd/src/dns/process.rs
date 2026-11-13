@@ -8,7 +8,7 @@ use std::{
 
 use futures_util::StreamExt;
 use hickory_server::Server;
-use ployz_core::{MachineId, MachineSubnet};
+use ployz_core::MachineId;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
@@ -214,7 +214,7 @@ impl Session {
 
     async fn first_load(
         &mut self,
-        local_subnet: MachineSubnet,
+        local_subnet: ipnet::Ipv4Net,
         keeper: &dyn Keeper,
         shutdown: &CancellationToken,
     ) -> io::Result<Option<(Answers, Connection)>> {

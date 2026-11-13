@@ -18,8 +18,8 @@ use hickory_server::proto::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ClusterName, ContainerObservation, MachineId, MachineSubnet, Namespace, ProxyRoutes,
-    QualifiedService, ServiceId, proxy_routes, reachable_routes, service_containers,
+    ClusterName, ContainerObservation, MachineId, Namespace, ProxyRoutes, QualifiedService,
+    ServiceId, proxy_routes, reachable_routes, service_containers,
 };
 use tokio::sync::watch;
 
@@ -151,7 +151,7 @@ impl Projection {
         &self,
         name: &Name,
         record_type: RecordType,
-        local_subnet: MachineSubnet,
+        local_subnet: Ipv4Net,
         source: IpAddr,
     ) -> ResponsePlan {
         match parse(name, self.cluster.as_ref()) {
@@ -170,7 +170,7 @@ impl Projection {
         &self,
         name: &Name,
         record_type: RecordType,
-        local_subnet: MachineSubnet,
+        local_subnet: Ipv4Net,
         query: InternalQuery,
         source: IpAddr,
     ) -> ResponsePlan {
@@ -222,8 +222,7 @@ impl Projection {
             ),
         };
         if nearest {
-            let local_net = Ipv4Net::from(local_subnet);
-            addresses.sort_by_key(|address| !local_net.contains(address));
+            addresses.sort_by_key(|address| !local_subnet.contains(address));
         }
         if addresses.is_empty() {
             return ResponsePlan::Internal {
@@ -251,11 +250,12 @@ impl Projection {
 
 /// Whether `source` is a container address on this Machine's bridge, which a later
 /// projection may name. The gateway is the host itself and never is.
-fn may_be_projected(local_subnet: MachineSubnet, source: IpAddr) -> bool {
+fn may_be_projected(local_subnet: Ipv4Net, source: IpAddr) -> bool {
     let IpAddr::V4(address) = source else {
         return false;
     };
-    Ipv4Net::from(local_subnet).contains(&address) && address != local_subnet.gateway().0
+    let gateway = Ipv4Addr::from(u32::from(local_subnet.network()) + 1);
+    local_subnet.contains(&address) && address != gateway
 }
 
 fn unique_caller_namespaces(containers: &[ContainerObservation]) -> HashMap<Ipv4Addr, Namespace> {
@@ -285,11 +285,11 @@ pub(super) struct Answers(Arc<Shared>);
 struct Shared {
     projection: RwLock<Projection>,
     replaced: watch::Sender<()>,
-    local_subnet: MachineSubnet,
+    local_subnet: Ipv4Net,
 }
 
 impl Answers {
-    pub(super) fn loaded(projection: Projection, local_subnet: MachineSubnet) -> Self {
+    pub(super) fn loaded(projection: Projection, local_subnet: Ipv4Net) -> Self {
         Self(Arc::new(Shared {
             projection: RwLock::new(projection),
             replaced: watch::Sender::new(()),

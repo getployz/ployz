@@ -11,8 +11,7 @@ use hickory_server::proto::{
     op::{Message, Metadata, Query as WireQuery, ResponseCode},
     rr::{Name, RData, Record, RecordType, rdata::A},
 };
-use ipnet::Ipv4Net;
-use ployz_core::{CopyRotation, MachineId, MachineSubnet};
+use ployz_core::{CopyRotation, MachineId};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -40,10 +39,6 @@ const SILENCE: Duration = Duration::from_millis(300);
 const INTERNAL: &str = "api.app.internal.";
 const FORWARDED: &str = "example.com.";
 
-fn subnet_of(listen: SocketAddrV4) -> MachineSubnet {
-    MachineSubnet::try_from(Ipv4Net::new(*listen.ip(), 24).unwrap()).unwrap()
-}
-
 struct Harness {
     dir: TempDir,
     cluster: FakeCluster,
@@ -61,11 +56,10 @@ impl Harness {
         let spec_file = SpecFile::in_run_dir(dir.path());
         let token_file = dir.path().join("token");
         fs::write(&token_file, cluster.token()).unwrap();
-        let listen = unclaimed_loopback();
         let spec = DnsSpec {
             machine: MachineId::random(),
-            listen,
-            local_subnet: subnet_of(listen),
+            listen: unclaimed_loopback(),
+            local_subnet: "127.0.0.0/8".parse().unwrap(),
             upstreams: Vec::new(),
             corrosion: CorrosionEndpoint {
                 api: cluster.address(),
@@ -445,7 +439,6 @@ async fn a_changed_spec_ends_the_process_and_the_next_one_rebinds() {
     let old_names = harness.keeper.stored_names();
 
     harness.spec.listen = unclaimed_loopback();
-    harness.spec.local_subnet = subnet_of(harness.spec.listen);
     harness.spec_file.publish(Some(&harness.spec)).unwrap();
     assert_eq!(first.await.unwrap().unwrap(), DnsExit::SpecChanged);
     assert_eq!(harness.keeper.stored_names(), old_names);

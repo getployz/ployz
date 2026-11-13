@@ -12,7 +12,7 @@ use std::{
 };
 
 use ipnet::Ipv4Net;
-use ployz_core::{CORROSION_API_ADDRESS, MachineId, MachineSubnet};
+use ployz_core::{CORROSION_API_ADDRESS, MachineId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -30,7 +30,7 @@ const FILE_NAME: &str = "dns.json";
 pub(crate) struct DnsSpec {
     pub(crate) machine: MachineId,
     pub(crate) listen: SocketAddrV4,
-    pub(crate) local_subnet: MachineSubnet,
+    pub(crate) local_subnet: Ipv4Net,
     /// Explicit forwarders; empty means follow `/etc/resolv.conf`.
     pub(crate) upstreams: Vec<SocketAddr>,
     pub(crate) corrosion: CorrosionEndpoint,
@@ -58,7 +58,7 @@ impl DnsSpec {
         Some(Self {
             machine: machine.id,
             listen: SocketAddrV4::new(machine.subnet.gateway().0, PORT),
-            local_subnet: machine.subnet,
+            local_subnet: machine.subnet.into(),
             upstreams: upstreams.to_vec(),
             corrosion: CorrosionEndpoint {
                 api: CORROSION_API_ADDRESS,
@@ -73,8 +73,6 @@ impl DnsSpec {
 enum InvalidSpec {
     #[error("listen address {listen} is outside the Machine subnet {subnet}")]
     ListenOutsideSubnet { listen: Ipv4Addr, subnet: Ipv4Net },
-    #[error("subnet {subnet} is not an IPv4 /24 Machine Subnet")]
-    NotMachineSubnet { subnet: Ipv4Net },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,7 +92,7 @@ impl From<&DnsSpec> for Wire {
         Self {
             machine: spec.machine,
             listen: spec.listen,
-            subnet: spec.local_subnet.into(),
+            subnet: spec.local_subnet,
             upstreams: spec.upstreams.clone(),
             corrosion_api: spec.corrosion.api,
             corrosion_admin_socket: spec.corrosion.admin_socket.clone(),
@@ -113,14 +111,10 @@ impl TryFrom<Wire> for DnsSpec {
                 subnet: wire.subnet,
             });
         }
-        let local_subnet =
-            MachineSubnet::try_from(wire.subnet).map_err(|_| InvalidSpec::NotMachineSubnet {
-                subnet: wire.subnet,
-            })?;
         Ok(Self {
             machine: wire.machine,
             listen: wire.listen,
-            local_subnet,
+            local_subnet: wire.subnet,
             upstreams: wire.upstreams,
             corrosion: CorrosionEndpoint {
                 api: wire.corrosion_api,
@@ -315,16 +309,13 @@ mod tests {
         assert_eq!(read.listen, "10.210.3.1:53".parse().unwrap());
     }
 
-    #[test]
-    fn read_rejects_a_subnet_that_is_not_a_machine_subnet() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = SpecFile::in_run_dir(dir.path());
+    fn stored(file: &SpecFile, listen: &str, subnet: &str) {
         fs::write(
             file.path(),
             json!({
                 "machine": "b".repeat(32),
-                "listen": "10.210.3.1:53",
-                "subnet": "10.210.0.0/16",
+                "listen": listen,
+                "subnet": subnet,
                 "corrosion_api": "127.0.0.1:7571",
                 "corrosion_admin_socket": "/a",
                 "corrosion_token_file": "/t",
@@ -332,11 +323,50 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn read_keeps_any_stored_subnet_exactly_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpecFile::in_run_dir(dir.path());
+        for (listen, subnet) in [
+            ("127.0.0.1:53", "127.0.0.0/8"),
+            ("10.210.3.1:53", "10.210.0.0/16"),
+            ("10.210.3.1:53", "10.210.3.7/24"),
+        ] {
+            stored(&file, listen, subnet);
+            let read = file.read().unwrap().unwrap();
+            assert_eq!(read.local_subnet, subnet.parse::<Ipv4Net>().unwrap());
+            assert_eq!(read.local_subnet.to_string(), subnet);
+            assert_eq!(read.listen, listen.parse().unwrap());
+        }
+    }
+
+    #[test]
+    fn a_non_machine_subnet_spec_publishes_back_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpecFile::in_run_dir(dir.path());
+        stored(&file, "10.210.3.1:53", "10.210.3.7/24");
+        let read = file.read().unwrap().unwrap();
+        assert!(file.publish(Some(&read)).unwrap());
+        assert_eq!(file.read().unwrap(), Some(read));
+        assert!(
+            fs::read_to_string(file.path())
+                .unwrap()
+                .contains(r#""subnet": "10.210.3.7/24""#)
+        );
+    }
+
+    #[test]
+    fn listen_outside_a_wide_subnet_is_still_rejected_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpecFile::in_run_dir(dir.path());
+        stored(&file, "10.211.0.1:53", "10.210.0.0/16");
         let error = file.read().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
             error.to_string(),
-            "subnet 10.210.0.0/16 is not an IPv4 /24 Machine Subnet"
+            "listen address 10.211.0.1 is outside the Machine subnet 10.210.0.0/16"
         );
     }
 
