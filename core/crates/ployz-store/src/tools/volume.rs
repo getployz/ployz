@@ -248,11 +248,8 @@ impl Tool for VolumeRemove {
         let effects = cx.effects_after_write(scope)?;
         let asks_approval = effects_ask(
             &effects,
-            &[
-                DestructiveKind::DeletesVolume,
-                DestructiveKind::DetachesVolume,
-            ],
-            staged.volume.name.as_str(),
+            &[DestructiveKind::DeletesVolume],
+            staged.volume.id.as_str(),
         );
         Ok(json!({
             "at": staged.environment.to_string(),

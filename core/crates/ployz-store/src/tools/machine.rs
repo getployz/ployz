@@ -27,15 +27,16 @@ use crate::{
     ServicesQuery, Tell, View, Written,
 };
 
-/// Whether the next deploy destroys, among `effects`, a `kinds` thing named `name`.
+/// Whether the next deploy destroys, among `effects`, a `kinds` thing with ID `node`:
+/// the deployed identity, which a rename since the last Deploy leaves alone.
 pub(crate) fn effects_ask(
     effects: &BTreeSet<DestructiveEffect>,
     kinds: &[DestructiveKind],
-    name: &str,
+    node: &str,
 ) -> bool {
     effects
         .iter()
-        .any(|effect| kinds.contains(&effect.kind) && effect.name == name)
+        .any(|effect| kinds.contains(&effect.kind) && effect.node == node)
 }
 
 /// Read and write steps one call may take; waits are bounded by time instead.

@@ -2349,10 +2349,9 @@ fn finish(store: &ConfigStore, id: &DeploymentId, row: Value, outcome: Value) {
         .unwrap();
 }
 
-/// A removal says it asks a human only when what it removes already ran: a
-/// Service, Volume or domain staged since the last Deploy goes without.
-#[test]
-fn a_removal_asks_approval_only_for_what_a_deploy_already_ran() {
+/// [`shop`] with `web` (Volume `data`, domain `app.example.com`) and `api` run by
+/// one finished Deploy.
+fn deployed_shop() -> ConfigStore {
     let store = shop();
     let added = |store: &ConfigStore, tool: &str, input: Value, key: &str| {
         call(store, tool, input, key).ok()
@@ -2406,6 +2405,17 @@ fn a_removal_asks_approval_only_for_what_a_deploy_already_ran() {
         json!({ "type": "completed" }),
         json!({ "type": "success", "completed": [remove_container()] }),
     );
+    store
+}
+
+/// A removal says it asks a human only when what it removes already ran: a
+/// Service, Volume or domain staged since the last Deploy goes without.
+#[test]
+fn a_removal_asks_approval_only_for_what_a_deploy_already_ran() {
+    let store = deployed_shop();
+    let added = |store: &ConfigStore, tool: &str, input: Value, key: &str| {
+        call(store, tool, input, key).ok()
+    };
 
     // Staged after the Deploy: nothing ran, so nothing to approve.
     added(
@@ -2467,6 +2477,44 @@ fn a_removal_asks_approval_only_for_what_a_deploy_already_ran() {
     );
     assert_eq!(
         asks("service_remove", json!({ "service": "web" }), "rm-web"),
+        true
+    );
+}
+
+/// A removal asks by what the Deploy ran, not by what the staged Environment now
+/// calls it: a deployed Service or Volume renamed since still asks.
+#[test]
+fn a_renamed_deployed_service_or_volume_still_asks_approval_when_removed() {
+    let asks = |rename: (&str, Value), remove: (&str, Value)| {
+        let store = deployed_shop();
+        call(&store, rename.0, rename.1, "rename").ok();
+        call(&store, remove.0, remove.1, "remove").ok()["asks_approval"].clone()
+    };
+    assert_eq!(
+        asks(
+            (
+                "service_rename",
+                json!({ "service": "web", "to": "frontend" })
+            ),
+            ("service_remove", json!({ "service": "frontend" })),
+        ),
+        true
+    );
+    assert_eq!(
+        asks(
+            ("volume_update", json!({ "volume": "data", "to": "files" })),
+            ("volume_remove", json!({ "volume": "files" })),
+        ),
+        true
+    );
+    assert_eq!(
+        asks(
+            (
+                "service_rename",
+                json!({ "service": "web", "to": "frontend" })
+            ),
+            ("domain_remove", json!({ "domain": "app.example.com" })),
+        ),
         true
     );
 }

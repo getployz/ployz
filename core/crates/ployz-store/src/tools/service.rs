@@ -576,7 +576,7 @@ impl Tool for ServiceRemove {
                 DestructiveKind::RemovesService,
                 DestructiveKind::StopsService,
             ],
-            staged.service.name.as_str(),
+            &staged.service.id.to_string(),
         );
         Ok(json!({
             "at": staged.environment.to_string(),
