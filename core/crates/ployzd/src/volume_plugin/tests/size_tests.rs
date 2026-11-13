@@ -383,7 +383,7 @@ async fn a_grow_a_first_receive_lands_during_raises_the_copy_it_landed() {
     let receives = storage.receives.clone();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
 
     fs::write(test.0.join("receive-gate"), "").unwrap();
     let started = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;

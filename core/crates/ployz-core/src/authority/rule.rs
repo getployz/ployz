@@ -42,6 +42,16 @@ hex_newtype!(
     /// A Git commit as GitHub names it: 40 lowercase hex digits.
     CommitSha, "commit", 20, ""
 );
+impl CommitSha {
+    /// The first 12 hex digits, for a line a person reads.
+    #[must_use]
+    pub fn short(&self) -> String {
+        let mut text = self.to_string();
+        text.truncate(12);
+        text
+    }
+}
+
 hex_newtype!(
     /// SHA-256 of a [`BuildPolicy`] in canonical JSON.
     PolicyDigest, "policy digest", 32, ""

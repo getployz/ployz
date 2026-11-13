@@ -11,7 +11,7 @@ use ployz_core::MachineLayout;
 use ployzd::machine_pool::{self, MachinePool};
 
 use super::{
-    CapacityAdmission, DockerVolumeName, PluginError, Result, VolumeStorage, checked_command,
+    CapacityAdmission, PluginError, Result, VolumeName, VolumeStorage, checked_command,
     checked_output, parse_size, run_command,
 };
 
@@ -95,7 +95,7 @@ impl VolumeStorage {
     /// Returns an error when request validation, Pool creation, or dataset creation fails.
     pub(super) async fn create(
         &self,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         options: &BTreeMap<String, String>,
     ) -> Result<()> {
         let requested = parse_size(options)?;

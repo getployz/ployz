@@ -14,7 +14,7 @@ use ployz_core::{
 };
 use ployz_decide::volume_size::{Refused, SizeFacts, SizePlan, size_plan};
 
-use super::{DockerVolumeName, PluginError, VolumeStorage, inspect::internal, slot, storage::Held};
+use super::{PluginError, VolumeName, VolumeStorage, inspect::internal, slot, storage::Held};
 
 impl VolumeStorage {
     async fn set_size(
@@ -36,7 +36,7 @@ impl VolumeStorage {
 
     async fn set_size_admitted(
         &self,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         wanted: ProvisionedVolumeMaximumBytes,
         allow_shrink: bool,
     ) -> Result<SetVolumeSizeReply, RpcError> {

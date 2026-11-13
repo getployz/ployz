@@ -20,7 +20,7 @@ use tokio::{
 };
 
 use super::{
-    DockerVolumeName, PluginError, Result,
+    PluginError, Result, VolumeName,
     pool::PoolStorage,
     transfer::{RECEIVE_STALL, STOP_DEADLINE},
 };
@@ -126,7 +126,7 @@ impl VolumeStorage {
     pub(super) async fn create_volume(
         &self,
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         requested: u64,
         origin: CapacityAdmission,
     ) -> Result<()> {
@@ -251,7 +251,7 @@ impl VolumeStorage {
         Ok(())
     }
 
-    pub(super) async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
+    pub(super) async fn mountpoint(&self, name: &VolumeName) -> Result<String> {
         let _guard = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
         let pool = self
@@ -306,7 +306,7 @@ impl VolumeStorage {
     pub(super) fn dataset<'datasets>(
         datasets: &'datasets [Dataset],
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
     ) -> Result<Option<&'datasets Dataset>> {
         let layout = DatasetLayout::of(pool);
         let root_name = layout.root_parent();
@@ -352,7 +352,7 @@ impl VolumeStorage {
         &self,
         datasets: &'datasets [Dataset],
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         receiving: bool,
     ) -> Result<Option<Held<'datasets>>> {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
@@ -507,7 +507,7 @@ impl Dataset {
         self.readonly
     }
 
-    pub(super) fn require_not_switching(&self, name: &DockerVolumeName) -> Result<()> {
+    pub(super) fn require_not_switching(&self, name: &VolumeName) -> Result<()> {
         if !self.switching() {
             return Ok(());
         }
@@ -522,7 +522,7 @@ impl Dataset {
         NonZeroU64::new(self.refquota)
     }
 
-    pub(super) fn require_provisioned(&self, name: &DockerVolumeName) -> Result<()> {
+    pub(super) fn require_provisioned(&self, name: &VolumeName) -> Result<()> {
         if self.bound().is_none() {
             return Err(PluginError::NotProvisioned {
                 dataset: self.name.clone(),
@@ -531,7 +531,7 @@ impl Dataset {
         self.require_mountpoint(&name.mountpoint())
     }
 
-    pub(super) fn require_requested(&self, name: &DockerVolumeName, requested: u64) -> Result<()> {
+    pub(super) fn require_requested(&self, name: &VolumeName, requested: u64) -> Result<()> {
         self.require_mountpoint(&name.mountpoint())?;
         self.require_writable()?;
         if self.refquota >= requested {

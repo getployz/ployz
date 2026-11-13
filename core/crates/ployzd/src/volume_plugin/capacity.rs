@@ -7,7 +7,7 @@ use ployz_core::{
 use ployzd::dataset_layout::{DatasetLayout, Place, SlotAt};
 use std::collections::BTreeMap;
 
-use super::{DockerVolumeName, VolumeStorage};
+use super::{VolumeName, VolumeStorage};
 
 type Volumes = BTreeMap<ployz_core::DockerVolumeName, ProvisionedVolumeMaximumBytes>;
 
@@ -160,10 +160,8 @@ impl VolumeStorage {
         if let Some(pool) = &existing_pool {
             let datasets = self.datasets(pool).await.map_err(storage_error)?;
             for (name, maximum) in requested {
-                let plugin_name = name
-                    .as_str()
-                    .parse::<DockerVolumeName>()
-                    .map_err(storage_error)?;
+                let plugin_name =
+                    VolumeName::try_from(name).map_err(|error| storage_error(error.into()))?;
                 if let Some(existing) =
                     Self::dataset(&datasets, pool, &plugin_name).map_err(storage_error)?
                 {

@@ -12,13 +12,13 @@ use ployzd::{
 use tokio::process::Command;
 
 use super::{
-    Dataset, DockerVolumeName, VolumeStorage,
+    Dataset, VolumeName, VolumeStorage,
     inspect::internal,
     transfer::{Stop, ZfsChild},
 };
 
-pub(super) fn name(name: &ployz_core::DockerVolumeName) -> Result<DockerVolumeName, RpcError> {
-    name.as_str().parse().map_err(internal)
+pub(super) fn name(name: &ployz_core::DockerVolumeName) -> Result<VolumeName, RpcError> {
+    VolumeName::try_from(name).map_err(|error| internal(error.into()))
 }
 
 /// The arguments of the `zfs receive` that fills a slot's copy `fs` bounded by `bound`:
@@ -96,7 +96,7 @@ impl VolumeStorage {
         &self,
         pool: &MachinePool,
         datasets: &[Dataset],
-        name: &DockerVolumeName,
+        name: &VolumeName,
         root: &Dataset,
     ) -> super::Result<()> {
         let layout = DatasetLayout::of(pool);

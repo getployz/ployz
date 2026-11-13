@@ -12,7 +12,7 @@ use ployzd::{
 use serde::Serialize;
 
 use super::{
-    DockerVolumeName, ErrorResponse, HangUp, PluginError, Result, VolumeRequest, VolumeStorage,
+    ErrorResponse, HangUp, PluginError, Result, VolumeName, VolumeRequest, VolumeStorage,
     error_response, marks::Mark,
 };
 
@@ -36,7 +36,7 @@ impl VolumeStorage {
         Ok((guard, pool))
     }
 
-    async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
+    async fn remove(&self, name: &VolumeName) -> Result<()> {
         let _guard = self.admit_mutation().await?;
         let (_pool_guard, pool) = self.imported_pool().await?;
         let Some(pool) = pool else {
@@ -60,7 +60,7 @@ impl VolumeStorage {
         Ok(())
     }
 
-    async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
+    async fn inspect(&self, name: &VolumeName) -> Result<Option<PluginVolume>> {
         let (_pool_guard, pool) = self.imported_pool().await?;
         let Some(pool) = pool else {
             return Ok(None);
@@ -83,7 +83,7 @@ impl VolumeStorage {
         &self,
         datasets: &[super::Dataset],
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
     ) -> Result<Option<PluginVolume>> {
         let Some(fs) = Self::slot_fs(datasets, pool, name) else {
             return Ok(None);
@@ -135,7 +135,7 @@ impl VolumeStorage {
             if root.is_none() {
                 return Err(format!("ZFS did not report managed root dataset {root_name}").into());
             }
-            let name = name.parse::<DockerVolumeName>()?;
+            let name = name.parse::<VolumeName>()?;
             dataset.require_provisioned(&name)?;
             if self.marks(&dataset.name).unregistered().await? {
                 continue;
@@ -150,9 +150,9 @@ pub(super) async fn remove(
     State(storage): State<VolumeStorage>,
     Json(request): Json<VolumeRequest>,
 ) -> Json<ErrorResponse> {
-    let result = match request.name.parse::<DockerVolumeName>() {
+    let result = match request.name.parse::<VolumeName>() {
         Ok(name) => storage.remove(&name).await,
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     };
     error_response(result)
 }
@@ -162,7 +162,7 @@ pub(super) async fn get(
     request: std::result::Result<Json<VolumeRequest>, JsonRejection>,
 ) -> std::result::Result<Json<GetResponse>, HangUp> {
     let Json(request) = request.map_err(|rejection| HangUp(rejection.body_text()))?;
-    let (volume, error) = match request.name.parse::<DockerVolumeName>() {
+    let (volume, error) = match request.name.parse::<VolumeName>() {
         Err(error) => (None, ployz_core::error_chain::inline(&error)),
         Ok(name) => match storage.inspect(&name).await {
             Ok(Some(volume)) => (Some(volume), String::new()),
@@ -213,7 +213,7 @@ struct PluginVolume {
 }
 
 impl PluginVolume {
-    fn new(name: &DockerVolumeName, dataset: &super::Dataset) -> Self {
+    fn new(name: &VolumeName, dataset: &super::Dataset) -> Self {
         Self {
             name: name.to_string(),
             mountpoint: dataset.mountpoint.clone(),

@@ -18,8 +18,8 @@ use ployz_core::{
     ContainerKind, ContainerNow, ContainerWant, Namespace, QualifiedService, RunTarget, Sealing,
     ServiceName,
     authority::{
-        AuthorityRefusal, BuildClaim, CheckedReview, CommitAuthority, CommitSha, PreviewFacts,
-        PreviewKey, PreviewProof, PreviewRule, RestartStep, Timestamp,
+        AuthorityRefusal, CheckedReview, CommitAuthority, CommitSha, PreviewFacts, PreviewKey,
+        PreviewProof, PreviewRule, RestartStep, Timestamp,
         deploy::Creation,
         preview::{verify_accepted_review, verify_review},
         rule::verify_signature,
@@ -168,7 +168,7 @@ impl LocalMachine {
                 new.slot.service,
                 rule.rule,
                 rule.generation,
-                short(claim),
+                claim.commit.short(),
             );
             return Ok(want);
         };
@@ -231,7 +231,7 @@ impl LocalMachine {
             "step on {identity} admitted under preview rule {} gen {} commit {}",
             rule.rule,
             rule.generation,
-            short(claim),
+            claim.commit.short(),
         );
         Ok(pinned(want, observed.container_id))
     }
@@ -367,13 +367,6 @@ fn logged(rule: &PreviewRule, service: &ServiceName, refusal: AuthorityRefusal) 
         "preview deploy of {service} refused under the rule: {refusal}"
     );
     refused(refusal)
-}
-
-/// The first 12 hex digits of the claim's commit.
-fn short(claim: &BuildClaim) -> String {
-    let mut commit = claim.commit.to_string();
-    commit.truncate(12);
-    commit
 }
 
 /// What a refused preview says to the person who reads the Deployment or the build.

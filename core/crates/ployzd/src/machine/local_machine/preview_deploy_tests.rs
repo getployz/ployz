@@ -3,8 +3,8 @@
 use ployz_core::{
     Namespace,
     authority::{
-        AttestKey, ImageDigest, PreviewReview, PreviewRule, Review, ReviewedService, Signed,
-        preview::preview_namespace,
+        AttestKey, BuildClaim, ImageDigest, PreviewReview, PreviewRule, Review, ReviewedService,
+        Signed, preview::preview_namespace,
     },
 };
 use serde_json::{Value, json};

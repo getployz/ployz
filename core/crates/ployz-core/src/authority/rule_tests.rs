@@ -1282,3 +1282,9 @@ fn a_session_grant_approves_a_commit_only_in_the_rules_environment() {
         "a grant for another Environment"
     );
 }
+
+#[test]
+fn a_commit_shows_its_first_twelve_digits() {
+    let commit = CommitSha::parse(BUILDER_SHA).unwrap();
+    assert_eq!(commit.short(), "0123456789ab");
+}

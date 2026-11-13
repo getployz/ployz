@@ -34,6 +34,12 @@ impl From<String> for PluginError {
     }
 }
 
+impl From<ployzd::dataset_layout::InvalidVolumeName> for PluginError {
+    fn from(error: ployzd::dataset_layout::InvalidVolumeName) -> Self {
+        Self::Message(error.to_string())
+    }
+}
+
 impl From<&str> for PluginError {
     fn from(message: &str) -> Self {
         Self::Message(message.to_owned())

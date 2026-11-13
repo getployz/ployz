@@ -24,7 +24,7 @@ use tokio::{
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
 
-use super::{DockerVolumeName, VolumeStorage, storage::HeldMutation};
+use super::{VolumeName, VolumeStorage, storage::HeldMutation};
 
 /// The Volume and target a pull of `stream` lands, for the lane at `gen`.
 pub(super) fn pulling(stream: &SendStream, r#gen: VolumeGen) -> Identity<'_> {
@@ -205,23 +205,23 @@ impl Receives {
     /// The receive of `name`, whatever its target. A task that answered still runs until
     /// the children it dropped exit, and those can still change the slot, so its failure
     /// waits for them, but only for the hold.
-    pub(super) fn status(&self, name: &DockerVolumeName) -> Status {
+    pub(super) fn status(&self, name: &VolumeName) -> Status {
         let receives = self
             .receives
             .lock()
             .expect("receive registry is not poisoned");
         receives
-            .get(&name.0)
+            .get(name.as_str())
             .map_or(Status::Idle, |entry| self.read(&entry.receive))
     }
 
     /// The receive of `name` pulling `target`, read as [`Self::status`] reads it.
-    pub(super) fn status_of(&self, name: &DockerVolumeName, target: &SnapshotName) -> Status {
+    pub(super) fn status_of(&self, name: &VolumeName, target: &SnapshotName) -> Status {
         let receives = self
             .receives
             .lock()
             .expect("receive registry is not poisoned");
-        match receives.get(&name.0) {
+        match receives.get(name.as_str()) {
             Some(entry) if entry.target == *target => self.read(&entry.receive),
             Some(_) | None => Status::Idle,
         }
@@ -254,14 +254,14 @@ impl Receives {
     /// whether or not its failure already shows.
     pub(super) fn take_failure(
         &self,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         target: Option<&SnapshotName>,
     ) -> Result<Option<String>, Busy> {
         let mut receives = self
             .receives
             .lock()
             .expect("receive registry is not poisoned");
-        match receives.remove(&name.0) {
+        match receives.remove(name.as_str()) {
             None => Ok(None),
             Some(Entry {
                 target: failed,
@@ -274,7 +274,7 @@ impl Receives {
             }) if Some(&failed) == target && life.finished.is_cancelled() => Ok(Some(failure)),
             Some(entry) => {
                 let busy = entry.receive.unfinished();
-                receives.insert(name.0.clone(), entry);
+                receives.insert(name.to_string(), entry);
                 if busy { Err(Busy) } else { Ok(None) }
             }
         }
@@ -282,16 +282,16 @@ impl Receives {
 
     /// Drops `name`'s receive once it has finished. One whose task or dropped child is
     /// alive stays, so the departure still waits for it and its ending is not lost.
-    pub(super) fn forget(&self, name: &DockerVolumeName) {
+    pub(super) fn forget(&self, name: &VolumeName) {
         let mut receives = self
             .receives
             .lock()
             .expect("receive registry is not poisoned");
         if receives
-            .get(&name.0)
+            .get(name.as_str())
             .is_some_and(|entry| !entry.receive.unfinished())
         {
-            receives.remove(&name.0);
+            receives.remove(name.as_str());
         }
     }
 
@@ -309,7 +309,7 @@ impl Receives {
     pub(super) fn spawn<F>(
         &self,
         _held: &HeldMutation,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         target: &SnapshotName,
         work: impl FnOnce(Stop) -> F,
     ) -> Result<(), Busy>
@@ -331,13 +331,13 @@ impl Receives {
                 .lock()
                 .expect("receive registry is not poisoned");
             if receives
-                .get(&name.0)
+                .get(name.as_str())
                 .is_some_and(|entry| entry.receive.unfinished())
             {
                 return Err(Busy);
             }
             receives.insert(
-                name.0.clone(),
+                name.to_string(),
                 Entry {
                     target: target.clone(),
                     receive: Receive::Running { life },
@@ -347,7 +347,7 @@ impl Receives {
         let held = stop.clone();
         let work = work(stop);
         let receives = Arc::clone(&self.receives);
-        let name = name.0.clone();
+        let name = name.to_string();
         tokio::spawn(async move {
             let ending = match std::panic::AssertUnwindSafe(work).catch_unwind().await {
                 Ok(Ok(())) => Ending::Landed,

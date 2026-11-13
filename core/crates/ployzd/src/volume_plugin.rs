@@ -2,10 +2,9 @@
 
 use std::{
     collections::BTreeMap,
-    fmt, fs, io,
+    fs, io,
     os::unix::{fs::PermissionsExt, net::UnixListener as StdUnixListener},
     path::Path,
-    str::FromStr,
     time::Duration,
 };
 
@@ -38,10 +37,13 @@ mod storage;
 mod transfer;
 
 use error::PluginError;
-use ployzd::volume_copy::{
-    CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SNAPSHOT_ROUTE,
-    STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE, STORAGE_PREPARE_ROUTE, STORAGE_SEAL_ROUTE,
-    VOLUME_INSPECT_ROUTE, VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE,
+use ployzd::{
+    dataset_layout::VolumeName,
+    volume_copy::{
+        CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SNAPSHOT_ROUTE,
+        STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE, STORAGE_PREPARE_ROUTE, STORAGE_SEAL_ROUTE,
+        VOLUME_INSPECT_ROUTE, VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE,
+    },
 };
 use storage::{
     CapacityAdmission, Dataset, VolumeStorage, checked_command, checked_output, parse_size,
@@ -63,36 +65,6 @@ impl IntoResponse for HangUp {
         let mut response = Response::default();
         response.extensions_mut().insert(self);
         response
-    }
-}
-
-struct DockerVolumeName(String);
-
-impl FromStr for DockerVolumeName {
-    type Err = PluginError;
-
-    fn from_str(name: &str) -> Result<Self> {
-        let mut bytes = name.bytes();
-        if !bytes
-            .next()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric())
-            || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-        {
-            return Err(format!("invalid Docker Volume name {name:?}").into());
-        }
-        Ok(Self(name.to_owned()))
-    }
-}
-
-impl fmt::Display for DockerVolumeName {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl DockerVolumeName {
-    fn mountpoint(&self) -> String {
-        ployzd::dataset_layout::root_mountpoint(self)
     }
 }
 
@@ -264,9 +236,9 @@ async fn create(
     State(storage): State<VolumeStorage>,
     Json(request): Json<CreateRequest>,
 ) -> Json<ErrorResponse> {
-    let result = match request.name.parse::<DockerVolumeName>() {
+    let result = match request.name.parse::<VolumeName>() {
         Ok(name) => storage.create(&name, &request.options).await,
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     };
     error_response(result)
 }
@@ -284,9 +256,9 @@ async fn mount(
     State(storage): State<VolumeStorage>,
     Json(request): Json<VolumeRequest>,
 ) -> Json<MountResponse> {
-    let result = match request.name.parse::<DockerVolumeName>() {
+    let result = match request.name.parse::<VolumeName>() {
         Ok(name) => storage.mountpoint(&name).await,
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     };
     mount_response(result)
 }
