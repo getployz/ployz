@@ -17,6 +17,7 @@ use super::assess::{
     ZFS_SMOKE_BYTES, read_root_filesystem, read_secure_boot_variable, read_virtualization,
     root_reserve_blocker, secure_boot_blocker, virtualization_blocker, zfs_os_route,
 };
+use super::packages::PackageManager;
 use super::zfs_route::ZfsRoute;
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
@@ -352,7 +353,7 @@ pub(super) fn zfs_preflight(paths: &InstallPaths) -> Result<(OsRelease, ZfsRoute
     if let Some(reason) = virtualization_blocker(&virt) {
         return Err(refusal(reason));
     }
-    let package_manager = route.package_manager();
+    let package_manager = route.package_manager().command();
     if !command_exists(package_manager) {
         return Err(refuse(
             STAGE,
@@ -441,86 +442,46 @@ fn prepare_debian_zfs(
         let flavour = debian_kernel_flavour_step(kernel)?;
         enable_debian_contrib(apt_dir, codename, keyring)?;
         // The flavour's meta package pulls headers for future kernels, so DKMS can rebuild.
-        let step = "installing kernel headers";
-        run_apt(
-            step,
-            [
-                "install",
-                "-y",
-                "-qq",
-                "--no-install-recommends",
-                &format!("linux-headers-{kernel}"),
-                &format!("linux-headers-{flavour}"),
-            ],
-            None,
-        )
-        .map_err(failed(step))?;
+        run_step(
+            "installing kernel headers",
+            &mut PackageManager::Apt.install([
+                format!("linux-headers-{kernel}"),
+                format!("linux-headers-{flavour}"),
+            ]),
+        )?;
         if let Some(build) = prepared {
             let step = "installing the prepared ZFS build";
             super::prepare::install_prepared_build(&build, kernel).map_err(failed(step))?;
-            let step = "installing zfsutils-linux";
-            run_apt(
-                step,
-                [
-                    "install",
-                    "-y",
-                    "-qq",
-                    "--no-install-recommends",
-                    "zfsutils-linux",
-                ],
-                None,
-            )
-            .map_err(failed(step))?;
-            return Ok(());
+            return run_step(
+                "installing zfsutils-linux",
+                &mut PackageManager::Apt.install(["zfsutils-linux"]),
+            );
         }
         // run_apt's noninteractive frontend and closed stdin keep the CDDL debconf note from blocking.
-        let step = "installing zfs-dkms";
-        run_apt(
-            step,
-            [
-                "install",
-                "-y",
-                "-qq",
-                "--no-install-recommends",
-                "zfs-dkms",
-                "zfsutils-linux",
-            ],
-            None,
-        )
-        .map_err(failed(step))?;
-        install_packaged_build(kernel, ["dpkg", "-L"])
+        run_step(
+            "installing zfs-dkms",
+            &mut PackageManager::Apt.install(["zfs-dkms", "zfsutils-linux"]),
+        )?;
+        install_packaged_build(kernel, PackageManager::Apt)
     })
 }
 
 /// Installs the installed `zfs-dkms`'s own build for `kernel`, which its package manager skips
 /// when the package is already installed. The package's build is installed, never claimed.
-fn install_packaged_build(kernel: &str, list: [&str; 2]) -> Result<(), BuildFailure> {
+fn install_packaged_build(
+    kernel: &str,
+    package_manager: PackageManager,
+) -> Result<(), BuildFailure> {
     if zfs_installed(kernel) {
         return Ok(());
     }
-    let Some(version) = zfs_dkms_package_version(list) else {
+    let Some(version) = package_manager.zfs_dkms_version() else {
         return Ok(());
     };
     run_step(
         "installing the zfs-dkms build",
         Command::new("dkms").args(["install", "-m", "zfs", "-v", &version, "-k", kernel]),
     )
-}
-
-/// The DKMS version of the installed `zfs-dkms`, read from the source directory it ships.
-fn zfs_dkms_package_version([command, flag]: [&str; 2]) -> Option<String> {
-    let output = Command::new(command)
-        .args([flag, "zfs-dkms"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())?;
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("/usr/src/zfs-")
-                .filter(|version| !version.is_empty() && !version.contains('/'))
-                .map(str::to_owned)
-        })
 }
 
 pub(super) fn debian_contrib_source(apt_dir: &Path) -> PathBuf {
@@ -635,19 +596,22 @@ fn prepare_amazon_zfs(
                 scratch =
                     staging_directory(staging).map_err(failed("staging the OpenZFS build"))?;
                 let tarball = download_openzfs(scratch.path(), tarball_sha256)?;
-                let mut dependencies = Command::new("dnf");
-                dependencies
-                    .args(["install", "-y", &kernel_devel(kernel)])
-                    .args(OPENZFS_BUILD_DEPENDENCIES);
-                run_step("installing build dependencies", &mut dependencies)?;
+                run_step(
+                    "installing build dependencies",
+                    &mut PackageManager::Dnf.install(
+                        std::iter::once(kernel_devel(kernel))
+                            .chain(OPENZFS_BUILD_DEPENDENCIES.map(str::to_owned)),
+                    ),
+                )?;
                 make_openzfs_rpms(scratch.path(), &tarball)?
             }
         };
         // zfs-dkms's install builds and installs the module for the running kernel.
-        let mut install = Command::new("dnf");
-        install.args(["install", "-y"]).args(rpms);
-        run_step("installing the ZFS RPMs", &mut install)?;
-        install_packaged_build(kernel, ["rpm", "-ql"])?;
+        run_step(
+            "installing the ZFS RPMs",
+            &mut PackageManager::Dnf.install(rpms),
+        )?;
+        install_packaged_build(kernel, PackageManager::Dnf)?;
         // The RPMs enable zfs-import-cache, zfs-mount and zfs.target, but those skip unless the
         // module is loaded, and upstream leaves loading it at boot commented out. Debian's
         // zfs-load-module.service does this there.
@@ -898,17 +862,9 @@ pub(super) fn install_zfs_packages(kernel: &str, staging: &Path) -> Result<(), E
                 "Ubuntu has no packaged ZFS module for the running kernel {kernel}; install a supported Ubuntu kernel and retry"
             )))
     })?;
-    run_apt(
+    run_command(
         "install ZFS packages",
-        [
-            "install",
-            "-y",
-            "-qq",
-            "--no-install-recommends",
-            "zfsutils-linux",
-            &package,
-        ],
-        None,
+        &mut PackageManager::Apt.install(["zfsutils-linux", &package]),
     )?;
     let files = command_stdout(
         "verify installed Ubuntu ZFS module package",

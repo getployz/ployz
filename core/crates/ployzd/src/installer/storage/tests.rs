@@ -700,6 +700,22 @@ esac"#,
         ]);
         let zfs = installs(&["zfs-dkms", "zfsutils-linux"]);
         assert!(headers < zfs, "{name}: headers after zfs-dkms\n{apt}");
+        let install =
+            "noninteractive -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends";
+        let call = |at: usize| calls.get(at).map(|words| words.join(" "));
+        assert_eq!(
+            call(headers),
+            Some(format!(
+                "{install} linux-headers-{} linux-headers-{}",
+                case.kernel, case.flavour
+            )),
+            "{name}"
+        );
+        assert_eq!(
+            call(zfs),
+            Some(format!("{install} zfs-dkms zfsutils-linux")),
+            "{name}"
+        );
         let dkms = read_log(root, "dkms.log");
         if name == "packaged-unbuilt" {
             assert_eq!(
@@ -1103,9 +1119,12 @@ done"#,
             let [dependencies, packages] = installs.as_slice() else {
                 panic!("unexpected dnf installs:\n{dnf}");
             };
-            assert!(
-                dependencies.contains(&format!("kernel-devel-uname-r = {AMAZON_KERNEL}")),
-                "{dependencies}"
+            assert_eq!(
+                *dependencies,
+                format!(
+                    "install -y kernel-devel-uname-r = {AMAZON_KERNEL} {}",
+                    OPENZFS_BUILD_DEPENDENCIES.join(" ")
+                )
             );
             packages
         };

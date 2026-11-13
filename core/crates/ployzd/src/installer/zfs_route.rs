@@ -1,5 +1,7 @@
 use ployz_core::probe_document::OsRelease;
 
+use super::packages::PackageManager;
+
 #[derive(Clone, Copy)]
 pub(super) enum ZfsRoute {
     /// Canonical's prebuilt module package for the running kernel.
@@ -45,10 +47,10 @@ impl ZfsRoute {
         }
     }
 
-    pub(super) fn package_manager(self) -> &'static str {
+    pub(super) fn package_manager(self) -> PackageManager {
         match self {
-            Self::Ubuntu | Self::Debian { .. } => "apt-get",
-            Self::AmazonLinux => "dnf",
+            Self::Ubuntu | Self::Debian { .. } => PackageManager::Apt,
+            Self::AmazonLinux => PackageManager::Dnf,
         }
     }
 }
@@ -71,7 +73,7 @@ mod tests {
         assert!(matches!(ubuntu, ZfsRoute::Ubuntu));
         assert!(!ubuntu.builds_module());
         assert_eq!(
-            (ubuntu.prepare_minutes(), ubuntu.package_manager()),
+            (ubuntu.prepare_minutes(), ubuntu.package_manager().command()),
             (1, "apt-get")
         );
         let bookworm = ZfsRoute::for_os(&os("debian", "Debian", Some("12"))).unwrap();
@@ -92,13 +94,13 @@ mod tests {
         ));
         assert!(trixie.builds_module());
         assert_eq!(
-            (trixie.prepare_minutes(), trixie.package_manager()),
+            (trixie.prepare_minutes(), trixie.package_manager().command()),
             (10, "apt-get")
         );
         let amazon = ZfsRoute::for_os(&os("amzn", "Amazon Linux", Some("2023"))).unwrap();
         assert!(matches!(amazon, ZfsRoute::AmazonLinux));
         assert_eq!(
-            (amazon.prepare_minutes(), amazon.package_manager()),
+            (amazon.prepare_minutes(), amazon.package_manager().command()),
             (20, "dnf")
         );
         assert!(ZfsRoute::for_os(&os("debian", "Debian", Some("11"))).is_none());

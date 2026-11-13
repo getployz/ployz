@@ -4,6 +4,7 @@ mod assess;
 mod compensation;
 mod host;
 mod os_release;
+mod packages;
 mod prepare;
 mod release;
 mod storage;
