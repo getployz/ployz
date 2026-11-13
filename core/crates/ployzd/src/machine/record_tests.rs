@@ -98,6 +98,112 @@ fn key_text(byte: u8) -> String {
     format!("[{}]", vec![byte.to_string(); 32].join(","))
 }
 
+const EDGE: &str = concat!(
+    r#"{"labels":{},"accepts_builds":true,"accepts_services":true,"accepts_ingress":true,"#,
+    r#""id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","name":"edge","subnet":"10.210.1.0/24","#,
+    r#""public_key":[19,190,79,234,234,242,4,199,253,51,88,252,156,0,114,24,129,209,116,39,129,40,34,126,198,116,243,127,127,233,123,109],"#,
+    r#""public_ip":null,"advertised_endpoints":["192.0.2.4:51820"],"#,
+    r#""runtime":{"daemon_version":"","docker_version":"","hostname":"","architecture":"","os_pretty_name":"","kernel_version":"","memory_total_bytes":null,"running_builds":0,"pool_committable_bytes":null,"sealing":null,"store_filesystem":null,"store_syncs_commits":null,"capabilities":[],"device_enforcement":null,"management_identity":null,"leaving":false},"#,
+    r#""build_concurrency":null}"#,
+);
+
+const PEER: &str = concat!(
+    r#"{"labels":{},"accepts_builds":true,"accepts_services":true,"accepts_ingress":true,"#,
+    r#""id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","name":"peer","subnet":"10.210.2.0/24","#,
+    r#""public_key":[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],"#,
+    r#""public_ip":null,"advertised_endpoints":["192.0.2.4:51820"],"#,
+    r#""runtime":{"daemon_version":"","docker_version":"","hostname":"","architecture":"","os_pretty_name":"","kernel_version":"","memory_total_bytes":null,"running_builds":0,"pool_committable_bytes":null,"sealing":null,"store_filesystem":null,"store_syncs_commits":null,"capabilities":[],"device_enforcement":null,"management_identity":null,"leaving":false},"#,
+    r#""build_concurrency":null}"#,
+);
+
+/// A record's bytes as the daemon serializes them: `body`, then the keys and the defaults
+/// a record born today holds.
+fn record_text(body: &str) -> String {
+    format!(
+        concat!(
+            r#"{{"body":{body},"wireguard_private_key":{private},"management_secret":{secret},"#,
+            r#""management_clients":{{}},"pinned_addresses":{{"public_ip":false,"advertised_endpoints":false}},"#,
+            r#""device_slots_vetted":true,"device_enforcement":false,"trusted_machines":[],"#,
+            r#""membership_cluster":null,"enrollment":null,"trusted_snapshot":{{}}}}"#,
+        ),
+        body = body,
+        private = key_text(7),
+        secret = key_text(9),
+    )
+}
+
+/// One checked-in body per phase, each Participating origin, and Resetting around each.
+fn phase_bodies() -> Vec<(String, String)> {
+    let uninitialized = r#"{"phase":"uninitialized","id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+    let joining = format!(
+        r#"{{"phase":"joining","machine":{EDGE},"bootstrap":[{PEER}],"min_store_version":{{"actor":4}}}}"#
+    );
+    let joined = format!(
+        r#"{{"phase":"participating","machine":{EDGE},"origin":"join","bootstrap":[{PEER}]}}"#
+    );
+    let founded = format!(
+        r#"{{"phase":"participating","machine":{EDGE},"origin":"founder","cluster":{{"network":"10.210.0.0/16"}}}}"#
+    );
+    let live = [
+        ("uninitialized".to_owned(), uninitialized.to_owned()),
+        ("joining".to_owned(), joining),
+        ("participating after a join".to_owned(), joined),
+        ("participating as the founder".to_owned(), founded),
+    ];
+    let resetting = live.iter().map(|(name, body)| {
+        (
+            format!("resetting from {name}"),
+            format!(r#"{{"phase":"resetting","prior":{body}}}"#),
+        )
+    });
+    live.iter().cloned().chain(resetting).collect()
+}
+
+#[test]
+fn a_record_in_each_phase_reads_and_writes_back_byte_for_byte() {
+    for (name, body) in phase_bodies() {
+        let text = record_text(&body);
+        let record: LocalMachineRecord = serde_json::from_str(&text).unwrap();
+        assert_eq!(serde_json::to_string(&record).unwrap(), text, "{name}");
+    }
+}
+
+#[test]
+fn a_record_in_each_phase_reads_the_fields_the_phases_share() {
+    let id = MachineId::parse("a".repeat(32)).unwrap();
+    let peer = MachineId::parse("b".repeat(32)).unwrap();
+    let network: Ipv4Net = "10.210.0.0/16".parse().unwrap();
+    let expected = [
+        (None, None, vec![], 0),
+        (None, Some(id), vec![peer], 1),
+        (None, Some(id), vec![peer], 0),
+        (Some(network), Some(id), vec![], 0),
+    ];
+    for ((name, body), (cluster_network, machine, bootstrap, store_versions)) in
+        phase_bodies().into_iter().zip(expected.iter().cycle())
+    {
+        let record: LocalMachineRecord = serde_json::from_str(&record_text(&body)).unwrap();
+        assert_eq!(record.id(), id, "{name}");
+        assert_eq!(record.cluster_network(), *cluster_network, "{name}");
+        assert_eq!(
+            record.machine().map(|machine| machine.id),
+            *machine,
+            "{name}"
+        );
+        assert_eq!(
+            record
+                .body()
+                .bootstrap()
+                .iter()
+                .map(|machine| machine.id)
+                .collect::<Vec<_>>(),
+            *bootstrap,
+            "{name}"
+        );
+        assert_eq!(record.min_store_version().len(), *store_versions, "{name}");
+    }
+}
+
 #[test]
 fn every_management_client_slot_state_is_written_as_arrays_of_key_bytes() {
     let mut row = golden();
