@@ -9,6 +9,7 @@ mod convert;
 mod pg;
 mod sqlite;
 mod steps;
+pub(crate) mod tables;
 
 pub use convert::Converted;
 use ployz_core::RpcError;
