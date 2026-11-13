@@ -13,7 +13,7 @@ use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 use tokio::process::Command;
 
 use super::{
-    Dataset, DockerVolumeName, VolumeStorage,
+    Dataset, VolumeName, VolumeStorage,
     inspect::{answering, internal},
     marks::{Mark, Marks},
     slot,
@@ -133,7 +133,7 @@ struct Stale {
 impl Stale {
     /// Destroys the slot so the copy starts over, unless its `fs` holds a point this Machine
     /// may alone hold.
-    async fn clear(self, storage: &VolumeStorage, into: &DockerVolumeName) -> Result<(), RpcError> {
+    async fn clear(self, storage: &VolumeStorage, into: &VolumeName) -> Result<(), RpcError> {
         if let Some(fs) = &self.fs
             && storage.written_here(fs).await.map_err(internal)?
         {
@@ -219,7 +219,7 @@ impl VolumeStorage {
         _held: &HeldMutation,
         pool: &MachinePool,
         datasets: &[Dataset],
-        into: &DockerVolumeName,
+        into: &VolumeName,
         guid: SnapshotGuid,
     ) -> Result<SeedProgress, RpcError> {
         let root = DatasetLayout::of(pool).root(into);
@@ -285,8 +285,8 @@ impl VolumeStorage {
         &self,
         pool: &MachinePool,
         datasets: &[Dataset],
-        name: &DockerVolumeName,
-        into: &DockerVolumeName,
+        name: &VolumeName,
+        into: &VolumeName,
         guid: SnapshotGuid,
     ) -> Result<Source, RpcError> {
         let root = DatasetLayout::of(pool).root(name);
@@ -321,7 +321,7 @@ impl VolumeStorage {
         &self,
         held: &HeldMutation,
         pool: &MachinePool,
-        into: &DockerVolumeName,
+        into: &VolumeName,
         source: Source,
     ) -> Result<VolumeCopyView, RpcError> {
         let parent = DatasetLayout::of(pool).slot_parent(into);
@@ -347,7 +347,7 @@ impl VolumeStorage {
     async fn seeded(
         &self,
         pool: &MachinePool,
-        into: &DockerVolumeName,
+        into: &VolumeName,
     ) -> Result<VolumeCopyView, RpcError> {
         let copy = self.current_copy(pool, into).await.map_err(internal)?;
         Ok(VolumeCopyView { copy })

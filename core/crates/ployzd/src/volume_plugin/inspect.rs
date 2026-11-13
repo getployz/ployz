@@ -8,7 +8,7 @@ use ployz_core::{
 use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
 use super::{
-    Dataset, DockerVolumeName, PluginError, Result, VolumeStorage, marks::Mark, transfer::Status,
+    Dataset, PluginError, Result, VolumeName, VolumeStorage, marks::Mark, transfer::Status,
 };
 
 /// The `ployz:*` marks [`RootCopy::parse`] reads off a root. They narrow which steps can
@@ -217,7 +217,7 @@ impl VolumeStorage {
     async fn pull(
         &self,
         slot: &Dataset,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         newest: Option<&Snapshot>,
         resumable: bool,
     ) -> Result<Option<(Pull, PullState)>> {
@@ -248,7 +248,7 @@ impl VolumeStorage {
         &self,
         datasets: &[Dataset],
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
     ) -> Result<Option<VolumeCopy>> {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
             root.require_provisioned(name)?;
@@ -289,7 +289,7 @@ impl VolumeStorage {
     pub(super) fn slot<'datasets>(
         datasets: &'datasets [Dataset],
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
     ) -> Option<&'datasets Dataset> {
         let parent = DatasetLayout::of(pool).slot_parent(name);
         datasets.iter().find(|dataset| dataset.name == parent)
@@ -299,7 +299,7 @@ impl VolumeStorage {
     pub(super) fn slot_fs<'datasets>(
         datasets: &'datasets [Dataset],
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
     ) -> Option<&'datasets Dataset> {
         let fs = DatasetLayout::of(pool).slot_fs(name);
         datasets.iter().find(|dataset| dataset.name == fs)
@@ -312,7 +312,7 @@ impl VolumeStorage {
     pub(super) async fn current_copy(
         &self,
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
     ) -> Result<Option<VolumeCopy>> {
         let busy = self.receives.status(name).busy();
         let copy = self.copy(&self.datasets(pool).await?, pool, name).await?;
@@ -322,7 +322,7 @@ impl VolumeStorage {
         Ok(copy)
     }
 
-    async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<VolumeCopyView> {
+    async fn inspect_copy(&self, name: &VolumeName) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(VolumeCopyView { copy: None });
@@ -337,9 +337,9 @@ pub(super) async fn inspect(
     State(storage): State<VolumeStorage>,
     Json(request): Json<InspectVolumeCopyRequest>,
 ) -> Json<std::result::Result<VolumeCopyView, RpcError>> {
-    let result = match request.name.as_str().parse::<DockerVolumeName>() {
+    let result = match request.name.as_str().parse::<VolumeName>() {
         Ok(name) => storage.inspect_copy(&name).await.map_err(internal),
-        Err(error) => Err(internal(error)),
+        Err(error) => Err(internal(PluginError::from(error))),
     };
     Json(result)
 }

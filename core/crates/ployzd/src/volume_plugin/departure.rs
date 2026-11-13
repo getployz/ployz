@@ -27,7 +27,7 @@ use axum::{Json, extract::State};
 use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
 use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
-use super::{Dataset, DockerVolumeName, VolumeStorage, inspect::internal};
+use super::{Dataset, VolumeName, VolumeStorage, inspect::internal};
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
 pub(super) const DEPARTURE_SNAPSHOT_PREFIX: &str = "dep-";
@@ -78,7 +78,7 @@ impl VolumeStorage {
             .filter(|name| !stuck.iter().any(|stuck| stuck == name))
             .collect::<BTreeSet<&str>>()
             .into_iter()
-            .map(str::parse::<DockerVolumeName>)
+            .map(|name| name.parse::<VolumeName>().map_err(super::PluginError::from))
             .collect::<super::Result<Vec<_>>>()?;
         let mut departure = StorageDeparture {
             stuck: stuck
@@ -140,7 +140,7 @@ impl VolumeStorage {
     async fn demote_copy(
         &self,
         pool: &MachinePool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         now_unix_seconds: i64,
         mirrors: Mirrors,
     ) -> super::Result<bool> {
@@ -183,7 +183,7 @@ impl VolumeStorage {
         &self,
         pool: &MachinePool,
         datasets: &'datasets [Dataset],
-        name: &DockerVolumeName,
+        name: &VolumeName,
     ) -> super::Result<Departure<'datasets>> {
         let root = Self::dataset(datasets, pool, name)?;
         let slot = Self::slot(datasets, pool, name);
@@ -243,7 +243,7 @@ impl VolumeStorage {
     async fn freeze_root(
         &self,
         root: &Dataset,
-        name: &DockerVolumeName,
+        name: &VolumeName,
         now_unix_seconds: i64,
     ) -> super::Result<()> {
         root.require_provisioned(name)?;

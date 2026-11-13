@@ -19,7 +19,7 @@ use ployzd::{
 };
 
 use super::{
-    Dataset, DockerVolumeName, PluginError, VolumeStorage,
+    Dataset, PluginError, VolumeName, VolumeStorage,
     inspect::{answering, internal},
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
@@ -92,7 +92,7 @@ pub(super) async fn destroy(
 struct Admitted {
     held: super::storage::HeldMutation,
     installation: ployzd::mutation::MutationGuard,
-    name: DockerVolumeName,
+    name: VolumeName,
 }
 
 /// What a route sees once it holds the plugin's mutation and the daemon's installation.
@@ -101,7 +101,7 @@ struct Scope {
     _installation: ployzd::mutation::MutationGuard,
     pool: MachinePool,
     datasets: Vec<Dataset>,
-    name: DockerVolumeName,
+    name: VolumeName,
 }
 
 impl Scope {
@@ -132,7 +132,7 @@ fn no_pool() -> RpcError {
     internal("no usable existing Machine Pool".into())
 }
 
-fn no_room(bound: u64, name: &DockerVolumeName) -> RpcError {
+fn no_room(bound: u64, name: &VolumeName) -> RpcError {
     refuse(
         CopyRefusal::NoCapacity,
         None,
@@ -170,11 +170,7 @@ impl VolumeStorage {
         }
     }
 
-    async fn first_pool(
-        &self,
-        bound: u64,
-        name: &DockerVolumeName,
-    ) -> Result<MachinePool, RpcError> {
+    async fn first_pool(&self, bound: u64, name: &VolumeName) -> Result<MachinePool, RpcError> {
         let _pool_guard = self.pool.lock_mutation().await.map_err(internal)?;
         if let Some(pool) = self.pool.one_usable().await.map_err(internal)? {
             return Ok(pool);
@@ -507,7 +503,7 @@ impl VolumeStorage {
         root: &str,
         mountpoint: &str,
         readonly: bool,
-        name: &DockerVolumeName,
+        name: &VolumeName,
     ) -> Result<(), RpcError> {
         if mountpoint != name.mountpoint() {
             self.z(&["inherit", "mountpoint", root]).await?;

@@ -80,7 +80,7 @@ async fn an_inspect_a_breaking_receive_lands_between_answers_the_copy_before_or_
     let receives = storage.receives.clone();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let inspect = || post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"}));
 
     let pull = json!({"name": "data", "from": "::1", "target": "w-1-1"});
@@ -134,7 +134,7 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
     let receives = storage.receives.clone();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let inspect = || post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"}));
 
     let pull = json!({"name": "data", "from": "::1", "target": "w-1-1"});
@@ -222,7 +222,7 @@ async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_h
     let receives = storage.receives.clone();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let inspect = || post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"}));
 
     let pull = json!({"name": "data", "from": "::1", "target": "w-1-1"});

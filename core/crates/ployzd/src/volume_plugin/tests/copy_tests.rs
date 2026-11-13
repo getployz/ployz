@@ -1291,7 +1291,7 @@ async fn a_pull_a_seal_stopped_reads_unattended() {
 #[tokio::test]
 async fn a_failure_is_read_and_taken_only_for_its_own_target() {
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let other: ployz_core::SnapshotName = "w-1-2".parse().unwrap();
     receives
         .spawn(&mutation().await, &name, &target(), |_stop| async {
@@ -1760,7 +1760,7 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
         // A receive still running at the scan lands now, and its task marks the pull
         // before the departure goes on, so stopping it can no longer beat that mark.
         fs::remove_file(test.0.join("props/stall-read")).unwrap();
-        let name: DockerVolumeName = "data".parse().unwrap();
+        let name: VolumeName = "data".parse().unwrap();
         eventually(&format!("{mark}: the receive task's finish"), || {
             !receives.status(&name).busy()
         })
@@ -2134,7 +2134,7 @@ async fn stopped_after(receives: &Receives, pid: u32) -> bool {
 #[tokio::test]
 async fn a_zfs_child_dropped_without_a_reap_is_killed() {
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let mut pid = 0;
     receives
         .spawn(&mutation().await, &name, &target(), |stop| {
@@ -2152,7 +2152,7 @@ async fn a_zfs_child_dropped_without_a_reap_is_killed() {
 #[tokio::test]
 async fn a_receive_task_finishes_only_once_a_dropped_child_exits() {
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let mut pid = 0;
     receives
         .spawn(&mutation().await, &name, &target(), |stop| {
@@ -2175,7 +2175,7 @@ async fn a_receive_task_finishes_only_once_a_dropped_child_exits() {
 #[tokio::test]
 async fn a_receive_task_whose_second_spawn_fails_finishes_once_the_first_child_exits() {
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let mut pid = 0;
     receives
         .spawn(&mutation().await, &name, &target(), |stop| {
@@ -2199,7 +2199,7 @@ async fn a_receive_task_whose_second_spawn_fails_finishes_once_the_first_child_e
 #[tokio::test]
 async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let mut pid = 0;
     receives
         .spawn(&mutation().await, &name, &target(), |stop| {
@@ -2250,7 +2250,7 @@ async fn a_reap_whose_kill_fails_holds_its_task_until_the_child_exits() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     receives
         .spawn(&mutation().await, &name, &target(), |stop| {
             let mut child = held_child(&stop, &gate);
@@ -2278,7 +2278,7 @@ async fn a_reap_whose_wait_fails_holds_its_task_until_the_child_exits() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     receives
         .spawn(&mutation().await, &name, &target(), |stop| {
             let mut child = held_child(&stop, &gate);
@@ -2305,7 +2305,7 @@ async fn a_dropped_child_whose_wait_fails_holds_its_task_until_it_exits() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     receives
         .spawn(&mutation().await, &name, &target(), |stop| {
             let mut child = held_child(&stop, &gate);
@@ -2333,7 +2333,7 @@ async fn a_dropped_child_whose_kill_fails_holds_its_task_until_it_exits() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     let capture = Capture::default();
     let _logs = tracing::subscriber::set_default(
         tracing_subscriber::fmt()
@@ -2391,7 +2391,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
 /// A task of `name` that panics while `gate` holds its child, answered once it panicked
 /// and the child is still alive. The test's runtime runs one task at a time, so the panic
 /// is recorded by then.
-async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName, gate: &Path) {
+async fn panicked_with_a_held_child(receives: &Receives, name: &VolumeName, gate: &Path) {
     let panicked = Arc::new(AtomicBool::new(false));
     receives
         .spawn(&mutation().await, name, &target(), |stop| {
@@ -2425,7 +2425,7 @@ async fn a_panicked_task_reads_as_running_until_its_child_exits() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     panicked_with_a_held_child(&receives, &name, &gate).await;
     assert!(
         receives.status(&name).busy(),
@@ -2444,7 +2444,7 @@ async fn a_failure_whose_child_is_alive_is_neither_taken_nor_forgotten() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     panicked_with_a_held_child(&receives, &name, &gate).await;
     assert!(matches!(
         receives.take_failure(&name, Some(&target())),
@@ -2475,7 +2475,7 @@ async fn a_spawn_over_a_task_whose_child_is_alive_answers_busy() {
     let test = TestDir::new();
     let gate = test.0.join("gate");
     let receives = Receives::default();
-    let name: DockerVolumeName = "data".parse().unwrap();
+    let name: VolumeName = "data".parse().unwrap();
     panicked_with_a_held_child(&receives, &name, &gate).await;
     let ran = Arc::new(AtomicBool::new(false));
     let spawned = receives.spawn(&mutation().await, &name, &target(), |_stop| {

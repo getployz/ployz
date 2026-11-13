@@ -5,7 +5,10 @@
 //! `<pool>/ployz-mirror/<name>` whose received copy is the `fs` child. Every route that
 //! names or reads one of these goes through here.
 
-use std::fmt::Display;
+use std::{
+    fmt::{self, Display},
+    str::FromStr,
+};
 
 use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
 
@@ -20,6 +23,62 @@ pub const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
 pub const MIRROR_MOUNT_ROOT: &str = "/var/lib/ployz-mirror";
 
 const SLOT_FS: &str = "fs";
+
+/// A Docker Volume name safe to use as one ZFS dataset segment and one path component:
+/// ASCII letters and digits first, then letters, digits, `_`, `.` and `-`. Core's
+/// `DockerVolumeName` accepts any non-empty text, so a name from the wire passes through
+/// here before it names a dataset.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VolumeName(String);
+
+/// The text that is not a [`VolumeName`].
+#[derive(Debug, thiserror::Error)]
+#[error("invalid Docker Volume name {0:?}")]
+pub struct InvalidVolumeName(String);
+
+impl FromStr for VolumeName {
+    type Err = InvalidVolumeName;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        let mut bytes = name.bytes();
+        if !bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+        {
+            return Err(InvalidVolumeName(name.to_owned()));
+        }
+        Ok(Self(name.to_owned()))
+    }
+}
+
+impl TryFrom<&ployz_core::DockerVolumeName> for VolumeName {
+    type Error = InvalidVolumeName;
+
+    fn try_from(name: &ployz_core::DockerVolumeName) -> Result<Self, Self::Error> {
+        name.as_str().parse()
+    }
+}
+
+impl fmt::Display for VolumeName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl VolumeName {
+    /// The name as the text Docker sent.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Where Docker mounts this Volume's writer root.
+    #[must_use]
+    pub fn mountpoint(&self) -> String {
+        root_mountpoint(self)
+    }
+}
 
 /// The dataset names of one Machine Pool.
 #[derive(Clone, Copy, Debug)]
@@ -303,6 +362,38 @@ mod tests {
             None
         );
         assert_eq!(Place::Outside.writer_root(), None);
+    }
+
+    #[test]
+    fn the_volume_name_gate_accepts_and_refuses_today_s_names() {
+        for name in [
+            "data", "0", "a", "Z9", "a-b", "a_b", "a.b", "9lives", "data.v2", "a--b", "a..b", "x_",
+            "x-", "x.",
+        ] {
+            assert_eq!(
+                name.parse::<VolumeName>().unwrap().to_string(),
+                name,
+                "{name:?}"
+            );
+            let wire = ployz_core::DockerVolumeName::parse(name).unwrap();
+            assert_eq!(VolumeName::try_from(&wire).unwrap().to_string(), name);
+        }
+        for name in [
+            "", "-a", "_a", ".a", "..", "../data", "a/b", "/a", "a b", " a", "a\n", "a:b", "a@b",
+            "a#b", "a%b", "é", "aé", "a\0",
+        ] {
+            let error = name.parse::<VolumeName>().err().unwrap();
+            assert_eq!(
+                error.to_string(),
+                format!("invalid Docker Volume name {name:?}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_volume_name_mounts_under_the_writer_mount_root() {
+        let name: VolumeName = "data".parse().unwrap();
+        assert_eq!(name.mountpoint(), "/var/lib/ployz-volumes/data");
     }
 
     #[test]
