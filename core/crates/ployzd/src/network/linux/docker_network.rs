@@ -20,7 +20,7 @@ use crate::docker_image::is_not_found;
 use crate::network::{
     DOCKER_NETWORK_NAME, NetworkError, WIREGUARD_INTERFACE_NAME, checked_command,
     docker_firewall::Ipv6Off,
-    firewall::{docker_ipv6_firewall, fence_container_ipv6},
+    firewall::{BridgeFence, docker_ipv6_firewall, fence_container_ipv6},
 };
 
 use super::NetworkPlane;
@@ -516,7 +516,7 @@ impl NetworkPlane {
     pub(super) async fn ensure_docker_network(
         &self,
         data_dir: &Path,
-    ) -> Result<bool, NetworkError> {
+    ) -> Result<(bool, BridgeFence), NetworkError> {
         // The fence goes in before any container holds IPv6 that NAT66 could carry
         // into the mesh, including one an earlier start gave IPv6; without it the
         // bridge stays IPv4-only.
@@ -544,7 +544,12 @@ impl NetworkPlane {
             .await?;
         self.pin_members(&mut stopped, pins).await;
         stopped.start(&self.docker).await;
-        Ok(created)
+        let fence = if fenced {
+            BridgeFence::Required
+        } else {
+            BridgeFence::IfAvailable
+        };
+        Ok((created, fence))
     }
 
     async fn ensure_docker_network_shape(

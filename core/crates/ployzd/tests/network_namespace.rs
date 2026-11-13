@@ -8,7 +8,7 @@ use defguard_wireguard_rs::{
     Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
 };
 use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
-use ployzd::network::{NetworkError, apply_firewall_rules, fence_builder};
+use ployzd::network::{BridgeFence, NetworkError, apply_firewall_rules, fence_builder};
 
 const TEST_NAME: &str = "mesh_firewall_policy";
 const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
@@ -75,6 +75,7 @@ fn firewall_surfaces_command_start_errors() {
         let error = apply_firewall_rules(
             "10.210.2.0/24".parse().unwrap(),
             ManagementAddress("fdcc::2".parse().unwrap()),
+            BridgeFence::IfAvailable,
         )
         .unwrap_err();
         assert!(matches!(error, NetworkError::Io(_)));
@@ -101,6 +102,7 @@ fn mesh_firewall_policy() {
         apply_firewall_rules(
             subnet.parse().unwrap(),
             ManagementAddress(management_address),
+            BridgeFence::IfAvailable,
         )
         .unwrap();
         return;

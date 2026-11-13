@@ -24,7 +24,7 @@ mod path;
 
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
-pub use firewall::{Installed, Restored, apply_firewall_rules, fence_builder};
+pub use firewall::{BridgeFence, Installed, Restored, apply_firewall_rules, fence_builder};
 pub use linux::{Leftover, NetworkPlane};
 pub(crate) use path::PathBook;
 
@@ -97,6 +97,10 @@ pub enum NetworkError {
     Docker(#[from] bollard::errors::Error),
     #[error("WireGuard operation failed")]
     WireGuard(#[from] defguard_wireguard_rs::error::WireguardInterfaceError),
+    #[error(
+        "the Docker bridge was fenced from the mesh, but the fence can no longer be kept: {cause}"
+    )]
+    BridgeUnfenced { cause: String },
     #[error("endpoint discovery request failed")]
     Http(#[from] reqwest::Error),
     #[error("endpoint discovery output is invalid")]

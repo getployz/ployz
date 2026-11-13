@@ -98,8 +98,8 @@ impl NetworkPlane {
         };
         // Boxed: settling the bridge is a large future, and inline it overflows the
         // stack of a daemon start.
-        let docker_created = match Box::pin(plane.ensure_docker_network(data_dir)).await {
-            Ok(created) => created,
+        let (docker_created, fence) = match Box::pin(plane.ensure_docker_network(data_dir)).await {
+            Ok(settled) => settled,
             Err(error) => {
                 if wireguard_created {
                     let _ = plane.wireguard.remove_interface();
@@ -116,8 +116,11 @@ impl NetworkPlane {
                 .await;
             return Err(error);
         }
-        match super::apply_firewall_rules(plane.machine.subnet, plane.machine.management_address())
-        {
+        match super::apply_firewall_rules(
+            plane.machine.subnet,
+            plane.machine.management_address(),
+            fence,
+        ) {
             Ok(installed) => plane.firewall = Some(installed),
             Err(error) => {
                 plane
