@@ -161,6 +161,7 @@ src/sealing_backfill.rs::observe	op::DescribeContract	read	unary	budget(target_r
 src/sealing_backfill.rs::observe	op::Inspect	read	unary	budget(target_read_timeout)	redial	read
 src/sealing_backfill.rs::share	op::ShareSealingKey	read	unary	budget(target_read_timeout)	redial	keyed
 src/sealing_pin.rs::entry_pin	op::Inspect	call	setup	wait(WAIT)	redial	read
+src/sealing_pin_tests.rs::an_activated_entry_without_a_recipient_key_gives_no_pin	op::Inspect	call	unary	-	redial	read
 tests/certificates_cluster.rs::clear_material	op::PublishCertificateMaterial	call	unary	-	redial	keyed
 tests/certificates_cluster.rs::publish_material	op::PublishCertificateMaterial	call	unary	-	redial	keyed
 tests/cloud_init/founder_resumption.rs::new_founding_claim_with_reset_resets_then_initializes	op::Enroll	call	unary	-	redial	keyed
