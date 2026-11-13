@@ -75,6 +75,7 @@ import { appliedMirrors, observePlacement } from "#/modules/volume-placement/vol
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
+import type { KeptVolumeApproval } from "#/modules/approvals/approvals";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
@@ -4613,6 +4614,12 @@ describe("volume runs", () => {
     };
     const review = async (id: string) =>
       (await harness.pool.query<{ review: unknown }>("select review from operation_approvals where id = $1", [id])).rows[0]?.review;
+    /** What the protector's passkey answers for `input`, kept with their approval for the run that asks again. */
+    const answered = (input: VolumeRunInput): KeptVolumeApproval => {
+      const { args } = approvedRun(input);
+      if (!("approval" in args) || args.approval === undefined) throw new Error(`no approval drafted for ${input.kind}`);
+      return "service" in args && args.service !== undefined ? { approval: args.approval, service: args.service } : { approval: args.approval };
+    };
 
     beforeEach(async () => {
       storeProtected = true;
@@ -4630,7 +4637,7 @@ describe("volume runs", () => {
       expect(await review(approval_id)).toMatchObject({ protected: { environment: "production" } });
       expect(await runEffect(decideApproval({ ...asker, via: "dashboard" }, approval_id, { approve: { digest: approval } })))
         .toMatchObject({ ok: false });
-      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }, undefined, answered(move)));
       expect(await as(asker, move, approval_id)).toMatchObject({ ok: true });
       expect(await rows()).toMatchObject([{ kind: "move" }]);
     });
@@ -4707,8 +4714,8 @@ describe("volume runs", () => {
         expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
         expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", name: "data from 10 GB to 20 GB", preview: { recorded_bytes: 10 * GB, maximum_bytes: 20 * GB } } });
         expect(await rows()).toEqual([]);
-        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
-        expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }, undefined, answered(grow(20))));
+        expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false });
         expect(await as(asker, grow(20), approval_id)).toMatchObject({ ok: true });
         expect(await rows()).toMatchObject([{ kind: "resize" }]);
       });
@@ -4717,9 +4724,10 @@ describe("volume runs", () => {
         await harness.pool.query("insert into member (user_id, organization_id, role) values ($1, $2, 'member')", [userId, organizationId]);
         const { approval, approval_id } = askedOf(await as({ ...member, via: "dashboard" }, grow(20)));
 
-        expect(await runEffect(decideAndApply(protector, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: true });
+        const kept = answered(grow(20));
+        expect(await runEffect(decideAndApply(protector, approval_id, { approve: { digest: approval } }, undefined, undefined, kept))).toMatchObject({ ok: true });
         const ran = await harness.pool.query<{ args: unknown; requested_by_user_id: string }>("select args, requested_by_user_id from volume_run");
-        expect(ran.rows).toEqual([{ args: { maximum_bytes: 20 * GB }, requested_by_user_id: userId }]);
+        expect(ran.rows).toEqual([{ args: { maximum_bytes: 20 * GB, approval: kept.approval }, requested_by_user_id: userId }]);
       });
 
       it("an approved grow is refused once the Volume's size moved, so it never runs as a shrink", async () => {

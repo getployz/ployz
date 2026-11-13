@@ -54,7 +54,7 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember; readonly args: VolumeRunArgs["seed"] } }
   | { readonly ok: true; readonly phase: ResizePhase }
-  | { readonly ok: false; readonly refusal: Refusal };
+  | { readonly ok: false; readonly refusal: Refusal; readonly deletes?: readonly AnsweredMember[] };
 
 /**
  * A resize also carries the sizes the Store holds for the Volume: `recordedBytes`, the one its copies hold, 0 before
@@ -171,7 +171,9 @@ function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Pla
       return refuse("enforced", `${own} restore ${name} on its own. Run ployz volume restore ${name} --from ${phase.from.machine.name} from an approved device.`);
     case "delete_mirror": {
       const slot = copyName(name, server);
-      return refuse("enforced", `${own} delete ${slot} on its own. Run ployz volume mirror rm ${slot}${ifOldCopy(phase.role ?? undefined)} from an approved device.`);
+      const message = `${own} delete ${slot} on its own. Run ployz volume mirror rm ${slot}${ifOldCopy(phase.role ?? undefined)} from an approved device.`;
+      // The copies it would delete with no writer left, so the approval that answers the refusal can name them.
+      return { ok: false, refusal: { code: "enforced", message }, deletes: phase.forget === null ? phase.destroy : [] };
     }
     default:
       return refuse("enforced", enforcedMessage(phase.kind === "seed", name, server));
