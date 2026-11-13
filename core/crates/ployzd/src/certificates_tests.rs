@@ -20,14 +20,93 @@ use serde_json::json;
 use super::{
     DoorStanding, Host, advance, challenge_probe_addresses, directory_from_env, door_standing,
     held, ingress_challenge_ips, issue_wanted, machine_jitter, material_validity,
-    order_certificate, ordering_machines, renewal_window, run, verify_answers, wait_for_http01,
-    wanted_certificate_hosts,
+    order_certificate, ordering_machines, renewal_window, run, unwritten, verify_answers,
+    wait_for_http01, wanted_certificate_hosts,
 };
 use crate::corrosion::{
-    CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
+    AcmeWrite, CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
     fake_cluster::FakeCluster,
     store_tests::{corrosion_db, identity_store},
 };
+
+#[test]
+fn a_write_that_moved_says_what_it_did_not_record() {
+    let host = IngressHost::parse("app.example.com").unwrap();
+    for (what, write, tried, line) in [
+        (
+            "record the certificate policy refusal",
+            AcmeWrite::Moved,
+            false,
+            Some(
+                "did not record the certificate policy refusal for app.example.com: its row changed on every attempt",
+            ),
+        ),
+        (
+            "record why no certificate is ordered",
+            AcmeWrite::Moved,
+            false,
+            Some(
+                "did not record why no certificate is ordered for app.example.com: its row changed on every attempt",
+            ),
+        ),
+        (
+            "publish the HTTP-01 challenge",
+            AcmeWrite::Moved,
+            false,
+            Some(
+                "did not publish the HTTP-01 challenge for app.example.com: its row changed on every attempt",
+            ),
+        ),
+        (
+            "record the certificate issued",
+            AcmeWrite::Moved,
+            false,
+            Some(
+                "did not record the certificate issued for app.example.com: its row changed on every attempt",
+            ),
+        ),
+        (
+            "record certificate refusal",
+            AcmeWrite::Moved,
+            false,
+            Some(
+                "did not record certificate refusal for app.example.com: its row changed on every attempt",
+            ),
+        ),
+        (
+            "record certificate refusal",
+            AcmeWrite::Moved,
+            true,
+            Some(
+                "did not record certificate refusal for app.example.com: its row no longer holds the failed material as ACME material",
+            ),
+        ),
+        (
+            "record certificate authority failure",
+            AcmeWrite::Moved,
+            false,
+            Some(
+                "did not record certificate authority failure for app.example.com: its row changed on every attempt",
+            ),
+        ),
+        (
+            "record certificate authority failure",
+            AcmeWrite::Moved,
+            true,
+            Some(
+                "did not record certificate authority failure for app.example.com: its row no longer holds the failed material as ACME material",
+            ),
+        ),
+        ("record certificate refusal", AcmeWrite::Changed, true, None),
+        ("record certificate refusal", AcmeWrite::Kept, false, None),
+    ] {
+        assert_eq!(
+            unwritten(&host, write, what, tried).as_deref(),
+            line,
+            "{what} {write:?} {tried}"
+        );
+    }
+}
 
 fn policy_for(directory: &str) -> CertificatePolicy {
     CertificatePolicy::built_in(Some(directory.to_owned()))
