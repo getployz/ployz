@@ -695,3 +695,33 @@ async fn an_awaiting_machine_refuses_register_and_share_sealing_key() {
     drop(entry);
     let _ = std::fs::remove_dir_all(directory);
 }
+
+/// A Server that enforced from its first start reports itself activated and refuses a
+/// starting set, so running `ployz device enforce` against it can't drop the Devices its
+/// joins brought.
+#[tokio::test]
+async fn a_server_born_enforcing_refuses_activation() {
+    let (entry, _replicated, founder, directory, server) = participating().await;
+    let console_key = Signer::from_seed(&[1; 32]);
+    approve(&entry.clone().on_local_socket(), &console_key).await;
+
+    let report = entry.activation_report().await;
+    assert_eq!(report.state, ActivationState::Activated);
+    assert_eq!(report.operation, None);
+    assert!(report.legacy_keys.is_empty());
+    let refused = entry
+        .clone()
+        .on_local_socket()
+        .set_device_enforcement(enforce(starting_set(&console_key, vec![(&founder).into()])))
+        .await;
+    assert!(matches!(refusal(refused), Refusal::BornEnforcing));
+    assert!(
+        entry
+            .record()
+            .devices()
+            .any(|key| key == DeviceKey::from(console_key.public()))
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}

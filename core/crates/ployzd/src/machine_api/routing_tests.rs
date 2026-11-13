@@ -582,9 +582,10 @@ async fn client_streaming_methods_reject_fanout_before_reading_input() {
 
 /// A Machine whose record predates enforcement serves an Operator no route a statement must
 /// admit, since the keys it would check them against were never vouched for. Its upgrade
-/// still runs, and so does a Full caller's call.
+/// and its activation still reach it, and so does a Full caller's call.
 #[tokio::test]
-async fn an_awaiting_machine_refuses_an_operators_signed_route_and_serves_its_upgrade() {
+async fn an_awaiting_machine_refuses_an_operators_signed_route_and_serves_its_upgrade_and_activation()
+ {
     use crate::machine::{LocalMachine, LocalMachineStore, RecordOwner, test_support};
     use ployz_core::{op, rpc::Rpc};
 
@@ -629,6 +630,7 @@ async fn an_awaiting_machine_refuses_an_operators_signed_route_and_serves_its_up
 
     for (path, operator) in [
         (op::RequestMachineUpgrade::PATH, true),
+        (op::ActivateEnforcement::PATH, true),
         (op::EnsureContainer::PATH, false),
     ] {
         let served = proxy

@@ -311,8 +311,7 @@ impl BuildGrants {
                 .expect("grant registry lock")
                 .get(&grant_id(key))?,
         );
-        (grant.expires > Instant::now() && !grant.pushed() && !grant.refused())
-            .then_some(grant)
+        (grant.expires > Instant::now() && !grant.pushed() && !grant.refused()).then_some(grant)
     }
 }
 
@@ -470,11 +469,7 @@ fn tagged(reference: &str) -> Option<ImageDigest> {
     ImageDigest::parse(format!("sha256:{hex}")).ok()
 }
 
-async fn handle<B>(
-    request: Request<B>,
-    grant: &Grant,
-    client: &reqwest::Client,
-) -> Response<Body>
+async fn handle<B>(request: Request<B>, grant: &Grant, client: &reqwest::Client) -> Response<Body>
 where
     B: hyper::body::Body<Data = Bytes> + Send + 'static,
     B::Error: Into<axum::BoxError>,

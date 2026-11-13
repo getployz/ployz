@@ -1552,7 +1552,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             serde_json::json!({
                 "capability": capability,
-                "next": "ployz device enforce --off from an approved device",
+                "next": "approve the change from an approved device or with your passkey",
             }),
         )),
         LocalMachineError::VolumeStepRefused(ref refusal) => Err(ployz_core::rpc::hinted_status(

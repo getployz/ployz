@@ -4,8 +4,7 @@
 
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet,
-    ManagementScope, RunTarget, Sealing, SetDeviceEnforcementRequest,
-    SetPrivateAccessRequest,
+    ManagementScope, RunTarget, Sealing, SetDeviceEnforcementRequest, SetPrivateAccessRequest,
     authority::{
         AuthorityRefusal, DeployApproval, PrivateAccessFacts, Purpose, RestartApproval,
         RestartFacts, RestartStep, Signed, Timestamp, private_access, restart,
