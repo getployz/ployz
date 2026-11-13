@@ -7,9 +7,9 @@ use std::ops::Range;
 use std::sync::LazyLock;
 
 use ployz_core::config::{
-    PRIVATE_DOMAIN_KEY, SavedServiceIntent, ValuePart, ValuePartOwner, private_domain,
-    render_variable_parts,
+    PRIVATE_DOMAIN_KEY, SavedServiceIntent, ValuePart, ValuePartOwner, render_variable_parts,
 };
+use ployz_core::domain::private_dns;
 use ployz_core::{RpcError, ServiceName};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -122,7 +122,8 @@ fn hosts<'env>(
                 url_hosts.contains(&host.start()) || (host_key && whole.range() == (0..text.len()));
             let other = others.iter().copied().find(|other| {
                 let name = &other.config.private_dns;
-                host.as_str().eq_ignore_ascii_case(&private_domain(name))
+                host.as_str()
+                    .eq_ignore_ascii_case(&private_dns::short(name))
                     || (bare && host.as_str().eq_ignore_ascii_case(name.as_str()))
             })?;
             Some((host.range(), other))

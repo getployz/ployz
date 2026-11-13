@@ -17,6 +17,7 @@ mod machine;
 mod management_capability;
 mod observation;
 mod placement;
+pub mod private_dns;
 mod resources;
 mod rotation;
 mod runtime_watch;
