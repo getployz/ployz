@@ -47,12 +47,14 @@
 //! Move (a late `SetVolumeSize` may land during it), a Restore, and a Mirror made after
 //! the resize by anything but the Move's own pull.
 
-use std::net::Ipv6Addr;
+use std::{net::Ipv6Addr, num::NonZeroU64};
 
 use ployz_core::{
     ContainerId, CopyPlan, CopyRefusal, CopyTransition, Drain, ExpectedCopy, ManagementAddress,
-    SlotId, SlotRole, Snapshot, SnapshotGuid, Start, VolumeCopy, WantedCopy, WriterEpoch,
+    ProvisionedVolumeMaximumBytes, SlotId, SlotRole, Snapshot, SnapshotGuid, Start, VolumeCopy,
+    WantedCopy, WriterEpoch,
 };
+use ployz_decide::volume_size::{Refused, SizeFacts, SizePlan, size_plan};
 use stateright::{Checker, Model, Property};
 
 /// The Move's lane `gen`, and the Release's after it.
@@ -87,6 +89,18 @@ enum Size {
     Large,
 }
 
+impl Size {
+    /// The bytes the size stands for: 2 GB and 4 GB, so a copy referencing the smaller one
+    /// has a `shrink_floor` above it, and one referencing nothing has a floor below it.
+    fn bytes(self) -> ProvisionedVolumeMaximumBytes {
+        let bytes = match self {
+            Self::Small => 2_000_000_000,
+            Self::Large => 4_000_000_000,
+        };
+        ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(bytes).expect("a size is positive"))
+    }
+}
+
 /// Which way the resize moves the Volume's bound (`SizeDirection` in `resize.ts`).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Direction {
@@ -118,8 +132,8 @@ enum Cramped {
     /// Its Pool has no room for the larger size: a grow, and a pull's raise, refuse
     /// `NoCapacity`.
     Pool(Machine),
-    /// Its copy references more than the smaller size leaves room for, so `shrink_floor`
-    /// sits above the target: a shrink refuses `BelowFloor`.
+    /// Its copy references the smaller size, so `ployz_core::shrink_floor` of it sits above
+    /// the target: a shrink refuses `BelowFloor`.
     Copy(Machine),
 }
 
@@ -1007,42 +1021,47 @@ impl VolumeRuns {
     }
 
     /// `set_size_admitted` (`ployzd/src/volume_plugin/size.rs`), whole under the switch
-    /// lock: a bound rises, or falls when the request allows it and the copy's
-    /// `shrink_floor` (read once, at the start of the request) sits below the target;
-    /// an equal one answers with no write, and a read-only root is mid-cut.
+    /// lock. `ployz_decide::volume_size::size_plan` decides it, from the bound, the target
+    /// and the bytes the copy references, which `shrink_floor` (read once, at the start of
+    /// the request) holds above the target for a cramped copy. The Pool's room is the
+    /// model's `fits`, as `grow_bound` reads it.
     fn set_size(state: &mut State, to: Machine, size: Size, allow_shrink: bool) -> Reply {
         let fits = state.fits(to, size);
-        let below_floor = state.below_floor(to);
+        let referenced_bytes = if state.below_floor(to) {
+            Size::Small.bytes().get()
+        } else {
+            0
+        };
         let host = state.host_mut(to);
         let switching = match host.copy {
             Held::None => return Reply::Refused(Refusal::Other),
             Held::Root { readonly, .. } => readonly,
             Held::Slot { .. } => false,
         };
-        if size < host.bound {
-            if !allow_shrink {
-                return Reply::Refused(Refusal::Shrink);
+        let plan = size_plan(SizeFacts {
+            bound: host.bound.bytes(),
+            wanted: size.bytes(),
+            allow_shrink,
+            switching,
+            referenced_bytes,
+            copy_behind: false,
+        });
+        match plan {
+            SizePlan::Answer(_) => Reply::Bound(size),
+            SizePlan::Refuse(Refused::Shrink) => Reply::Refused(Refusal::Shrink),
+            SizePlan::Refuse(Refused::Switching) => Reply::Refused(Refusal::Switching),
+            SizePlan::Refuse(Refused::BelowFloor { .. }) => Reply::Refused(Refusal::BelowFloor),
+            SizePlan::Shrink => {
+                host.bound = size;
+                Reply::Bound(size)
             }
-            if switching {
-                return Reply::Refused(Refusal::Switching);
+            SizePlan::Grow { .. } if !fits => Reply::Refused(Refusal::NoCapacity),
+            SizePlan::Grow { .. } => {
+                host.bound = size;
+                Reply::Bound(size)
             }
-            if below_floor {
-                return Reply::Refused(Refusal::BelowFloor);
-            }
-            host.bound = size;
-            return Reply::Bound(size);
+            SizePlan::RaiseCopy => unreachable!("a bound is one value per copy"),
         }
-        if size == host.bound {
-            return Reply::Bound(size);
-        }
-        if switching {
-            return Reply::Refused(Refusal::Switching);
-        }
-        if !fits {
-            return Reply::Refused(Refusal::NoCapacity);
-        }
-        host.bound = size;
-        Reply::Bound(size)
     }
 
     /// `copy_pull` before its receive: a new slot is made at the Writer's bound
