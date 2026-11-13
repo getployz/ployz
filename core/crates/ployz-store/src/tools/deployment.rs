@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{MachineId, RpcErrorCode};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::ToolId;
 use super::input::tool_input;
@@ -196,11 +196,17 @@ fn show(view: &DeploymentView) -> Value {
     shown
 }
 
-fn follow(cx: &Cx<'_>, number: u64) -> Call {
-    let mut input = cx.place_args();
-    input.insert("deployment".into(), number.into());
-    input.insert("wait_seconds".into(), 120.into());
-    Call::to(ToolId::DeploymentShow, Value::Object(input))
+/// How long a call that follows a Deployment waits for its outcome.
+const FOLLOW_WAIT_SECONDS: u32 = 120;
+
+/// The `deployment_show` call that follows a Deployment in `place`: the one `number`
+/// names, or the latest when none.
+pub(crate) fn follow_call(mut place: Map<String, Value>, number: Option<u64>) -> Call {
+    if let Some(number) = number {
+        place.insert("deployment".into(), number.into());
+    }
+    place.insert("wait_seconds".into(), FOLLOW_WAIT_SECONDS.into());
+    Call::to(ToolId::DeploymentShow, Value::Object(place))
 }
 
 tool_input! {
@@ -273,15 +279,13 @@ impl Tool for DeploymentShow {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(&self);
-        let (query, mut view) = find(cx, scope, self.deployment)?;
-        let mut attempt = 0;
-        while view.deployment.in_flight {
-            let Some(answers) = cx.poll(self.wait_seconds, attempt, vec![store(&query)?])? else {
-                break;
-            };
-            view = cx.view::<NumberedDeploymentQuery>(answers.into_iter().next())?;
-            attempt += 1;
-        }
+        let (query, view) = find(cx, scope, self.deployment)?;
+        let view = cx.follow(
+            self.wait_seconds,
+            view,
+            |view| view.deployment.in_flight.then(|| store(&query)).transpose(),
+            |cx, _, answer| cx.view::<NumberedDeploymentQuery>(answer),
+        )?;
         let mut shown = show(&view);
         let Value::Object(object) = &mut shown else {
             return Ok(shown);
@@ -293,7 +297,7 @@ impl Tool for DeploymentShow {
                 json!(
                     view.deployment
                         .number
-                        .map(|number| follow(cx, number))
+                        .map(|number| follow_call(cx.place_args(), Some(number)))
                         .into_iter()
                         .collect::<Vec<_>>()
                 ),
@@ -450,7 +454,7 @@ fn retried(
         "rolls_back": rolls_back,
         "status": retried.status,
         "saved_revision": retried.saved.0,
-        "next": retried.number.map(|number| follow(cx, number)),
+        "next": retried.number.map(|number| follow_call(cx.place_args(), Some(number))),
     })
 }
 
@@ -483,7 +487,7 @@ impl Tool for DeploymentStart {
             "at": queued.environment.to_string(),
             "deployment": started.number,
             "status": started.status,
-            "next": started.number.map(|number| follow(cx, number)),
+            "next": started.number.map(|number| follow_call(cx.place_args(), Some(number))),
         }))
     }
 }

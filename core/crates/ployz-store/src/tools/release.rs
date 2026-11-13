@@ -7,10 +7,10 @@ use ployz_core::config::{ChangeKind, EnvironmentNodeType, ReviewLifecycleKind};
 use ployz_core::{ConfigName, ServiceName};
 use serde_json::{Value, json};
 
-use super::ToolId;
+use super::deployment::follow_call;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, written};
-use super::refusal::{Call, Refusal};
+use super::refusal::Refusal;
 use super::step::{AcceptedLoss, Gate};
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -301,9 +301,6 @@ impl Tool for DeployInput {
             no_prune: self.no_prune,
             approval: None,
         }))?;
-        let mut next = cx.place_args();
-        next.insert("deployment".into(), deployment.number.into());
-        next.insert("wait_seconds".into(), 120.into());
         Ok(json!({
             "at": here.environment.to_string(),
             "deployment": deployment.number,
@@ -311,7 +308,7 @@ impl Tool for DeployInput {
             "saved_revision": deployment.saved.0,
             "services": deployment.services,
             "prunes": deployment.prune,
-            "next": Call::to(ToolId::DeploymentShow, next.into()),
+            "next": follow_call(cx.place_args(), deployment.number),
         }))
     }
 }

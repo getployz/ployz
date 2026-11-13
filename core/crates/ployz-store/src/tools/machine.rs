@@ -346,6 +346,28 @@ impl Cx<'_> {
         }
     }
 
+    /// Follow `state` to its end: while `ask` names the read that moves it on, wait
+    /// as [`Cx::poll`] does within `wait_seconds`, read it, and fold the answer into
+    /// the next state with `absorb`. It stops when `ask` has no read left, or when
+    /// the time is spent.
+    pub(crate) fn follow<S>(
+        &mut self,
+        wait_seconds: u32,
+        mut state: S,
+        ask: impl Fn(&S) -> Result<Option<Ask>, Stop>,
+        absorb: impl Fn(&mut Self, S, Option<Result<Value, RpcError>>) -> Result<S, Stop>,
+    ) -> Result<S, Stop> {
+        let mut attempt = 0;
+        while let Some(read) = ask(&state)? {
+            let Some(answers) = self.poll(wait_seconds, attempt, vec![read])? else {
+                break;
+            };
+            state = absorb(self, state, answers.into_iter().next())?;
+            attempt += 1;
+        }
+        Ok(state)
+    }
+
     /// The call's one write, refused as stale when the Store finds the
     /// Environment moved past `expect`, and any other refusal read by `refuse`.
     pub(crate) fn write_expecting<C: Tell>(

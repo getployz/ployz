@@ -103,23 +103,24 @@ pub(crate) fn operate(
     key: Option<RequestKey>,
     wait_seconds: u32,
 ) -> Result<Value, Stop> {
-    let mut operation = cx.act(run.action, key, run.read.clone())?;
-    let mut attempt = 0;
-    while !operation.state.ended() {
-        let ask = Ask::Cloud(CloudQuery::Operations(OperationsQuery {
-            subject: run.subject.clone(),
-            attempt: Some(operation.attempt),
-            limit: 1,
-        }));
-        let Some(answers) = cx.poll(wait_seconds, attempt, vec![ask])? else {
-            break;
-        };
-        let page = cx.cloud::<OperationsAnswer>(answers.into_iter().next())?;
-        if let Some(latest) = page.operations.into_iter().next() {
-            operation = latest;
-        }
-        attempt += 1;
-    }
+    let operation = cx.act(run.action, key, run.read.clone())?;
+    let operation = cx.follow(
+        wait_seconds,
+        operation,
+        |operation| {
+            Ok((!operation.state.ended()).then(|| {
+                Ask::Cloud(CloudQuery::Operations(OperationsQuery {
+                    subject: run.subject.clone(),
+                    attempt: Some(operation.attempt),
+                    limit: 1,
+                }))
+            }))
+        },
+        |cx, operation, answer| {
+            let page = cx.cloud::<OperationsAnswer>(answer)?;
+            Ok(page.operations.into_iter().next().unwrap_or(operation))
+        },
+    )?;
     Ok(json!({
         "at": run.at,
         "run": operation.run,
