@@ -55,12 +55,12 @@ pub(super) fn prepare_storage(
             let module_loaded = paths.zfs_module.is_dir()
                 || (command_exists("zpool")
                     && run_host("load ZFS kernel module for retry", "modprobe", ["zfs"]).is_ok());
-            if module_loaded && existing_device_pool(device)? {
+            if module_loaded && existing_device_pool(device, &paths.sys_class_block)? {
                 return remember_device_pool(paths);
             }
             super::assess::empty_device(device)?;
             prepare_zfs(paths)?;
-            if !existing_device_pool(device)? {
+            if !existing_device_pool(device, &paths.sys_class_block)? {
                 let assessed = super::assess::empty_device(device)?;
                 create_device_pool(device, &assessed, paths)?;
             } else {
@@ -105,7 +105,7 @@ fn create_device_pool(device: &Path, assessed: &Path, paths: &InstallPaths) -> R
         OsStr::new(DEVICE_BACKED_POOL_NAME),
         device.as_os_str(),
     ])?;
-    if !existing_device_pool(device)? {
+    if !existing_device_pool(device, &paths.sys_class_block)? {
         return Err(refuse(
             STAGE,
             "the device Machine Pool was not imported after creation",
@@ -160,7 +160,7 @@ fn reconcile_device_pool_marker(paths: &InstallPaths) -> Result<(), Error> {
     ))
 }
 
-fn existing_device_pool(device: &Path) -> Result<bool, Error> {
+fn existing_device_pool(device: &Path, sys_block: &Path) -> Result<bool, Error> {
     if !command_exists("zpool") {
         return Ok(false);
     }
@@ -203,11 +203,11 @@ fn existing_device_pool(device: &Path) -> Result<bool, Error> {
             .skip(1)
             .find(|section| section.split_whitespace().next() == Some(DEVICE_BACKED_POOL_NAME))
             .ok_or_else(|| refuse(STAGE, "device Machine Pool label is incomplete"))?;
-        require_device_backing(status, &device)?;
+        require_device_backing(status, &device, sys_block)?;
         zpool_stdout(["import", "-N", DEVICE_BACKED_POOL_NAME])?;
     }
     let status = zpool_stdout(["status", "-LP", DEVICE_BACKED_POOL_NAME])?;
-    require_device_backing(&status, &device)?;
+    require_device_backing(&status, &device, sys_block)?;
     let pools = zpool_stdout(crate::machine_pool::ZPOOL_LIST)?;
     match crate::machine_pool::one_usable(&pools)
         .map_err(|error| refuse(STAGE, error.to_string()))?
@@ -220,8 +220,8 @@ fn existing_device_pool(device: &Path) -> Result<bool, Error> {
     }
 }
 
-fn require_device_backing(status: &str, device: &Path) -> Result<(), Error> {
-    if !device_pool_matches(status, device) {
+fn require_device_backing(status: &str, device: &Path, sys_block: &Path) -> Result<(), Error> {
+    if !device_pool_matches(status, device, sys_block) {
         return Err(refuse(
             STAGE,
             format!(
@@ -233,7 +233,7 @@ fn require_device_backing(status: &str, device: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn device_pool_matches(status: &str, device: &Path) -> bool {
+fn device_pool_matches(status: &str, device: &Path, sys_block: &Path) -> bool {
     let status = status
         .split_once("config:")
         .map_or(status, |(_, config)| config);
@@ -258,21 +258,21 @@ fn device_pool_matches(status: &str, device: &Path) -> bool {
             .or_else(|_| fs::canonicalize(Path::new("/dev/disk/by-id").join(name)))
             .or_else(|_| fs::canonicalize(Path::new("/dev/disk/by-path").join(name)))
             .unwrap_or(backing);
-        backing == device || partition_of(&backing, device)
+        backing == device || partition_of(&backing, device, sys_block)
     }) && devices.next().is_none()
 }
 
-fn partition_of(partition: &Path, disk: &Path) -> bool {
+fn partition_of(partition: &Path, disk: &Path, sys_block: &Path) -> bool {
     let (Some(partition), Some(disk)) = (partition.file_name(), disk.file_name()) else {
         return false;
     };
-    let partition = Path::new("/sys/class/block").join(partition);
+    let partition = sys_block.join(partition);
     if !partition.join("partition").exists() {
         return false;
     }
     let (Ok(partition), Ok(disk)) = (
         fs::canonicalize(partition),
-        fs::canonicalize(Path::new("/sys/class/block").join(disk)),
+        fs::canonicalize(sys_block.join(disk)),
     ) else {
         return false;
     };
@@ -291,7 +291,7 @@ fn install_route(
         paths,
         route.package_manager(),
         || match route {
-            ZfsRoute::Ubuntu => install_zfs_packages(kernel),
+            ZfsRoute::Ubuntu => install_zfs_packages(kernel, &paths.staging_dir),
             ZfsRoute::Debian { codename, keyring } => prepare_debian_zfs(
                 &paths.apt_dir,
                 os,
@@ -303,6 +303,7 @@ fn install_route(
             ZfsRoute::AmazonLinux => prepare_amazon_zfs(
                 &paths.layout.prepare_zfs_dir(),
                 &paths.modules_load_dir,
+                &paths.staging_dir,
                 os,
                 kernel,
                 OPENZFS_SHA256,
@@ -321,15 +322,15 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
         require_kernel_devel(&os, &kernel)?;
     }
     require_host_root_reserve()?;
-    let cap = zfs_arc_max()?;
+    let cap = zfs_arc_max(paths)?;
     if install {
         install_route(route, paths, &os, &kernel)?;
     }
     // Written only once ZFS is in place, so every refusal above leaves the host untouched.
     persist_zfs_arc_max(paths, cap)?;
     run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
-    set_and_verify_zfs_arc_max(cap)?;
-    validate_zfs()?;
+    set_and_verify_zfs_arc_max(paths, cap)?;
+    validate_zfs(paths)?;
     Ok(())
 }
 
@@ -621,6 +622,7 @@ pub(super) fn require_kernel_devel(os: &OsRelease, kernel: &str) -> Result<(), E
 fn prepare_amazon_zfs(
     prepared: &Path,
     modules_load_dir: &Path,
+    staging: &Path,
     os: &OsRelease,
     kernel: &str,
     tarball_sha256: &str,
@@ -630,8 +632,8 @@ fn prepare_amazon_zfs(
         let rpms = match built_rpms(&prepared.join(format!("zfs-{OPENZFS_VERSION}"))) {
             Ok(rpms) => rpms,
             Err(_) => {
-                scratch = staging_directory(Path::new("/var/tmp"))
-                    .map_err(failed("staging the OpenZFS build"))?;
+                scratch =
+                    staging_directory(staging).map_err(failed("staging the OpenZFS build"))?;
                 let tarball = download_openzfs(scratch.path(), tarball_sha256)?;
                 let mut dependencies = Command::new("dnf");
                 dependencies
@@ -783,20 +785,17 @@ fn require_host_root_reserve() -> Result<(), Error> {
     }
 }
 
-fn zfs_arc_max() -> Result<u64, Error> {
-    let memory = fs::read_to_string("/proc/meminfo").map_err(|source| Error::Io {
-        stage: "read total RAM for ZFS ARC limit",
-        source,
+fn zfs_arc_max(paths: &InstallPaths) -> Result<u64, Error> {
+    let total = super::assess::read_memory_total(&paths.proc_dir).map_err(|error| {
+        if let Error::Io { source, .. } = error {
+            return Error::Io {
+                stage: "read total RAM for ZFS ARC limit",
+                source,
+            };
+        }
+        refuse(STAGE, "Could not read total RAM for the ZFS ARC limit")
     })?;
-    let kib = memory
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("MemTotal:")
-                .and_then(|value| value.split_whitespace().next())
-        })
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| refuse(STAGE, "Could not read total RAM for the ZFS ARC limit"))?;
-    Ok((kib.saturating_mul(1024) / 4).clamp(256 * 1024 * 1024, 1024 * 1024 * 1024))
+    Ok((total / 4).clamp(256 * 1024 * 1024, 1024 * 1024 * 1024))
 }
 
 fn persist_zfs_arc_max(paths: &InstallPaths, cap: u64) -> Result<(), Error> {
@@ -832,7 +831,7 @@ fn installed_package_files(candidate: &str) -> Result<Option<String>, Error> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
 }
 
-pub(super) fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
+pub(super) fn install_zfs_packages(kernel: &str, staging: &Path) -> Result<(), Error> {
     run_apt("refresh Ubuntu packages for ZFS", ["update", "-qq"], None)?;
     let mut package = None;
     let mut download_error = None;
@@ -861,7 +860,7 @@ pub(super) fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
             package = Some(candidate);
             break;
         }
-        let scratch = staging_directory(Path::new("/var/tmp"))?;
+        let scratch = staging_directory(staging)?;
         if let Err(error) = run_apt(
             "download Ubuntu ZFS module package",
             ["download", &candidate],
@@ -937,8 +936,8 @@ fn command_stdout<const N: usize>(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn set_and_verify_zfs_arc_max(cap: u64) -> Result<(), Error> {
-    let path = Path::new("/sys/module/zfs/parameters/zfs_arc_max");
+fn set_and_verify_zfs_arc_max(paths: &InstallPaths, cap: u64) -> Result<(), Error> {
+    let path = &paths.zfs_module.join("parameters/zfs_arc_max");
     let mut file = OpenOptions::new()
         .write(true)
         .open(path)
@@ -965,9 +964,9 @@ fn set_and_verify_zfs_arc_max(cap: u64) -> Result<(), Error> {
     }
 }
 
-fn validate_zfs() -> Result<(), Error> {
+fn validate_zfs(paths: &InstallPaths) -> Result<(), Error> {
     require_host_root_reserve()?;
-    let stage = staging_directory(Path::new("/var/tmp"))?;
+    let stage = staging_directory(&paths.staging_dir)?;
     let backing = stage.path().join("backing");
     write_private(&backing, b"", "create ZFS smoke backing file")?;
     let mut allocate = Command::new("fallocate");

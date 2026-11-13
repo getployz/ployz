@@ -109,8 +109,18 @@ pub enum Error {
     Verification(String),
     #[error("Release {0} is not signed, and Ployz installs only signed releases.")]
     Unsigned(MachineVersion),
+    /// A host command ran and failed, or a step failed with a message for the user.
     #[error("{stage}: {message}")]
     Command { stage: String, message: String },
+    /// The installer declined to act at `stage`, worded for the user.
+    #[error("{stage}: {message}")]
+    Refused { stage: String, message: String },
+    /// A host command could not be started at all.
+    #[error("start host command")]
+    Spawn {
+        #[source]
+        source: io::Error,
+    },
     #[error("{stage}")]
     Io {
         stage: &'static str,
@@ -137,6 +147,10 @@ pub(super) struct InstallPaths {
     pub(super) zfs_module: PathBuf,
     pub(super) device_pool_marker: PathBuf,
     pub(super) usr_src: PathBuf,
+    /// Where builds and downloads are staged before they are installed.
+    pub(super) staging_dir: PathBuf,
+    /// Where the kernel lists block devices and how partitions belong to disks.
+    pub(super) sys_class_block: PathBuf,
 }
 
 impl InstallPaths {
@@ -159,6 +173,8 @@ impl InstallPaths {
             zfs_module: PathBuf::from("/sys/module/zfs"),
             device_pool_marker: MachineLayout::production().device_pool_marker(),
             usr_src: PathBuf::from("/usr/src"),
+            staging_dir: PathBuf::from("/var/tmp"),
+            sys_class_block: PathBuf::from("/sys/class/block"),
         }
     }
 
@@ -194,6 +210,8 @@ impl InstallPaths {
             zfs_module: root.join("sys/module/zfs"),
             device_pool_marker: root.join("machine-pool.device"),
             usr_src: root.join("usr/src"),
+            staging_dir: root.join("var/tmp"),
+            sys_class_block: root.join("sys/class/block"),
         }
     }
 }
@@ -400,7 +418,7 @@ fn sudo_user() -> Option<String> {
 
 /// A refusal at `stage`, worded for the user.
 pub(super) fn refuse(stage: &str, message: impl Into<String>) -> Error {
-    Error::Command {
+    Error::Refused {
         stage: stage.into(),
         message: message.into(),
     }
@@ -423,10 +441,7 @@ pub(super) fn run_command(
     command: &mut Command,
 ) -> Result<Output, Error> {
     let stage = stage.into();
-    let output = command.output().map_err(|source| Error::Io {
-        stage: "start host command",
-        source,
-    })?;
+    let output = command.output().map_err(|source| Error::Spawn { source })?;
     if output.status.success() {
         Ok(output)
     } else {
@@ -493,6 +508,40 @@ mod tests {
     use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
 
+    /// The text `UpgradeFailure` records and the CLI prints for each way a host step stops.
+    #[test]
+    fn host_step_failures_render_their_recorded_text() {
+        assert_eq!(
+            refuse("prepare ZFS storage", "no ZFS here").to_string(),
+            "prepare ZFS storage: no ZFS here"
+        );
+
+        let mut missing = Command::new("/nonexistent/ployz-installer-test");
+        let spawn = run_command("never shown", &mut missing).unwrap_err();
+        assert_eq!(spawn.to_string(), "start host command");
+        assert_eq!(
+            ployz_core::error_chain::inline(&spawn),
+            "start host command: No such file or directory (os error 2)"
+        );
+
+        let mut loud = Command::new("sh");
+        loud.args(["-c", "echo boom >&2; exit 3"]);
+        assert_eq!(
+            run_command("run a loud step", &mut loud)
+                .unwrap_err()
+                .to_string(),
+            "run a loud step: boom"
+        );
+        let mut quiet = Command::new("sh");
+        quiet.args(["-c", "exit 3"]);
+        assert_eq!(
+            run_command("run a quiet step", &mut quiet)
+                .unwrap_err()
+                .to_string(),
+            "run a quiet step: exited with exit status: 3"
+        );
+    }
+
     #[test]
     fn machine_files_stay_where_installed_machines_keep_them() {
         let paths = InstallPaths::production();
@@ -507,6 +556,9 @@ mod tests {
             paths.device_pool_marker.as_os_str(),
             "/var/lib/ployz-machine-pool.device"
         );
+        assert_eq!(paths.staging_dir.as_os_str(), "/var/tmp");
+        assert_eq!(paths.sys_class_block.as_os_str(), "/sys/class/block");
+        assert_eq!(paths.zfs_module.as_os_str(), "/sys/module/zfs");
         assert_eq!(
             prepare::prepare_dir(&paths).as_os_str(),
             "/var/lib/ployz/prepare"
@@ -624,8 +676,8 @@ mod tests {
     #[test]
     fn zfs_candidate_download_contract() {
         if env::var_os("PLOYZ_ZFS_CANDIDATE_CONTRACT").is_some() {
-            super::storage::install_zfs_packages("test-kernel").unwrap();
             let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            super::storage::install_zfs_packages("test-kernel", &root.join("var/tmp")).unwrap();
             fs::write(root.join("child-completed"), "zfs-candidate").unwrap();
             return;
         }

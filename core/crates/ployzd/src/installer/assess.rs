@@ -104,11 +104,7 @@ fn error_text(error: &Error) -> String {
 
 /// A failure to start `program` named after it, rather than run_command's shared stage.
 fn naming_program(error: Error, stage: &'static str) -> Error {
-    if let Error::Io {
-        stage: "start host command",
-        source,
-    } = error
-    {
+    if let Error::Spawn { source } = error {
         return Error::Io { stage, source };
     }
     error
@@ -172,7 +168,7 @@ fn read_cpu_count(proc_dir: &Path) -> Result<u32, Error> {
         .ok_or_else(|| unreadable(STAGE, "no processor lines in cpuinfo"))
 }
 
-fn read_memory_total(proc_dir: &Path) -> Result<u64, Error> {
+pub(super) fn read_memory_total(proc_dir: &Path) -> Result<u64, Error> {
     const STAGE: &str = "read memory size";
     let meminfo = read_proc(proc_dir, "meminfo", STAGE)?;
     meminfo

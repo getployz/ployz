@@ -294,7 +294,7 @@ impl Job {
 fn zfs_step(paths: &InstallPaths, job: &mut Job) -> ZfsOutcome {
     match build_ahead(paths, job) {
         Ok(outcome) => outcome,
-        Err(Error::Command { stage, message }) if stage == storage::STAGE => {
+        Err(Error::Refused { stage, message }) if stage == storage::STAGE => {
             ZfsOutcome::Skipped { reason: message }
         }
         Err(error) => ZfsOutcome::Failed {
