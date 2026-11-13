@@ -132,6 +132,7 @@ pub fn join_request(first: &Machine, registration: &Registered) -> EnrollRequest
     }
     EnrollRequest {
         role: EnrollAs::Member {
+            pin: None,
             registration: Registered {
                 visible_peers,
                 ..registration.clone()

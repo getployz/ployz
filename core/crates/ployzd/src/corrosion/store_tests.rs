@@ -45,6 +45,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
     local
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
+                pin: None,
                 registration: ployz_core::Registered {
                     assigned_machine: machine.clone(),
                     visible_peers: vec![machine],
@@ -469,6 +470,7 @@ fn only_a_founder_recovers_a_sealing_key() {
     let refused = local.enroll_for_recovery(
         ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
+                pin: None,
                 registration: ployz_core::Registered {
                     assigned_machine: machine.clone(),
                     visible_peers: vec![machine],

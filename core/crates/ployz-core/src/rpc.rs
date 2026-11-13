@@ -708,6 +708,7 @@ mod set_management_client_wire {
         .unwrap();
         let member = serde_json::to_value(EnrollRequest {
             role: EnrollAs::Member {
+                pin: None,
                 registration: Registered {
                     assigned_machine: machine(),
                     visible_peers: vec![machine()],

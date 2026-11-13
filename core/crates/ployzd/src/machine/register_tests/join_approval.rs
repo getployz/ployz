@@ -474,6 +474,7 @@ async fn an_approved_row_is_published_only_once_the_joiner_confirms_its_capsule(
         ..
     } = Box::pin(joiner.enroll(EnrollRequest {
         role: EnrollAs::Member {
+            pin: None,
             registration: registration.clone(),
         },
         wireguard_mtu: None,

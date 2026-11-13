@@ -442,6 +442,7 @@ fn join(path: &Path) {
             .enroll(
                 op::Enroll::into_request(EnrollRequest {
                     role: EnrollAs::Member {
+                        pin: None,
                         registration: Registered {
                             assigned_machine: assigned,
                             visible_peers: vec![peer],

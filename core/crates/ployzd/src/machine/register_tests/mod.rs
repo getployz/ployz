@@ -95,6 +95,7 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
     target
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
+                pin: None,
                 registration: replay,
             },
             wireguard_mtu: None,
@@ -128,6 +129,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
     joiner
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
+                pin: None,
                 registration: registered,
             },
             wireguard_mtu: None,
@@ -175,6 +177,7 @@ async fn register_carries_the_entrys_devices_to_the_joiner() {
     joiner
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
+                pin: None,
                 registration: registered,
             },
             wireguard_mtu: None,

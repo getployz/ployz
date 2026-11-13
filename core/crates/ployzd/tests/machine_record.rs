@@ -155,6 +155,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     second
         .enroll(EnrollRequest {
             role: EnrollAs::Member {
+                pin: None,
                 registration: Registered {
                     assigned_machine: assigned.clone(),
                     visible_peers: vec![initialized.clone()],
@@ -983,6 +984,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
     assert!(matches!(
         store.enroll(EnrollRequest {
             role: EnrollAs::Member {
+                pin: None,
                 registration: Registered {
                     assigned_machine: assigned,
                     visible_peers: vec![peer],

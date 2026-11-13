@@ -296,6 +296,7 @@ async fn joining_admits_direct_create() {
         .mutate(move |store| {
             store.enroll(ployz_core::EnrollRequest {
                 role: ployz_core::EnrollAs::Member {
+                    pin: None,
                     registration: ployz_core::Registered {
                         assigned_machine: machine,
                         visible_peers: vec![peer],

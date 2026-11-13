@@ -112,6 +112,7 @@ fn join_request(record: &crate::machine::LocalMachineRecord) -> EnrollRequest {
     peer.id = MachineId::random();
     EnrollRequest {
         role: EnrollAs::Member {
+            pin: None,
             registration: Registered {
                 assigned_machine,
                 visible_peers: vec![peer],
