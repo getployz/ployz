@@ -98,9 +98,9 @@ peers only from the approval. A passkey you approve on your cluster after that i
 server that already joined; approve it there too. A server you add with `ployz server add` takes
 no passkeys from the approval, so approve each passkey there too. When you run
 `ployz server add` over SSH, the CLI also tells the new server which devices may sign that
-approval: your own, and those of the server it joins through. The new server refuses an
-approval signed by any other key. A join from the pasted line has no such list, so it trusts
-whichever devices the approval names.
+approval: your own, and with `--standalone`, those of the server it joins through. The new
+server refuses an approval signed by any other key. A join from the pasted line has no such
+list, so it trusts whichever devices the approval names.
 
 Each server checks new servers against its own devices before it accepts them as members or
 WireGuard peers. The servers in the starting set you signed with `ployz device enforce` are
@@ -114,13 +114,23 @@ publishes the new server. Until then, no server peers with it.
 
 ### Join through Ployz Cloud without an approved device
 
-`ployz server add root@HOST` needs this computer's approved device key, or an SSH connection to a
-server of the cluster, to check the approval the new server joins under. From a computer with
-neither, it stops before anything joins:
+`ployz server add root@HOST` tells the new server which devices may approve its join: this
+computer's device. From a computer with no device key it has nothing to tell it, so it stops
+before the server joins:
+
+```text
+web-2 can't join from here: this computer has no device key, so nothing tells the new Server which devices may approve its join. Run the same command from an approved device. Nothing was enrolled.
+```
+
+`ployz server add --standalone` can also take the devices of the server it joins through, when it
+reaches that server over SSH. With neither, it stops the same way:
 
 ```text
 web-2 can't join from here: this computer has no approved device key and reaches your Servers only through Ployz Cloud. Run it from an approved device, or add --connect ssh://USER@SERVER for a Server of the Cluster. Nothing was enrolled.
 ```
+
+The line the dashboard or `ployz server add --command` gives you runs on the server itself and
+tells it no devices: it trusts whichever devices the approval names.
 
 ## Add a standalone server
 

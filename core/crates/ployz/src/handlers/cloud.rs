@@ -404,11 +404,13 @@ async fn enroll_current_identity(
                     runtime: Default::default(),
                     capabilities: Vec::new(),
                 };
-                if super::device::sign_waiting_join(&mut entry, &config, &expected, false).await? {
+                if super::device::sign_waiting_join(&mut entry, &config, &expected, true).await? {
                     cloud_enroll::enroll(command, url, token, &identity, progress).await?
                 } else {
                     return Err(error.into());
                 }
+            } else if !dials_this_host(matches) {
+                return Err(unpinnable_join(&name));
             } else {
                 return Err(Error::from(error).hint(Hint::Next(format!(
                     "ployz device approve --join {}",
@@ -419,6 +421,31 @@ async fn enroll_current_identity(
         result => result?,
     };
     Ok((details, machine_token, name, identity, outcome))
+}
+
+/// The pin a join run from this CLI carries: this computer's Device, so the new Server
+/// refuses an approval Cloud forged under a Device of its own. Run over SSH from a computer
+/// with no Device key, nothing could pin the join, so it is refused. Run on the Server itself
+/// from Cloud's printed line, it is the install line's residual and goes unpinned.
+fn cli_join_pin(
+    matches: &ArgMatches,
+    name: &MachineName,
+) -> Result<Option<ployz_core::JoinPin>, Error> {
+    let own = super::device::key::load(&super::device::key::path(&config_path(matches)?))?
+        .map(|secret| super::device::key::public(&secret));
+    match own {
+        Some(device) => Ok(Some(ployz_core::JoinPin {
+            devices: vec![device],
+        })),
+        None if !dials_this_host(matches) => Err(unpinnable_join(name)),
+        None => Ok(None),
+    }
+}
+
+fn unpinnable_join(name: &MachineName) -> Error {
+    Error::conflict(format!(
+        "{name} can't join from here: this computer has no device key, so nothing tells the new Server which devices may approve its join. Run the same command from an approved device. Nothing was enrolled."
+    ))
 }
 
 #[expect(
@@ -475,10 +502,11 @@ where
     // Cloud. A rerun that finds the Server still joining replays its Enroll to read it again.
     let relays =
         assigned.join_approval.is_some() && details.phase != LocalMachinePhase::Participating;
+    let pin = cli_join_pin(matches, &assigned.name).map_err(undoable)?;
     let member = EnrollRequest {
         role: EnrollAs::Member {
             registration: join.registration,
-            pin: None,
+            pin,
         },
         wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
         pinned,

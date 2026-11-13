@@ -101,3 +101,27 @@ except (OSError, BrokenPipeError):
     command.env_remove("DO_NOT_TRACK");
     command
 }
+
+/// [`cli`] as a person's computer that holds a device key, which a join it runs over SSH
+/// pins. A computer with no key can't add a Server it reaches over a connection.
+pub fn device_cli() -> tokio::process::Command {
+    use std::os::unix::fs::OpenOptionsExt;
+    static CONFIG: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let directory = CONFIG.get_or_init(|| {
+        let directory = tempfile::tempdir().unwrap();
+        let mut key = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(directory.path().join("device.key"))
+            .unwrap();
+        std::io::Write::write_all(&mut key, &DEVICE_SEED).unwrap();
+        directory
+    });
+    let mut command = cli();
+    command.env("PLOYZ_CONFIG", directory.path().join("config.yaml"));
+    command
+}
+
+/// The seed of the device key [`device_cli`] holds.
+pub const DEVICE_SEED: [u8; 32] = [21; 32];

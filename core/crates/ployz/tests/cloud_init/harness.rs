@@ -47,7 +47,7 @@ mod inspect_telemetry_fixture;
 mod servers;
 
 pub use enroll_http::{CallbackReply, EnrollListen, EventLog, ReportReply};
-pub use servers::{cli, serve_local_machine, serve_machine};
+pub use servers::{DEVICE_SEED, cli, device_cli, serve_local_machine, serve_machine};
 
 pub const TOKEN: &str = "pmet_test";
 

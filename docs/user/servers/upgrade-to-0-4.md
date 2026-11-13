@@ -17,7 +17,7 @@ you start this one yourself.
 
 [Upgrade the CLI](../cli/overview.md#install-the-cli) on each computer you use to 0.4 as well.
 Once a server runs 0.4, a 0.3 CLI's `exec` into it through another server is refused with
-`This Server takes this call only from an approved Device connected to it directly`.
+a message that ends `upgrade ployz on this computer to 0.4, then run the command again`.
 
 Until you activate, your servers keep running your services, and the **Servers** page shows each
 one as **Awaiting activation**. Activate soon after you upgrade. Until then:
@@ -112,9 +112,9 @@ ployz server add root@203.0.113.12 --reset --name web-2
 
 `--reset` wipes what the server ran, including its volumes, so move anything you need off it
 first. `server add` installs this computer's Ployz on it, so a server left out for running 0.3
-comes back on 0.4. Your device approves the join itself. From a computer without an approved
-device, the command stops and names a code instead: approve it from an approved device with
-`ployz device approve --join <code>`, then run the same `ployz server add` again.
+comes back on 0.4. Your device approves the join itself, and the server takes only an approval from
+it. Run it from an approved device: from a computer with no device key, the command stops
+before the server joins.
 
 ## What activation can't undo
 
