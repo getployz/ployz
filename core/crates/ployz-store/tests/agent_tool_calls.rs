@@ -2519,6 +2519,63 @@ fn a_renamed_deployed_service_or_volume_still_asks_approval_when_removed() {
     );
 }
 
+/// A removal reads the Store's effects once more after its write. Whatever goes
+/// wrong with that read, the refusal says the write committed.
+#[test]
+fn a_removal_whose_read_after_the_write_fails_says_the_write_committed() {
+    let unreadable: [Vec<Result<Value, RpcError>>; 2] = [
+        vec![Err(RpcError::new(RpcErrorCode::Unavailable, "read failed"))],
+        vec![Ok(json!({ "unexpected": true }))],
+    ];
+    for bad in unreadable {
+        let store = shop();
+        call(
+            &store,
+            "service_add",
+            json!({ "name": "web", "image": "nginx" }),
+            "add",
+        )
+        .ok();
+        let (mut step, mut state) = start(
+            "service_remove",
+            json!({ "service": "web" }),
+            &place(in_org()),
+            "remove",
+        );
+        let mut wrote = false;
+        let result = loop {
+            let answers = match step {
+                Step::Read { asks } if wrote => {
+                    assert_eq!(asks.len(), 1);
+                    bad.clone()
+                }
+                Step::Read { asks } => asks
+                    .into_iter()
+                    .map(|ask| answer(&store, &who(), &mut no_cloud, ask))
+                    .collect(),
+                Step::Write { write } => {
+                    wrote = true;
+                    let Write::Store(command) = *write else {
+                        panic!("a Store write");
+                    };
+                    vec![
+                        store
+                            .write(&who(), &command)
+                            .map(|written| serde_json::to_value(written).unwrap()),
+                    ]
+                }
+                Step::Done { result } => break result,
+                Step::Wait { .. } => panic!("a removal tool does not wait"),
+            };
+            (step, state) = resume(state, answers);
+        };
+        let ToolResult::Refused(refusal) = result else {
+            panic!("{bad:?} refused nothing: {result:?}");
+        };
+        assert_eq!(refusal.writes, Writes::Committed, "{bad:?}: {refusal:?}");
+    }
+}
+
 #[test]
 fn a_failed_deployments_next_calls_read_its_own_window_as_given() {
     let error = json!({

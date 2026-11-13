@@ -268,10 +268,14 @@ impl Cx<'_> {
         answer: Option<Result<Value, RpcError>>,
         writes: Writes,
     ) -> Result<Q::View, Stop> {
-        let answer = answer.ok_or_else(|| Refusal::internal("A read came back short"))?;
+        let internal = |message: &str| Refusal {
+            writes,
+            ..Refusal::internal(message)
+        };
+        let answer = answer.ok_or_else(|| internal("A read came back short"))?;
         let value = answer.map_err(|error| from_store(error, &self.call, writes))?;
         let view = serde_json::from_value::<View>(value)
-            .map_err(|_| Refusal::internal("The Config Store answered in an unknown shape"))?;
+            .map_err(|_| internal("The Config Store answered in an unknown shape"))?;
         Q::view(view).map_err(|error| from_store(error, &self.call, writes).into())
     }
 
@@ -282,7 +286,14 @@ impl Cx<'_> {
         environment: EnvironmentRef,
     ) -> Result<BTreeSet<DestructiveEffect>, Stop> {
         let mut answers = self
-            .read(vec![store(&DiffQuery { environment })?])?
+            .read(vec![store(&DiffQuery { environment })?])
+            .map_err(|stop| match stop {
+                Stop::Refuse(refusal) => Stop::Refuse(Box::new(Refusal {
+                    writes: Writes::Committed,
+                    ..*refusal
+                })),
+                step @ Stop::Step(..) => step,
+            })?
             .into_iter();
         let diff = self.view_after::<DiffQuery>(answers.next(), Writes::Committed)?;
         Ok(diff.effects)
