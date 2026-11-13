@@ -113,11 +113,11 @@ No `standing()` read fails on this path. The runner cannot keep this outcome alo
 
 On the CLI, the refusal makes the run's command say the Deployment was replaced. On Cloud, `runStoreDeployment` catches the conflict as `{ nothingToRun }` (`dashboard/src/modules/config-store/store-deployment.server.ts:107`). The function then marks the Volumes done, skips `retire-old` (`dashboard/src/modules/config-store/store-deployment.inngest.ts:85`), and skips `mail-failure`, which runs only for a `ran` result that failed or is unknown (`:105-107`). `onFailure`, which calls `stopStoreDeploymentRun` (`:44-50`), never runs. A run that sent its outcome again as Interrupted returns `Ok` with the Deployment Unknown instead, so Cloud reads `ran` and mails the failure.
 
-Closing it needs the store change `store_fixed()` models. `record` keeps a non-Interrupted `Executed` for an Unknown Deployment as Interrupted, in the same transaction, where the code refuses it (`lifecycle.rs:1641-1644`). `removed_volume` shows an Interrupted outcome's deleted Volumes, where the code reads them NotAttempted for anything but a Success (`lifecycle.rs:2186-2190`). Each part has a `Broken` flag and a test that breaks the property it keeps on `store_fixed()`:
+Closing it needs the store change `store_fixed()` models. `record` keeps a non-Interrupted `Executed` for an Unknown Deployment as Interrupted, in the same transaction, where the code refuses it (`lifecycle.rs:1641-1644`). `removed_volume` shows an Interrupted outcome's deleted Volumes, where the code reads them NotAttempted for anything but a Success (`lifecycle.rs:2186-2190`). Each part is a field of `StoreFix`, and a test sets that field on `Variant::Proposed(StoreFix { .. })` to break the property it keeps on `store_fixed()`:
 
-| Part of the store fix | `Broken` flag | Test | Property it keeps |
+| Part of the store fix | `StoreFix` field | Test | Property it keeps |
 |---|---|---|---|
-| `record` keeps a late `Executed` as Interrupted | `store_refuses_late_executed` | `the_store_fix_needs_record_to_keep_a_late_executed` | `TAKEOVER_KEEPS_OUTCOME` |
+| `record` keeps a late `Executed` as Interrupted | `refuses_late_executed` | `the_store_fix_needs_record_to_keep_a_late_executed` | `TAKEOVER_KEEPS_OUTCOME` |
 | The projection shows an Interrupted outcome's deletions | `projection_hides_interrupted_deletions` | `the_store_fix_needs_the_projection_to_show_interrupted_deletions` | `DELETIONS_KEPT` |
 
 When the store change lands, model it as the code writes it, make `store_fix` the default, and turn `the_code_still_loses_the_volumes_a_run_deleted_once_taken_over` into a `Broken` flag that restores the old store, as the four tests under What `Standing` added did for the runner.
