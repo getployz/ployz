@@ -6,25 +6,33 @@
 
 pub(crate) mod admit;
 pub(crate) mod applied;
+mod claim;
 mod history;
 mod landing;
 mod lifecycle;
 pub(crate) mod loss;
 mod lowering;
+mod outcomes;
 pub(crate) mod query;
+mod record;
 #[cfg(test)]
 mod reference_tests;
 #[cfg(test)]
 mod retire_tests;
+mod retry;
 mod rows;
 mod status;
 #[cfg(test)]
 mod status_tests;
 pub(crate) mod uploads;
+pub(crate) use claim::*;
 pub(crate) use history::*;
 pub(crate) use landing::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
+use outcomes::*;
+pub(crate) use record::*;
+pub(crate) use retry::*;
 pub(crate) use rows::server_names;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,

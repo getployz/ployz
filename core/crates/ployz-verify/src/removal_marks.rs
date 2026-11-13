@@ -21,7 +21,7 @@
 //!   Deployment and saving `cancelled`;
 //! - a close: `removal::close` (removal/due.rs) locking the Environment, reading the
 //!   mark under the lock, returning on a tombstone, and settling as the sweep does;
-//! - the runner: `deployment::record` (deployment/lifecycle.rs) ending the removal
+//! - the runner: `deployment::record` (deployment/record.rs) ending the removal
 //!   Deployment under the Project lock, as one step, since it takes that lock before
 //!   anything else and the cancel takes it first too. A running removal ends
 //!   `Applied`; a cancelling one ends `Applied` when its run succeeded, or
@@ -364,7 +364,7 @@ impl RemovalMarks {
     /// Project lock first, then the Deployment, which only a removal still running
     /// or cancelling has to record. `record` picks `Applied` when the run succeeded
     /// and `Failed` otherwise, and `end` turns only `(Cancelling, Failed)` into
-    /// `Cancelled` (deployment/lifecycle.rs). A running removal that fails is out of
+    /// `Cancelled` (deployment/record.rs). A running removal that fails is out of
     /// bounds: it leaves the Environment on the Servers, and no finisher gets past
     /// `CheckServers`.
     fn records(state: &State) -> &'static [Removal] {
