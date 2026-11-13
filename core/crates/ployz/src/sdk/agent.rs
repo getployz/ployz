@@ -404,8 +404,8 @@ fn summarize(
             .get(&machine_id)
             .map_or_else(|| machine_id.to_string(), ToString::to_string)
     };
-    let mut notes = crate::cli::metrics::gap_notes(history);
-    notes.extend(crate::cli::metrics::behind_notes(
+    let mut notes = super::metrics_rows::gap_notes(history);
+    notes.extend(super::metrics_rows::behind_notes(
         history,
         until_nanos,
         name,
@@ -425,7 +425,7 @@ fn summarize(
     MetricsAnswer {
         since,
         until: Timestamp(until_nanos / NANOS_PER_SECOND),
-        metrics: crate::cli::metrics::rows(history, until_nanos),
+        metrics: super::metrics_rows::rows(history, until_nanos),
         oom_kills: count(|kind| matches!(kind, MarkerKind::Oom)),
         exits: count(|kind| matches!(kind, MarkerKind::Exit { .. })),
         restarts: count(|kind| matches!(kind, MarkerKind::Restart)),

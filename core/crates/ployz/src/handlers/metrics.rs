@@ -15,10 +15,10 @@ use super::{
 use crate::{
     cli::{
         base,
-        metrics::{Window, behind_notes, report},
+        metrics::{Window, report},
         positional, value,
     },
-    sdk::{MetricSubject, metric_history},
+    sdk::{MetricSubject, metric_history, metrics_rows::behind_notes},
     ui::{self, Gaps},
 };
 

@@ -32,6 +32,7 @@ mod deploy;
 mod github_build;
 mod logs;
 mod metrics;
+pub(crate) mod metrics_rows;
 mod observe;
 mod payloads;
 pub(crate) mod preparation;
