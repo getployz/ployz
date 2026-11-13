@@ -28,12 +28,20 @@ const typeScaleRule = defineRule({
     return {
       Literal: checkText,
       TemplateLiteral: checkText,
+      // A literal font size in an object (a style) must be an on-scale token; a computed one is
+      // checked where its value is written.
       Property(node) {
         if (node.parent.type !== "ObjectExpression") return;
         const key = node.key.type === "Identifier" ? node.key.name : node.key.type === "Literal" ? node.key.value : null;
         if (key !== "fontSize" && key !== "font-size") return;
-        const value = staticText(node.value);
-        if (value !== null && !ON_SCALE_VALUE.test(value)) context.report({ node, messageId: "offScaleStyle" });
+        const { value } = node;
+        const literal =
+          value.type === "Literal"
+            ? typeof value.value === "string" || typeof value.value === "number"
+            : value.type === "TemplateLiteral" && value.expressions.length === 0;
+        if (!literal) return;
+        const text = staticText(value);
+        if (text === null || !ON_SCALE_VALUE.test(text)) context.report({ node, messageId: "offScaleStyle" });
       },
     };
   },
