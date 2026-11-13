@@ -51,13 +51,7 @@ pub(crate) fn branch(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let made = store.write(&create)?;
     let branch = &made.branch.environment;
-    let ship = ship(
-        &store,
-        EnvironmentRef {
-            project: Some(branch.project.clone()),
-            environment: Some(branch.name.clone()),
-        },
-    );
+    let ship = ship(&store, EnvironmentRef::of(branch));
     let deploy = store::next(matches, &[ship, "--env", create.name.as_str()]);
     finish(&made, Some(deploy), "Made Branch")
 }

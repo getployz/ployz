@@ -8236,6 +8236,34 @@ fn an_unreadable_input_keeps_its_error_code() {
     assert_eq!(refused["message"], "stdin: an env file is UTF-8 text");
 }
 
+/// `env default`, `protect`, `rm` and `shutdown` judge the Environment name before the
+/// Project, so a name that is no name is refused even where the Project is no name either.
+#[test]
+fn an_environment_name_is_judged_before_the_project_it_is_in() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(store);
+    for verb in ["default", "protect", "rm", "shutdown"] {
+        let name = error(store, &["env", verb, "Bad Name"]);
+        let both = error(
+            store,
+            &["env", verb, "Bad Name", "--project", "Bad Project"],
+        );
+        assert_eq!(both, name, "{verb}");
+        assert_eq!(name["code"], json!("invalid_argument"), "{verb}");
+        let project = error(store, &["env", verb, "staging", "--project", "Bad Project"]);
+        assert_eq!(
+            name["message"],
+            "Expected an Environment name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit",
+            "{verb}"
+        );
+        assert_eq!(
+            project["message"],
+            "Expected a Project name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit",
+            "{verb}"
+        );
+    }
+}
+
 /// Each reader of stdin words a binary input its own way: its message and code are
 /// the CLI's, and a `--patch -` or `env sync --value` is the read's own.
 #[test]

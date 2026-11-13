@@ -13,12 +13,12 @@ use unicode_width::UnicodeWidthStr as _;
 use ployz_store::tools::Confirmation;
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
-    EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId, ProjectName, Publish,
-    Published, Removal, RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View,
-    VolumeObservation, Written,
+    EnvironmentName, EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId,
+    ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey, Sweep,
+    SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
 };
 
-use super::{Error, config_path, leaf_matches, runtime};
+use super::{Error, config_path, leaf_matches, required, runtime};
 use crate::approval::{self, Asked};
 use crate::cli::value;
 use crate::cloud_account::{self, Credential, StoreCallError};
@@ -75,6 +75,19 @@ pub(crate) fn project(matches: &ArgMatches) -> Result<Option<ProjectName>, Error
 /// The Environment a command addresses: flags, environment variables, else the directory link.
 pub(crate) fn environment(matches: &ArgMatches) -> Result<EnvironmentRef, Error> {
     Ok(super::link::scope(matches)?.at())
+}
+
+/// The Environment the required argument `arg` names, in the Project a command addresses.
+pub(crate) fn named_environment(
+    matches: &ArgMatches,
+    arg: &str,
+) -> Result<(EnvironmentName, EnvironmentRef), Error> {
+    let name = EnvironmentName::parse(required(matches, arg)?)?;
+    let at = EnvironmentRef {
+        project: project(matches)?,
+        environment: Some(name.clone()),
+    };
+    Ok((name, at))
 }
 
 /// Where the Config Store is: Cloud's over HTTPS, as `PLOYZ_TOKEN` or this device's

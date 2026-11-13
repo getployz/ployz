@@ -22,8 +22,8 @@ use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
-    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, NodeStatus, PlanQuery,
-    Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, EnvironmentSummary,
+    NodeStatus, PlanQuery, Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Store, environment, mint, next, scoped, store};
@@ -907,19 +907,20 @@ fn follow(
     }
 }
 
+/// The read of `environment`'s newest Deployments, with its latest and those in flight, that
+/// the follow's lookups share.
+fn deployments_of(environment: &EnvironmentSummary) -> DeploymentsQuery {
+    DeploymentsQuery {
+        environment: EnvironmentRef::of(environment),
+        limit: None,
+        cursor: None,
+    }
+}
+
 /// The oldest Deployment in `view`'s Environment still in flight ahead of it, which it waits behind.
 /// A failed read names none: the follow's next read reports it.
 fn ahead(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
-    let page = store
-        .read(&DeploymentsQuery {
-            environment: EnvironmentRef {
-                project: Some(view.environment.project.clone()),
-                environment: Some(view.environment.name.clone()),
-            },
-            limit: None,
-            cursor: None,
-        })
-        .ok()?;
+    let page = store.read(&deployments_of(&view.environment)).ok()?;
     let ours = view.deployment.number?;
     page.in_flight
         .into_iter()
@@ -930,16 +931,7 @@ fn ahead(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
 /// The newer Deployment that took `view`'s Environment over, among its newest page,
 /// the latest and those in flight. None when none did or the read fails.
 fn taken_over_by(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
-    let page = store
-        .read(&DeploymentsQuery {
-            environment: EnvironmentRef {
-                project: Some(view.environment.project.clone()),
-                environment: Some(view.environment.name.clone()),
-            },
-            limit: None,
-            cursor: None,
-        })
-        .ok()?;
+    let page = store.read(&deployments_of(&view.environment)).ok()?;
     let candidates: Vec<DeploymentSummary> = page
         .deployments
         .into_iter()
@@ -958,14 +950,7 @@ enum Replacement {
 }
 
 fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Replacement>, Error> {
-    let page = store.read(&DeploymentsQuery {
-        environment: EnvironmentRef {
-            project: Some(view.environment.project.clone()),
-            environment: Some(view.environment.name.clone()),
-        },
-        limit: None,
-        cursor: None,
-    })?;
+    let page = store.read(&deployments_of(&view.environment))?;
     let ours = &view.deployment.services;
     // The latest may ship other Services while an older one in flight ships ours:
     // the latest, then the in-flight ones newest first, whatever page they fall on.
@@ -1708,6 +1693,29 @@ mod tests {
         status_tone, status_word, undecided, unserved_outcome_lines, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn the_follow_reads_the_first_page_of_the_environment_a_view_names() {
+        let environment: ployz_store::EnvironmentSummary =
+            serde_json::from_value(serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000002",
+                "project": "shop",
+                "name": "production",
+                "revision": 4,
+            }))
+            .unwrap();
+        assert_eq!(
+            super::deployments_of(&environment),
+            ployz_store::DeploymentsQuery {
+                environment: ployz_store::EnvironmentRef {
+                    project: Some(ployz_store::ProjectName::parse("shop").unwrap()),
+                    environment: Some(ployz_store::EnvironmentName::parse("production").unwrap()),
+                },
+                limit: None,
+                cursor: None,
+            }
+        );
+    }
 
     #[test]
     fn a_deployment_speaks_of_its_prune_only_when_it_kept_services_or_the_servers_refused() {
