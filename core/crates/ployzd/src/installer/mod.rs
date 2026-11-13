@@ -147,6 +147,10 @@ pub(super) struct InstallPaths {
     pub(super) zfs_module: PathBuf,
     pub(super) device_pool_marker: PathBuf,
     pub(super) usr_src: PathBuf,
+    /// Where builds and downloads are staged before they are installed.
+    pub(super) staging_dir: PathBuf,
+    /// Where the kernel lists block devices and how partitions belong to disks.
+    pub(super) sys_class_block: PathBuf,
 }
 
 impl InstallPaths {
@@ -169,6 +173,8 @@ impl InstallPaths {
             zfs_module: PathBuf::from("/sys/module/zfs"),
             device_pool_marker: MachineLayout::production().device_pool_marker(),
             usr_src: PathBuf::from("/usr/src"),
+            staging_dir: PathBuf::from("/var/tmp"),
+            sys_class_block: PathBuf::from("/sys/class/block"),
         }
     }
 
@@ -204,6 +210,8 @@ impl InstallPaths {
             zfs_module: root.join("sys/module/zfs"),
             device_pool_marker: root.join("machine-pool.device"),
             usr_src: root.join("usr/src"),
+            staging_dir: root.join("var/tmp"),
+            sys_class_block: root.join("sys/class/block"),
         }
     }
 }
@@ -548,6 +556,9 @@ mod tests {
             paths.device_pool_marker.as_os_str(),
             "/var/lib/ployz-machine-pool.device"
         );
+        assert_eq!(paths.staging_dir.as_os_str(), "/var/tmp");
+        assert_eq!(paths.sys_class_block.as_os_str(), "/sys/class/block");
+        assert_eq!(paths.zfs_module.as_os_str(), "/sys/module/zfs");
         assert_eq!(
             prepare::prepare_dir(&paths).as_os_str(),
             "/var/lib/ployz/prepare"
@@ -665,8 +676,8 @@ mod tests {
     #[test]
     fn zfs_candidate_download_contract() {
         if env::var_os("PLOYZ_ZFS_CANDIDATE_CONTRACT").is_some() {
-            super::storage::install_zfs_packages("test-kernel").unwrap();
             let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            super::storage::install_zfs_packages("test-kernel", &root.join("var/tmp")).unwrap();
             fs::write(root.join("child-completed"), "zfs-candidate").unwrap();
             return;
         }

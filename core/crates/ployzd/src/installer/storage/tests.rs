@@ -20,20 +20,170 @@ fn storage_device_parsing_preserves_default_and_named_targets() {
 
 #[test]
 fn storage_device_pool_requires_exactly_the_requested_backing() {
+    const SYS_CLASS_BLOCK: &str = "/sys/class/block";
     let status = "  pool: ployz-device\n state: ONLINE\nconfig:\n\tNAME STATE\n\tployz-device ONLINE\n\t  /dev/vdb ONLINE\n";
-    assert!(device_pool_matches(status, Path::new("/dev/vdb")));
-    assert!(!device_pool_matches(status, Path::new("/dev/vdc")));
+    assert!(device_pool_matches(
+        status,
+        Path::new("/dev/vdb"),
+        Path::new(SYS_CLASS_BLOCK)
+    ));
+    assert!(!device_pool_matches(
+        status,
+        Path::new("/dev/vdc"),
+        Path::new(SYS_CLASS_BLOCK)
+    ));
     assert!(!device_pool_matches(
         &format!("{status}\t  /dev/vdc ONLINE\n"),
-        Path::new("/dev/vdb")
+        Path::new("/dev/vdb"),
+        Path::new(SYS_CLASS_BLOCK)
     ));
     assert!(device_pool_matches(
         "ployz-device ONLINE\n  null ONLINE\n",
-        Path::new("/dev/null")
+        Path::new("/dev/null"),
+        Path::new(SYS_CLASS_BLOCK)
     ));
     assert!(!device_pool_matches(
         "ployz-device ONLINE\n  mirror-0 ONLINE\n    /dev/vdb ONLINE\n    123456 UNAVAIL\n",
-        Path::new("/dev/vdb")
+        Path::new("/dev/vdb"),
+        Path::new(SYS_CLASS_BLOCK)
+    ));
+}
+
+const ARC_FLOOR: u64 = 256 * 1024 * 1024;
+const ARC_CEILING: u64 = 1024 * 1024 * 1024;
+
+fn write_meminfo(paths: &InstallPaths, text: &str) {
+    fs::create_dir_all(&paths.proc_dir).unwrap();
+    fs::write(paths.proc_dir.join("meminfo"), text).unwrap();
+}
+
+#[test]
+fn the_zfs_arc_limit_is_a_quarter_of_ram_between_256_mib_and_1_gib() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = InstallPaths::at(root.path());
+    for (meminfo_kib, expected) in [
+        (524_288_u64, ARC_FLOOR),
+        (1_048_576, ARC_FLOOR),
+        (2_097_152, 512 * 1024 * 1024),
+        (4_194_304, ARC_CEILING),
+        (134_217_728, ARC_CEILING),
+    ] {
+        write_meminfo(
+            &paths,
+            &format!("MemFree: 1 kB\nMemTotal:       {meminfo_kib} kB\nMemAvailable: 1 kB\n"),
+        );
+        assert_eq!(zfs_arc_max(&paths).unwrap(), expected, "{meminfo_kib} kB");
+    }
+}
+
+#[test]
+fn the_zfs_arc_limit_reads_the_hosts_own_meminfo_with_production_paths() {
+    let meminfo = fs::read_to_string("/proc/meminfo").unwrap();
+    let kib: u64 = meminfo
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemTotal:")?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+        .unwrap();
+    assert_eq!(
+        zfs_arc_max(&InstallPaths::production()).unwrap(),
+        (kib.saturating_mul(1024) / 4).clamp(ARC_FLOOR, ARC_CEILING)
+    );
+}
+
+#[test]
+fn an_unreadable_total_ram_keeps_its_two_refusal_texts() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = InstallPaths::at(root.path());
+
+    let unreadable = zfs_arc_max(&paths).unwrap_err();
+    assert!(matches!(
+        unreadable,
+        Error::Io {
+            stage: "read total RAM for ZFS ARC limit",
+            ..
+        }
+    ));
+    assert_eq!(
+        ployz_core::error_chain::inline(&unreadable),
+        "read total RAM for ZFS ARC limit: No such file or directory (os error 2)"
+    );
+
+    for meminfo in ["MemFree: 1 kB\n", "MemTotal: lots kB\n"] {
+        write_meminfo(&paths, meminfo);
+        assert_eq!(
+            zfs_arc_max(&paths).unwrap_err().to_string(),
+            "prepare ZFS storage: Could not read total RAM for the ZFS ARC limit"
+        );
+    }
+}
+
+#[test]
+fn the_zfs_arc_limit_is_written_under_the_zfs_module_directory_and_read_back() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = InstallPaths::at(root.path());
+
+    let missing = set_and_verify_zfs_arc_max(&paths, ARC_FLOOR).unwrap_err();
+    assert!(matches!(
+        missing,
+        Error::Io {
+            stage: "apply ZFS ARC limit",
+            ..
+        }
+    ));
+
+    let parameters = paths.zfs_module.join("parameters");
+    fs::create_dir_all(&parameters).unwrap();
+    let limit = parameters.join("zfs_arc_max");
+    fs::write(&limit, "0\n").unwrap();
+    set_and_verify_zfs_arc_max(&paths, ARC_FLOOR).unwrap();
+    assert_eq!(fs::read_to_string(&limit).unwrap(), ARC_FLOOR.to_string());
+    assert_eq!(
+        InstallPaths::production()
+            .zfs_module
+            .join("parameters/zfs_arc_max"),
+        Path::new("/sys/module/zfs/parameters/zfs_arc_max")
+    );
+}
+
+#[test]
+fn a_partition_belongs_to_the_disk_whose_directory_holds_it() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = InstallPaths::at(root.path());
+    let devices = root.path().join("devices");
+    for disk in ["sda", "sdb"] {
+        fs::create_dir_all(devices.join(disk)).unwrap();
+        fs::create_dir_all(&paths.sys_class_block).unwrap();
+        symlink(devices.join(disk), paths.sys_class_block.join(disk)).unwrap();
+    }
+    fs::create_dir_all(devices.join("sda/sda1")).unwrap();
+    fs::write(devices.join("sda/sda1/partition"), "1\n").unwrap();
+    symlink(devices.join("sda/sda1"), paths.sys_class_block.join("sda1")).unwrap();
+
+    let sys = &paths.sys_class_block;
+    assert!(partition_of(
+        Path::new("/dev/sda1"),
+        Path::new("/dev/sda"),
+        sys
+    ));
+    assert!(!partition_of(
+        Path::new("/dev/sda1"),
+        Path::new("/dev/sdb"),
+        sys
+    ));
+    assert!(!partition_of(
+        Path::new("/dev/sda"),
+        Path::new("/dev/sda"),
+        sys
+    ));
+    assert!(!partition_of(
+        Path::new("/dev/sdz1"),
+        Path::new("/dev/sda"),
+        sys
     ));
 }
 
@@ -828,6 +978,7 @@ fn zfs_amazon_linux_contract() {
             prepare_amazon_zfs(
                 &root.join("prepared"),
                 &paths.modules_load_dir,
+                &paths.staging_dir,
                 &os,
                 AMAZON_KERNEL,
                 &hex::encode(Sha256::digest(tarball)),

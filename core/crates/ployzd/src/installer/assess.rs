@@ -168,7 +168,7 @@ fn read_cpu_count(proc_dir: &Path) -> Result<u32, Error> {
         .ok_or_else(|| unreadable(STAGE, "no processor lines in cpuinfo"))
 }
 
-fn read_memory_total(proc_dir: &Path) -> Result<u64, Error> {
+pub(super) fn read_memory_total(proc_dir: &Path) -> Result<u64, Error> {
     const STAGE: &str = "read memory size";
     let meminfo = read_proc(proc_dir, "meminfo", STAGE)?;
     meminfo
