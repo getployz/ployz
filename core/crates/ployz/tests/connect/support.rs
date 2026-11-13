@@ -159,6 +159,8 @@ pub(super) struct DiscoveryService {
     pub(super) storage_reads: Arc<AtomicUsize>,
     /// The first reads answer Unavailable, as a daemon that is not participating does.
     pub(super) storage_unavailable_for: usize,
+    /// Storage reads answer that the Server is not listed, as an entry does for a forgotten one.
+    pub(super) storage_unlisted: Option<MachineId>,
     pub(super) recover_volume_on_storage_inspect: Option<DockerVolume>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
@@ -278,6 +280,7 @@ impl DiscoveryService {
             storage_hangs_after: None,
             storage_reads: Arc::new(AtomicUsize::new(0)),
             storage_unavailable_for: 0,
+            storage_unlisted: None,
             recover_volume_on_storage_inspect: None,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
@@ -991,6 +994,17 @@ impl FakeMachine for DiscoveryService {
         let read = self.storage_reads.fetch_add(1, Ordering::SeqCst);
         if read < self.storage_unavailable_for {
             return Err(Status::unavailable("Machine is not participating"));
+        }
+        if let Some(id) = self.storage_unlisted {
+            return Err(ployz_core::rpc::hinted_status(
+                tonic::Code::NotFound,
+                &std::io::Error::other(format!("No Server named {:?}", id.to_string())),
+                serde_json::json!({
+                    "inspect": ["ployz server ls"],
+                    "reason": ployz_core::rpc::NO_SUCH_SERVER_REASON,
+                    "targets": [id.to_string()],
+                }),
+            ));
         }
         if self
             .storage_hangs_after

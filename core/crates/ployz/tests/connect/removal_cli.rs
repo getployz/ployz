@@ -1166,6 +1166,52 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
     server.abort();
 }
 
+/// The entry no longer lists the Server, so an earlier forget finished.
+#[tokio::test]
+async fn a_server_the_entry_no_longer_lists_is_already_forgotten() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('b', "two"));
+    service.storage_unlisted = Some(machine_id('b'));
+    let removals = service.removed_machines.clone();
+    let (address, server) = serve_discovery(service).await;
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--json",
+            "--connect",
+            &format!("tcp://{address}"),
+            "server",
+            "forget",
+            "two",
+            "--confirm",
+            "two",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Server two was already forgotten. Nothing to do.\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.get("already_forgotten"),
+        Some(&json!(true)),
+        "{result}"
+    );
+    assert_eq!(result.pointer("/server/machine/name"), Some(&json!("two")));
+    let mut fields = result
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    fields.sort();
+    assert_eq!(fields, ["already_forgotten", "server"], "{result}");
+    assert!(removals.lock().unwrap().is_empty());
+    server.abort();
+}
+
 /// Each forget gives a silent Server one second, not the default ten.
 const TARGET_READ_TIMEOUT: &str = "PLOYZ_TARGET_READ_TIMEOUT_SECONDS";
 

@@ -37,6 +37,7 @@ pub(super) mod clean;
 pub(super) mod drain;
 mod endpoint;
 pub(super) mod enroll;
+mod fence;
 pub(super) mod forget;
 mod helpers;
 pub(crate) mod init;
