@@ -761,9 +761,13 @@ impl LocalMachine {
         let shared = self.owner.admission_lock().read_owned().await;
         self.finish_admitted(shared, async move {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            if let Err(error) =
-                crate::docker::pull_from_ingest(&request.pull, request.source, &request.platform)
-                    .await
+            if let Err(error) = crate::docker::pull_from_ingest(
+                &containers.local_docker(),
+                &request.pull,
+                request.source,
+                &request.platform,
+            )
+            .await
             {
                 return Err(containers.pull_failure(error).await.into());
             }

@@ -45,6 +45,8 @@ pub(crate) struct FakeDocker {
     /// inspects each answers before the failing one.
     pub(crate) failing_inspects: Arc<Mutex<BTreeMap<String, usize>>>,
     pub(crate) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
+    /// Docker's `info` reports the containerd image store, which a digest pull needs.
+    pub(crate) containerd_store: bool,
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -155,6 +157,15 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
     }
     if method == Method::POST && path.ends_with("/stop") {
         drop(fake.stop_gate.read().await);
+    }
+    if method == Method::GET && path == "/info" {
+        let driver = if fake.containerd_store {
+            "io.containerd.snapshotter.v1"
+        } else {
+            "overlay2"
+        };
+        return axum::Json(serde_json::json!({"DriverStatus": [["driver-type", driver]]}))
+            .into_response();
     }
     if method == Method::GET && path.contains("/containers/") && path.ends_with("/logs") {
         return fake.logs.lock().unwrap().clone().into_response();
