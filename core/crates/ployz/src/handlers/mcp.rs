@@ -47,6 +47,7 @@ use gated::{
     APPROVAL, GatedInput, Raced, approval_required, approve_at, raced, with_approval,
     writes_unknown,
 };
+use login::ActingAs;
 pub(super) use login::{login, login_command};
 
 pub(super) fn command(command: Command) -> Command {
@@ -57,10 +58,8 @@ pub(super) fn command(command: Command) -> Command {
 /// `PLOYZ_TOKEN` that is the Cloud `ployz mcp login` stored, not the sign-in's.
 fn publishing_setup(config: &Path, cloud: Option<String>, token: Option<&str>) -> Setup {
     let setup = Setup::beside(config, cloud);
-    match login::stored(config) {
-        Ok(Some(stored)) if token.is_none_or(str::is_empty) => {
-            setup.in_cloud(stored.credential().cloud())
-        }
+    match ActingAs::resolve(config, token) {
+        Ok(ActingAs::Login(stored)) => setup.in_cloud(stored.credential().cloud()),
         _ => setup,
     }
 }
@@ -663,17 +662,10 @@ impl Server {
     }
 
     async fn agent(&self) -> Result<Credential, String> {
-        if self
-            .account
-            .token
-            .as_deref()
-            .is_some_and(|token| !token.is_empty())
-        {
-            return self.person().await;
-        }
-        match login::stored(&self.account.config) {
-            Ok(Some(stored)) => Ok(stored.credential()),
-            Ok(None) => Err(login::NOT_LOGGED_IN.to_owned()),
+        match ActingAs::resolve(&self.account.config, self.account.token.as_deref()) {
+            Ok(ActingAs::Token) => self.person().await,
+            Ok(ActingAs::Login(stored)) => Ok(stored.credential()),
+            Ok(ActingAs::LoggedOut) => Err(login::NOT_LOGGED_IN.to_owned()),
             Err(error) => Err(Error::from(error).to_string()),
         }
     }

@@ -1243,6 +1243,32 @@ fn published_commands_come_from_the_cloud_the_agent_acts_in() {
     );
 }
 
+#[tokio::test]
+async fn an_unreadable_login_file_is_named_to_the_agent_and_ignored_when_publishing() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    std::fs::write(home.path().join("mcp.json"), "{ not json").unwrap();
+    let account = Account {
+        config: config.clone(),
+        ..Account::default()
+    };
+    let server = Server::new(account, None, fixed(transcript("deploy", in_org()).place));
+    let Err(named) = server.agent().await else {
+        panic!("a corrupt mcp.json is no credential");
+    };
+    assert_eq!(
+        named,
+        format!(
+            "The sign-in stored at {}/mcp.json is unreadable.",
+            home.path().display()
+        )
+    );
+    assert_eq!(
+        publishing_setup(&config, None, None).cloud,
+        Setup::beside(&config, None).cloud
+    );
+}
+
 fn removal_asks() -> Value {
     json!({ "error": {
         "code": "approval_required",

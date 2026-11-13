@@ -1,6 +1,6 @@
 ---
 name: verify-mcp-login
-description: Model-check `ployz mcp login`, which mints the agent token `ployz mcp` acts with and keeps it in mcp.json beside the config, against a second login stepping between any two of its reads, Cloud calls and writes, Cloud answering a token of kind cli, a save that fails before or after its rename, and a list or DELETE that fails, from six start files, with the Stateright model in core/crates/ployz-verify/src/mcp_login.rs. Use when a change touches core/crates/ployz/src/handlers/mcp/login.rs (login, stored, save, Saved, fate, revoke, warnings, Left, Stored, path, LIFETIME_DAYS), core/crates/ployz-decide/src/fate.rs (fate, Previous, Durability, Why, Fate), the callers of login::stored in core/crates/ployz/src/handlers/mcp.rs (publishing_setup, agent), in_cloud in core/crates/ployz/src/handlers/account.rs, new_token, credentials or remove_token in core/crates/ployz/src/cloud_account/token.rs, or Cloud's /api/cli/tokens routes (POST tokens, GET tokens, DELETE tokens/:id and pendingRevocation in dashboard/src/routes/api/cli/-cli.handler.ts; createOrganizationToken, mintOrganizationTokenUnchecked, listCredentials and revokeCredential in dashboard/src/modules/identity/organization-token.server.ts).
+description: Model-check `ployz mcp login`, which mints the agent token `ployz mcp` acts with and keeps it in mcp.json beside the config, against a second login stepping between any two of its reads, Cloud calls and writes, Cloud answering a token of kind cli, a save that fails before or after its rename, and a list or DELETE that fails, from six start files, with the Stateright model in core/crates/ployz-verify/src/mcp_login.rs. Use when a change touches core/crates/ployz/src/handlers/mcp/login.rs (login, stored, save, Saved, fate, revoke, warnings, Left, Stored, ActingAs, path, LIFETIME_DAYS), core/crates/ployz-decide/src/fate.rs (fate, Previous, Durability, Why, Fate), the callers of ActingAs::resolve in core/crates/ployz/src/handlers/mcp.rs (publishing_setup, agent), in_cloud in core/crates/ployz/src/handlers/account.rs, new_token, credentials or remove_token in core/crates/ployz/src/cloud_account/token.rs, or Cloud's /api/cli/tokens routes (POST tokens, GET tokens, DELETE tokens/:id and pendingRevocation in dashboard/src/routes/api/cli/-cli.handler.ts; createOrganizationToken, mintOrganizationTokenUnchecked, listCredentials and revokeCredential in dashboard/src/modules/identity/organization-token.server.ts).
 ---
 
 # Verify the MCP login token
@@ -36,19 +36,20 @@ The model in `core/crates/ployz-verify/src/mcp_login.rs` explores every interlea
 **Every writer and reader of `mcp.json`.** This grep lists them:
 
 ```
-git grep -E 'login::stored|stored\(&config|^\s+save\($' -- core/crates/ployz/src
+git grep -E 'ActingAs::resolve|stored\(&?config\)|^\s+save\($' -- core/crates/ployz/src
 ```
 
-At the sync commit it prints four lines:
+At the sync commit it prints five lines:
 
 ```
-core/crates/ployz/src/handlers/mcp.rs:    match login::stored(config) {
-core/crates/ployz/src/handlers/mcp.rs:        match login::stored(&self.account.config) {
+core/crates/ployz/src/handlers/mcp.rs:    match ActingAs::resolve(config, token) {
+core/crates/ployz/src/handlers/mcp.rs:        match ActingAs::resolve(&self.account.config, self.account.token.as_deref()) {
+core/crates/ployz/src/handlers/mcp/login.rs:        Ok(stored(config)?.map_or(Self::LoggedOut, Self::Login))
 core/crates/ployz/src/handlers/mcp/login.rs:    let previous = match stored(&config) {
 core/crates/ployz/src/handlers/mcp/login.rs:            save(
 ```
 
-`save` is the one writer, and `login`'s call at `:110` is its one call. `publishing_setup` and `agent` (both in `core/crates/ployz/src/handlers/mcp.rs`) read it and write nothing, and `agent` reads it on each call. So readers are left out: they change no state a login reads. A hand edit of `mcp.json` is left out too, except as a start file.
+`save` is the one writer, and `login`'s call at `:110` is its one call. `publishing_setup` and `agent` (both in `core/crates/ployz/src/handlers/mcp.rs`) read it through `ActingAs::resolve`, the one place that decides between `PLOYZ_TOKEN` and the stored login, and write nothing; `agent` reads it on each call. So readers are left out: they change no state a login reads. A hand edit of `mcp.json` is left out too, except as a start file.
 
 **Every writer of a token row.** This grep lists them:
 
@@ -495,7 +496,7 @@ When a change touches a function the description names, reread the step that cop
 
 | Covered | Functions |
 |---|---|
-| `core/crates/ployz/src/handlers/mcp/login.rs` | `login`, `stored`, `save`, `Saved`, `fate`, `revoke`, `warnings`, `Left`, `Stored`, `path`, `LIFETIME_DAYS` |
+| `core/crates/ployz/src/handlers/mcp/login.rs` | `login`, `stored`, `save`, `Saved`, `fate`, `revoke`, `warnings`, `Left`, `Stored`, `ActingAs`, `path`, `LIFETIME_DAYS` |
 | `core/crates/ployz-decide/src/fate.rs` | `fate`, `Previous`, `Durability`, `Why`, `Fate` |
 | `core/crates/ployz/src/handlers/account.rs` | `in_cloud` |
 | `core/crates/ployz/src/handlers/mod.rs` | `runtime` |
