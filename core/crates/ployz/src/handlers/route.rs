@@ -12,7 +12,7 @@ use crate::{
     cloud_account::{self, Credential, StoreCallError},
     cloud_login::{CredentialStore, LoginError},
     cluster::{Call, FullRoutes},
-    connect::{Client, ConnectError, SystemConnector},
+    connect::{Client, ConnectError, Connector, SystemConnector},
     context::{Connection, ConnectionSource, ContextError, SelectedConnections},
     failure::ConnectFailure,
 };
@@ -30,14 +30,31 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
 /// `--connect`, `--context` or current context, or the local daemon, goes first, so over SSH
 /// on a Server that approves the first Device; signed in, Cloud's Server Access follows.
 /// Only a Device slot grants Full, so with a Device key every Management Capability
-/// connection dials as the Device.
+/// connection dials as the Device. Several `--connect` reach each Server over its own, as
+/// [`connect_each`] says.
 pub(super) async fn connect_full(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Client, Error> {
     let config = super::config_path(matches)?;
     let key = super::device::key::path(&config);
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let direct: Vec<&str> = matches
+        .get_many::<String>("connect")
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    if let [_, _, ..] = direct[..] {
+        let connections = direct
+            .iter()
+            .map(|direct| direct.parse())
+            .collect::<Result<Vec<Connection>, _>>()
+            .map_err(ConnectError::from)?;
+        let connector =
+            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+        return connect_each(connections, Arc::new(connector)).await;
+    }
+    let direct = direct.first().copied();
     let access = access(matches, context).await?;
     let local = match crate::connect::resolve_connections(
         &config,
@@ -74,6 +91,51 @@ pub(super) async fn connect_full(
             client.with_full_routes(FullRoutes::from_cloud(connections, direct.is_some()))
         })
         .ok_or_else(no_servers)
+}
+
+/// A client entering by the first of `connections` that holds each one as the route the
+/// person chose to the Server answering on it. Each Server names itself over its own
+/// connection, so no route is labelled from Cloud's or another Server's word.
+///
+/// # Errors
+/// Fails when a connection doesn't answer, or two reach the same Server.
+pub(super) async fn connect_each(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Client, Error> {
+    let dialed = futures_util::future::try_join_all(connections.into_iter().map(|connection| {
+        let connector = Arc::clone(&connector);
+        async move {
+            let selected = SelectedConnections {
+                source: ConnectionSource::Direct,
+                connections: vec![connection.clone()],
+            };
+            let dial = async {
+                let client = crate::connect::connect_selected_with(selected, connector).await?;
+                let machine = client.entry_id().await?;
+                Ok::<_, ConnectError>((client, machine))
+            };
+            let (client, machine) = dial.await.map_err(|error| {
+                Error::from(error).context(format!("No Server answered at {connection}."))
+            })?;
+            Ok::<_, Error>((client, connection.with_machine_id(machine)))
+        }
+    }))
+    .await?;
+    let mut routes: Vec<Connection> = Vec::new();
+    for (_, connection) in &dialed {
+        if let Some(twice) = routes
+            .iter()
+            .find(|route| route.machine_id() == connection.machine_id())
+        {
+            return Err(Error::usage(format!(
+                "{twice} and {connection} reach the same Server. Give each Server's connection once."
+            )));
+        }
+        routes.push(connection.clone());
+    }
+    let (client, _) = dialed.into_iter().next().ok_or_else(no_servers)?;
+    Ok(client.with_full_routes(FullRoutes::chosen(routes, false)))
 }
 
 /// `connections`, each Management Capability one dialing as the Device whose key is at `key`

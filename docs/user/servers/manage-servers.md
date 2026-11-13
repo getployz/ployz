@@ -341,9 +341,9 @@ first: it says what activation removes and what it can't undo.
 ployz device enforce
 ```
 
-Run it in the context where you added your servers with `ployz server add` over SSH. With
-`--connect`, it reaches only that one server directly, and leaves out each other server that holds
-keys from before. `enforce` needs this computer's approved device key. It trusts a server's key only when this
+Run it in the context where you added your servers with `ployz server add` over SSH. If your
+servers joined through Ployz Cloud, give one `--connect ssh://root@SERVER` for each server
+instead: a server that holds keys from before takes the list only over its own SSH. `enforce` needs this computer's approved device key. It trusts a server's key only when this
 computer learned it without going through Ployz Cloud:
 
 - the server's join was approved from this computer, or
@@ -375,8 +375,8 @@ After activation a server trusts only the servers in the signed list, plus serve
 approved device signs later. A server that held a key or server from before enforcement takes the
 list only over its own SSH. When a server like that is reached only through another one or
 through Ployz Cloud, `enforce` signs nothing and names it. Run `ployz device enforce` without
-`--connect` in the context where you added your servers with `ployz server add` over SSH: it
-reaches each server over the SSH connection saved for it.
+`--connect` in the context where you added your servers with `ployz server add` over SSH, or
+with one `--connect` for each server, so it reaches each one over its own SSH.
 
 Enforcement also covers deploys: a server creates a container only from a spec an approved
 device signed with `ployz deploy`, and only from an image pinned by digest. See
@@ -414,7 +414,8 @@ signed the join does not disconnect that server. Use `ployz server rm` to remove
 With enforcement on, mesh connections have Operator access. Full actions such as approving Devices, changing
 enforcement, and `exec` use a direct authenticated connection to each target server. A context
 used for those actions must contain a direct connection to each target. With an explicit
-`--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
+`--connect`, `device approve` and `device rm` affect that server only. `device enforce` takes
+`--connect` once for each server.
 To approve the first Device through SSH, repeat the command on each server.
 
 **Deploy**, **Restart**, **Stop** and **Start** in the dashboard ask for your passkey the first
