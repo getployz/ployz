@@ -266,7 +266,7 @@ fn assert_refused(result: Result<(), Error>, expected: &str) {
     assert!(
         matches!(
             &result,
-            Err(Error::Command { stage, message })
+            Err(Error::Refused { stage, message })
                 if stage == "prepare ZFS storage" && message == expected
         ),
         "expected refusal {expected:?}, got {result:?}"

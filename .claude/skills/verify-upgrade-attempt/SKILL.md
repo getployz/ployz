@@ -83,7 +83,7 @@ The model has three askers:
 | Leave | daemon | `depart`, `machine/local_machine.rs:938-961`, through `latest` (`:945`). A `settle` error fails Leave (`:956`). | When a user leaves the Machine. `depart` refuses a live attempt (`:946-953`) and otherwise runs `finish_mutation` (`:959`). |
 | Daemon start | daemon | `daemon.rs:184-186`, through `reconcile` (`installer/upgrade.rs:349-351`) and `latest` | Once per start, before the daemon serves |
 | A new upgrade request | daemon | `replay` returns None for another id (`installer/upgrade.rs:98-99`); `try_installation` (`machine/local_machine/upgrade.rs:38`); `request_locked`'s `reconcile_locked` (`:185`) | On the next upgrade |
-| `ployzd install` | its own | `install_at`: `try_installation` (`installer/mod.rs:254`), then `reconcile_for_install` (`installer/upgrade.rs:353-370`, from `installer/mod.rs:255-257`), holding the lock through `install_locked` (`:255`) | When an operator runs it |
+| `ployzd install` | its own | `install_at`: `try_installation` (`installer/mod.rs:264`), then `reconcile_for_install` (`installer/upgrade.rs:353-370`, from `installer/mod.rs:265-267`), holding the lock through `install_locked` (`:265`) | When an operator runs it |
 
 **The finding.** Every terminal write comes before its `clear_active`:
 - the request's Failed{Launching} at `:235`, before `:236`;

@@ -934,7 +934,7 @@ RestrictNamespaces=true
             match case.refusal {
                 None => result.unwrap(),
                 Some(refusal) => assert!(
-                    matches!(&result, Err(Error::Command { stage, message })
+                    matches!(&result, Err(Error::Refused { stage, message } | Error::Command { stage, message })
                         if stage == "checking Docker" && message == refusal),
                     "{result:?}"
                 ),

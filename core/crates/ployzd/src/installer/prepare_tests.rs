@@ -561,13 +561,53 @@ async fn a_refused_host_records_zfs_skipped() {
     );
 }
 
+/// Only a refusal at the ZFS storage stage skips ZFS; any other refusal or failure fails it.
+#[test]
+fn zfs_is_skipped_only_by_a_storage_stage_refusal() {
+    let fixture = fixture("zfs-step-outcomes");
+    let paths = InstallPaths::at(fixture.path());
+    let mut job = Job {
+        path: state_path(&paths),
+        state: PrepState::default(),
+    };
+
+    fs::write(
+        &paths.os_release,
+        "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"11\"\nID=debian\n",
+    )
+    .unwrap();
+    assert_eq!(
+        zfs_step(&paths, &mut job),
+        ZfsOutcome::Skipped {
+            reason: "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs Debian 11. Use one of those, or add `--storage none`.".into()
+        }
+    );
+
+    fs::write(&paths.os_release, "NAME=\"Mystery\"\n").unwrap();
+    assert_eq!(
+        zfs_step(&paths, &mut job),
+        ZfsOutcome::Failed {
+            message: "identify Linux distribution: Could not identify the Linux distribution"
+                .into()
+        }
+    );
+
+    fs::remove_file(&paths.os_release).unwrap();
+    assert_eq!(
+        zfs_step(&paths, &mut job),
+        ZfsOutcome::Failed {
+            message: "identify Linux distribution: No such file or directory (os error 2)".into()
+        }
+    );
+}
+
 #[tokio::test]
 async fn skip_zfs_records_off_and_a_docker_failure_fails_the_job() {
     let fixture = fixture("skip-zfs");
     let paths = InstallPaths::at(fixture.path());
     let result = prepare_at(&paths, true, async || Err("no systemd".into())).await;
     assert!(
-        matches!(&result, Err(Error::Command { message, .. }) if message == "Docker failed (no systemd), ZFS off"),
+        matches!(&result, Err(Error::Refused { message, .. }) if message == "Docker failed (no systemd), ZFS off"),
         "{result:?}"
     );
     let state = read_state(fixture.path());

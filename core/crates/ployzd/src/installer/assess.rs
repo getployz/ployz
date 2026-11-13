@@ -104,11 +104,7 @@ fn error_text(error: &Error) -> String {
 
 /// A failure to start `program` named after it, rather than run_command's shared stage.
 fn naming_program(error: Error, stage: &'static str) -> Error {
-    if let Error::Io {
-        stage: "start host command",
-        source,
-    } = error
-    {
+    if let Error::Spawn { source } = error {
         return Error::Io { stage, source };
     }
     error
