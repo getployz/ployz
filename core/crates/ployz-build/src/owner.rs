@@ -83,7 +83,8 @@ pub(crate) enum Mark {
     Named {
         boot: String,
         processes: Vec<(Role, Process)>,
-        /// Each Docker endpoint the attempt's Docker CLIs used.
+        /// Each Docker endpoint the attempt's Docker CLIs used, or an
+        /// interrupted recovery was removing leftovers from.
         endpoints: Vec<String>,
     },
 }
@@ -97,6 +98,17 @@ impl Mark {
             boot_id()?,
             line(Role::Owner, owner)
         ))
+    }
+
+    /// The mark a recovery leaves while it removes `endpoints`' leftovers: this
+    /// boot, no owner, and the endpoints, so its own Docker CLIs, recorded
+    /// below, are what a later recovery waits on.
+    pub(crate) fn recovery(endpoints: &[String]) -> std::io::Result<String> {
+        let mut mark = format!("{HEADER}\nboot {}\n", boot_id()?);
+        for endpoint in endpoints {
+            mark.push_str(&format!("endpoint {endpoint}\n"));
+        }
+        Ok(mark)
     }
 
     pub(crate) fn docker_line(process: Process, endpoint: &str) -> String {
@@ -116,20 +128,27 @@ impl Mark {
         let mut boot = None;
         let mut processes = Vec::new();
         let mut endpoints = Vec::<String>::new();
-        for words in text
-            .lines()
-            .map(|line| line.splitn(4, ' ').collect::<Vec<_>>())
-        {
-            match words.as_slice() {
-                ["boot", id] => boot = Some((*id).to_owned()),
+        let remember = |endpoint: &str, endpoints: &mut Vec<String>| {
+            if !endpoints.iter().any(|known| known == endpoint) {
+                endpoints.push(endpoint.to_owned());
+            }
+        };
+        for text in text.lines() {
+            if let Some(endpoint) = text.strip_prefix("endpoint ") {
+                remember(endpoint, &mut endpoints);
+                continue;
+            }
+            match text.splitn(4, ' ').collect::<Vec<_>>().as_slice() {
+                // The first wins: a rewrite cut short leaves the old mark's tail after it.
+                ["boot", id] => {
+                    boot.get_or_insert_with(|| (*id).to_owned());
+                }
                 ["docker", pid, start, endpoint] => {
                     let (Ok(pid), Ok(start)) = (pid.parse(), start.parse()) else {
                         continue;
                     };
                     processes.push((Role::Docker, Process { pid, start }));
-                    if !endpoints.iter().any(|known| known == endpoint) {
-                        endpoints.push((*endpoint).to_owned());
-                    }
+                    remember(endpoint, &mut endpoints);
                 }
                 [role @ ("owner" | "docker"), pid, start] => {
                     let (Ok(pid), Ok(start)) = (pid.parse(), start.parse()) else {

@@ -517,9 +517,13 @@ impl Lock {
     /// Clear an earlier attempt's mark once nothing it started can still run.
     ///
     /// Holding the file lock proves no live attempt owns the slot. The mark's
-    /// processes, matched by PID and start time on this boot, and any Buildx
-    /// process naming the builder must be gone, and Docker must then confirm
-    /// the builder and its helper containers are removed.
+    /// processes, matched by PID and start time on their boot, and any Buildx
+    /// process naming the builder must be gone. Recovery then rewrites the mark
+    /// to name this boot and the endpoints to clean, and no owner. Its own
+    /// Docker CLIs are recorded there before they run. So a recovery killed
+    /// mid-removal leaves those CLIs for the next one to wait on, and one that
+    /// fails leaves nothing alive that blocks a retry. The mark clears once
+    /// Docker confirms the builder and its helpers are gone on every endpoint.
     fn recover(&mut self, docker: &std::path::Path) -> Result<(), BuildError> {
         let path = self.directory.join(lock_file(self.slot));
         let name = self.name();
@@ -548,20 +552,19 @@ impl Lock {
                     .join(", ")
             )));
         }
-        // Recovery's own Docker CLIs are recorded like a Build's, so a recovery
-        // killed mid-removal leaves them for the next one to wait on. A mark
-        // that named no processes is rewritten first, naming this process.
-        if mark == crate::owner::Mark::Unnamed {
-            self.restamp()?;
+        let endpoints = mark.endpoints();
+        // Builds refuse any other Docker, so a mark naming one was not written by them.
+        if let Some(endpoint) = endpoints
+            .iter()
+            .find(|endpoint| !endpoint.starts_with("unix://"))
+        {
+            return Err(quarantined(format!(
+                "none of its processes is running, but it used Docker at {endpoint}, which is not this Machine's"
+            )));
         }
+        self.take_over(&endpoints)?;
         let recorder = self.recorder();
-        for endpoint in mark.endpoints() {
-            // Builds refuse any other Docker, so a mark naming one was not written by them.
-            if !endpoint.starts_with("unix://") {
-                return Err(quarantined(format!(
-                    "none of its processes is running, but it used Docker at {endpoint}, which is not this Machine's"
-                )));
-            }
+        for endpoint in endpoints {
             let mut environment = crate::upload::environment(&self.upload_directory());
             environment.insert("DOCKER_HOST".into(), endpoint.clone());
             let docker = Docker {
@@ -650,19 +653,19 @@ impl Lock {
         self.file.file.sync_all().map_err(lock_error)
     }
 
-    /// Replace the mark with one naming this process as its owner.
-    /// The mark is never empty meanwhile: the header overwrites it in place.
-    fn restamp(&mut self) -> Result<(), BuildError> {
+    /// Replace the mark with a recovery's. The mark is never empty meanwhile:
+    /// the new one overwrites it in place before the rest is cut.
+    fn take_over(&mut self, endpoints: &[String]) -> Result<(), BuildError> {
         use std::os::unix::fs::FileExt as _;
         let _writes = self.file.writes.lock().expect("mark writes never panic");
-        let header = crate::owner::Mark::header().map_err(lock_error)?;
+        let mark = crate::owner::Mark::recovery(endpoints).map_err(lock_error)?;
         self.file
             .file
-            .write_all_at(header.as_bytes(), 0)
+            .write_all_at(mark.as_bytes(), 0)
             .map_err(lock_error)?;
         self.file
             .file
-            .set_len(header.len() as u64)
+            .set_len(mark.len() as u64)
             .map_err(lock_error)?;
         self.file.file.sync_all().map_err(lock_error)
     }
@@ -1096,25 +1099,83 @@ esac
     }
 
     #[test]
-    fn recovery_names_its_own_docker_clis_before_they_run() {
-        let slot = 11;
-        let (directory, docker) = quarantined_slot(slot, "termination unconfirmed\n");
-        let marker = directory.path().join(lock_file(slot));
-        crate::tests::executable(
-            &docker,
-            &format!(
-                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\ngrep -q \"^docker $$ \" '{}' && echo named >> '{}/seen' || echo unnamed >> '{}/seen'\n",
-                marker.display(),
-                directory.path().display(),
-                directory.path().display()
+    fn recovery_names_its_own_docker_clis_on_this_boot_before_they_run() {
+        let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+        let before_reboot = format!(
+            "termination unconfirmed\nboot an-earlier-boot\nowner 1 1\ndocker 2 2 {}\n",
+            crate::owner::DEFAULT_ENDPOINT
+        );
+        for (slot, mark) in [
+            (11, "termination unconfirmed\n"),
+            (12, before_reboot.as_str()),
+        ] {
+            let (directory, docker) = quarantined_slot(slot, mark);
+            let marker = directory.path().join(lock_file(slot));
+            crate::tests::executable(
+                &docker,
+                &format!(
+                    "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nif grep -qx 'boot {}' '{}' && grep -q \"^docker $$ \" '{}' && ! grep -q '^owner ' '{}'; then echo named; else echo unnamed; cat '{}'; fi >> '{}/seen'\n",
+                    boot.trim(),
+                    marker.display(),
+                    marker.display(),
+                    marker.display(),
+                    marker.display(),
+                    directory.path().display()
+                ),
+            );
+            drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
+            let seen = fs::read_to_string(directory.path().join("seen")).unwrap();
+            assert!(
+                !seen.is_empty() && seen.lines().all(|line| line == "named"),
+                "a recovery Docker CLI ran before a mark on this boot named it: {seen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_recovery_leaves_nothing_that_blocks_a_retry() {
+        let custom = format!(
+            "{}docker 2 2 unix:///run/user/7/docker.sock\n",
+            crate::owner::named(&[])
+        );
+        for (slot, mark, endpoint) in [
+            (
+                13,
+                "termination unconfirmed\n",
+                crate::owner::DEFAULT_ENDPOINT,
             ),
-        );
-        drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
-        let seen = fs::read_to_string(directory.path().join("seen")).unwrap();
-        assert!(
-            !seen.is_empty() && seen.lines().all(|line| line == "named"),
-            "a recovery Docker CLI ran before the mark named it: {seen}"
-        );
+            (14, custom.as_str(), "unix:///run/user/7/docker.sock"),
+        ] {
+            let (directory, docker) = quarantined_slot(slot, mark);
+            crate::tests::executable(
+                &docker,
+                &format!(
+                    "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\n[ -e '{root}/docker-up' ] || {{ echo 'Cannot connect to the Docker daemon' >&2; exit 1; }}\nprintf '%s %s\\n' \"$DOCKER_HOST\" \"$*\" >> '{root}/calls'\n",
+                    root = directory.path().display()
+                ),
+            );
+            let refused = Lock::try_acquire_slot(directory.path(), slot, &docker)
+                .err()
+                .unwrap();
+            assert!(
+                refused.to_string().contains("removing its builder from"),
+                "{refused}"
+            );
+
+            fs::write(directory.path().join("docker-up"), "").unwrap();
+            let retried = Lock::try_acquire_slot(directory.path(), slot, &docker);
+            assert!(
+                retried.is_ok(),
+                "a retry after Docker returned was refused: {}",
+                retried.err().unwrap()
+            );
+            let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
+            assert!(
+                calls.lines().any(|call| call
+                    == format!("{endpoint} rm --force buildx_buildkit_{}0", slot_name(slot))),
+                "the retry forgot where the builder lives: {calls}"
+            );
+        }
     }
 
     #[test]
