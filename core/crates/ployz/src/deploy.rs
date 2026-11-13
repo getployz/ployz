@@ -568,6 +568,10 @@ pub enum EliminatingConstraint {
     Unanswered {
         names: Vec<MachineName>,
     },
+    /// Machines whose membership is neither up nor down, so no RPC goes to them.
+    MembershipUnknown {
+        names: Vec<MachineName>,
+    },
     VolumeInventoryUnavailable {
         machine: MachineName,
         message: String,
@@ -655,6 +659,14 @@ impl fmt::Display for EliminatingConstraint {
             Self::Unanswered { names } => {
                 write_machine_names(f, names)?;
                 f.write_str(" did not answer when this Deploy listed its containers")
+            }
+            Self::MembershipUnknown { names } => {
+                write_machine_names(f, names)?;
+                if names.len() == 1 {
+                    f.write_str(" is not known to be up")
+                } else {
+                    f.write_str(" are not known to be up")
+                }
             }
             Self::VolumeInventoryUnavailable { machine, message } => {
                 write!(f, "Machine '{machine}' was skipped because its {message}")

@@ -1023,6 +1023,31 @@ fn constraints_name_each_excluded_machine_under_the_first_reason_that_applies_to
 }
 
 #[test]
+fn constraints_name_a_machine_whose_membership_is_unknown() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.placement.constraints = [label_constraint("ord1")].into();
+    let mut ord1 = machine('2', "ord1");
+    ord1.membership = MembershipObservation::Unknown;
+
+    assert_no_eligible(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "ewr1"), ord1],
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        &[EliminatingConstraint::MembershipUnknown {
+            names: vec![MachineName::parse("ord1").unwrap()],
+        }],
+        &["Machine 'ord1' is not known to be up"],
+    );
+}
+
+#[test]
 fn volume_on_another_machine_names_the_volume_and_the_conflict() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
