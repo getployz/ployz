@@ -206,12 +206,9 @@ fn capture_target(
         .filter_map(|(key, value)| Some((key.clone(), value.text()?.to_owned())))
         .collect();
     let name = service.name.to_string();
-    let (build_method, context, dockerfile, sealed) = match spec.recipe {
+    let (build_method, context, dockerfile, secrets, sealed) = match spec.recipe {
         Recipe::Railpack { command } => {
-            let recipe = Recipe::Railpack {
-                command: command.clone(),
-            };
-            let mut sealed = sealed::capture(service, &recipe, &inputs, opened)?;
+            let sealed = sealed::capture_railpack(service, command.as_deref(), &inputs, opened)?;
             if let Some(command) = command {
                 args.insert(ployz_build::railpack::BUILD_CMD.into(), command);
             }
@@ -228,17 +225,22 @@ fn capture_target(
                 name: name.clone(),
                 context: context.clone(),
                 variables: std::mem::take(&mut args),
-                sealed: std::mem::take(&mut sealed.fingerprints),
+                sealed: sealed.fingerprints,
                 refresh_cache: false,
             })?;
-            (BuildMethod::Railpack, context, None, sealed)
+            (
+                BuildMethod::Railpack,
+                context,
+                None,
+                BTreeMap::new(),
+                sealed.names,
+            )
         }
         Recipe::Dockerfile(dockerfile) => {
             let context = inputs.context(&spec.context, &dockerfile)?;
             let file = inputs.dockerfile(&dockerfile)?;
-            let mut sealed =
-                sealed::capture(service, &Recipe::Dockerfile(file.clone()), &inputs, opened)?;
-            args.extend(std::mem::take(&mut sealed.args));
+            let sealed = sealed::capture_dockerfile(service, &file, &inputs)?;
+            args.extend(sealed.args);
             if !sealed.declared.is_empty() {
                 inputs.sealed_args(&name, &sealed.declared)?;
             }
@@ -248,7 +250,8 @@ fn capture_target(
                 BuildMethod::Dockerfile,
                 inputs.relative(&context),
                 Some(dockerfile),
-                sealed,
+                sealed.secrets,
+                sealed.names,
             )
         }
     };
@@ -262,12 +265,12 @@ fn capture_target(
                     context,
                     dockerfile,
                     args,
-                    secrets: sealed.secrets.keys().cloned().collect(),
+                    secrets: secrets.keys().cloned().collect(),
                     tags: vec![image.clone(), retained_tag.clone()],
                 },
             },
         )]),
-        secrets: &sealed.secrets,
+        secrets: &secrets,
     };
     // Buildx interpolates the recipe. Escape dollars so captured values cannot
     // pick up an execution host value or lose a literal dollar.
@@ -285,7 +288,7 @@ fn capture_target(
         placement: service.placement.clone(),
         build_method,
         retained_tag,
-        sealed: sealed.names,
+        sealed,
         inputs,
     })
 }
