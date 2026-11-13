@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
+import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { releasingExpectation } from "#/modules/machines/connections.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
