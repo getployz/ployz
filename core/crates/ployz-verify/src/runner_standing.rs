@@ -1,6 +1,6 @@
 //! One Deployment's run, from the runner that claimed it, against the Config Store that
 //! holds its status. The runner (`run_deployment_expecting` and `Run`, ployz's
-//! sdk/store_runner.rs:163-219) dials the Servers under `connecting`, then
+//! sdk/store_runner.rs) dials the Servers under `connecting`, then
 //! plans or builds and prepares, executes, deletes the Volumes the Deploy removes and
 //! fills ingress, each piece of work under `renewing` (:653-665, :687-691, :708,
 //! :726-738). While it awaits that work, `connecting` and `renewing` call `standing()`
@@ -20,7 +20,7 @@
 //! The first finding: a takeover that lands after the run's last read leaves the
 //! Deployment Unknown, and `record` then refuses an `Executed` that is not Interrupted
 //! (deployment/record.rs `record`, the `taken_over` check), so the store keeps no outcome. `Run::executed` now sends a
-//! refused outcome again as Interrupted (store_runner.rs:1200-1222), which the store
+//! refused outcome again as Interrupted (store_runner.rs `executed`), which the store
 //! keeps. Not when the run tried to delete Volumes: the store reads an Interrupted
 //! outcome's removed Volumes NotAttempted (deployment/outcomes.rs `removed_volume`). On that path the
 //! store still keeps neither the outcome nor the deletions, and `TAKEOVER_KEEPS_OUTCOME`
@@ -79,9 +79,9 @@ enum Status {
 enum Outcome {
     NotExecuted,
     /// `RunEvidence::Executed`: whether its outcome is Interrupted, and whether `removed`
-    /// names the Volumes the run deleted (store_runner.rs:1209-1215). One that is not
+    /// names the Volumes the run deleted (store_runner.rs `executed`). One that is not
     /// Interrupted and names deletions is a Success, since only a Success deletes
-    /// (store_runner.rs:706-711).
+    /// (store_runner.rs `execute`).
     Executed {
         interrupted: bool,
         removed: bool,
@@ -705,7 +705,7 @@ impl RunnerStanding {
         }
     }
 
-    /// One `renewing` tick (store_runner.rs:1136-1149): Cancel, Lost or Ended calls
+    /// One `renewing` tick (store_runner.rs `renewing`): Cancel, Lost or Ended calls
     /// `abort`, and Keep or Unread skips the check.
     fn tick(&self, state: &mut State, call: Call) {
         let Some((work, stopped)) = state.phase.renewing() else {
@@ -786,7 +786,7 @@ impl RunnerStanding {
         answer
     }
 
-    /// `Run::executed` (store_runner.rs:1200-1222): `record(Executed)` with the outcome,
+    /// `Run::executed` (store_runner.rs): `record(Executed)` with the outcome,
     /// and one the store refused sent again as Interrupted, unless the run deleted
     /// Volumes. Returns the last answer and whether the run sent it again.
     fn record(&self, state: &mut State) -> (Answer, bool) {
@@ -821,8 +821,8 @@ impl RunnerStanding {
             Action::CancelInFlight => state.store.status = Status::Ended,
             Action::Takeover => state.store.status = Status::Unknown,
             Action::Cancel => state.store.status = Status::Cancelling,
-            // `connecting` (store_runner.rs:1116-1132) returns `Ok(None)` on Cancel, Lost
-            // or Ended, and the run records NotExecuted (:202), which the store refuses
+            // `connecting` (store_runner.rs) returns `Ok(None)` on Cancel, Lost
+            // or Ended, and the run records NotExecuted (`run_deployment_expecting`), which the store refuses
             // from a run it no longer holds.
             Action::Poll(call) => match self.read(state, call, true).0 {
                 Said::Cancel if !broken.connecting_ignores_cancel => {
@@ -873,7 +873,7 @@ impl RunnerStanding {
                 state.phase = Phase::Returned;
                 state.took = Some(Branch::Abandons);
             }
-            // The read after executing (store_runner.rs:694-703): Lost records Interrupted,
+            // The read after executing (store_runner.rs `execute`): Lost records Interrupted,
             // Ended records the outcome, which the store refuses, without deleting.
             Action::Check(call) => {
                 let Phase::Checking(exec) = state.phase else {
@@ -906,7 +906,7 @@ impl RunnerStanding {
                 state.removed = true;
                 state.phase = Phase::Gating(Exec::Success);
             }
-            // The gate (store_runner.rs:712-718): Keep or Unread fills ingress.
+            // The gate (store_runner.rs `execute`): Keep or Unread fills ingress.
             Action::Gate(call) => {
                 let Phase::Gating(exec) = state.phase else {
                     return;

@@ -273,6 +273,42 @@ pub struct PreparedDeploy {
     prune_targets: Vec<ployz_core::PruneTarget>,
 }
 
+impl PreparedDeploy {
+    /// A Deploy planned without preparing: nothing built, nothing retained.
+    fn new(preview: DeployPlan, session: std::sync::Weak<SessionInner>) -> Self {
+        Self {
+            preview,
+            build_receipts: Default::default(),
+            session,
+            confirmed: AtomicBool::new(false),
+            retained: std::sync::Mutex::new(None),
+            prune_targets: Vec::new(),
+        }
+    }
+
+    /// A Deploy prepared from a Build: its receipts and the images it retains until
+    /// confirmed or closed.
+    fn prepared(
+        preview: DeployPlan,
+        session: std::sync::Weak<SessionInner>,
+        build_receipts: std::collections::BTreeMap<
+            ployz_core::ServiceName,
+            preparation::BuildReceipt,
+        >,
+        retained: Vec<crate::build::BuiltService>,
+        prune_targets: Vec<ployz_core::PruneTarget>,
+    ) -> Self {
+        Self {
+            preview,
+            build_receipts,
+            session,
+            confirmed: AtomicBool::new(false),
+            retained: std::sync::Mutex::new(Some(retained)),
+            prune_targets,
+        }
+    }
+}
+
 type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
 
 /// In-flight execution of one Deploy Preview.
@@ -776,10 +812,7 @@ impl Session {
             ployz_core::ServiceName,
             ployz_core::RegistryAuth,
         >,
-        runner: Option<(
-            ployz_core::Operator,
-            std::collections::BTreeSet<ployz_core::DeploymentLogId>,
-        )>,
+        runner: Option<ployz_core::RunnerOptions>,
     ) -> Result<Running<PreparedDeploy, E>, RpcError>
     where
         E: From<RpcError> + From<Unprepared> + Send + 'static,
@@ -790,8 +823,8 @@ impl Session {
         Ok(Running::spawn(token.clone(), move |reporter| async move {
             let mut captured = capture(input).await?;
             captured.intent.registry_auth = registry_auth;
-            if let Some((operator, ended_runs)) = runner {
-                captured.intent.options = captured.intent.options.as_runner(operator, ended_runs);
+            if let Some(runner) = runner {
+                captured.intent.options = captured.intent.options.as_runner(runner);
             }
             if token.is_cancelled() {
                 return Err(E::from(preparation_error(
@@ -814,14 +847,13 @@ impl Session {
             let build_receipts =
                 preparation::receipts(&captured.fingerprints, &captured.reused, &retained);
             let prune_targets = crate::image::prune_targets(&preview, &retained);
-            Ok(PreparedDeploy {
+            Ok(PreparedDeploy::prepared(
                 preview,
-                build_receipts,
                 session,
-                confirmed: AtomicBool::new(false),
-                retained: std::sync::Mutex::new(Some(retained)),
+                build_receipts,
+                retained,
                 prune_targets,
-            })
+            ))
         }))
     }
 
@@ -883,14 +915,7 @@ impl Session {
             () = self.inner.cancel.cancelled() => return Err(closed().into()),
             preview = client.preview(intent) => preview?,
         };
-        Ok(PreparedDeploy {
-            preview,
-            build_receipts: Default::default(),
-            session: Arc::downgrade(&self.inner),
-            confirmed: AtomicBool::new(false),
-            retained: std::sync::Mutex::new(None),
-            prune_targets: Vec::new(),
-        })
+        Ok(PreparedDeploy::new(preview, Arc::downgrade(&self.inner)))
     }
 
     /// Calculate a Namespace-removal preview. Confirming executes these operations.
@@ -910,14 +935,7 @@ impl Session {
             () = self.inner.cancel.cancelled() => return Err(closed()),
             preview = client.preview_namespace_removal(&namespace, volumes) => preview?,
         };
-        Ok(PreparedDeploy {
-            preview,
-            build_receipts: Default::default(),
-            session: Arc::downgrade(&self.inner),
-            confirmed: AtomicBool::new(false),
-            retained: std::sync::Mutex::new(None),
-            prune_targets: Vec::new(),
-        })
+        Ok(PreparedDeploy::new(preview, Arc::downgrade(&self.inner)))
     }
 
     /// Preview, auto-confirm, and return the Deploy Outcome.
