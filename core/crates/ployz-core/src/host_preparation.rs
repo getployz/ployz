@@ -29,8 +29,100 @@ pub struct PrepState {
     pub interrupted: Vec<String>,
 }
 
+/// The two steps ployzd takes to prepare a host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Docker,
+    Zfs,
+}
+
+/// How a step ended, which is also the [`Step`] it was.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StepOutcome {
+    Docker(DockerOutcome),
+    Zfs(ZfsOutcome),
+}
+
+impl PrepState {
+    /// Starts a new run over this record: both steps begin again, and a step the last run left
+    /// `installing` is named in `interrupted`. What the last run added stays, so discarding can
+    /// still remove it. Returns the steps it found interrupted.
+    pub fn restart(&mut self) -> Vec<String> {
+        let interrupted: Vec<String> = [
+            ("docker", matches!(self.docker, PrepStep::Running { .. })),
+            ("zfs", matches!(self.zfs, PrepStep::Running { .. })),
+        ]
+        .into_iter()
+        .filter(|(_, unfinished)| *unfinished)
+        .map(|(step, _)| step.to_owned())
+        .collect();
+        self.docker = PrepStep::NotStarted;
+        self.zfs = PrepStep::NotStarted;
+        self.interrupted.clone_from(&interrupted);
+        interrupted
+    }
+
+    /// Records `step` as running since `begun`.
+    pub fn begin(&mut self, step: Step, begun: &Begun) {
+        match step {
+            Step::Docker => self.docker = begun.running(),
+            Step::Zfs => self.zfs = begun.running(),
+        }
+    }
+
+    /// Records the step `outcome` names as finished, which `begun` began.
+    pub fn finish(&mut self, begun: Begun, outcome: StepOutcome, finished_at: String) {
+        match outcome {
+            StepOutcome::Docker(outcome) => self.docker = begun.finish(outcome, finished_at),
+            StepOutcome::Zfs(outcome) => self.zfs = begun.finish(outcome, finished_at),
+        }
+    }
+
+    /// Notes packages preparation is about to install, so discarding can remove them.
+    pub fn note_packages(&mut self, packages: &[String]) {
+        for package in packages {
+            if !self.added_packages.contains(package) {
+                self.added_packages.push(package.clone());
+            }
+        }
+    }
+
+    pub const fn note_contrib_source(&mut self) {
+        self.added_contrib_source = true;
+    }
+
+    pub fn set_build(&mut self, build: ZfsBuild) {
+        self.zfs_build = Some(build);
+    }
+
+    pub fn forget_build(&mut self) {
+        self.zfs_build = None;
+    }
+
+    /// Records that packages now provide ZFS: what preparation added is theirs, and only `kept`
+    /// of the build stays for discarding.
+    pub fn take_over(&mut self, kept: Option<ZfsBuild>) {
+        self.zfs_build = kept;
+        self.added_packages.clear();
+        self.added_contrib_source = false;
+    }
+
+    /// Records the ZFS step as finished without running, `off`, once its build and what it added
+    /// are removed.
+    pub fn discard(&mut self, finished_at: String) {
+        self.added_packages.clear();
+        self.zfs_build = None;
+        self.added_contrib_source = false;
+        self.zfs = PrepStep::Finished {
+            started_at: None,
+            finished_at,
+            outcome: ZfsOutcome::Off,
+        };
+    }
+}
+
 /// What the ZFS step built or downloaded, which discarding the build removes.
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "route", rename_all = "lowercase")]
 pub enum ZfsBuild {
     Ubuntu {

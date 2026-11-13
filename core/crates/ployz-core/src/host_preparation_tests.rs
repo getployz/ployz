@@ -326,3 +326,117 @@ fn the_check_in_reader_names_the_record_it_expected_as_it_always_has() {
         assert_eq!(error.to_string(), expected);
     }
 }
+
+#[test]
+fn a_new_run_starts_the_steps_over_and_keeps_what_the_last_run_added() {
+    let mut state = written_state();
+    assert_eq!(state.restart(), ["zfs"]);
+    assert_eq!(state.docker, PrepStep::NotStarted);
+    assert_eq!(state.zfs, PrepStep::NotStarted);
+    assert_eq!(state.interrupted, ["zfs"]);
+    assert_eq!(state.added_packages, ["dkms", "perl"]);
+    assert!(state.zfs_build.is_some());
+    assert!(state.added_contrib_source);
+
+    assert!(state.restart().is_empty());
+    assert!(state.interrupted.is_empty());
+}
+
+#[test]
+fn a_step_is_written_running_when_it_begins_and_dated_when_it_finishes() {
+    let mut state = PrepState::default();
+    let begun = Begun::at("2026-10-16T00:00:00Z".to_owned());
+    state.begin(Step::Zfs, &begun);
+    assert_eq!(
+        state.zfs,
+        PrepStep::Running {
+            started_at: "2026-10-16T00:00:00Z".to_owned()
+        }
+    );
+    assert_eq!(state.docker, PrepStep::NotStarted);
+
+    state.finish(
+        begun,
+        StepOutcome::Zfs(ZfsOutcome::Off),
+        "2026-10-16T00:01:00Z".to_owned(),
+    );
+    assert_eq!(
+        state.zfs,
+        PrepStep::Finished {
+            started_at: Some("2026-10-16T00:00:00Z".to_owned()),
+            finished_at: "2026-10-16T00:01:00Z".to_owned(),
+            outcome: ZfsOutcome::Off,
+        }
+    );
+    assert_eq!(state.docker, PrepStep::NotStarted);
+}
+
+#[test]
+fn packages_and_the_build_are_noted_once_and_forgotten_or_taken_over_together() {
+    let mut state = PrepState::default();
+    state.note_packages(&["dkms".to_owned(), "perl".to_owned()]);
+    state.note_packages(&["perl".to_owned(), "file".to_owned()]);
+    state.note_contrib_source();
+    assert_eq!(state.added_packages, ["dkms", "perl", "file"]);
+    assert!(state.added_contrib_source);
+
+    let build = ZfsBuild::Ubuntu {
+        downloaded: vec!["zfsutils-linux".to_owned()],
+    };
+    state.set_build(build);
+    state.forget_build();
+    assert_eq!(state.zfs_build, None);
+
+    state.set_build(ZfsBuild::Ubuntu {
+        downloaded: vec!["zfsutils-linux".to_owned()],
+    });
+    state.take_over(None);
+    assert_eq!(state.zfs_build, None);
+    assert!(state.added_packages.is_empty());
+    assert!(!state.added_contrib_source);
+}
+
+#[test]
+fn discarding_records_zfs_off_and_nothing_added() {
+    let mut state = written_state();
+    state.discard("2026-10-16T00:09:00Z".to_owned());
+    assert_eq!(
+        state.zfs,
+        PrepStep::Finished {
+            started_at: None,
+            finished_at: "2026-10-16T00:09:00Z".to_owned(),
+            outcome: ZfsOutcome::Off,
+        }
+    );
+    assert!(state.added_packages.is_empty());
+    assert_eq!(state.zfs_build, None);
+    assert!(!state.added_contrib_source);
+    assert_eq!(state.docker, written_state().docker);
+}
+
+/// A file the earlier writer produced keeps its keys and tags through every transition a run
+/// makes, so every reader of an earlier release still parses what this one writes.
+#[test]
+fn the_transitions_keep_writing_the_shape_an_older_reader_parses() {
+    let mut state: PrepState = serde_json::from_str(WRITTEN_BY_PLOYZD).unwrap();
+    state.restart();
+    let begun = Begun::at("2026-10-16T00:10:00Z".to_owned());
+    state.begin(Step::Docker, &begun);
+    state.finish(
+        begun,
+        StepOutcome::Docker(DockerOutcome::Ready),
+        "2026-10-16T00:11:00Z".to_owned(),
+    );
+    let written: Value = serde_json::from_slice(&encode_state(&state).unwrap()).unwrap();
+    assert_eq!(
+        written,
+        json!({
+            "docker": {"state": "ready", "started_at": "2026-10-16T00:10:00Z", "finished_at": "2026-10-16T00:11:00Z"},
+            "zfs": {"state": "installing", "started_at": null, "finished_at": null},
+            "added_packages": ["dkms", "perl"],
+            "zfs_build": {"route": "dkms", "module": "zfs", "version": "2.2.2", "source_dir": "/usr/src/zfs-2.2.2"},
+            "added_contrib_source": true,
+            "interrupted": ["zfs"],
+        })
+    );
+}
