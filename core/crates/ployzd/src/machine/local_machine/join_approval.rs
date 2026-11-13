@@ -166,10 +166,7 @@ impl LocalMachine {
         network: ipnet::Ipv4Net,
         approval: Option<Signed<JoinApproval>>,
         peers: &[Machine],
-    ) -> Result<Option<Signed<JoinApproval>>, Error> {
-        if !self.record().device_enforcement() {
-            return Ok(None);
-        }
+    ) -> Result<Signed<JoinApproval>, Error> {
         let mut joins = self.read_joins()?;
         self.require_unused_join(machine.id)?;
         let approval = approval.or_else(|| {
@@ -180,7 +177,7 @@ impl LocalMachine {
         });
         if let Some(approval) = approval {
             self.verify_join(&approval, &join::JoinAllocation::from(machine), network)?;
-            return Ok(Some(approval));
+            return Ok(approval);
         }
         let record = self.record();
         let cluster = crate::sealing_key::SealingKey::load(self.owner.data_dir())

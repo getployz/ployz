@@ -37,11 +37,6 @@ impl LocalMachine {
         want: ContainerWant,
         approval: Box<TeardownApproval>,
     ) -> Result<(ContainerWant, HeldTeardown), Error> {
-        if !self.record().device_enforcement() {
-            // Held with no Namespace: a turn that finds enforcement on by then refuses it,
-            // and a resend is admitted in full.
-            return Ok((want, HeldTeardown::unsigned(HeldStep::Container(None))));
-        }
         let Some((step, locator)) = RestartStep::of(&want) else {
             return Err(Error::TeardownRefused(AuthorityRefusal::Mismatch {
                 field: "a creation",
@@ -62,9 +57,8 @@ impl LocalMachine {
         Ok((pinned(want, observed.container_id), held))
     }
 
-    /// Under Device enforcement an Operator's `RemoveVolume` deletes `name` only under a
-    /// teardown that names it on this Server, or the preview rule whose preview it held. A
-    /// Machine not enforcing passes untouched.
+    /// An Operator's `RemoveVolume` deletes `name` only under a teardown that names it on
+    /// this Server, or the preview rule whose preview it held.
     ///
     /// # Errors
     /// Returns [`Error::TeardownRefused`] naming what the teardown lacks.
@@ -77,17 +71,15 @@ impl LocalMachine {
             approval,
             step: HeldStep::Volume(name.clone()),
         };
-        if self.record().device_enforcement() {
-            held.admit(self)?;
-            tracing::info!("teardown removal of Volume {name} admitted");
-        }
+        held.admit(self)?;
+        tracing::info!("teardown removal of Volume {name} admitted");
         Ok(held)
     }
 
-    /// Under Device enforcement an Operator's `Leave` runs only under a Server teardown
-    /// naming this Server as the one leaving, and its `Forget` of `forgotten` only under one
-    /// naming `forgotten` as leaving and this Server as one that forgets it. Either resets a
-    /// Server, so neither is Cloud's to start. A Machine not enforcing passes untouched.
+    /// An Operator's `Leave` runs only under a Server teardown naming this Server as the one
+    /// leaving, and its `Forget` of `forgotten` only under one naming `forgotten` as leaving
+    /// and this Server as one that forgets it. Either resets a Server, so neither is Cloud's
+    /// to start.
     ///
     /// # Errors
     /// Returns [`Error::DepartureRefused`] naming the route's capability and what the
@@ -101,23 +93,21 @@ impl LocalMachine {
             approval,
             step: forgotten.map_or(HeldStep::Leave, |machine| HeldStep::Forget(*machine)),
         };
-        if self.record().device_enforcement() {
-            held.admit(self)?;
-            tracing::info!(step = ?held.step, "teardown departure admitted");
-        }
+        held.admit(self)?;
+        tracing::info!(step = ?held.step, "teardown departure admitted");
         Ok(held)
     }
 
     /// Check this call's held teardown again, under the admission turn its caller holds:
-    /// against the trusted keys and the enforcement switch as they stand now. A call that
+    /// against the trusted keys as they stand now. A call that
     /// holds none, a Full caller's or this Machine's own, passes untouched.
     ///
     /// # Errors
     /// As the admission of the held teardown's route.
     pub(super) fn recheck_teardown(&self) -> Result<(), Error> {
         match &self.teardown {
-            Some(held) if self.record().device_enforcement() => held.check(self, false),
-            _ => Ok(()),
+            Some(held) => held.check(self, false),
+            None => Ok(()),
         }
     }
 }

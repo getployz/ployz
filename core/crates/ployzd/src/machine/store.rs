@@ -57,7 +57,6 @@ pub(crate) struct Installation {
     sealing_key: Option<SealingKey>,
     recipient: Option<JoinedRecipient>,
     devices: Vec<DeviceKey>,
-    device_enforcement: bool,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
     enrollment: EnrollRequest,
@@ -72,12 +71,11 @@ struct JoinedRecipient {
 }
 
 /// What an enrollment installs: the body, the Cluster's key, its approved Devices, whether
-/// it enforces, and the recipient key after activation.
+/// and the recipient key after activation.
 type Enrolled = (
     LocalMachineBody,
     Option<SealingKey>,
     Vec<DeviceKey>,
-    bool,
     Option<JoinedRecipient>,
 );
 
@@ -445,7 +443,6 @@ impl LocalMachineStore {
                     sealing_key: None,
                     recipient: None,
                     devices: Vec::new(),
-                    device_enforcement: self.record.device_enforcement,
                     wireguard_mtu: request.wireguard_mtu,
                     pinned: request.pinned,
                     enrollment: request,
@@ -457,7 +454,7 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, devices, device_enforcement, recipient) = match role {
+        let (body, sealing_key, devices, recipient) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -477,12 +474,12 @@ impl LocalMachineStore {
                     public_ip,
                     advertised_endpoints,
                 )?;
-                (body, sealing_key, Vec::new(), false, None)
+                (body, sealing_key, Vec::new(), None)
             }
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
             }
-            EnrollAs::Member { registration } => self.member(registration)?,
+            EnrollAs::Member { registration, pin } => self.member(registration, pin)?,
         };
         let wanted = body.machine().expect("an enrollment owns its Machine");
         let plan = plan_enroll(
@@ -498,7 +495,6 @@ impl LocalMachineStore {
                 sealing_key,
                 recipient,
                 devices,
-                device_enforcement,
                 wireguard_mtu,
                 pinned,
                 enrollment,
@@ -544,13 +540,20 @@ impl LocalMachineStore {
         ))
     }
 
-    fn member(&self, registration: Registered) -> Result<Enrolled, StoreError> {
+    /// A Member's enrollment, admitted only under an approved capsule: one that opens to this
+    /// Machine and carries a join approval signed by a key in `pin`, or with no pin, by a
+    /// Device the approval lists. Anything else is refused and the record stays as it was.
+    fn member(
+        &self,
+        registration: Registered,
+        pin: Option<ployz_core::JoinPin>,
+    ) -> Result<Enrolled, StoreError> {
         let Registered {
             assigned_machine: mut machine,
             mut visible_peers,
             target_versions,
             sealing_key,
-            devices,
+            devices: _,
             recipient,
         } = registration;
         if self.record.id() != machine.id {
@@ -572,69 +575,59 @@ impl LocalMachineStore {
             Some((key, approval)) => (Some(key), approval),
             None => (None, None),
         };
-        let mut joined = None;
-        let (devices, device_enforcement) = if let Some(approval) = approval {
-            let body = approval.open().map_err(StoreError::JoinRefused)?;
-            let trusted = if self.record.device_enforcement() {
-                self.record.devices().collect()
-            } else {
-                body.devices
-            };
-            let body = ployz_core::authority::join::verify_signature(
-                &approval,
-                &trusted,
-                ployz_core::authority::Timestamp::now(),
-            )
-            .map_err(StoreError::JoinRefused)?;
-            if body.machine != ployz_core::authority::join::JoinAllocation::from(&machine)
-                || body.sealing_recipient != machine.public_key
-                || sealing_key.as_ref().map(SealingKey::public_key) != Some(body.cluster)
-                || !body.network.contains(&ipnet::Ipv4Net::from(machine.subnet))
-                || body.admitting_machines.is_empty()
-            {
-                return Err(StoreError::JoinRefused(
-                    ployz_core::authority::AuthorityRefusal::Mismatch {
-                        field: "a joining Machine",
-                    },
-                ));
-            }
-            visible_peers = body
-                .bootstrap
-                .iter()
-                .map(|allocation| Machine {
-                    join_approval: None,
-                    id: allocation.id,
-                    name: allocation.name.clone(),
-                    subnet: allocation.subnet,
-                    public_key: allocation.public_key,
-                    public_ip: allocation.public_ip,
-                    advertised_endpoints: allocation.advertised_endpoints.clone(),
-                    labels: allocation.policy.labels.clone(),
-                    accepts_builds: allocation.policy.accepts_builds,
-                    accepts_services: allocation.policy.accepts_services,
-                    accepts_ingress: allocation.policy.accepts_ingress,
-                    runtime: Default::default(),
-                    build_concurrency: None,
-                })
-                .collect();
-            if visible_peers.is_empty() {
-                return Err(StoreError::MissingPeers);
-            }
-            machine.join_approval = Some(approval);
-            joined = recipient.and_then(|recipient| {
-                joined_recipient(&recipient, &body, &self.record.wireguard_private_key)
-            });
-            (body.devices, true)
-        } else {
-            if self.record.device_enforcement() {
-                return Err(StoreError::JoinRefused(
-                    ployz_core::authority::AuthorityRefusal::Unsigned {
-                        purpose: ployz_core::authority::Purpose::Join,
-                    },
-                ));
-            }
-            (devices, false)
+        let Some(approval) = approval else {
+            return Err(StoreError::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Unsigned {
+                    purpose: ployz_core::authority::Purpose::Join,
+                },
+            ));
         };
+        let body = approval.open().map_err(StoreError::JoinRefused)?;
+        let trusted = pin.map_or(body.devices, |pin| pin.devices);
+        let body = ployz_core::authority::join::verify_signature(
+            &approval,
+            &trusted,
+            ployz_core::authority::Timestamp::now(),
+        )
+        .map_err(StoreError::JoinRefused)?;
+        if body.machine != ployz_core::authority::join::JoinAllocation::from(&machine)
+            || body.sealing_recipient != machine.public_key
+            || sealing_key.as_ref().map(SealingKey::public_key) != Some(body.cluster)
+            || !body.network.contains(&ipnet::Ipv4Net::from(machine.subnet))
+            || body.admitting_machines.is_empty()
+        {
+            return Err(StoreError::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Mismatch {
+                    field: "a joining Machine",
+                },
+            ));
+        }
+        visible_peers = body
+            .bootstrap
+            .iter()
+            .map(|allocation| Machine {
+                join_approval: None,
+                id: allocation.id,
+                name: allocation.name.clone(),
+                subnet: allocation.subnet,
+                public_key: allocation.public_key,
+                public_ip: allocation.public_ip,
+                advertised_endpoints: allocation.advertised_endpoints.clone(),
+                labels: allocation.policy.labels.clone(),
+                accepts_builds: allocation.policy.accepts_builds,
+                accepts_services: allocation.policy.accepts_services,
+                accepts_ingress: allocation.policy.accepts_ingress,
+                runtime: Default::default(),
+                build_concurrency: None,
+            })
+            .collect();
+        if visible_peers.is_empty() {
+            return Err(StoreError::MissingPeers);
+        }
+        machine.join_approval = Some(approval);
+        let joined = recipient.and_then(|recipient| {
+            joined_recipient(&recipient, &body, &self.record.wireguard_private_key)
+        });
         machine.runtime = local_runtime(&self.data_dir);
         Ok((
             LocalMachineBody::Joining {
@@ -643,8 +636,7 @@ impl LocalMachineStore {
                 min_store_version: target_versions,
             },
             sealing_key,
-            devices,
-            device_enforcement,
+            body.devices,
             joined,
         ))
     }
@@ -653,11 +645,10 @@ impl LocalMachineStore {
         self.require_uninitialized()?;
         let mut installed = self.record.clone();
         installed.body = installation.body;
-        installed.device_enforcement = installation.device_enforcement;
-        if installation.device_enforcement {
-            installed.trusted_machines =
-                installed.body.bootstrap().iter().map(Into::into).collect();
-        }
+        installed.filters_peers = true;
+        installed.born_enforcing = true;
+        let joins = installed.phase() == LocalMachinePhase::Joining;
+        installed.trusted_machines = installed.body.bootstrap().iter().map(Into::into).collect();
         installed.membership_cluster = installation
             .sealing_key
             .as_ref()
@@ -665,7 +656,7 @@ impl LocalMachineStore {
         installed.enrollment = Some(installation.enrollment);
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
-        if installation.device_enforcement {
+        if joins {
             installed
                 .management_clients
                 .retain(|label, _| !DeviceCode::reserves(label));
@@ -716,7 +707,7 @@ impl LocalMachineStore {
 
     pub(crate) fn set_sealing_key(&mut self, key: Option<&SealingKey>) -> io::Result<()> {
         SealingKey::set(&self.data_dir, key)?;
-        if self.record.device_enforcement && self.record.membership_cluster.is_none() {
+        if self.record.filters_peers && self.record.membership_cluster.is_none() {
             let mut updated = self.record.clone();
             updated.membership_cluster = key.map(SealingKey::public_key);
             save(&self.data_dir, &updated).map_err(io::Error::other)?;
@@ -1023,28 +1014,25 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    /// Turn Device enforcement on or off in one write, trusting `starting` while on.
-    /// Turning it on afresh replaces the trusted Members; while on, `starting` adds to them.
+    /// Trust `starting` as Members beside those already trusted, and filter peers by them.
+    /// A record that did not filter peers trusts exactly `starting` from now on.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn set_device_enforcement(
+    pub fn trust_members(
         &mut self,
-        enforced: bool,
         starting: Vec<ployz_core::authority::Member>,
     ) -> Result<(), StoreError> {
         let mut updated = self.record.clone();
-        if enforced && !self.record.device_enforcement {
+        if !self.record.filters_peers {
             updated.trusted_machines.clear();
             updated.membership_cluster =
                 SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
         }
-        updated.device_enforcement = enforced;
-        if enforced {
-            for member in starting {
-                if !updated.trusted_machines.contains(&member) {
-                    updated.trusted_machines.push(member);
-                }
+        updated.filters_peers = true;
+        for member in starting {
+            if !updated.trusted_machines.contains(&member) {
+                updated.trusted_machines.push(member);
             }
         }
         if updated == self.record {
@@ -1117,7 +1105,7 @@ impl LocalMachineStore {
             }
             kept
         });
-        updated.device_enforcement = true;
+        updated.filters_peers = true;
         updated.trusted_machines = pending.members.clone();
         if updated.membership_cluster.is_none() {
             updated.membership_cluster =

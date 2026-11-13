@@ -146,7 +146,8 @@ fn wrap(service: local::MachineService) -> MachineApi {
     let port = service.machine_api_port();
     let replicated = local.replicated().ok().cloned();
     let proxy = MachineProxy::new(routes(service.clone()), machine_id, port, replicated)
-        .with_paths(service.paths.clone());
+        .with_paths(service.paths.clone())
+        .for_machine(local);
     MachineApi {
         proxy,
         machine_id,

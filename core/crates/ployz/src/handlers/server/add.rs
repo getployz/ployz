@@ -51,6 +51,12 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let (details, mut token) =
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
         require_another_entry(entry_id, token.id, destination)?;
+        let own_device = crate::handlers::device::key::load(&crate::handlers::device::key::path(
+            config.path(),
+        ))?
+        .map(|secret| crate::handlers::device::key::public(&secret));
+        let entry_answers = entry.answers_for_itself(&entry_id);
+        require_a_pin(own_device.is_some() || entry_answers, destination)?;
         // Before the reset, so a taken name leaves the Server as it was.
         let name = helpers::machine_name(requested_name, &token);
         require_free_name(&snapshot, token.id, &name, destination)?;
@@ -126,10 +132,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             result => result?,
         };
         let approved = registration.assigned_machine.join_approval.is_some();
+        let pin = join_pin(own_device, entry_answers.then_some(&registration.devices));
         let (_, join_confirmation) = helpers::enroll_member(
             &mut target_client,
             EnrollRequest {
-                role: EnrollAs::Member { registration },
+                role: EnrollAs::Member {
+                    registration,
+                    pin: Some(pin),
+                },
                 wireguard_mtu,
                 pinned,
             },
@@ -183,6 +193,34 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         ),
         follow_up,
     )
+}
+
+/// The Devices whose join approval the new Server accepts: this computer's own key, and the
+/// keys the entry trusts when it answered over a route the person chose. Never the keys a
+/// relayed reply names, so a capsule Cloud forged under its own Device is refused.
+fn join_pin(
+    own: Option<ployz_core::DeviceKey>,
+    entry: Option<&Vec<ployz_core::DeviceKey>>,
+) -> ployz_core::JoinPin {
+    let mut devices: Vec<_> = own.into_iter().collect();
+    for key in entry.into_iter().flatten() {
+        if !devices.contains(key) {
+            devices.push(*key);
+        }
+    }
+    ployz_core::JoinPin { devices }
+}
+
+/// Refuse, before anything is asked of the Cluster, a join this CLI can't pin: it holds no
+/// approved device key, and reaches the Cluster only through Ployz Cloud, which could hand
+/// the new Server a capsule of its own.
+fn require_a_pin(pinnable: bool, destination: &str) -> Result<(), Error> {
+    if pinnable {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "This computer can't check the approval {destination} would join under: it holds no approved device key and reaches your servers only through Ployz Cloud. Run it from an approved device, or with --connect ssh://USER@SERVER naming a Server of the Cluster. Nothing was enrolled."
+    )))
 }
 
 /// A Server that answers as the entry for its own add vouches only for its own state, which

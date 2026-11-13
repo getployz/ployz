@@ -877,11 +877,10 @@ impl MachineRpc for MachineService {
         request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::BuildStream>, Status> {
         // Refused before the request stream is read, so no source or recipe is taken.
-        if from_operator(&request)
-            && let Err(error) = self
-                .local
-                .admit_operator_build(ployz_core::BUILD_CAPABILITY)
-        {
+        if from_operator(&request) {
+            let error = LocalMachineError::BuildRefused {
+                capability: ployz_core::BUILD_CAPABILITY,
+            };
             return Err(build_refused(&error, ployz_core::BUILD_CAPABILITY));
         }
         let containers = self
@@ -1210,12 +1209,10 @@ impl MachineRpc for MachineService {
                 }
             }
             (None, None) => {
-                if operator
-                    && let Err(error) = self
-                        .local
-                        .admit_operator_build(ployz_core::MINT_BUILD_GRANT_CAPABILITY)
-                {
-                    return local_error(error);
+                if operator {
+                    return local_error(LocalMachineError::BuildRefused {
+                        capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
+                    });
                 }
                 None
             }
@@ -1618,6 +1615,17 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 tonic::Code::PermissionDenied,
                 &error,
                 serde_json::json!({ "capability": capability }),
+            ))
+        }
+        LocalMachineError::AwaitingActivation { capability } => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": capability,
+                    "reason": "awaiting_activation",
+                    "next": "ployz device enforce",
+                }),
             ))
         }
         LocalMachineError::Activating => Err(ployz_core::rpc::hinted_status(

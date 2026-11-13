@@ -63,7 +63,22 @@ pub enum EnrollAs {
         grant: Option<crate::FoundingGrant>,
     },
     /// Joins with the registration a Cluster member issued.
-    Member { registration: Registered },
+    Member {
+        registration: Registered,
+        /// The keys whose join approval this Machine accepts, from the person's own CLI.
+        /// Absent from a join Cloud drives, where the approval is checked against the
+        /// Devices it lists itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        pin: Option<JoinPin>,
+    },
+}
+
+/// The Cluster authority a joining Machine checks its approval against: the Devices a
+/// person's CLI vouches for, passed over the connection it enrolls the joiner through.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct JoinPin {
+    pub devices: Vec<crate::DeviceKey>,
 }
 
 /// A resend replays `Enrolled` with the stored record; the daemon restarts only

@@ -185,12 +185,10 @@ impl MachineService {
             }
             CopyPlan::Transition(transition) => Some(transition),
         };
-        // Only an enforcing Server checks the Restore's signature at admission, so only one
-        // lets a Restore through its handoff.
+        // The Restore's signature is checked at admission, so a Restore passes its handoff.
         if operator
             && let WantedCopy::Writer { at, .. } = &want
-            && !(self.local.record().device_enforcement()
-                && restores(approval.as_ref(), &self.local.record().id(), at))
+            && !restores(approval.as_ref(), &self.local.record().id(), at)
             && let Some(handed) = self.local.handed_off(&name, copy.as_ref())?
         {
             tracing::warn!(%name, "Volume handed off here refuses to become its Writer again");

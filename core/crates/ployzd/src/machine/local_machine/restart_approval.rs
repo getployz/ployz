@@ -4,7 +4,7 @@
 
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet,
-    LocalMachinePhase, ManagementScope, RunTarget, Sealing, SetDeviceEnforcementRequest,
+    ManagementScope, RunTarget, Sealing, SetDeviceEnforcementRequest,
     SetPrivateAccessRequest,
     authority::{
         AuthorityRefusal, DeployApproval, PrivateAccessFacts, Purpose, RestartApproval,
@@ -19,69 +19,41 @@ mod consumption;
 pub(crate) use consumption::{ConsumptionLog, JoinReply, JoinResult};
 
 impl LocalMachine {
-    /// Turn Device enforcement on by activation, or off before activation, at Full scope
-    /// only. Turning it on admits a person's starting set and restarts to commit it (see
-    /// [`LocalMachine::activate`]). Once activated, off is refused.
+    /// Activate this Machine under a person's starting set, at Full scope only (see
+    /// [`LocalMachine::activate`]). There is no off.
     ///
     /// # Errors
-    /// Returns [`Error::NeedsFullScope`] for an Operator caller, [`Error::NotParticipating`]
-    /// when this Machine is not participating, [`Error::EnforcementRefused`] for a missing
-    /// starting set, [`Error::ActivationRefused`] for off once activated and for a set
-    /// activation refuses, admission failures, [`Error::RecordOwner`] when the record owner
-    /// has stopped, and [`Error::Store`] when the record cannot be written.
+    /// Returns [`Error::NeedsFullScope`] for an Operator caller,
+    /// [`Error::EnforcementRefused`] for a missing starting set, [`Error::ActivationRefused`]
+    /// for off and for a set activation refuses, and what [`LocalMachine::activate`] returns.
     pub async fn set_device_enforcement(
         &self,
         request: SetDeviceEnforcementRequest,
     ) -> Result<DeviceEnforcementSet, Error> {
-        let client = self.management_client;
         let record = self.record();
-        if client
+        if self
+            .management_client
             .is_some_and(|remote| record.management_scope(&remote) != Some(ManagementScope::Full))
         {
             return Err(Error::NeedsFullScope);
         }
         let capability = ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY;
         match (request.enforced, request.starting_set) {
-            (true, Some(signed)) => return self.activate(signed, capability).await,
-            (true, None) => {
-                return Err(Error::EnforcementRefused(AuthorityRefusal::Unsigned {
-                    purpose: Purpose::Enforce,
-                }));
-            }
-            (false, _) => {}
+            (true, Some(signed)) => self.activate(signed, capability).await,
+            (true, None) => Err(Error::EnforcementRefused(AuthorityRefusal::Unsigned {
+                purpose: Purpose::Enforce,
+            })),
+            (false, _) => Err(Error::ActivationRefused {
+                capability,
+                reason: super::activation::Refusal::NoOff,
+            }),
         }
-        let owner = self.owner.clone();
-        self.finish_mutation(async move {
-            owner
-                .mutate(move |store| {
-                    let record = store.record();
-                    if record.phase() != LocalMachinePhase::Participating {
-                        return Err(Error::NotParticipating);
-                    }
-                    if record.activation().is_some() {
-                        return Err(Error::ActivationRefused {
-                            capability,
-                            reason: super::activation::Refusal::NoOff,
-                        });
-                    }
-                    if client.is_some_and(|remote| {
-                        record.management_scope(&remote) != Some(ManagementScope::Full)
-                    }) {
-                        return Err(Error::NeedsFullScope);
-                    }
-                    store.set_device_enforcement(false, Vec::new())?;
-                    Ok(DeviceEnforcementSet { enforced: false })
-                })
-                .await?
-        })
-        .await
     }
 
-    /// Under Device enforcement an Operator's `SetPrivateAccess` turns Private Access on
-    /// only with an approval, by a trusted Device or a trusted passkey's own prompt, of the
-    /// sealed auth key it carries. The key decides which tailnet reaches the whole Cluster
-    /// network. Turning off needs none, and neither does a Full caller or a Machine not
-    /// enforcing.
+    /// An Operator's `SetPrivateAccess` turns Private Access on only with an approval, by a
+    /// trusted Device or a trusted passkey's own prompt, of the sealed auth key it carries.
+    /// The key decides which tailnet reaches the whole Cluster network. Turning off needs
+    /// none, and neither does a Full caller.
     ///
     /// # Errors
     /// Returns [`Error::PrivateAccessRefused`] naming what the approval lacks.
@@ -90,7 +62,7 @@ impl LocalMachine {
         request: &SetPrivateAccessRequest,
     ) -> Result<(), Error> {
         let record = self.record();
-        if !record.device_enforcement() || !request.enabled {
+        if !request.enabled {
             return Ok(());
         }
         let approval = request
@@ -121,29 +93,14 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// Under Device enforcement an Operator caller's `Build` or `MintBuildGrant` is
-    /// refused before anything opens. A Build runs recipe steps of the caller's choosing
-    /// with Sealed values opened, and a Build Grant hands them to a key the caller names,
-    /// so neither is Cloud's to start. `capability` is the RPC refused. A Full caller and a
-    /// Machine not enforcing pass untouched.
-    ///
-    /// # Errors
-    /// Returns [`Error::BuildRefused`] naming `capability` under enforcement.
-    pub(crate) fn admit_operator_build(&self, capability: &'static str) -> Result<(), Error> {
-        if self.record().device_enforcement() {
-            return Err(Error::BuildRefused { capability });
-        }
-        Ok(())
-    }
-
-    /// Under Device enforcement, let an Operator caller's restart step through only with
+    /// Let an Operator caller's restart step through only with
     /// an approved Device's approval of exactly this restart, or a browser key's under a
     /// trusted passkey's session grant that covers it, and record the step so the
     /// same approval never runs it again. A new creation, adoption included, needs a deploy
     /// approval of its spec, and a step that carries only a deploy approval is checked
     /// against it. A change carrying only an automatic deploy rule's proof is checked
     /// against the rule. Returns a want pinned to the verified Container ID. An absent
-    /// target is refused. A Machine not enforcing passes untouched.
+    /// target is refused.
     ///
     /// # Errors
     /// Returns [`Error::RestartRefused`], [`Error::DeployRefused`] or
@@ -159,9 +116,6 @@ impl LocalMachine {
         preview: Option<&ployz_core::authority::PreviewProof>,
     ) -> Result<ContainerWant, Error> {
         let record = self.record();
-        if !record.device_enforcement() {
-            return Ok(want);
-        }
         match (approval, deploy, rule, preview) {
             (None, None, Some(rule), None) => {
                 return self.admit_rule_deploy_online(want, rule).await;

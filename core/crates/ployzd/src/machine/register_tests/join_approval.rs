@@ -113,7 +113,7 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
     assert_eq!(
         joiner
             .enroll(EnrollRequest {
-                role: EnrollAs::Member { registration },
+                role: EnrollAs::Member { registration, pin: None },
                 wireguard_mtu: None,
                 pinned: Default::default()
             })
@@ -212,7 +212,7 @@ async fn unsigned_enroll_and_share_are_refused_under_enforcement() {
     joiner.set_device_enforcement(true, Vec::new()).unwrap();
     assert!(matches!(
         joiner.enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member { registration, pin: None },
             wireguard_mtu: None,
             pinned: Default::default()
         }),
@@ -551,7 +551,7 @@ async fn a_joiner_cut_off_from_its_capsule_is_never_published_nor_authorizes_ano
     registration.devices = vec![DeviceKey::from_bytes([9; 32])];
     joiner
         .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member { registration, pin: None },
             wireguard_mtu: None,
             pinned: Default::default(),
         })
@@ -644,7 +644,7 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
     );
     joiner
         .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member { registration, pin: None },
             wireguard_mtu: None,
             pinned: Default::default(),
         })
@@ -694,7 +694,7 @@ async fn unsigned_visible_peers_never_seed_an_approved_join_or_its_membership() 
     registration.devices = vec![DeviceKey::from_bytes([9; 32])];
     joiner
         .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member { registration, pin: None },
             wireguard_mtu: None,
             pinned: Default::default(),
         })
@@ -768,7 +768,7 @@ async fn enrollment_replay_does_not_revalidate_an_expired_approval_or_change_sta
     request.join_approval = Some(Signed::sign(&body, &signer).unwrap());
     let registration = entry.register(request.clone()).await.unwrap();
     let enrollment = EnrollRequest {
-        role: EnrollAs::Member { registration },
+        role: EnrollAs::Member { registration, pin: None },
         wireguard_mtu: None,
         pinned: Default::default(),
     };
@@ -895,7 +895,7 @@ async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
     let approval = registration.assigned_machine.join_approval.clone().unwrap();
     joiner
         .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member { registration, pin: None },
             wireguard_mtu: None,
             pinned: Default::default(),
         })
@@ -982,7 +982,7 @@ async fn resending_the_original_enroll_while_resetting_conflicts() {
     let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
     let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
     let enrollment = EnrollRequest {
-        role: EnrollAs::Member { registration },
+        role: EnrollAs::Member { registration, pin: None },
         wireguard_mtu: None,
         pinned: Default::default(),
     };
@@ -1113,7 +1113,7 @@ async fn a_saved_bootstrap_peer_outside_the_starting_set_is_not_offered_after_re
     registration.visible_peers.push(unapproved);
     joiner
         .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member { registration, pin: None },
             wireguard_mtu: None,
             pinned: Default::default(),
         })

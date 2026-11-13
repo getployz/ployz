@@ -48,7 +48,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
     let joiner = LocalMachine::new(RecordOwner::spawn(joiner_store).unwrap());
     joiner
         .enroll(ployz_core::EnrollRequest {
-            role: ployz_core::EnrollAs::Member { registration },
+            role: ployz_core::EnrollAs::Member { registration, pin: None },
             wireguard_mtu: None,
             pinned: Default::default(),
         })

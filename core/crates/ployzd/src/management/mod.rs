@@ -253,10 +253,7 @@ async fn serve_connection<S, R>(
     };
     if connection.alpn() == BUILD_GRANT_ALPN {
         drop(permit);
-        // The current record, read at each admission and request: see `Enforcing`.
-        let enforcing: build_grant::Enforcing =
-            Arc::new(move || local.record().device_enforcement());
-        build_grant::serve(connection, &grants, enforcing, shutdown).await;
+        build_grant::serve(connection, &grants, shutdown).await;
         return;
     }
     if connection.alpn() == TUNNEL_ALPN {

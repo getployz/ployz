@@ -331,7 +331,7 @@ impl JoinDaemon {
         enroll: &EnrollRequest,
     ) -> Option<ployz_core::authority::join::JoinConfirmation> {
         match &enroll.role {
-            EnrollAs::Member { registration }
+            EnrollAs::Member { registration, .. }
                 if registration.assigned_machine.join_approval.is_some()
                     && !self.inner.predates_confirmation.load(Ordering::SeqCst) =>
             {
@@ -1326,7 +1326,7 @@ impl JoinDaemon {
             });
         }
         let machine = match enroll.role.clone() {
-            EnrollAs::Member { registration } => {
+            EnrollAs::Member { registration, .. } => {
                 *self.inner.founding.lock().unwrap() = ployz_core::Founding::Joined;
                 if registration.assigned_machine.public_key != self.public_key() {
                     return rpc_ok(RpcError {

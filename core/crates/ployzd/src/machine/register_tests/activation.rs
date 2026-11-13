@@ -489,7 +489,7 @@ async fn approved_registration(
 
 fn as_member(registration: ployz_core::Registered) -> ployz_core::EnrollRequest {
     ployz_core::EnrollRequest {
-        role: ployz_core::EnrollAs::Member { registration },
+        role: ployz_core::EnrollAs::Member { registration, pin: None },
         wireguard_mtu: None,
         pinned: Default::default(),
     }

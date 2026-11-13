@@ -1054,7 +1054,7 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
         recipient: None,
     };
     let member = |registration: Registered, wireguard_mtu| EnrollRequest {
-        role: EnrollAs::Member { registration },
+        role: EnrollAs::Member { registration, pin: None },
         wireguard_mtu,
         pinned: Default::default(),
     };
@@ -1109,7 +1109,7 @@ fn a_fresh_joiner_admits_the_issuers_devices_and_a_replay_keeps_its_own() {
         "devices": [approved],
     });
     let member = |registration| EnrollRequest {
-        role: EnrollAs::Member { registration },
+        role: EnrollAs::Member { registration, pin: None },
         wireguard_mtu: None,
         pinned: Default::default(),
     };

@@ -200,10 +200,16 @@ pub struct LocalMachineRecord {
     /// records from before Devices were Full-only, when any client could name one.
     #[serde(default)]
     device_slots_vetted: bool,
-    /// Whether an Operator caller's Service restart needs a Device-signed approval.
-    /// Off until a Full caller turns it on, so an upgrade changes nothing.
-    #[serde(default)]
-    device_enforcement: bool,
+    /// Whether only trusted Members peer here. Every record enrolled since enforcement
+    /// became the only mode sets it, and so does an activation. A record from before that
+    /// keeps what it had until it activates. Written under its old name, so an older daemon
+    /// that reads this record enforces too.
+    #[serde(default, rename = "device_enforcement")]
+    filters_peers: bool,
+    /// Whether this record was enrolled by a daemon on which enforcement is the only mode.
+    /// Absent from every record written before, which awaits activation instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    born_enforcing: bool,
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
     /// Passkeys a Full caller approved here. They approve workflows and rules only and hold no slot.
@@ -407,7 +413,7 @@ impl LocalMachineRecord {
 
     /// Whether this Machine accepts the row as a Cluster member using its own authority.
     pub(crate) fn accepts_machine(&self, machine: &Machine) -> bool {
-        if !self.device_enforcement || self.pins_machine(machine) {
+        if !self.filters_peers || self.pins_machine(machine) {
             return true;
         }
         let Some(approval) = &machine.join_approval else {
@@ -472,7 +478,7 @@ impl LocalMachineRecord {
         key: &WireGuardPublicKey,
         answered: Option<&BTreeSet<MachineId>>,
     ) -> bool {
-        if !self.device_enforcement {
+        if !self.filters_peers {
             return answered.is_none();
         }
         self.trusted_machines.iter().any(|member| {
@@ -488,7 +494,7 @@ impl LocalMachineRecord {
         installed: impl Fn(&WireGuardPublicKey) -> bool,
         listed: &BTreeSet<MachineId>,
     ) -> Vec<MachineId> {
-        if !self.device_enforcement {
+        if !self.filters_peers {
             return Vec::new();
         }
         self.trusted_machines
@@ -496,6 +502,13 @@ impl LocalMachineRecord {
             .filter(|member| installed(&member.public_key) && !listed.contains(&member.id))
             .map(|member| member.id)
             .collect()
+    }
+
+    /// Whether only trusted Members peer here: every record but an awaiting one that never
+    /// turned enforcement on.
+    #[must_use]
+    pub(crate) fn filters_peers(&self) -> bool {
+        self.filters_peers
     }
 
     pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {
@@ -742,7 +755,8 @@ impl LocalMachineRecord {
             pinned_addresses: PinnedAddresses::default(),
             push_target: None,
             device_slots_vetted: true,
-            device_enforcement: false,
+            filters_peers: false,
+            born_enforcing: false,
             trusted_machines: Vec::new(),
             passkeys: Vec::new(),
             membership_cluster: None,
@@ -764,10 +778,18 @@ impl LocalMachineRecord {
         self.push_target.as_ref()
     }
 
-    /// Whether an Operator caller's Service restart needs a Device-signed approval.
+    /// Whether this Machine waits for its Cluster's activation: it joined or founded its
+    /// Cluster before enforcement was the only mode, and no activation has committed here.
+    /// It serves reads, upgrades and the routes that cross no part of the bar, and nothing
+    /// else an Operator asks.
     #[must_use]
-    pub fn device_enforcement(&self) -> bool {
-        self.device_enforcement
+    pub fn awaits_activation(&self) -> bool {
+        self.activation.is_none()
+            && !self.born_enforcing
+            && matches!(
+                self.phase(),
+                LocalMachinePhase::Joining | LocalMachinePhase::Participating
+            )
     }
 
     /// Secret behind this Machine's Management Identity.

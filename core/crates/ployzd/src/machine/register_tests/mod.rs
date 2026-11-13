@@ -584,7 +584,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     identity.machine_id = target_store.record().id();
     let target = LocalMachine::new(target_store.clone()).with_cluster(cluster());
     let enroll = |registration| ployz_core::EnrollRequest {
-        role: ployz_core::EnrollAs::Member { registration },
+        role: ployz_core::EnrollAs::Member { registration, pin: None },
         wireguard_mtu: None,
         pinned: Default::default(),
     };
@@ -741,7 +741,7 @@ async fn sealing_entry(prefix: &str) -> (LocalMachine, std::path::PathBuf, Joine
 
 fn member(registration: ployz_core::Registered) -> ployz_core::EnrollRequest {
     ployz_core::EnrollRequest {
-        role: ployz_core::EnrollAs::Member { registration },
+        role: ployz_core::EnrollAs::Member { registration, pin: None },
         wireguard_mtu: None,
         pinned: Default::default(),
     }

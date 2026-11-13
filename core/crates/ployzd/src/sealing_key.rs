@@ -288,6 +288,9 @@ impl SealingKey {
         )))
     }
 
+    /// A seal with no join approval in it, which no joiner accepts: tests use it to build
+    /// one.
+    #[cfg(test)]
     pub(crate) fn seal_to(
         &self,
         recipient: &WireGuardPublicKey,

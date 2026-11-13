@@ -65,8 +65,10 @@ impl LocalMachine {
         .map_err(Into::into)
     }
 
-    /// The releases `scope` may name here. An Operator under enforcement gets only the
-    /// channel its verified statement approves, whose generation is recorded first.
+    /// The releases `scope` may name here. An Operator gets only the channel its verified
+    /// statement approves, whose generation is recorded first. On a Machine that awaits
+    /// activation, an Operator that sends no statement may name either channel, as before
+    /// activation: the keys a statement would verify against were never vouched for.
     fn release_choice(
         &self,
         request: &RequestMachineUpgradeRequest,
@@ -76,7 +78,9 @@ impl LocalMachine {
         let record = self.record();
         match scope {
             ManagementScope::Full => return Ok(ReleaseChoice::AnyRelease),
-            ManagementScope::Operator if !record.device_enforcement() => {
+            ManagementScope::Operator
+                if record.awaits_activation() && request.channel.is_none() =>
+            {
                 return Ok(ReleaseChoice::ChannelResolved);
             }
             ManagementScope::Operator => {}

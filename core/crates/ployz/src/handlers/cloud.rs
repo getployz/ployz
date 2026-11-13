@@ -478,6 +478,7 @@ where
     let member = EnrollRequest {
         role: EnrollAs::Member {
             registration: join.registration,
+            pin: None,
         },
         wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
         pinned,
