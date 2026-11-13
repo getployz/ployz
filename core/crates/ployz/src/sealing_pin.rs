@@ -316,14 +316,17 @@ pub(crate) async fn entry_pin(client: &mut Client) -> Result<Pin, Failure> {
 }
 
 /// The pin an entry's own report gives. A Server that activated, or is activating, with no
-/// recipient key gives none: everything planted before activation holds its identity key.
+/// recipient key gives none: everything planted before activation holds its identity key. A
+/// Server born enforcing reports activated with no operation, and nothing was planted before it.
 fn pin_from(details: MachineDetails) -> Result<Pin, Failure> {
-    let activated = details.activation.as_ref().is_some_and(|report| {
-        matches!(
-            report.state,
-            ActivationState::Activating | ActivationState::Activated
-        )
-    });
+    let activated = details
+        .activation
+        .as_ref()
+        .is_some_and(|report| match report.state {
+            ActivationState::Activating => true,
+            ActivationState::Activated => report.operation.is_some(),
+            ActivationState::Awaiting => false,
+        });
     match (details.sealing, details.machine) {
         (Some(Sealing::Held { .. }), Some(machine))
             if activated && details.sealing_recipient.is_none() =>

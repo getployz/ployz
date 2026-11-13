@@ -792,6 +792,14 @@ impl LocalMachineRecord {
             )
     }
 
+    /// Whether this Machine enrolled under enforcement as the only mode, so it never awaits an
+    /// activation: it trusts what its join approval named, or, as a founder, no key until a
+    /// person installs one over local administration.
+    #[must_use]
+    pub fn born_enforcing(&self) -> bool {
+        self.born_enforcing
+    }
+
     /// Secret behind this Machine's Management Identity.
     #[must_use]
     pub fn management_secret(&self) -> &ManagementSecret {
