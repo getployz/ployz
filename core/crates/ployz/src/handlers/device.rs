@@ -64,7 +64,7 @@ pub(crate) fn approve_command(command: Command) -> Command {
                 .long("this-device")
                 .action(ArgAction::SetTrue)
                 .conflicts_with_all(["code", "join", "passkey"])
-                .help("Approve this computer's own device, made now if it has none, without Ployz Cloud. Run it from your computer over SSH"),
+                .help("Approve this computer's own device, made now if it has none. Run it from your computer with --connect ssh://root@HOST"),
         )
         .arg(
             Arg::new("join")
@@ -209,8 +209,9 @@ fn own_key(config: &Path) -> Result<DeviceKey, Error> {
     Ok(key::public(&secret))
 }
 
-/// Approve this computer's own Device on every Server it reaches, with no word from Ployz
-/// Cloud: the key is made here. Refused over a Server's own socket, where the key would be
+/// Approve this computer's own Device on every Server it reaches. The key comes from this
+/// computer's own file, never from Ployz Cloud, though with no `--connect` the route may run
+/// through Cloud's Server Access. Refused over a Server's own socket, where the key would be
 /// root's on that Server and ride into every later join approval.
 async fn approve_this_device(leaf: &ArgMatches) -> Result<(), Error> {
     let mut client = route::connect_full(leaf, context(leaf)).await?;

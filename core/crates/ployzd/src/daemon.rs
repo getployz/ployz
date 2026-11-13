@@ -1345,17 +1345,15 @@ mod tests {
             relay_tls: iroh::tls::CaTlsConfig::insecure_skip_verify(),
         };
         let daemon = Daemon::start(config).await.unwrap();
+        // An approved Device's own connection, the Full caller a Leave over management needs.
         let client = iroh::SecretKey::generate();
-        let pending = ployz_core::ClientKey::from_bytes(*client.public().as_bytes());
+        let device = ployz_core::DeviceKey::from_bytes(*client.public().as_bytes());
         let machine = daemon
             .local
             .mutate(move |store| {
                 store
-                    .stage_management_client(
-                        ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
-                        pending,
-                    )
-                    .map(|()| store.record().management_secret().public_key())
+                    .approve_device(device, None)
+                    .map(|_| store.record().management_secret().public_key())
             })
             .await
             .unwrap()

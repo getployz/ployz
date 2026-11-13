@@ -10,7 +10,7 @@ export function enforceCommand(servers: readonly EnforceTarget[]): string {
   return overSsh("ployz device enforce", servers);
 }
 
-/** `ployz device approve --this-device` over each Server's own SSH: a first key that trusts this computer, not Ployz Cloud. */
+/** `ployz device approve --this-device` over each Server's own SSH: a first key that trusts this computer and the Server's SSH, not Ployz Cloud. */
 export function thisDeviceCommand(servers: readonly EnforceTarget[]): string {
   return overSsh("ployz device approve --this-device", servers);
 }

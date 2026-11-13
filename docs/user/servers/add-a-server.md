@@ -164,13 +164,14 @@ A new cluster's first server trusts no device or passkey, and Ployz Cloud can't 
 Until you approve one on the server itself, it refuses deploys, restarts and other changes that
 need an approval. Approve one over SSH on that server:
 
-- **From your computer, without Ployz Cloud.** Run
+- **From your computer, over SSH.** Run
   `ployz device approve --this-device --connect ssh://root@HOST`, as in
   [Approve a device](manage-servers.md#approve-a-device).
 - **From the dashboard only.** Add a passkey under **Account**, then on the server run
   `sudo ployz login` and `sudo ployz device approve --passkey CODE`, as in
   [Add a passkey](manage-servers.md#add-a-passkey). The server then trusts whichever key the
-  dashboard named, wherever you installed it. Only the first way doesn't trust Ployz Cloud.
+  dashboard named, wherever you installed it. Only the first way, with `--connect`, doesn't trust
+  Ployz Cloud.
 - **With a device request.** Run `ployz device request` on your computer, then on the server run
   `sudo ployz login` and `sudo ployz device approve CODE`.
 
