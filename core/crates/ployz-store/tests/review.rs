@@ -2461,6 +2461,50 @@ fn history_refuses_a_hostname_another_environment_took_since() {
     );
 }
 
+/// A private DNS name a Save stored keeps coming back on a Discard to it, even
+/// when the name is reserved or another Service's slug now: only what a write adds
+/// beyond what the stored state holds is refused.
+#[test]
+fn discard_restores_a_stored_private_dns_name_the_rules_would_refuse_new() {
+    for legacy in ["setup", "api"] {
+        let fixture = LegacyWorking::new();
+        let (store, who) = (&fixture.store, &fixture.who);
+        let mut intent = fixture.intent();
+        intent
+            .services
+            .iter_mut()
+            .find(|service| service.slug == "web")
+            .unwrap()
+            .config
+            .private_dns = ServiceName::parse(legacy).unwrap();
+        fixture
+            .sql
+            .execute(
+                "UPDATE config_environment SET working = ?1 WHERE id = ?2",
+                rusqlite::params![serde_json::to_string(&intent).unwrap(), ENVIRONMENT],
+            )
+            .unwrap();
+        publish(store, who, None).unwrap();
+        set(store, who, "web.privateDns", json!("web"));
+        store
+            .write(
+                who,
+                &Discard {
+                    target: Some(ployz_store::DiscardTarget::Saved),
+                    ..Discard::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("{legacy}: {error:?}"));
+        let restored = fixture
+            .intent()
+            .services
+            .into_iter()
+            .find(|service| service.slug == "web")
+            .unwrap();
+        assert_eq!(restored.config.private_dns.as_str(), legacy);
+    }
+}
+
 #[test]
 fn discard_refuses_a_hostname_another_environment_took_since() {
     let (store, who) = shop();

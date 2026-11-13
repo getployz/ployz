@@ -165,11 +165,15 @@ pub(crate) fn refuse_new_reserved(
 }
 
 /// Refuse each name `environment`'s Working State gives a node that the node doesn't
-/// hold in `before`, the Working State it replaces, when another node holds it.
+/// hold in `before`, the Working State it replaces, when another node holds it. A
+/// Service, Volume or Config name a document of `coming` already gave the node is not
+/// new: it only comes back. A hostname or generated domain prefix is checked against
+/// the Organization as it is now, so it is.
 pub(crate) fn refuse_new_taken(
     tx: &mut dyn Tx,
     environment: &Environment,
     before: &SavedEnvironmentIntent,
+    coming: &[&SavedEnvironmentIntent],
 ) -> Result<(), RpcError> {
     let now = before;
     let target = &environment.working;
@@ -177,7 +181,13 @@ pub(crate) fn refuse_new_taken(
     for service in &target.services {
         let held = now.services.iter().find(|held| held.id == service.id);
         for name in [service.slug.as_str(), service.config.private_dns.as_str()] {
-            if held.is_none_or(|held| held.slug != name && held.config.private_dns.as_str() != name)
+            let gives = |held: &ployz_core::config::SavedServiceIntent| {
+                held.slug == name || held.config.private_dns.as_str() == name
+            };
+            if !held.is_some_and(gives)
+                && !coming
+                    .iter()
+                    .any(|from| from.services.iter().any(|s| s.id == service.id && gives(s)))
             {
                 claims.push((&service.id, Name::Service(name)));
             }
@@ -204,20 +214,24 @@ pub(crate) fn refuse_new_taken(
         }
     }
     for volume in &target.volumes {
-        if !now
-            .volumes
-            .iter()
-            .any(|held| held.resource_id == volume.resource_id && held.name == volume.name)
-        {
+        let held = |intent: &SavedEnvironmentIntent| {
+            intent
+                .volumes
+                .iter()
+                .any(|held| held.resource_id == volume.resource_id && held.name == volume.name)
+        };
+        if !held(now) && !coming.iter().any(|from| held(from)) {
             claims.push((&volume.resource_id, Name::Volume(&volume.name)));
         }
     }
     for config in &target.configs {
-        if !now
-            .configs
-            .iter()
-            .any(|held| held.resource_id == config.resource_id && held.name == config.name)
-        {
+        let held = |intent: &SavedEnvironmentIntent| {
+            intent
+                .configs
+                .iter()
+                .any(|held| held.resource_id == config.resource_id && held.name == config.name)
+        };
+        if !held(now) && !coming.iter().any(|from| held(from)) {
             claims.push((&config.resource_id, Name::Config(config.name.as_str())));
         }
     }

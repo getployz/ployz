@@ -2202,7 +2202,7 @@ impl Prepared {
         environment: &Environment,
         saved: Option<&SavedEnvironmentIntent>,
         target: SavedEnvironmentIntent,
-        from: Option<&SavedEnvironmentIntent>,
+        write: scope::Write<'_>,
         trusted: &Trusted,
     ) -> Result<Self, RpcError> {
         prevent_plaintext(&environment.working, &target)?;
@@ -2215,7 +2215,7 @@ impl Prepared {
                 removed: environment.removed.clone(),
                 inherited: environment.inherited.clone(),
             },
-            scope::Write::arriving(from),
+            write,
             trusted,
         )?;
         let actual = Plan::between(&environment.working, &working.environment().working)?;
@@ -2291,7 +2291,14 @@ pub(super) fn prepare_history(
         selected.clone()
     };
     let not_set = keep_sealed(environment, ledger, &mut target)?;
-    let mut prepared = Prepared::from_target(tx, environment, saved, target, None, trusted)?;
+    let mut prepared = Prepared::from_target(
+        tx,
+        environment,
+        saved,
+        target,
+        scope::Write::arriving(None),
+        trusted,
+    )?;
     prepared.not_set = not_set;
     Ok(prepared)
 }
@@ -2477,14 +2484,14 @@ pub(super) fn prepare_discard(
         };
         plan.reverse_into(&mut working, &selected)?;
     } else {
-        working = baseline;
+        working = baseline.clone();
     }
     Prepared::from_target(
         tx,
         environment,
         saved,
         working,
-        Some(&reviewed.head.intent),
+        scope::Write::restoring(Some(&reviewed.head.intent), &baseline),
         trusted,
     )
     .map_err(|failure| {

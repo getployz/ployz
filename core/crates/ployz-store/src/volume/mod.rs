@@ -256,8 +256,8 @@ pub(crate) fn set_storage(
             tx,
             &mut environment,
             scope::Write {
-                from: None,
                 storage: Some(StorageRule::Edit { volume: &edited }),
+                ..scope::Write::default()
             },
             trusted,
         )?;

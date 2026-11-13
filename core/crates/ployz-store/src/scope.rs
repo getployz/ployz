@@ -793,6 +793,9 @@ pub(crate) struct Write<'a> {
     /// `None` for an edit that leaves the Volumes' storage as it was; only a
     /// document arriving wholesale and `volume set --size` change it.
     pub(crate) storage: Option<crate::volume::StorageRule<'a>>,
+    /// A stored document the write brings back from, whole or in part: a name it
+    /// already gave a node is not new to the naming rules.
+    pub(crate) restoring: Option<&'a SavedEnvironmentIntent>,
 }
 
 impl<'a> Write<'a> {
@@ -803,6 +806,18 @@ impl<'a> Write<'a> {
         Self {
             from,
             storage: Some(crate::volume::StorageRule::Replay),
+            restoring: None,
+        }
+    }
+
+    /// [`Write::arriving`] from a stored `document` that the write restores.
+    pub(crate) const fn restoring(
+        from: Option<&'a SavedEnvironmentIntent>,
+        document: &'a SavedEnvironmentIntent,
+    ) -> Self {
+        Self {
+            restoring: Some(document),
+            ..Self::arriving(from)
         }
     }
 }
@@ -1003,7 +1018,8 @@ pub(crate) fn validate_and_refresh_working_from(
         .intent(0, "Working State")?;
     // Every write of Working State, whole or not, comes through here.
     crate::variables::make_generated(&mut environment.working)?;
-    crate::names::refuse_new_taken(tx, environment, &before)?;
+    let coming: Vec<&SavedEnvironmentIntent> = from.into_iter().chain(write.restoring).collect();
+    crate::names::refuse_new_taken(tx, environment, &before, &coming)?;
     crate::names::refuse_new_reserved(&before, &environment.working)?;
     crate::domain::refuse_new_shared_hostnames(
         tx,
