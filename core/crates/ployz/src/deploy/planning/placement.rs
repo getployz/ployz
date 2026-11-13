@@ -320,6 +320,11 @@ pub(super) fn plan_global(
             (!endpoint_operation(machine.machine.id).keeps_container())
                 .then_some(&machine.machine.id)
         }));
+    let emitter = ReplicaEmitter {
+        service_id,
+        requested,
+        options,
+    };
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
     let hook_machine = requested.pre_deploy.as_ref().and_then(|_| {
@@ -349,33 +354,26 @@ pub(super) fn plan_global(
         if let Some(container) = on_machine(current, machine_id).find(|container| {
             container_fate(container, requested, options, limits) == ContainerFate::Update
         }) {
-            let observation = container.as_observation();
-            used.insert(observation.container_id);
-            operations.push(DeployOperation::UpdateContainer(LimitsUpdateOperation {
+            used.insert(container.as_observation().container_id);
+            emitter.emit(
+                &mut placement.sockets,
+                &mut operations,
                 machine_id,
-                container_id: observation.container_id,
-                spec: resolve(
-                    requested,
-                    *service_id,
-                    determine_update_order(Some(container), requested),
-                ),
-            }));
+                Replica::Update(container),
+            )?;
             continue;
         }
 
         if let Some(container) = on_machine(current, machine_id)
             .find(|container| reusable_global(container, requested, options))
         {
-            let observation = container.as_observation();
-            used.insert(observation.container_id);
-            placement
-                .sockets
-                .admit(machine_id, requested, None, EndpointOperation::Create)?;
-            operations.push(DeployOperation::RunContainer {
+            used.insert(container.as_observation().container_id);
+            emitter.emit(
+                &mut placement.sockets,
+                &mut operations,
                 machine_id,
-                spec: observation.resolved_spec.clone(),
-                skip_health_monitor: options.skip_health_monitor,
-            });
+                Replica::Reuse(container),
+            )?;
             continue;
         }
 
@@ -392,58 +390,34 @@ pub(super) fn plan_global(
                 return Err(capacity_error);
             }
             used.insert(observation.container_id);
-            for other in on_machine(current, machine_id) {
-                let other_observation = other.as_observation();
-                if other_observation.container_id != observation.container_id
-                    && super::super::is_active_runtime(&other_observation.runtime)
-                    && other_observation.resolved_spec.ports.iter().any(|old| {
-                        requested
-                            .ports
-                            .iter()
-                            .any(|new| host_ports_conflict(old, new))
-                    })
-                {
-                    placement
-                        .sockets
-                        .release(machine_id, other_observation.container_id);
-                    operations.push(DeployOperation::StopContainer {
-                        machine_id,
-                        container_id: other_observation.container_id,
-                        purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
-                    });
-                }
-            }
-            placement.sockets.admit(
-                machine_id,
+            let siblings = on_machine(current, machine_id).collect::<Vec<_>>();
+            let pre_stops = conflicting_siblings(
                 requested,
                 Some(container),
                 EndpointOperation::Replace,
-            )?;
-            let order = determine_update_order(Some(container), requested);
-            operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
+                &siblings,
+            );
+            emitter.emit(
+                &mut placement.sockets,
+                &mut operations,
                 machine_id,
-                old_container_id: observation.container_id,
-                spec: resolve(requested, *service_id, order),
-                skip_health_monitor: options.skip_health_monitor,
-            }));
+                Replica::Replace {
+                    old: container,
+                    pre_stops,
+                },
+            )?;
         } else {
             let demand =
                 endpoint_demand(EndpointOperation::Create, hook_machine == Some(machine_id));
             if !placement.capacity.reserve(&machine_id, demand) {
                 return Err(capacity_error);
             }
-            placement
-                .sockets
-                .admit(machine_id, requested, None, EndpointOperation::Create)?;
-            operations.push(DeployOperation::RunContainer {
+            emitter.emit(
+                &mut placement.sockets,
+                &mut operations,
                 machine_id,
-                spec: resolve(
-                    requested,
-                    *service_id,
-                    determine_update_order(None, requested),
-                ),
-                skip_health_monitor: options.skip_health_monitor,
-            });
+                Replica::Create,
+            )?;
         }
     }
 
@@ -585,78 +559,136 @@ pub(super) fn plan_replicated(
         .collect::<BTreeMap<_, _>>();
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
+    let emitter = ReplicaEmitter {
+        service_id,
+        requested,
+        options,
+    };
+    let observed = |container_id| {
+        *by_id
+            .get(&container_id)
+            .expect("placement choices retain observed Containers")
+    };
     for ReplicaChoice { machine_id, action } in reservation.choices {
         *placement.occupancy.entry(machine_id).or_default() += 1;
-        match action {
+        let replica = match action {
             ReplicaAction::Unchanged(container_id) => {
                 used.insert(container_id);
+                continue;
             }
             ReplicaAction::Update(container_id) => {
                 used.insert(container_id);
-                let container = by_id
-                    .get(&container_id)
-                    .expect("placement choices retain observed Containers");
-                operations.push(DeployOperation::UpdateContainer(LimitsUpdateOperation {
-                    machine_id,
-                    container_id,
-                    spec: resolve(
-                        requested,
-                        *service_id,
-                        determine_update_order(Some(container), requested),
-                    ),
-                }));
+                Replica::Update(observed(container_id))
             }
             ReplicaAction::Replace {
                 container_id,
                 pre_stops,
             } => {
                 used.insert(container_id);
-                let container = by_id
-                    .get(&container_id)
-                    .expect("placement choices retain observed Containers");
+                Replica::Replace {
+                    old: observed(container_id),
+                    pre_stops,
+                }
+            }
+            ReplicaAction::Create => Replica::Create,
+        };
+        emitter.emit(&mut placement.sockets, &mut operations, machine_id, replica)?;
+    }
+    remove_unused(&mut operations, requested, current, &used, placement);
+    Ok((operations, reservation.hook_machine))
+}
+
+/// What one Machine's copy of a Service becomes, as [`ReplicaEmitter::emit`] writes it.
+enum Replica<'a> {
+    /// The Container stays and takes the requested limits in place.
+    Update(&'a ServiceContainer),
+    /// A stopped Container of the requested spec is started again.
+    Reuse(&'a ServiceContainer),
+    /// A new Container replaces `old`, after `pre_stops` free its host ports.
+    Replace {
+        old: &'a ServiceContainer,
+        pre_stops: Vec<ContainerId>,
+    },
+    Create,
+}
+
+/// Writes the operations of one Machine's copy for both placements of a Service, so the
+/// order of its socket claims and its operations is written once.
+struct ReplicaEmitter<'a> {
+    service_id: &'a ServiceId,
+    requested: &'a RequestedServiceSpec,
+    options: &'a PlanOptions,
+}
+
+impl ReplicaEmitter<'_> {
+    fn emit(
+        &self,
+        sockets: &mut HostSockets,
+        operations: &mut Vec<DeployOperation>,
+        machine_id: MachineId,
+        replica: Replica<'_>,
+    ) -> Result<(), PlanError> {
+        let Self {
+            service_id,
+            requested,
+            options,
+        } = self;
+        match replica {
+            Replica::Update(container) => {
+                operations.push(DeployOperation::UpdateContainer(LimitsUpdateOperation {
+                    machine_id,
+                    container_id: container.as_observation().container_id,
+                    spec: resolve(
+                        requested,
+                        **service_id,
+                        determine_update_order(Some(container), requested),
+                    ),
+                }));
+            }
+            Replica::Reuse(container) => {
+                sockets.admit(machine_id, requested, None, EndpointOperation::Create)?;
+                operations.push(DeployOperation::RunContainer {
+                    machine_id,
+                    spec: container.as_observation().resolved_spec.clone(),
+                    skip_health_monitor: options.skip_health_monitor,
+                });
+            }
+            Replica::Replace { old, pre_stops } => {
                 for container_id in pre_stops {
-                    placement.sockets.release(machine_id, container_id);
+                    sockets.release(machine_id, container_id);
                     operations.push(DeployOperation::StopContainer {
                         machine_id,
                         container_id,
                         purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
                     });
                 }
-                placement.sockets.admit(
-                    machine_id,
-                    requested,
-                    Some(container),
-                    EndpointOperation::Replace,
-                )?;
+                sockets.admit(machine_id, requested, Some(old), EndpointOperation::Replace)?;
                 operations.push(DeployOperation::ReplaceContainer(ReplacementOperation {
                     machine_id,
-                    old_container_id: container_id,
+                    old_container_id: old.as_observation().container_id,
                     spec: resolve(
                         requested,
-                        *service_id,
-                        determine_update_order(Some(container), requested),
+                        **service_id,
+                        determine_update_order(Some(old), requested),
                     ),
                     skip_health_monitor: options.skip_health_monitor,
                 }));
             }
-            ReplicaAction::Create => {
-                placement
-                    .sockets
-                    .admit(machine_id, requested, None, EndpointOperation::Create)?;
+            Replica::Create => {
+                sockets.admit(machine_id, requested, None, EndpointOperation::Create)?;
                 operations.push(DeployOperation::RunContainer {
                     machine_id,
                     spec: resolve(
                         requested,
-                        *service_id,
+                        **service_id,
                         determine_update_order(None, requested),
                     ),
                     skip_health_monitor: options.skip_health_monitor,
                 });
             }
         }
+        Ok(())
     }
-    remove_unused(&mut operations, requested, current, &used, placement);
-    Ok((operations, reservation.hook_machine))
 }
 
 /// The same Container selection and admission for ordinary placement and shared Volume trials.
