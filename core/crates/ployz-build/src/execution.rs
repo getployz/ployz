@@ -3,7 +3,10 @@
 use crate::{BuildError, Deadline, EXECUTION_TIMEOUT, builder::Lock};
 use ployz_core::BuildConcurrency;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 /// Earliest observed phase of one Build attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -193,10 +196,11 @@ pub struct Admission {
     pub(crate) fence: Option<crate::FenceInstaller>,
 }
 impl Admission {
-    /// Attempt abandoned-resource teardown once after daemon restart. Never
-    /// clears uncertainty about orphaned host processes or replays a Build.
+    /// Recover abandoned build slots once after daemon restart. A slot whose
+    /// last Build may still run stays quarantined; no Build is replayed.
     /// # Errors
-    /// Busy or uncertain ownership remains unavailable.
+    /// Busy slots, and quarantined slots with a surviving process or a builder
+    /// Docker cannot confirm removed, remain unavailable.
     pub fn cleanup_abandoned(policy: &HostPolicy) -> Result<(), BuildError> {
         policy.validate()?;
         Lock::cleanup_abandoned(policy)
@@ -247,14 +251,14 @@ impl Admission {
         let resources = crate::policy::Resources::load(&policy.configuration_file)?;
         Ok(Self {
             resources,
-            lock: Lock::try_acquire_slot(&policy.state_directory, slot)?,
+            lock: Lock::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?,
             deadline: Deadline::starting_now(policy.active_timeout),
             cancellation: Cancellation::default(),
             fence: policy.fence,
         })
     }
-    pub(crate) fn wait(cancellation: &Cancellation) -> Result<Self, BuildError> {
-        let lock = Lock::acquire(cancellation)?;
+    pub(crate) fn wait(docker: &Path, cancellation: &Cancellation) -> Result<Self, BuildError> {
+        let lock = Lock::acquire(docker, cancellation)?;
         let resources = crate::policy::Resources::load(&HostPolicy::default().configuration_file)?;
         Ok(Self {
             resources,
@@ -327,29 +331,24 @@ mod tests {
             Err(BuildError::Busy)
         ));
         drop(upload);
+        // This test process owns the mark, so its Build may still be running.
         let mut lock = Lock::try_acquire_in(&root).unwrap();
         lock.quarantine().unwrap();
         drop(lock);
-        assert!(
-            Admission::cleanup_abandoned(&policy)
-                .unwrap_err()
-                .is_unknown()
-        );
-        assert!(
-            root.join("cleaned").exists(),
-            "cleanup skipped absent upload staging"
-        );
-        std::fs::remove_file(root.join("cleaned")).unwrap();
         std::fs::create_dir(root.join("build-upload")).unwrap();
         std::fs::write(root.join("build-upload/uncertain"), "still in use").unwrap();
+        let refused = Admission::cleanup_abandoned(&policy).unwrap_err();
+        assert!(refused.is_unknown());
         assert!(
-            Admission::cleanup_abandoned(&policy)
-                .unwrap_err()
-                .is_unknown()
+            refused.to_string().contains(&format!(
+                "process {} that owned the Build",
+                std::process::id()
+            )),
+            "{refused}"
         );
         assert!(
-            root.join("cleaned").exists(),
-            "bounded abandoned cleanup was not attempted"
+            !root.join("cleaned").exists(),
+            "cleanup touched the builder of a Build that may still run"
         );
         assert!(
             root.join("build-upload/uncertain").exists(),
@@ -361,6 +360,23 @@ mod tests {
                 .unwrap()
                 .is_unknown()
         );
+
+        // The same mark from before a reboot: none of its processes survives.
+        let marker = root.join(format!("{}.lock", crate::builder_name()));
+        let mark = std::fs::read_to_string(&marker).unwrap();
+        let boot = mark.lines().find(|line| line.starts_with("boot ")).unwrap();
+        std::fs::write(&marker, mark.replace(boot, "boot an-earlier-boot")).unwrap();
+        Admission::cleanup_abandoned(&policy).unwrap();
+        assert!(
+            root.join("cleaned").exists(),
+            "recovery did not remove the builder"
+        );
+        assert!(
+            !root.join("build-upload").exists(),
+            "recovery kept the abandoned inputs"
+        );
+        assert!(std::fs::read_to_string(&marker).unwrap().is_empty());
+        drop(Admission::try_acquire_with(&policy).unwrap());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -445,6 +461,7 @@ mod tests {
             deadline: admission.deadline,
             cancellation: None,
             progress: None,
+            recorder: None,
         };
         assert!(matches!(
             docker.run("build", &["build"], crate::Streams::Captured),

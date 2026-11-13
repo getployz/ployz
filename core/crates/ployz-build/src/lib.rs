@@ -16,6 +16,7 @@ mod fence;
 pub use fence::{CgroupPath, Fence, FenceInstaller};
 mod image_contexts;
 mod index;
+mod owner;
 mod policy;
 pub use policy::clear_cache;
 mod received_recipe;
@@ -383,9 +384,11 @@ fn execute_rendered(
     cancellation: &Cancellation,
     sinks: Sinks<'_>,
 ) -> Result<Vec<BuiltImage>, BuildError> {
-    let built = Admission::wait(cancellation).and_then(|admission| {
-        execute_produce(request, produce, admission, &|event| sinks.emit(event))
-    });
+    let built = Admission::wait(
+        request.docker.unwrap_or_else(|| Path::new("docker")),
+        cancellation,
+    )
+    .and_then(|admission| execute_produce(request, produce, admission, &|event| sinks.emit(event)));
     sinks.finish();
     built.map_err(|error| sinks.error(error))
 }
@@ -486,6 +489,7 @@ fn execute_produce(
         return Ok(Vec::new());
     }
     admission.check()?;
+    let recorder = admission.lock.recorder();
     let docker = Docker {
         program: request.docker.unwrap_or_else(|| Path::new("docker")),
         environment: request.environment,
@@ -493,6 +497,7 @@ fn execute_produce(
         deadline: admission.deadline,
         cancellation: Some(&admission.cancellation),
         progress: Some(progress),
+        recorder: Some(&recorder),
     };
     progress(Progress::Stage(Stage::Preparation));
     // Preflight processes also use private inputs. Persist ownership before
@@ -915,6 +920,7 @@ pub(crate) struct Docker<'a> {
     deadline: Deadline,
     cancellation: Option<&'a Cancellation>,
     progress: Option<&'a (dyn Fn(Progress) + Sync)>,
+    recorder: Option<&'a builder::Recorder>,
 }
 
 impl<'a> Docker<'a> {
@@ -973,6 +979,7 @@ impl<'a> Docker<'a> {
             }),
             cancellation: None,
             progress: self.progress,
+            recorder: self.recorder,
         }
     }
 
@@ -1107,6 +1114,13 @@ impl<'a> Docker<'a> {
             diagnostic: error.to_string(),
         })?;
         drop(command);
+        if let Some(recorder) = self.recorder
+            && let Err(error) = recorder.record(child.id())
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         started();
         let status = wait_controlled(&mut child, self.deadline, self.cancellation, &mut drain);
         if !status.as_ref().is_err_and(|error| error.is_unknown()) {
