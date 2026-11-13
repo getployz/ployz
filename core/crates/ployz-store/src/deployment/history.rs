@@ -799,7 +799,7 @@ pub(crate) fn server_names(
     machines: impl IntoIterator<Item = ployz_core::MachineId>,
 ) -> Result<BTreeMap<ployz_core::MachineId, String>, RpcError> {
     let mut names = BTreeMap::new();
-    for machine in machines.into_iter() {
+    for machine in machines.into_iter().collect::<BTreeSet<_>>() {
         let id = machine.to_string();
         let named = tx.query(
             "SELECT server FROM config_deployment_row \

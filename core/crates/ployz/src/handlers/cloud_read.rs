@@ -2,7 +2,7 @@
 //! the Servers instead, under the read permission each needs and the credential's
 //! Environment ceiling.
 
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use chrono::Utc;
 use ployz_core::{MachineName, QualifiedService, ServiceName, ServiceSelector};
@@ -183,7 +183,11 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
             }
         }
     })?;
-    ui::unanswered(read.iter().flat_map(|(_, answer)| &answer.seen.unanswered))?;
+    ui::unanswered(
+        read.iter()
+            .flat_map(|(_, answer)| &answer.seen.unanswered)
+            .collect::<BTreeSet<_>>(),
+    )?;
     refusal.map_or(Ok(()), Err)
 }
 

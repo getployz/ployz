@@ -212,7 +212,7 @@ fn compare_related_settings(
         };
         let before = indexed(baseline);
         let after = indexed(current);
-        for id in before.keys().chain(after.keys()) {
+        for id in before.keys().chain(after.keys()).collect::<BTreeSet<_>>() {
             let before = before.get(id).unwrap_or(&Value::Null);
             let after = after.get(id).unwrap_or(&Value::Null);
             let equal = match family {
