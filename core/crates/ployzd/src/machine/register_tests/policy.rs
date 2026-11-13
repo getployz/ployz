@@ -21,8 +21,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
             "accepts_ingress": false
         }),
     );
-    let registration = entry
-        .register(serde_json::from_value(wire).unwrap())
+    let registration = register_published(&entry, &serde_json::from_value(wire).unwrap())
         .await
         .unwrap();
     let assigned = &registration.assigned_machine;
@@ -48,7 +47,10 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
     let joiner = LocalMachine::new(RecordOwner::spawn(joiner_store).unwrap());
     joiner
         .enroll(ployz_core::EnrollRequest {
-            role: ployz_core::EnrollAs::Member { registration },
+            role: ployz_core::EnrollAs::Member {
+                registration,
+                pin: None,
+            },
             wireguard_mtu: None,
             pinned: Default::default(),
         })
@@ -69,11 +71,11 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
     let _ = std::fs::remove_dir_all(joiner_dir);
 }
 
-/// A Register replaces the row an earlier Register wrote with its whole assignment,
-/// even when that earlier request named a Management Identity: a Register writes no
-/// identity, and never the mark that keeps a row its Machine published.
+/// A Register writes no Management Identity, even when its request names one, and never
+/// the mark that keeps a row its Machine published. The assignment it answered is the one
+/// a person approved, so a changed policy for the same Machine is refused and the row stays.
 #[tokio::test]
-async fn registration_with_a_changed_policy_replaces_the_registered_row() {
+async fn a_registration_writes_no_identity_and_a_changed_policy_is_refused() {
     let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-policy").await;
     let mut wire = serde_json::to_value(RegisterRequest {
         join_approval: None,
@@ -88,8 +90,7 @@ async fn registration_with_a_changed_policy_replaces_the_registered_row() {
     *wire.pointer_mut("/runtime/management_identity").unwrap() = serde_json::json!("11".repeat(32));
     let identity: RegisterRequest = serde_json::from_value(wire).unwrap();
     assert!(identity.runtime.management_identity.is_some());
-    let assigned = local
-        .register(identity.clone())
+    let assigned = register_published(&local, &identity)
         .await
         .unwrap()
         .assigned_machine;
@@ -102,26 +103,23 @@ async fn registration_with_a_changed_policy_replaces_the_registered_row() {
             .assigned_machine,
         assigned
     );
-    let changed = local
-        .register(RegisterRequest {
-            join_approval: None,
-            join_confirmation: None,
-            name: ployz_core::MachineName::parse("renamed").unwrap(),
-            initial_policy: ployz_core::InitialMachinePolicy {
-                accepts_services: false,
-                ..Default::default()
-            },
-            ..identity
-        })
-        .await
-        .unwrap()
-        .assigned_machine;
-    assert!(!changed.accepts_services);
-    assert!(changed.accepts_builds);
-    assert_eq!(changed.name.as_str(), "renamed");
+    let changed = RegisterRequest {
+        join_approval: None,
+        join_confirmation: None,
+        name: ployz_core::MachineName::parse("renamed").unwrap(),
+        initial_policy: ployz_core::InitialMachinePolicy {
+            accepts_services: false,
+            ..Default::default()
+        },
+        ..identity
+    };
+    assert!(matches!(
+        register_published(&local, &changed).await,
+        Err(LocalMachineError::JoinConsumed(_))
+    ));
     assert_eq!(
         replicated.machine(assigned.id.as_str()).await.unwrap(),
-        Some(changed)
+        Some(assigned)
     );
     server.abort();
     drop(local);

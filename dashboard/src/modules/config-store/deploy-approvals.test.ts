@@ -12,12 +12,16 @@ const ENVIRONMENT = { id: "0f8fad5b-d9cb-469f-a165-70867728950e", project: "shop
 // The namespace of `PayloadDigest`'s golden fixture in ployz-core's authority/deploy_tests.rs.
 const NAMESPACE = "app";
 const scope: ApprovalScope = { environmentId: ENVIRONMENT.id, environmentName: "production", namespace: NAMESPACE, cluster: CLUSTER, machines: MACHINES };
-const CAPABILITIES = ["ployz.container.deploy-approval.v1", "ployz.restart.session-grant.v2", "ployz.rule.commit-approval.v1"];
+const ENFORCED = "ployz.machine.enforced.v1";
+const CAPABILITIES = [ENFORCED, "ployz.container.deploy-approval.v1", "ployz.restart.session-grant.v2", "ployz.rule.commit-approval.v1"];
 
-/** Every Server enforcing or not; the first runs `production`'s Namespace, and every other runs nothing. */
-const placing = (enforced = true, runs: Record<string, readonly string[]> = { [NAMESPACE]: [MACHINES[0] ?? ""] }): Servers => ({
+/** Every Server on Ployz 0.4, or on 0.3 when `older`; the first runs `production`'s Namespace, and every other runs nothing. */
+const placing = (older = false, runs: Record<string, readonly string[]> = { [NAMESPACE]: [MACHINES[0] ?? ""] }): Servers => ({
   running: (namespace) => runs[namespace] ?? [],
-  machines: MACHINES.map((id, at) => ({ id, name: `server-${at}`, sealing: { kind: "held", public_key: CLUSTER }, deviceEnforcement: enforced, capabilities: CAPABILITIES })),
+  machines: MACHINES.map((id, at) => ({
+    id, name: `server-${at}`, sealing: { kind: "held", public_key: CLUSTER },
+    capabilities: older ? CAPABILITIES.filter((capability) => capability !== ENFORCED) : CAPABILITIES,
+  })),
 });
 
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
@@ -135,9 +139,9 @@ describe("approveRedeploy of an image", () => {
     expect(sign).not.toHaveBeenCalled();
   });
 
-  it("asks nothing and reads nothing where no Server enforces, so the redeploy goes as before", async () => {
+  it("refuses before it reads or asks anything where a Server runs Ployz 0.3, naming the upgrade", async () => {
     const store = reads();
-    expect(await approveRedeploy(approving(store, placing(false)), deployment(), crypto.randomUUID())).toBeUndefined();
+    await expect(approveRedeploy(approving(store, placing(true)), deployment(), crypto.randomUUID())).rejects.toThrow("server-0 runs Ployz 0.3. Upgrade it to deploy.");
     expect(store.plan).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
   });
@@ -256,9 +260,9 @@ describe("approveEnvironmentDeploy", () => {
   it("names the Cluster its Parent runs on for a Branch that runs nowhere yet, and refuses when Cloud can't tell which", async () => {
     review.mockResolvedValue(true);
     const store = reads({ plan: vi.fn(async () => ({ ...plan(), environment: { ...ENVIRONMENT, name: "fix-web" } })), namespace: vi.fn(async () => "production-ns") });
-    const servers = placing(true, { "production-ns": [MACHINES[1] ?? ""] });
+    const servers = placing(false, { "production-ns": [MACHINES[1] ?? ""] });
     // Two Clusters, so only the Parent's Servers say which one the Branch deploys to.
-    const other = { ...servers, machines: [...servers.machines, { id: "3".repeat(32), name: "elsewhere", sealing: { kind: "held", public_key: "b".repeat(43) + "=" }, deviceEnforcement: true, capabilities: CAPABILITIES }] };
+    const other = { ...servers, machines: [...servers.machines, { id: "3".repeat(32), name: "elsewhere", sealing: { kind: "held", public_key: "b".repeat(43) + "=" }, capabilities: CAPABILITIES }] };
     const approved = await approveEnvironmentDeploy(approving(store, other), branch, crypto.randomUUID(), parent) ?? expect.fail("approved");
     expect(store.namespace).toHaveBeenCalledWith(parent);
     expect(JSON.parse(approved.approval.body)).toMatchObject({ cluster: CLUSTER, machines: MACHINES });

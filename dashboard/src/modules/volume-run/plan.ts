@@ -54,7 +54,7 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember; readonly args: VolumeRunArgs["seed"] } }
   | { readonly ok: true; readonly phase: ResizePhase }
-  | { readonly ok: false; readonly refusal: Refusal };
+  | { readonly ok: false; readonly refusal: Refusal; readonly deletes?: readonly AnsweredMember[] };
 
 /**
  * A resize also carries the sizes the Store holds for the Volume: `recordedBytes`, the one its copies hold, 0 before
@@ -116,23 +116,23 @@ const refuse = (code: RefusalCode, message: string, next?: string): Planned => (
 
 /**
  * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A Move, a
- * Mirror, a full Sync, a Restore, a Mirror removal or a seed that carries no approval, through a Server that enforces
- * device approval, is refused here, before anything stops: a Move would otherwise stop the Service before its start met
- * the refusal, and a full Sync forget the Mirror's copy before its pull did.
+ * Mirror, a full Sync, a Restore, a Mirror removal or a seed that carries no approval is refused here, before anything
+ * stops, since every Server enforces device approval: a Move would otherwise stop the Service before its start met the
+ * refusal, and a full Sync forget the Mirror's copy before its pull did.
  */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const planned = planCopies(input, observed);
   if (!planned.ok) return planned;
   const unapproved = (input.kind === "mirror" || input.kind === "sync" || input.kind === "move" || input.kind === "restore" || input.kind === "delete_mirror"
     || input.kind === "seed") && input.args.approval === undefined;
-  const enforcing = gatedOn(planned.phase, unapproved).find((member) => member.enforces === true);
-  return enforcing === undefined ? planned : enforcedRefusal(planned.phase, input.volumeName, enforcing.machine.name);
+  const [gated] = gatedOn(planned.phase, unapproved);
+  return gated === undefined ? planned : enforcedRefusal(planned.phase, input.volumeName, gated.machine.name);
 }
 
 type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
 
 /**
- * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud without an approval: an `unapproved`
+ * The Servers a phase asks for what a Server refuses from Ployz Cloud without an approval: an `unapproved`
  * seed's copy, Move's start on B and release back to A's stopped Container, Mirror's snapshot and pull, Restore's
  * promotion, or removal of a slot that holds a snapshot. A slot with none holds no data, so its Server deletes it unasked.
  */
@@ -171,7 +171,9 @@ function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Pla
       return refuse("enforced", `${own} restore ${name} on its own. Run ployz volume restore ${name} --from ${phase.from.machine.name} from an approved device.`);
     case "delete_mirror": {
       const slot = copyName(name, server);
-      return refuse("enforced", `${own} delete ${slot} on its own. Run ployz volume mirror rm ${slot}${ifOldCopy(phase.role ?? undefined)} from an approved device.`);
+      const message = `${own} delete ${slot} on its own. Run ployz volume mirror rm ${slot}${ifOldCopy(phase.role ?? undefined)} from an approved device.`;
+      // The copies it would delete with no writer left, so the approval that answers the refusal can name them.
+      return { ok: false, refusal: { code: "enforced", message }, deletes: phase.forget === null ? phase.destroy : [] };
     }
     default:
       return refuse("enforced", enforcedMessage(phase.kind === "seed", name, server));
@@ -588,13 +590,13 @@ function unfinishedCutsBefore(volumeName: string, target: AnsweredMember, member
 const PREVIEW_APPROVAL: Signed = { body: "", signatures: [] };
 
 /**
- * `input` as the dashboard runs it on `observed`: where every Server that enforces device approval takes a passkey's
- * answer, the person approves the run before it starts, so a preview plans it as approved. Otherwise `input` as it is,
- * which an enforcing Server refuses. Only previews and staging use it; a run plans with the approval it carries.
+ * `input` as the dashboard runs it on `observed`: where every Server takes a passkey's answer, the person approves the
+ * run before it starts, so a preview plans it as approved. Otherwise `input` as it is, which a Server refuses. Only
+ * previews and staging use it; a run plans with the approval it carries.
  */
 export function asApproved<I extends PlanInput>(input: I, observed: readonly Member[]): I {
   if (!APPROVED_KINDS.has(input.kind)) return input;
-  const passkeys = observed.every((member) => !member.answered || member.enforces !== true || member.passkey === true);
+  const passkeys = observed.every((member) => !member.answered || member.passkey === true);
   if (!passkeys || ("approval" in input.args && input.args.approval !== undefined)) return input;
   return { ...input, args: { ...input.args, approval: PREVIEW_APPROVAL } };
 }

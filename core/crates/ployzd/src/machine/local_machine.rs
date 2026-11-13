@@ -106,7 +106,7 @@ pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
 mod teardown;
 pub(crate) use sealing_recovery::Error as RecoveryError;
-pub(crate) use teardown::{HeldStep, HeldTeardown};
+pub(crate) use teardown::HeldTeardown;
 mod upgrade;
 mod volume_approval;
 pub(crate) use volume_approval::{Admitted, CopyStep};
@@ -284,6 +284,13 @@ pub enum Error {
         "This Server is turning on Device enforcement and restarts in a few seconds. Try again then"
     )]
     Activating,
+    /// This Machine awaits its Cluster's activation, so it refuses the change an Operator
+    /// asked, or a join from anyone. The refusal names `capability` and says how to
+    /// activate.
+    #[error(
+        "{capability}: this Server awaits its Cluster's activation. Activate the Cluster, then try again"
+    )]
+    AwaitingActivation { capability: &'static str },
     #[error("could not keep the pending activation")]
     ActivationRecord(#[source] std::io::Error),
     /// A recipient key step this Server did not admit. The refusal names `capability`.
@@ -948,15 +955,6 @@ impl LocalMachine {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<Enrolled, Error> {
-        if self.record().device_enforcement()
-            && matches!(&request.role, ployz_core::EnrollAs::Founder { .. })
-        {
-            return Err(Error::JoinRefused(
-                ployz_core::authority::AuthorityRefusal::Unsigned {
-                    purpose: ployz_core::authority::Purpose::Join,
-                },
-            ));
-        }
         let (plan, installation) = self
             .owner
             .mutate(move |store| store.plan_enrollment(request, recovery))
@@ -999,11 +997,9 @@ impl LocalMachine {
             "enrolled"
         );
         let join_confirmation = match &machine.join_approval {
-            Some(approval) if self.record().device_enforcement() => {
-                SealingKey::load(self.owner.data_dir())
-                    .map_err(Error::JoinRecord)?
-                    .map(|key| key.confirm_join(approval))
-            }
+            Some(approval) => SealingKey::load(self.owner.data_dir())
+                .map_err(Error::JoinRecord)?
+                .map(|key| key.confirm_join(approval)),
             _ => None,
         };
         Ok(Enrolled::Enrolled {
@@ -1053,48 +1049,51 @@ impl LocalMachine {
             },
             &[],
         )?;
-        if self.record().device_enforcement() {
-            if let Some(stored) = self.approvals.join_result(request.machine_id)? {
-                if ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
-                    != stored.approval.open().map_err(Error::JoinRefused)?.machine
-                    || request
-                        .join_approval
-                        .as_ref()
-                        .is_some_and(|approval| approval != &stored.approval)
-                {
-                    return Err(Error::JoinConsumed(request.machine_id));
-                }
-                let restart_approval::JoinReply::Register(registration) = stored.reply else {
-                    return Err(Error::JoinConsumed(request.machine_id));
-                };
-                if let Some(confirmation) = &request.join_confirmation {
-                    let confirmed = SealingKey::load(self.owner.data_dir())
-                        .map_err(Error::JoinRecord)?
-                        .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
-                    if !confirmed {
-                        return Err(Error::JoinRefused(
-                            ployz_core::authority::AuthorityRefusal::Mismatch {
-                                field: "a join confirmation",
-                            },
-                        ));
-                    }
-                    publication
-                        .register(registration.assigned_machine.clone())
-                        .await?;
-                }
-                return Ok(*registration);
+        if self.record().awaits_activation() {
+            return Err(Error::AwaitingActivation {
+                capability: ployz_core::REGISTER_MACHINE_CAPABILITY,
+            });
+        }
+        if let Some(stored) = self.approvals.join_result(request.machine_id)? {
+            if ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
+                != stored.approval.open().map_err(Error::JoinRefused)?.machine
+                || request
+                    .join_approval
+                    .as_ref()
+                    .is_some_and(|approval| approval != &stored.approval)
+            {
+                return Err(Error::JoinConsumed(request.machine_id));
             }
-            let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
-            if snapshot.machines.iter().any(|peer| {
-                let other = ipnet::Ipv4Net::from(peer.subnet);
-                subnet.contains(&other.network()) || other.contains(&subnet.network())
-            }) {
-                return Err(Error::JoinRefused(
-                    ployz_core::authority::AuthorityRefusal::Mismatch {
-                        field: "an unused subnet",
-                    },
-                ));
+            let restart_approval::JoinReply::Register(registration) = stored.reply else {
+                return Err(Error::JoinConsumed(request.machine_id));
+            };
+            if let Some(confirmation) = &request.join_confirmation {
+                let confirmed = SealingKey::load(self.owner.data_dir())
+                    .map_err(Error::JoinRecord)?
+                    .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
+                if !confirmed {
+                    return Err(Error::JoinRefused(
+                        ployz_core::authority::AuthorityRefusal::Mismatch {
+                            field: "a join confirmation",
+                        },
+                    ));
+                }
+                publication
+                    .register(registration.assigned_machine.clone())
+                    .await?;
             }
+            return Ok(*registration);
+        }
+        let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
+        if snapshot.machines.iter().any(|peer| {
+            let other = ipnet::Ipv4Net::from(peer.subnet);
+            subnet.contains(&other.network()) || other.contains(&subnet.network())
+        }) {
+            return Err(Error::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Mismatch {
+                    field: "an unused subnet",
+                },
+            ));
         }
         let approval = self.admit_join(
             &assignment.machine,
@@ -1102,21 +1101,11 @@ impl LocalMachine {
             request.join_approval,
             &snapshot.machines,
         )?;
-        assignment.machine.join_approval = approval.clone();
+        assignment.machine.join_approval = Some(approval.clone());
         assignment.machine.runtime.management_identity = None;
-        let held = match SealingKey::load(self.owner.data_dir()) {
-            Ok(key) => key,
-            Err(error) if !self.record().device_enforcement() => {
-                tracing::warn!(%error, "could not read the Sealing Key; registering without it");
-                None
-            }
-            Err(error) => return Err(Error::JoinRecord(error)),
-        };
-        let sealing_key = held
-            .map(|key| match &approval {
-                Some(approval) => key.seal_join(&assignment.machine.public_key, approval),
-                None => key.seal_to(&assignment.machine.public_key),
-            })
+        let sealing_key = SealingKey::load(self.owner.data_dir())
+            .map_err(Error::JoinRecord)?
+            .map(|key| key.seal_join(&assignment.machine.public_key, &approval))
             .transpose()?;
         let mut registration = registered(
             assignment.machine,
@@ -1125,21 +1114,11 @@ impl LocalMachine {
             sealing_key,
             self.record().devices().collect(),
         );
-        if let Some(approval) = approval {
-            registration.recipient =
-                self.join_recipient(&registration.assigned_machine.public_key)?;
-            self.consume_join(restart_approval::JoinResult {
-                approval,
-                reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
-            })?;
-            return Ok(registration);
-        }
-        publication
-            .register(registration.assigned_machine.clone())
-            .await?;
-        if !self.record().device_enforcement() {
-            registration.target_versions = replicated.version().await?;
-        }
+        registration.recipient = self.join_recipient(&registration.assigned_machine.public_key)?;
+        self.consume_join(restart_approval::JoinResult {
+            approval,
+            reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
+        })?;
         Ok(registration)
     }
 

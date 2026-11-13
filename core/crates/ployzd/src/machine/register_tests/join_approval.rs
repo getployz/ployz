@@ -5,16 +5,22 @@ use ployz_core::{
     authority::{AuthorityRefusal, Member, Signed, Signer, StartingSet, Timestamp},
 };
 
-/// Approve `signer` and activate with it at `entry`'s console, then commit as the next boot
-/// does.
+/// Approve `signer` at `entry`'s console, as a person does on a Server born enforcing.
 async fn enforce(entry: &LocalMachine, signer: &Signer) {
-    let console = entry.clone().on_local_socket();
-    console
+    entry
+        .clone()
+        .on_local_socket()
         .set_device(SetDeviceRequest::Approve {
             key: signer.public().into(),
         })
         .await
         .unwrap();
+}
+
+/// Approve `signer` at an awaiting `entry`'s console and activate with every row the store
+/// holds, then commit as the next boot does.
+async fn activate(entry: &LocalMachine, signer: &Signer) {
+    enforce(entry, signer).await;
     let members = entry
         .replicated()
         .unwrap()
@@ -25,7 +31,9 @@ async fn enforce(entry: &LocalMachine, signer: &Signer) {
         .iter()
         .map(Into::into)
         .collect();
-    console
+    entry
+        .clone()
+        .on_local_socket()
         .set_device_enforcement(enforce_request(signer, members))
         .await
         .unwrap();
@@ -90,6 +98,30 @@ async fn enforced_register_refuses_unsigned_and_unknown_signers_without_publicat
 }
 
 #[tokio::test]
+async fn a_pending_join_lists_the_passkeys_the_admitting_server_trusts() {
+    let (entry, _, _, directory, server) = participating().await;
+    enforce(&entry, &Signer::from_seed(&[1; 32])).await;
+    let passkey = crate::machine::test_support::passkey(5);
+    entry
+        .clone()
+        .on_local_socket()
+        .set_passkey(ployz_core::SetPasskeyRequest::Approve {
+            passkey: Box::new(passkey.clone()),
+        })
+        .await
+        .unwrap();
+    let joiner = request("joiner", WireGuardPublicKey([3; 32]));
+    assert!(entry.register(joiner).await.is_err());
+
+    let body = entry.pending_joins().unwrap().joins.pop().unwrap();
+
+    assert_eq!(body.passkeys, [passkey]);
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeemed_twice() {
     let (entry, _, _, directory, server) = participating().await;
     let signer = Signer::from_seed(&[1; 32]);
@@ -113,7 +145,10 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
     assert_eq!(
         joiner
             .enroll(EnrollRequest {
-                role: EnrollAs::Member { registration },
+                role: EnrollAs::Member {
+                    registration,
+                    pin: None
+                },
                 wireguard_mtu: None,
                 pinned: Default::default()
             })
@@ -124,7 +159,7 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
         joiner.record().devices().collect::<Vec<_>>(),
         vec![signer.public().into()]
     );
-    assert!(joiner.record().device_enforcement());
+    assert!(joiner.record().filters_peers());
     assert!(entry.register(request.clone()).await.is_ok());
     confirm(&entry, &request, &approval, join_dir.path()).await;
     assert!(matches!(
@@ -184,7 +219,15 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
         }))
     ));
     body.devices.pop();
-    body.admitting_machines = vec![entry.record().id()];
+    body.passkeys.push(crate::machine::test_support::passkey(6));
+    let approval = Signed::sign(&body, &signer).unwrap();
+    assert!(matches!(
+        entry.approve_join(ApproveJoinRequest { approval }).await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: "approved passkeys"
+        }))
+    ));
+    body.passkeys.pop();
     body.sealing_recipient = WireGuardPublicKey([3; 32]);
     let approval = Signed::sign(&body, &signer).unwrap();
     assert!(matches!(
@@ -199,27 +242,10 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
 }
 
 #[tokio::test]
-async fn unsigned_enroll_and_share_are_refused_under_enforcement() {
+async fn an_unsigned_share_is_refused() {
     let (entry, _, _, directory, server) = participating().await;
-    let join_dir = tempfile::tempdir().unwrap();
-    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
-    let mut request = request("joiner", joiner.record().private_key().public_key());
-    request.machine_id = joiner.record().id();
-    let registration = entry.register(request.clone()).await.unwrap();
-    let signer = Signer::from_seed(&[1; 32]);
-    enforce(&entry, &signer).await;
-    joiner.approve_device(signer.public().into(), None).unwrap();
-    joiner.set_device_enforcement(true, Vec::new()).unwrap();
-    assert!(matches!(
-        joiner.enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
-            wireguard_mtu: None,
-            pinned: Default::default()
-        }),
-        Err(super::super::StoreError::JoinRefused(
-            AuthorityRefusal::Unsigned { .. }
-        ))
-    ));
+    let request = request("joiner", WireGuardPublicKey([2; 32]));
+    register_published(&entry, &request).await.unwrap();
     assert!(matches!(
         entry
             .share_sealing_key(ShareSealingKeyRequest {
@@ -474,6 +500,7 @@ async fn an_approved_row_is_published_only_once_the_joiner_confirms_its_capsule(
         ..
     } = Box::pin(joiner.enroll(EnrollRequest {
         role: EnrollAs::Member {
+            pin: None,
             registration: registration.clone(),
         },
         wireguard_mtu: None,
@@ -549,15 +576,22 @@ async fn a_joiner_cut_off_from_its_capsule_is_never_published_nor_authorizes_ano
     let approval = registration.assigned_machine.join_approval.clone().unwrap();
     registration.sealing_key = None;
     registration.devices = vec![DeviceKey::from_bytes([9; 32])];
-    joiner
-        .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+    let assigned = registration.assigned_machine.clone();
+    assert!(matches!(
+        joiner.enroll(EnrollRequest {
+            role: EnrollAs::Member {
+                registration,
+                pin: None,
+            },
             wireguard_mtu: None,
             pinned: Default::default(),
-        })
-        .unwrap();
-    assert!(!joiner.record().device_enforcement());
-    let stripped = joiner.record().machine().unwrap().id;
+        }),
+        Err(super::super::StoreError::JoinRefused(
+            AuthorityRefusal::Unsigned { .. }
+        ))
+    ));
+    assert_eq!(joiner.record().phase(), LocalMachinePhase::Uninitialized);
+    assert_eq!(joiner.record().devices().count(), 0);
     assert!(
         crate::sealing_key::SealingKey::load(join_dir.path())
             .unwrap()
@@ -576,14 +610,10 @@ async fn a_joiner_cut_off_from_its_capsule_is_never_published_nor_authorizes_ano
         }))
     ));
     assert!(
-        raw.machine(stripped.as_str()).await.unwrap().is_none(),
+        raw.machine(assigned.id.as_str()).await.unwrap().is_none(),
         "a joiner cut off from its capsule is never published, so no Machine peers with it"
     );
-    assert_eq!(
-        joiner.record().devices().collect::<Vec<_>>(),
-        vec![DeviceKey::from_bytes([9; 32])]
-    );
-    let mut attacker = joiner.record().machine().unwrap().clone();
+    let mut attacker = assigned;
     attacker.id = MachineId::random();
     attacker.public_key = WireGuardPublicKey([9; 32]);
     attacker.join_approval = None;
@@ -644,7 +674,10 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
     );
     joiner
         .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member {
+                registration,
+                pin: None,
+            },
             wireguard_mtu: None,
             pinned: Default::default(),
         })
@@ -662,7 +695,7 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
         }))
     ));
     raw.publish_local_machine(forged).await.unwrap();
-    assert!(joiner.record().device_enforcement());
+    assert!(joiner.record().filters_peers());
     assert!(!entry.record().accepts_machine(forged));
     assert!(
         entry
@@ -694,7 +727,10 @@ async fn unsigned_visible_peers_never_seed_an_approved_join_or_its_membership() 
     registration.devices = vec![DeviceKey::from_bytes([9; 32])];
     joiner
         .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member {
+                registration,
+                pin: None,
+            },
             wireguard_mtu: None,
             pinned: Default::default(),
         })
@@ -768,7 +804,10 @@ async fn enrollment_replay_does_not_revalidate_an_expired_approval_or_change_sta
     request.join_approval = Some(Signed::sign(&body, &signer).unwrap());
     let registration = entry.register(request.clone()).await.unwrap();
     let enrollment = EnrollRequest {
-        role: EnrollAs::Member { registration },
+        role: EnrollAs::Member {
+            registration,
+            pin: None,
+        },
         wireguard_mtu: None,
         pinned: Default::default(),
     };
@@ -817,7 +856,7 @@ async fn a_mesh_caller_is_never_full_on_an_enforced_v1_daemon() {
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::{Request, transport::Server};
     let (directory, owner, _) = open_store("ployzd-mesh-off");
-    assert!(!owner.record().device_enforcement());
+    assert_eq!(owner.record().activation(), None);
     let api = crate::machine_api::MachineApi::builder(owner.clone()).build();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -845,14 +884,14 @@ async fn a_mesh_caller_is_never_full_on_an_enforced_v1_daemon() {
 
 #[tokio::test]
 async fn enforcement_pins_existing_id_key_and_subnet_durably() {
-    let (entry, raw, mut founder, directory, server) = participating().await;
+    let (entry, raw, mut founder, directory, server) = participating_awaiting().await;
     let signer = Signer::from_seed(&[1; 32]);
     let mut existing = founder.clone();
     existing.id = MachineId::random();
     existing.subnet = "10.210.2.0/24".parse().unwrap();
     existing.public_key = WireGuardPublicKey([2; 32]);
     raw.publish_local_machine(&existing).await.unwrap();
-    enforce(&entry, &signer).await;
+    activate(&entry, &signer).await;
     assert!(entry.record().accepts_machine(&existing));
     drop(entry);
     let store = LocalMachineStore::open(&directory).unwrap();
@@ -895,7 +934,10 @@ async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
     let approval = registration.assigned_machine.join_approval.clone().unwrap();
     joiner
         .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
+            role: EnrollAs::Member {
+                registration,
+                pin: None,
+            },
             wireguard_mtu: None,
             pinned: Default::default(),
         })
@@ -939,12 +981,14 @@ async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
 
 #[tokio::test]
 async fn share_refuses_an_approval_for_another_allocation_of_the_recipient() {
-    let (entry, _, _, directory, server) = participating().await;
-    let existing = entry
-        .register(request("existing", WireGuardPublicKey([4; 32])))
+    let (entry, raw, founder, directory, server) = participating().await;
+    let existing = joined_before_activation(&raw, &founder).await;
+    let member = (&existing).into();
+    entry
+        .owner()
+        .mutate(move |store| store.trust_members(vec![member]).unwrap())
         .await
-        .unwrap()
-        .assigned_machine;
+        .unwrap();
     let signer = Signer::from_seed(&[1; 32]);
     enforce(&entry, &signer).await;
     let mut other = request("other", WireGuardPublicKey([5; 32]));
@@ -982,7 +1026,10 @@ async fn resending_the_original_enroll_while_resetting_conflicts() {
     let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
     let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
     let enrollment = EnrollRequest {
-        role: EnrollAs::Member { registration },
+        role: EnrollAs::Member {
+            registration,
+            pin: None,
+        },
         wireguard_mtu: None,
         pinned: Default::default(),
     };
@@ -999,12 +1046,8 @@ async fn resending_the_original_enroll_while_resetting_conflicts() {
 
 #[tokio::test]
 async fn enforcement_trusts_only_the_signed_starting_set_not_rows_registered_before_it() {
-    let (entry, raw, founder, directory, server) = participating().await;
-    let late = entry
-        .register(request("late", WireGuardPublicKey([4; 32])))
-        .await
-        .unwrap()
-        .assigned_machine;
+    let (entry, raw, founder, directory, server) = participating_awaiting().await;
+    let late = joined_before_activation(&raw, &founder).await;
     let signer = Signer::from_seed(&[1; 32]);
     let console = entry.clone().on_local_socket();
     console
@@ -1045,7 +1088,7 @@ async fn enforcement_trusts_only_the_signed_starting_set_not_rows_registered_bef
 
 #[tokio::test]
 async fn activation_refuses_a_missing_foreign_or_misscoped_starting_set_and_has_no_off() {
-    let (entry, _, founder, directory, server) = participating().await;
+    let (entry, _, founder, directory, server) = participating_awaiting().await;
     let signer = Signer::from_seed(&[1; 32]);
     let console = entry.clone().on_local_socket();
     console
@@ -1077,13 +1120,14 @@ async fn activation_refuses_a_missing_foreign_or_misscoped_starting_set_and_has_
         .set_device_enforcement(approved.clone())
         .await
         .unwrap();
-    assert!(!entry.record().device_enforcement());
+    assert_eq!(entry.record().activation(), None);
     assert!(matches!(
         console.set_device_enforcement(approved.clone()).await,
         Err(LocalMachineError::Activating)
     ));
     entry.commit_activation_as_if_restarted().await;
-    assert!(entry.record().device_enforcement());
+    let activated = entry.record().activation();
+    assert!(activated.is_some());
     let off = SetDeviceEnforcementRequest {
         enforced: false,
         starting_set: None,
@@ -1092,39 +1136,36 @@ async fn activation_refuses_a_missing_foreign_or_misscoped_starting_set_and_has_
     console.set_device_enforcement(approved).await.unwrap();
     let again = enforce_request(&signer, vec![(&founder).into()]);
     assert!(refused(console.set_device_enforcement(again).await));
-    assert!(entry.record().device_enforcement());
+    assert_eq!(entry.record().activation(), activated);
     server.abort();
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test]
-async fn a_saved_bootstrap_peer_outside_the_starting_set_is_not_offered_after_restart() {
-    let (entry, _, founder, directory, server) = participating().await;
+async fn a_saved_bootstrap_peer_it_does_not_trust_is_not_offered_after_restart() {
     let join_dir = tempfile::tempdir().unwrap();
     let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
-    let mut joining = request("joiner", joiner.record().private_key().public_key());
-    joining.machine_id = joiner.record().id();
-    let mut registration = entry.register(joining).await.unwrap();
-    let mut unapproved = founder.clone();
-    unapproved.id = MachineId::random();
-    unapproved.public_key = WireGuardPublicKey([9; 32]);
-    unapproved.subnet = "10.210.77.0/24".parse().unwrap();
-    registration.visible_peers.push(unapproved);
-    joiner
-        .enroll(EnrollRequest {
-            role: EnrollAs::Member { registration },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        })
-        .unwrap();
-    joiner.complete_catch_up().unwrap();
-    let own = joiner.record().machine().unwrap().into();
-    joiner
-        .set_device_enforcement(true, vec![(&founder).into(), own])
-        .unwrap();
+    let cluster = crate::machine::test_support::ApprovingCluster::new(1);
+    joiner.enroll(cluster.join(joiner.record())).unwrap();
     drop(joiner);
+    let path = join_dir.path().join("machine.json");
+    let mut row: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let unapproved = ployz_core::Machine {
+        id: MachineId::random(),
+        public_key: WireGuardPublicKey([9; 32]),
+        subnet: "10.210.77.0/24".parse().unwrap(),
+        ..cluster.admitting.clone()
+    };
+    row.pointer_mut("/body/bootstrap")
+        .and_then(serde_json::Value::as_array_mut)
+        .unwrap()
+        .push(serde_json::to_value(&unapproved).unwrap());
+    std::fs::write(&path, serde_json::to_vec(&row).unwrap()).unwrap();
+
     let joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+
     assert_eq!(
         joiner
             .record()
@@ -1132,9 +1173,6 @@ async fn a_saved_bootstrap_peer_outside_the_starting_set_is_not_offered_after_re
             .iter()
             .map(|row| row.id)
             .collect::<Vec<_>>(),
-        vec![founder.id]
+        vec![cluster.admitting.id]
     );
-    server.abort();
-    drop(entry);
-    std::fs::remove_dir_all(directory).unwrap();
 }

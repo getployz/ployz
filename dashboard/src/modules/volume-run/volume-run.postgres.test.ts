@@ -31,6 +31,7 @@ import { Effect, Exit } from "effect";
 import { Inngest, NonRetriableError } from "inngest";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { JsonValue } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -71,10 +72,10 @@ import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { appliedMirrors, observePlacement } from "#/modules/volume-placement/volume-placement";
-import { deleteOldCopy } from "#/modules/volume-placement/volume-placement.server";
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
+import type { KeptVolumeApproval } from "#/modules/approvals/approvals";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
@@ -202,6 +203,15 @@ const label = (fake: FakeMachine, want: WantedCopy) => {
 /** A handoff receipt as a source signs it. The fakes check nothing in it; Cloud reads only where it routes. */
 const receiptFor = (to: MachineId, at: string, epoch: number): MachineSigned =>
   ({ body: JSON.stringify({ from: idOf("fsn-1"), to, at, epoch }), key: { kind: "cluster", key: "c".repeat(64) }, signature: "d".repeat(128) });
+/** What a fake Server on Ployz 0.4 lists unless a test names its own: it enforces device approval and takes every Volume verb but a handoff. */
+const ON_PLOYZ_04 = [
+  requirements.enforced.capability,
+  requirements.volumeMove.capability,
+  requirements.volumeFloor.capability,
+  requirements.volumeSize.capability,
+  requirements.volumeShrink.capability,
+  requirements.volumePasskey.capability,
+];
 /** Every capability a Move asks of a Server that signs and checks handoffs. */
 const HANDOFF_CAPABILITIES = [
   requirements.volumeMove.capability,
@@ -265,6 +275,10 @@ describe("volume runs", () => {
     const found = machines.find((entry) => entry.name === name);
     if (found === undefined) throw new Error(`no fake Machine ${name}`);
     return found;
+  };
+  /** Every fake Server signs handoffs, so a Move's cut leaves A's receipt and a Move that commits goes forward to B. */
+  const signHandoffs = () => {
+    for (const fake of machines) fake.capabilities = HANDOFF_CAPABILITIES;
   };
   const newSnap = (name: string) => {
     guids += 1;
@@ -424,7 +438,7 @@ describe("volume runs", () => {
       const fault = frameFault?.(++frames) ?? false;
       return fault !== false ? firstFrame(() => answering(fault), fault === true ? 1 : timeoutMs) : Effect.succeed({
       machines: machines.map((fake) => ({
-        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities, device_enforcement: fake.enforces ?? null } },
+        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities === undefined ? ON_PLOYZ_04 : [requirements.enforced.capability, ...fake.capabilities] } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
       containers: containers.map((container) => ({
@@ -590,6 +604,8 @@ describe("volume runs", () => {
       Effect.provideService(CloudStore, {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
           githubCancel: async () => [],
+          // The pull requests whose check a Deployment's outcome may move.
+          checks: async () => [],
           awaitingApproval: async () => false,
           abandonDeployment: async (id: string) => ({ id, status: "failed" }),
           system: async (_: string, event: SystemEvent) => {
@@ -628,8 +644,51 @@ describe("volume runs", () => {
       }),
     ))) as typeof runInngestEffect;
 
+  /**
+   * `input` as the person's passkey approves it in the dashboard, naming the Servers the fakes hold now. Every Server
+   * enforces device approval, so a run that changes data carries one; a test that sends its own, or none, keeps it.
+   */
+  const approvedRun = (input: VolumeRunInput): VolumeRunInput => {
+    if ("approval" in input.args) return input;
+    const signed = (workflow: { readonly [field: string]: JsonValue }): Signed => ({ body: JSON.stringify({ volume: dockerVolume, workflow }), signatures: APPROVAL.signatures });
+    const writer = machines.find((fake) => fake.copy?.kind === "root" && !fake.copy.readonly) ?? machines.find((fake) => fake.copy?.kind === "root");
+    const writerId = writer === undefined ? idOf("none") : writer.id ?? idOf(writer.name);
+    const target = (args: { readonly to: string; readonly machine?: MachineId }) => args.machine ?? machines.find((fake) => fake.name === args.to)?.id ?? idOf(args.to);
+    switch (input.kind) {
+      case "mirror":
+        return { ...input, args: { ...input.args, approval: signed({ kind: "mirror", writer: writerId, mirror: target(input.args) }) } };
+      case "sync": {
+        if (!input.args.full) return input;
+        const mirror = machines.find((fake) => fake.copy?.kind === "slot" && fake.copy.role !== "old_copy");
+        return { ...input, args: { ...input.args, approval: signed({ kind: "mirror", writer: writerId, mirror: mirror?.id ?? idOf(mirror?.name ?? "none") }) } };
+      }
+      case "move": {
+        const service = input.args.service ?? asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+        return { ...input, args: { ...input.args, service, approval: signed({ kind: "move", from: writerId, to: target(input.args), service: { name: service.name } }) } };
+      }
+      case "restore": {
+        const from = input.args.machine ?? machines.find((fake) => fake.name === input.args.from)?.id ?? idOf(input.args.from);
+        return { ...input, args: { ...input.args, approval: signed({ kind: "restore", machine: from }) } };
+      }
+      case "delete_mirror": {
+        if (input.args.slot === null) return input;
+        const slot = input.args.slot;
+        const mirror = machines.find((fake) => fake.name === slot)?.id ?? idOf(slot);
+        return { ...input, args: { ...input.args, approval: signed({ kind: "mirror_removal", mirror }) } };
+      }
+      case "seed":
+        return { ...input, args: { ...input.args, approval: signed({ kind: "seed" }) } };
+      case "resize": {
+        const recorded = storeVolumes.find((volume) => volume.id === volumeId)?.recorded_storage ?? 0;
+        const holders = machines.map((fake) => fake.id ?? idOf(fake.name));
+        return { ...input, args: { ...input.args, approval: signed({ kind: "resize", machines: holders, maximum_bytes: input.args.maximum_bytes, shrink: input.args.maximum_bytes <= recorded }) } };
+      }
+      default:
+        return input;
+    }
+  };
   const request = (input: VolumeRunInput) =>
-    runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, ...input }));
+    runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, ...approvedRun(input) }));
   const requested = async (input: VolumeRunInput) => {
     const result = await request(input);
     if (!result.ok) throw new Error(result.refusal.message);
@@ -1104,7 +1163,7 @@ describe("volume runs", () => {
                values ($1, 'env-1', $2, 'data', $3, $4, $5, 'requested') returning id`,
               [organizationId, volumeId, dockerVolume, kind, args]) as { rows: Array<{ id: string }> };
 
-            const taking = runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" }));
+            const taking = runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, ...approvedRun({ kind: "mirror", args: { to: "fsn-2" } }) }, { end: "yielded" }));
             await waitingOnLock();
             await landing.query("commit");
 
@@ -1214,7 +1273,7 @@ describe("volume runs", () => {
       named("fsn-1").copy = slotCopy(G, null, "3");
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G) };
       await move();
-      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" }));
+      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, ...approvedRun({ kind: "mirror", args: { to: "fsn-2" } }) }, { end: "yielded" }));
       if (!staged.ok) throw new Error(staged.refusal.message);
       const run = staged.run;
 
@@ -1234,7 +1293,7 @@ describe("volume runs", () => {
     it("a staged Mirror that took a warm Move before B got a copy plans from B as the fence saw it, and the Move's late Mirror to B is stale", async () => {
       const moved = newSnap("w-0-1");
       const taken = await move();
-      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "fsn-2" } }, { end: "yielded" }));
+      const staged = await runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, ...approvedRun({ kind: "mirror", args: { to: "fsn-2" } }) }, { end: "yielded" }));
       if (!staged.ok) throw new Error(staged.refusal.message);
       const dead: RunContext = { ...context(taken.id), kind: "move", args: { to: "fsn-2" }, gen: Number((await lanes()).find((lane) => lane.id === taken.id)?.gen) };
       let late: CopyAnswer | undefined;
@@ -1281,10 +1340,10 @@ describe("volume runs", () => {
     };
     /** The Cluster once fsn-2 is gone, after the committed Move cut fsn-1 into a slot holding its final snapshot. */
     const cutLeftOnA = () => { machines = [{ name: "fsn-1", pool: true, copy: slotCopy(newSnap("f-1")) }]; };
-    /** A release that took over a Move committed to fsn-2. */
+    /** A release that took over a Move committed to fsn-2 on A's receipt. */
     const committedRelease = async () => {
       const move = await warmMove();
-      await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2 where id = $1", [move.id, idOf("fsn-2")]);
+      await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2, receipt = $3 where id = $1", [move.id, idOf("fsn-2"), receiptFor(idOf("fsn-2"), base.guid, 4)]);
       const release = await requested({ kind: "release", args: {} });
       await harness.pool.query("update volume_run set phase = 'committed', current = $2 where id = $1", [release.id, idOf("fsn-2")]);
       return release;
@@ -1722,7 +1781,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.error).toBeUndefined();
-      expect(seeds).toEqual([{ name: dockerVolume, into: into.dockerVolume, guid: base.guid, gen: await genOf(run.id) }]);
+      expect(seeds).toEqual([{ name: dockerVolume, into: into.dockerVolume, guid: base.guid, gen: await genOf(run.id), approval: expect.objectContaining({ signatures: APPROVAL.signatures }) }]);
       expect(await rows()).toEqual([expect.objectContaining({ id: run.id, kind: "seed", state: "done" })]);
     });
 
@@ -1897,11 +1956,12 @@ describe("volume runs", () => {
 
   describe("on failure", () => {
     const B = idOf("fsn-2");
+    /** An approved Move that committed did so on A's receipt, so the release that finishes it goes forward to B. */
     const owned = async (phase: "warm" | "committed") => {
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
       await harness.pool.query(
-        "update volume_run set state = 'running', inngest_run_id = 'run-1', phase = $2, current = $3, epoch = 4 where id = $1",
-        [run.id, phase, phase === "committed" ? B : null]);
+        "update volume_run set state = 'running', inngest_run_id = 'run-1', phase = $2, current = $3, epoch = 4, receipt = $4 where id = $1",
+        [run.id, phase, phase === "committed" ? B : null, phase === "committed" ? receiptFor(B, base.guid, 4) : null]);
       return run;
     };
 
@@ -2691,7 +2751,10 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[1]).toEqual({ name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "dep-10", drain: 3_000 }, gen: expect.any(Number) });
+      expect(sent[1]).toEqual({
+        name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "dep-10", drain: 3_000 }, gen: expect.any(Number),
+        approval: expect.objectContaining({ signatures: APPROVAL.signatures }),
+      });
       expect(machines[1]?.copy).toMatchObject({ kind: "slot", newest: base, pull: null });
     });
 
@@ -2812,15 +2875,6 @@ describe("volume runs", () => {
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL] }]);
     });
 
-    it("mirror: a caught-up mirror with no approval sends no pull, as before", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
-
-      await execute(run.id);
-
-      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)"]);
-    });
-
     it("sync --full: offers its approval ahead of the kept one, and sends it with the Mirror's forget, snapshots and pulls but not the Writer's forget", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       await harness.pool.query(
@@ -2835,30 +2889,6 @@ describe("volume runs", () => {
         "forget:approval", "forget:none", "snapshot:approval", "mirror:approval", "mirror:approval", "snapshot:approval",
       ]);
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, { body: "old", signatures: [] }] }]);
-    });
-
-    it("a move sends no approval", async () => {
-      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
-
-      await execute(run.id);
-
-      expect(sent.length).toBeGreaterThan(0);
-      expect(sent.filter((request) => request.approval !== undefined)).toEqual([]);
-    });
-
-    it.each([
-      ["mirror", { kind: "mirror", args: { to: "fsn-2" } }, "ployz volume mirror data --to fsn-2"],
-      ["full sync", { kind: "sync", args: { full: true } }, "ployz volume sync data --full"],
-    ] as const)("%s with no approval on an enforcing Server is refused before any step", async (_, input, command) => {
-      if (input.kind === "sync") machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), enforces: true };
-      else machines[1] = { name: "fsn-2", pool: true, copy: null, enforces: true };
-      const run = await requested(input);
-
-      await execute(run.id);
-
-      expect(verbs.filter((verb) => !verb.startsWith("floor"))).toEqual([]);
-      expect(machines[1]?.copy).toEqual(input.kind === "sync" ? slotCopy(base) : null);
-      expect(await rows()).toMatchObject([{ state: "failed", message: `fsn-2 enforces device approval, so Ployz Cloud can't ${input.kind === "sync" ? "sync data in full" : "mirror data"} on its own. Run ${command} from an approved device.` }]);
     });
 
     it("a step the Server refuses for its approval ends the run with the refusal, not a retry", async () => {
@@ -3039,21 +3069,6 @@ describe("volume runs", () => {
       }]);
     });
 
-    it("withdraws every slot it deleted on the writer, each in its own step, once every slot is gone", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      machines.push({ name: "fsn-3", pool: true, copy: slotCopy(base, null, "2", "old_copy") });
-      const run = await requested({ kind: "delete_mirror", args: { slot: null, confirmed_name: null, role: "any" } });
-
-      await execute(run.id);
-
-      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-3", "forget@fsn-1", "forget@fsn-1"]);
-      expect(sent.slice(2).map((request) => request.want)).toEqual([
-        { kind: "forget", recipient: idOf("fsn-2") },
-        { kind: "forget", recipient: idOf("fsn-3") },
-      ]);
-      expect(await rows()).toMatchObject([{ state: "done" }]);
-    });
-
     it("drops the approval kept with the mirror it deletes", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       await harness.pool.query(
@@ -3156,11 +3171,10 @@ describe("volume runs", () => {
     const LEGACY = "data's delete was requested before Ployz recorded which copy it deletes, so nothing was deleted. Delete the copy again.";
     const legacyOldCopyDelete = async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
-      const admitted = await runEffect(deleteOldCopy(organizationId, userId, { volumeId, environment, server: "fsn-2" }));
-      if (!admitted.ok) throw new Error(admitted.refusal.message);
-      await harness.pool.query(`update volume_run set args = args - 'role' where id = $1`, [admitted.run.id]);
+      const admitted = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, machine: idOf("fsn-2"), role: "old_copy" } });
+      await harness.pool.query(`update volume_run set args = args - 'role' where id = $1`, [admitted.id]);
       named("fsn-2").copy = slotCopy(base, null, "7", "mirror");
-      return admitted.run.id;
+      return admitted.id;
     };
 
     it("refuses an old copy's delete admitted before runs recorded the role, and deletes nothing", async () => {
@@ -3182,19 +3196,6 @@ describe("volume runs", () => {
       expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: LEGACY }]);
-    });
-
-    it("deletes only the old copy it was admitted for, though a pull made it the mirror before the run looked", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
-      const admitted = await runEffect(deleteOldCopy(organizationId, userId, { volumeId, environment, server: "fsn-2" }));
-      if (!admitted.ok) throw new Error(admitted.refusal.message);
-      named("fsn-2").copy = slotCopy(base, null, "7", "mirror");
-
-      await execute(admitted.run.id);
-
-      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
-      expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
   });
 
@@ -3234,7 +3235,8 @@ describe("volume runs", () => {
             kind: "create",
             namespace: "shop-production",
             creation_key: `${volumeId}-${G.guid}`,
-            resolved_spec: { container: { pull_policy: "never", environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } },
+            // The approved Move starts B from the spec its approval names, not from A's kept Container.
+            resolved_spec: { name: "web" },
           },
         },
       });
@@ -3457,7 +3459,8 @@ describe("volume runs", () => {
 
       expect(output.error).toBeDefined();
       expect(verbs.filter((verb) => verb.startsWith("pull@"))).toHaveLength(4);
-      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: "data's copy on fsn-2 changed under this run" }, { kind: "release" }]);
+      // The Move fails while warm, before A was cut, so nothing is in flight for a release to finish.
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: "data's copy on fsn-2 changed under this run" }]);
     });
 
     it("a pull refused by a B that became a root fails the Move with B's refusal, asking once", async () => {
@@ -3468,8 +3471,8 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.error).toBeDefined();
-      expect(verbs.filter((verb) => verb.startsWith("pull@"))).toEqual(["pull@fsn-2(f-1)"]);
-      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: "data's copy on fsn-2 changed under this run" }, { kind: "release" }]);
+      expect(verbs.filter((verb) => verb.startsWith("pull@"))).toEqual(["pull@fsn-2(dep-10)"]);
+      expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: "data's copy on fsn-2 changed under this run" }]);
     });
 
     it("again after the cut continues from the final pull", async () => {
@@ -3744,6 +3747,7 @@ describe("volume runs", () => {
     };
 
     it("a committed Move cancelled while B's start is in flight finishes on B, and the late start changes nothing", async () => {
+      signHandoffs();
       failNext.set("writer@fsn-2", "held");
       const move = await requested({ kind: "move", args: { to: "fsn-2" } });
       await execute(move.id, "run-1");
@@ -3994,8 +3998,10 @@ describe("volume runs", () => {
   });
 
   const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
-  /** A run as the CLI asks for it, planned on the Cluster before any row. */
-  const admit = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
+  /** A run as the CLI asks for it under a person's passkey approval, planned on the Cluster before any row. */
+  const admit = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...approvedRun(input) }, { key: null, approvalId: null }));
+  /** The approval a Server is shown with each step of an approved run. */
+  const signedStep = expect.objectContaining({ signatures: APPROVAL.signatures });
 
   describe("resize", () => {
     const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability, requirements.volumeShrink.capability];
@@ -4019,7 +4025,7 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, resized: 20 * GB });
       expect(verbs).toEqual(["size@fsn-2(20)", "size@fsn-3(20)", "size@fsn-1(20)"]);
       expect(sizing).toEqual(["Growing data to 20 GB on fsn-2", "Growing data to 20 GB on fsn-3", "Growing data to 20 GB on fsn-1"]);
-      expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 20 * GB })));
+      expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 20 * GB, approval: signedStep })));
       expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
       expect(storeEvents).toEqual([recorded]);
       expect(await rows()).toMatchObject([{ kind: "resize", state: "done", epoch: null, message: "data is 20 GB on fsn-2, fsn-3, fsn-1" }]);
@@ -4234,11 +4240,8 @@ describe("volume runs", () => {
       }]);
     });
 
-    it.each([
-      ["lists no capabilities", undefined],
-      ["lacks the size verb", [requirements.volumeFloor.capability]],
-    ])("a holder that %s refuses the run at admission, before any row", async (_, capabilities) => {
-      named("fsn-2").capabilities = capabilities;
+    it("a holder that lacks the size verb refuses the run at admission, before any row", async () => {
+      named("fsn-2").capabilities = [requirements.volumeFloor.capability];
 
       expect(await admit(grow(20))).toEqual({ ok: false, refusal: { code: "unsupported", message: "Volume resize is not available on fsn-2.", details: null } });
 
@@ -4264,7 +4267,7 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, resized: 10 * GB });
       expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
       expect(sizing).toEqual(["Setting data to 10 GB on fsn-1", "Setting data to 10 GB on fsn-2", "Setting data to 10 GB on fsn-3"]);
-      expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true })));
+      expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true, approval: signedStep })));
       expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
       expect(storeEvents).toEqual([]);
       expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
@@ -4306,7 +4309,7 @@ describe("volume runs", () => {
         expect(storeEvents).toEqual([shrunk]);
         expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
         expect(sizing).toEqual(["Shrinking data to 10 GB on fsn-1", "Shrinking data to 10 GB on fsn-2", "Shrinking data to 10 GB on fsn-3"]);
-        expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true })));
+        expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true, approval: signedStep })));
         expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
         expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
       });
@@ -4611,6 +4614,12 @@ describe("volume runs", () => {
     };
     const review = async (id: string) =>
       (await harness.pool.query<{ review: unknown }>("select review from operation_approvals where id = $1", [id])).rows[0]?.review;
+    /** What the protector's passkey answers for `input`, kept with their approval for the run that asks again. */
+    const answered = (input: VolumeRunInput): KeptVolumeApproval => {
+      const { args } = approvedRun(input);
+      if (!("approval" in args) || args.approval === undefined) throw new Error(`no approval drafted for ${input.kind}`);
+      return "service" in args && args.service !== undefined ? { approval: args.approval, service: args.service } : { approval: args.approval };
+    };
 
     beforeEach(async () => {
       storeProtected = true;
@@ -4628,7 +4637,7 @@ describe("volume runs", () => {
       expect(await review(approval_id)).toMatchObject({ protected: { environment: "production" } });
       expect(await runEffect(decideApproval({ ...asker, via: "dashboard" }, approval_id, { approve: { digest: approval } })))
         .toMatchObject({ ok: false });
-      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }, undefined, answered(move)));
       expect(await as(asker, move, approval_id)).toMatchObject({ ok: true });
       expect(await rows()).toMatchObject([{ kind: "move" }]);
     });
@@ -4645,7 +4654,7 @@ describe("volume runs", () => {
       await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
 
       expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
-      expect(await review(approval_id)).toMatchObject({ operation: { name: "data to fsn-2", preview: { to: { name: "fsn-2", machine: idOf("fsn-2") } } } });
+      expect(await review(approval_id)).toMatchObject({ operation: { name: "data to fsn-2", preview: { run: { kind: "move", args: { to: "fsn-2" } } } } });
       expect(await rows()).toEqual([]);
     });
 
@@ -4656,15 +4665,7 @@ describe("volume runs", () => {
 
       expect(await as(member, { kind: "move", args: { to: "fsn-3", machine: idOf("fsn-2") } }, approval_id)).toMatchObject({ ok: false });
       expect(await rows()).toEqual([]);
-      expect(await review(approval_id)).toMatchObject({ operation: { preview: { to: { name: "fsn-3", machine: idOf("fsn-3") } } } });
-    });
-
-    it("a Restore names the Server it restores from", async () => {
-      machines = [{ name: "fsn-1", pool: true, copy: null }, { name: "fsn-2", pool: true, copy: slotCopy(base) }];
-
-      const { approval_id } = askedOf(await as(member, { kind: "restore", args: { from: "fsn-2" } }));
-
-      expect(await review(approval_id)).toMatchObject({ operation: { name: "data from fsn-2", preview: { from: { name: "fsn-2", machine: idOf("fsn-2") } } }, protected: { environment: "production" } });
+      expect(await review(approval_id)).toMatchObject({ operation: { preview: { run: { kind: "move", args: { to: "fsn-3", machine: idOf("fsn-3") } } } } });
     });
 
     it("a member can't decide another member's Release", async () => {
@@ -4713,8 +4714,8 @@ describe("volume runs", () => {
         expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
         expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", name: "data from 10 GB to 20 GB", preview: { recorded_bytes: 10 * GB, maximum_bytes: 20 * GB } } });
         expect(await rows()).toEqual([]);
-        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
-        expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }, undefined, answered(grow(20))));
+        expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false });
         expect(await as(asker, grow(20), approval_id)).toMatchObject({ ok: true });
         expect(await rows()).toMatchObject([{ kind: "resize" }]);
       });
@@ -4723,17 +4724,21 @@ describe("volume runs", () => {
         await harness.pool.query("insert into member (user_id, organization_id, role) values ($1, $2, 'member')", [userId, organizationId]);
         const { approval, approval_id } = askedOf(await as({ ...member, via: "dashboard" }, grow(20)));
 
-        expect(await runEffect(decideAndApply(protector, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: true });
+        const kept = answered(grow(20));
+        expect(await runEffect(decideAndApply(protector, approval_id, { approve: { digest: approval } }, undefined, undefined, kept))).toMatchObject({ ok: true });
         const ran = await harness.pool.query<{ args: unknown; requested_by_user_id: string }>("select args, requested_by_user_id from volume_run");
-        expect(ran.rows).toEqual([{ args: { maximum_bytes: 20 * GB }, requested_by_user_id: userId }]);
+        expect(ran.rows).toEqual([{ args: { maximum_bytes: 20 * GB, approval: kept.approval }, requested_by_user_id: userId }]);
       });
 
-      it("an approved grow asks again once the Volume's size moved, so it never runs as a shrink", async () => {
+      it("an approved grow is refused once the Volume's size moved, so it never runs as a shrink", async () => {
         const { approval, approval_id } = askedOf(await as(member, grow(20)));
         storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 30 * GB }, recorded_storage: 30 * GB }];
-        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }, undefined, { approval: APPROVAL }));
 
-        expect(await as(member, grow(20), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        expect(await as(member, grow(20), approval_id)).toMatchObject({
+          ok: false,
+          refusal: { message: "The approval from your device is for another change, not setting data to 20 GB on fsn-1. Run ployz volume set data --size 20 again." },
+        });
         expect(await rows()).toEqual([]);
       });
 
@@ -4747,21 +4752,6 @@ describe("volume runs", () => {
         expect(await rows()).toEqual([]);
       });
 
-      it("someone who can protect it grows unasked", async () => {
-        expect(await as({ ...caller, via: "cli" }, grow(20))).toMatchObject({ ok: true });
-      });
-    });
-
-    it("someone who can protect it moves unasked, and a member still mirrors unasked", async () => {
-      expect(await as({ ...caller, via: "cli" }, { kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
-      await harness.pool.query("truncate table volume_run cascade");
-      expect(await as(member, { kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
-    });
-
-    it("an unprotected Environment lets a member move unasked", async () => {
-      storeProtected = false;
-
-      expect(await as(member, { kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
     });
   });
 
@@ -5049,8 +5039,9 @@ describe("volume runs", () => {
       "select id, kind, state, phase, message, gen, inngest_run_id, args from volume_run order by gen")).rows as Lane[];
     const moving = async (phase: "warm" | "committed" = "warm") => {
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
-      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = $2, current = $3 where id = $1",
-        [run.id, phase, phase === "committed" ? idOf("fsn-2") : null]);
+      // An approved Move that committed did so on A's receipt, so what finishes it goes forward to B.
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = $2, current = $3, receipt = $4 where id = $1",
+        [run.id, phase, phase === "committed" ? idOf("fsn-2") : null, phase === "committed" ? receiptFor(idOf("fsn-2"), base.guid, 1) : null]);
       send.mockClear();
       return run;
     };
@@ -5494,7 +5485,7 @@ describe("volume runs", () => {
         const cut = await failedCommit();
         machines.push({ name: "fsn-3", pool: true, copy: slotCopy(cut) });
         const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
-        const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: "data", role: "any" } }));
+        const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, ...approvedRun({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: "data", role: "any" } }) }));
         if (!planned.ok) throw new Error(planned.refusal.message);
         expect(planned.input).toMatchObject({ kind: "delete_mirror", args: { slot: "fsn-3", machine: idOf("fsn-3") } });
         frameFault = () => true;
@@ -5768,6 +5759,7 @@ describe("volume runs", () => {
         events: [{ name: "config/deployment.admitted", data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } }],
         steps: [
           { id: "record-run", handler: () => undefined },
+          { id: "servers-lacking", handler: () => [] },
           { id: "plan-builds", handler: () => [] },
           { id: "placement-0", handler: () => ({ kind: "done" }) },
           { id: "refresh-mirrors", handler: () => undefined },
@@ -5997,6 +5989,7 @@ describe("volume runs", () => {
         events: [{ name: "config/deployment.admitted", data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } }],
         steps: [
           { id: "record-run", handler: () => undefined },
+          { id: "servers-lacking", handler: () => [] },
           { id: "plan-builds", handler: () => [] },
           { id: "placement-0", handler: () => ({ kind: "done" }) },
           { id: "refresh-mirrors", handler: () => undefined },
@@ -6157,6 +6150,7 @@ describe("volume runs", () => {
       events: [{ name: "config/deployment.admitted", data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } }],
       steps: [
         { id: "record-run", handler: () => undefined },
+        { id: "servers-lacking", handler: () => [] },
         { id: "plan-builds", handler: () => [] },
         { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status, remove: false } }) },
         { id: "retire-old", handler: () => ({ ids: [] }) },

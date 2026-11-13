@@ -18,6 +18,7 @@ import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgrade";
 import { ActivationCard } from "./-components/activation-card";
+import { FirstKeyAlert } from "./-components/first-key-alert";
 import { useActivation } from "#/modules/server-upgrade/activation.queries";
 import { useEnrollmentStatus, useWaitingServers } from "./-components/use-waiting";
 import { IntakeTray } from "./-components/waiting-list";
@@ -88,7 +89,11 @@ function RouteComponent() {
       ) : (
         <>
           {page.stale ? <ServersStaleAlert /> : null}
-          <ActivationCard organizationSlug={organizationSlug} servers={activation.data ?? null} />
+          <ActivationCard organizationSlug={organizationSlug} servers={activation.data ?? null}
+            reach={servers.map(({ name, machine }) => ({ name, publicIp: machine.publicIp }))} />
+          <FirstKeyAlert organizationSlug={organizationSlug}
+            servers={servers.map(({ name, machine }) => ({ id: machine.id, name, capabilities: machine.capabilities }))}
+            reach={servers.map(({ name, machine }) => ({ name, publicIp: machine.publicIp }))} />
           <FleetHealth servers={servers} upgrades={upgrade?.rows ?? new Map()} />
           <nav aria-label="Servers" className={SERVER_LIST}>
             {servers.map((server) => (

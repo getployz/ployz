@@ -65,8 +65,10 @@ impl LocalMachine {
         .map_err(Into::into)
     }
 
-    /// The releases `scope` may name here. An Operator under enforcement gets only the
-    /// channel its verified statement approves, whose generation is recorded first.
+    /// The releases `scope` may name here. An Operator gets only the channel its verified
+    /// statement approves, whose generation is recorded first. On a Machine that awaits
+    /// activation, an Operator that sends no statement may name either channel, as before
+    /// activation: the keys a statement would verify against were never vouched for.
     fn release_choice(
         &self,
         request: &RequestMachineUpgradeRequest,
@@ -76,7 +78,9 @@ impl LocalMachine {
         let record = self.record();
         match scope {
             ManagementScope::Full => return Ok(ReleaseChoice::AnyRelease),
-            ManagementScope::Operator if !record.device_enforcement() => {
+            ManagementScope::Operator
+                if record.awaits_activation() && request.channel.is_none() =>
+            {
                 return Ok(ReleaseChoice::ChannelResolved);
             }
             ManagementScope::Operator => {}
@@ -146,8 +150,8 @@ mod tests {
         Signer::from_seed(&[7; 32])
     }
 
-    /// A founder in `dir` that trusts [`device`], with enforcement as given.
-    async fn founder(dir: &std::path::Path, enforced: bool) -> LocalMachine {
+    /// A founder in `dir` that trusts [`device`].
+    async fn founder(dir: &std::path::Path) -> LocalMachine {
         let mut store = LocalMachineStore::open(dir).unwrap();
         store
             .enroll(ployz_core::EnrollRequest {
@@ -171,7 +175,6 @@ mod tests {
                 store
                     .approve_device(DeviceKey::from(device().public()), None)
                     .unwrap();
-                store.set_device_enforcement(enforced, Vec::new()).unwrap();
             })
             .await
             .unwrap();
@@ -218,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn an_enforcing_machine_refuses_an_operator_upgrade_without_an_approved_channel() {
         let dir = tempfile::tempdir().unwrap();
-        let local = founder(dir.path(), true).await;
+        let local = founder(dir.path()).await;
         let refused = choose(&local, &request(None)).unwrap_err();
         assert!(
             matches!(
@@ -243,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn an_older_generation_is_refused_after_a_newer_one_also_after_a_reload() {
         let dir = tempfile::tempdir().unwrap();
-        let local = founder(dir.path(), true).await;
+        let local = founder(dir.path()).await;
         assert_eq!(
             choose(&local, &request(Some(approved(dir.path(), 2)))).unwrap(),
             ReleaseChoice::Signed(ReleaseChannel::Stable)
@@ -279,7 +282,7 @@ mod tests {
     #[tokio::test]
     async fn an_equal_generation_naming_another_channel_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let local = founder(dir.path(), true).await;
+        let local = founder(dir.path()).await;
         let cluster = SealingKey::load(dir.path()).unwrap().unwrap().public_key();
         choose(&local, &request(Some(approved(dir.path(), 2)))).unwrap();
         let refused = choose(
@@ -301,7 +304,7 @@ mod tests {
     #[tokio::test]
     async fn another_clusters_approval_or_no_cluster_key_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let local = founder(dir.path(), true).await;
+        let local = founder(dir.path()).await;
         let elsewhere = approved_for(
             ployz_core::SealingPublicKey::from_bytes([8; 32]),
             ReleaseChannel::Stable,
@@ -329,18 +332,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_machine_not_enforcing_ignores_the_channel() {
+    async fn a_machine_awaiting_activation_lets_an_operator_upgrade_without_a_channel() {
         let dir = tempfile::tempdir().unwrap();
-        let local = founder(dir.path(), false).await;
-        let mut stranger = approved(dir.path(), 1);
-        stranger.body = stranger.body.replace("stable", "beta");
-        assert_eq!(
-            choose(&local, &request(Some(stranger))).unwrap(),
-            ReleaseChoice::ChannelResolved
+        drop(founder(dir.path()).await);
+        crate::machine::test_support::written_before_f7(dir.path(), false);
+        let local = LocalMachine::new(
+            RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap(),
         );
         assert_eq!(
             choose(&local, &request(None)).unwrap(),
             ReleaseChoice::ChannelResolved
         );
+        let mut tampered = approved(dir.path(), 1);
+        tampered.body = tampered.body.replace("stable", "beta");
+        assert!(matches!(
+            choose(&local, &request(Some(tampered))),
+            Err(Error::UpgradeChannelRefused(_))
+        ));
     }
 }

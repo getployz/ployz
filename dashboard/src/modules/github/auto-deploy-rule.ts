@@ -1,6 +1,6 @@
 /**
  * An Environment's automatic deploy rule as the browser approves it: every push to one branch deploys with the settings
- * shown, on Servers that enforce device approval, with no prompt. The browser drafts the rule's canonical body with the
+ * shown, with no prompt. The browser drafts the rule's canonical body with the
  * ployz-core code the CLI and the Servers run, and the person's passkey answers it with a prompt of its own. No session
  * signs a rule: it stands for every future push, so each Server takes only a passkey's own answer or a Device's
  * signature. Cloud keeps and relays the answered rule and can change none of it.

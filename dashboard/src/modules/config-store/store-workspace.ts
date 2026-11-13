@@ -91,7 +91,7 @@ function same(left: ByEnvironment, right: ByEnvironment) {
  * Without a version the Store names the one it reviewed; when it loses exactly the Volumes the user accepted, that
  * version goes back at once, and anything else is a question for the user. So is a Server that couldn't say whether
  * it holds the data: the Store offers giving up every copy. `teardown`, the person's approval of what goes, rides along
- * for Servers that enforce Device approval.
+ * for the Servers.
  */
 export async function removeTarget(commit: Commit, target: TeardownTarget, consent: RemovalConsent, teardown?: TeardownApproval): Promise<RemovalAnswer> {
   const command: Extract<ConfigCommand, { command: "remove" }> = {

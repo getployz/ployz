@@ -731,29 +731,6 @@ mod coverage {
         }
     }
 
-    /// `Pending` is a migration state: each entry names the slice that gates it, and a new
-    /// route cannot join this list without an edit here.
-    #[test]
-    fn pending_routes_are_the_frozen_list() {
-        let pending: Vec<(&str, &str)> = AUTHORIZATION
-            .iter()
-            .filter_map(|(name, class)| match class {
-                Authorization::Pending(slice) => Some((*name, *slice)),
-                Authorization::Read
-                | Authorization::Full
-                | Authorization::Signed(_)
-                | Authorization::Bound(_) => None,
-            })
-            .collect();
-        assert_eq!(
-            pending,
-            [
-                ("ployz.machine.enroll.v1", "F7"),
-                ("ployz.machine.enroll-for-recovery.v1", "F7"),
-            ]
-        );
-    }
-
     /// The branches the security plan's live matrix lists for a route with several
     /// mutations, as they exist at this slice. A later slice that gives a route a new
     /// branch adds it here and to `CASES`.

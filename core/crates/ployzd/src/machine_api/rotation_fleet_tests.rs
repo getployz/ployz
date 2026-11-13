@@ -127,14 +127,22 @@ impl Fleet {
                 })
             })
         };
+        let stores: Vec<(LocalMachineStore, Machine)> = (1..=3_u8)
+            .map(|octet| {
+                let store = enrolled(&dir.join(format!("machine-{octet}")));
+                let row = Machine {
+                    id: store.record().id(),
+                    ..machine_row(octet)
+                };
+                (store, row)
+            })
+            .collect();
+        let members: Vec<ployz_core::authority::Member> =
+            stores.iter().map(|(_, row)| row.into()).collect();
         let mut nodes = Vec::new();
-        for octet in 1..=3_u8 {
-            let data_dir = dir.join(format!("machine-{octet}"));
-            let owner = RecordOwner::spawn(enrolled(&data_dir)).unwrap();
-            let row = Machine {
-                id: owner.record().id(),
-                ..machine_row(octet)
-            };
+        for (mut local, row) in stores {
+            local.trust_members(members.clone()).unwrap();
+            let owner = RecordOwner::spawn(local).unwrap();
             store
                 .machine_publication()
                 .await

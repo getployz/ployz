@@ -24,7 +24,8 @@ import {
   subscribe,
 } from "./approval-session";
 import { strandedByProposal } from "#/modules/proposals/proposal";
-import { needsNewerPloyz, strandedByStop } from "#/modules/service-act/service-act";
+import { olderPloyzSentence, olderServer, olderSays } from "#/modules/runtime/daemon-compat";
+import { olderStepSays, strandedByStop } from "#/modules/service-act/service-act";
 
 /** A passkey prompt for a session, or the lines of approvals this browser drafted, which it signs only once approved. */
 type Ask =
@@ -76,15 +77,19 @@ export type ActTarget = {
 };
 
 /**
- * One approval of `verb` per copy on Servers that enforce, after one prompt when the session doesn't cover it.
- * Undefined when no Server asks for one; null when the person cancels. Throws, before any prompt, for a stop that a
- * Server couldn't later start again.
+ * One approval of `verb` per copy, after one prompt when the session doesn't cover it. Undefined when no Server runs a
+ * copy, so there is nothing to approve; null when the person cancels. Throws, before any prompt, for a copy on a Server
+ * that runs Ployz 0.3, a stop that a Server couldn't later start again, or Servers Cloud can't check.
  */
 export async function actApprovals(verb: ServiceVerb, target: ActTarget) {
+  if (target.copies.length === 0) return undefined;
+  const hosts = new Set(target.copies.map((copy) => copy.machineId));
+  const older = olderServer(target.machines.filter((machine) => hosts.has(machine.id)));
+  if (older !== null) throw new Error(olderPloyzSentence(older.name));
   const stranded = verb === "stop" ? strandedByStop(target.copies, target.machines) : null;
-  if (stranded !== null) throw new Error(needsNewerPloyz(stranded, "stop"));
-  const { enforced, scope } = actScope(target.environment, target.copies, target.machines);
-  if (!enforced || scope === null) return undefined;
+  if (stranded !== null) throw new Error(olderStepSays(stranded, "stop"));
+  const scope = actScope(target.environment, target.copies, target.machines);
+  if (scope === null) throw new Error("Cloud couldn't check the servers. Try again.");
   if (!(await ensureApproval(scope, verb))) return null;
   return approveAct(verb, scope, target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id, hook: copy.hook })));
 }
@@ -103,12 +108,12 @@ export type ProposalTarget = {
 export async function proposalApprovals(target: ProposalTarget) {
   for (const step of target.steps) {
     const older = strandedByProposal(step.copies, target.machines);
-    if (older !== null) throw new Error(needsNewerPloyz(older, step.verb));
+    if (older !== null) throw new Error(olderStepSays(older, step.verb));
     const stranded = step.verb === "stop" ? strandedByStop(step.copies, target.machines) : null;
-    if (stranded !== null) throw new Error(needsNewerPloyz(stranded, "stop"));
+    if (stranded !== null) throw new Error(olderStepSays(stranded, "stop"));
   }
   const copies = target.steps.flatMap((step) => step.copies);
-  const { scope } = actScope(target.environment, copies, target.machines);
+  const scope = actScope(target.environment, copies, target.machines);
   if (scope === null) throw new Error("Cloud couldn't check the servers. Try again.");
   if (!(await ensureApproval(scope, "proposal"))) return null;
   const steps: ProposalStepTarget[] = target.steps.map((step) => ({
@@ -127,15 +132,13 @@ export type DeployTarget = {
 };
 
 /**
- * The scope a Deploy's approval names, after one prompt when the session doesn't cover it. Undefined when no Server
- * enforces, so the Deploy goes as before; null when the person cancels. Throws, before any prompt, when a Server that
- * enforces can't take an approval from a browser, or Cloud can't tell which Cluster the Deploy goes to: either way the
- * Deploy would only be refused there.
+ * The scope a Deploy's approval names, after one prompt when the session doesn't cover it. Null when the person
+ * cancels. Throws, before any prompt, when a Server can't take an approval from a browser, or Cloud can't tell which
+ * Cluster the Deploy goes to: either way the Deploy would only be refused there.
  */
-export async function deployApprovalScope(target: DeployTarget, capabilities?: readonly string[]): Promise<ApprovalScope | null | undefined> {
-  const { enforced, scope, older } = deployScope(target.environment, target.environmentMachines, target.machines, capabilities);
-  if (!enforced) return undefined;
-  if (older !== null) throw new Error(`${older} needs a newer Ployz to deploy from the dashboard. Upgrade it, or run ployz deploy.`);
+export async function deployApprovalScope(target: DeployTarget, capabilities?: readonly string[]): Promise<ApprovalScope | null> {
+  const { scope, older } = deployScope(target.environment, target.environmentMachines, target.machines, capabilities);
+  if (older !== null) throw new Error(olderSays(older, (server) => `${server} needs a newer Ployz to deploy from the dashboard. Upgrade it, or run ployz deploy.`));
   if (scope === null) throw new Error("Cloud couldn't check the servers. Try again.");
   return (await ensureApproval(scope, "deploy")) ? scope : null;
 }

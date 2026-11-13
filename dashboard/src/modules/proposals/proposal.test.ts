@@ -71,12 +71,15 @@ describe("shownSteps", () => {
 });
 
 describe("strandedByProposal", () => {
-  const host = { id: "m1", name: "fra-1", capabilities: ["ployz.restart.session-grant.v2"], deviceEnforcement: true };
-  it("names an enforcing host that hasn't learnt proposals, and no other", () => {
-    expect(strandedByProposal(copies, [host])).toBe("fra-1");
+  const host = { id: "m1", name: "fra-1", capabilities: ["ployz.machine.enforced.v1", "ployz.restart.session-grant.v2"] };
+  it("names a host that hasn't learnt proposals, and no other", () => {
+    expect(strandedByProposal(copies, [host])).toEqual({ name: "fra-1", ployz03: false });
     expect(strandedByProposal(copies, [{ ...host, capabilities: [...host.capabilities, PROPOSAL_CAPABILITY] }])).toBeNull();
-    expect(strandedByProposal(copies, [{ ...host, deviceEnforcement: false }])).toBeNull();
     expect(strandedByProposal(copies, [{ ...host, id: "m2" }])).toBeNull();
+  });
+
+  it("names a host on Ployz 0.3, which takes only an upgrade", () => {
+    expect(strandedByProposal(copies, [{ ...host, capabilities: [PROPOSAL_CAPABILITY] }])).toEqual({ name: "fra-1", ployz03: true });
   });
 });
 

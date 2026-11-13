@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
 struct Fixture {
@@ -25,6 +25,8 @@ struct Fixture {
     cluster: tokio::task::JoinHandle<()>,
     local: crate::machine::LocalMachine,
     machine: ployz_core::Machine,
+    /// This Server's local socket, `unix://…`: a build sent there runs with Full scope,
+    /// as one from an approved Device does. An Operator's build is refused.
     address: String,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
     running_builds: tokio::sync::watch::Receiver<u32>,
@@ -93,11 +95,12 @@ impl Fixture {
         service.builds = builds;
         let local = service.local();
         write_docker(&policy.docker, &root);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = format!("http://{}", listener.local_addr().unwrap());
+        let socket = root.join("ployz.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let address = format!("unix://{}", socket.display());
         let api = MachineApi::from_local(service);
         let server = tokio::spawn(
-            Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)),
+            Server::builder().serve_with_incoming(api, UnixListenerStream::new(listener)),
         );
         Self {
             shutdown,
@@ -132,9 +135,12 @@ impl Fixture {
         &self,
         frame: Input,
     ) -> (mpsc::Sender<OpaquePayload>, tonic::Streaming<OpaquePayload>) {
-        let mut client = MachineRpcClient::connect(self.address.clone())
+        let socket = LocalSocket(PathBuf::from(self.address.trim_start_matches("unix://")));
+        let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
+            .connect_with_connector(socket)
             .await
             .unwrap();
+        let mut client = MachineRpcClient::new(channel);
         let (sender, receiver) = mpsc::channel(2);
         sender.send(remote::encode(&frame).unwrap()).await.unwrap();
         let response = client
@@ -224,6 +230,34 @@ impl Fixture {
         .unwrap()
     }
 }
+/// Dials the fixture's local socket for every connection tonic opens.
+#[derive(Clone)]
+struct LocalSocket(PathBuf);
+
+impl tower_service::Service<http::Uri> for LocalSocket {
+    type Response = hyper_util::rt::TokioIo<tokio::net::UnixStream>;
+    type Error = std::io::Error;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _: http::Uri) -> Self::Future {
+        let socket = self.0.clone();
+        Box::pin(async move {
+            tokio::net::UnixStream::connect(socket)
+                .await
+                .map(hyper_util::rt::TokioIo::new)
+        })
+    }
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.server.abort();
@@ -504,7 +538,7 @@ async fn captured_build_crosses_owned_rpc_and_returns_only_remote_image_evidence
     fs::write(fixture.root.join("project/payload"), "later-edit").unwrap();
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await
@@ -551,7 +585,7 @@ async fn retained_build_images_do_not_block_same_machine_mutation() {
     let fixture = Fixture::new().await;
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await
@@ -607,7 +641,7 @@ async fn oversized_diagnostics_still_return_a_definite_terminal_failure() {
     fs::write(fixture.root.join("oversized-error"), "").unwrap();
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await
@@ -705,7 +739,7 @@ async fn active_cancellation_confirms_cleanup_or_quarantines_uncertain_terminati
         let capture = fixture.capture();
         let client = ployz::connect::connect(
             Path::new("/missing-test-config"),
-            Some(&fixture.address.replace("http://", "tcp://")),
+            Some(fixture.address.as_str()),
             None,
         )
         .await
@@ -805,7 +839,7 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
         fs::write(fixture.root.join(failed), "").unwrap();
         let client = ployz::connect::connect(
             Path::new("/missing-test-config"),
-            Some(&fixture.address.replace("http://", "tcp://")),
+            Some(fixture.address.as_str()),
             None,
         )
         .await
@@ -905,7 +939,7 @@ async fn captured_client_cancels_in_queue_without_uploading() {
     let capture = fixture.capture();
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await
@@ -941,7 +975,7 @@ async fn client_waits_past_connection_deadline_and_uploads_only_after_admission(
     let capture = fixture.capture();
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await
@@ -1021,7 +1055,7 @@ async fn dropping_completed_build_releases_only_its_temporary_tags() {
         let fixture = Fixture::new().await;
         let client = ployz::connect::connect(
             Path::new("/missing-test-config"),
-            Some(&fixture.address.replace("http://", "tcp://")),
+            Some(fixture.address.as_str()),
             None,
         )
         .await
@@ -1079,7 +1113,7 @@ async fn a_sealed_value_opens_into_a_private_file_and_never_into_the_output() {
     let capture = fixture.capture_with(Some(&cluster));
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await
@@ -1149,7 +1183,7 @@ async fn a_sealed_value_read_only_by_mount_builds_with_no_arg_override() {
     );
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await
@@ -1188,7 +1222,7 @@ async fn a_failed_sealed_arg_build_removes_its_private_override() {
     let capture = fixture.capture_with(Some(&cluster));
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await
@@ -1233,7 +1267,7 @@ async fn a_cancelled_sealed_build_leaves_no_opened_file_even_in_a_retained_root(
         let capture = fixture.capture_with(Some(&cluster));
         let client = ployz::connect::connect(
             Path::new("/missing-test-config"),
-            Some(&fixture.address.replace("http://", "tcp://")),
+            Some(fixture.address.as_str()),
             None,
         )
         .await
@@ -1309,7 +1343,7 @@ async fn a_sealed_value_this_machine_cannot_open_fails_closed_before_docker() {
         let capture = fixture.capture_with(Some(&sealed_by));
         let client = ployz::connect::connect(
             Path::new("/missing-test-config"),
-            Some(&fixture.address.replace("http://", "tcp://")),
+            Some(fixture.address.as_str()),
             None,
         )
         .await

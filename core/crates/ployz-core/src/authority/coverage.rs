@@ -89,11 +89,9 @@ pub enum Authorization {
     /// Served unsigned. The reason says why the worst Cloud can do with it is mislabel,
     /// reorder, delay or drop, or an effect that crosses no part of the bar.
     Bound(&'static str),
-    /// Not gated yet. Names the slice that gates it.
-    Pending(&'static str),
 }
 
-use Authorization::{Bound, Full, Pending, Read, Signed};
+use Authorization::{Bound, Full, Read, Signed};
 use Statement::{
     Activation, Deploy, Join, PrivateAccess, Proposal, Restart, Rotation, Rule, Teardown, Upgrade,
     Volume,
@@ -105,8 +103,13 @@ const IMAGE_BOUND: &str = "content-addressed; checked at creation by C";
 pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (DESCRIBE_CONTRACT_CAPABILITY, Read),
     (INSPECT_MACHINE_CAPABILITY, Read),
-    (ENROLL_MACHINE_CAPABILITY, Pending("F7")),
-    (ENROLL_FOR_RECOVERY_CAPABILITY, Pending("F7")),
+    (ENROLL_MACHINE_CAPABILITY, Signed(&[Join])),
+    (
+        ENROLL_FOR_RECOVERY_CAPABILITY,
+        Bound(
+            "founds a Cluster on an Uninitialized Machine, which trusts no key until a person installs one over local administration; its Sealing Key comes only through RecoverSealingKey, a Full route",
+        ),
+    ),
     (WRAP_SEALING_KEY_CAPABILITY, Full),
     (RECOVER_SEALING_KEY_CAPABILITY, Full),
     (REGISTER_MACHINE_CAPABILITY, Signed(&[Join])),
@@ -267,14 +270,13 @@ const fn case(
 const STARTS_NOTHING: &str = "a following unsigned EnsureContainer create that uses it is refused";
 const PINNED_DOORS: &str = "only pinned images run";
 
-/// Every case an enforcing Machine is held to, in catalog order. A `Pending` row's cases
-/// are Served until its slice, except a branch already refused today.
+/// Every case an enforcing Machine is held to, in catalog order.
 pub const CASES: &[Case] = &[
     case(
         ENROLL_MACHINE_CAPABILITY,
         "member, no capsule",
         "an Enroll as a member whose registration carries no approved capsule",
-        Expected::Served,
+        Expected::Refused(&[JOIN_APPROVAL_CAPABILITY]),
     ),
     case(
         ENROLL_MACHINE_CAPABILITY,
@@ -285,14 +287,14 @@ pub const CASES: &[Case] = &[
     case(
         ENROLL_MACHINE_CAPABILITY,
         "founder",
-        "an Enroll as a founder",
-        Expected::Refused(&[JOIN_APPROVAL_CAPABILITY]),
+        "an Enroll as a founder, which a Participating Machine refuses as a conflict",
+        Expected::Served,
     ),
     case(
         ENROLL_FOR_RECOVERY_CAPABILITY,
         "founder",
-        "an EnrollForRecovery founding a Cluster that awaits recovery",
-        Expected::Refused(&[JOIN_APPROVAL_CAPABILITY]),
+        "an EnrollForRecovery founding a Cluster that awaits recovery, which a Participating Machine refuses as a conflict",
+        Expected::Served,
     ),
     case(
         WRAP_SEALING_KEY_CAPABILITY,

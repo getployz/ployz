@@ -1,6 +1,6 @@
 /**
- * A person's teardown, as this browser asks for it: when a Server of the Cluster enforces Device approval, deleting an
- * Environment, a Project, a Server or a Namespace's leftovers takes off only what their passkey approved. The body is
+ * A person's teardown, as this browser asks for it: deleting an Environment, a Project, a Server or a Namespace's
+ * leftovers takes off only what their passkey approved. The body is
  * drafted by the ployz-core code the Servers run, every term shows read back from it, and the passkey answers exactly
  * that body. A browser key never signs one: a session lent for deploys says nothing about deleting data.
  *
@@ -11,6 +11,7 @@ import type { MachineId, TeardownApproval, TeardownScope } from "@ployz/sdk";
 import { teardownBody } from "@ployz/sdk/authority";
 import { Schema } from "effect";
 import { shownText } from "#/modules/github/preview-review";
+import { olderServer, olderSays } from "#/modules/runtime/daemon-compat";
 import { clusterOf, type ScopeMachine, utc } from "./approval-session";
 import type { Review } from "./approval-prompt";
 import { PasskeyRefused, passkeyAnswer, statementChallenge } from "./passkey-statement";
@@ -59,17 +60,17 @@ function termLines(body: string) {
 }
 
 /**
- * The teardown of `ask`, answered by the person's passkey once they approve every line of it. Undefined when no Server
- * of the Cluster enforces, so the deletion goes as before. Throws a `TeardownRefused` when the person cancels, the
- * passkey doesn't answer, an enforcing Server can't take a teardown yet, or Cloud can't tell which Cluster it is:
- * nothing is deleted then.
+ * The teardown of `ask`, answered by the person's passkey once they approve every line of it. Undefined when there is
+ * no Server, so nothing on one is deleted. Throws a `TeardownRefused` when the person cancels, the passkey doesn't
+ * answer, a Server can't take a teardown, or Cloud can't tell which Cluster it is: nothing is deleted then.
  */
 export async function approveTeardown(ask: TeardownAsk, review: (review: Review) => Promise<boolean>, now = Date.now()): Promise<PasskeyTeardown | undefined> {
+  if (ask.machines.length === 0) return undefined;
   const { cluster, members } = clusterOf(ask.near, ask.machines);
-  const enforcing = members.filter((machine) => machine.deviceEnforcement === true);
-  if (enforcing.length === 0) return undefined;
-  const older = enforcing.find((machine) => !machine.capabilities.includes(TEARDOWN_CAPABILITY));
-  if (older !== undefined) throw new TeardownRefused(`${older.name} needs a newer Ployz to delete from the dashboard. Upgrade it, then try again. Nothing deleted.`);
+  const older = olderServer(members, [TEARDOWN_CAPABILITY]);
+  if (older !== null) {
+    throw new TeardownRefused(`${olderSays(older, (server) => `${server} needs a newer Ployz to delete from the dashboard. Upgrade it, then try again.`)} Nothing deleted.`);
+  }
   if (cluster === undefined) throw new TeardownRefused("Cloud couldn't check the servers. Try again. Nothing deleted.");
   const servers = Object.fromEntries(ask.machines.map((machine) => [machine.id, machine.name]));
   let drafted: { body: string; lines: string[] };

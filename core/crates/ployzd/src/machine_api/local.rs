@@ -12,8 +12,7 @@ use ployz_core::{
     ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
     LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, ManagementScope,
     OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy,
-    authority::RestartStep, op,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -22,8 +21,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        HeldStep, HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord,
-        RecordOwner, RecoveryError, SealingError, StoreError,
+        HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner,
+        RecoveryError, SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -657,12 +656,6 @@ impl MachineRpc for MachineService {
                 Err(error) => return local_error(error),
             }
         } else if operator {
-            // A step that starts nothing, sent with no statement, passes only while this
-            // Machine doesn't enforce: each turn checks that again.
-            let unsigned = (teardown_only
-                && RestartStep::of(&request.want)
-                    .is_some_and(|(step, _)| step != RestartStep::Start))
-            .then(|| HeldTeardown::unsigned(HeldStep::Container(None)));
             match self
                 .local
                 .admit_operator_restart(
@@ -674,7 +667,7 @@ impl MachineRpc for MachineService {
                 )
                 .await
             {
-                Ok(want) => (want, unsigned),
+                Ok(want) => (want, None),
                 Err(error) => return local_error(error),
             }
         } else {
@@ -877,11 +870,10 @@ impl MachineRpc for MachineService {
         request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::BuildStream>, Status> {
         // Refused before the request stream is read, so no source or recipe is taken.
-        if from_operator(&request)
-            && let Err(error) = self
-                .local
-                .admit_operator_build(ployz_core::BUILD_CAPABILITY)
-        {
+        if from_operator(&request) {
+            let error = LocalMachineError::BuildRefused {
+                capability: ployz_core::BUILD_CAPABILITY,
+            };
             return Err(build_refused(&error, ployz_core::BUILD_CAPABILITY));
         }
         let containers = self
@@ -1210,12 +1202,10 @@ impl MachineRpc for MachineService {
                 }
             }
             (None, None) => {
-                if operator
-                    && let Err(error) = self
-                        .local
-                        .admit_operator_build(ployz_core::MINT_BUILD_GRANT_CAPABILITY)
-                {
-                    return local_error(error);
+                if operator {
+                    return local_error(LocalMachineError::BuildRefused {
+                        capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
+                    });
                 }
                 None
             }
@@ -1562,7 +1552,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             serde_json::json!({
                 "capability": capability,
-                "next": "ployz device enforce --off from an approved device",
+                "next": "approve the change from an approved device or with your passkey",
             }),
         )),
         LocalMachineError::VolumeStepRefused(ref refusal) => Err(ployz_core::rpc::hinted_status(
@@ -1620,6 +1610,17 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 serde_json::json!({ "capability": capability }),
             ))
         }
+        LocalMachineError::AwaitingActivation { capability } => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": capability,
+                    "reason": "awaiting_activation",
+                    "next": "ployz device enforce",
+                }),
+            ))
+        }
         LocalMachineError::Activating => Err(ployz_core::rpc::hinted_status(
             tonic::Code::Unavailable,
             &error,
@@ -1649,7 +1650,10 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 Refusal::LegacyKey(code) => {
                     details.insert("legacy_key".to_owned(), serde_json::json!(code));
                 }
-                Refusal::Authority(_) | Refusal::NoOff | Refusal::Activated => {}
+                Refusal::Authority(_)
+                | Refusal::NoOff
+                | Refusal::Activated
+                | Refusal::BornEnforcing => {}
             }
             let details = serde_json::Value::Object(details);
             Err(ployz_core::rpc::hinted_status(

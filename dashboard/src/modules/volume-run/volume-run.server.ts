@@ -43,7 +43,7 @@ import {
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
-import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { movedRouting, olderPloyzSentence, type Requirement, requirementFor, requirements, runsOlderPloyz, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, approvalExpiredMessage, approvalExpiredReason, approvalRefusedMessage, approvalRefusedReason, approvesMirror, approvesMove, approvesRemoval, approvesRestore, enforcedMessage, otherMoveApprovalMessage, otherRemovalApprovalMessage, otherRestoreApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
@@ -627,24 +627,37 @@ const ENFORCED_VERBS = {
  * The ask an agent's or the CLI's run makes when a Server that enforces device approval refuses it without one: a person
  * approves it in Ployz Cloud, where their browser drafts the run's workflow and their passkey answers it, and the run
  * asked again under that approval carries the answer. Its preview names the run as asked, so the approval covers no
- * other. Null for a run no person asks for.
+ * other. `deletes` are the copies the refused plan would delete, which the card names before anyone approves. `guarded`
+ * says the run interrupts or takes off what runs in a Protected Environment, so someone who can't protect it asks
+ * someone who can. Null for a run no person asks for.
  */
-export const enforcedAsk = Effect.fn("VolumeRun.enforcedAsk")(function* (organizationId: string, input: PlanRequest) {
+export const enforcedAsk = Effect.fn("VolumeRun.enforcedAsk")(function* (
+  organizationId: string,
+  input: PlanRequest,
+  deletes: readonly DestructiveEffect[] = [],
+) {
   const verb = ENFORCED_VERBS[input.kind];
   if (verb === null) return null;
   const volume = yield* resolveVolume(organizationId, input.environment, input.volumeId);
+  // A grow is approved from the size the Servers hold, so a change of it asks again.
+  const sizes = input.kind === "resize" ? requestPreview(volume, input, []) : {};
   const asked: OperationAsked = {
     subject: `volume:${input.volumeId}`,
     verb,
     name: requestName(volume, input),
-    preview: { volume: input.volumeId, environment: { project: input.environment.project, environment: input.environment.environment }, run: { kind: input.kind, args: unapproved(input).args } },
+    preview: {
+      volume: input.volumeId,
+      environment: { project: input.environment.project, environment: input.environment.environment },
+      run: { kind: input.kind, args: unapproved(input).args },
+      ...sizes,
+    },
     // A restore loses the writes after its restore point; the approver's browser names that point from what it signs.
     effects: input.kind === "restore"
       ? [{ kind: "restores_volume", name: volume.volumeName, node: input.volumeId, path: `volumes/${input.volumeId}` }]
-      : [],
+      : [...deletes],
     alwaysAsks: true,
   };
-  return asked;
+  return { asked, guarded: PROTECTED_VERBS[input.kind] !== null, environmentId: volume.environmentId, environment: volume.environment };
 });
 
 /** `input` without the approval or spec it carries, as an enforced ask names it. */
@@ -662,7 +675,7 @@ const unapproved = (input: VolumeRunInput): VolumeRunInput => {
  */
 type ClusterPlan =
   | { readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null; readonly guard: OperationAsked | null; readonly input: PlanRequest }
-  | { readonly ok: false; readonly refusal: StoreRefusal };
+  | { readonly ok: false; readonly refusal: StoreRefusal; readonly effects?: readonly DestructiveEffect[] };
 
 /** A plan as `planVolumeRun` answers it, naming the Environment the Volume is in. */
 export type VolumeRunPlan =
@@ -775,7 +788,8 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     : { ...input, volumeName: volume.volumeName, orphan: false };
   const planned = planFromCopies(planInput, members.value);
   if (!planned.ok) {
-    return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies ClusterPlan;
+    const effects = planned.deletes?.map((member) => deletesCopy(volume, member));
+    return { ok: false, refusal: storeRefusal(planned.refusal), ...(effects !== undefined && { effects }) } satisfies ClusterPlan;
   }
   const verb = VERBS[input.kind];
   const { phase } = planned;
@@ -1693,9 +1707,9 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
 /**
  * B becomes the writer at G and creates the Service from the source's stopped Container, at its gen and routed once
  * healthy when the source was routed; a B already running it is left alone, unless the source is routed and B is not,
- * when B is asked again and fails while its copy stays unrouted. With no source named, a B whose stopped Service is
- * the only one left becomes the writer and stays stopped: an earlier start moved the Service there, and a Deploy's
- * placement may have removed the source since. `ownedBy` is the Inngest run that must still own the row when B is
+ * when B is asked again and fails while its copy stays unrouted. With no stopped Container to start from, a B that
+ * holds its own Service becomes the writer and stays stopped: an earlier start moved the Service there, or a Deploy's
+ * placement removed the source's Container since the receipt named it. `ownedBy` is the Inngest run that must still own the row when B is
  * told, or null for a Deploy following another run's committed lane, which owns no row.
  */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
@@ -1710,7 +1724,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     return running;
   }
   const [holder] = from === null ? stopped : newestFirst(stopped);
-  if (holder === undefined && from === null && containers.some((container) => container.machine_id === to.id)) {
+  if (holder === undefined && containers.some((container) => container.machine_id === to.id)) {
     if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
     return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: null }, undefined, start.receipt ?? undefined);
   }
@@ -1853,6 +1867,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, movedRouting) === false) {
       return lacks(movedRouting.capability, run.kind);
     }
+    if (runsOlderPloyz(capabilities)) return Effect.succeed<Member>({ machine: ref, answered: false, lack: olderPloyzSentence(machine.name), outdated: true });
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
@@ -1867,7 +1882,6 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           view,
           floorless,
           ...sized,
-          enforces: machine.runtime.device_enforcement === true,
           handoff: serverSupports(capabilities, requirements.volumeHandoff) === true,
           passkey: serverSupports(capabilities, requirements.volumePasskey) === true,
         })),

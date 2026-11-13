@@ -316,14 +316,21 @@ pub(crate) async fn entry_pin(client: &mut Client) -> Result<Pin, Failure> {
 }
 
 /// The pin an entry's own report gives. A Server that activated, or is activating, with no
-/// recipient key gives none: everything planted before activation holds its identity key.
+/// recipient key gives none: everything planted before activation holds its identity key. A
+/// Server born enforcing reports activated with no operation. Nothing was planted before it,
+/// so its identity is where new values go, and the pin names it as the recipient.
 fn pin_from(details: MachineDetails) -> Result<Pin, Failure> {
-    let activated = details.activation.as_ref().is_some_and(|report| {
-        matches!(
-            report.state,
-            ActivationState::Activating | ActivationState::Activated
-        )
-    });
+    let (activated, born_enforcing) =
+        details
+            .activation
+            .as_ref()
+            .map_or((false, false), |report| match report.state {
+                ActivationState::Activating => (true, false),
+                ActivationState::Activated => {
+                    (report.operation.is_some(), report.operation.is_none())
+                }
+                ActivationState::Awaiting => (false, false),
+            });
     match (details.sealing, details.machine) {
         (Some(Sealing::Held { .. }), Some(machine))
             if activated && details.sealing_recipient.is_none() =>
@@ -338,7 +345,9 @@ fn pin_from(details: MachineDetails) -> Result<Pin, Failure> {
         (Some(Sealing::Held { public_key }), Some(machine)) => Ok(Pin {
             public_key,
             server: machine.name,
-            recipient: details.sealing_recipient,
+            recipient: details
+                .sealing_recipient
+                .or(born_enforcing.then_some(public_key)),
         }),
         (_, machine) => Err(Failure::conflict(format!(
             "Server {} holds no Sealing Key it can open with, so nothing can be sealed for it.",

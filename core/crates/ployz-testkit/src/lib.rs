@@ -132,6 +132,7 @@ pub fn join_request(first: &Machine, registration: &Registered) -> EnrollRequest
     }
     EnrollRequest {
         role: EnrollAs::Member {
+            pin: None,
             registration: Registered {
                 visible_peers,
                 ..registration.clone()
@@ -1201,7 +1202,10 @@ mod tests {
             devices: Vec::new(),
             recipient: None,
         };
-        let EnrollAs::Member { registration: join } = join_request(&first, &registration).role
+        let EnrollAs::Member {
+            registration: join,
+            pin: None,
+        } = join_request(&first, &registration).role
         else {
             panic!("join_request enrolls a member");
         };

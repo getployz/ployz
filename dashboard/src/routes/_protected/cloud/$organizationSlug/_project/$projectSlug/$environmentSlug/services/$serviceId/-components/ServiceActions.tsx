@@ -50,8 +50,8 @@ export function usePress(state: StoreService, namespace: string | null) {
 }
 
 /**
- * The request id is minted here so a retried POST admits the same run instead of a second one. On Servers that enforce,
- * a press first asks for a passkey session and carries one approval per copy, unless an owner must approve it.
+ * The request id is minted here so a retried POST admits the same run instead of a second one. A press first asks for a
+ * passkey session and carries one approval per copy, unless an owner must approve it.
  */
 export function useServiceAct(subject: Subject) {
   const queryClient = useQueryClient();

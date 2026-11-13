@@ -21,6 +21,7 @@ fn golden() -> Value {
         "push_target": "https://cloud.example/push",
         "device_slots_vetted": false,
         "device_enforcement": true,
+        "born_enforcing": true,
         "trusted_machines": [{
             "id": "c".repeat(32),
             "public_key": bytes(3),
@@ -175,7 +176,8 @@ fn resetting_keeps_every_field_but_the_body() {
         pinned_addresses,
         push_target,
         device_slots_vetted,
-        device_enforcement,
+        filters_peers,
+        born_enforcing,
         trusted_machines,
         passkeys,
         membership_cluster,
@@ -195,7 +197,8 @@ fn resetting_keeps_every_field_but_the_body() {
         pinned_addresses: kept_pins,
         push_target: kept_push_target,
         device_slots_vetted: kept_vetted,
-        device_enforcement: kept_enforcement,
+        filters_peers: kept_filter,
+        born_enforcing: kept_born,
         trusted_machines: kept_trusted,
         passkeys: kept_passkeys,
         membership_cluster: kept_cluster,
@@ -219,7 +222,8 @@ fn resetting_keeps_every_field_but_the_body() {
     assert_eq!(kept_pins, pinned_addresses);
     assert_eq!(kept_push_target, push_target);
     assert_eq!(kept_vetted, device_slots_vetted);
-    assert_eq!(kept_enforcement, device_enforcement);
+    assert_eq!(kept_filter, filters_peers);
+    assert_eq!(kept_born, born_enforcing);
     assert_eq!(kept_trusted, trusted_machines);
     assert_eq!(kept_passkeys, passkeys);
     assert_eq!(kept_cluster, membership_cluster);

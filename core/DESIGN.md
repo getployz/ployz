@@ -32,6 +32,11 @@ place without re-enrolling. On 0.2 or 0.3.0-beta.6 and earlier, the first
 Machine of a Cluster takes that upgrade over SSH, because its relay protocol
 predates 0.3.0's; the rest upgrade through it.
 
+**The 0.4 authority exception.** From 0.4, a Machine refuses a route that
+changes it when the request carries no customer authority, and names the
+route's capability. This is the only semantic 0.x has withdrawn. It is not a
+precedent. The next withdrawal waits for a major.
+
 **Rules.** Frozen formats only gain optional fields with defaults. Nothing is
 renamed or repurposed, and readers ignore unknown fields. Replicated bodies
 never refuse unknown fields; only secret-bearing sections and

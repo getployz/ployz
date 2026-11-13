@@ -207,10 +207,24 @@ const guardedVolume = Effect.fn("Operations.guardedVolume")(function* (
   caller: Caller,
   { asked, guard, volume, environment, input }: Pick<Extract<VolumeRunPlan, { ok: true }>, "asked" | "guard" | "volume" | "environment" | "input">,
 ) {
-  if (guard === null || protectorOnly(caller, environment.name) === null) return asked;
-  if (!(yield* environmentProtected(caller.organization.id, environment.project, volume.environmentId))) return asked;
-  const protectedAsk = { ...guard, protected: environment.name } satisfies OperationAsked;
-  // The dashboard's grow waits as a request, and runs as its asker once someone who can protect it approves.
+  if (guard === null) return asked;
+  return (yield* protecting(caller, guard, { environmentId: volume.environmentId, environment }, input)) ?? asked;
+});
+
+/**
+ * `ask` as someone who can't protect a Protected Environment makes it: it waits for someone who can. Null when this
+ * caller or Environment needs no such wait. The dashboard's grow waits as a request, and runs as its asker once
+ * someone who can protect it approves.
+ */
+const protecting = Effect.fn("Operations.protecting")(function* (
+  caller: Caller,
+  ask: OperationAsked,
+  where: { readonly environmentId: string; readonly environment: { readonly project: string; readonly name: string } },
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
+) {
+  if (protectorOnly(caller, where.environment.name) === null) return null;
+  if (!(yield* environmentProtected(caller.organization.id, where.environment.project, where.environmentId))) return null;
+  const protectedAsk = { ...ask, protected: where.environment.name } satisfies OperationAsked;
   if (caller.via !== "dashboard" || input.kind !== "resize") return protectedAsk;
   return { ...protectedAsk, apply: { volumeId: input.volumeId, environment: input.environment, maximum_bytes: input.args.maximum_bytes } } satisfies OperationAsked;
 });
@@ -218,8 +232,10 @@ const guardedVolume = Effect.fn("Operations.guardedVolume")(function* (
 /**
  * An agent's or the CLI's run that a Server enforcing device approval refuses without one asks a person: they approve it
  * in Ployz Cloud, where their browser drafts its workflow and their passkey answers it. Asked again under that approval,
- * the run carries the answer kept with it, and plans again with it. Null for any run this doesn't ask for; the person's
- * approval covers the run's ask alone, and spends once.
+ * the run carries the answer kept with it, and plans again with it. A Protected Environment's run by someone who can't
+ * protect it asks someone who can, and a member's grow from the dashboard waits there the same way, since the
+ * dashboard signs only for who can approve it. Null for any run this doesn't ask for; the person's approval covers the
+ * run's ask alone, and spends once.
  */
 const enforcedVolume = Effect.fn("Operations.enforcedVolume")(function* (
   caller: Caller,
@@ -227,10 +243,13 @@ const enforcedVolume = Effect.fn("Operations.enforcedVolume")(function* (
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
   planned: VolumeRunPlan,
 ) {
-  if (planned.ok || !refusedEnforced(planned.refusal) || caller.via === "dashboard") return null;
+  if (planned.ok || !refusedEnforced(planned.refusal)) return null;
   if ("approval" in input.args && input.args.approval !== undefined) return null;
-  const asked = yield* enforcedAsk(caller.organization.id, input);
-  if (asked === null) return null;
+  const enforced = yield* enforcedAsk(caller.organization.id, input, planned.effects);
+  if (enforced === null) return null;
+  const waiting = enforced.guarded ? yield* protecting(caller, enforced.asked, enforced, input) : null;
+  if (caller.via === "dashboard" && waiting?.apply === undefined) return null;
+  const asked = waiting ?? enforced.asked;
   const kept = yield* keptVolumeApproval(caller.organization.id, call.approvalId);
   if (kept === null) {
     const gated = yield* gate(caller, call, asked);

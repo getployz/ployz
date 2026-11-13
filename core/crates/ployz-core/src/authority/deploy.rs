@@ -341,13 +341,36 @@ pub enum BrowserDraftError {
          yet. Deploy it from an image pinned by digest."
     )]
     Built(ServiceName),
-    #[error(
-        "The dashboard can't check what {service}'s tag {image} points to. Write the image \
-         by digest, or run ployz deploy, which pins it for you."
-    )]
-    Tag { service: ServiceName, image: String },
+    /// Every Service named by a tag, so one refusal lists each to write by digest.
+    #[error("{}", tagged_message(.0))]
+    Tag(Vec<TaggedImage>),
     #[error(transparent)]
     Canonical(#[from] CanonicalError),
+}
+
+/// A Service whose image a tag names, as [`BrowserDraftError::Tag`] lists it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaggedImage {
+    pub service: ServiceName,
+    pub image: String,
+}
+
+fn tagged_message(tagged: &[TaggedImage]) -> String {
+    match tagged {
+        [TaggedImage { service, image }] => format!(
+            "The dashboard can't check what {service}'s tag {image} points to. Write {service}'s \
+             image by digest, which docker buildx imagetools inspect {image} prints."
+        ),
+        _ => format!(
+            "The dashboard can't check what these tags point to: {}. Write each image by digest, \
+             which docker buildx imagetools inspect IMAGE prints.",
+            tagged
+                .iter()
+                .map(|TaggedImage { service, image }| format!("{service}'s {image}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 /// What an approver's client sets around the Services a plan ships.
@@ -439,14 +462,16 @@ impl DeployApproval {
         {
             return Err(BrowserDraftError::Built(spec.name.clone()));
         }
-        if let Some(spec) = target
+        let tagged: Vec<TaggedImage> = target
             .iter()
-            .find(|spec| !content_addressed(&spec.container.image))
-        {
-            return Err(BrowserDraftError::Tag {
+            .filter(|spec| !content_addressed(&spec.container.image))
+            .map(|spec| TaggedImage {
                 service: spec.name.clone(),
                 image: spec.container.image.clone(),
-            });
+            })
+            .collect();
+        if !tagged.is_empty() {
+            return Err(BrowserDraftError::Tag(tagged));
         }
         let (body, changes) = Self::draft(terms, namespace, target, &BTreeMap::new())?;
         Ok(BrowserDraft {

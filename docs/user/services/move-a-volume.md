@@ -44,7 +44,8 @@ The old server keeps a read-only copy, like `data-web-1`, under **Elsewhere**. I
 and never refreshes. Moving back sends only what changed since. If an earlier move onto that server
 failed, Ployz may send the whole volume instead.
 
-- Its × deletes it right away, after you click **Delete**. This can't be undone.
+- Its × deletes it right away, after you click **Delete**. This can't be undone. On servers that
+  enforce device approval, your browser then asks for your passkey.
 - Its **Restore** stages a restore from its last point. See [Restore a volume](restore-a-volume.md).
   While a staged restore reads the copy, × says "A restore reads this copy."
 

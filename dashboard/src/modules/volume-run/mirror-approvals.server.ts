@@ -10,8 +10,7 @@ import { volumeMirrorStatus } from "#/modules/volume-run/tables";
  *
  * A Mirror admits an approval when a pull carrying it passes admission, before the pull receives anything, and
  * admitting one ends the approval that was open there. So one approval works at the Mirror, and only the Mirror knows
- * which: an answer can be lost or come late, a pull can fail after admission, a run and a sync can overlap, a Mirror
- * that doesn't enforce accepts any pull without admitting anything, and a refusal can stop being true (a clock that
+ * which: an answer can be lost or come late, a pull can fail after admission, a run and a sync can overlap, and a refusal can stop being true (a clock that
  * steps back, approval records that are reset). So while the Mirror exists Cloud drops none of them, and the one the
  * Mirror holds open is always kept:
  *

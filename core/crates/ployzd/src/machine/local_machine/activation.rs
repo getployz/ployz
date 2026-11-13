@@ -37,6 +37,8 @@ pub enum Refusal {
     NoOff,
     #[error("this Server is already activated under another starting set")]
     Activated,
+    #[error("this Server enforces from its first start, so it has nothing to activate")]
+    BornEnforcing,
 }
 
 /// An admitted starting set, written before the restart that commits it.
@@ -170,6 +172,9 @@ impl LocalMachine {
                         let body = signed
                             .open()
                             .map_err(|refusal| refused(Refusal::Authority(refusal)))?;
+                        if record.born_enforcing() {
+                            return Err(refused(Refusal::BornEnforcing));
+                        }
                         if let Some(operation) = record.activation() {
                             return if operation == body.operation {
                                 Ok(None)
@@ -243,7 +248,7 @@ impl LocalMachine {
     /// This Machine's own account of its activation, for Inspect.
     pub(crate) async fn activation_report(&self) -> ActivationReport {
         let record = self.record();
-        let state = if record.activation().is_some() {
+        let state = if record.activation().is_some() || record.born_enforcing() {
             ActivationState::Activated
         } else if self.owner.activating()
             || PendingActivation::read(self.owner.data_dir())
@@ -257,7 +262,7 @@ impl LocalMachine {
         };
         let cluster = self.cluster_identity(record.phase());
         let legacy_members = match self.replicated() {
-            Ok(replicated) if record.activation().is_none() => replicated
+            Ok(replicated) if record.awaits_activation() => replicated
                 .machines()
                 .await
                 .map(|rows| {
@@ -302,6 +307,9 @@ impl LocalMachine {
 
 /// Every key the record holds that the snapshot does not.
 fn legacy_keys(record: &LocalMachineRecord) -> Vec<LegacyKey> {
+    if record.born_enforcing() {
+        return Vec::new();
+    }
     let evidenced = |code: DeviceCode| {
         record
             .trusted_snapshot()

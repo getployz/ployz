@@ -166,11 +166,11 @@ impl Downgrade {
 pub(crate) enum ReleaseChoice {
     /// A Full caller: any published release.
     AnyRelease,
-    /// An Operator on a Machine not enforcing Device approval: a channel, or an exact
-    /// version either channel resolves to now.
+    /// An Operator on a Machine awaiting its Cluster's activation, asking with no channel
+    /// statement: a channel, or an exact version either channel resolves to now.
     ChannelResolved,
-    /// An Operator on a Machine enforcing Device approval: the channel a person approved,
-    /// or the exact version it resolves to now.
+    /// Any other Operator: the channel a person approved, or the exact version it resolves
+    /// to now.
     Signed(ReleaseChannel),
 }
 

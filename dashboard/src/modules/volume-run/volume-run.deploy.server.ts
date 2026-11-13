@@ -348,7 +348,7 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
 const askSource = Effect.fn("VolumeRun.askSource")(function* (lane: FollowLane, others: readonly AnsweredMember[]) {
   const { run } = lane;
   const approved = carriedApproval(run);
-  const asks = (member: AnsweredMember) => member.handoff === true && member.enforces === true;
+  const asks = (member: AnsweredMember) => member.handoff === true;
   const resumed = others.find(({ view: { copy } }) => copy?.kind === "root" && !copy.readonly && copy.epoch === lane.epoch);
   if (approved !== undefined && resumed !== undefined && asks(resumed)) return { kind: "resumed", on: resumed.machine.name } as const;
   const slots = others.filter((member) => member.view.copy?.kind === "slot");

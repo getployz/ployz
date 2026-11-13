@@ -47,15 +47,21 @@ pub(crate) fn enforce_command(command: Command) -> Command {
          from a join this device approved, from a Server you reach over SSH, or from a \
          fingerprint you confirm against `ployz status` on that Server. A Server that holds \
          keys or Servers from before takes the set only over its own SSH, so reach every such \
-         Server in one run. A Server left out is no longer part of the Cluster once the others \
-         activate. Keys added while enforcement was off are removed unless you keep them. \
-         There is no off.",
+         Server in one run: in the context `ployz server add` saved SSH connections to, or \
+         with one `--connect` for each Server. A Server left out is no longer part of the \
+         Cluster once the others activate. Keys added while enforcement was off are removed \
+         unless you keep them. There is no off.",
     )
     .after_help(concat!(
         "Examples:\n",
-        "  ployz device enforce --connect ssh://root@203.0.113.10\n",
+        "  ployz device enforce\n",
+        "  ployz device enforce --connect ssh://root@203.0.113.10 --connect ssh://root@203.0.113.11\n",
         "  ployz device enforce --pin 3f9a1c2e --keep mmg42klgyq"
     ))
+    .mut_arg("connect", |arg| {
+        arg.action(ArgAction::Append)
+            .help("Reach a Server over this connection. Repeat it once for each Server")
+    })
     .arg(
         Arg::new("pin")
             .long("pin")
@@ -253,18 +259,16 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
             Outcome {
                 machine_id,
                 state: State::LeftOut(format!(
-                    "didn't answer over the connection you saved for it, so it's left out rather than trusting another Server's word for it. Check it with `ployz status` on {server}, then run this again."
+                    "didn't answer over the connection you gave or saved for it, so it's left out rather than trusting another Server's word for it. Check it with `ployz status` on {server}, then run this again."
                 )),
                 server,
             }
         }));
         if included.is_empty() {
             return Err(Error::conflict(
-                "No Server is pinned on this computer, so nothing was signed.",
+                "No Server is pinned on this computer, so nothing was signed. Reach each Server over its own SSH, with one --connect for each.",
             )
-            .hint(Hint::Next(
-                "ployz device enforce --connect ssh://root@SERVER".to_owned(),
-            )));
+            .hint(Hint::Next(EACH_OVER_SSH.to_owned())));
         }
         refuse_unreachable(&included, &direct, &reach)?;
         let own = DeviceKey::from(signer.public()).code();
@@ -472,7 +476,7 @@ fn pin_each<'a>(
             pinning.outcomes.push(left_out(
                 server,
                 &name,
-                "isn't pinned on this computer. Check its key with `ployz status` on it, or reach it over SSH.".to_owned(),
+                "isn't pinned on this computer. Check its key with `ployz status` on it, or reach it over SSH with its own --connect.".to_owned(),
             ));
             continue;
         }
@@ -675,14 +679,16 @@ fn refuse_unreachable(
         return Ok(());
     }
     Err(Error::conflict(format!(
-        "{} hold keys or Servers added while enforcement was off, so each takes the set only over its own SSH. Nothing was signed.",
+        "{} hold keys or Servers added while enforcement was off, so each takes the set only over its own SSH. Nothing was signed. Reach every Server in one run, with one --connect for each.",
         unreached.join(", ")
     ))
-    .hint(Hint::Next(
-        "ployz device enforce without --connect, in the context `ployz server add` saved SSH connections to"
-            .to_owned(),
-    )))
+    .hint(Hint::Next(EACH_OVER_SSH.to_owned())))
 }
+
+/// The run that reaches every Server over its own SSH, for a Cluster whose Servers joined
+/// through Cloud and so have no saved connection.
+const EACH_OVER_SSH: &str =
+    "ployz device enforce --connect ssh://root@SERVER-1 --connect ssh://root@SERVER-2";
 
 /// Hand the signed set to a Server through the mesh, which admits it against its own
 /// trusted snapshot.
@@ -691,8 +697,29 @@ fn refuse_unreachable(
 ///
 /// # Errors
 /// Refuses, before anything is signed, when Servers committed different operations: no one
-/// set activates them together.
+/// set activates them together, or when a Server enforces from its first start and has
+/// nothing to activate.
 fn resumed(included: &[&Found], reach: &Reach) -> Result<Option<OperationId>, Error> {
+    let born: Vec<String> = included
+        .iter()
+        .filter(|server| {
+            matches!(
+                &server.report,
+                Some(ActivationReport {
+                    state: ActivationState::Activated,
+                    operation: None,
+                    ..
+                })
+            )
+        })
+        .map(|server| reach.name(&server.machine_id))
+        .collect();
+    if !born.is_empty() {
+        return Err(Error::conflict(format!(
+            "{} enforce from their first start, so there is nothing to activate. Nothing was signed.",
+            born.join(", ")
+        )));
+    }
     let mut under: BTreeMap<OperationId, Vec<String>> = BTreeMap::new();
     for server in included {
         if let Some(ActivationReport {
@@ -781,7 +808,7 @@ fn held_recipient<'a>(
                     Ok(Some(Recipient::Held { recipient, holder }))
                 }
                 (None, _) => Err(format!(
-                    "Your activated Servers report recipient key {recipient}, but none of them answered over its own SSH and this computer never pinned that key. Nothing was signed. Run `ployz device enforce` again in the context `ployz server add` saved SSH connections to."
+                    "Your activated Servers report recipient key {recipient}, but none of them answered over its own SSH and this computer never pinned that key. Nothing was signed. Run `ployz device enforce` again with one --connect for each Server."
                 )),
             }
         }

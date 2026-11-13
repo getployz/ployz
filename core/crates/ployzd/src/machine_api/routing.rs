@@ -93,6 +93,8 @@ pub struct MachineProxy {
     // TODO: stale remote backends intentionally reconnect until ployzd restarts.
     remote_backends: Arc<Mutex<HashMap<ManagementAddress, Channel>>>,
     paths: crate::network::PathBook,
+    /// The Machine whose record decides what an Operator may ask of it here.
+    machine: Option<crate::machine::LocalMachine>,
 }
 
 impl MachineProxy {
@@ -110,7 +112,15 @@ impl MachineProxy {
             replicated,
             remote_backends: Arc::new(Mutex::new(HashMap::new())),
             paths: crate::network::PathBook::default(),
+            machine: None,
         }
+    }
+
+    /// Hold an Operator's calls served here to what `machine`'s record admits.
+    #[must_use]
+    pub(crate) fn for_machine(mut self, machine: crate::machine::LocalMachine) -> Self {
+        self.machine = Some(machine);
+        self
     }
 
     /// Where the router reads this Machine's path to each target, to say why one is silent.
@@ -237,6 +247,13 @@ impl MachineProxy {
     }
 
     async fn call_local(&self, request: http::Request<Body>) -> http::Response<Body> {
+        if let Some(refused) = self
+            .machine
+            .as_ref()
+            .and_then(|machine| refuse_awaiting(&request, &machine.record()))
+        {
+            return refused;
+        }
         let mut local = self.local.clone();
         poll_fn(|context| Service::<http::Request<Body>>::poll_ready(&mut local, context))
             .await
@@ -496,6 +513,47 @@ impl Service<http::Request<Body>> for MachineProxy {
             Ok(proxy.dispatch(request, routing, &visible).await)
         })
     }
+}
+
+/// An Operator's call to a route a statement must admit, refused while this Machine awaits
+/// its Cluster's activation: the keys it would check were never vouched for. An upgrade is
+/// served, since a Machine moves only forward through Ployz's signed releases, and so is the
+/// activation itself, whose starting set names the keys this Machine may trust.
+fn refuse_awaiting(
+    request: &http::Request<Body>,
+    record: &crate::machine::LocalMachineRecord,
+) -> Option<http::Response<Body>> {
+    use ployz_core::authority::coverage::{Authorization, authorization};
+    if !record.awaits_activation()
+        || !request
+            .headers()
+            .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
+    {
+        return None;
+    }
+    let capability = ployz_core::capability_of(request.uri().path())?;
+    if [
+        ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY,
+        ployz_core::ACTIVATE_ENFORCEMENT_CAPABILITY,
+    ]
+    .contains(&capability)
+        || !matches!(authorization(capability), Some(Authorization::Signed(_)))
+    {
+        return None;
+    }
+    let error = crate::machine::LocalMachineError::AwaitingActivation { capability };
+    Some(
+        ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": capability,
+                "reason": "awaiting_activation",
+                "next": "ployz device enforce",
+            }),
+        )
+        .into_http(),
+    )
 }
 
 #[cfg(test)]

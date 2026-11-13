@@ -15,7 +15,7 @@ import {
 } from "./volume-placement";
 import { approveVolume, VolumeNotApproved, type VolumeScope } from "#/modules/approval-session/volume-approval";
 import { readVolumeScope } from "#/modules/volume-run/volume-approval-scope";
-import { type PlacementApproval, type PlacementAsk, seedAsk, stagedAsks } from "./placement-approvals";
+import { type PlacementApproval, type PlacementAsk, placementAsks, seedAsk, stagedAsks } from "./placement-approvals";
 import { deleteCopyServerFn, discardPlacementServerFn, keepPlacementApprovalsServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
@@ -55,7 +55,10 @@ export function useStageRestore(organizationSlug: string, environment: Environme
   return { restore, pending };
 }
 
-/** Delete an old copy now, and say how it ended once the Server finishes. */
+/**
+ * Delete an old copy now, and say how it ended once the Server finishes. A copy that holds data is deleted under the
+ * person's passkey, drafted over the copies each Server reports now; one that holds none needs no approval.
+ */
 export function useDeleteCopy(organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume) {
   const queryClient = useQueryClient();
   const { watch } = useWatchVolumeRun(organizationSlug, (run) => {
@@ -63,12 +66,23 @@ export function useDeleteCopy(organizationSlug: string, environment: Environment
     else toast.error(run?.message ?? `Could not delete the copy of ${volume.name}`);
     void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
   });
-  return (server: MachineName) => {
-    void deleteCopyServerFn({ data: { organizationSlug, volumeId: volume.id, environment, server } }).then((result) => {
+  async function remove(server: MachineName) {
+    try {
+      const scope = await readVolumeScope(queryClient, organizationSlug, environment, volume.id);
+      const machine = scope.members.find((member) => member.machine.name === server)?.machine;
+      const [ask] = machine === undefined ? [] : placementAsks(volume.name, { kind: "delete_copy", volume, server: machine }, scope.members, { running: null, recorded: null });
+      const approved = ask === undefined ? undefined : await approveVolume(scope, ask.change);
+      if (approved === null) return;
+      const result = await deleteCopyServerFn({ data: {
+        organizationSlug, volumeId: volume.id, environment, server, ...(approved !== undefined && { approval: approved.approval }),
+      } });
       if (result.ok) watch(result.run.id);
       else toast.error(result.refusal.message);
-    }, (error: Error) => { toast.error(toErrorMessage(error, `Could not delete the copy of ${volume.name}`)); });
-  };
+    } catch (error) {
+      toast.error(toErrorMessage(error, `Could not delete the copy of ${volume.name}`));
+    }
+  }
+  return (server: MachineName) => { void remove(server); };
 }
 
 export type StagedPlacements = {
@@ -128,10 +142,10 @@ export function useStagedPlacements(
       } })]);
     },
     prepare: async () => {
-      // A Volume no Server enforces on asks nothing, so it reads nothing more. A Server that started enforcing since
-      // refuses its run, and says to deploy again. A restore into a new Volume runs on its source's Servers.
+      // A Volume no Server answered for asks nothing, so it reads nothing more. A restore into a new Volume runs on its
+      // source's Servers.
       const asking = staged.filter(({ members: shown, changes }) =>
-        shown.some((member) => member.answered && member.enforces === true) || changes.some((change) => change.kind === "seed"));
+        shown.some((member) => member.answered) || changes.some((change) => change.kind === "seed"));
       const asked = await Promise.all(asking.map(async ({ volume, row, changes }) =>
         (await placementApprovalAsks(queryClient, organizationSlug, environment, volume, row, changes)).map((each) => ({ ...each, volumeId: volume.id }))));
       return async () => {
@@ -139,7 +153,6 @@ export function useStagedPlacements(
         for (const { scope, ask, volumeId } of asked.flat()) {
           const approved = await approveVolume(scope, ask.change);
           if (approved === null) return false;
-          if (approved === undefined) continue;
           kept.push({ volumeId, run: ask.run, machine: ask.machine, approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) });
         }
         if (kept.length === 0) return true;

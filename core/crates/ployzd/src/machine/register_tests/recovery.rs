@@ -9,7 +9,7 @@ use tonic::{Code, Request};
 use super::super::{
     LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner, RecoveryError, SealingError,
 };
-use super::harness::{machine_service, open_store, participating};
+use super::harness::{approve_recipient, machine_service, open_store, participating};
 use crate::corrosion::{AdminClient, ReplicatedStore, fake_cluster};
 use crate::machine_api::MachineApi;
 use crate::sealing_key::SealingKey;
@@ -278,9 +278,17 @@ async fn install_refuses_another_key_on_a_seeded_founder_before_its_awaits_marke
     )));
     let other = held(&holder_dir).unwrap();
     let founder = local.owner().record().machine().unwrap().clone();
+    for (machine, member) in [(&holder_local, &founder), (&local, &holder)] {
+        let member = member.into();
+        machine
+            .owner()
+            .mutate(move |store| store.trust_members(vec![member]).unwrap())
+            .await
+            .unwrap();
+    }
     let sealed = holder_local
         .share_sealing_key(ShareSealingKeyRequest {
-            join_approval: None,
+            join_approval: Some(approve_recipient(&holder_local, &founder).await),
             machine: founder.id,
             public_key: founder.public_key,
         })
@@ -348,7 +356,7 @@ async fn install_refuses_to_publish_a_held_key_on_a_seeded_founder_before_its_aw
     let founder = local.owner().record().machine().unwrap().clone();
     let sealed = local
         .share_sealing_key(ShareSealingKeyRequest {
-            join_approval: None,
+            join_approval: Some(approve_recipient(&local, &founder).await),
             machine: founder.id,
             public_key: founder.public_key,
         })

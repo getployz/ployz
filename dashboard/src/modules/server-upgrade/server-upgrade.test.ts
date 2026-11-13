@@ -275,7 +275,9 @@ describe("a Release Channel approval", () => {
   const cluster = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
   const kept = (channel: "stable" | "beta", generation: number, keptCluster = cluster) =>
     ({ body: JSON.stringify({ channel, cluster: keptCluster, generation, signer: "passkey" }) });
-  const enforcing = channelScope([{ sealing: { kind: "held", public_key: cluster }, deviceEnforcement: true }]);
+  const newer = { id: "newer", sealing: { kind: "held", public_key: cluster }, capabilities: ["ployz.machine.enforced.v1"] };
+  const older = { id: "older", sealing: { kind: "held", public_key: cluster }, capabilities: [] };
+  const enforcing = channelScope([newer]);
 
   // Catches a body the daemon's canonical form doesn't match, which every Server refuses: ployz-core pins the same bytes.
   it("drafts the body the daemon reads, one generation past the kept approval", () => {
@@ -284,12 +286,19 @@ describe("a Release Channel approval", () => {
     expect(channelApprovalBody(cluster, "beta", null)).toContain(`"generation":1`);
   });
 
-  it("asks only when the Servers enforce and nobody approved this channel for this Cluster", () => {
+  it("asks only when a Server past Ployz 0.3 checks it and nobody approved this channel for this Cluster", () => {
     expect(needsApproval(enforcing, "stable", null)).toBe(true);
     expect(needsApproval(enforcing, "stable", kept("stable", 3))).toBe(false);
     expect(needsApproval(enforcing, "beta", kept("stable", 3))).toBe(true);
     expect(needsApproval(enforcing, "stable", kept("stable", 3, "another"))).toBe(true);
-    expect(needsApproval(channelScope([{ sealing: { kind: "held", public_key: cluster }, deviceEnforcement: false }]), "beta", null))
+    expect(needsApproval(channelScope([older]), "beta", null)).toBe(false);
+  });
+
+  // Catches an Upgrade of a 0.3 Server, or of one awaiting activation, waiting on a passkey for an approval it ignores.
+  it("asks only for an upgrade that reaches a Server checking it", () => {
+    expect(needsApproval(channelScope([newer, older], { reaches: new Set(["older"]) }), "stable", null)).toBe(false);
+    expect(needsApproval(channelScope([newer, older], { reaches: new Set(["newer"]), awaiting: new Set(["newer"]) }), "stable", null))
       .toBe(false);
+    expect(needsApproval(channelScope([newer, older], { reaches: new Set(["newer", "older"]) }), "stable", null)).toBe(true);
   });
 });

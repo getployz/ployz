@@ -25,8 +25,7 @@ use super::{Error, LocalMachine, restart_approval::pinned};
 impl LocalMachine {
     /// Admit an Operator's step on an existing Container under `approval`: one that starts
     /// nothing, in a Namespace the teardown names, on this Server. Returns the want pinned
-    /// to the Container seen, and the teardown each of its turns checks again. A Machine not
-    /// enforcing passes the want untouched.
+    /// to the Container seen, and the teardown each of its turns checks again.
     ///
     /// # Errors
     /// Returns [`Error::TeardownRefused`] for a creation, a start, or a step the teardown
@@ -37,11 +36,6 @@ impl LocalMachine {
         want: ContainerWant,
         approval: Box<TeardownApproval>,
     ) -> Result<(ContainerWant, HeldTeardown), Error> {
-        if !self.record().device_enforcement() {
-            // Held with no Namespace: a turn that finds enforcement on by then refuses it,
-            // and a resend is admitted in full.
-            return Ok((want, HeldTeardown::unsigned(HeldStep::Container(None))));
-        }
         let Some((step, locator)) = RestartStep::of(&want) else {
             return Err(Error::TeardownRefused(AuthorityRefusal::Mismatch {
                 field: "a creation",
@@ -55,16 +49,15 @@ impl LocalMachine {
         let identity = observed.identity();
         let held = HeldTeardown {
             approval: Some(approval),
-            step: HeldStep::Container(Some((identity.namespace.clone(), step))),
+            step: HeldStep::Container(identity.namespace.clone(), step),
         };
         held.admit(self)?;
         tracing::info!(?step, "teardown step on {identity} admitted");
         Ok((pinned(want, observed.container_id), held))
     }
 
-    /// Under Device enforcement an Operator's `RemoveVolume` deletes `name` only under a
-    /// teardown that names it on this Server, or the preview rule whose preview it held. A
-    /// Machine not enforcing passes untouched.
+    /// An Operator's `RemoveVolume` deletes `name` only under a teardown that names it on
+    /// this Server, or the preview rule whose preview it held.
     ///
     /// # Errors
     /// Returns [`Error::TeardownRefused`] naming what the teardown lacks.
@@ -77,17 +70,15 @@ impl LocalMachine {
             approval,
             step: HeldStep::Volume(name.clone()),
         };
-        if self.record().device_enforcement() {
-            held.admit(self)?;
-            tracing::info!("teardown removal of Volume {name} admitted");
-        }
+        held.admit(self)?;
+        tracing::info!("teardown removal of Volume {name} admitted");
         Ok(held)
     }
 
-    /// Under Device enforcement an Operator's `Leave` runs only under a Server teardown
-    /// naming this Server as the one leaving, and its `Forget` of `forgotten` only under one
-    /// naming `forgotten` as leaving and this Server as one that forgets it. Either resets a
-    /// Server, so neither is Cloud's to start. A Machine not enforcing passes untouched.
+    /// An Operator's `Leave` runs only under a Server teardown naming this Server as the one
+    /// leaving, and its `Forget` of `forgotten` only under one naming `forgotten` as leaving
+    /// and this Server as one that forgets it. Either resets a Server, so neither is Cloud's
+    /// to start.
     ///
     /// # Errors
     /// Returns [`Error::DepartureRefused`] naming the route's capability and what the
@@ -101,23 +92,21 @@ impl LocalMachine {
             approval,
             step: forgotten.map_or(HeldStep::Leave, |machine| HeldStep::Forget(*machine)),
         };
-        if self.record().device_enforcement() {
-            held.admit(self)?;
-            tracing::info!(step = ?held.step, "teardown departure admitted");
-        }
+        held.admit(self)?;
+        tracing::info!(step = ?held.step, "teardown departure admitted");
         Ok(held)
     }
 
     /// Check this call's held teardown again, under the admission turn its caller holds:
-    /// against the trusted keys and the enforcement switch as they stand now. A call that
+    /// against the trusted keys as they stand now. A call that
     /// holds none, a Full caller's or this Machine's own, passes untouched.
     ///
     /// # Errors
     /// As the admission of the held teardown's route.
     pub(super) fn recheck_teardown(&self) -> Result<(), Error> {
         match &self.teardown {
-            Some(held) if self.record().device_enforcement() => held.check(self, false),
-            _ => Ok(()),
+            Some(held) => held.check(self, false),
+            None => Ok(()),
         }
     }
 }
@@ -135,21 +124,13 @@ pub(crate) struct HeldTeardown {
 pub(crate) enum HeldStep {
     /// A step on an existing Container, with its Namespace. None when admitted with no
     /// teardown while this Machine did not enforce: a turn under enforcement refuses it.
-    Container(Option<(Namespace, RestartStep)>),
+    Container(Namespace, RestartStep),
     Volume(DockerVolumeName),
     Leave,
     Forget(MachineId),
 }
 
 impl HeldTeardown {
-    /// A step sent to a Machine not enforcing, held with no teardown it could check.
-    pub(crate) fn unsigned(step: HeldStep) -> Self {
-        Self {
-            approval: None,
-            step,
-        }
-    }
-
     fn admit(&self, machine: &LocalMachine) -> Result<(), Error> {
         self.check(machine, true)
     }
@@ -168,7 +149,7 @@ impl HeldTeardown {
                     capability: ployz_core::FORGET_MACHINE_CAPABILITY,
                     refusal,
                 },
-                HeldStep::Container(_) | HeldStep::Volume(_) => Error::TeardownRefused(refusal),
+                HeldStep::Container(..) | HeldStep::Volume(_) => Error::TeardownRefused(refusal),
             }
         };
         let unsigned = AuthorityRefusal::Unsigned {
@@ -178,11 +159,10 @@ impl HeldTeardown {
             return Err(refused(unsigned));
         };
         let step = match &self.step {
-            HeldStep::Container(Some((namespace, step))) => TeardownStep::Container {
+            HeldStep::Container(namespace, step) => TeardownStep::Container {
                 namespace,
                 step: *step,
             },
-            HeldStep::Container(None) => return Err(refused(unsigned)),
             HeldStep::Volume(name) => TeardownStep::Volume(name),
             HeldStep::Leave => TeardownStep::Leave,
             HeldStep::Forget(forgotten) => TeardownStep::Forget(forgotten),

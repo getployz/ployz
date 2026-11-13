@@ -101,6 +101,7 @@ const NETWORK_FILES = {
 const ON_DEMAND_READS = {
   activationQueryOptions: "each Server is asked live once the Servers list shows; one that doesn't answer takes up to ten seconds, which the page never waits on",
   waitingServerDetailQueryOptions: "opening a Waiting row fetches its full report and probe",
+  serversWithoutPasskeyQueryOptions: "each Server is asked live for its trusted passkeys once the Servers list shows; one that doesn't answer is skipped, which the page never waits on",
   enrollmentPlanQueryOptions: "the Enroll sheet previews the selected hosts and storage choices when it opens or changes",
   githubFileSearchQueryOptions: "searches as the user types",
   githubRepoAccessQueryOptions: "read when a repository picker opens; installation access changes in GitHub, so each picker rechecks it",

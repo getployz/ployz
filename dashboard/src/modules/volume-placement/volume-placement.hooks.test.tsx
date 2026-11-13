@@ -4,6 +4,10 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
+import * as volumeApproval from "#/modules/approval-session/volume-approval";
+import * as scopeRead from "#/modules/volume-run/volume-approval-scope";
+import type { Member } from "#/modules/volume-run/volume-run";
 import * as runs from "#/modules/volume-run/volume-run.functions";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import * as functions from "./volume-placement.functions";
@@ -123,7 +127,12 @@ it("dates a staged restore's point in Details once the day turns, with the Serve
 
 const runView = (id: string, state: string, message: string | null = null) => ({ id, state, message }) as never;
 
+/** What the Servers answer for the Volume just now, which a delete reads before it asks for the person's passkey. */
+const scoped = (...members: Member[]) =>
+  vi.spyOn(scopeRead, "readVolumeScope").mockResolvedValue(asTestDouble<Awaited<ReturnType<typeof scopeRead.readVolumeScope>>>()({ members }));
+
 it("Delete copy toasts only once the delete run ends, with the Server's words when it fails", async () => {
+  scoped();
   vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValueOnce({ ok: true, run: { id: "run-1" } } as never)
     .mockResolvedValueOnce({ ok: true, run: { id: "run-2" } } as never);
   const read = vi.spyOn(runs, "getVolumeRunServerFn").mockResolvedValueOnce(runView("run-1", "running"))
@@ -145,6 +154,7 @@ it("Delete copy toasts only once the delete run ends, with the Server's words wh
 });
 
 it("Delete copy watches each delete it starts, so a second one leaves the first its toast", async () => {
+  scoped();
   vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValueOnce({ ok: true, run: { id: "run-1" } } as never)
     .mockResolvedValueOnce({ ok: true, run: { id: "run-2" } } as never);
   let ended = false;
@@ -163,7 +173,38 @@ it("Delete copy watches each delete it starts, so a second one leaves the first 
   expect(invalidated.mock.calls.filter(([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(["volume-placement"]))).toHaveLength(2);
 }, 10_000);
 
+it("Delete copy asks the person's passkey for a copy that holds data, and sends their answer with the delete", async () => {
+  scoped(member("web-1", "writer"), member("web-3", "old"));
+  const answer = { body: '{"workflow":{"kind":"mirror_removal"}}', signatures: [] };
+  const approve = vi.spyOn(volumeApproval, "approveVolume").mockResolvedValue({ approval: answer, lines: [] });
+  const deleted = vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValue({ ok: false, refusal: { message: "stopped here." } } as never);
+  vi.spyOn(toast, "error").mockReturnValue("");
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
+
+  act(() => result.current("web-3"));
+
+  await waitFor(() => expect(deleted).toHaveBeenCalledWith({ data: { organizationSlug: "acme", volumeId: "v1", environment, server: "web-3", approval: answer } }));
+  expect(approve.mock.calls[0]?.[1]).toMatchObject({ workflow: { kind: "mirror_removal", mirror: member("web-3", "old").machine.id, role: "old_copy" } });
+});
+
+it("Delete copy sends nothing when the person cancels their passkey", async () => {
+  scoped(member("web-1", "writer"), member("web-3", "old"));
+  vi.spyOn(volumeApproval, "approveVolume").mockResolvedValue(null);
+  const deleted = vi.spyOn(functions, "deleteCopyServerFn");
+  const approved = vi.spyOn(volumeApproval, "approveVolume");
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
+
+  act(() => result.current("web-3"));
+
+  await waitFor(() => expect(approved).toHaveBeenCalled());
+  await act(async () => undefined);
+  expect(deleted).not.toHaveBeenCalled();
+});
+
 it("Delete copy toasts a refusal without watching anything", async () => {
+  scoped();
   vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValue({ ok: false, refusal: { message: "data is busy." } } as never);
   const read = vi.spyOn(runs, "getVolumeRunServerFn");
   const error = vi.spyOn(toast, "error").mockReturnValue("");

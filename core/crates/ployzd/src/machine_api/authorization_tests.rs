@@ -95,7 +95,7 @@ fn founder(dir: &std::path::Path, name: &str) -> LocalMachineStore {
 }
 
 impl Enforcing {
-    async fn new(enforced: bool) -> Self {
+    async fn new() -> Self {
         use crate::docker::test_support::fake_runtime_with;
         let data_dir =
             std::env::temp_dir().join(format!("ployzd-authorization-{}", MachineId::random()));
@@ -120,7 +120,7 @@ impl Enforcing {
                 store
                     .approve_device(device, Some(crate::machine::Evidence::LocalSocket))
                     .unwrap();
-                store.set_device_enforcement(enforced, starting).unwrap();
+                store.trust_members(starting).unwrap();
             })
             .await
             .unwrap();
@@ -334,12 +334,22 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
     }
     let peer = machine.peer.id;
     match (case.capability, case.branch) {
-        (
-            ployz_core::ENROLL_MACHINE_CAPABILITY,
-            "member, no capsule" | "member, approved capsule",
-        ) => unary::<op::Enroll>(json!({
-            "as": {"kind": "member", "registration": registration(machine)},
-        })),
+        (ployz_core::ENROLL_MACHINE_CAPABILITY, "member, no capsule") => {
+            unary::<op::Enroll>(json!({
+                "as": {"kind": "member", "registration": {
+                    "assigned_machine": machine.machine,
+                    "visible_peers": [machine.peer],
+                    "target_versions": {},
+                    "sealing_key": null,
+                    "devices": [],
+                }},
+            }))
+        }
+        (ployz_core::ENROLL_MACHINE_CAPABILITY, "member, approved capsule") => {
+            unary::<op::Enroll>(json!({
+                "as": {"kind": "member", "registration": registration(machine)},
+            }))
+        }
         (ployz_core::ENROLL_MACHINE_CAPABILITY, "founder") => {
             unary::<op::Enroll>(json!({"as": fresh_founder()}))
         }
@@ -665,6 +675,7 @@ fn stranger_join(machine: &Enforcing) -> Value {
         network: "10.210.0.0/16".parse().unwrap(),
         sealing_recipient: machine.peer.public_key,
         devices: vec![DeviceKey::from(stranger.public())],
+        passkeys: Vec::new(),
         admitting_machines: vec![machine.machine.id],
         bootstrap: Vec::new(),
         issued_at: Timestamp::now(),
@@ -855,7 +866,7 @@ async fn every_case_gets_its_expected_answer_from_an_enforcing_machine() {
 }
 
 async fn check(case: &'static Case) -> Outcome {
-    let machine = Enforcing::new(true).await;
+    let machine = Enforcing::new().await;
     let outcome = answer(case, &machine).await;
     machine.remove();
     outcome
@@ -965,7 +976,7 @@ mod departure {
 
     #[tokio::test]
     async fn an_operator_leave_under_enforcement_is_refused_before_any_container_stops() {
-        let machine = Enforcing::new(true).await;
+        let machine = Enforcing::new().await;
         let container = running_container(&machine).await;
         let before = machine.snapshot().await;
 
@@ -998,7 +1009,7 @@ mod departure {
 
     #[tokio::test]
     async fn an_operator_forget_under_enforcement_is_refused_and_the_row_stays() {
-        let machine = Enforcing::new(true).await;
+        let machine = Enforcing::new().await;
         let before = machine.snapshot().await;
 
         refused_naming(
@@ -1016,7 +1027,7 @@ mod departure {
 
     #[tokio::test]
     async fn a_full_caller_departs_under_enforcement() {
-        let machine = Enforcing::new(true).await;
+        let machine = Enforcing::new().await;
         machine
             .service
             .forget(forget(machine.peer.id))
@@ -1030,24 +1041,8 @@ mod departure {
         machine.remove();
     }
 
-    #[tokio::test]
-    async fn an_operator_departs_with_enforcement_off() {
-        let machine = Enforcing::new(false).await;
-        machine
-            .service
-            .forget(operator(forget(machine.peer.id)))
-            .await
-            .unwrap();
-        assert!(
-            !rows(&machine).await.contains(&machine.peer.id),
-            "the row is gone"
-        );
-        admitted(machine.service.leave(operator(leave())).await);
-        machine.remove();
-    }
-
-    /// A restarted daemon reads enforcement from the record on disk, so it refuses the
-    /// same Leave.
+    /// A restarted daemon reads its trusted Devices from the record on disk, so it refuses
+    /// the same Leave.
     #[tokio::test]
     async fn a_restarted_daemon_still_refuses_an_operator_leave() {
         let dir = tempfile::tempdir().unwrap();
@@ -1055,7 +1050,6 @@ mod departure {
         store
             .approve_device(DeviceKey::from(Signer::from_seed(&[7; 32]).public()), None)
             .unwrap();
-        store.set_device_enforcement(true, Vec::new()).unwrap();
         drop(store);
 
         let reopened = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
@@ -1147,7 +1141,7 @@ mod private_access {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn an_operator_turns_private_access_on_only_with_an_approval_of_its_key() {
-        let machine = Enforcing::new(true).await;
+        let machine = Enforcing::new().await;
         let key = sealed(&machine, "tskey-auth-approved");
         let before = machine.snapshot().await;
         refused(&turn(&machine, on(key.clone(), None)).await);
@@ -1180,8 +1174,8 @@ mod private_access {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn turning_off_or_a_machine_not_enforcing_needs_no_approval() {
-        let machine = Enforcing::new(true).await;
+    async fn turning_private_access_off_needs_no_approval() {
+        let machine = Enforcing::new().await;
         let off = turn(
             &machine,
             SetPrivateAccessRequest {
@@ -1192,11 +1186,6 @@ mod private_access {
         )
         .await;
         assert!(!off.for_authority(), "{off:?}");
-        machine.remove();
-        let machine = Enforcing::new(false).await;
-        let key = sealed(&machine, "tskey-auth-unenforced");
-        let answer = turn(&machine, on(key, None)).await;
-        assert!(!answer.for_authority(), "{answer:?}");
         machine.remove();
     }
 }
@@ -1298,7 +1287,7 @@ mod teardown {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_teardown_removes_only_the_containers_it_names_and_starts_nothing() {
-        let machine = Enforcing::new(true).await;
+        let machine = Enforcing::new().await;
         let here = machine.machine.id;
         let other_namespace = approval(&machine, &device(), namespace("shop", vec![here], vec![]));
         refused(
@@ -1335,7 +1324,7 @@ mod teardown {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_volume_goes_only_under_a_teardown_that_names_it_here() {
-        let machine = Enforcing::new(true).await;
+        let machine = Enforcing::new().await;
         let before = machine.snapshot().await;
         refused(
             &remove_volume(&machine, None).await,
@@ -1379,7 +1368,7 @@ mod teardown {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_departure_runs_only_under_a_server_teardown_naming_this_server() {
-        let machine = Enforcing::new(true).await;
+        let machine = Enforcing::new().await;
         let here = machine.machine.id;
         let peer = machine.peer.id;
         let server = |leaving, forgetting| TeardownScope::Server {
@@ -1509,7 +1498,7 @@ mod teardown {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_teardown_whose_device_is_removed_while_it_waits_takes_nothing_off() {
-        let machine = Enforcing::new(true).await;
+        let machine = Enforcing::new().await;
         let here = machine.machine.id;
         let id = running_container(&machine).await;
         let app = approval(
@@ -1537,54 +1526,6 @@ mod teardown {
             refused(&call.await.unwrap(), ployz_core::TEARDOWN_CAPABILITY);
         }
         assert_took_nothing_off(&machine, before);
-        machine.remove();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_request_sent_unsigned_before_enforcement_takes_nothing_off_once_it_turns_on() {
-        let machine = Enforcing::new(false).await;
-        let id = running_container(&machine).await;
-        let forget = op::Forget::into_request(ForgetRequest {
-            machine_id: machine.peer.id,
-            teardown: None,
-        });
-        let (turn, waiting) = queued(
-            &machine,
-            vec![
-                (op::EnsureContainer::PATH, removal(id, None)),
-                (op::RemoveVolume::PATH, volume_removal(None)),
-                (op::Forget::PATH, forget),
-            ],
-        )
-        .await;
-        let before = machine.fake.requests.lock().unwrap().len();
-        let starting = vec![ployz_core::authority::Member::from(&machine.peer)];
-        machine
-            .store
-            .mutate(move |store| store.set_device_enforcement(true, starting).unwrap())
-            .await
-            .unwrap();
-        drop(turn);
-        let capabilities = [
-            ployz_core::TEARDOWN_CAPABILITY,
-            ployz_core::TEARDOWN_CAPABILITY,
-            ployz_core::FORGET_MACHINE_CAPABILITY,
-        ];
-        for (call, capability) in waiting.into_iter().zip(capabilities) {
-            refused(&call.await.unwrap(), capability);
-        }
-        assert_took_nothing_off(&machine, before);
-        assert!(
-            machine
-                .replicated
-                .machines()
-                .await
-                .unwrap()
-                .observations
-                .iter()
-                .any(|row| row.id == machine.peer.id),
-            "the peer is not forgotten"
-        );
         machine.remove();
     }
 }

@@ -64,7 +64,7 @@ export async function decideApproval(
   return answer.ok ? { ok: true, decided: answer.approval } : answer;
 }
 
-/** Whether approving `approval` runs a restart or stop, which Servers that enforce take only with the approver's passkey. */
+/** Whether approving `approval` runs a restart or stop, which Servers take only with the approver's passkey. */
 export const runsServiceAct = (approval: Pick<ApprovalView, "review">) =>
   "operation" in approval.review && (approval.review.operation.verb === "restart" || approval.review.operation.verb === "stop");
 
@@ -120,7 +120,7 @@ const VolumeAsked = Schema.Struct({
   run: Schema.Struct({ kind: Schema.String, args: Schema.Record(Schema.String, Schema.Unknown) }),
 });
 
-/** The Volume run an agent's or the CLI's ask names, when Servers that enforce took it only with a passkey's answer. */
+/** The Volume run an agent's or the CLI's ask names, which Servers take only with a passkey's answer. */
 export function askedVolumeRun(approval: Pick<ApprovalView, "review">) {
   if (!("operation" in approval.review)) return null;
   const asked = Schema.decodeUnknownOption(VolumeAsked)(approval.review.operation.preview);
@@ -158,13 +158,10 @@ export function askedLoss({ read, change }: AskedVolumeDraft): { place: string; 
   return { place: read.place, item };
 }
 
-/**
- * The approver's passkey answer to a drafted Volume run, shown line by line first. Undefined when no Server it names
- * enforces; null when the person cancels.
- */
-export async function signAskedVolume({ read, change }: AskedVolumeDraft): Promise<KeptVolumeApproval | null | undefined> {
+/** The approver's passkey answer to a drafted Volume run, shown line by line first. Null when the person cancels. */
+export async function signAskedVolume({ read, change }: AskedVolumeDraft): Promise<KeptVolumeApproval | null> {
   const approved = await approveVolume(read, change);
-  if (approved === null || approved === undefined) return approved;
+  if (approved === null) return null;
   return { approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) };
 }
 

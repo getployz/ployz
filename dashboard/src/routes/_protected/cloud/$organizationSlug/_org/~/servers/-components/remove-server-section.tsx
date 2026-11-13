@@ -28,8 +28,8 @@ import { reviewApproval } from "#/modules/approval-session/approval-prompt";
 import { approveTeardown, departure } from "#/modules/approval-session/teardown-approval";
 
 /**
- * The person's approval of taking `machine` out of the Cluster, when a Server enforces Device approval: it leaves, the
- * others forget it, and `lost`, by Docker name, can't be reached again. Undefined when no Server enforces.
+ * The person's approval of taking `machine` out of the Cluster: it leaves, the others forget it, and `lost`, by Docker
+ * name, can't be reached again.
  */
 function approveDeparture(machines: Parameters<typeof approveTeardown>[0]["machines"], machine: RuntimeMachineRecord,
   lost: readonly { docker: string; name: string }[], verb: "Remove" | "Forget") {
@@ -94,7 +94,7 @@ const volumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) =
  */
 export function RemoveServerSection({ machine, machines, organizationSlug, last, offline, hint, gate }: {
   machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
-  /** Every Server, as the page last saw them: an enforcing one makes the removal ask for a passkey. */
+  /** Every Server, as the page last saw them, which the removal's passkey approval names. */
   machines: readonly RuntimeMachineRecord[];
   /** Whether your role may remove Servers. */
   gate: RoleGate;

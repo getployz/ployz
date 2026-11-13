@@ -9,14 +9,14 @@
 //! stops. The Machine RPC handlers only forward to [`mint_for`] and
 //! [`BuildGrants::inspect`].
 //!
-//! A grant records the scope of the caller that minted it. While this Machine enforces
-//! Device approval, an Operator's grant is refused at admission and on every request,
-//! whenever it was minted, and one with no recorded scope counts as an Operator's.
+//! A grant records the scope of the caller that minted it. An Operator's grant is refused
+//! at admission and on every request, and one with no recorded scope counts as an
+//! Operator's.
 //!
 //! A grant minted for a holder can carry the built Service's Sealed values, still
 //! sealed. Its holder reads them opened from `GET /ployz/sealed` once, before the push.
 //! A grant minted under an automatic deploy rule, after every check in `rule_grant`,
-//! survives enforcement, and serves its values only HPKE-sealed from the Cluster's attest
+//! is served, and serves its values only HPKE-sealed from the Cluster's attest
 //! key to the build's recipient key, bound to the grant's audience. It serves that even
 //! with no Sealed values, so the builder can tell a Cluster Machine from any endpoint.
 
@@ -61,10 +61,6 @@ pub const GRANT_LIFETIME: Duration = Duration::from_secs(3 * 60 * 60);
 /// Largest manifest a grant push may write; the OCI Distribution limit.
 const MANIFEST_LIMIT: usize = 4 * 1024 * 1024;
 
-/// Whether this Machine's Device enforcement is on now. Read at each admission and each
-/// request, never kept, so turning enforcement on reaches a grant already minted.
-pub type Enforcing = Arc<dyn Fn() -> bool + Send + Sync>;
-
 /// Live grants, keyed by their public key. Never persisted or replicated.
 #[derive(Default)]
 pub struct BuildGrants {
@@ -72,8 +68,7 @@ pub struct BuildGrants {
 }
 
 struct Grant {
-    /// Who minted it. An Operator's grant opens nothing on a Machine that enforces
-    /// Device approval.
+    /// Who minted it. An Operator's grant opens nothing.
     minted_by: Minter,
     repository: BuildGrantRepository,
     ingest: SocketAddr,
@@ -308,17 +303,15 @@ impl BuildGrants {
         })
     }
 
-    /// The live, unused grant `key` holds, unless this Machine enforces Device approval
-    /// and an Operator minted it.
-    fn admit(&self, key: &[u8; 32], enforcing: &(dyn Fn() -> bool + Sync)) -> Option<Arc<Grant>> {
+    /// The live, unused grant `key` holds, unless an Operator minted it.
+    fn admit(&self, key: &[u8; 32]) -> Option<Arc<Grant>> {
         let grant = Arc::clone(
             self.grants
                 .lock()
                 .expect("grant registry lock")
                 .get(&grant_id(key))?,
         );
-        (grant.expires > Instant::now() && !grant.pushed() && !grant.refused_by(enforcing))
-            .then_some(grant)
+        (grant.expires > Instant::now() && !grant.pushed() && !grant.refused()).then_some(grant)
     }
 }
 
@@ -343,10 +336,10 @@ fn grant_id(key: &[u8; 32]) -> BuildGrantId {
 }
 
 impl Grant {
-    /// An Operator's grant is dead while this Machine enforces Device approval, however
-    /// long ago it was minted: Cloud could have minted it for its own key.
-    fn refused_by(&self, enforcing: &(dyn Fn() -> bool + Sync)) -> bool {
-        self.minted_by == Minter::Operator && enforcing()
+    /// An Operator's grant is dead, however it was minted: Cloud could have minted it for
+    /// its own key.
+    fn refused(&self) -> bool {
+        self.minted_by == Minter::Operator
     }
 
     fn pushed(&self) -> bool {
@@ -359,10 +352,9 @@ impl Grant {
 pub(super) async fn serve(
     connection: Connection,
     grants: &BuildGrants,
-    enforcing: Enforcing,
     shutdown: CancellationToken,
 ) {
-    let Some(grant) = grants.admit(connection.remote_id().as_bytes(), &*enforcing) else {
+    let Some(grant) = grants.admit(connection.remote_id().as_bytes()) else {
         connection.close(
             VarInt::from_u32(BUILD_GRANT_REFUSED),
             b"build grant refused",
@@ -383,14 +375,12 @@ pub(super) async fn serve(
         };
         let grant = Arc::clone(&grant);
         let client = client.clone();
-        let enforcing = Arc::clone(&enforcing);
         streams.spawn(async move {
             let service = service_fn(move |request| {
                 let grant = Arc::clone(&grant);
                 let client = client.clone();
-                let enforcing = Arc::clone(&enforcing);
                 async move {
-                    Ok::<_, Infallible>(handle(request, &grant, &client, &*enforcing).await)
+                    Ok::<_, Infallible>(handle(request, &grant, &client).await)
                 }
             });
             if let Err(error) = http1::Builder::new()
@@ -479,18 +469,12 @@ fn tagged(reference: &str) -> Option<ImageDigest> {
     ImageDigest::parse(format!("sha256:{hex}")).ok()
 }
 
-async fn handle<B>(
-    request: Request<B>,
-    grant: &Grant,
-    client: &reqwest::Client,
-    enforcing: &(dyn Fn() -> bool + Sync),
-) -> Response<Body>
+async fn handle<B>(request: Request<B>, grant: &Grant, client: &reqwest::Client) -> Response<Body>
 where
     B: hyper::body::Body<Data = Bytes> + Send + 'static,
     B::Error: Into<axum::BoxError>,
 {
-    // Read now, per request: a connection admitted before enforcement came on stops here.
-    if grant.refused_by(enforcing) {
+    if grant.refused() {
         return denied(
             StatusCode::FORBIDDEN,
             "this Machine runs only builds an approved device starts",
@@ -731,7 +715,13 @@ mod tests {
         let machine = ManagementIdentity::from_bytes([7; 32]);
         let ingest = SocketAddr::from(([127, 0, 0, 1], 5000));
         grants
-            .mint(machine, Mint::check(request, None).unwrap(), ingest)
+            .mint(
+                machine,
+                Mint::check(request, None)
+                    .unwrap()
+                    .minted_by(ManagementScope::Full),
+                ingest,
+            )
             .unwrap()
     }
 
@@ -754,7 +744,9 @@ mod tests {
 
     fn sealed_grant(cluster: &Cluster) -> Arc<Grant> {
         let grants = BuildGrants::default();
-        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0)).unwrap();
+        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0))
+            .unwrap()
+            .minted_by(ManagementScope::Full);
         grants
             .mint(
                 ManagementIdentity::from_bytes([7; 32]),
@@ -762,7 +754,7 @@ mod tests {
                 SocketAddr::from(([127, 0, 0, 1], 5000)),
             )
             .unwrap();
-        grants.admit(holder().as_bytes(), &|| false).unwrap()
+        grants.admit(holder().as_bytes()).unwrap()
     }
 
     async fn read(response: Response<Body>) -> (StatusCode, String) {
@@ -825,43 +817,28 @@ mod tests {
 
     /// The holder's `GET /ployz/sealed` through the request handler, as a connection
     /// admitted earlier would send it.
-    async fn get_sealed(
-        grant: &Grant,
-        enforcing: &(dyn Fn() -> bool + Sync),
-    ) -> (StatusCode, String) {
+    async fn get_sealed(grant: &Grant) -> (StatusCode, String) {
         let request = Request::builder()
             .method(Method::GET)
             .uri("/ployz/sealed")
             .body(http_body_util::Empty::<Bytes>::new())
             .unwrap();
-        read(handle(request, grant, &reqwest::Client::new(), enforcing).await).await
+        read(handle(request, grant, &reqwest::Client::new()).await).await
     }
 
     #[tokio::test]
-    async fn an_operators_grant_opens_nothing_once_enforcement_is_on() {
+    async fn an_operators_grant_opens_nothing() {
         let cluster = Cluster::new();
         let grants = grants_minted_by(&cluster, ManagementScope::Operator);
-        let enforced = std::sync::atomic::AtomicBool::new(false);
-        let enforcing = || enforced.load(std::sync::atomic::Ordering::SeqCst);
-        // Minted and admitted while enforcement is off.
-        let admitted = grants.admit(holder().as_bytes(), &enforcing).unwrap();
-
-        enforced.store(true, std::sync::atomic::Ordering::SeqCst);
-        // (a) A new connection is refused.
-        assert!(grants.admit(holder().as_bytes(), &enforcing).is_none());
-        // (b) The admitted connection's next request is refused, and nothing opened.
-        let (status, body) = get_sealed(&admitted, &enforcing).await;
+        assert!(grants.admit(holder().as_bytes()).is_none());
+        let grant = Arc::clone(grants.grants.lock().unwrap().values().next().unwrap());
+        let (status, body) = get_sealed(&grant).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(!body.contains(MARKER), "{body}");
         assert!(
-            matches!(*admitted.sealed.lock().unwrap(), Sealing::Ready(_)),
+            matches!(*grant.sealed.lock().unwrap(), Sealing::Ready(_)),
             "a refused request leaves the Sealed record unopened and unread"
         );
-
-        // Enforcement off again: the same grant reads, so the refusal spent nothing.
-        enforced.store(false, std::sync::atomic::Ordering::SeqCst);
-        let (status, body) = get_sealed(&admitted, &enforcing).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     #[tokio::test]
@@ -876,28 +853,18 @@ mod tests {
                 SocketAddr::from(([127, 0, 0, 1], 5000)),
             )
             .unwrap();
-        assert!(grants.admit(holder().as_bytes(), &|| true).is_none());
-        assert!(grants.admit(holder().as_bytes(), &|| false).is_some());
+        assert!(grants.admit(holder().as_bytes()).is_none());
     }
 
     #[tokio::test]
-    async fn a_full_callers_grant_still_opens_under_enforcement() {
+    async fn a_full_callers_grant_opens() {
         let cluster = Cluster::new();
         let grants = grants_minted_by(&cluster, ManagementScope::Full);
-        let admitted = grants.admit(holder().as_bytes(), &|| true).unwrap();
-        let (status, body) = get_sealed(&admitted, &|| true).await;
+        let admitted = grants.admit(holder().as_bytes()).unwrap();
+        let (status, body) = get_sealed(&admitted).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let opened: OpenedSealed = serde_json::from_str(&body).unwrap();
         assert_eq!(opened.get("NPM_TOKEN"), Some(MARKER));
-    }
-
-    #[tokio::test]
-    async fn an_operators_grant_opens_as_before_with_enforcement_off() {
-        let cluster = Cluster::new();
-        let grants = grants_minted_by(&cluster, ManagementScope::Operator);
-        let admitted = grants.admit(holder().as_bytes(), &|| false).unwrap();
-        let (status, body) = get_sealed(&admitted, &|| false).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     #[tokio::test]
@@ -947,7 +914,7 @@ mod tests {
     async fn a_grant_without_sealed_values_has_none_to_read() {
         let grants = BuildGrants::default();
         mint(&grants, request(Some(&hex::encode(holder().as_bytes()))));
-        let grant = grants.admit(holder().as_bytes(), &|| false).unwrap();
+        let grant = grants.admit(holder().as_bytes()).unwrap();
         assert_eq!(read(sealed(&grant)).await.0, StatusCode::NOT_FOUND);
     }
 
@@ -985,7 +952,7 @@ mod tests {
                 machine: ManagementIdentity::from_bytes([7; 32])
             }
         );
-        assert!(grants.admit(holder.as_bytes(), &|| false).is_some());
+        assert!(grants.admit(holder.as_bytes()).is_some());
     }
 
     #[test]
@@ -998,7 +965,7 @@ mod tests {
         let public = SecretKey::from_bytes(grant.secret()).public();
         assert_eq!(minted.id.as_str(), hex::encode(public.as_bytes()));
         assert_eq!(grant.machine(), &ManagementIdentity::from_bytes([7; 32]));
-        assert!(grants.admit(public.as_bytes(), &|| false).is_some());
+        assert!(grants.admit(public.as_bytes()).is_some());
     }
 
     #[test]
@@ -1172,7 +1139,7 @@ mod tests {
                     SocketAddr::from(([127, 0, 0, 1], 5000)),
                 )
                 .unwrap();
-            grants.admit(holder().as_bytes(), &|| true).unwrap()
+            grants.admit(holder().as_bytes()).unwrap()
         }
 
         async fn body(response: Response<Body>) -> (StatusCode, Vec<u8>) {
@@ -1236,7 +1203,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_rule_grant_reaches_its_holder_through_enforcement() {
+        async fn a_rule_grant_reaches_its_holder() {
             let cluster = Cluster::new();
             let grant = rule_grant(&cluster, None, &X25519Secret::generate());
             let request = Request::builder()
@@ -1244,7 +1211,7 @@ mod tests {
                 .uri("/ployz/sealed")
                 .body(http_body_util::Empty::<Bytes>::new())
                 .unwrap();
-            let response = handle(request, &grant, &reqwest::Client::new(), &|| true).await;
+            let response = handle(request, &grant, &reqwest::Client::new()).await;
             assert_eq!(response.status(), StatusCode::OK);
         }
     }

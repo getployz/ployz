@@ -72,9 +72,6 @@ impl LocalMachine {
         volume: &DockerVolumeName,
         step: &VolumeStep,
     ) -> Result<Landing, Error> {
-        if !self.record().device_enforcement() {
-            return Ok(Landing::Run(None));
-        }
         let Some(approval) = approval else {
             return Err(Error::VolumeStepRefused(AuthorityRefusal::Unsigned {
                 purpose: Purpose::Volume,

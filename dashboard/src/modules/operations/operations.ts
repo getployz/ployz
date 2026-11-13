@@ -80,7 +80,7 @@ const STAGED = { absent: "The dashboard stages it in the Volume's placement, and
 const VOLUME_RUNS = "POST volumes/:id/runs";
 /** A person's teardown, which a Server that enforces Device approval needs before it takes anything off. */
 const Teardown = Schema.Unknown;
-const AGENT_TEARDOWN = { omitted: "An agent can't approve a teardown: only a person's Device or passkey can, and Servers that enforce refuse without one." } as const;
+const AGENT_TEARDOWN = { omitted: "An agent can't approve a teardown: only a person's Device or passkey can, and Servers refuse without one." } as const;
 
 /** Restart, start or stop a Service's containers, on one Server or all. */
 const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>(tool: T, gate: "approval" | "none") =>
@@ -113,14 +113,14 @@ export const OPERATIONS = {
         options: {
           server: { via: ":id" },
           acceptLoss: { via: "confirm_data_loss" },
-          teardown: { omitted: "A Device's CLI removes a Server of a Cluster that enforces Device approval itself, under its own key." },
+          teardown: { omitted: "A Device's CLI removes a Server itself, under its own key." },
         },
       },
       agent: { tool: "server_remove", options: { server: { via: "server" }, acceptLoss: AGENT_LOSS, teardown: AGENT_TEARDOWN } },
       ui: {
         fn: "enqueueMachineRemoveServerFn",
         input: EnqueueMachineRemoveInput,
-        ungated: "The human confirms in the page's own dialog and, where a Server enforces, approves the departure with their passkey.",
+        ungated: "The human confirms in the page's own dialog and approves the departure with their passkey.",
         options: { server: { via: "machineId" }, acceptLoss: { via: "confirmDataLoss" }, teardown: { via: "teardown" } },
       },
     },
@@ -136,7 +136,7 @@ export const OPERATIONS = {
         body: ForgetServer,
         options: {
           server: { via: ":id" },
-          teardown: { omitted: "A Device's CLI forgets a Server of a Cluster that enforces Device approval itself, under its own key." },
+          teardown: { omitted: "A Device's CLI forgets a Server itself, under its own key." },
         },
       },
       agent: { tool: "server_forget", options: { server: { via: "server" }, teardown: AGENT_TEARDOWN } },
@@ -258,7 +258,7 @@ export const OPERATIONS = {
       ui: {
         fn: "removeNamespaceServerFn",
         input: RemoveNamespaceInput,
-        ungated: "The human confirms in the page's own dialog and, where a Server enforces, approves the teardown with their passkey.",
+        ungated: "The human confirms in the page's own dialog and approves the teardown with their passkey.",
         options: { namespace: { via: "namespace" }, acceptLoss: { via: "confirmDataLoss" }, teardown: { via: "teardown" } },
       },
     },
@@ -485,7 +485,7 @@ export const OPERATIONS = {
       ui: {
         fn: "setPrivateAccessServerFn",
         input: SetPrivateAccessInput,
-        ungated: "The human pasted the auth key, which the browser sealed, pressed Connect and, where a Server enforces, approved it with their passkey; or pressed Turn off.",
+        ungated: "The human pasted the auth key, which the browser sealed, pressed Connect and approved it with their passkey; or pressed Turn off.",
         options: { to: { via: "to" }, authKey: { via: "on" } },
       },
     },

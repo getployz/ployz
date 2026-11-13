@@ -231,6 +231,18 @@ ployz device approve mmg42klgyq
 For your first device, approve it over SSH on a server. Run `ployz login` there first, then the
 same `ployz device approve`. A request lasts 24 hours.
 
+To approve your computer's own device, run this on your computer with one `--connect` per
+server:
+
+```sh
+ployz device approve --this-device --connect ssh://root@HOST
+```
+
+It makes the device key if your computer has none and adds it to each server it reaches. With
+`--connect`, the server's first key trusts only your computer and the server's SSH. Run on a
+server's own terminal, it refuses: a device made there would stay trusted after the server is
+gone.
+
 `approve` refuses a key from Ployz Cloud that doesn't hash to the code you typed. It says the
 device gets Full access to every server you approve it on, and asks first. Pass `--yes` to skip
 the question. Take the code from the person who ran `ployz device request`, not from a web page.
@@ -295,16 +307,18 @@ device to add one.
 
 `approve --passkey` reads the passkey from Ployz Cloud, refuses one whose key doesn't hash to the
 code you typed, shows its account, and asks before it adds it. Pass `--yes` to skip the question.
-The code itself comes from the Ployz Cloud page, so approving trusts that page to show your own
-passkey's code.
+The code itself comes from the dashboard, so the server trusts whichever key the dashboard named,
+and `approve --passkey` says so before it asks. To give a server its first key without trusting
+Ployz Cloud, approve your computer's device from your computer instead; see
+[Approve a device](#approve-a-device).
 The passkey is tied to the Ployz Cloud address your CLI signed in to, never to one Ployz Cloud
 names. Account asks each server whether it trusts the passkey and shows the answer, like
 **Trusted on 1 of 2 servers**, with each server's state underneath and the steps until every
 server trusts it. A passkey Ployz Cloud filed but no server approved approves nothing.
 
-The installer reminds you of this step when a server finishes installing.
-
-A server that joins later doesn't have your passkeys. Run `approve --passkey` there too.
+A server you add later from the dashboard trusts the passkeys your admitting server trusts when
+you approve its join; see [Approve a join](add-a-server.md#approve-a-join). A server you add with
+`ployz server add`, or a passkey you add after the server joined, needs its own approval. Run `approve --passkey` there, or from an approved device for every server.
 
 `ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
 account and who approved it on each server: a device, or `on <server>` for that server's own
@@ -341,9 +355,9 @@ first: it says what activation removes and what it can't undo.
 ployz device enforce
 ```
 
-Run it in the context where you added your servers with `ployz server add` over SSH. With
-`--connect`, it reaches only that one server directly, and leaves out each other server that holds
-keys from before. `enforce` needs this computer's approved device key. It trusts a server's key only when this
+Run it in the context where you added your servers with `ployz server add` over SSH. If your
+servers joined through Ployz Cloud, give one `--connect ssh://root@SERVER` for each server
+instead: a server that holds keys from before takes the list only over its own SSH. `enforce` needs this computer's approved device key. It trusts a server's key only when this
 computer learned it without going through Ployz Cloud:
 
 - the server's join was approved from this computer, or
@@ -375,8 +389,8 @@ After activation a server trusts only the servers in the signed list, plus serve
 approved device signs later. A server that held a key or server from before enforcement takes the
 list only over its own SSH. When a server like that is reached only through another one or
 through Ployz Cloud, `enforce` signs nothing and names it. Run `ployz device enforce` without
-`--connect` in the context where you added your servers with `ployz server add` over SSH: it
-reaches each server over the SSH connection saved for it.
+`--connect` in the context where you added your servers with `ployz server add` over SSH, or
+with one `--connect` for each server, so it reaches each one over its own SSH.
 
 Enforcement also covers deploys: a server creates a container only from a spec an approved
 device signed with `ployz deploy`, and only from an image pinned by digest. See
@@ -405,7 +419,7 @@ working. See
 Restoring a point into a new volume on these servers waits for a later release.
 
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
-allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
+allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join).
 A joining server inherits enforcement. Approvals name one existing server that may admit the
 join, so another Cluster cannot use the approval even if it shares a Sealing public key.
 Each server keeps an approved server as a member once it has seen it. Removing the device that
@@ -414,7 +428,8 @@ signed the join does not disconnect that server. Use `ployz server rm` to remove
 With enforcement on, mesh connections have Operator access. Full actions such as approving Devices, changing
 enforcement, and `exec` use a direct authenticated connection to each target server. A context
 used for those actions must contain a direct connection to each target. With an explicit
-`--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
+`--connect`, `device approve` and `device rm` affect that server only. `device enforce` takes
+`--connect` once for each server.
 To approve the first Device through SSH, repeat the command on each server.
 
 **Deploy**, **Restart**, **Stop** and **Start** in the dashboard ask for your passkey the first
@@ -434,11 +449,10 @@ nothing could start it again there, and says which server needs a newer Ployz.
 With enforcement on, `service restart`, `service stop` and `service start` from a device that
 isn't approved are refused with
 `ployz.restart.device-approval.v2 needs a Device-signed restart approval`. A server before 0.4
-refuses `service start` even from an approved device, so upgrade it first. `deploy` is refused
-through Ployz Cloud, since it starts and stops containers without an approval yet. That includes
-the first deploy of a new service. Turn enforcement off to run it. Over `--connect ssh://`
-everything works as before. If your device key cannot be loaded, restart, stop and start go
-unsigned and still work where enforcement is off.
+refuses `service start` even from an approved device, so upgrade it first. Run `ployz deploy` from
+an approved device, which signs what it deploys, as in
+[Deploy to servers that enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval).
+Over `--connect ssh://` everything works as before.
 
 #### Upgrades on servers that enforce device approval
 
@@ -465,13 +479,17 @@ without changing anything when it can't reach your servers to check whether they
 Over `--connect ssh://` you can still upgrade to any release.
 A server before this release ignores the approval and upgrades as before.
 
+**Upgrade** in the dashboard asks for your passkey only when a server it upgrades checks the
+approval and none is kept for your channel. A server on Ployz 0.3, or one
+[awaiting activation](upgrade-to-0-4.md), takes the upgrade without one. If you have no passkey,
+the dashboard says so and upgrades nothing: add one under **Account**, then press **Upgrade** again.
+
 With enforcement on, `ployz server rm` and `ployz server forget <server>` work only from an
 approved device or over SSH on a server. Elsewhere they stop before changing anything and name the
 server that needs an approved device. The dashboard's **Remove server** and **Forget server** ask
 for your passkey after you type the server's name; see
 [Take things off servers that enforce](#take-things-off-servers-that-enforce). Ployz Cloud drops a server you removed from the CLI once the Cluster no longer lists it,
-within minutes. To remove the last server of a Cluster Ployz Cloud manages, turn enforcement off
-first. Ingress doors still change from the dashboard, and a server runs only Ployz's own
+within minutes. Ingress doors still change from the dashboard, and a server runs only Ployz's own
 images for them. Private Access turns on from the dashboard once your passkey approves the key,
 or with `ployz private-access on` from an approved device. Over `--connect ssh://` to that
 server, both change as before.

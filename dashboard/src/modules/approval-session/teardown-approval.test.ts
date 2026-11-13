@@ -11,11 +11,13 @@ const B = "b".repeat(32);
 const C = "c".repeat(32);
 const ASSERTION = { credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" };
 
-const server = (id: string, name: string, enforcing: boolean, cluster = CLUSTER, capabilities = [TEARDOWN_CAPABILITY]) =>
-  ({ id, name, sealing: { kind: "held", public_key: cluster }, deviceEnforcement: enforcing, capabilities });
+const ENFORCED = "ployz.machine.enforced.v1";
+
+const server = (id: string, name: string, cluster = CLUSTER, capabilities = [ENFORCED, TEARDOWN_CAPABILITY]) =>
+  ({ id, name, sealing: { kind: "held", public_key: cluster }, capabilities });
 
 const ask = (over: Partial<TeardownAsk> = {}): TeardownAsk => ({
-  machines: [server(A, "web-1", true), server(B, "web-2", false), server(C, "elsewhere", true, OTHER)],
+  machines: [server(A, "web-1"), server(B, "web-2"), server(C, "elsewhere", OTHER)],
   near: [A],
   scope: (machines) => ({ kind: "namespace", namespaces: ["shop-production"], machines, volumes: ["shop-production_vol-1"] }),
   volumes: { "shop-production_vol-1": "data" },
@@ -28,11 +30,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("asks nothing when no Server of the Cluster enforces, so the deletion goes as before", async () => {
+it("refuses before asking while a Server of the Cluster runs Ployz 0.3, naming the upgrade", async () => {
   const review = vi.fn(async () => true);
-  const machines = [server(A, "web-1", false), server(C, "elsewhere", true, OTHER)];
+  const machines = [server(A, "web-1"), server(B, "web-2", CLUSTER, []), server(C, "elsewhere", OTHER, [])];
 
-  await expect(approveTeardown(ask({ machines }), review)).resolves.toBeUndefined();
+  await expect(approveTeardown(ask({ machines }), review)).rejects.toEqual(new TeardownRefused("web-2 runs Ployz 0.3. Upgrade it to deploy. Nothing deleted."));
   expect(review).not.toHaveBeenCalled();
 });
 
@@ -71,9 +73,9 @@ it("signs nothing when the person cancels the review or the passkey doesn't answ
   await expect(approveTeardown(ask(), async () => true)).rejects.toEqual(new TeardownRefused("Your passkey didn't answer. Nothing deleted."));
 });
 
-it("refuses before asking when an enforcing Server can't take a teardown yet", async () => {
+it("refuses before asking when a Server can't take a teardown yet", async () => {
   const review = vi.fn(async () => true);
-  const machines = [server(A, "web-1", true, CLUSTER, [])];
+  const machines = [server(A, "web-1", CLUSTER, [ENFORCED])];
 
   await expect(approveTeardown(ask({ machines }), review)).rejects.toBeInstanceOf(TeardownRefused);
   expect(review).not.toHaveBeenCalled();

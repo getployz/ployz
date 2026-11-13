@@ -64,6 +64,10 @@ async fn a_member_from_before_the_first_f6_start_is_legacy() {
     let mut json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
     json.as_object_mut().unwrap().remove("trusted_snapshot");
+    json.as_object_mut().unwrap().remove("born_enforcing");
+    json.as_object_mut()
+        .unwrap()
+        .insert("device_enforcement".into(), false.into());
     std::fs::write(&record, serde_json::to_vec(&json).unwrap()).unwrap();
     let mut harness = founder.clone();
     harness.id = MachineId::random();
@@ -97,12 +101,8 @@ async fn a_member_from_before_the_first_f6_start_is_legacy() {
 
 #[tokio::test]
 async fn a_starting_set_outside_the_snapshot_is_refused() {
-    let (entry, _, founder, directory, server) = participating().await;
-    let late = entry
-        .register(request("late", WireGuardPublicKey([4; 32])))
-        .await
-        .unwrap()
-        .assigned_machine;
+    let (entry, raw, founder, directory, server) = participating_awaiting().await;
+    let late = joined_before_activation(&raw, &founder).await;
     let mesh_key = Signer::from_seed(&[3; 32]);
     approve(&entry, &mesh_key).await;
     let console_key = Signer::from_seed(&[1; 32]);
@@ -148,7 +148,7 @@ async fn a_starting_set_outside_the_snapshot_is_refused() {
 /// Full scope after activation.
 #[tokio::test]
 async fn a_set_from_the_mesh_keeps_no_key_outside_the_snapshot() {
-    let (entry, _, founder, directory, server) = participating().await;
+    let (entry, _, founder, directory, server) = participating_awaiting().await;
     let planted = Signer::from_seed(&[3; 32]);
     approve(&entry, &planted).await;
     let console_key = Signer::from_seed(&[1; 32]);
@@ -207,7 +207,7 @@ async fn activated(
     std::path::PathBuf,
     tokio::task::JoinHandle<()>,
 ) {
-    let (entry, _, founder, directory, server) = participating().await;
+    let (entry, _, founder, directory, server) = participating_awaiting().await;
     if SealingKey::load(&directory).unwrap().is_none() {
         SealingKey::set(&directory, Some(&SealingKey::generate())).unwrap();
     }
@@ -489,7 +489,10 @@ async fn approved_registration(
 
 fn as_member(registration: ployz_core::Registered) -> ployz_core::EnrollRequest {
     ployz_core::EnrollRequest {
-        role: ployz_core::EnrollAs::Member { registration },
+        role: ployz_core::EnrollAs::Member {
+            registration,
+            pin: None,
+        },
         wireguard_mtu: None,
         pinned: Default::default(),
     }
@@ -642,6 +645,81 @@ async fn a_lost_recipient_key_comes_back_only_under_its_code_and_a_trusted_rotat
     assert_eq!(
         entry.held_recipient(ployz_core::LocalMachinePhase::Participating),
         Some(recipient)
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A Machine whose record predates enforcement has no keys anyone vouched for, so until its
+/// Cluster activates it admits no joiner and hands its Sealing Key to no Member, even under
+/// an approval its console trusts.
+#[tokio::test]
+async fn an_awaiting_machine_refuses_register_and_share_sealing_key() {
+    let (entry, raw, founder, directory, server) = participating_awaiting().await;
+    assert!(entry.record().awaits_activation());
+
+    let register = entry
+        .register(request("joiner", WireGuardPublicKey([9; 32])))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            register,
+            LocalMachineError::AwaitingActivation {
+                capability: ployz_core::REGISTER_MACHINE_CAPABILITY
+            }
+        ),
+        "{register:?}"
+    );
+
+    let late = joined_before_activation(&raw, &founder).await;
+    let share = entry
+        .share_sealing_key(ployz_core::ShareSealingKeyRequest {
+            join_approval: Some(approve_recipient(&entry, &late).await),
+            machine: late.id,
+            public_key: late.public_key,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            share,
+            LocalMachineError::AwaitingActivation {
+                capability: ployz_core::SHARE_SEALING_KEY_CAPABILITY
+            }
+        ),
+        "{share:?}"
+    );
+    server.abort();
+    drop(entry);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+/// A Server that enforced from its first start reports itself activated and refuses a
+/// starting set, so running `ployz device enforce` against it can't drop the Devices its
+/// joins brought.
+#[tokio::test]
+async fn a_server_born_enforcing_refuses_activation() {
+    let (entry, _replicated, founder, directory, server) = participating().await;
+    let console_key = Signer::from_seed(&[1; 32]);
+    approve(&entry.clone().on_local_socket(), &console_key).await;
+
+    let report = entry.activation_report().await;
+    assert_eq!(report.state, ActivationState::Activated);
+    assert_eq!(report.operation, None);
+    assert!(report.legacy_keys.is_empty());
+    let refused = entry
+        .clone()
+        .on_local_socket()
+        .set_device_enforcement(enforce(starting_set(&console_key, vec![(&founder).into()])))
+        .await;
+    assert!(matches!(refusal(refused), Refusal::BornEnforcing));
+    assert!(
+        entry
+            .record()
+            .devices()
+            .any(|key| key == DeviceKey::from(console_key.public()))
     );
     server.abort();
     drop(entry);

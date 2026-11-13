@@ -56,8 +56,7 @@ pub(crate) struct Installation {
     body: LocalMachineBody,
     sealing_key: Option<SealingKey>,
     recipient: Option<JoinedRecipient>,
-    devices: Vec<DeviceKey>,
-    device_enforcement: bool,
+    keys: ployz_core::authority::TrustedKeys,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
     enrollment: EnrollRequest,
@@ -71,13 +70,12 @@ struct JoinedRecipient {
     operation: ployz_core::OperationId,
 }
 
-/// What an enrollment installs: the body, the Cluster's key, its approved Devices, whether
-/// it enforces, and the recipient key after activation.
+/// What an enrollment installs: the body, the Cluster's key, the keys its approval names,
+/// and the recipient key after activation.
 type Enrolled = (
     LocalMachineBody,
     Option<SealingKey>,
-    Vec<DeviceKey>,
-    bool,
+    ployz_core::authority::TrustedKeys,
     Option<JoinedRecipient>,
 );
 
@@ -444,8 +442,7 @@ impl LocalMachineStore {
                     body: self.record.body.clone(),
                     sealing_key: None,
                     recipient: None,
-                    devices: Vec::new(),
-                    device_enforcement: self.record.device_enforcement,
+                    keys: ployz_core::authority::TrustedKeys::default(),
                     wireguard_mtu: request.wireguard_mtu,
                     pinned: request.pinned,
                     enrollment: request,
@@ -457,7 +454,7 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, devices, device_enforcement, recipient) = match role {
+        let (body, sealing_key, keys, recipient) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -477,12 +474,17 @@ impl LocalMachineStore {
                     public_ip,
                     advertised_endpoints,
                 )?;
-                (body, sealing_key, Vec::new(), false, None)
+                (
+                    body,
+                    sealing_key,
+                    ployz_core::authority::TrustedKeys::default(),
+                    None,
+                )
             }
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
             }
-            EnrollAs::Member { registration } => self.member(registration)?,
+            EnrollAs::Member { registration, pin } => self.member(registration, pin)?,
         };
         let wanted = body.machine().expect("an enrollment owns its Machine");
         let plan = plan_enroll(
@@ -497,8 +499,7 @@ impl LocalMachineStore {
                 body,
                 sealing_key,
                 recipient,
-                devices,
-                device_enforcement,
+                keys,
                 wireguard_mtu,
                 pinned,
                 enrollment,
@@ -544,13 +545,21 @@ impl LocalMachineStore {
         ))
     }
 
-    fn member(&self, registration: Registered) -> Result<Enrolled, StoreError> {
+    /// A Member's enrollment, admitted only under an approved capsule: one that opens to this
+    /// Machine and carries a join approval signed by a key in `pin`, or with no pin, by a
+    /// Device the approval lists. Only an unpinned join trusts the approval's passkeys.
+    /// Anything else is refused and the record stays as it was.
+    fn member(
+        &self,
+        registration: Registered,
+        pin: Option<ployz_core::JoinPin>,
+    ) -> Result<Enrolled, StoreError> {
         let Registered {
             assigned_machine: mut machine,
             mut visible_peers,
             target_versions,
             sealing_key,
-            devices,
+            devices: _,
             recipient,
         } = registration;
         if self.record.id() != machine.id {
@@ -572,69 +581,78 @@ impl LocalMachineStore {
             Some((key, approval)) => (Some(key), approval),
             None => (None, None),
         };
-        let mut joined = None;
-        let (devices, device_enforcement) = if let Some(approval) = approval {
-            let body = approval.open().map_err(StoreError::JoinRefused)?;
-            let trusted = if self.record.device_enforcement() {
-                self.record.devices().collect()
-            } else {
-                body.devices
-            };
-            let body = ployz_core::authority::join::verify_signature(
-                &approval,
-                &trusted,
-                ployz_core::authority::Timestamp::now(),
-            )
-            .map_err(StoreError::JoinRefused)?;
-            if body.machine != ployz_core::authority::join::JoinAllocation::from(&machine)
-                || body.sealing_recipient != machine.public_key
-                || sealing_key.as_ref().map(SealingKey::public_key) != Some(body.cluster)
-                || !body.network.contains(&ipnet::Ipv4Net::from(machine.subnet))
-                || body.admitting_machines.is_empty()
-            {
-                return Err(StoreError::JoinRefused(
-                    ployz_core::authority::AuthorityRefusal::Mismatch {
-                        field: "a joining Machine",
-                    },
-                ));
-            }
-            visible_peers = body
-                .bootstrap
-                .iter()
-                .map(|allocation| Machine {
-                    join_approval: None,
-                    id: allocation.id,
-                    name: allocation.name.clone(),
-                    subnet: allocation.subnet,
-                    public_key: allocation.public_key,
-                    public_ip: allocation.public_ip,
-                    advertised_endpoints: allocation.advertised_endpoints.clone(),
-                    labels: allocation.policy.labels.clone(),
-                    accepts_builds: allocation.policy.accepts_builds,
-                    accepts_services: allocation.policy.accepts_services,
-                    accepts_ingress: allocation.policy.accepts_ingress,
-                    runtime: Default::default(),
-                    build_concurrency: None,
-                })
-                .collect();
-            if visible_peers.is_empty() {
-                return Err(StoreError::MissingPeers);
-            }
-            machine.join_approval = Some(approval);
-            joined = recipient.and_then(|recipient| {
-                joined_recipient(&recipient, &body, &self.record.wireguard_private_key)
-            });
-            (body.devices, true)
-        } else {
-            if self.record.device_enforcement() {
-                return Err(StoreError::JoinRefused(
-                    ployz_core::authority::AuthorityRefusal::Unsigned {
-                        purpose: ployz_core::authority::Purpose::Join,
-                    },
-                ));
-            }
-            (devices, false)
+        let Some(approval) = approval else {
+            return Err(StoreError::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Unsigned {
+                    purpose: ployz_core::authority::Purpose::Join,
+                },
+            ));
         };
+        let body = approval.open().map_err(StoreError::JoinRefused)?;
+        // A pinned join's body may come through Cloud under a Sealing Key of Cloud's own, so
+        // its passkeys aren't trusted. The install line already runs Cloud's script.
+        let carries_passkeys = pin.is_none();
+        let trusted = pin.map_or(body.devices, |pin| pin.devices);
+        let body = ployz_core::authority::join::verify_signature(
+            &approval,
+            &trusted,
+            ployz_core::authority::Timestamp::now(),
+        )
+        .map_err(StoreError::JoinRefused)?;
+        if body.machine != ployz_core::authority::join::JoinAllocation::from(&machine)
+            || body.sealing_recipient != machine.public_key
+            || sealing_key.as_ref().map(SealingKey::public_key) != Some(body.cluster)
+            || !body.network.contains(&ipnet::Ipv4Net::from(machine.subnet))
+            || body.admitting_machines.is_empty()
+        {
+            return Err(StoreError::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Mismatch {
+                    field: "a joining Machine",
+                },
+            ));
+        }
+        visible_peers = body
+            .bootstrap
+            .iter()
+            .map(|allocation| Machine {
+                join_approval: None,
+                id: allocation.id,
+                name: allocation.name.clone(),
+                subnet: allocation.subnet,
+                public_key: allocation.public_key,
+                public_ip: allocation.public_ip,
+                advertised_endpoints: allocation.advertised_endpoints.clone(),
+                labels: allocation.policy.labels.clone(),
+                accepts_builds: allocation.policy.accepts_builds,
+                accepts_services: allocation.policy.accepts_services,
+                accepts_ingress: allocation.policy.accepts_ingress,
+                runtime: Default::default(),
+                build_concurrency: None,
+            })
+            .collect();
+        if visible_peers.is_empty() {
+            return Err(StoreError::MissingPeers);
+        }
+        let mut approved_passkeys: Vec<ployz_core::authority::TrustedPasskey> = Vec::new();
+        for passkey in body.passkeys.iter().filter(|_| carries_passkeys) {
+            let code = passkey.code();
+            let held = approved_passkeys
+                .iter()
+                .any(|held| held.passkey.code() == code)
+                || body.devices.iter().any(|device| device.code() == code);
+            if !held {
+                approved_passkeys.push(ployz_core::authority::TrustedPasskey {
+                    passkey: passkey.clone(),
+                    approved_by: ployz_core::authority::PasskeyApprover::Device {
+                        code: body.signer.code(),
+                    },
+                });
+            }
+        }
+        machine.join_approval = Some(approval);
+        let joined = recipient.and_then(|recipient| {
+            joined_recipient(&recipient, &body, &self.record.wireguard_private_key)
+        });
         machine.runtime = local_runtime(&self.data_dir);
         Ok((
             LocalMachineBody::Joining {
@@ -643,8 +661,10 @@ impl LocalMachineStore {
                 min_store_version: target_versions,
             },
             sealing_key,
-            devices,
-            device_enforcement,
+            ployz_core::authority::TrustedKeys {
+                devices: body.devices,
+                passkeys: approved_passkeys,
+            },
             joined,
         ))
     }
@@ -653,11 +673,10 @@ impl LocalMachineStore {
         self.require_uninitialized()?;
         let mut installed = self.record.clone();
         installed.body = installation.body;
-        installed.device_enforcement = installation.device_enforcement;
-        if installation.device_enforcement {
-            installed.trusted_machines =
-                installed.body.bootstrap().iter().map(Into::into).collect();
-        }
+        installed.filters_peers = true;
+        installed.born_enforcing = true;
+        let joins = installed.phase() == LocalMachinePhase::Joining;
+        installed.trusted_machines = installed.body.bootstrap().iter().map(Into::into).collect();
         installed.membership_cluster = installation
             .sealing_key
             .as_ref()
@@ -665,14 +684,15 @@ impl LocalMachineStore {
         installed.enrollment = Some(installation.enrollment);
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
-        if installation.device_enforcement {
+        if joins {
             installed
                 .management_clients
                 .retain(|label, _| !DeviceCode::reserves(label));
+            installed.passkeys = installation.keys.passkeys.clone();
         }
         installed
             .management_clients
-            .extend(installation.devices.iter().map(|&key| {
+            .extend(installation.keys.devices.iter().map(|&key| {
                 (
                     key.label(),
                     ManagementClientSlot::Live(LiveSlot::Active {
@@ -693,9 +713,16 @@ impl LocalMachineStore {
             {
                 snapshot.add_member(member.clone());
             }
-            for key in &installation.devices {
+            let codes = installation.keys.devices.iter().map(DeviceKey::code).chain(
+                installation
+                    .keys
+                    .passkeys
+                    .iter()
+                    .map(|trusted| trusted.passkey.code()),
+            );
+            for code in codes {
                 snapshot.add_key(
-                    key.code(),
+                    code,
                     super::Evidence::Activation {
                         operation: joined.operation,
                     },
@@ -716,7 +743,7 @@ impl LocalMachineStore {
 
     pub(crate) fn set_sealing_key(&mut self, key: Option<&SealingKey>) -> io::Result<()> {
         SealingKey::set(&self.data_dir, key)?;
-        if self.record.device_enforcement && self.record.membership_cluster.is_none() {
+        if self.record.filters_peers && self.record.membership_cluster.is_none() {
             let mut updated = self.record.clone();
             updated.membership_cluster = key.map(SealingKey::public_key);
             save(&self.data_dir, &updated).map_err(io::Error::other)?;
@@ -1023,28 +1050,26 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    /// Turn Device enforcement on or off in one write, trusting `starting` while on.
-    /// Turning it on afresh replaces the trusted Members; while on, `starting` adds to them.
+    /// Trust `starting` as Members beside those already trusted, and filter peers by them.
+    /// A record that did not filter peers trusts exactly `starting` from now on.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn set_device_enforcement(
+    #[cfg(test)]
+    pub(crate) fn trust_members(
         &mut self,
-        enforced: bool,
         starting: Vec<ployz_core::authority::Member>,
     ) -> Result<(), StoreError> {
         let mut updated = self.record.clone();
-        if enforced && !self.record.device_enforcement {
+        if !self.record.filters_peers {
             updated.trusted_machines.clear();
             updated.membership_cluster =
                 SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
         }
-        updated.device_enforcement = enforced;
-        if enforced {
-            for member in starting {
-                if !updated.trusted_machines.contains(&member) {
-                    updated.trusted_machines.push(member);
-                }
+        updated.filters_peers = true;
+        for member in starting {
+            if !updated.trusted_machines.contains(&member) {
+                updated.trusted_machines.push(member);
             }
         }
         if updated == self.record {
@@ -1117,7 +1142,7 @@ impl LocalMachineStore {
             }
             kept
         });
-        updated.device_enforcement = true;
+        updated.filters_peers = true;
         updated.trusted_machines = pending.members.clone();
         if updated.membership_cluster.is_none() {
             updated.membership_cluster =
@@ -1722,17 +1747,6 @@ mod device_slot_tests {
         assert_eq!(record.management_scope(&key().into()), None);
         assert_eq!(record.devices().count(), 0);
         assert!(record.clears_management_client(&key().into()));
-    }
-
-    #[test]
-    fn device_enforcement_is_off_until_set_and_survives_reopening() {
-        let (dir, mut store) = founded();
-        assert!(!store.record().device_enforcement());
-        store.set_device_enforcement(true, Vec::new()).unwrap();
-
-        let store = reopened(&dir, store);
-
-        assert!(store.record().device_enforcement());
     }
 
     #[test]

@@ -11,6 +11,7 @@ import {
   logForeignServers,
 } from "#/modules/machines/connections.server";
 import { runtimeFrameRecords, runtimeNamesDigest } from "#/modules/runtime/runtime-frame-record.server";
+import { upgradeOnlyOnOlder } from "#/modules/runtime/upgrade-only";
 import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -360,7 +361,7 @@ export function makeOrganizationRuntimeLayer(
               Effect.tap((connected) => logForeignServers(organizationId, sealingPublicKey === null ? [] : connected.cluster()?.foreign ?? [])),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
-                connected: recordingFrames(connected, (frame) => record(organizationId, access.generation, frame)),
+                connected: upgradeOnlyOnOlder(recordingFrames(connected, (frame) => record(organizationId, access.generation, frame))),
               })),
               // Out of Cluster time fails the open, so its plan refuses instead of reading on as if unpaired.
               Effect.catch((error) => error instanceof ClusterOutOfTime ? Effect.fail(error) : Effect.succeed(session.closed ? noConnection : ({

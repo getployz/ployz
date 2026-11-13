@@ -5,7 +5,7 @@ use ployz_core::{
     MachineId, MachineName, RegisterRequest, WireGuardPublicKey, op,
 };
 
-use super::super::{connect_context, runtime};
+use super::super::{connect_context_chosen, runtime};
 use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
@@ -31,11 +31,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let no_install = matches.get_flag("no-install");
     let runtime = runtime()?;
     let assigned = runtime.block_on(async {
-        if !no_install {
-            crate::provisioning::provision(matches, &storage).await?;
-        }
-        let mut entry = connect_context(matches, options.context()).await?;
-        let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
+        let mut entry = connect_context_chosen(matches, options.context()).await?;
         let entry_id = entry
             .call::<op::Inspect>(
                 InspectRequest::default(),
@@ -43,6 +39,15 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?
             .id;
+        let own_device =
+            crate::handlers::device::key::load(&crate::handlers::device::key::path(config.path()))?
+                .map(|secret| crate::handlers::device::key::public(&secret));
+        let entry_answers = entry.answers_for_itself(&entry_id);
+        require_a_pin(own_device.is_some() || entry_answers, destination)?;
+        if !no_install {
+            crate::provisioning::provision(matches, &storage).await?;
+        }
+        let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let mut target_client = if no_install {
             helpers::connect_direct(matches, &connection).await?
         } else {
@@ -114,6 +119,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                         assigned_subnet: Some(assigned.subnet),
                         ..assignment.request.clone()
                     },
+                    true,
                 )
                 .await?
                 {
@@ -126,10 +132,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             result => result?,
         };
         let approved = registration.assigned_machine.join_approval.is_some();
+        let pin = join_pin(own_device, entry_answers.then_some(&registration.devices));
         let (_, join_confirmation) = helpers::enroll_member(
             &mut target_client,
             EnrollRequest {
-                role: EnrollAs::Member { registration },
+                role: EnrollAs::Member {
+                    registration,
+                    pin: Some(pin),
+                },
                 wireguard_mtu,
                 pinned,
             },
@@ -183,6 +193,34 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         ),
         follow_up,
     )
+}
+
+/// The Devices whose join approval the new Server accepts: this computer's own key, and the
+/// keys the entry trusts when it answered over a route the person chose. Never the keys a
+/// relayed reply names, so a capsule Cloud forged under its own Device is refused.
+fn join_pin(
+    own: Option<ployz_core::DeviceKey>,
+    entry: Option<&Vec<ployz_core::DeviceKey>>,
+) -> ployz_core::JoinPin {
+    let mut devices: Vec<_> = own.into_iter().collect();
+    for key in entry.into_iter().flatten() {
+        if !devices.contains(key) {
+            devices.push(*key);
+        }
+    }
+    ployz_core::JoinPin { devices }
+}
+
+/// Refuse, before anything is asked of the Cluster, a join this CLI can't pin: it holds no
+/// approved device key, and reaches the Cluster only through Ployz Cloud, which could hand
+/// the new Server a capsule of its own.
+fn require_a_pin(pinnable: bool, destination: &str) -> Result<(), Error> {
+    if pinnable {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "{destination} can't join from here: this computer has no approved device key and reaches your Servers only through Ployz Cloud. Run it from an approved device, or add --connect ssh://USER@SERVER for a Server of the Cluster. Nothing was enrolled."
+    )))
 }
 
 /// A Server that answers as the entry for its own add vouches only for its own state, which

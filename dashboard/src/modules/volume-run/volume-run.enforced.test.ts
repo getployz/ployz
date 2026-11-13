@@ -14,7 +14,7 @@ const server = { id: "web-2".padEnd(32, "0") as MachineId, name: "web-2" };
 const refusal = (capability: string) => new RpcError({
   code: "permission_denied",
   message: "This server refused it.",
-  details: { capability, next: "ployz device enforce --off from an approved device", cause: [] },
+  details: { capability, next: "ployz volume move from an approved device", cause: [] },
 });
 
 /** The real askCopy, over a session whose SetVolumeCopy rejects with `rejection` as the SDK does. */

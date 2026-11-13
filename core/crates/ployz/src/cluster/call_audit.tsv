@@ -74,6 +74,7 @@ src/handlers/cloud.rs::wait_phase	op::Inspect	call_repeatable	setup	wait(WAIT)	r
 src/handlers/cluster.rs::read	op::ReadClusterName	invoke_entry	single	-	-	once
 src/handlers/cluster.rs::set	op::SetClusterName	invoke_entry	single	-	-	once
 src/handlers/debug.rs::send	-	invoke_raw	single	target(TARGET_RPC_TIMEOUT)	-	once
+src/handlers/device.rs::approve_own	op::SetDevice	call_shared	single	-	-	once
 src/handlers/device.rs::approve_waiting_join	op::ApproveJoin	invoke	single	-	-	once
 src/handlers/device.rs::approve_waiting_join	op::PendingJoins	invoke	single	-	-	once
 src/handlers/device.rs::devices_on	op::Inspect	invoke	single	-	-	once
@@ -158,6 +159,7 @@ src/sealing_backfill.rs::observe	op::DescribeContract	read	unary	budget(target_r
 src/sealing_backfill.rs::observe	op::Inspect	read	unary	budget(target_read_timeout)	redial	read
 src/sealing_backfill.rs::share	op::ShareSealingKey	read	unary	budget(target_read_timeout)	redial	keyed
 src/sealing_pin.rs::entry_pin	op::Inspect	call	setup	wait(WAIT)	redial	read
+src/sealing_pin_tests.rs::a_pin_from_a_server_born_enforcing_seals_through_cloud_to_its_identity	op::Inspect	call	unary	-	redial	read
 src/sealing_pin_tests.rs::an_activated_entry_without_a_recipient_key_gives_no_pin	op::Inspect	call	unary	-	redial	read
 tests/certificates_cluster.rs::clear_material	op::PublishCertificateMaterial	call	unary	-	redial	keyed
 tests/certificates_cluster.rs::publish_material	op::PublishCertificateMaterial	call	unary	-	redial	keyed

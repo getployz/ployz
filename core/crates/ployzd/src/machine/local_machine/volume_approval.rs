@@ -149,9 +149,8 @@ impl LocalMachine {
     /// Withdraw `recipient` from `volume` here, before a `Forget` destroys anything: every
     /// Mirror operation this Machine admitted for it ends, and so does every grant to it. It
     /// needs no approval, because it only narrows what a driver can do. An approval this
-    /// Machine never admitted is still new work while its window lasts. A Machine that
-    /// doesn't enforce writes one only when it holds something the withdrawal ends. Returns
-    /// whether it wrote one.
+    /// Machine never admitted is still new work while its window lasts. Returns whether it
+    /// wrote one, which it always does.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
@@ -162,20 +161,13 @@ impl LocalMachine {
     ) -> Result<bool, Error> {
         let record = self.record();
         let machine = record.id();
-        let enforcing = record.device_enforcement();
-        let withdrew = self
-            .approvals
+        self.approvals
             .change_volumes(Timestamp::now(), |records, _| {
-                let withdraws = enforcing || records.sends(volume, recipient);
-                if withdraws {
-                    records.withdraw(&machine, volume, recipient);
-                }
-                Ok(withdraws)
+                records.withdraw(&machine, volume, recipient);
+                Ok(())
             })?;
-        if withdrew {
-            tracing::info!(%volume, %recipient, "Volume recipient withdrawn");
-        }
-        Ok(withdrew)
+        tracing::info!(%volume, %recipient, "Volume recipient withdrawn");
+        Ok(true)
     }
 
     /// Under Device enforcement, admit an Operator's `SetVolumeCopy` step against the Volume
@@ -202,9 +194,6 @@ impl LocalMachine {
         volume: &DockerVolumeName,
         step: CopyStep<'_>,
     ) -> Result<Option<Admitted>, Error> {
-        if !self.record().device_enforcement() {
-            return Ok(None);
-        }
         let unsigned = || {
             Error::VolumeStepRefused(AuthorityRefusal::Unsigned {
                 purpose: Purpose::Volume,
@@ -578,9 +567,6 @@ impl LocalMachine {
         volume: &DockerVolumeName,
         snapshot: Option<&SnapshotName>,
     ) -> Result<Sends, Error> {
-        if !self.record().device_enforcement() {
-            return Ok(Sends::Open);
-        }
         let IpAddr::V6(address) = peer.to_canonical() else {
             return Ok(Sends::Refused { recipient: None });
         };
@@ -610,7 +596,7 @@ impl LocalMachine {
         &self,
         approval: Option<&Signed<VolumeApproval>>,
     ) -> Result<(), Error> {
-        if approval.is_none() && self.record().device_enforcement() {
+        if approval.is_none() {
             return Err(Error::VolumeStepRefused(AuthorityRefusal::Unsigned {
                 purpose: Purpose::Volume,
             }));
@@ -638,9 +624,6 @@ impl LocalMachine {
         start: &Start,
         handed: Option<(&HandoffReceiptEnvelope, &SnapshotGuid, WriterEpoch)>,
     ) -> Result<(), Error> {
-        if !self.record().device_enforcement() {
-            return Ok(());
-        }
         let refused = |refusal: AuthorityRefusal| {
             tracing::warn!(%volume, "Volume start refused: {refusal}");
             Error::VolumeStepRefused(refusal)

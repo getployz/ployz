@@ -230,8 +230,8 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
 
   /**
    * This modal is the person's consent to roll back exactly what it named, so no Approval asks again; the Store refuses
-   * when that changed, and the modal asks again. Deleting data a newer Deployment brought back asks by name. On Servers
-   * that enforce Device approval, the person approves what it ships first, and nothing goes when they cancel. Resolves
+   * when that changed, and the modal asks again. Deleting data a newer Deployment brought back asks by name. The person
+   * approves what it ships first, and nothing goes when they cancel. Resolves
    * with the Volume loss to ask about, if any.
    */
   async function redeploy(acceptance: Acceptance = { accept: [], version: null }): Promise<VolumeLossCheck | null> {

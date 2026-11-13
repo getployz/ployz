@@ -33,7 +33,8 @@ export function member(server: string, copy: Copy, options: { epoch?: number; id
       : answer?.kind === "slot" && options.slot !== undefined ? { ...answer, slot: options.slot }
       : answer,
   };
-  const answered: Member = { machine, address: "fdcc::1", answered: true, view };
+  // Every Server that answers runs Ployz 0.4, which takes a passkey's answer to a Volume workflow.
+  const answered: Member = { machine, address: "fdcc::1", answered: true, view, passkey: true };
   return options.bound === undefined ? answered : { ...answered, boundBytes: options.bound };
 }
 

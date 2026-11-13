@@ -81,7 +81,9 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
     let mut identity = request("joiner", public_key);
     identity.machine_id = target_store.record().id();
 
-    let first = rpc_register(&service, identity.clone()).await.unwrap();
+    let first = register_published(&service.local(), &identity)
+        .await
+        .unwrap();
     let replay = rpc_register(&service, identity).await.unwrap();
 
     assert_eq!(replay.assigned_machine.id, first.assigned_machine.id);
@@ -95,6 +97,7 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
     target
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
+                pin: None,
                 registration: replay,
             },
             wireguard_mtu: None,
@@ -120,7 +123,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
     let public_key = joiner_store.record().wireguard_private_key.public_key();
     let mut identity = request("peer", public_key);
     identity.machine_id = joiner_store.record().id();
-    let registered = entry.register(identity).await.unwrap();
+    let registered = register_approved(&entry, &identity).await.unwrap();
     let joiner = LocalMachine::new(joiner_store).with_cluster(Some((
         replicated.clone(),
         AdminClient::new("/no/such/ployz-admin.sock"),
@@ -128,6 +131,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
     joiner
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
+                pin: None,
                 registration: registered,
             },
             wireguard_mtu: None,
@@ -151,7 +155,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
 }
 
 #[tokio::test]
-async fn register_carries_the_entrys_devices_to_the_joiner() {
+async fn register_carries_the_entrys_devices_to_the_joiner_in_its_approval() {
     let (entry, replicated, _founder, data_dir, server) = participating().await;
     let device = ployz_core::DeviceKey::from_bytes([5; 32]);
     entry
@@ -166,8 +170,7 @@ async fn register_carries_the_entrys_devices_to_the_joiner() {
         joiner_store.record().wireguard_private_key.public_key(),
     );
     identity.machine_id = joiner_store.record().id();
-    let registered = entry.register(identity).await.unwrap();
-    assert_eq!(registered.devices, [device]);
+    let registered = register_approved(&entry, &identity).await.unwrap();
     let joiner = LocalMachine::new(joiner_store).with_cluster(Some((
         replicated.clone(),
         AdminClient::new("/no/such/ployz-admin.sock"),
@@ -175,6 +178,7 @@ async fn register_carries_the_entrys_devices_to_the_joiner() {
     joiner
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
+                pin: None,
                 registration: registered,
             },
             wireguard_mtu: None,
@@ -195,13 +199,13 @@ async fn register_carries_the_entrys_devices_to_the_joiner() {
 }
 
 #[tokio::test]
-async fn client_assignment_publishes_through_entry_and_a_changed_register_overwrites_it() {
+async fn client_assignment_publishes_through_entry_and_a_rekeyed_register_is_refused() {
     let (local, replicated, founder, data_dir, server) = participating().await;
     let id = MachineId::random();
     let mut identity = request("edge", WireGuardPublicKey([21; 32]));
     identity.machine_id = id;
     identity.assigned_subnet = Some("10.210.1.0/24".parse().unwrap());
-    let first = local.register(identity.clone()).await.unwrap();
+    let first = register_published(&local, &identity).await.unwrap();
     assert_eq!(first.assigned_machine.id, id);
     assert_eq!(first.visible_peers, vec![founder]);
     assert_eq!(
@@ -218,11 +222,13 @@ async fn client_assignment_publishes_through_entry_and_a_changed_register_overwr
     );
     let mut rekeyed = identity;
     rekeyed.public_key = WireGuardPublicKey([22; 32]);
-    let overwritten = local.register(rekeyed).await.unwrap().assigned_machine;
-    assert_eq!(overwritten.public_key, WireGuardPublicKey([22; 32]));
+    assert!(matches!(
+        register_published(&local, &rekeyed).await,
+        Err(LocalMachineError::JoinConsumed(_))
+    ));
     assert_eq!(
         replicated.machine(id.as_str()).await.unwrap(),
-        Some(overwritten)
+        Some(first.assigned_machine)
     );
     server.abort();
     drop(local);
@@ -256,8 +262,7 @@ async fn register_of_a_forgotten_id_does_not_list_it_again() {
     )));
 
     let forgotten = request("gone", WireGuardPublicKey([31; 32]));
-    let mut published = local
-        .register(forgotten.clone())
+    let mut published = register_published(&local, &forgotten)
         .await
         .unwrap()
         .assigned_machine;
@@ -266,7 +271,7 @@ async fn register_of_a_forgotten_id_does_not_list_it_again() {
     replicated.publish_local_machine(&published).await.unwrap();
     replicated.forget_machine(&published.id).await.unwrap();
 
-    local.register(forgotten).await.unwrap();
+    register_published(&local, &forgotten).await.unwrap();
     assert_eq!(
         replicated.machine(published.id.as_str()).await.unwrap(),
         None
@@ -274,7 +279,10 @@ async fn register_of_a_forgotten_id_does_not_list_it_again() {
 
     let mut fresh = request("back", WireGuardPublicKey([32; 32]));
     fresh.assigned_subnet = Some("10.210.2.0/24".parse().unwrap());
-    let listed = local.register(fresh).await.unwrap().assigned_machine;
+    let listed = register_published(&local, &fresh)
+        .await
+        .unwrap()
+        .assigned_machine;
     assert_eq!(
         replicated.machine(listed.id.as_str()).await.unwrap(),
         Some(listed)
@@ -311,14 +319,13 @@ async fn register_after_forgetting_a_registered_row_lists_it_again() {
     )));
 
     let rerun = request("rerun", WireGuardPublicKey([33; 32]));
-    let registered = local
-        .register(rerun.clone())
+    let registered = register_published(&local, &rerun)
         .await
         .unwrap()
         .assigned_machine;
     replicated.forget_machine(&registered.id).await.unwrap();
 
-    local.register(rerun).await.unwrap();
+    register_published(&local, &rerun).await.unwrap();
     assert_eq!(
         replicated.machine(registered.id.as_str()).await.unwrap(),
         Some(registered.clone())
@@ -376,11 +383,7 @@ async fn register_keeps_a_row_its_machine_already_published() {
     let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-joined").await;
 
     let identity = request("joiner", WireGuardPublicKey([41; 32]));
-    local.register(identity.clone()).await.unwrap();
-    let mut rekeyed = identity;
-    rekeyed.public_key = WireGuardPublicKey([42; 32]);
-    let assigned = local
-        .register(rekeyed.clone())
+    let assigned = register_published(&local, &identity)
         .await
         .unwrap()
         .assigned_machine;
@@ -394,7 +397,7 @@ async fn register_keeps_a_row_its_machine_already_published() {
     joined.runtime.management_identity =
         Some(crate::management::ManagementSecret::generate().public_key());
     replicated.publish_local_machine(&joined).await.unwrap();
-    local.register(rekeyed).await.unwrap();
+    register_published(&local, &identity).await.unwrap();
     assert_eq!(
         replicated.machine(joined.id.as_str()).await.unwrap(),
         Some(joined.clone())
@@ -405,32 +408,6 @@ async fn register_keeps_a_row_its_machine_already_published() {
     assert_eq!(
         replicated.machine(joined.id.as_str()).await.unwrap(),
         Some(joined)
-    );
-    server.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-/// A CLI Register carries the Server's daemon version from its token before that
-/// Server joins. Another Register still replaces the row, and answers what it stored.
-#[tokio::test]
-async fn register_replaces_a_pending_row_that_carries_a_daemon_version() {
-    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-pending").await;
-
-    let mut identity = request("joiner", WireGuardPublicKey([41; 32]));
-    identity.runtime.daemon_version = "0.3.16".into();
-    local.register(identity.clone()).await.unwrap();
-    let rekeyed = RegisterRequest {
-        join_approval: None,
-        join_confirmation: None,
-        public_key: WireGuardPublicKey([42; 32]),
-        ..identity
-    };
-    let assigned = local.register(rekeyed).await.unwrap().assigned_machine;
-    assert_eq!(assigned.public_key, WireGuardPublicKey([42; 32]));
-    assert_eq!(
-        replicated.machine(assigned.id.as_str()).await.unwrap(),
-        Some(assigned)
     );
     server.abort();
     drop(local);
@@ -448,8 +425,7 @@ async fn register_replaces_a_row_without_the_mark_and_takes_back_its_forget() {
     let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-unmarked").await;
 
     let identity = request("joiner", WireGuardPublicKey([41; 32]));
-    let mut older = local
-        .register(identity.clone())
+    let mut older = register_published(&local, &identity)
         .await
         .unwrap()
         .assigned_machine;
@@ -458,8 +434,7 @@ async fn register_replaces_a_row_without_the_mark_and_takes_back_its_forget() {
         Some(crate::management::ManagementSecret::generate().public_key());
     store_as_an_older_daemon(&replicated, &older).await;
 
-    let assigned = local
-        .register(identity.clone())
+    let assigned = register_published(&local, &identity)
         .await
         .unwrap()
         .assigned_machine;
@@ -468,50 +443,10 @@ async fn register_replaces_a_row_without_the_mark_and_takes_back_its_forget() {
         Some(assigned.clone())
     );
     replicated.forget_machine(&assigned.id).await.unwrap();
-    local.register(identity).await.unwrap();
+    register_published(&local, &identity).await.unwrap();
     assert_eq!(
         replicated.machine(assigned.id.as_str()).await.unwrap(),
         Some(assigned)
-    );
-    server.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-/// A Register that names another key than the joined row replaces it, and the joined
-/// Machine's own publish writes it back.
-#[tokio::test]
-async fn a_register_with_another_key_over_a_published_row_is_replaced_and_its_publisher_restores_it()
- {
-    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-other-key").await;
-
-    let identity = request("joiner", WireGuardPublicKey([41; 32]));
-    let mut joined = local
-        .register(identity.clone())
-        .await
-        .unwrap()
-        .assigned_machine;
-    joined.runtime.daemon_version = "0.3.16".into();
-    joined.runtime.management_identity =
-        Some(crate::management::ManagementSecret::generate().public_key());
-    replicated.publish_local_machine(&joined).await.unwrap();
-
-    let rekeyed = RegisterRequest {
-        join_approval: None,
-        join_confirmation: None,
-        public_key: WireGuardPublicKey([43; 32]),
-        ..identity
-    };
-    let assigned = local.register(rekeyed).await.unwrap().assigned_machine;
-    assert_eq!(
-        replicated.machine(assigned.id.as_str()).await.unwrap(),
-        Some(assigned)
-    );
-
-    replicated.publish_local_machine(&joined).await.unwrap();
-    assert_eq!(
-        replicated.machine(joined.id.as_str()).await.unwrap(),
-        Some(joined)
     );
     server.abort();
     drop(local);
@@ -538,7 +473,9 @@ async fn register_requires_a_valid_assignment_and_preserves_the_row_on_refusal()
         vec![founder]
     );
     identity.assigned_subnet = Some("10.210.1.0/24".parse().unwrap());
-    let first = rpc_register(&service, identity.clone()).await.unwrap();
+    let first = register_published(&service.local(), &identity)
+        .await
+        .unwrap();
     for change in 0..2 {
         let mut invalid = identity.clone();
         match change {
@@ -584,12 +521,15 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     identity.machine_id = target_store.record().id();
     let target = LocalMachine::new(target_store.clone()).with_cluster(cluster());
     let enroll = |registration| ployz_core::EnrollRequest {
-        role: ployz_core::EnrollAs::Member { registration },
+        role: ployz_core::EnrollAs::Member {
+            registration,
+            pin: None,
+        },
         wireguard_mtu: None,
         pinned: Default::default(),
     };
     target
-        .enroll(enroll(entry.register(identity.clone()).await.unwrap()))
+        .enroll(enroll(register_published(&entry, &identity).await.unwrap()))
         .await
         .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -652,11 +592,18 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     .expect("the Machines view sees the served row")
     .unwrap();
     assert_eq!(target.record().phase(), LocalMachinePhase::Participating);
+    // The entry trusts the joined Machine once it reads its approved row, and that record
+    // change republishes the founder: settle it before the marker.
+    replicated.publish_cluster_network(marker).await.unwrap();
+    entry.replicated().unwrap().machines().await.unwrap();
+    eventually(|| async { replicated.cluster_network().await.unwrap() == Some(network) })
+        .await
+        .expect("the founder republishes once it trusts the joined Machine");
     replicated.publish_cluster_network(marker).await.unwrap();
 
     // `ployz server add` registers through the entry with an empty runtime,
     // then resends Enroll to a Machine that already participates.
-    let registration = entry.register(identity.clone()).await.unwrap();
+    let registration = register_published(&entry, &identity).await.unwrap();
     assert!(
         registration
             .assigned_machine
@@ -741,7 +688,10 @@ async fn sealing_entry(prefix: &str) -> (LocalMachine, std::path::PathBuf, Joine
 
 fn member(registration: ployz_core::Registered) -> ployz_core::EnrollRequest {
     ployz_core::EnrollRequest {
-        role: ployz_core::EnrollAs::Member { registration },
+        role: ployz_core::EnrollAs::Member {
+            registration,
+            pin: None,
+        },
         wireguard_mtu: None,
         pinned: Default::default(),
     }
@@ -770,7 +720,7 @@ async fn enroll_hands_the_joiner_the_founders_sealing_key() {
         .unwrap()
         .expect("the founder holds a key");
 
-    let registration = entry.register(joiner.identity).await.unwrap();
+    let registration = register_approved(&entry, &joiner.identity).await.unwrap();
     joiner.machine.enroll(member(registration)).await.unwrap();
 
     assert_eq!(
@@ -787,25 +737,10 @@ async fn enroll_hands_the_joiner_the_founders_sealing_key() {
 }
 
 #[tokio::test]
-async fn enroll_from_an_issuer_without_a_sealing_key_leaves_the_joiner_needing_access() {
-    let (entry, _entry_dir, joiner) = sealing_entry("ployzd-enroll-old-issuer").await;
-
-    let mut registration = entry.register(joiner.identity).await.unwrap();
-    registration.sealing_key = None;
-    joiner.machine.enroll(member(registration)).await.unwrap();
-
-    assert_eq!(SealingKey::load(&joiner.dir).unwrap(), None);
-    assert_eq!(
-        sealing(&joiner.machine).await,
-        Some(ployz_core::Sealing::NeedsAccess)
-    );
-}
-
-#[tokio::test]
 async fn enroll_refuses_a_sealing_key_sealed_to_another_machine() {
     let (entry, _entry_dir, joiner) = sealing_entry("ployzd-enroll-wrong-recipient").await;
 
-    let mut registration = entry.register(joiner.identity).await.unwrap();
+    let mut registration = register_approved(&entry, &joiner.identity).await.unwrap();
     registration.sealing_key = Some(
         SealingKey::generate()
             .seal_to(&crate::network::WireGuardPrivateKey::generate().public_key())
@@ -821,21 +756,19 @@ async fn enroll_refuses_a_sealing_key_sealed_to_another_machine() {
 }
 
 #[tokio::test]
-async fn a_corrupt_sealing_key_reads_as_needs_access_and_still_admits_the_joiner() {
+async fn a_corrupt_sealing_key_reads_as_needs_access_and_admits_no_joiner() {
     let (entry, entry_dir, joiner) = sealing_entry("ployzd-register-corrupt-key").await;
     std::fs::write(entry_dir.join("sealing.key"), b"not a key").unwrap();
 
-    let registration = entry.register(joiner.identity).await.unwrap();
-    assert_eq!(registration.sealing_key, None);
-    joiner.machine.enroll(member(registration)).await.unwrap();
+    assert!(register_approved(&entry, &joiner.identity).await.is_err());
 
     assert_eq!(
         sealing(&entry).await,
         Some(ployz_core::Sealing::NeedsAccess)
     );
     assert_eq!(
-        sealing(&joiner.machine).await,
-        Some(ployz_core::Sealing::NeedsAccess)
+        joiner.machine.record().phase(),
+        LocalMachinePhase::Uninitialized
     );
 }
 
@@ -844,9 +777,11 @@ async fn register_refuses_a_low_order_wireguard_key_instead_of_sealing_to_it() {
     let (entry, _entry_dir, mut joiner) = sealing_entry("ployzd-register-low-order").await;
     joiner.identity.public_key = WireGuardPublicKey([0; 32]);
 
-    let error = entry.register(joiner.identity).await.unwrap_err();
+    let error = register_approved(&entry, &joiner.identity)
+        .await
+        .unwrap_err();
 
-    assert!(matches!(error, LocalMachineError::Seal(_)));
+    assert!(matches!(error, LocalMachineError::Seal(_)), "{error:?}");
 }
 
 #[test]

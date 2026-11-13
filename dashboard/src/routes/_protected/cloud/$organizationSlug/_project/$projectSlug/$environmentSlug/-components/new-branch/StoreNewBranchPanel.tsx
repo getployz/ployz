@@ -128,8 +128,8 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         setup: branchSetupCommands(plan, setupCommands).map((setup) => ({ service: setup.lineageId, command: setup.command })),
         fix,
       });
-      // The writer toasts a refused Deploy; the Branch is made either way. On Servers that enforce Device approval the
-      // person approves what it ships first, and a cancel leaves the Branch undeployed.
+      // The writer toasts a refused Deploy; the Branch is made either way. The person approves what it ships first, and a
+      // cancel leaves the Branch undeployed.
       if (deployNow) {
         const id = crypto.randomUUID();
         const approved = await approvals.deploy(branch, id, store).catch((error: Error) => {

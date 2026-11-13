@@ -655,7 +655,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     // A source that signs handoffs decides first, whatever B runs: it resumes, or refuses with the receipt it signed and
     // the Move goes forward. The floors above keep a late start of the run this ends from reaching B meanwhile. A
     // release with no approval asks too, so it fails at A before it forgets the copy a handoff left the only writer.
-    const asksFirst = owner.handoff === true && owner.enforces === true;
+    const asksFirst = owner.handoff === true;
     if (asksFirst) {
       const decided = await resumeA("04-source");
       if (!decided.ok && decided.reason === "handed_off" && decided.receipt !== undefined) throw new HandedOff(decided.receipt);

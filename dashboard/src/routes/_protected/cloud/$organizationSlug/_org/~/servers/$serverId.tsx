@@ -39,6 +39,8 @@ import { ServiceUsage } from "./-components/service-usage";
 import { StrayNamespaces } from "./-components/stray-namespaces";
 import { WebTrafficDialog } from "./-components/web-traffic-dialog";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
+import { FirstKeyAlert } from "./-components/first-key-alert";
+import { olderPloyzSentence, runsOlderPloyz } from "#/modules/runtime/daemon-compat";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/$serverId",
@@ -87,6 +89,8 @@ function RouteComponent() {
 
   const stale = state === "stale";
   const { machine } = server;
+  // A Server on Ployz 0.3 takes only an upgrade from Cloud, so the page offers that in place of its settings.
+  const ployz03 = runsOlderPloyz(machine);
   return (
     <DashboardPage width="content" title={server.name}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
@@ -106,15 +110,25 @@ function RouteComponent() {
           <AlertTitle>Can’t reach {server.name}</AlertTitle>
           <AlertDescription>Check that it’s powered on and online.</AlertDescription>
         </Alert>
+      ) : ployz03 ? (
+        <Alert>
+          <TriangleAlertIcon />
+          <AlertTitle>{olderPloyzSentence()}</AlertTitle>
+          <AlertDescription>Upgrade it under Ployz below. Its services keep running.</AlertDescription>
+        </Alert>
       ) : null}
+      <FirstKeyAlert organizationSlug={organizationSlug} servers={[{ id: machine.id, name: server.name, capabilities: machine.capabilities }]}
+        reach={servers.map(({ name, machine: each }) => ({ name, publicIp: each.publicIp }))} />
       {server.status === "offline" ? null : <ServerResources organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name, version: machine.daemonVersion }} />}
       <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
       <Suspense fallback={null}>
         <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />
       </Suspense>
-      <Suspense fallback={null}>
-        <ServerSettings organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
-      </Suspense>
+      {ployz03 ? null : (
+        <Suspense fallback={null}>
+          <ServerSettings organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
+        </Suspense>
+      )}
     </DashboardPage>
   );
 }

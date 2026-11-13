@@ -245,7 +245,7 @@ async fn cancelled_create_finishes_before_reset_cleanup() {
 #[tokio::test]
 async fn joining_admits_direct_create() {
     use crate::docker::test_support::{FakeDocker, fake_runtime_with};
-    use ployz_core::{AdvertisedEndpoint, ContainerKind, Machine, MachineName};
+    use ployz_core::ContainerKind;
     let data_dir =
         std::env::temp_dir().join(format!("ployzd-joining-admission-{}", MachineId::random()));
     let owner = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
@@ -274,41 +274,9 @@ async fn joining_admits_direct_create() {
             .await,
         Err(LocalMachineError::NotParticipating)
     ));
-    let record = owner.record();
-    let machine = Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id: record.id(),
-        name: MachineName::parse("joining").unwrap(),
-        subnet: "10.210.0.0/24".parse().unwrap(),
-        public_key: record.private_key().public_key(),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-        runtime: Default::default(),
-        join_approval: None,
-        build_concurrency: None,
-    };
-    let mut peer = machine.clone();
-    peer.id = MachineId::random();
+    let join = crate::machine::test_support::ApprovingCluster::new(1).join(&owner.record());
     owner
-        .mutate(move |store| {
-            store.enroll(ployz_core::EnrollRequest {
-                role: ployz_core::EnrollAs::Member {
-                    registration: ployz_core::Registered {
-                        assigned_machine: machine,
-                        visible_peers: vec![peer],
-                        target_versions: Default::default(),
-                        sealing_key: None,
-                        devices: Vec::new(),
-                        recipient: None,
-                    },
-                },
-                wireguard_mtu: None,
-                pinned: Default::default(),
-            })
-        })
+        .mutate(move |store| store.enroll(join))
         .await
         .unwrap()
         .unwrap();

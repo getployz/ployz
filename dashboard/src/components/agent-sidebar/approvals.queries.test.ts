@@ -67,7 +67,7 @@ describe("shownTarget", () => {
 
   it("approves a stop whose title names the Server the ask is limited to, and refuses one naming another", () => {
     const only = { ...preview, only: { machine: "m1" } };
-    const machines = [{ id: "m1" as MachineId, name: "fra-1", capabilities: [], sealing: null, deviceEnforcement: false }];
+    const machines = [{ id: "m1" as MachineId, name: "fra-1", capabilities: [], sealing: null }];
     expect(shownTarget(card("stop", only, "web in shop/production on fra-1"), { ...target({ verb: "stop" }), machines }).verb).toBe("stop");
     expect(() => shownTarget(card("stop", only, "web in shop/production on fra-2"), { ...target({ verb: "stop" }), machines })).toThrow(MISMATCHED_ACT);
     expect(() => shownTarget(card("stop", only, "web in shop/production"), { ...target({ verb: "stop" }), machines })).toThrow(MISMATCHED_ACT);

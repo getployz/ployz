@@ -1,6 +1,6 @@
 /**
  * A person's review of an untrusted pull request's preview, as the browser approves it: this one commit of the
- * preview runs, with the settings shown, on Servers that enforce device approval. The browser drafts the review's
+ * preview runs, with the settings shown. The browser drafts the review's
  * canonical body with the ployz-core code the Servers run, and the person's passkey answers it with a prompt of its own.
  * Cloud keeps and relays the answered review and can change none of it.
  */

@@ -306,7 +306,7 @@ async fn cloud_join_with(
         ensure_failures,
     );
     let address = serve_machine(daemon.clone()).await;
-    let output = super::harness::cli()
+    let output = super::harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{address}"),

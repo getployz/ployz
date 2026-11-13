@@ -145,7 +145,6 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           capabilities: ["ployz.logs.tail.v1"],
           poolCommittableBytes: 12_884_901_888,
           sealing: null,
-          deviceEnforcement: null,
           daemonVersion: "0.1.2",
           membership: "suspect",
           unanswered: false,

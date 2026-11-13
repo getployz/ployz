@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { withApproval } from "#/modules/volume-placement/placement-approvals";
 import { isDeepStrictEqual } from "node:util";
-import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace } from "@ployz/sdk";
+import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace, Signed } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -322,10 +322,10 @@ export const unlessPlacementRefused = <A, E, R>(organizationId: string, write: E
     return yield* write;
   });
 
-/** Delete on an old copy in the volume drawer. */
+/** Delete on an old copy in the volume drawer, under the person's passkey answer when the copy holds data. */
 export const deleteCopy = Effect.fn("VolumePlacement.deleteCopy")(function* (
   actor: Actor,
-  input: typeof DeleteCopyInput.Type,
+  input: typeof DeleteCopyInput.Type & { readonly approval?: Signed },
   read: BlockerReader = readPlacementBlockers,
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "volumes:delete-copy");

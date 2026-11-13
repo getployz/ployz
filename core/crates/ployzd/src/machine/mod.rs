@@ -45,7 +45,7 @@ pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    Admitted, CopyStep, CutRefusal, HeldStep, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
+    Admitted, CopyStep, CutRefusal, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
     SealingError,
 };
 #[cfg(test)]
@@ -53,9 +53,13 @@ pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
 #[cfg(test)]
+mod enrollment_tests;
+#[cfg(test)]
 mod record_tests;
 #[cfg(test)]
 mod register_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -200,10 +204,16 @@ pub struct LocalMachineRecord {
     /// records from before Devices were Full-only, when any client could name one.
     #[serde(default)]
     device_slots_vetted: bool,
-    /// Whether an Operator caller's Service restart needs a Device-signed approval.
-    /// Off until a Full caller turns it on, so an upgrade changes nothing.
-    #[serde(default)]
-    device_enforcement: bool,
+    /// Whether only trusted Members peer here. Every record enrolled since enforcement
+    /// became the only mode sets it, and so does an activation. A record from before that
+    /// keeps what it had until it activates. Written under its old name, so an older daemon
+    /// that reads this record enforces too.
+    #[serde(default, rename = "device_enforcement")]
+    filters_peers: bool,
+    /// Whether this record was enrolled by a daemon on which enforcement is the only mode.
+    /// Absent from every record written before, which awaits activation instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    born_enforcing: bool,
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
     /// Passkeys a Full caller approved here. They approve workflows and rules only and hold no slot.
@@ -407,7 +417,7 @@ impl LocalMachineRecord {
 
     /// Whether this Machine accepts the row as a Cluster member using its own authority.
     pub(crate) fn accepts_machine(&self, machine: &Machine) -> bool {
-        if !self.device_enforcement || self.pins_machine(machine) {
+        if !self.filters_peers || self.pins_machine(machine) {
             return true;
         }
         let Some(approval) = &machine.join_approval else {
@@ -464,15 +474,15 @@ impl LocalMachineRecord {
 
     /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
     /// the IDs a complete snapshot has an accepted row or a removal for, and is `None` while
-    /// the store can't say who left. With enforcement off the peer stays until such a
-    /// snapshot. Under enforcement only a trusted Member stays, until the snapshot answers
+    /// the store can't say who left. A record that doesn't filter peers keeps the peer until
+    /// such a snapshot. Otherwise only a trusted Member stays, until the snapshot answers
     /// for its ID, so a missing or refused row never cuts the peers carrying gossip.
     pub(crate) fn keeps_unlisted_peer(
         &self,
         key: &WireGuardPublicKey,
         answered: Option<&BTreeSet<MachineId>>,
     ) -> bool {
-        if !self.device_enforcement {
+        if !self.filters_peers {
             return answered.is_none();
         }
         self.trusted_machines.iter().any(|member| {
@@ -480,15 +490,15 @@ impl LocalMachineRecord {
         })
     }
 
-    /// Trusted Members whose key is `installed` and whose ID `listed` lacks. Under
-    /// enforcement each stays until the store shows its row deleted, so only these need
-    /// that evidence. Empty with enforcement off.
+    /// Trusted Members whose key is `installed` and whose ID `listed` lacks. Each stays until
+    /// the store shows its row deleted, so only these need that evidence. Empty on a record
+    /// that doesn't filter peers.
     pub(crate) fn unlisted_trusted_machines(
         &self,
         installed: impl Fn(&WireGuardPublicKey) -> bool,
         listed: &BTreeSet<MachineId>,
     ) -> Vec<MachineId> {
-        if !self.device_enforcement {
+        if !self.filters_peers {
             return Vec::new();
         }
         self.trusted_machines
@@ -496,6 +506,13 @@ impl LocalMachineRecord {
             .filter(|member| installed(&member.public_key) && !listed.contains(&member.id))
             .map(|member| member.id)
             .collect()
+    }
+
+    /// Whether only trusted Members peer here: every record but an awaiting one that never
+    /// turned enforcement on.
+    #[must_use]
+    pub(crate) fn filters_peers(&self) -> bool {
+        self.filters_peers
     }
 
     pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {
@@ -742,7 +759,8 @@ impl LocalMachineRecord {
             pinned_addresses: PinnedAddresses::default(),
             push_target: None,
             device_slots_vetted: true,
-            device_enforcement: false,
+            filters_peers: false,
+            born_enforcing: false,
             trusted_machines: Vec::new(),
             passkeys: Vec::new(),
             membership_cluster: None,
@@ -764,10 +782,26 @@ impl LocalMachineRecord {
         self.push_target.as_ref()
     }
 
-    /// Whether an Operator caller's Service restart needs a Device-signed approval.
+    /// Whether this Machine waits for its Cluster's activation: it joined or founded its
+    /// Cluster before enforcement was the only mode, and no activation has committed here.
+    /// It serves reads, upgrades and the routes that cross no part of the bar, and nothing
+    /// else an Operator asks.
     #[must_use]
-    pub fn device_enforcement(&self) -> bool {
-        self.device_enforcement
+    pub fn awaits_activation(&self) -> bool {
+        self.activation.is_none()
+            && !self.born_enforcing
+            && matches!(
+                self.phase(),
+                LocalMachinePhase::Joining | LocalMachinePhase::Participating
+            )
+    }
+
+    /// Whether this Machine enrolled under enforcement as the only mode, so it never awaits an
+    /// activation: it trusts what its join approval named, or, as a founder, no key until a
+    /// person installs one over local administration.
+    #[must_use]
+    pub fn born_enforcing(&self) -> bool {
+        self.born_enforcing
     }
 
     /// Secret behind this Machine's Management Identity.

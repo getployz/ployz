@@ -519,7 +519,7 @@ async fn enforcing_with(starting: Vec<ployz_core::authority::Member>) -> Enforci
     owner
         .mutate(move |store| {
             store.approve_device(device, None).unwrap();
-            store.set_device_enforcement(true, starting).unwrap();
+            store.trust_members(starting).unwrap();
         })
         .await
         .unwrap();
@@ -1032,28 +1032,6 @@ async fn the_send_stream_serves_only_an_accepted_machine_a_live_grant_covers() {
         }),
         "the old approval's snapshot step"
     );
-}
-
-#[tokio::test]
-async fn a_machine_that_does_not_enforce_sends_to_any_peer() {
-    let peered = peered().await;
-    peered
-        .fixture
-        .machine
-        .owner()
-        .mutate(|store| store.set_device_enforcement(false, Vec::new()).unwrap())
-        .await
-        .unwrap();
-    let stranger: std::net::IpAddr = "fdcc::99".parse().unwrap();
-    assert_eq!(
-        peered
-            .machine
-            .sends_volume(stranger, &data(), None)
-            .await
-            .unwrap(),
-        Sends::Open
-    );
-    assert!(peered.fixture.records_empty());
 }
 
 /// An Operator's cut, which stops the Writer's Service, needs a Move approval under

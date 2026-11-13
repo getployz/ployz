@@ -146,7 +146,8 @@ fn wrap(service: local::MachineService) -> MachineApi {
     let port = service.machine_api_port();
     let replicated = local.replicated().ok().cloned();
     let proxy = MachineProxy::new(routes(service.clone()), machine_id, port, replicated)
-        .with_paths(service.paths.clone());
+        .with_paths(service.paths.clone())
+        .for_machine(local);
     MachineApi {
         proxy,
         machine_id,
@@ -345,9 +346,11 @@ struct NeedsFullAccess {
 #[error("Management slots require a local or authenticated management connection")]
 struct NeedsManagementConnection;
 
+/// Said in the message itself, since a CLI before 0.4 prints only the message, and sends a
+/// Full call for another Server through the entry, where this refuses it.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "This Server takes this call only from an approved Device connected to it directly, or over SSH."
+    "This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again."
 )]
 struct NeedsDirectDevice;
 

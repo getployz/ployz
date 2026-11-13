@@ -19,7 +19,7 @@ export function authKeyProblem(key: string): string | null {
 
 const Slug = Schema.String.check(Schema.isNonEmpty());
 
-/** The auth key as the browser sealed it to the Cluster, with the passkey's approval of exactly that ciphertext when a Server enforces. */
+/** The auth key as the browser sealed it to the Cluster, with the passkey's approval of exactly that ciphertext. */
 const PrivateAccessOnInput = Schema.Struct({
   sealed_auth_key: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{1,2048}={0,2}$/)),
   approval: Schema.optional(PasskeyAnswerInput),
@@ -35,7 +35,7 @@ export type RouterState = "running" | "stopped" | "none";
 
 export type ObservedServer = { readonly id: string; readonly name: string; readonly router: RouterState };
 
-export type PrivateAccessObservation = { readonly servers: readonly ObservedServer[]; readonly partial: boolean; readonly enforced: boolean };
+export type PrivateAccessObservation = { readonly servers: readonly ObservedServer[]; readonly partial: boolean };
 
 /** Why a Server's router didn't take: Tailscale refused the key, the router didn't run, or the Server didn't answer. */
 export type RouterProblem = "key_refused" | "not_running" | "unreachable";
@@ -82,6 +82,5 @@ export function privateAccessObservation(frame: ObservedFrame): PrivateAccessObs
   return {
     servers: frame.machines.map(({ machine }) => ({ id: machine.id, name: machine.name, router: routers.get(machine.id) ?? "none" })),
     partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0 || offline.size > 0,
-    enforced: frame.machines.some(({ machine }) => machine.runtime.device_enforcement === true),
   };
 }

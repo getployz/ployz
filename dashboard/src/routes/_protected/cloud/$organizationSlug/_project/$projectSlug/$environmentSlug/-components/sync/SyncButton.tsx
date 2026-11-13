@@ -109,7 +109,7 @@ function BranchSync({ params, store, branch, environments }: {
   const [kept, holdKept] = useCommitHold(branch.kept);
   const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
 
-  /** On Servers that enforce Device approval the person approves what it ships first; a cancel deploys nothing. */
+  /** The person approves what it ships first; a cancel deploys nothing. */
   async function deployAgain() {
     const id = crypto.randomUUID();
     let approved;

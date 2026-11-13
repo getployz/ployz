@@ -302,7 +302,7 @@ def approve_device(run, commands):
     cli(run, commands, ["login", "--wait"], device=True, timeout=120)
     code = json.loads(cli(run, commands, ["--json", "device", "request"], device=True).stdout)["code"]
     # A device is approved from an approved device or over SSH on a Server; this one is the first.
-    for machine in run["machines"]:
+    for machine in [machine for machine in run["machines"] if "machine_id" in machine]:
         cli(run, commands, ["device", "approve", code, "--yes", "--connect", "ssh://" + machine["ssh"]], device=True, timeout=120)
     run["device"] = code
     save(run)
@@ -844,13 +844,16 @@ def launch(args, run, private, total_started):
         for node in run["machines"]:
             enroll(run, commands, node, private)
             save(run)
+            if "cloud" in run and "device" not in run and len(run["machines"]) > 1:
+                # Every join needs a Device's approval, so the founder approves the device before the rest join.
+                approve_device(run, commands)
         bridged = [node for node in run["machines"] if node["name"] in run["bridged"]]
         if bridged:
             print("Enrolled on the checkout daemon; installing " +
                   ", ".join(f"{node['name']}={node['daemon']['version']}" for node in bridged), file=sys.stderr)
             parallel(lambda node: install(run, backend, node, node["daemon"]), bridged)
         wait_ready(run, commands, backend)
-        if "cloud" in run:
+        if "cloud" in run and "device" not in run:
             try:
                 approve_device(run, commands)
             except Exception as error:  # noqa: BLE001 - the run is ready either way
@@ -976,13 +979,15 @@ def enroll(run, commands, node, private, roles=None):
     public = public_ip(node["address"])
     # A standalone founder names its Cluster; a release CLI that predates Cluster Names takes no name.
     founder = "cloud" not in run and not run.get("cli") and run.get("machines", [node])[0] is node
+    # A joiner's approval is signed by the run's approved device, which pins the join to it.
+    joiner = "device" in run and run["machines"][0] is not node
     result = cli(run, commands, ["--json", "server", "add", node["ssh"],
                        *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                        *(["--cluster-name", "verify"] if founder else []),
                        "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
                        "--public-ip", public, "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420",
                        *([f"--accepts-{role}={str(role in roles).lower()}" for role in ROLES] if roles is not None else [])],
-                 check=False)
+                 check=False, device=joiner)
     response = enrolled(node, result, commands.evidence)
     follow_up = response.get("follow_up_error", {})
     node["machine_id"] = response["server"]["machine"]["id"]

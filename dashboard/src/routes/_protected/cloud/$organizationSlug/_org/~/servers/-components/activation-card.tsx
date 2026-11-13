@@ -25,6 +25,7 @@ import {
   installRecipientServerFn,
 } from "#/modules/server-upgrade/activation.functions";
 import { activationKeys } from "#/modules/server-upgrade/activation.queries";
+import { type EnforceTarget, enforceCommand } from "#/modules/server-upgrade/enforce-command";
 import { CopyBlock } from "./copy-block";
 
 /** What this tab's run is doing, or what it ended with. The Servers' own reports drive everything else. */
@@ -71,9 +72,11 @@ function blockerText(blocker: ActivationBlocker) {
  * On the Servers page once a Server runs Ployz 0.4: turn device enforcement on with two passkey prompts, or why it
  * can't be from here. There's no off.
  */
-export function ActivationCard({ organizationSlug, servers }: {
+export function ActivationCard({ organizationSlug, servers, reach }: {
   organizationSlug: string;
   servers: readonly ActivationServer[] | null;
+  /** Every Server of the Cluster, which activating from a computer reaches over its own SSH. */
+  reach: readonly EnforceTarget[];
 }) {
   const queryClient = useQueryClient();
   const operate = useRoleGate(organizationSlug, "servers:operate", OPERATE_REFUSED);
@@ -175,7 +178,7 @@ export function ActivationCard({ organizationSlug, servers }: {
           <AlertTitle>Turn on device enforcement from your computer</AlertTitle>
           <AlertDescription className="flex min-w-0 flex-col gap-2">
             {gate.blockers.map((blocker) => <p key={blocker.kind}>{blockerText(blocker)}</p>)}
-            <CopyBlock value={CLI} />
+            <CopyBlock value={enforceCommand(reach)} />
           </AlertDescription>
         </Alert>
       );

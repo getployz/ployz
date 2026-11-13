@@ -1,5 +1,6 @@
 import type { MachineId, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
 import { APPROVAL_RAN_OUT, leftStopped, type ServiceActLeg } from "#/modules/service-act/service-act";
+import { type OlderServer, olderServer } from "#/modules/runtime/daemon-compat";
 
 export const PROPOSAL_STATUSES = ["draft", "presented", "approved", "denied"] as const;
 export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
@@ -29,15 +30,15 @@ export type ProposalApprovals = Readonly<Record<string, Readonly<Record<string, 
 export const PROPOSAL_CAPABILITY = "ployz.restart.proposal.v1";
 
 /**
- * The Server that would refuse a proposal step: it runs a copy of a step's Service and enforces, but doesn't take a
- * proposal. Null when every such Server does.
+ * The Server that would refuse a proposal step: it runs a copy of a step's Service but doesn't take a proposal. Null
+ * when every such Server does.
  */
 export function strandedByProposal(
   copies: readonly { readonly machineId: string }[],
-  machines: readonly { readonly id: string; readonly name: string; readonly capabilities: readonly string[]; readonly deviceEnforcement?: boolean | null }[],
-) {
+  machines: readonly { readonly id: string; readonly name: string; readonly capabilities: readonly string[] }[],
+): OlderServer | null {
   const hosts = new Set(copies.map((copy) => copy.machineId));
-  return machines.find((machine) => hosts.has(machine.id) && machine.deviceEnforcement === true && !machine.capabilities.includes(PROPOSAL_CAPABILITY))?.name ?? null;
+  return olderServer(machines.filter((machine) => hosts.has(machine.id)), [PROPOSAL_CAPABILITY]);
 }
 
 const VERBS = { restart: "Restart", stop: "Stop", start: "Start" } as const satisfies Record<ServiceVerb, string>;

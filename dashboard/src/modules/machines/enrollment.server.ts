@@ -37,6 +37,7 @@ import {
   type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
+import { joinCode } from "#/modules/machines/join-code.server";
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -804,7 +805,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           }))(error.cause);
           const message = alreadyAdmitted
             ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
-            : "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command.";
+            : `This Server needs a Device to approve its join. On an approved Device, run \`ployz device approve --join ${joinCode(assignment.machine.id, assignment.machine.public_key)}\`, then enroll the Server again.`;
           return Effect.fail(cannotKeepDoors
             ? new Conflict({ message: CANNOT_KEEP_DOORS, userFacing: true })
             : needsApproval

@@ -478,6 +478,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
         sealing_recipient: ployz_core::WireGuardPublicKey([9; 32]),
         devices: vec![signer.public().into()],
         bootstrap: Vec::new(),
+        passkeys: Vec::new(),
         admitting_machines: vec![id('b')],
         issued_at,
         expires_at: issued_at.plus(900_000),
@@ -502,7 +503,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
             }
         })
         .await;
-    let error = sign_waiting_join(&mut client, &config, &expected)
+    let error = sign_waiting_join(&mut client, &config, &expected, false)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("does not match"));
@@ -550,6 +551,7 @@ fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
         sealing_recipient: joiner.public_key,
         devices: Vec::new(),
         bootstrap: Vec::new(),
+        passkeys: Vec::new(),
         admitting_machines: vec![id('b')],
         issued_at,
         expires_at: issued_at.plus(900_000),

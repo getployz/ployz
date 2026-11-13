@@ -7,7 +7,7 @@ use ployz_core::{
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
 use crate::{
-    context::{Connection, Context},
+    context::{Connection, Context, Transport},
     handlers::{Error, leaf_matches},
 };
 use serde_json::json;
@@ -44,6 +44,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         )?,
     };
     let local = destination.is_none();
+    // Over the Server's own socket the person is root there: a Device made now would be
+    // root's on that Server, ride into every later join approval, and outlive the Server.
+    let on_server = matches!(connection.transport(), Transport::Unix(_));
     let requested_name = helpers::requested_name(matches)?;
     let cluster_name = founding_name(matches)?;
     let token_request = helpers::token_request(matches)?;
@@ -156,6 +159,28 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                             .hint(Hint::Next(next))
                     }),
             );
+        }
+        if on_server {
+            crate::ui::note(format_args!(
+                "{} trusts no device yet. From your computer, run:\n  ployz device approve --this-device --connect ssh://root@{}",
+                machine.name,
+                machine.public_ip.map_or_else(|| "HOST".to_owned(), |ip| ip.to_string()),
+            ));
+        } else {
+            let code = crate::handlers::device::approve_own(
+                &ready,
+                &crate::handlers::config_path(matches)?,
+            )
+            .await
+            .map_err(|error| {
+                error
+                    .context("Server initialized; this computer's device isn't approved on it yet.")
+                    .hint(Hint::Next("ployz device request".to_owned()))
+            })?;
+            crate::ui::note(format_args!(
+                "Approved this computer's device {code} on {}.",
+                machine.name
+            ));
         }
         let closed = matches.get_flag("ingress-closed");
         let incomplete = |error: crate::failure::Failure| {

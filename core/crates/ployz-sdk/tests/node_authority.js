@@ -101,7 +101,7 @@ test("a built image, a tag image, a plan read without target, or unknown terms s
     message: "web builds from source, and servers that enforce device approval can't run a build yet. Deploy it from an image pinned by digest.",
   });
   assert.throws(() => deployApprovalBody(preview([web("nginx:1.29-alpine")]), terms), {
-    message: "The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.",
+    message: "The dashboard can't check what web's tag nginx:1.29-alpine points to. Write web's image by digest, which docker buildx imagetools inspect nginx:1.29-alpine prints.",
   });
   assert.throws(() => deployApprovalBody(preview(), terms), { message: "Read the plan with target set to sign a deploy." });
   assert.throws(() => deployApprovalBody(preview([web()]), { ...terms, extra: 1 }), /unknown field `extra`/);

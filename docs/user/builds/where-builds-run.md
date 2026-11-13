@@ -149,7 +149,6 @@ build checks in, is refused, and moves to your servers, which refuse it too, so 
 stops before anything changes. A build an approved device starts over its own connection still
 runs. A build already under way when you turn enforcement on can't start another request for
 sealed values or another image push, though a request it started before then may still finish.
-Turn enforcement off to build through Ployz Cloud again.
 
 ## When a build fails
 

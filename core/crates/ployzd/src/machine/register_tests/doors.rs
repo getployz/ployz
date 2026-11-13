@@ -34,7 +34,9 @@ async fn a_closed_cluster_refuses_a_joiner_that_claims_nothing_and_publishes_no_
     );
     assert_eq!(replicated.machines().await.unwrap().observations.len(), 1);
 
-    let admitted = rpc_register(&service, claiming("new")).await.unwrap();
+    let admitted = register_published(&service.local(), &claiming("new"))
+        .await
+        .unwrap();
     assert_eq!(admitted.assigned_machine.name.as_str(), "new");
 
     server.abort();
@@ -49,17 +51,26 @@ async fn an_undeclared_or_public_cluster_admits_a_joiner_that_claims_nothing() {
     replicated.publish_local_machine(&founder).await.unwrap();
     let service = machine_service(store, replicated.clone(), None);
 
-    rpc_register(&service, request("first", WireGuardPublicKey([1; 32])))
-        .await
-        .unwrap();
+    register_published(
+        &service.local(),
+        &request("first", WireGuardPublicKey([1; 32])),
+    )
+    .await
+    .unwrap();
 
     replicated
         .publish_cluster_doors(&IngressDoors::public())
         .await
         .unwrap();
-    rpc_register(&service, request("second", WireGuardPublicKey([3; 32])))
-        .await
-        .unwrap();
+    register_published(
+        &service.local(),
+        &RegisterRequest {
+            assigned_subnet: Some("10.210.3.0/24".parse().unwrap()),
+            ..request("second", WireGuardPublicKey([3; 32]))
+        },
+    )
+    .await
+    .unwrap();
 
     for doors in [IngressDoors::tunnel(), IngressDoors::both()] {
         replicated.publish_cluster_doors(&doors).await.unwrap();

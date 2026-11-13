@@ -4,6 +4,7 @@ mod catch_up;
 mod daemon_sync;
 mod founder_resumption;
 mod harness;
+mod pin;
 mod policy;
 mod recovery;
 mod setup_report;
@@ -32,7 +33,7 @@ async fn cloud_init_join_participates() {
     let daemon = JoinDaemon::new(registration.clone()).lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let mut child = harness::cli()
+    let mut child = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -72,6 +73,15 @@ async fn cloud_init_join_participates() {
     );
     let joined = daemon.join_request();
     assert_eq!(joined.registration.assigned_machine.id, machine_id);
+    let device: ployz_core::DeviceKey =
+        ployz_core::authority::Signer::from_seed(&harness::DEVICE_SEED)
+            .public()
+            .into();
+    assert_eq!(
+        joined.pin.map(|pin| pin.devices),
+        Some(vec![device]),
+        "a join run from a person's CLI is pinned to its device, so Cloud can't forge it"
+    );
 
     assert!(
         daemon.ensure_requests().is_empty(),
@@ -104,9 +114,53 @@ async fn cloud_init_join_participates() {
     );
 }
 
+/// Run over SSH from a computer with no device key, nothing could pin the join, so Cloud
+/// could bring the Server up under a device of its own. The add stops before the Server
+/// enrolls.
+#[tokio::test]
+async fn a_join_over_ssh_from_a_computer_with_no_device_key_refuses_before_enrolling() {
+    let registration = registration();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration);
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let config = tempfile::tempdir().unwrap();
+
+    let output = harness::cli()
+        .env("PLOYZ_CONFIG", config.path().join("config.yaml"))
+        .env("PLOYZ_ENROLL_TOKEN", TOKEN)
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("this computer has no device key"),
+        "{stderr}"
+    );
+    assert_eq!(daemon.join_attempts(), 0);
+}
+
 async fn add_through_cloud(daemon: JoinDaemon, enroll: &EnrollListen) -> std::process::Output {
     let machine_addr = serve_machine(daemon).await;
-    let mut child = harness::cli()
+    let mut child = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -190,6 +244,33 @@ async fn an_approved_join_to_a_server_that_cannot_confirm_stops_and_names_the_up
     );
 }
 
+/// A Cloud that strips the capsule from its join reply can't make a Server join: the Server
+/// refuses, the command fails naming the refusal, and Cloud hears of no enrollment.
+#[tokio::test]
+async fn a_join_cloud_sent_without_its_capsule_fails_and_reports_nothing() {
+    let registration = registration();
+    assert!(registration.sealing_key.is_none());
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration).refusing_unsigned_joins();
+    let output = add_through_cloud(daemon.clone(), &enroll).await;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the join approval carries no signature"),
+        "{stderr}"
+    );
+    assert_eq!(daemon.join_attempts(), 1);
+    assert_eq!(enroll.posts().len(), 1, "only the identity reaches Cloud");
+    assert!(enroll.callbacks().is_empty(), "{:?}", enroll.callbacks());
+}
+
 /// `--public-ip` and `--wg-endpoint` reach Cloud's registration and stay pinned, as on a
 /// direct join, so the daemon doesn't swap in a detected address (#3515).
 #[tokio::test]
@@ -205,7 +286,7 @@ async fn cloud_join_advertises_and_pins_the_chosen_addresses() {
     let daemon = JoinDaemon::new(registration);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = harness::cli()
+    let output = harness::device_cli()
         .env("PLOYZ_ENROLL_TOKEN", TOKEN)
         .args([
             "--connect",
@@ -362,7 +443,7 @@ async fn a_forgotten_server_is_refused_and_told_to_make_a_new_token() {
     let daemon = JoinDaemon::new(registration).participating();
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let mut child = harness::cli()
+    let mut child = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -420,7 +501,7 @@ async fn an_initialised_server_is_refused_and_told_to_make_a_new_token() {
     let daemon = JoinDaemon::new(registration).resetting();
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let mut child = harness::cli()
+    let mut child = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -626,7 +707,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
     let daemon = JoinDaemon::new(registration.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = harness::cli()
+    let output = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -762,7 +843,7 @@ async fn init_cloud(
     reset: bool,
     yes: bool,
 ) -> std::process::Output {
-    let mut command = harness::cli();
+    let mut command = harness::device_cli();
     command.args([
         "--connect",
         connect,
@@ -1146,7 +1227,7 @@ async fn join_places_observed_ingress_on_this_machine() {
     let daemon = JoinDaemon::new(registration.clone()).with_containers(vec![ingress_on(&founder)]);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = harness::cli()
+    let output = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -1203,7 +1284,7 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
         .fail_list_on(unreachable.id);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = harness::cli()
+    let output = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -1253,7 +1334,7 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     ]);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = harness::cli()
+    let output = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -1308,7 +1389,7 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
         .fail_ensure();
     let machine_addr = serve_machine(daemon).await;
 
-    let output = harness::cli()
+    let output = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -1364,7 +1445,7 @@ async fn join_starts_created_ingress_before_success() {
     let daemon = JoinDaemon::new(registration).with_containers(vec![ingress_on(&founder), created]);
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = harness::cli()
+    let output = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
@@ -1425,7 +1506,7 @@ async fn join_against_founder(
     .await;
     let daemon = JoinDaemon::new(registration.clone()).with_containers(vec![ingress_on(founder)]);
     let machine_addr = serve_machine(daemon.clone()).await;
-    let output = harness::cli()
+    let output = harness::device_cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
