@@ -5,16 +5,15 @@
 //! one. A scope that resolves nowhere, or to no single place, after a rename, removal
 //! or a second Project, cannot name another place, so the first answer stands.
 
+use crate::command::{Keyed, Staged};
 use crate::deployment::admit::Admit;
 use crate::error::conflict;
 use crate::id::ProjectId;
 use crate::storage::Tx;
 use crate::{
-    Actor, Branched, CreateBranch, CreateConfig, CreateEnvironment, CreateGitService,
-    CreateService, CreateVolume, DeploymentSummary, EnvironmentCreated, EnvironmentId,
-    EnvironmentRef, Publish, Published, RpcError, scope,
+    Actor, Branched, CreateBranch, CreateEnvironment, DeploymentSummary, EnvironmentCreated,
+    EnvironmentId, EnvironmentRef, RpcError, scope,
 };
-use crate::{ConfigStaged, ServiceStaged, VolumeStaged};
 use ployz_core::RpcErrorCode;
 
 /// For a create with no Project or Environment to resolve.
@@ -56,73 +55,19 @@ fn environment(
     }
 }
 
-pub(crate) fn publish(
+/// For a keyed create or save whose Environment the caller named.
+pub(crate) fn same_environment<P: Keyed, A: Staged>(
     tx: &mut dyn Tx,
     who: &Actor,
-    c: &Publish,
-    first: &Published,
-) -> Result<(), RpcError> {
-    let id = c.id.as_deref().unwrap_or_default();
-    environment(tx, who, &c.environment, Some(&first.environment.id), id)
-}
-
-pub(crate) fn service(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    c: &CreateService,
-    first: &ServiceStaged,
+    c: &P,
+    first: &A,
 ) -> Result<(), RpcError> {
     environment(
         tx,
         who,
-        &c.environment,
-        Some(&first.environment.id),
-        c.id.as_str(),
-    )
-}
-
-pub(crate) fn git_service(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    c: &CreateGitService,
-    first: &ServiceStaged,
-) -> Result<(), RpcError> {
-    environment(
-        tx,
-        who,
-        &c.environment,
-        Some(&first.environment.id),
-        c.id.as_str(),
-    )
-}
-
-pub(crate) fn volume(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    c: &CreateVolume,
-    first: &VolumeStaged,
-) -> Result<(), RpcError> {
-    environment(
-        tx,
-        who,
-        &c.environment,
-        Some(&first.environment.id),
-        c.id.as_str(),
-    )
-}
-
-pub(crate) fn config(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    c: &CreateConfig,
-    first: &ConfigStaged,
-) -> Result<(), RpcError> {
-    environment(
-        tx,
-        who,
-        &c.environment,
-        Some(&first.environment.id),
-        c.id.as_str(),
+        c.environment(),
+        Some(first.environment_id()),
+        c.key(),
     )
 }
 

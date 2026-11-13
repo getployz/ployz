@@ -90,6 +90,128 @@ macro_rules! claim {
     };
 }
 
+/// The body of `decode` for a table whose enum is tagged by `$tag`: serde buffers an
+/// internally tagged payload and loses the path inside it, so a refused payload is
+/// decoded again on its own, without the tag.
+macro_rules! tagged_decode {
+    ($value:ident, $tag:literal, [$($variant:ident),*]) => {{
+        use ployz_core::decode::decode;
+        if let Ok(decoded) = Self::deserialize(&$value) {
+            return Ok(decoded);
+        }
+        #[derive(Deserialize)]
+        #[serde(tag = $tag, rename_all = "snake_case")]
+        enum Tag {
+            $($variant(serde::de::IgnoredAny),)*
+        }
+        let Ok(tag) = Tag::deserialize(&$value) else {
+            return decode(&$value);
+        };
+        if let Value::Object(fields) = &mut $value {
+            fields.remove($tag);
+        }
+        match tag {
+            $(Tag::$variant(_) => decode(&$value).map(Self::$variant),)*
+        }
+    }};
+}
+pub(crate) use tagged_decode;
+
+/// A payload that writes into the Environment its caller names.
+pub(crate) trait InEnvironment: Clone {
+    fn environment(&self) -> &EnvironmentRef;
+
+    /// This payload written into `to` instead.
+    #[must_use]
+    fn rebound(&self, to: &EnvironmentRef) -> Self;
+}
+
+macro_rules! in_environment {
+    ($($payload:ty),+ $(,)?) => {$(
+        impl InEnvironment for $payload {
+            fn environment(&self) -> &EnvironmentRef {
+                &self.environment
+            }
+
+            fn rebound(&self, to: &EnvironmentRef) -> Self {
+                Self {
+                    environment: to.clone(),
+                    ..self.clone()
+                }
+            }
+        }
+    )+};
+}
+
+in_environment!(
+    CreateService,
+    crate::CreateGitService,
+    CreateVolume,
+    CreateConfig,
+    PutConfigFile,
+    RemoveConfigFile,
+    RenameConfig,
+    DeleteConfig,
+    AttachConfig,
+    DetachConfig,
+    Edit,
+    Discard,
+    crate::NeverSync,
+    Publish,
+);
+
+/// A payload a replay is keyed by: the ID the caller minted for it.
+pub(crate) trait Keyed: InEnvironment {
+    fn key(&self) -> &str;
+}
+
+impl Keyed for CreateService {
+    fn key(&self) -> &str {
+        self.id.as_str()
+    }
+}
+
+impl Keyed for crate::CreateGitService {
+    fn key(&self) -> &str {
+        self.id.as_str()
+    }
+}
+
+impl Keyed for CreateVolume {
+    fn key(&self) -> &str {
+        self.id.as_str()
+    }
+}
+
+impl Keyed for CreateConfig {
+    fn key(&self) -> &str {
+        self.id.as_str()
+    }
+}
+
+impl Keyed for Publish {
+    fn key(&self) -> &str {
+        self.id.as_deref().unwrap_or_default()
+    }
+}
+
+/// An answer that names the Environment it staged into.
+pub(crate) trait Staged {
+    fn environment_id(&self) -> &crate::EnvironmentId;
+}
+
+macro_rules! staged {
+    ($($answer:ty),+ $(,)?) => {$(
+        impl Staged for $answer {
+            fn environment_id(&self) -> &crate::EnvironmentId {
+                &self.environment.id
+            }
+        }
+    )+};
+}
+
+staged!(ServiceStaged, VolumeStaged, ConfigStaged, Published);
+
 /// Register every command. A row reads:
 /// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS] if SAME]
 /// needs PERMISSION agent CLAIM => CALL;`
@@ -140,26 +262,7 @@ macro_rules! commands {
             /// Where it does not fit, inside its payload too, and what fits there;
             /// never a value it holds.
             pub fn decode(mut value: Value) -> Result<Self, ployz_core::decode::DecodeError> {
-                use ployz_core::decode::decode;
-                if let Ok(decoded) = Self::deserialize(&value) {
-                    return Ok(decoded);
-                }
-                // serde buffers an internally tagged payload and loses the path inside it,
-                // so a refused payload is decoded again on its own.
-                #[derive(Deserialize)]
-                #[serde(tag = "command", rename_all = "snake_case")]
-                enum Tag {
-                    $($variant(serde::de::IgnoredAny),)*
-                }
-                let Ok(tag) = Tag::deserialize(&value) else {
-                    return decode(&value);
-                };
-                if let Value::Object(fields) = &mut value {
-                    fields.remove("command");
-                }
-                match tag {
-                    $(Tag::$variant(_) => decode(&value).map(Self::$variant),)*
-                }
+                tagged_decode!(value, "command", [$($variant),*])
             }
         }
 
@@ -258,13 +361,13 @@ commands! {
         => crate::project::create_environment(tx, who, c);
     /// Create an image Service, or an empty one.
     CreateService(CreateService) -> Service(ServiceStaged)
-        keyed [c.id.as_str()] if crate::replay::service
+        keyed [c.id.as_str()] if crate::replay::same_environment
         needs ChangesStage
         agent [ServiceAdd]
         => crate::service::create_service(tx, who, c, trusted);
     /// Create a Service that builds a GitHub repository.
     CreateGitService(crate::CreateGitService) -> Service(ServiceStaged)
-        keyed [c.id.as_str()] if crate::replay::git_service
+        keyed [c.id.as_str()] if crate::replay::same_environment
         needs ChangesStage
         agent [ServiceAdd]
         => crate::git::create_git_service(tx, who, c, trusted);
@@ -280,7 +383,7 @@ commands! {
         => crate::service::remove_service(tx, who, c, trusted);
     /// Create a Volume, optionally mounted into Services.
     CreateVolume(CreateVolume) -> Volume(VolumeStaged)
-        keyed [c.id.as_str()] if crate::replay::volume
+        keyed [c.id.as_str()] if crate::replay::same_environment
         needs ChangesStage
         agent [VolumeAdd]
         => crate::volume::create_volume(tx, who, c, trusted);
@@ -307,7 +410,7 @@ commands! {
         => crate::volume::rename_volume(tx, who, c, trusted);
     /// Create a Config, optionally mounted into Services.
     CreateConfig(CreateConfig) -> Config(ConfigStaged)
-        keyed [c.id.as_str()] if crate::replay::config
+        keyed [c.id.as_str()] if crate::replay::same_environment
         needs ChangesStage
         agent [ConfigWrite]
         => crate::config_item::create_config(tx, who, c, trusted);
@@ -348,7 +451,7 @@ commands! {
         => crate::settings::edit::edit(tx, who, sealing, c, trusted);
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
-        keyed [c.id.as_deref()] if crate::replay::publish
+        keyed [c.id.as_deref()] if crate::replay::same_environment
         needs ChangesStage
         agent [DeployInput]
         => crate::review::publish::publish(tx, who, c, trusted);
@@ -553,133 +656,70 @@ pub struct Batch {
     pub expect: Option<crate::Revision>,
 }
 
-/// A command a [`Batch`] may hold.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "command", rename_all = "snake_case")]
-pub enum BatchCommand {
+/// Register every command a [`Batch`] may hold: the enum, the Environment a command
+/// names, and the [`Command`] it runs as once bound to the Batch's own.
+macro_rules! batch_commands {
+    ($($(#[doc = $doc:literal])* $variant:ident($payload:ty);)*) => {
+        /// A command a [`Batch`] may hold.
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+        #[serde(tag = "command", rename_all = "snake_case")]
+        pub enum BatchCommand {
+            $($(#[doc = $doc])* $variant($payload),)*
+        }
+
+        impl BatchCommand {
+            fn named(&self) -> &EnvironmentRef {
+                match self {
+                    $(Self::$variant(payload) => payload.environment(),)*
+                }
+            }
+
+            fn as_command(&self, at: &EnvironmentRef) -> Command {
+                match self {
+                    $(Self::$variant(payload) => Command::$variant(payload.rebound(at)),)*
+                }
+            }
+        }
+    };
+}
+
+batch_commands! {
     /// See [`Command::CreateService`].
-    CreateService(CreateService),
+    CreateService(CreateService);
     /// See [`Command::CreateVolume`].
-    CreateVolume(CreateVolume),
+    CreateVolume(CreateVolume);
     /// See [`Command::CreateConfig`].
-    CreateConfig(CreateConfig),
+    CreateConfig(CreateConfig);
     /// See [`Command::PutConfigFile`].
-    PutConfigFile(PutConfigFile),
+    PutConfigFile(PutConfigFile);
     /// See [`Command::RemoveConfigFile`].
-    RemoveConfigFile(RemoveConfigFile),
+    RemoveConfigFile(RemoveConfigFile);
     /// See [`Command::RenameConfig`].
-    RenameConfig(RenameConfig),
+    RenameConfig(RenameConfig);
     /// See [`Command::DeleteConfig`].
-    DeleteConfig(DeleteConfig),
+    DeleteConfig(DeleteConfig);
     /// See [`Command::AttachConfig`].
-    AttachConfig(AttachConfig),
+    AttachConfig(AttachConfig);
     /// See [`Command::DetachConfig`].
-    DetachConfig(DetachConfig),
+    DetachConfig(DetachConfig);
     /// See [`Command::Edit`].
-    Edit(Edit),
+    Edit(Edit);
     /// See [`Command::Discard`].
-    Discard(Discard),
+    Discard(Discard);
     /// See [`Command::NeverSync`].
-    NeverSync(crate::NeverSync),
+    NeverSync(crate::NeverSync);
 }
 
 impl BatchCommand {
     fn apply(&self, environment: &EnvironmentRef, at: &mut Call<'_>) -> Result<Written, RpcError> {
-        let unnamed = EnvironmentRef::default();
-        let named = match self {
-            Self::CreateService(create) => &create.environment,
-            Self::CreateVolume(create) => &create.environment,
-            Self::CreateConfig(create) => &create.environment,
-            Self::PutConfigFile(put) => &put.environment,
-            Self::RemoveConfigFile(remove) => &remove.environment,
-            Self::RenameConfig(rename) => &rename.environment,
-            Self::DeleteConfig(delete) => &delete.environment,
-            Self::AttachConfig(mount) => &mount.environment,
-            Self::DetachConfig(unmount) => &unmount.environment,
-            Self::Edit(edit) => &edit.environment,
-            Self::Discard(discard) => &discard.environment,
-            Self::NeverSync(mark) => &mark.environment,
-        };
-        if named != environment && *named != unnamed {
+        let named = self.named();
+        if named != environment && *named != EnvironmentRef::default() {
             return Err(error::invalid(
                 "Every command in a Batch writes the Batch's Environment",
                 json!({ "environment": named }),
             ));
         }
-        match self {
-            Self::CreateService(create) => CreateService {
-                environment: environment.clone(),
-                ..create.clone()
-            }
-            .apply(at)
-            .map(Written::Service),
-            Self::CreateVolume(create) => CreateVolume {
-                environment: environment.clone(),
-                ..create.clone()
-            }
-            .apply(at)
-            .map(Written::Volume),
-            Self::CreateConfig(create) => CreateConfig {
-                environment: environment.clone(),
-                ..create.clone()
-            }
-            .apply(at)
-            .map(Written::Config),
-            Self::PutConfigFile(put) => PutConfigFile {
-                environment: environment.clone(),
-                ..put.clone()
-            }
-            .apply(at)
-            .map(Written::Config),
-            Self::RemoveConfigFile(remove) => RemoveConfigFile {
-                environment: environment.clone(),
-                ..remove.clone()
-            }
-            .apply(at)
-            .map(Written::Config),
-            Self::RenameConfig(rename) => RenameConfig {
-                environment: environment.clone(),
-                ..rename.clone()
-            }
-            .apply(at)
-            .map(Written::ConfigRenamed),
-            Self::DeleteConfig(delete) => DeleteConfig {
-                environment: environment.clone(),
-                ..delete.clone()
-            }
-            .apply(at)
-            .map(Written::ConfigRemoved),
-            Self::AttachConfig(mount) => AttachConfig {
-                environment: environment.clone(),
-                ..mount.clone()
-            }
-            .apply(at)
-            .map(Written::Config),
-            Self::DetachConfig(unmount) => DetachConfig {
-                environment: environment.clone(),
-                ..unmount.clone()
-            }
-            .apply(at)
-            .map(Written::Config),
-            Self::Edit(edit) => Edit {
-                environment: environment.clone(),
-                ..edit.clone()
-            }
-            .apply(at)
-            .map(Written::Edited),
-            Self::Discard(discard) => Discard {
-                environment: environment.clone(),
-                ..discard.clone()
-            }
-            .apply(at)
-            .map(Written::Discarded),
-            Self::NeverSync(mark) => crate::NeverSync {
-                environment: environment.clone(),
-                ..mark.clone()
-            }
-            .apply(at)
-            .map(Written::NeverSynced),
-        }
+        self.as_command(environment).apply(at)
     }
 }
 
