@@ -804,6 +804,14 @@ impl MachineObservation {
         )
     }
 
+    /// Whether a command that sets something on every Server may ask this one: it
+    /// responds, and its row is not marked leaving. A role or a capability narrows the set
+    /// further, where the command has one.
+    #[must_use]
+    pub fn can_be_asked(&self) -> bool {
+        self.invites_rpc() && self.machine.takes_part()
+    }
+
     /// An Unarrived Machine: omitted, never recorded by this observer's admin, and with
     /// no daemon version in its row. Cloud's Register writes an empty runtime, and a
     /// daemon publishes its own row, version included, only once it participates, so
@@ -1262,6 +1270,25 @@ mod placement_tests {
                 row.takes_part(),
                 takes_part,
                 "daemon version {version:?}, leaving {leaving}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_asks_only_a_responding_machine_that_is_not_leaving() {
+        for (membership, leaving, asked) in [
+            (MembershipObservation::Up, false, true),
+            (MembershipObservation::Suspect, false, true),
+            (MembershipObservation::Down, false, false),
+            (MembershipObservation::Up, true, false),
+        ] {
+            let mut row = machine('a', "row");
+            row.runtime.leaving = leaving;
+            let observed = MachineObservation::new(row, membership.clone());
+            assert_eq!(
+                observed.can_be_asked(),
+                asked,
+                "{membership:?}, leaving {leaving}"
             );
         }
     }

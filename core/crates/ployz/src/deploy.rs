@@ -16,8 +16,8 @@ use thiserror::Error;
 pub(crate) mod cleanup;
 mod exec;
 pub(crate) use exec::{
-    CopyLifecycle, MachineOperations, MoveEnd, MoveError, ProxyPlacement, RestartTolerant,
-    health_error, move_container,
+    Answer, CopyLifecycle, MachineOperations, MoveEnd, MoveError, ProxyPlacement, RestartTolerant,
+    health_error, move_container, set_each,
 };
 #[cfg(test)]
 pub(crate) use exec::{RedialFailure, Session};
@@ -488,9 +488,8 @@ impl DeploySnapshot {
             .map(|spec| spec.placement.clone())
             .unwrap_or_default();
         self.machines.iter().filter(move |machine| {
-            machine.invites_rpc()
+            machine.can_be_asked()
                 && machine.machine.accepts_ingress
-                && machine.machine.takes_part()
                 && ployz_core::machine_matches_placement(&machine.machine, &placement)
         })
     }
