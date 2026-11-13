@@ -231,6 +231,18 @@ ployz device approve mmg42klgyq
 For your first device, approve it over SSH on a server. Run `ployz login` there first, then the
 same `ployz device approve`. A request lasts 24 hours.
 
+To approve your computer's own device without Ployz Cloud, run this on your computer with one
+`--connect` per server:
+
+```sh
+ployz device approve --this-device --connect ssh://root@HOST
+```
+
+It makes the device key if your computer has none and adds it to each server it reaches. This is
+the way to give a server its first key that trusts only your computer, not Ployz Cloud. Run on a
+server's own terminal, it refuses: a device made there would stay trusted after the server is
+gone.
+
 `approve` refuses a key from Ployz Cloud that doesn't hash to the code you typed. It says the
 device gets Full access to every server you approve it on, and asks first. Pass `--yes` to skip
 the question. Take the code from the person who ran `ployz device request`, not from a web page.
@@ -295,8 +307,10 @@ device to add one.
 
 `approve --passkey` reads the passkey from Ployz Cloud, refuses one whose key doesn't hash to the
 code you typed, shows its account, and asks before it adds it. Pass `--yes` to skip the question.
-The code itself comes from the Ployz Cloud page, so approving trusts that page to show your own
-passkey's code.
+The code itself comes from the dashboard, so the server trusts whichever key the dashboard named,
+and `approve --passkey` says so before it asks. To give a server its first key without trusting
+Ployz Cloud, approve your computer's device from your computer instead; see
+[Approve a device](#approve-a-device).
 The passkey is tied to the Ployz Cloud address your CLI signed in to, never to one Ployz Cloud
 names. Account asks each server whether it trusts the passkey and shows the answer, like
 **Trusted on 1 of 2 servers**, with each server's state underneath and the steps until every

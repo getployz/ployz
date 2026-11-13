@@ -1185,6 +1185,7 @@ impl FakeMachine for JoinDaemon {
         else {
             return Err(Status::invalid_argument("expected a SetDevice approval"));
         };
+        self.record("set_device");
         rpc_ok(ployz_core::DeviceSet::Approved { code: key.code() })
     }
 

@@ -68,7 +68,7 @@ it.effect("refuses a change to a Server on Ployz 0.3 naming it, and sends the sa
 it.effect("refuses a change that reaches every Server while one of them runs Ployz 0.3", () =>
   Effect.gen(function* () {
     const { sent, session } = recording();
-    const refused = yield* Effect.exit(upgradeOnlyOnOlder(session).destroyNamespace("shop-prod", { volumes: [] } as never, null));
-    assert.isTrue(Exit.isFailure(refused));
+    const refused = yield* Effect.flip(upgradeOnlyOnOlder(session).destroyNamespace("shop-prod", { volumes: [] } as never, null));
+    assert.instanceOf(refused, ServerLacks);
     assert.notInclude(sent, "destroyNamespace");
   }));

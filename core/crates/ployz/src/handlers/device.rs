@@ -53,11 +53,19 @@ pub(crate) fn approve_command(command: Command) -> Command {
         .after_help(concat!(
             "Examples:\n",
             "  ployz device approve mmg42klgyq\n",
+            "  ployz device approve --this-device --connect ssh://root@HOST\n",
             "  sudo ployz device approve --passkey hq3vbn5x2c"
         ))
-        .arg(positional("code", true).help(
+        .arg(positional("code", false).required_unless_present("this-device").help(
             "The code the requesting device or server printed, or the passkey's code from Ployz Cloud",
         ))
+        .arg(
+            Arg::new("this-device")
+                .long("this-device")
+                .action(ArgAction::SetTrue)
+                .conflicts_with_all(["code", "join", "passkey"])
+                .help("Approve this computer's own device, made now if it has none, without Ployz Cloud. Run it from your computer over SSH"),
+        )
         .arg(
             Arg::new("join")
                 .long("join")
@@ -141,6 +149,9 @@ async fn request_with(credential: &Credential, key: DeviceKey) -> Result<Request
 
 pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
+    if leaf.get_flag("this-device") {
+        return runtime()?.block_on(approve_this_device(leaf));
+    }
     if leaf.get_flag("join") {
         let code = leaf
             .get_one::<String>("code")
@@ -176,6 +187,16 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
 /// # Errors
 /// Fails when the key can't be read or written, or the Server refuses it.
 pub(crate) async fn approve_own(client: &Client, config: &Path) -> Result<DeviceCode, Error> {
+    let key = own_key(config)?;
+    client
+        .call_shared::<op::SetDevice>(SetDeviceRequest::Approve { key }, Call::once())
+        .await
+        .map_err(crate::connect::rpc_error)?;
+    Ok(key.code())
+}
+
+/// This computer's Device key beside `config`, made now if it has none.
+fn own_key(config: &Path) -> Result<DeviceKey, Error> {
     let path = key::path(config);
     let secret = match key::load(&path)? {
         Some(secret) => secret,
@@ -185,12 +206,35 @@ pub(crate) async fn approve_own(client: &Client, config: &Path) -> Result<Device
             key::load(&path)?.unwrap_or(secret)
         }
     };
-    let key = key::public(&secret);
-    client
-        .call_shared::<op::SetDevice>(SetDeviceRequest::Approve { key }, Call::once())
-        .await
-        .map_err(crate::connect::rpc_error)?;
-    Ok(key.code())
+    Ok(key::public(&secret))
+}
+
+/// Approve this computer's own Device on every Server it reaches, with no word from Ployz
+/// Cloud: the key is made here. Refused over a Server's own socket, where the key would be
+/// root's on that Server and ride into every later join approval.
+async fn approve_this_device(leaf: &ArgMatches) -> Result<(), Error> {
+    let mut client = route::connect_full(leaf, context(leaf)).await?;
+    if client
+        .full_routes()
+        .connections()
+        .iter()
+        .any(|route| matches!(route.transport(), crate::context::Transport::Unix(_)))
+    {
+        return Err(Error::usage(
+            "Run this from your own computer, with --connect ssh://root@HOST. A device made on a server would stay trusted after that server is gone.",
+        ));
+    }
+    let key = own_key(&config_path(leaf)?)?;
+    ui::note(format_args!(
+        "Approving this computer's device {}.",
+        key.code()
+    ));
+    let request = SetDeviceRequest::Approve { key };
+    set_everywhere(&mut client, |client, machine_id| {
+        set_on::<op::SetDevice>(client, machine_id, SET_DEVICE_CAPABILITY, request.clone())
+    })
+    .await?
+    .finish()
 }
 
 /// Say what approving the Device `code` grants, and ask. A code copied from a compromised
@@ -227,6 +271,9 @@ async fn approve_passkey(
         "Passkey {code} for {}. It can approve workflows, automatic deploy rules, volume changes and Release Channels on these servers, and nothing else.",
         passkey.account
     ));
+    ui::note(
+        "The dashboard named this key, so the server trusts the dashboard here. To trust only your computer, run this there instead:\n  ployz device approve --this-device --connect ssh://root@HOST",
+    );
     if !leaf.get_flag("yes") {
         ui::confirm(
             &format!("Approve passkey {code} for {}?", passkey.account),

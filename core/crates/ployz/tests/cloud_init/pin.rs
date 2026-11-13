@@ -6,7 +6,9 @@ use std::{collections::BTreeMap, os::unix::fs::OpenOptionsExt, path::Path, proce
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{DeviceKey, authority::Signer};
 
-use super::harness::{JoinDaemon, founder_machine, registration, serve_machine};
+use super::harness::{
+    EventLog, JoinDaemon, founder_machine, registration, serve_local_machine, serve_machine,
+};
 
 /// The Device the entry trusts, named in what it answers.
 fn entry_device() -> DeviceKey {
@@ -121,4 +123,96 @@ async fn an_unpinnable_add_refuses_before_register() {
     );
     assert!(!entry.registered());
     assert_eq!(target.join_attempts(), 0);
+}
+
+/// Founding on the Server itself makes no Device for root there: one would ride into every
+/// later join approval as a Full Device, and outlive the Server.
+#[tokio::test]
+async fn a_cluster_founded_on_its_server_approves_no_device_of_the_servers_own() {
+    let events = EventLog::default();
+    let daemon = JoinDaemon::new(registration()).with_events(events.clone());
+    let (socket, path, _) = serve_local_machine(daemon).await;
+    let root = std::env::temp_dir().join(format!(
+        "ployz-found-local-{}",
+        ployz_core::MachineId::random()
+    ));
+    let config = root.join("config.yaml");
+    let output = super::harness::cli()
+        .args([
+            "--ployz-config",
+            config.to_str().unwrap(),
+            "server",
+            "add",
+            "--standalone",
+            &socket,
+            "--cluster-name",
+            "acme",
+            "--name",
+            "founder",
+            "--no-install",
+            "--storage",
+            "none",
+            "--accepts-ingress=false",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    let minted = config.with_file_name("device.key").exists();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(path);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!minted, "no Device key is made for the Server's root");
+    assert!(
+        !events.entries().contains(&"set_device"),
+        "{:?}",
+        events.entries()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ployz device approve --this-device"),
+        "{stderr}"
+    );
+}
+
+/// `ployz device approve --this-device` over a Server's own socket makes and approves no key:
+/// it would be root's on that Server, and ride into every later join approval.
+#[tokio::test]
+async fn this_device_is_refused_on_the_servers_own_socket() {
+    let events = EventLog::default();
+    let daemon = JoinDaemon::new(registration()).with_events(events.clone());
+    let (socket, path, _) = serve_local_machine(daemon).await;
+    let root = std::env::temp_dir().join(format!(
+        "ployz-this-device-{}",
+        ployz_core::MachineId::random()
+    ));
+    let config = root.join("config.yaml");
+    let output = super::harness::cli()
+        .args([
+            "--ployz-config",
+            config.to_str().unwrap(),
+            "device",
+            "approve",
+            "--this-device",
+            "--connect",
+            &socket,
+        ])
+        .env_remove("PLOYZ_TOKEN")
+        .output()
+        .await
+        .unwrap();
+    let minted = config.with_file_name("device.key").exists();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(path);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("from your own computer"),
+        "{output:?}"
+    );
+    assert!(!minted, "no Device key is made on the Server");
+    assert!(
+        !events.entries().contains(&"set_device"),
+        "{:?}",
+        events.entries()
+    );
 }

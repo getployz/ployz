@@ -47,7 +47,7 @@ async fn running_build_finishes_after_build_acceptance_is_revoked() {
     let capture = fixture.capture();
     let client = ployz::connect::connect(
         Path::new("/missing-test-config"),
-        Some(&fixture.address.replace("http://", "tcp://")),
+        Some(fixture.address.as_str()),
         None,
     )
     .await

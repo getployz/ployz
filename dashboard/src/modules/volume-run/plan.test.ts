@@ -504,6 +504,7 @@ describe("plan a run on Servers that enforce device approval", () => {
         code: "enforced",
         message: "b enforces device approval, so Ployz Cloud can't delete data-b on its own. Run ployz volume mirror rm data-b --if-old-copy from an approved device.",
       },
+      deletes: [],
     });
   });
 

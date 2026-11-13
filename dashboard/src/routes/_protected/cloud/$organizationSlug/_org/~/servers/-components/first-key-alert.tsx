@@ -6,7 +6,7 @@ import { listNames } from "#/lib/plural";
 import { passkeysQueryOptions, serversWithoutPasskeyQueryOptions } from "#/modules/passkeys/passkeys.queries";
 import { runsOlderPloyz } from "#/modules/runtime/daemon-compat";
 import { useActivation } from "#/modules/server-upgrade/activation.queries";
-import { type EnforceTarget, enforceCommand } from "#/modules/server-upgrade/enforce-command";
+import { type EnforceTarget, enforceCommand, thisDeviceCommand } from "#/modules/server-upgrade/enforce-command";
 import { CopyBlock } from "./copy-block";
 
 type Shown = { readonly id: string; readonly name: string; readonly capabilities: readonly string[] };
@@ -56,10 +56,15 @@ export function FirstKeyAlert({ organizationSlug, servers, reach }: {
         <CopyBlock value={firstKeyCommands(code)} />
         {awaiting ? (
           <>
-            <p>Or activate from an approved device, reaching each server over its own SSH:</p>
+            <p>That trusts the key the dashboard shows. To trust only your devices, activate from an approved device instead:</p>
             <CopyBlock value={enforceCommand(reach)} />
           </>
-        ) : null}
+        ) : (
+          <>
+            <p>That trusts the key the dashboard shows. To trust only your computer, run this on it instead:</p>
+            <CopyBlock value={thisDeviceCommand(reach)} />
+          </>
+        )}
       </AlertDescription>
     </Alert>
   );

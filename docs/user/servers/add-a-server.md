@@ -150,18 +150,29 @@ No Cloud sign-in or enrollment token is needed. A new or empty context gets its 
 Server and becomes the current context. To add another Server to a context that already
 has connections, use the SSH form. It joins the existing Cluster.
 
+Run on the server, it approves no device: a device made there would be root's on that server, ride
+into every server you add later, and stay trusted after the server is gone. It prints the command
+that gives the server its first key from your computer:
+
+```sh
+ployz device approve --this-device --connect ssh://root@HOST
+```
+
 ## Your first server's first key
 
 A new cluster's first server trusts no device or passkey, and Ployz Cloud can't give it one.
 Until you approve one on the server itself, it refuses deploys, restarts and other changes that
 need an approval. Approve one over SSH on that server:
 
+- **From your computer, without Ployz Cloud.** Run
+  `ployz device approve --this-device --connect ssh://root@HOST`, as in
+  [Approve a device](manage-servers.md#approve-a-device).
 - **From the dashboard only.** Add a passkey under **Account**, then on the server run
   `sudo ployz login` and `sudo ployz device approve --passkey CODE`, as in
-  [Add a passkey](manage-servers.md#add-a-passkey).
-- **With the CLI.** Run `ployz device request` on your computer, then on the server run
-  `sudo ployz login` and `sudo ployz device approve CODE`, as in
-  [Approve a device](manage-servers.md#approve-a-device).
+  [Add a passkey](manage-servers.md#add-a-passkey). The server then trusts whichever key the
+  dashboard named, wherever you installed it. Only the first way doesn't trust Ployz Cloud.
+- **With a device request.** Run `ployz device request` on your computer, then on the server run
+  `sudo ployz login` and `sudo ployz device approve CODE`.
 
 `ployz server add --standalone root@HOST` approves this computer's device on the new server for
 you. Servers you add later get your devices from the join approval. A server you add from the

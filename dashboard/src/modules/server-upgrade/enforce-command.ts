@@ -7,5 +7,14 @@ export type EnforceTarget = { readonly name: string; readonly publicIp: string |
  * no known address shows its name to fill in.
  */
 export function enforceCommand(servers: readonly EnforceTarget[]): string {
-  return ["ployz device enforce", ...servers.map(({ name, publicIp }) => `  --connect ssh://root@${publicIp ?? `<${name}>`}`)].join(" \\\n");
+  return overSsh("ployz device enforce", servers);
+}
+
+/** `ployz device approve --this-device` over each Server's own SSH: a first key that trusts this computer, not Ployz Cloud. */
+export function thisDeviceCommand(servers: readonly EnforceTarget[]): string {
+  return overSsh("ployz device approve --this-device", servers);
+}
+
+function overSsh(command: string, servers: readonly EnforceTarget[]): string {
+  return [command, ...servers.map(({ name, publicIp }) => `  --connect ssh://root@${publicIp ?? `<${name}>`}`)].join(" \\\n");
 }
