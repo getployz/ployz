@@ -1888,7 +1888,7 @@ mod tests {
             }],
             mesh_rtts: BTreeMap::new(),
         }
-        .overlay(vec![entry.clone(), peer.clone()], &entry.id);
+        .overlay(vec![entry.clone(), peer], &entry.id);
 
         let [entry_row, peer_row] = observations.as_slice() else {
             panic!("expected entry and peer observations");
@@ -1945,7 +1945,7 @@ mod tests {
         let entry = machine("edge", ENTRY_ID, 1);
         let peer = machine("peer", PEER_ID, 2);
         let observations =
-            RuntimeWatchTelemetry::default().overlay(vec![entry.clone(), peer.clone()], &entry.id);
+            RuntimeWatchTelemetry::default().overlay(vec![entry.clone(), peer], &entry.id);
 
         let [entry_row, peer_row] = observations.as_slice() else {
             panic!("expected entry and peer observations");

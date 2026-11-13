@@ -66,6 +66,7 @@ fn a_failed_build_is_not_blamed_on_an_earlier_command() {
         deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
         cancellation: None,
         progress: None,
+        recorder: None,
     };
 
     // A captured command carries its own diagnosis.
@@ -112,6 +113,7 @@ fn chatty_builds_deliver_the_final_diagnosis_without_a_disk_spool() {
         deadline: Deadline::starting_now(Duration::from_secs(10)),
         cancellation: None,
         progress: Some(&progress),
+        recorder: None,
     };
     // Let a file-backed writer finish its burst before the first poll.
     let error = docker
@@ -156,6 +158,7 @@ fn cancellation_does_not_wait_for_a_surviving_output_writer() {
         deadline: Deadline::starting_now(Duration::from_secs(10)),
         cancellation: Some(&cancellation),
         progress: Some(&progress),
+        recorder: None,
     };
     let started = Instant::now();
     assert!(matches!(
@@ -907,6 +910,7 @@ fn railpack_prepares_a_python_requirements_app() {
         deadline: Deadline::starting_now(Duration::from_secs(600)),
         cancellation: None,
         progress: None,
+        recorder: None,
     };
     let builder = format!("ployz-test-{}", uuid::Uuid::new_v4().simple());
     let preparation = railpack::prepare(
@@ -1011,6 +1015,7 @@ fn railpack_delivers_a_sealed_value_to_a_build_step_and_keeps_it_out_of_the_imag
         deadline: Deadline::starting_now(Duration::from_secs(900)),
         cancellation: None,
         progress: Some(&progress),
+        recorder: None,
     };
     let native = if cfg!(target_arch = "aarch64") {
         "linux/arm64"

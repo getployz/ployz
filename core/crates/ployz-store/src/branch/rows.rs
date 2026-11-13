@@ -31,7 +31,7 @@ pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, Rp
 }
 
 /// What Branch `id` was made with; none for a root.
-pub(super) fn made_with(
+pub(crate) fn made_with(
     tx: &mut dyn Tx,
     id: &EnvironmentId,
 ) -> Result<Option<SavedEnvironmentIntent>, RpcError> {
@@ -98,9 +98,9 @@ pub(super) fn set_setup(
 }
 
 /// What one Branch row was made with, as read: it can be replaced while still as read.
-pub(super) struct MadeWith {
+pub(crate) struct MadeWith {
     environment: String,
-    pub(super) intent: SavedEnvironmentIntent,
+    pub(crate) intent: SavedEnvironmentIntent,
     text: String,
 }
 
@@ -114,7 +114,7 @@ impl MadeWith {
     }
 
     /// Replace what the Branch was made with by `new`, unless it moved since it was read.
-    pub(super) fn replace(
+    pub(crate) fn replace(
         &self,
         tx: &mut dyn Tx,
         new: &SavedEnvironmentIntent,
@@ -133,7 +133,7 @@ impl MadeWith {
 }
 
 /// What `environment` and the Branches directly below it were made with.
-pub(super) fn made_with_around(
+pub(crate) fn made_with_around(
     tx: &mut dyn Tx,
     environment: &str,
 ) -> Result<Vec<MadeWith>, RpcError> {
@@ -148,7 +148,7 @@ pub(super) fn made_with_around(
 }
 
 /// What Branch `environment` was made with; none for a root.
-pub(super) fn made_with_of(
+pub(crate) fn made_with_of(
     tx: &mut dyn Tx,
     environment: &str,
 ) -> Result<Option<MadeWith>, RpcError> {
@@ -187,7 +187,7 @@ pub(crate) fn parent_and_made_with(
 }
 
 /// The Branches directly below `parent`.
-pub(super) fn children(tx: &mut dyn Tx, parent: &str) -> Result<Vec<String>, RpcError> {
+pub(crate) fn children(tx: &mut dyn Tx, parent: &str) -> Result<Vec<String>, RpcError> {
     tx.query(
         "SELECT environment_id FROM config_environment_branch WHERE parent_id = ?1",
         &[parent.into()],

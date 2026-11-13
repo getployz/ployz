@@ -108,7 +108,7 @@ impl Tool for VolumeShow {
         }
         let mut asks = vec![Ask::Cloud(CloudQuery::Copies {
             namespace: namespace.namespace,
-            volume: self.volume.clone(),
+            volume: self.volume,
         })];
         if let [one] = volumes.as_slice() {
             asks.push(operations(

@@ -610,7 +610,7 @@ pub(super) fn queue(
     let number = next_number(tx, environment)?;
     insert(tx, number)?;
     if superseded > 0 {
-        crate::review::scrub_sealed(tx, environment)?;
+        crate::seal_scrub::history::scrub_sealed(tx, environment)?;
     }
     Ok(number)
 }

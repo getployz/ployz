@@ -390,7 +390,7 @@ enum Action {
     /// makes returns Err.
     Pass { who: usize, lost: bool },
     /// Machine `who`'s loop runs one pass of `issue_wanted`, and a call before the gate returns
-    /// Err: a store read (:400, :405-406, :424-425, :430) or `probe_client` (:431).
+    /// Err: a store read (:400, :405-406, :424-425, :430) or `HostnameProbe::new` in `read_pass`.
     Errs(usize),
     /// Machine `who`'s obtain ends.
     Obtain { who: usize, ends: Ends },

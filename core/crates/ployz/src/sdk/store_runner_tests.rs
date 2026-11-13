@@ -76,7 +76,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             store,
             deployment,
             runner,
-            over: OnceLock::new(),
+            over: Latch::new(),
             reader: None,
         },
         actor,
@@ -152,7 +152,7 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         store: superseded.store.clone(),
         deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
         runner: RunnerId::parse("other").unwrap(),
-        over: OnceLock::new(),
+        over: Latch::new(),
         reader: None,
     };
 
@@ -468,15 +468,15 @@ async fn a_read_is_the_standing_its_status_or_error_code_names() {
     let read = |status| {
         let mut summary = summary.clone();
         summary.status = status;
-        standing(&Ok(summary))
+        standing(read_of(&Ok(summary)))
     };
     let failed = |code| {
-        standing(&Err(RpcError {
+        standing(read_of(&Err(RpcError {
             code,
             message: String::new(),
             details: Value::Null,
             cause: Vec::new(),
-        }))
+        })))
     };
     assert_eq!(read(DeploymentStatus::Running), Standing::Keep);
     assert_eq!(read(DeploymentStatus::Cancelling), Standing::Cancel);

@@ -45,8 +45,8 @@ fn fresh_salts(store: &StoreRoot) -> Arc<Salts> {
 
 #[test]
 fn backoff_doubles_to_its_cap_honors_retry_after_and_resets() {
-    let mut backoff = Backoff::default();
-    let waits: Vec<Duration> = (0..12).map(|_| backoff.next(None)).collect();
+    let mut backoff = Doubling::between(BACKOFF_FLOOR, BACKOFF_CAP);
+    let waits: Vec<Duration> = (0..12).map(|_| retry_delay(&mut backoff, None)).collect();
     for (n, wait) in waits.iter().enumerate() {
         let ceiling = (BACKOFF_FLOOR * 2_u32.pow(u32::try_from(n).unwrap())).min(BACKOFF_CAP);
         assert!(
@@ -56,19 +56,19 @@ fn backoff_doubles_to_its_cap_honors_retry_after_and_resets() {
     }
     assert!(waits.last().is_some_and(|wait| *wait >= BACKOFF_CAP / 2));
     assert_eq!(
-        backoff.next(Some(Duration::from_secs(7))),
+        retry_delay(&mut backoff, Some(Duration::from_secs(7))),
         Duration::from_secs(7)
     );
     assert_eq!(
-        backoff.next(Some(Duration::from_secs(3600))),
+        retry_delay(&mut backoff, Some(Duration::from_secs(3600))),
         Duration::from_secs(3600)
     );
     assert_eq!(
-        backoff.next(Some(Duration::from_secs(86_400))),
+        retry_delay(&mut backoff, Some(Duration::from_secs(86_400))),
         RETRY_AFTER_CAP
     );
     backoff.reset();
-    assert!(backoff.next(None) <= BACKOFF_FLOOR);
+    assert!(retry_delay(&mut backoff, None) <= BACKOFF_FLOOR);
 }
 
 type Reply = (StatusCode, Option<&'static str>);

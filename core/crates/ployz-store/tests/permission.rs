@@ -393,9 +393,7 @@ fn cancelling_a_removal_needs_changes_deploy_on_either_route() {
     store
         .write_trusted(
             &who,
-            &Cancel {
-                deployment: deployment.clone(),
-            },
+            &Cancel { deployment },
             &holding(&[Permission::ChangesDeploy]),
         )
         .unwrap();

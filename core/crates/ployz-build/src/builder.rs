@@ -367,7 +367,8 @@ fn remove(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
 
 /// Serializes local attempts sharing one build slot's builder and retained cache.
 ///
-/// Held for the whole attempt. Uncertain termination quarantines the slot.
+/// Held for the whole attempt. Uncertain termination quarantines the slot
+/// until its mark's processes are observed gone and its builder is removed.
 #[derive(Clone)]
 pub(crate) struct Lock {
     file: std::sync::Arc<LockedFile>,
@@ -375,19 +376,84 @@ pub(crate) struct Lock {
     slot: usize,
 }
 
-struct LockedFile(fs::File);
+struct LockedFile {
+    file: fs::File,
+    // Serializes writes to the mark between threads of one attempt.
+    writes: std::sync::Mutex<()>,
+}
+
+/// Records each Docker CLI an attempt spawns in its mark, while it still
+/// holds the slot.
+#[derive(Clone)]
+pub(crate) struct Recorder(std::sync::Weak<LockedFile>);
+
+/// Waits on its stdin for `start` before it runs `program`, so a Docker CLI
+/// never runs unless the mark names it first. A parent killed before then
+/// closes the pipe, and the child exits without running anything.
+const GATE: &str = r#"IFS= read -r go && [ "$go" = start ] && exec "$0" "$@" </dev/null; exit 125"#;
+
+pub(crate) fn gated(program: &std::path::Path) -> std::process::Command {
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args(["-c", GATE])
+        .arg(program)
+        .stdin(std::process::Stdio::piped());
+    command
+}
+
+impl Recorder {
+    /// Name a [`gated`] child in the mark, with the Docker endpoint it uses,
+    /// then let it run. On failure the child is released without running.
+    pub(crate) fn record(
+        &self,
+        child: &mut std::process::Child,
+        endpoint: &str,
+    ) -> Result<(), BuildError> {
+        use std::io::Write as _;
+        let mut gate = child.stdin.take().expect("a gated child has a piped stdin");
+        self.append(child.id(), endpoint)?;
+        gate.write_all(b"start\n").map_err(lock_error)
+    }
+
+    fn append(&self, pid: u32, endpoint: &str) -> Result<(), BuildError> {
+        use std::os::unix::fs::FileExt as _;
+        let Some(locked) = self.0.upgrade() else {
+            return Ok(());
+        };
+        let _writes = locked.writes.lock().expect("mark writes never panic");
+        let length = locked.file.metadata().map_err(lock_error)?.len();
+        // An unmarked slot has nothing running that a later attempt must wait for.
+        if length == 0 {
+            return Ok(());
+        }
+        let Some(process) = crate::owner::Process::observe(pid).map_err(lock_error)? else {
+            return Ok(());
+        };
+        locked
+            .file
+            .write_all_at(
+                crate::owner::Mark::docker_line(process, endpoint).as_bytes(),
+                length,
+            )
+            .map_err(lock_error)
+    }
+}
 
 impl Lock {
     /// Wait for exclusive use of this user's builder.
     ///
     /// # Errors
-    /// Fails when the lock file cannot be opened or locked.
-    pub(crate) fn acquire(cancellation: &crate::Cancellation) -> Result<Self, BuildError> {
-        Self::acquire_in(&directory(), cancellation)
+    /// Fails when the lock file cannot be opened or locked, or stays quarantined.
+    pub(crate) fn acquire(
+        docker: &std::path::Path,
+        cancellation: &crate::Cancellation,
+    ) -> Result<Self, BuildError> {
+        Self::acquire_in(&directory(), docker, cancellation)
     }
 
     fn acquire_in(
         directory: &std::path::Path,
+        docker: &std::path::Path,
         cancellation: &crate::Cancellation,
     ) -> Result<Self, BuildError> {
         let deadline = std::time::Instant::now() + QUEUE_TIMEOUT;
@@ -395,7 +461,7 @@ impl Lock {
             if cancellation.is_cancelled() {
                 return Err(BuildError::Cancelled);
             }
-            match Self::try_acquire_in(directory) {
+            match Self::try_acquire_slot(directory, 0, docker) {
                 Err(BuildError::Busy) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
@@ -404,17 +470,20 @@ impl Lock {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn try_acquire_in(directory: &std::path::Path) -> Result<Self, BuildError> {
-        Self::try_acquire_slot(directory, 0)
+        Self::try_acquire_slot(directory, 0, std::path::Path::new("docker"))
     }
 
+    /// Take a free slot, first recovering it if an earlier attempt left a mark.
     pub(crate) fn try_acquire_slot(
         directory: &std::path::Path,
         slot: usize,
+        docker: &std::path::Path,
     ) -> Result<Self, BuildError> {
-        let lock = Self::open_locked(directory, slot)?;
-        if lock.file.0.metadata().map_err(lock_error)?.len() != 0 {
-            return Err(lock.uncertain());
+        let mut lock = Self::open_locked(directory, slot)?;
+        if lock.marked()? {
+            lock.recover(docker)?;
         }
         Ok(lock)
     }
@@ -429,6 +498,10 @@ impl Lock {
         slot_name(self.slot)
     }
 
+    pub(crate) fn recorder(&self) -> Recorder {
+        Recorder(std::sync::Arc::downgrade(&self.file))
+    }
+
     /// Private staging for this slot's uploads.
     pub(crate) fn upload_directory(&self) -> PathBuf {
         self.directory.join(match self.slot {
@@ -437,18 +510,88 @@ impl Lock {
         })
     }
 
-    fn uncertain(&self) -> BuildError {
-        BuildError::UncertainTermination(format!(
-            "retained builder state is quarantined; confirm builder {} and its host processes have stopped before clearing {}",
-            self.name(),
-            self.directory.join(lock_file(self.slot)).display()
-        ))
+    fn marked(&self) -> Result<bool, BuildError> {
+        Ok(self.file.file.metadata().map_err(lock_error)?.len() != 0)
     }
 
-    /// One bounded teardown of every abandoned builder slot on daemon startup.
-    /// Markers remain: removing a container cannot prove an orphaned host
-    /// process stopped, so cleanup alone must never authorize conflicting work.
-    /// Every slot is attempted; the first failure is reported.
+    /// Clear an earlier attempt's mark once nothing it started can still run.
+    ///
+    /// Holding the file lock proves no live attempt owns the slot. The mark's
+    /// processes, matched by PID and start time on their boot, and any Buildx
+    /// process naming the builder must be gone. Recovery then rewrites the mark
+    /// to name this boot and the endpoints to clean, and no owner. Its own
+    /// Docker CLIs are recorded there before they run. So a recovery killed
+    /// mid-removal leaves those CLIs for the next one to wait on, and one that
+    /// fails leaves nothing alive that blocks a retry. The mark clears once
+    /// Docker confirms the builder and its helpers are gone on every endpoint.
+    fn recover(&mut self, docker: &std::path::Path) -> Result<(), BuildError> {
+        let path = self.directory.join(lock_file(self.slot));
+        let name = self.name();
+        let quarantined = |observed: String| {
+            BuildError::UncertainTermination(format!(
+                "builder {name} stays quarantined: the Build that last used it never confirmed its end, and {observed}. A later Build, daemon start or cache clear recovers it once that changes; its mark is {}",
+                path.display()
+            ))
+        };
+        let mark = crate::owner::Mark::parse(&fs::read_to_string(&path).map_err(lock_error)?);
+        let survivors = mark
+            .survivors(&name)
+            .map_err(|error| quarantined(format!("its processes could not be read: {error}")))?;
+        if !survivors.is_empty() {
+            let unnamed = if mark == crate::owner::Mark::Unnamed {
+                " (its mark predates recorded processes)"
+            } else {
+                ""
+            };
+            return Err(quarantined(format!(
+                "still running{unnamed}: {}",
+                survivors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        let endpoints = mark.endpoints();
+        // Builds refuse any other Docker, so a mark naming one was not written by them.
+        if let Some(endpoint) = endpoints
+            .iter()
+            .find(|endpoint| !endpoint.starts_with("unix://"))
+        {
+            return Err(quarantined(format!(
+                "none of its processes is running, but it used Docker at {endpoint}, which is not this Machine's"
+            )));
+        }
+        self.take_over(&endpoints)?;
+        let recorder = self.recorder();
+        for endpoint in endpoints {
+            let mut environment = crate::upload::environment(&self.upload_directory());
+            environment.insert("DOCKER_HOST".into(), endpoint.clone());
+            let docker = Docker {
+                program: docker,
+                environment: &environment,
+                working_dir: &self.directory,
+                deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
+                cancellation: None,
+                progress: None,
+                recorder: Some(&recorder),
+            };
+            // Ask Docker itself, not a Buildx configuration the attempt may not have shared.
+            std::iter::once(format!("buildx_buildkit_{name}0"))
+                .chain(HELPERS.iter().map(|helper| format!("{name}-{helper}")))
+                .try_for_each(|container| docker.remove_container(&container))
+                .map_err(|error| {
+                    quarantined(format!(
+                        "none of its processes is running, but removing its builder from {endpoint} failed: {error}"
+                    ))
+                })?;
+        }
+        self.clear()
+    }
+
+    /// One bounded recovery of every abandoned builder slot on daemon startup.
+    /// A slot whose last attempt may still run stays quarantined. Every slot is
+    /// attempted; the first failure is reported.
     pub(crate) fn cleanup_abandoned(policy: &crate::HostPolicy) -> Result<(), BuildError> {
         Self::known_slots(&policy.state_directory)
             .map(|slot| Self::cleanup_abandoned_slot(policy, slot))
@@ -456,28 +599,10 @@ impl Lock {
     }
 
     fn cleanup_abandoned_slot(policy: &crate::HostPolicy, slot: usize) -> Result<(), BuildError> {
-        let lock = Self::open_locked(&policy.state_directory, slot)?;
-        if lock.file.0.metadata().map_err(lock_error)?.len() == 0 {
-            return crate::upload::remove_abandoned(&lock.upload_directory()).map_err(|error| {
-                BuildError::Prerequisite(format!("remove abandoned Build upload: {error}"))
-            });
-        }
-        let environment = crate::upload::environment(&lock.upload_directory());
-        let docker = Docker {
-            program: &policy.docker,
-            environment: &environment,
-            working_dir: &lock.directory,
-            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
-            cancellation: None,
-            progress: None,
-        };
-        if let Err(error) = remove(&docker, &lock.name()) {
-            return Err(BuildError::UncertainTermination(format!(
-                "{}; abandoned builder cleanup failed: {error}",
-                lock.uncertain()
-            )));
-        }
-        Err(lock.uncertain())
+        let lock = Self::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
+        crate::upload::remove_abandoned(&lock.upload_directory()).map_err(|error| {
+            BuildError::Prerequisite(format!("remove abandoned Build upload: {error}"))
+        })
     }
 
     fn open_locked(directory: &std::path::Path, slot: usize) -> Result<Self, BuildError> {
@@ -513,32 +638,64 @@ impl Lock {
             Err(error) => return Err(lock_error(error.into())),
         }
         Ok(Self {
-            file: std::sync::Arc::new(LockedFile(file)),
+            file: std::sync::Arc::new(LockedFile {
+                file,
+                writes: std::sync::Mutex::default(),
+            }),
             directory: directory.to_owned(),
             slot,
         })
     }
 
     pub(crate) fn clear(&mut self) -> Result<(), BuildError> {
-        self.file.0.set_len(0).map_err(lock_error)?;
-        self.file.0.sync_all().map_err(lock_error)
+        let _writes = self.file.writes.lock().expect("mark writes never panic");
+        self.file.file.set_len(0).map_err(lock_error)?;
+        self.file.file.sync_all().map_err(lock_error)
     }
 
-    /// Persist uncertainty across process exit before releasing the OS lock.
-    pub(crate) fn quarantine(&mut self) -> Result<(), BuildError> {
-        use std::io::Write as _;
-        (&self.file.0)
-            .write_all(b"termination unconfirmed\n")
+    /// Replace the mark with a recovery's. The mark is never empty meanwhile:
+    /// the new one overwrites it in place before the rest is cut.
+    fn take_over(&mut self, endpoints: &[String]) -> Result<(), BuildError> {
+        use std::os::unix::fs::FileExt as _;
+        let _writes = self.file.writes.lock().expect("mark writes never panic");
+        let mark = crate::owner::Mark::recovery(endpoints).map_err(lock_error)?;
+        self.file
+            .file
+            .write_all_at(mark.as_bytes(), 0)
             .map_err(lock_error)?;
-        self.file.0.sync_all().map_err(lock_error)
+        self.file
+            .file
+            .set_len(mark.len() as u64)
+            .map_err(lock_error)?;
+        self.file.file.sync_all().map_err(lock_error)
+    }
+
+    /// Persist uncertainty across process exit before releasing the OS lock,
+    /// naming this process as the owner. A slot this attempt already marked
+    /// keeps the Docker processes recorded since.
+    pub(crate) fn quarantine(&mut self) -> Result<(), BuildError> {
+        use std::os::unix::fs::FileExt as _;
+        let _writes = self.file.writes.lock().expect("mark writes never panic");
+        if self.file.file.metadata().map_err(lock_error)?.len() != 0 {
+            return Ok(());
+        }
+        let header = crate::owner::Mark::header().map_err(lock_error)?;
+        self.file
+            .file
+            .write_all_at(header.as_bytes(), 0)
+            .map_err(lock_error)?;
+        self.file.file.sync_all().map_err(lock_error)
     }
 }
+
+/// Helper containers named after a builder, removed with it.
+const HELPERS: [&str; 3] = ["railpack", "prepare", "assemble"];
 
 impl Drop for LockedFile {
     fn drop(&mut self) {
         // Another thread may have forked a child that briefly inherited this
         // CLOEXEC descriptor. Release ownership now, without waiting for exec.
-        let _ = rustix::fs::flock(&self.0, rustix::fs::FlockOperation::Unlock);
+        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
     }
 }
 
@@ -732,6 +889,7 @@ esac
             deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
             cancellation: None,
             progress: None,
+            recorder: None,
         };
         let resources = crate::policy::Resources::default();
         let builder = Builder::acquire(
@@ -780,15 +938,17 @@ esac
                 deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
                 cancellation: None,
                 progress: None,
+                recorder: None,
             };
             let lock = Lock::try_acquire_in(&directory).unwrap();
             let mut builder =
                 Builder::acquire(&docker, lock, &crate::policy::Resources::default(), None)
                     .unwrap();
             // A read-only descriptor deterministically makes marker truncation fail.
-            builder.lock.as_mut().unwrap().file = std::sync::Arc::new(LockedFile(
-                fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap(),
-            ));
+            builder.lock.as_mut().unwrap().file = std::sync::Arc::new(LockedFile {
+                file: fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap(),
+                writes: std::sync::Mutex::default(),
+            });
             let result = if prior_failure {
                 Err(BuildError::Result("earlier build failure".into()).at(crate::Stage::Building))
             } else {
@@ -810,6 +970,264 @@ esac
             assert!(error.to_string().contains("build lock"));
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    fn quarantined_slot(slot: usize, mark: &str) -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(
+            directory.path(),
+            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
+        let docker = directory.path().join("docker");
+        crate::tests::executable(
+            &docker,
+            &format!(
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf '%s\\n' \"$*\" >> '{}/calls'\n",
+                directory.path().display()
+            ),
+        );
+        fs::write(directory.path().join(lock_file(slot)), mark).unwrap();
+        (directory, docker)
+    }
+
+    fn sleeper(arguments: &[&str]) -> std::process::Child {
+        std::process::Command::new("sh")
+            .args(["-c", "sleep 30; :"])
+            .args(arguments)
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_dead_owner_whose_docker_child_survives_stays_quarantined() {
+        use crate::owner::{Process, Role};
+        let slot = 7;
+        let mut owner = sleeper(&[]);
+        let dead_owner = Process::observe(owner.id()).unwrap().unwrap();
+        owner.kill().unwrap();
+        owner.wait().unwrap();
+        let mut child = sleeper(&[]);
+        let surviving = Process::observe(child.id()).unwrap().unwrap();
+        let (directory, docker) = quarantined_slot(
+            slot,
+            &crate::owner::named(&[(Role::Owner, dead_owner), (Role::Docker, surviving)]),
+        );
+
+        let refused = Lock::try_acquire_slot(directory.path(), slot, &docker)
+            .err()
+            .unwrap();
+        assert!(refused.is_unknown());
+        let message = refused.to_string();
+        assert!(
+            message.contains(&format!(
+                "Docker CLI process {} the Build started",
+                child.id()
+            )),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&format!("process {} that owned", owner.id())),
+            "{message}"
+        );
+        assert!(
+            !directory.path().join("calls").exists(),
+            "recovery touched the builder while the Build's Docker CLI ran"
+        );
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let lock = Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap();
+        assert!(!lock.marked().unwrap());
+        let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
+        let name = slot_name(slot);
+        for removed in [
+            format!("rm --force buildx_buildkit_{name}0"),
+            format!("rm --force {name}-railpack"),
+            format!("rm --force {name}-prepare"),
+            format!("rm --force {name}-assemble"),
+        ] {
+            assert!(calls.lines().any(|call| call == removed), "{calls}");
+        }
+    }
+
+    #[test]
+    fn a_gated_child_whose_parent_never_records_it_runs_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let ran = directory.path().join("ran");
+        let mut child = gated(std::path::Path::new("touch"))
+            .arg(&ran)
+            .spawn()
+            .unwrap();
+        drop(child.stdin.take());
+        assert_eq!(child.wait().unwrap().code(), Some(125));
+        assert!(!ran.exists(), "the child ran before it was recorded");
+    }
+
+    #[test]
+    fn recovery_removes_the_builder_from_the_docker_the_build_used() {
+        use crate::owner::Process;
+        let slot = 10;
+        let mut gone = sleeper(&[]);
+        let docker_process = Process::observe(gone.id()).unwrap().unwrap();
+        gone.kill().unwrap();
+        gone.wait().unwrap();
+        let mark = format!(
+            "{}{}",
+            crate::owner::named(&[]),
+            crate::owner::Mark::docker_line(docker_process, "unix:///run/user/7/docker.sock")
+        );
+        let (directory, docker) = quarantined_slot(slot, &mark);
+        crate::tests::executable(
+            &docker,
+            &format!(
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf '%s %s\\n' \"$DOCKER_HOST\" \"$*\" >> '{}/calls'\n",
+                directory.path().display()
+            ),
+        );
+        drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
+        let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
+        assert!(
+            calls.lines().any(|call| call
+                == format!(
+                    "unix:///run/user/7/docker.sock rm --force buildx_buildkit_{}0",
+                    slot_name(slot)
+                )),
+            "{calls}"
+        );
+        assert!(!calls.contains("unix:///var/run/docker.sock"), "{calls}");
+    }
+
+    #[test]
+    fn recovery_names_its_own_docker_clis_on_this_boot_before_they_run() {
+        let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+        let before_reboot = format!(
+            "termination unconfirmed\nboot an-earlier-boot\nowner 1 1\ndocker 2 2 {}\n",
+            crate::owner::DEFAULT_ENDPOINT
+        );
+        for (slot, mark) in [
+            (11, "termination unconfirmed\n"),
+            (12, before_reboot.as_str()),
+        ] {
+            let (directory, docker) = quarantined_slot(slot, mark);
+            let marker = directory.path().join(lock_file(slot));
+            crate::tests::executable(
+                &docker,
+                &format!(
+                    "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nif grep -qx 'boot {}' '{}' && grep -q \"^docker $$ \" '{}' && ! grep -q '^owner ' '{}'; then echo named; else echo unnamed; cat '{}'; fi >> '{}/seen'\n",
+                    boot.trim(),
+                    marker.display(),
+                    marker.display(),
+                    marker.display(),
+                    marker.display(),
+                    directory.path().display()
+                ),
+            );
+            drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
+            let seen = fs::read_to_string(directory.path().join("seen")).unwrap();
+            assert!(
+                !seen.is_empty() && seen.lines().all(|line| line == "named"),
+                "a recovery Docker CLI ran before a mark on this boot named it: {seen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_recovery_leaves_nothing_that_blocks_a_retry() {
+        let custom = format!(
+            "{}docker 2 2 unix:///run/user/7/docker.sock\n",
+            crate::owner::named(&[])
+        );
+        for (slot, mark, endpoint) in [
+            (
+                13,
+                "termination unconfirmed\n",
+                crate::owner::DEFAULT_ENDPOINT,
+            ),
+            (14, custom.as_str(), "unix:///run/user/7/docker.sock"),
+        ] {
+            let (directory, docker) = quarantined_slot(slot, mark);
+            crate::tests::executable(
+                &docker,
+                &format!(
+                    "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\n[ -e '{root}/docker-up' ] || {{ echo 'Cannot connect to the Docker daemon' >&2; exit 1; }}\nprintf '%s %s\\n' \"$DOCKER_HOST\" \"$*\" >> '{root}/calls'\n",
+                    root = directory.path().display()
+                ),
+            );
+            let refused = Lock::try_acquire_slot(directory.path(), slot, &docker)
+                .err()
+                .unwrap();
+            assert!(
+                refused.to_string().contains("removing its builder from"),
+                "{refused}"
+            );
+
+            fs::write(directory.path().join("docker-up"), "").unwrap();
+            let retried = Lock::try_acquire_slot(directory.path(), slot, &docker);
+            assert!(
+                retried.is_ok(),
+                "a retry after Docker returned was refused: {}",
+                retried.err().unwrap()
+            );
+            let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
+            assert!(
+                calls.lines().any(|call| call
+                    == format!("{endpoint} rm --force buildx_buildkit_{}0", slot_name(slot))),
+                "the retry forgot where the builder lives: {calls}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mark_that_names_no_processes_waits_for_buildx_using_its_builder() {
+        let slot = 8;
+        let (directory, docker) = quarantined_slot(slot, "termination unconfirmed\n");
+        let mut buildx = sleeper(&["buildx", &slot_name(slot)]);
+
+        let refused = Lock::try_acquire_slot(directory.path(), slot, &docker)
+            .err()
+            .unwrap();
+        let message = refused.to_string();
+        assert!(
+            message.contains(&format!("Buildx process {} using the builder", buildx.id()))
+                && message.contains("predates recorded processes"),
+            "{message}"
+        );
+        assert!(!directory.path().join("calls").exists());
+
+        buildx.kill().unwrap();
+        buildx.wait().unwrap();
+        drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
+        assert!(
+            fs::read_to_string(directory.path().join(lock_file(slot)))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn recovery_keeps_the_mark_when_docker_cannot_confirm_the_builder_is_gone() {
+        let slot = 9;
+        let (directory, docker) = quarantined_slot(slot, "termination unconfirmed\n");
+        crate::tests::executable(
+            &docker,
+            "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n",
+        );
+        let refused = Lock::try_acquire_slot(directory.path(), slot, &docker)
+            .err()
+            .unwrap();
+        assert!(refused.is_unknown());
+        assert!(
+            refused
+                .to_string()
+                .contains("none of its processes is running, but removing its builder from"),
+            "{refused}"
+        );
+        assert!(
+            !fs::read_to_string(directory.path().join(lock_file(slot)))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -864,9 +1282,15 @@ esac
             deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
             cancellation: None,
             progress: None,
+            recorder: None,
         };
 
-        let lock = Lock::acquire_in(&directory, &crate::Cancellation::default()).unwrap();
+        let lock = Lock::acquire_in(
+            &directory,
+            std::path::Path::new("docker"),
+            &crate::Cancellation::default(),
+        )
+        .unwrap();
         let builder =
             Builder::acquire(&docker, lock, &crate::policy::Resources::default(), None).unwrap();
         let name = builder_name();
@@ -917,6 +1341,7 @@ exit 1
             deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
             cancellation: None,
             progress: Some(&progress),
+            recorder: None,
         };
         let builder = Builder {
             docker: &docker,

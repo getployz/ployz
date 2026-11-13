@@ -1475,7 +1475,7 @@ fn make(
         &CreateBranch {
             id: id.clone(),
             from,
-            name: name.clone(),
+            name,
             copy,
             live: Vec::new(),
             setup,

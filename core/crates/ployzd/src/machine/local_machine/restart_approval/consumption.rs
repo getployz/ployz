@@ -1014,7 +1014,7 @@ mod tests {
             .unwrap();
         let extended = RestartApproval {
             expires_at: at(300_000),
-            ..short.clone()
+            ..short
         };
         assert!(replayed(log.consume(
             &extended,

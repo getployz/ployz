@@ -592,7 +592,7 @@ fn review_of(
     let body: ployz_core::authority::PreviewReview =
         ployz_core::authority::canonical::from_canonical(&drafted.body).unwrap();
     (
-        view.environment.id.clone(),
+        view.environment.id,
         ployz_core::authority::Review::Signed(Signed::sign(&body, signer).unwrap()),
     )
 }

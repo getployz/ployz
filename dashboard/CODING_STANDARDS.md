@@ -41,16 +41,9 @@ File names say where a source lives, not its kind: a Query file that projects or
 
 ### Keep
 
-- Read a prefetched Remote Read with `useSuspenseQuery` (the route's `pendingComponent` or a local `Suspense` covers only that page) or `useQuery` for reads that poll or only matter after a user action.
-- Keep confirm dialogs for irreversible actions (seal, delete), but close them as soon as the user confirms; the optimistic write does the rest.
-- Warm reads the user is about to need on intent (menu open, hover, focus), and start independent reads together (`useSuspenseQueries`, not sequential `useSuspenseQuery` calls). Links need nothing extra: the router preloads every visible link's loader (`defaultPreload: "viewport"`).
 - Chrome above the gate (rail, top bar) uses `useLiveQuery` or `useOrgStoreStatus` and handles pending state. Project creation (`_project/new`) renders outside the shell and its gate, so it must not use `useLiveSuspenseQuery`.
-- Match an environment with `findEnvironment` (project slug and namespace) or by id; a namespace alone is ambiguous across projects.
 - Preserve failures. Loading and failed reads are not empty collections: the Org Store gate shows a retryable error; Remote Reads expose Query's error state.
-- Collection rows belong to DB serialization; do not duplicate them in loader payloads or Query dehydration.
-- Keep version calculation and readiness inside the owning data module. Test the SSR-to-hydration handoff for loading fallbacks as well as mismatched HTML.
-
-Verify cold SSR waits, cold client navigation commits with a pending region, readiness reveals content, and failures reach an error state. Warm navigation reuses cached data.
+- Match an environment with `findEnvironment` (project slug and namespace) or by id; a namespace alone is ambiguous across projects.
 
 ## Session replay
 

@@ -1,14 +1,14 @@
 //! One Deployment's run, from the runner that claimed it, against the Config Store that
 //! holds its status. The runner (`run_deployment_expecting` and `Run`, ployz's
-//! sdk/store_runner.rs:163-219, :556-563) dials the Servers under `connecting`, then
+//! sdk/store_runner.rs:163-219) dials the Servers under `connecting`, then
 //! plans or builds and prepares, executes, deletes the Volumes the Deploy removes and
 //! fills ingress, each piece of work under `renewing` (:653-665, :687-691, :708,
 //! :726-738). While it awaits that work, `connecting` and `renewing` call `standing()`
 //! every `CANCEL_POLL`, 2 s (:40, :1116-1132, :1136-1149), and the work can end before
 //! the next call (:1129, :1141). `execute` also calls it once after executing (:694) and
 //! once before `fill_ingress` (:712). `standing()` is `record(RunEvidence::Alive)` read
-//! through one `standing` (:590-606, :1326-1335), and every site matches the one
-//! `Standing` it returns. Meanwhile a user cancels the Deployment (ployz-store
+//! through `read_of` (store_runner.rs) and `ployz_decide::standing::Latch`, and every site
+//! matches the one `Standing` it returns. Meanwhile a user cancels the Deployment (ployz-store
 //! deployment/lifecycle.rs:1494), a newer Deployment of the Environment is claimed and
 //! sets it Unknown (lifecycle.rs:1320-1332), or forgetting the Cluster cancels it without
 //! waiting on the runner (lifecycle.rs:1525, teardown.rs:460).
@@ -31,7 +31,7 @@
 //! already ended", deployment/mod.rs:1813-1815, :1888-1890), and `renewing` kept the work
 //! in hand going. And `connecting` and the gate before `fill_ingress` read `Ok(Unknown)`
 //! as keep. Now `standing` reads the conflict as Ended, the first Lost or Ended read
-//! latches (`Run::over`, store_runner.rs:556-563), and every site stops on either.
+//! latches (`Run::over`, a `ployz_decide::standing::Latch`), and every site stops on either.
 //!
 //! The store fix variant (`store_fix`) is the store change that would close the rest of
 //! the first finding: `record` keeps a non-Interrupted `Executed` for an Unknown
@@ -54,6 +54,7 @@
 
 use std::fmt::Write as _;
 
+use ployz_decide::standing::{self as decide, Latch, Over, Read};
 use stateright::{Model, Property};
 
 /// The Deployment's status as `record` reads it. `stored` (deployment/mod.rs) remaps a
@@ -96,26 +97,15 @@ struct Store {
     shows_removed: bool,
 }
 
-/// What the read in `Run::standing` (store_runner.rs) returned:
-/// `record(RunEvidence::Alive)`'s summary status, or its error.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Read {
-    Running,
-    Cancelling,
-    Unknown,
-    /// `Err(conflict "This Deployment already ended")` from `running` (deployment/mod.rs).
-    Ended,
-    /// `Err(unavailable)` from `store_call` (sdk/store_call.rs): the Store was busy, slow
-    /// or closed.
-    Unavailable,
-}
-
-impl Read {
-    /// The store no longer takes this run as running: `running` (deployment/mod.rs)
-    /// refuses Unknown and ended Deployments alike.
-    fn over(self) -> bool {
-        matches!(self, Self::Unknown | Self::Ended)
-    }
+/// The store's answer to `record(RunEvidence::Alive)` as `read_of` (store_runner.rs) reads
+/// it: `Ended` is `Err(conflict "This Deployment already ended")` from `running`
+/// (deployment/mod.rs), and `Unavailable` is `Err(unavailable)` from `store_call`
+/// (sdk/store_call.rs), when the Store was busy, slow or closed.
+///
+/// The store no longer takes this run as running when `Unknown` or `Ended`: `running`
+/// (deployment/mod.rs) refuses an Unknown and an ended Deployment alike.
+const fn told_over(read: Read) -> bool {
+    matches!(read, Read::Unknown | Read::Ended)
 }
 
 /// Whether a `standing()` call's read reaches the store.
@@ -198,15 +188,33 @@ impl Phase {
     }
 }
 
-/// `Run::over` (store_runner.rs:556-563): the first read that said Lost or Ended sets
-/// it, and no later read changes it, since `Run::standing` reads nothing more once it is
-/// set (:1469-1478). `the_code_needs_its_latch_to_stick` shows what a latch that does
+/// `Run::over`, a `ployz_decide::standing::Latch`: the first read that said Lost or Ended
+/// sets it, and no later read changes it, since `Run::standing` reads nothing more once it is
+/// set. `the_code_needs_its_latch_to_stick` shows what a latch that does
 /// not stick lets through.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Standing {
     Keep,
     Lost,
     Ended,
+}
+
+impl Standing {
+    const fn of(latched: Option<Over>) -> Self {
+        match latched {
+            None => Self::Keep,
+            Some(Over::Lost) => Self::Lost,
+            Some(Over::Ended) => Self::Ended,
+        }
+    }
+
+    const fn latched(self) -> Option<Over> {
+        match self {
+            Self::Keep => None,
+            Self::Lost => Some(Over::Lost),
+            Self::Ended => Some(Over::Ended),
+        }
+    }
 }
 
 /// What `Run::standing` returned (store_runner.rs `Standing` and `standing`): the latch once it
@@ -218,6 +226,18 @@ enum Said {
     Lost,
     Ended,
     Unread,
+}
+
+impl Said {
+    const fn of(standing: decide::Standing) -> Self {
+        match standing {
+            decide::Standing::Keep => Self::Keep,
+            decide::Standing::Cancel => Self::Cancel,
+            decide::Standing::Over(Over::Lost) => Self::Lost,
+            decide::Standing::Over(Over::Ended) => Self::Ended,
+            decide::Standing::Unread => Self::Unread,
+        }
+    }
 }
 
 /// What `record` answered to an `Executed`.
@@ -633,19 +653,20 @@ fn finish(store: &mut Store, outcome: Outcome) -> Answer {
 
 impl RunnerStanding {
     /// `Run::standing` (store_runner.rs): the latch with no call once it is
-    /// set, else `record(RunEvidence::Alive)` read through `standing`, latching
-    /// Lost and Ended. The Alive arm of `record` (lifecycle.rs) answers an Unknown
+    /// set, else `record(RunEvidence::Alive)` read through `read_of` and
+    /// `ployz_decide::standing::Latch::settle`, which latches Lost and Ended. The Alive arm of `record` (lifecycle.rs) answers an Unknown
     /// Deployment, and otherwise calls `running`, which refuses an ended one as a
     /// conflict. `heeds_lost` is false where `check_ignores_lost` reads Unknown as keep.
     /// Returns what it said, and the read when it made one.
     fn read(&self, state: &mut State, call: Call, heeds_lost: bool) -> (Said, Option<Read>) {
         let broken = self.broken;
-        if !broken.latch_does_not_stick {
-            match state.standing {
-                Standing::Lost => return (Said::Lost, None),
-                Standing::Ended => return (Said::Ended, None),
-                Standing::Keep => {}
-            }
+        let latch = if broken.latch_does_not_stick {
+            Latch::new()
+        } else {
+            Latch::holding(state.standing.latched())
+        };
+        if let Some(over) = latch.latched() {
+            return (Said::of(decide::Standing::Over(over)), None);
         }
         let read = match call {
             Call::Fails => {
@@ -660,21 +681,15 @@ impl RunnerStanding {
             },
         };
         state.last_read = Some(read);
-        state.told_over |= read.over();
+        state.told_over |= told_over(read);
         let said = match read {
-            Read::Running => Said::Keep,
-            Read::Cancelling => Said::Cancel,
-            Read::Unknown if heeds_lost => Said::Lost,
-            Read::Unknown => Said::Keep,
-            Read::Ended if broken.ended_reads_as_keep => Said::Unread,
-            Read::Ended => Said::Ended,
-            Read::Unavailable => Said::Unread,
+            Read::Unknown if !heeds_lost => Said::Keep,
+            Read::Ended if broken.ended_reads_as_keep => Said::of(latch.settle(Read::Unavailable)),
+            Read::Running | Read::Cancelling | Read::Unknown | Read::Ended | Read::Unavailable => {
+                Said::of(latch.settle(read))
+            }
         };
-        state.standing = match said {
-            Said::Lost => Standing::Lost,
-            Said::Ended => Standing::Ended,
-            Said::Keep | Said::Cancel | Said::Unread => Standing::Keep,
-        };
+        state.standing = Standing::of(latch.latched());
         (said, Some(read))
     }
 
@@ -711,7 +726,7 @@ impl RunnerStanding {
             state.took = Some(Branch::Aborts);
             return;
         }
-        if matches!(said, Said::Lost | Said::Ended) || read.is_some_and(Read::over) {
+        if matches!(said, Said::Lost | Said::Ended) || read.is_some_and(told_over) {
             state.after_over.get_or_insert(work);
         }
         if said == Said::Cancel {

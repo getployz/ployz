@@ -39,6 +39,7 @@ mod reseal;
 mod review;
 mod rules;
 mod scope;
+mod seal_scrub;
 mod sealing;
 mod sealing_targets;
 mod service;

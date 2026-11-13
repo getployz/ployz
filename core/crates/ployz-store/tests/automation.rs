@@ -1814,12 +1814,7 @@ fn a_push_ships_a_config_a_save_restored_while_a_deploy_removed_it() {
     backend::run(&store, &restoring);
 
     let nodes: Vec<String> = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: restoring.clone(),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: restoring })
         .unwrap()
         .nodes
         .into_iter()

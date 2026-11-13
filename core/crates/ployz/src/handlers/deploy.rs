@@ -1541,7 +1541,7 @@ pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
             &["deployment", "ls"],
         )
         .map_err(refused(matches, &store, &id))?;
-    let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
+    let view = store.read(&ployz_store::DeploymentQuery { id })?;
     finish_view(&view, Some(hint_for(matches, &view.deployment)))
 }
 
@@ -1549,7 +1549,7 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
-    let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
+    let view = store.read(&ployz_store::DeploymentQuery { id })?;
     finish_view(&view, None)
 }
 

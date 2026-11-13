@@ -32,8 +32,8 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
         )
         .map(|projection| serde_json::to_value(projection).unwrap())
     };
-    let partial = json!({"type":"failed","completed":[api.clone()],
-        "failed":{"type":"operation","operation":worker.clone(),"error":{"type":"cancelled"}},"unexecuted":[]});
+    let partial = json!({"type":"failed","completed":[api],
+        "failed":{"type":"operation","operation":worker,"error":{"type":"cancelled"}},"unexecuted":[]});
     let result = project(
         preview(vec![("api", api.clone()), ("worker", worker.clone())]),
         partial.clone(),
@@ -60,7 +60,7 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
         ])
     );
     let mut incomplete = partial;
-    incomplete["unexecuted"] = json!([replica.clone()]);
+    incomplete["unexecuted"] = json!([replica]);
     assert_eq!(
         project(
             preview(vec![
@@ -73,7 +73,7 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
         .unwrap()["confirmedServices"],
         json!([])
     );
-    let success = json!({"type":"success","completed":[api.clone()]});
+    let success = json!({"type":"success","completed":[api]});
     assert_eq!(
         project(preview(vec![("api", api)]), success).unwrap()["summary"],
         json!({"type":"success","completed":1})

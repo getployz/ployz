@@ -682,7 +682,7 @@ fn the_cluster_sealing_decides_by_the_published_key_then_the_marker_then_the_see
         (malformed.clone(), row(None), None, None),
         (malformed.clone(), row(Some(m)), Some(s), None),
         (row(None), malformed.clone(), None, None),
-        (row(None), malformed.clone(), Some(s), None),
+        (row(None), malformed, Some(s), None),
     ] {
         let decided = super::ClusterSealing::decide(&published, &marker, seeded.map(seed).as_ref());
         match expected {

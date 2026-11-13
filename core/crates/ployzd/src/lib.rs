@@ -21,6 +21,7 @@ pub const VOLUME_PLUGIN_SOCKET: &str = "/run/docker/plugins/ployz.sock";
 
 mod docker_image;
 
+pub(crate) mod backoff;
 pub(crate) mod certificates;
 pub mod corrosion;
 pub mod daemon;

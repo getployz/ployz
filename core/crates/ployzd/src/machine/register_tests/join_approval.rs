@@ -1110,7 +1110,7 @@ async fn a_saved_bootstrap_peer_outside_the_starting_set_is_not_offered_after_re
     unapproved.id = MachineId::random();
     unapproved.public_key = WireGuardPublicKey([9; 32]);
     unapproved.subnet = "10.210.77.0/24".parse().unwrap();
-    registration.visible_peers.push(unapproved.clone());
+    registration.visible_peers.push(unapproved);
     joiner
         .enroll(EnrollRequest {
             role: EnrollAs::Member { registration },

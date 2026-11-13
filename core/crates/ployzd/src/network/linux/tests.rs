@@ -77,7 +77,7 @@ fn snapshot_updates_adds_and_prunes_peers_and_routes() {
     let departed = installed_peer(2);
     let mut installed = HashMap::from([
         (first.public_key.clone(), first.clone()),
-        (departed.public_key.clone(), departed.clone()),
+        (departed.public_key.clone(), departed),
     ]);
     let mut changed = first;
     changed.allowed_ips = vec![IpAddrMask::new(IpAddr::from([10, 211, 1, 0]), 24)];
@@ -376,7 +376,7 @@ fn a_store_that_never_held_another_machine_keeps_the_installed_peers() {
     // Once the store has held another Machine, its snapshot is the whole Cluster again.
     let (planned, set) =
         snapshot_peers(&observer.id, &own_row_only, &bootstrap, false, true).unwrap();
-    let mut installed = HashMap::from([(live.public_key.clone(), live.clone())]);
+    let mut installed = HashMap::from([(live.public_key.clone(), live)]);
     reconcile(&mut installed, &[], set);
     assert!(planned.is_empty());
     assert!(installed.is_empty());

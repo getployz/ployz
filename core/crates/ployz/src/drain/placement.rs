@@ -18,9 +18,9 @@ use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, ready};
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerObservation, ContainerRefusalReason,
-    CopyRotation, ExecutionError, InspectContainerRequest, Machine, MachineId, MachineName,
-    MachineTarget, Namespace, PullPolicy, QualifiedService, RawVolumeSource, ResolvedServiceSpec,
-    ServiceMode, ServicePlacementEligibility, op,
+    CopyRotation, InspectContainerRequest, Machine, MachineId, MachineName, MachineTarget,
+    Namespace, PullPolicy, QualifiedService, RawVolumeSource, ResolvedServiceSpec, ServiceMode,
+    ServicePlacementEligibility, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -28,9 +28,11 @@ use ts_rs::TS;
 
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
-use super::DeploySnapshot;
-use super::cleanup::{self, Copy, EmptyPolicy, NotIn, RotationFailure};
-use super::exec::{MachineOperations, MoveContainerError};
+use crate::deploy::cleanup::{self, Copy, EmptyPolicy, NotIn, RotationFailure};
+use crate::deploy::{
+    DeploySnapshot, MachineOperations, MoveEnd, MoveError, health_error, is_active_runtime,
+    move_container, place_one,
+};
 
 /// A Server as a move names it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -228,6 +230,26 @@ pub enum MoveFailure {
 }
 
 impl MoveFailure {
+    pub(crate) fn of(error: MoveError, from: MachineRef, to: MachineRef) -> Self {
+        let MoveError {
+            end,
+            replacement_removed,
+        } = error;
+        match end {
+            MoveEnd::NotServing { detail } => Self::NotServing {
+                from,
+                to,
+                detail,
+                replacement_removed,
+            },
+            MoveEnd::Cancelled => Self::Cancelled {
+                from,
+                to,
+                replacement_removed,
+            },
+        }
+    }
+
     /// Whether this was a move of another Server's copy that left nothing behind: that
     /// copy still serves there, and no replacement this move started is left. A
     /// cancellation is the Drain's own, so it never qualifies.
@@ -394,7 +416,7 @@ fn refusal(
     if let Some(reason) = stays(spec, &machine_ref(snapshot, &first.machine_id)) {
         return Some(reason);
     }
-    super::planning::place_one(&spec.to_requested(), &service.namespace, snapshot)
+    place_one(&spec.to_requested(), &service.namespace, snapshot)
         .err()
         .map(|error| StayReason::NoDestination {
             detail: error_chain::row(&error),
@@ -418,7 +440,7 @@ fn is_service_container(container: &ContainerObservation, service: &QualifiedSer
     container.kind == ContainerKind::ServiceContainer
         && container.namespace == service.namespace
         && container.resolved_spec.name == service.name
-        && super::is_active_runtime(&container.runtime)
+        && is_active_runtime(&container.runtime)
 }
 
 /// Why this Service's Containers can't move off `machine`, if they can't.
@@ -521,24 +543,13 @@ fn machine_ref(snapshot: &DeploySnapshot, id: &MachineId) -> MachineRef {
     MachineRef::from(machine(snapshot, id))
 }
 
-#[derive(Debug)]
-pub(in crate::deploy) enum RelocateError {
-    NotServing {
-        detail: String,
-        replacement_removed: bool,
-    },
-    Cancelled {
-        replacement_removed: bool,
-    },
-}
-
 #[derive(Debug, Eq, PartialEq)]
-pub(in crate::deploy) enum Relocated {
+pub(crate) enum Relocated {
     Listed,
     Unlisted(Unconfirmed),
 }
 
-pub(in crate::deploy) async fn relocate<C: MachineOperations>(
+pub(crate) async fn relocate<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
@@ -546,8 +557,8 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     old: &Copy,
     name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
     cancellation: &CancellationToken,
-) -> Result<Relocated, RelocateError> {
-    let (new, deploy) = super::exec::move_container(
+) -> Result<Relocated, MoveError> {
+    let (new, deploy) = move_container(
         client,
         namespace,
         spec,
@@ -555,25 +566,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
         (&old.machine_id, &old.container_id),
         cancellation,
     )
-    .await
-    .map_err(
-        |MoveContainerError {
-             error,
-             replacement_removed,
-         }| match error {
-            ExecutionError::Cancelled => RelocateError::Cancelled {
-                replacement_removed,
-            },
-            error @ (ExecutionError::Machine { .. }
-            | ExecutionError::Health { .. }
-            | ExecutionError::DependencyHealth { .. }
-            | ExecutionError::Hook { .. }
-            | ExecutionError::NewerServing { .. }) => RelocateError::NotServing {
-                detail: error_chain::row(&error),
-                replacement_removed,
-            },
-        },
-    )?;
+    .await?;
     let new = Copy {
         machine_id: *to,
         service: old.service.clone(),
@@ -586,7 +579,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     {
         Ok(Ok(())) => None,
         Ok(Err(NotIn::OlderThanIn(refusal) | NotIn::Refused(refusal))) => Some(refusal.message),
-        Ok(Err(NotIn::Health(health))) => Some(error_chain::row(&super::exec::health_error(
+        Ok(Err(NotIn::Health(health))) => Some(error_chain::row(&health_error(
             new.container_id,
             health,
             spec,
@@ -595,8 +588,8 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     };
     if let Some(detail) = not_in {
         let removed = cleanup::remove(client, &new, AnonymousVolumes::Remove).await;
-        return Err(RelocateError::NotServing {
-            detail,
+        return Err(MoveError {
+            end: MoveEnd::NotServing { detail },
             replacement_removed: matches!(removed, Ok(cleanup::Removal::Removed)),
         });
     }
@@ -629,7 +622,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     Ok(Relocated::Listed)
 }
 
-pub(in crate::deploy) async fn retire_old<C: MachineOperations>(
+pub(crate) async fn retire_old<C: MachineOperations>(
     client: &C,
     old: &Copy,
     name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
@@ -667,10 +660,12 @@ async fn move_one(
     let source = machine(snapshot, &container.machine_id);
     let from = MachineRef::from(source);
     let spec = &container.resolved_spec;
-    let dest = super::planning::place_one(&spec.to_requested(), &container.namespace, snapshot)
-        .map_err(|error| MoveFailure::NoDestination {
-            from: from.clone(),
-            detail: error_chain::row(&error),
+    let dest =
+        place_one(&spec.to_requested(), &container.namespace, snapshot).map_err(|error| {
+            MoveFailure::NoDestination {
+                from: from.clone(),
+                detail: error_chain::row(&error),
+            }
         })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
@@ -719,22 +714,7 @@ async fn move_one(
             to,
             old: ready(Ok(OldCopyEnd::In { unconfirmed })).boxed(),
         }),
-        Err(RelocateError::NotServing {
-            detail,
-            replacement_removed,
-        }) => Err(MoveFailure::NotServing {
-            from,
-            to,
-            detail,
-            replacement_removed,
-        }),
-        Err(RelocateError::Cancelled {
-            replacement_removed,
-        }) => Err(MoveFailure::Cancelled {
-            from,
-            to,
-            replacement_removed,
-        }),
+        Err(error) => Err(MoveFailure::of(error, from, to)),
     }
 }
 

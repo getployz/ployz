@@ -384,7 +384,7 @@ fn a_planted_control_character_in_a_build_policy_shows_escaped() {
         }),
         ("platform", {
             let mut policy = base();
-            policy.platforms.insert(hostile.clone());
+            policy.platforms.insert(hostile);
             policy
         }),
     ];

@@ -528,7 +528,7 @@ mod sealer {
 
             let other_organization = SealedIdentity {
                 organization: "org_2".into(),
-                ..identity.clone()
+                ..identity
             };
             assert_eq!(keypair.open(&other_organization, &sealed), None);
             let other_environment = SealedIdentity {

@@ -222,14 +222,7 @@ fn hold_is_not_in_flight_for_changes() {
 #[test]
 fn hold_is_not_the_pending_attempt() {
     let (store, who, hold) = waiting();
-    let view = store
-        .read(
-            &who,
-            &DeploymentQuery {
-                id: hold.id.clone(),
-            },
-        )
-        .unwrap();
+    let view = store.read(&who, &DeploymentQuery { id: hold.id }).unwrap();
     assert!(!view.deployment.in_flight);
     assert!(view.nodes.is_empty());
     // A manual Deploy is the pending attempt, and the only Deployment in flight.
@@ -354,13 +347,7 @@ fn holds_number_in_the_order_they_pass_ci() {
         .iter()
         .map(|deployment| (deployment.id.clone(), deployment.number))
         .collect();
-    assert_eq!(
-        numbers,
-        [
-            (web_hold.id.clone(), Some(2)),
-            (api_hold.id.clone(), Some(1))
-        ]
-    );
+    assert_eq!(numbers, [(web_hold.id, Some(2)), (api_hold.id, Some(1))]);
     let history = store
         .read(
             &who,
@@ -440,7 +427,7 @@ fn cancel_then_late_success_mints_nothing() {
         .write(
             &who,
             &Cancel {
-                deployment: hold.id.clone(),
+                deployment: hold.id,
             },
         )
         .unwrap();
@@ -817,7 +804,7 @@ fn cancelled_hold_cannot_be_retried() {
                 teardown: None,
                 id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000199")
                     .unwrap(),
-                deployment: hold.id.clone(),
+                deployment: hold.id,
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
@@ -1088,7 +1075,7 @@ fn pages_reach_holds_past_the_first_page() {
     let waiting: Vec<_> = rows
         .iter()
         .filter(|row| row.status == DeploymentStatus::WaitingForCi)
-        .map(|row| row.label().to_owned())
+        .map(|row| row.label())
         .collect();
     assert_eq!(waiting, [&heads[20][..7]]);
 

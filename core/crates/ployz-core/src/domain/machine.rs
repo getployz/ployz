@@ -1160,7 +1160,7 @@ mod placement_tests {
             "its row is marked leaving but names no daemon version"
         );
 
-        let mut leaving_versioned = versioned.clone();
+        let mut leaving_versioned = versioned;
         leaving_versioned.machine.runtime.leaving = true;
         assert!(
             !leaving_versioned.unarrived(),

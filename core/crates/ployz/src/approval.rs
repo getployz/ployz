@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::time::Duration;
 
 use chrono::{Local, SecondsFormat, TimeZone};
+use ployz_core::domain::private_dns;
 use ployz_core::{Hint, RpcError, RpcErrorCode};
 use ployz_store::{
     ApprovalOperation, ApprovalRequired, ApprovalSubject, DestructiveEffect, DestructiveKind,
@@ -57,9 +58,9 @@ impl Asked {
 }
 
 fn renamed_addresses(operation: &ApprovalOperation) -> String {
-    let to = format!("*.{}.ployz.internal", operation.name);
+    let to = private_dns::alias_wildcard(&operation.name);
     match operation.renamed_from() {
-        Some(from) => format!("*.{from}.ployz.internal → {to}"),
+        Some(from) => format!("{} → {to}", private_dns::alias_wildcard(from)),
         None => to,
     }
 }

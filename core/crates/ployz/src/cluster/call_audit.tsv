@@ -47,7 +47,7 @@ src/cluster_tests.rs::a_call_whose_redial_finds_another_cluster_ends_every_clone
 src/cluster_tests.rs::redialed_into_a_refusal	op::ListMachines	call	unary	-	redial	read
 src/cluster_tests.rs::redialed_into_a_refusal	op::ListMachines	try_read	unary	budget(target_read_timeout)	redial	read
 src/connect/tests.rs::prepare_volumes_answered_with	ployz_core::op::PrepareVolumes	invoke	single	-	-	once
-src/deploy/convergence.rs::image_id	op::InspectContainer	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
+src/drain/placement.rs::image_id	op::InspectContainer	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/deploy/exec/machine_ops.rs::inspect_container	op::InspectContainer	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/deploy/exec/machine_ops.rs::prepare_volumes	op::PrepareVolumes	invoke	single	target(Duration::from_secs(120))	-	once
 src/deploy/exec/machine_ops.rs::read_entry_routes	op::ReadRoutes	invoke_entry	single	target(TARGET_RPC_TIMEOUT)	-	once

@@ -22,6 +22,7 @@ use super::{
     spec::{CorrosionEndpoint, DnsSpec, SpecFile},
 };
 use crate::{
+    backoff::Doubling,
     corrosion::{
         AdminClient, ApiClient, Error as CorrosionError, MachineView, REFRESH_INTERVAL,
         ReplicatedStore, Subscription,
@@ -79,7 +80,7 @@ pub async fn serve(run_dir: &Path) -> io::Result<DnsExit> {
             exe: InstalledExe::current()?,
             tick: TICK,
             refresh: REFRESH_INTERVAL,
-            backoff: Backoff::default(),
+            backoff: Doubling::between(BACKOFF_MIN, BACKOFF_MAX),
         },
         shutdown,
     )
@@ -94,40 +95,7 @@ pub(crate) struct Fixture<'a> {
     pub(crate) tick: Duration,
     /// How often the Container snapshot is re-read with no change reported.
     pub(crate) refresh: Duration,
-    pub(crate) backoff: Backoff,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct Backoff {
-    pub(crate) min: Duration,
-    pub(crate) max: Duration,
-    next: Duration,
-}
-
-impl Backoff {
-    pub(crate) fn between(min: Duration, max: Duration) -> Self {
-        Self {
-            min,
-            max,
-            next: min,
-        }
-    }
-
-    fn take(&mut self) -> Duration {
-        let delay = self.next;
-        self.next = (self.next * 2).min(self.max);
-        delay
-    }
-
-    fn reset(&mut self) {
-        self.next = self.min;
-    }
-}
-
-impl Default for Backoff {
-    fn default() -> Self {
-        Self::between(BACKOFF_MIN, BACKOFF_MAX)
-    }
+    pub(crate) backoff: Doubling,
 }
 
 pub(crate) async fn serve_with(
@@ -206,7 +174,7 @@ pub(crate) async fn serve_with(
 struct Session {
     endpoint: CorrosionEndpoint,
     inputs: ProjectionInputs,
-    backoff: Backoff,
+    backoff: Doubling,
 }
 
 struct Connection {
@@ -236,7 +204,7 @@ impl From<CorrosionError> for Attempt {
 }
 
 impl Session {
-    fn new(machine: MachineId, endpoint: CorrosionEndpoint, backoff: Backoff) -> Self {
+    fn new(machine: MachineId, endpoint: CorrosionEndpoint, backoff: Doubling) -> Self {
         Self {
             endpoint,
             inputs: ProjectionInputs::new(machine),

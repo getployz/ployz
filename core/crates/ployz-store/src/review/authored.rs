@@ -2952,7 +2952,7 @@ mod tests {
                 vec![("/slug", json!("api"))],
             ),
             case(
-                ServiceField::Source(delta(image.clone(), git("/", "main"))),
+                ServiceField::Source(delta(image, git("/", "main"))),
                 "source",
                 Some(Setting::Source),
                 (
@@ -2980,7 +2980,7 @@ mod tests {
             ),
             case(
                 ServiceField::Branch(delta(
-                    disconnected.clone(),
+                    disconnected,
                     ServiceGitBranch::Connected {
                         name: "main".to_owned(),
                     },

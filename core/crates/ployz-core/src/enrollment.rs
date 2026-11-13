@@ -272,7 +272,7 @@ mod tests {
         let second =
             allocate_enrollment(&request(2), &snapshot, std::slice::from_ref(&first)).unwrap();
         assert_ne!(first.machine.subnet, second.machine.subnet);
-        snapshot.machines.push(second.machine.clone());
+        snapshot.machines.push(second.machine);
         let third =
             allocate_enrollment(&request(3), &snapshot, std::slice::from_ref(&first)).unwrap();
         assert_eq!(third.machine.subnet, "10.210.2.0/24".parse().unwrap());

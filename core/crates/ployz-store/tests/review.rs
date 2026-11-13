@@ -4594,7 +4594,7 @@ fn config_with(
             &ployz_store::CreateConfig {
                 environment: EnvironmentRef::default(),
                 id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
-                name: config.clone(),
+                name: config,
                 mounts,
             },
         )

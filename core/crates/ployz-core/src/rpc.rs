@@ -158,6 +158,11 @@ pub struct OpaquePayload {
 
 /// Generated tonic client and server for the shared Machine service.
 #[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::allow_attributes,
+    clippy::allow_attributes_without_reason,
+    reason = "tonic writes its own allows"
+)]
 pub mod transport {
     include!(concat!(env!("OUT_DIR"), "/ployz.rpc.v1.MachineRpc.rs"));
 }
@@ -241,7 +246,6 @@ macro_rules! define_request_body {
         ///
         /// The catalog stores caller-facing request types unboxed so
         /// `Rpc::Request` is the payload. That makes a few variants large.
-        #[allow(clippy::large_enum_variant)]
         #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
         #[serde(rename_all = "snake_case", tag = "command", content = "payload")]
         pub enum RpcRequestBody {
@@ -416,7 +420,7 @@ macro_rules! define_responses {
         ///
         /// Envelope identity stores `Rpc::Response` in the variant. Inspect
         /// payloads are large; boxing them would make `decode` return `Box<T>`.
-        #[allow(clippy::large_enum_variant)]
+        #[expect(clippy::large_enum_variant, reason = "boxing would make `decode` return `Box<T>`")]
         #[derive(Clone, Debug, PartialEq)]
         pub enum RpcResponseBody {
             $($variant($payload),)+

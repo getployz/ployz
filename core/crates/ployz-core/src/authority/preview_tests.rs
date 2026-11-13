@@ -576,7 +576,7 @@ fn a_session_may_not_review_a_preview_that_opens_secrets() {
         ReviewSigner::Passkey(passkey.passkey().code())
     );
 
-    let mut bare = rule.clone();
+    let mut bare = rule;
     bare.services[0].inherit.clear();
     let checked = verify_review(
         &session_review(&bare, &body, &passkey),
@@ -789,7 +789,7 @@ fn a_drafted_review_admits_the_spec_it_was_drafted_from() {
     )
     .unwrap();
     let case = Case {
-        rule: rule.clone(),
+        rule,
         claim: built(CommitAuthority::Review(review.digest())),
         key: PreviewKey::Fork(7),
         namespace,

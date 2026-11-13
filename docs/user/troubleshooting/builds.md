@@ -157,6 +157,19 @@ when that isn't enough:
 - [Cap the build cache](../builds/build-resources-and-cache.md#cap-cpu-memory-and-cache), or
   build on a server with more disk, or on GitHub Actions.
 
+## A build says its builder stays quarantined
+
+You'll see `builder ployz-1000 stays quarantined: the Build that last used it never confirmed
+its end, and still running: …`. A build stopped without confirming that its work ended, often
+because a cancelled GitHub Actions job was killed mid-build. Ployz won't reuse the builder
+while that build might still be writing to it.
+
+The message names each process that is still running. Once they have all stopped, the next
+build on that server takes the builder back without any action from you. The same check runs
+when the Ployz daemon starts and when you run `ployz server build-cache-clear`. If a named process hangs, stop it by
+its PID. If the message says removing the builder failed, check that Docker is running on
+the server.
+
 ## My repository is too big or uses submodules
 
 You'll see one of these:

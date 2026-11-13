@@ -1,6 +1,7 @@
 //! Parse an Internal DNS name into a typed query.
 
 use hickory_server::proto::rr::Name;
+use ployz_core::domain::private_dns::Fqdn;
 use ployz_core::{ClusterName, MachineId, Namespace, QualifiedService, ServiceId, ServiceName};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,21 +34,19 @@ pub(super) fn parse(name: &Name, cluster: Option<&ClusterName>) -> Query {
 }
 
 fn parse_fqdn(fqdn: &str, cluster: Option<&ClusterName>) -> Query {
-    let selector = if fqdn == "internal." {
-        ""
-    } else if let Some(selector) = fqdn.strip_suffix(".internal.") {
-        selector
-    } else {
-        return Query::Forward;
-    };
-    let Some(aliased) = selector.strip_suffix(".ployz") else {
-        return Query::Internal(parse_internal(selector));
-    };
-    let (selector, label) = aliased.rsplit_once('.').unwrap_or(("", aliased));
-    if cluster.is_some_and(|cluster| cluster.as_str() == label) {
-        Query::Internal(parse_internal(selector))
-    } else {
-        Query::NxDomain
+    match Fqdn::parse(fqdn) {
+        Fqdn::Foreign => Query::Forward,
+        Fqdn::Under {
+            selector,
+            alias: None,
+        } => Query::Internal(parse_internal(selector)),
+        Fqdn::Under {
+            selector,
+            alias: Some(label),
+        } if cluster.is_some_and(|cluster| cluster.as_str() == label) => {
+            Query::Internal(parse_internal(selector))
+        }
+        Fqdn::Under { alias: Some(_), .. } => Query::NxDomain,
     }
 }
 

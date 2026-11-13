@@ -14,9 +14,11 @@ use ployz_core::{
 use thiserror::Error;
 
 pub(crate) mod cleanup;
-mod convergence;
 mod exec;
-pub(crate) use exec::{CopyLifecycle, ProxyPlacement, RestartTolerant};
+pub(crate) use exec::{
+    CopyLifecycle, MachineOperations, MoveEnd, MoveError, ProxyPlacement, RestartTolerant,
+    health_error, move_container,
+};
 #[cfg(test)]
 pub(crate) use exec::{RedialFailure, Session};
 pub(crate) mod pipeline;
@@ -25,12 +27,9 @@ mod progress;
 mod report;
 mod schedule;
 
-pub(crate) use convergence::{Converged, LastIn, Moving, can_move, converge, named};
-pub use convergence::{
-    DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
-};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
+pub(crate) use planning::place_one;
 pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
     plan_ingress_repairs, plan_namespace_removal, preview_deploy, without_departed,
@@ -55,7 +54,7 @@ fn is_at_rest(runtime: &ContainerRuntimeObservation) -> bool {
     )
 }
 
-fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
+pub(crate) fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
         runtime,
         ContainerRuntimeObservation::Running { .. }

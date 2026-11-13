@@ -1767,12 +1767,7 @@ mod tests {
         assert_eq!(named(&[older.clone(), queued.clone()]), None);
         // The first newer one that started took over, whatever came after it.
         assert_eq!(
-            named(&[
-                after_it.clone(),
-                queued.clone(),
-                took_over.clone(),
-                older.clone()
-            ]),
+            named(&[after_it.clone(), queued, took_over.clone(), older.clone()]),
             Some(8)
         );
         // When the first that started never ran, it may still have taken over: no

@@ -590,7 +590,7 @@ mod tests {
 
         let refreshed = start + PEER_DOWN_INTERVAL * 2;
         let (mut peers, persist) = attach_peer_selections(
-            peers_for(&observer.id, &[observer.clone(), stale.clone()]),
+            peers_for(&observer.id, &[observer.clone(), stale]),
             peers,
             &BTreeMap::new(),
             refreshed,

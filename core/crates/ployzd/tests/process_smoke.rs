@@ -318,7 +318,6 @@ fn describe(path: &Path) -> ployz_core::ContractDescription {
             .unwrap()
             .decode::<op::DescribeContract>()
             .unwrap()
-            .clone()
     })
 }
 

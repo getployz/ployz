@@ -541,7 +541,7 @@ impl Daemon {
                 let unplaced = match machine.restore_doors().await {
                     Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
                     Ok(None) => None,
-                    Err(error) => Some(ployz_core::error_chain::inline(&error).to_string()),
+                    Err(error) => Some(ployz_core::error_chain::inline(&error)),
                 };
                 if let Some(error) = unplaced {
                     tracing::warn!(
@@ -1066,7 +1066,6 @@ mod tests {
             .unwrap()
             .decode::<op::DescribeContract>()
             .unwrap()
-            .clone()
     }
 
     async fn leave(path: &Path) -> ployz_core::Left {
@@ -1100,7 +1099,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_cleans_abandoned_builder_without_a_build_request() {
+    async fn startup_recovers_an_abandoned_builder_without_a_build_request() {
         use std::os::unix::fs::PermissionsExt as _;
         let root = TestDir::new("ployzd-builder-restart");
         let (config, socket) = test_config(&root.0, ContainerMode::Absent);
@@ -1114,7 +1113,7 @@ mod tests {
         fs::write(&marker, "termination unconfirmed\n").unwrap();
         fs::write(
             &policy.docker,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > cleaned\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> cleaned\n",
         )
         .unwrap();
         fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
@@ -1126,15 +1125,11 @@ mod tests {
         assert!(
             fs::read_to_string(root.0.join("cleaned"))
                 .unwrap()
-                .contains("buildx rm")
+                .contains("rm --force buildx_buildkit_")
         );
-        assert!(!fs::read_to_string(marker).unwrap().is_empty());
-        assert!(
-            ployz_build::Admission::try_acquire_with(&policy)
-                .err()
-                .unwrap()
-                .is_unknown()
-        );
+        // A mark from before marks named processes, and no Buildx process left.
+        assert!(fs::read_to_string(marker).unwrap().is_empty());
+        drop(ployz_build::Admission::try_acquire_with(&policy).unwrap());
         assert!(
             describe(&socket)
                 .await

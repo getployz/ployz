@@ -17,7 +17,9 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 
-use crate::{machine::store, management::ManagementSecret, observe::salts::Salts};
+use crate::{
+    backoff::Doubling, machine::store, management::ManagementSecret, observe::salts::Salts,
+};
 
 const TICK: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -167,7 +169,7 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
     }
 
     pub async fn run(self) {
-        let mut backoff = Backoff::default();
+        let mut backoff = Doubling::between(BACKOFF_FLOOR, BACKOFF_CAP);
         loop {
             match self.ship_once().await {
                 Shipped::Progress => backoff.reset(),
@@ -178,7 +180,9 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
                         () = tokio::time::sleep(TICK) => {}
                     }
                 }
-                Shipped::Retry { after } => tokio::time::sleep(backoff.next(after)).await,
+                Shipped::Retry { after } => {
+                    tokio::time::sleep(retry_delay(&mut backoff, after)).await
+                }
             }
         }
     }
@@ -298,33 +302,11 @@ fn retry_after(response: &reqwest::Response) -> Option<Duration> {
     seconds.trim().parse().ok().map(Duration::from_secs)
 }
 
-#[derive(Debug)]
-struct Backoff {
-    ceiling: Duration,
-}
-
-impl Default for Backoff {
-    fn default() -> Self {
-        Self {
-            ceiling: BACKOFF_FLOOR,
-        }
-    }
-}
-
-impl Backoff {
-    fn next(&mut self, asked: Option<Duration>) -> Duration {
-        let ceiling = self.ceiling;
-        self.ceiling = (ceiling * 2).min(BACKOFF_CAP);
-        if let Some(asked) = asked {
-            return asked.min(RETRY_AFTER_CAP);
-        }
-        let half = ceiling / 2;
-        half + half.mul_f64(fastrand::f64())
-    }
-
-    fn reset(&mut self) {
-        self.ceiling = BACKOFF_FLOOR;
-    }
+/// How long to wait before the next try: what Cloud asked, within the cap, or the next jittered
+/// backoff step. The step advances either way.
+fn retry_delay(backoff: &mut Doubling, asked: Option<Duration>) -> Duration {
+    let step = backoff.take_jittered();
+    asked.map_or(step, |asked| asked.min(RETRY_AFTER_CAP))
 }
 
 #[cfg(test)]

@@ -102,9 +102,9 @@ fn qualification_uses_selected_work_and_its_dependency_expansion() {
             .has_observation_gaps()
     );
     let intent = intent.with_dependencies(BTreeMap::from([(
-        web.name.clone(),
+        web.name,
         vec![ServiceDependency {
-            service: worker.name.clone(),
+            service: worker.name,
             condition: DependencyCondition::ServiceStarted,
         }],
     )]));

@@ -41,7 +41,7 @@ mod transport;
 
 use health::wait_healthy;
 use hooks::run_hook;
-pub(in crate::deploy) use machine_ops::MachineOperations;
+pub(crate) use machine_ops::MachineOperations;
 use machine_ops::Unanswered;
 pub(crate) use machine_ops::{CopyLifecycle, ProxyPlacement};
 #[cfg(test)]
@@ -51,7 +51,7 @@ use publish::{
     rolling_step, route_new,
 };
 use start::{Attempt, FailedStart, Row, SlotRun, answer_when, out_of_memory, remove_stray, start};
-pub(in crate::deploy) use start::{MoveContainerError, move_container};
+pub(crate) use start::{MoveEnd, MoveError, move_container};
 use stop_first::{
     leave_unstopped, remove_container, replace_stop_first, restore_group, stop_old_copy, withdraw,
 };
@@ -1868,7 +1868,7 @@ async fn gone<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::RemoveContainer, error))
 }
 
-pub(in crate::deploy) fn health_error(
+pub(crate) fn health_error(
     container_id: ContainerId,
     health: Option<HealthVerdict>,
     spec: &ResolvedServiceSpec,

@@ -35,6 +35,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    backoff::Doubling,
     corrosion::{AdminClient, MachineView, membership_states_by_address},
     machine::{LocalMachine, LocalMachineError},
     management::forgotten,
@@ -105,7 +106,7 @@ pub(crate) fn verdict(asked: &[Asked]) -> Verdict {
 #[derive(Clone, Copy)]
 struct Silence {
     ask_at: Instant,
-    backoff: Duration,
+    backoff: Doubling,
 }
 
 /// Watch the peers until `shutdown`, or until this Machine fenced itself.
@@ -129,7 +130,7 @@ pub(crate) async fn run<H: FenceHost>(host: &H, shutdown: CancellationToken) {
         for id in &silent {
             silence.entry(*id).or_insert(Silence {
                 ask_at: now + SILENCE,
-                backoff: ASK_BACKOFF_MIN,
+                backoff: Doubling::between(ASK_BACKOFF_MIN, ASK_BACKOFF_MAX),
             });
         }
         let due: Vec<Peer> = peers
@@ -142,8 +143,7 @@ pub(crate) async fn run<H: FenceHost>(host: &H, shutdown: CancellationToken) {
         }
         for peer in &due {
             if let Some(silence) = silence.get_mut(&peer.id) {
-                silence.ask_at = now + silence.backoff;
-                silence.backoff = (silence.backoff * 2).min(ASK_BACKOFF_MAX);
+                silence.ask_at = now + silence.backoff.take();
             }
         }
         let asked = host.ask(&due).await;

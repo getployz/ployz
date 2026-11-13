@@ -492,7 +492,7 @@ mod tests {
         let (_dir, owner) = owner();
         let observed = owner.restart_requested();
         assert!(!*observed.borrow());
-        owner.clone().request_restart();
+        owner.request_restart();
         assert!(*observed.borrow());
     }
 }

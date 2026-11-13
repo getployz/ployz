@@ -168,7 +168,8 @@ pub(super) fn container_create_body(
     let resources = &container.resources;
     let host_config = HostConfig {
         dns: on_bridge.then(|| vec![gateway.0.to_string()]),
-        dns_search: on_bridge.then(|| vec![format!("{namespace}.internal")]),
+        dns_search: on_bridge
+            .then(|| vec![ployz_core::domain::private_dns::search_domain(namespace)]),
         dns_options: on_bridge.then(|| vec!["ndots:1".into()]),
         init: container.init,
         network_mode: Some(match network {

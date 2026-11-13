@@ -20,9 +20,7 @@ fn volume_graph_rejects_duplicate_references_and_dangling_mounts() {
     );
     assert_eq!(
         duplicate,
-        Err(ServiceVolumeGraphError::DuplicateVolumeReference {
-            reference: data.clone(),
-        })
+        Err(ServiceVolumeGraphError::DuplicateVolumeReference { reference: data })
     );
 
     let dangling = ServiceVolumeGraph::parse(vec![], vec![mount("missing", "/missing")]);

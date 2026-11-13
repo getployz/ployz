@@ -624,7 +624,7 @@ mod tests {
             "a changed body never reaches the parser"
         );
         let mut unchecked = Signed::sign(&approval(&signer), &signer).unwrap();
-        unchecked.body = signed.body.clone();
+        unchecked.body = signed.body;
         assert!(matches!(
             unchecked.open().unwrap_err(),
             AuthorityRefusal::Malformed { .. }
