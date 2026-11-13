@@ -369,7 +369,11 @@ fn rollback_losses(
         tx,
         who,
         environment,
-        (&review.view.version, retry.version.as_deref()),
+        (
+            &review.view.version,
+            retry.version.as_deref(),
+            crate::removal::Deletes::Now,
+        ),
         removed,
         trusted.volumes.as_ref(),
         (&retry.accept_volume_loss, &[]),
