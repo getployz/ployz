@@ -44,6 +44,18 @@ impl Readable {
             Self::Only(namespaces) => namespaces.contains(namespace),
         }
     }
+
+    /// Refuses a Namespace outside the set as one no Server runs, which does not
+    /// confirm that it exists.
+    fn require(&self, namespace: &Namespace) -> Result<(), RpcError> {
+        if self.admits(namespace) {
+            Ok(())
+        } else {
+            Err(RpcError::not_found(format!(
+                "No Server runs Namespace {namespace}"
+            )))
+        }
+    }
 }
 
 /// Answer `query` from the Servers behind `session`, describing only the Services
@@ -64,9 +76,13 @@ pub async fn ask(
     match query {
         CloudQuery::Servers { only } => encode(&servers(session, only.as_ref(), readable).await?),
         CloudQuery::Containers { namespace, service } => {
+            readable.require(&namespace)?;
             encode(&containers(session, &namespace, service.as_ref()).await?)
         }
-        CloudQuery::Logs(query) => encode(&logs(session, query, sealed).await?),
+        CloudQuery::Logs(query) => {
+            readable.require(&query.namespace)?;
+            encode(&logs(session, query, sealed).await?)
+        }
         CloudQuery::ServerLogs(query) => encode(&server_logs(session, query).await?),
         CloudQuery::Metrics(query) => encode(&metrics(session, query, readable).await?),
         CloudQuery::Copies { .. } => Err(RpcError::unsupported(
