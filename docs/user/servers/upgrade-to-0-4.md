@@ -55,9 +55,10 @@ over its own SSH connection. Reach every server in the one run:
   Each server names itself over its own connection, so what Ployz Cloud or another server says
   about it never decides what is signed.
 
-If a server holding keys from before isn't reached over its own SSH, `enforce` signs nothing and
-names it, so you can run it again with that server's connection added. Leave a server out only
-when you can't reach it over SSH: [adding it back](#add-back-a-server-left-out) after activation
+If you confirm a server that holds keys from before but isn't reached over its own SSH,
+`enforce` signs nothing and names it, so you can run it again with that server's connection
+added. A server you don't confirm is left out. Leave one out only when you can't reach it over
+SSH: [adding it back](#add-back-a-server-left-out) after activation
 wipes its volumes.
 
 If a server is refused or stops partway, fix what it names and run `ployz device enforce` again.
