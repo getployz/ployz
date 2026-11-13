@@ -153,6 +153,11 @@ impl LocalMachine {
             cluster,
             record.id(),
             &record.devices().collect::<Vec<_>>(),
+            &record
+                .passkeys()
+                .iter()
+                .map(|trusted| trusted.passkey.clone())
+                .collect::<Vec<_>>(),
             machine,
             network,
             Timestamp::now(),

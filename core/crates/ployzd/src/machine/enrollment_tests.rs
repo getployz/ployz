@@ -130,42 +130,45 @@ fn a_pinned_join_under_the_clusters_device_enrolls_trusting_only_the_approvals_d
     assert!(!record.awaits_activation());
 }
 
+/// The install line already runs Cloud's script, so an unpinned joiner may trust the
+/// passkeys its approval carries. A pinned join must not: Cloud can relay the person a body
+/// under a Sealing Key of its own, and a passkey of its own would then approve workflows here.
 #[test]
-fn a_joiner_trusts_the_passkeys_in_its_verified_approval_and_none_from_elsewhere() {
+fn only_an_unpinned_joiner_trusts_the_passkeys_its_approval_carries() {
     use ployz_core::authority::{PasskeyApprover, TrustedPasskey};
-    let (_dir, mut store) = fresh();
-    let original = store.record().clone();
-    let cluster = ApprovingCluster::new(1);
-    let forger = ApprovingCluster::new(9);
-    let approved = |cluster: &ApprovingCluster, passkeys| {
-        let mut approval = cluster.approval(&original);
+    let approved = |cluster: &ApprovingCluster, joiner: &super::LocalMachineRecord, passkeys| {
+        let mut approval = cluster.approval(joiner);
         approval.passkeys = passkeys;
-        approval
+        cluster.registration_with(joiner, Some(&approval))
     };
+    let cluster = ApprovingCluster::new(1);
+    let clouds_cluster = ApprovingCluster::new(1);
 
-    let forged = forger.registration_with(&original, Some(&approved(&forger, vec![passkey(8)])));
-    assert!(
-        store
-            .enroll(member(forged, Some(cluster.pin())))
-            .is_err_and(|error| matches!(
-                error,
-                StoreError::JoinRefused(AuthorityRefusal::UnknownKey { .. })
-            ))
-    );
-    assert!(store.record().passkeys().is_empty());
-
-    let genuine = cluster.registration_with(
-        &original,
-        Some(&approved(&cluster, vec![passkey(5), passkey(6)])),
-    );
+    let (_dir, mut pinned) = fresh();
+    let relayed = approved(&clouds_cluster, &pinned.record().clone(), vec![passkey(8)]);
     assert_eq!(
-        store.enroll(member(genuine, Some(cluster.pin()))).unwrap(),
+        pinned.enroll(member(relayed, Some(cluster.pin()))).unwrap(),
         EnrollPlan::Fresh
     );
+    assert_eq!(
+        pinned.record().membership_cluster,
+        Some(clouds_cluster.sealing_key.public_key())
+    );
+    assert!(pinned.record().passkeys().is_empty());
 
+    let (_dir, mut unpinned) = fresh();
+    let genuine = approved(
+        &cluster,
+        &unpinned.record().clone(),
+        vec![passkey(5), passkey(6)],
+    );
+    assert_eq!(
+        unpinned.enroll(member(genuine, None)).unwrap(),
+        EnrollPlan::Fresh
+    );
     let device = cluster.device().code();
     assert_eq!(
-        store.record().passkeys(),
+        unpinned.record().passkeys(),
         [passkey(5), passkey(6)].map(|passkey| TrustedPasskey {
             passkey,
             approved_by: PasskeyApprover::Device { code: device },

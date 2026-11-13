@@ -503,7 +503,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
             }
         })
         .await;
-    let error = sign_waiting_join(&mut client, &config, &expected)
+    let error = sign_waiting_join(&mut client, &config, &expected, false)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("does not match"));

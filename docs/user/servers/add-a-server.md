@@ -95,7 +95,8 @@ you can run the join again.
 
 The new server takes its devices, the passkeys your admitting server trusts and its starting
 peers only from the approval. A passkey you approve on your cluster after that isn't added to a
-server that already joined; approve it there too. When you run
+server that already joined; approve it there too. A server you add with `ployz server add` takes
+no passkeys from the approval, so approve each passkey there too. When you run
 `ployz server add` over SSH, the CLI also tells the new server which devices may sign that
 approval: your own, and those of the server it joins through. The new server refuses an
 approval signed by any other key. A join from the pasted line has no such list, so it trusts
@@ -153,8 +154,9 @@ need an approval. Approve one over SSH on that server:
   [Approve a device](manage-servers.md#approve-a-device).
 
 `ployz server add --standalone root@HOST` approves this computer's device on the new server for
-you. Servers you add later get your devices and the passkeys your first server trusts from the
-join approval, so you add a passkey on the first server only.
+you. Servers you add later get your devices from the join approval. A server you add from the
+dashboard also gets the passkeys your first server trusts. One you add with `ployz server add`
+doesn't, so approve your passkey there too.
 
 ## Add servers from the dashboard
 

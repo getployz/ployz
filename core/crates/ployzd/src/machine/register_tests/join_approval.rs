@@ -219,7 +219,15 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
         }))
     ));
     body.devices.pop();
-    body.admitting_machines = vec![entry.record().id()];
+    body.passkeys.push(crate::machine::test_support::passkey(6));
+    let approval = Signed::sign(&body, &signer).unwrap();
+    assert!(matches!(
+        entry.approve_join(ApproveJoinRequest { approval }).await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: "approved passkeys"
+        }))
+    ));
+    body.passkeys.pop();
     body.sealing_recipient = WireGuardPublicKey([3; 32]);
     let approval = Signed::sign(&body, &signer).unwrap();
     assert!(matches!(

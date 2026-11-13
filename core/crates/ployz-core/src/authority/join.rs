@@ -152,15 +152,21 @@ impl std::fmt::Display for JoinConfirmation {
     }
 }
 
-/// Verify a join at an admitting Machine using only its own trusted keys and identity.
+/// Verify a join at an admitting Machine using only its own trusted keys and identity. The
+/// joiner trusts the approval's Devices and passkeys, so each must already be trusted here.
 ///
 /// # Errors
 /// Refuses untrusted signatures, expiry and any allocation, recipient or Cluster mismatch.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is one fact the admitting Machine holds itself"
+)]
 pub fn verify(
     signed: &Signed<JoinApproval>,
     cluster: SealingPublicKey,
     admitting: MachineId,
     devices: &[DeviceKey],
+    passkeys: &[super::Passkey],
     machine: &JoinAllocation,
     network: Ipv4Net,
     now: Timestamp,
@@ -172,6 +178,12 @@ pub fn verify(
             "approved Devices",
             body.devices.contains(&body.signer)
                 && body.devices.iter().all(|key| devices.contains(key)),
+        ),
+        (
+            "approved passkeys",
+            body.passkeys
+                .iter()
+                .all(|passkey| passkeys.contains(passkey)),
         ),
         (
             "an admitting Machine",

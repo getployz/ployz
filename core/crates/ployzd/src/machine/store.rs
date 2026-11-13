@@ -547,7 +547,8 @@ impl LocalMachineStore {
 
     /// A Member's enrollment, admitted only under an approved capsule: one that opens to this
     /// Machine and carries a join approval signed by a key in `pin`, or with no pin, by a
-    /// Device the approval lists. Anything else is refused and the record stays as it was.
+    /// Device the approval lists. Only an unpinned join trusts the approval's passkeys.
+    /// Anything else is refused and the record stays as it was.
     fn member(
         &self,
         registration: Registered,
@@ -588,6 +589,9 @@ impl LocalMachineStore {
             ));
         };
         let body = approval.open().map_err(StoreError::JoinRefused)?;
+        // A pinned join's body may come through Cloud under a Sealing Key of Cloud's own, so
+        // its passkeys aren't trusted. The install line already runs Cloud's script.
+        let carries_passkeys = pin.is_none();
         let trusted = pin.map_or(body.devices, |pin| pin.devices);
         let body = ployz_core::authority::join::verify_signature(
             &approval,
@@ -630,7 +634,7 @@ impl LocalMachineStore {
             return Err(StoreError::MissingPeers);
         }
         let mut approved_passkeys: Vec<ployz_core::authority::TrustedPasskey> = Vec::new();
-        for passkey in &body.passkeys {
+        for passkey in body.passkeys.iter().filter(|_| carries_passkeys) {
             let code = passkey.code();
             let held = approved_passkeys
                 .iter()

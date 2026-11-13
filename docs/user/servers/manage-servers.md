@@ -302,9 +302,9 @@ names. Account asks each server whether it trusts the passkey and shows the answ
 **Trusted on 1 of 2 servers**, with each server's state underneath and the steps until every
 server trusts it. A passkey Ployz Cloud filed but no server approved approves nothing.
 
-A server that joins later trusts the passkeys your admitting server trusts when you approve its
-join; see [Approve a join](add-a-server.md#approve-a-join). A passkey you add after it joined
-isn't added to it. Run `approve --passkey` there, or from an approved device for every server.
+A server you add later from the dashboard trusts the passkeys your admitting server trusts when
+you approve its join; see [Approve a join](add-a-server.md#approve-a-join). A server you add with
+`ployz server add`, or a passkey you add after the server joined, needs its own approval. Run `approve --passkey` there, or from an approved device for every server.
 
 `ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
 account and who approved it on each server: a device, or `on <server>` for that server's own

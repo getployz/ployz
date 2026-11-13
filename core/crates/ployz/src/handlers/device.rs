@@ -387,10 +387,13 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
     )
 }
 
+/// Sign the join waiting for `expected`. A pinned join (`server add`) signs no passkeys: its
+/// joiner doesn't trust them, so the summary must not promise them.
 pub(super) async fn sign_waiting_join(
     client: &mut Client,
     config: &Path,
     expected: &ployz_core::RegisterRequest,
+    pinned: bool,
 ) -> Result<bool, Error> {
     let Some(secret) = key::load(&key::path(config))? else {
         return Ok(false);
@@ -410,6 +413,9 @@ pub(super) async fn sign_waiting_join(
         return Err(Error::conflict(
             "The waiting join does not match the Server identity, keys, allocation, or policy requested. Nothing was approved.",
         ));
+    }
+    if pinned {
+        body.passkeys.clear();
     }
     show_join(&body);
     body.signer = signer.public().into();

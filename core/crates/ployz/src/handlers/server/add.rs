@@ -119,6 +119,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                         assigned_subnet: Some(assigned.subnet),
                         ..assignment.request.clone()
                     },
+                    true,
                 )
                 .await?
                 {
