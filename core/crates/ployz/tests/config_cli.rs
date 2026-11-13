@@ -8047,6 +8047,41 @@ fn an_input_past_the_cli_read_bound_is_refused_after_reading_one_byte_past_it() 
     assert_ne!(code, Some(0), "nothing was set: {unset}");
 }
 
+/// A patch or a secret value read from stdin is as bounded as any other input, so a
+/// wrong source such as `/dev/zero` can't fill memory.
+#[test]
+fn a_patch_or_secret_values_past_the_cli_read_bound_are_refused() {
+    let cloud = &sealing_cloud(ready());
+    branch_with_a_new_secret(cloud);
+    let sync = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--value",
+        "web.env.OTHER_KEY",
+    ];
+    let refusals = [
+        (
+            &["set", "web", "--patch", "-"][..],
+            "stdin: the CLI reads at most 32 MiB of a patch; this one holds more",
+        ),
+        (
+            &sync[..],
+            "stdin: the CLI reads at most 32 MiB of secret values; this one holds more",
+        ),
+    ];
+    for (args, message) in refusals {
+        let refused = refused_on(cloud, args, dev_zero());
+        assert_eq!(refused["message"], message);
+        assert_eq!(
+            refused["details"],
+            json!({ "input": "stdin", "max_bytes": MAX_CLI_INPUT })
+        );
+    }
+}
+
 #[test]
 fn an_env_file_cloud_takes_as_one_edit_is_read_whole() {
     let store = &Target::Local(tempfile::tempdir().unwrap());
@@ -8199,6 +8234,47 @@ fn an_unreadable_input_keeps_its_error_code() {
         "internal",
     );
     assert_eq!(refused["message"], "stdin: an env file is UTF-8 text");
+}
+
+/// Each reader of stdin words a binary input its own way: its message and code are
+/// the CLI's, and a `--patch -` or `env sync --value` is the read's own.
+#[test]
+fn stdin_that_is_not_text_is_refused_in_each_readers_own_words() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(store);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let binary = || file_of(&[0xff, 0xfe, b'\n']).1;
+
+    let refused = failed_on(
+        store,
+        &["config", "put", "app", "x.txt"],
+        binary(),
+        "invalid_argument",
+    );
+    assert_eq!(
+        refused["message"],
+        "x.txt: a Config file is UTF-8 text; this one is binary"
+    );
+    assert_eq!(refused["details"], Value::Null);
+
+    let refused = failed_on(store, &["set", "web", "--patch", "-"], binary(), "internal");
+    assert_eq!(refused["message"], "stream did not contain valid UTF-8");
+    assert_eq!(refused["details"], Value::Null);
+
+    let cloud = &sealing_cloud(ready());
+    branch_with_a_new_secret(cloud);
+    let args = [
+        "env",
+        "sync",
+        "--to",
+        "--env",
+        "fix-key",
+        "--value",
+        "web.env.OTHER_KEY",
+    ];
+    let refused = failed_on(cloud, &args, binary(), "internal");
+    assert_eq!(refused["message"], "stream did not contain valid UTF-8");
+    assert_eq!(refused["details"], Value::Null);
 }
 
 #[test]

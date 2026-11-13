@@ -14,6 +14,7 @@ use ployz_store::{
 };
 
 use super::super::config::expected;
+use super::super::input::{self, Source};
 use super::super::store::{self, Store, mint, project, store};
 use super::super::{Error, leaf_matches, required};
 use crate::cloud_account::StoreCallError;
@@ -179,7 +180,7 @@ fn secret_values(matches: &ArgMatches) -> Result<Vec<(String, String)>, Error> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    let input = std::io::read_to_string(std::io::stdin())?;
+    let input = input::read_text(Source::Stdin, "secret values")?;
     let mut lines = input.lines();
     rows.into_iter()
         .map(|row| match lines.next() {
