@@ -949,15 +949,12 @@ pub(crate) fn publish(
             changed: &changed,
         },
     )?;
-    sealed::SealLedger::record(tx, environment.as_str(), &intent)?;
-    // Saving a sealed value again clears what an earlier seal left plain below.
-    crate::seal_scrub::walk::empty_sealed_below(
+    crate::seal_scrub::write::after_saved_write(
         tx,
-        environment.as_str(),
-        &sealed::sealed_again(latest.map(|latest| &latest.intent), &intent),
-        None,
+        environment,
+        latest.map(|latest| &latest.intent),
+        &intent,
     )?;
-    crate::seal_scrub::history::scrub_sealed(tx, environment)?;
     Ok((revision, true))
 }
 

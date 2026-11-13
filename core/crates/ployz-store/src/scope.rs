@@ -900,18 +900,11 @@ fn persist_working(
             environment.summary.id.as_str().into(),
         ],
     )?;
-    crate::review::sealed::SealLedger::record(
+    crate::seal_scrub::write::after_working_write(
         tx,
         environment.summary.id.as_str(),
+        &before,
         &environment.working,
-    )?;
-    let sealed = crate::review::sealed::newly_sealed(&before, &environment.working);
-    crate::seal_scrub::walk::empty_in_bases(tx, environment.summary.id.as_str(), &sealed)?;
-    crate::seal_scrub::walk::empty_sealed_below(
-        tx,
-        environment.summary.id.as_str(),
-        &sealed,
-        Some(&before),
     )?;
     // A row the draft changed is its own now, whatever proposal brought it.
     crate::branch::release_changed(tx, environment)
