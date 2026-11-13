@@ -745,6 +745,21 @@ async fn an_unknown_tool_is_an_invalid_params_error() {
     assert_eq!(unknown["error"]["message"], "no tool named kubectl");
 }
 
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn a_gated_compiled_tool_takes_its_approval_as_one_string() {
+    let place = transcript("deploy", in_org()).place;
+    let mut client = Client::initialized(on_local(place), json!({})).await;
+    let refused = client
+        .call(2, "deploy", json!({ "services": ["web"], "approval": 5 }))
+        .await;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    assert_eq!(
+        refused["error"]["message"], "`approval` takes one string",
+        "{refused}"
+    );
+}
+
 #[tokio::test]
 async fn a_replayed_request_without_a_key_writes_under_the_same_id() {
     let transcript = transcript("service_add", in_org());
@@ -1225,6 +1240,32 @@ fn published_commands_come_from_the_cloud_the_agent_acts_in() {
         publishing_setup(&config, None, Some("ployz_token")).cloud,
         "https://device.example",
         "PLOYZ_TOKEN acts in the Cloud the environment names"
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_login_file_is_named_to_the_agent_and_ignored_when_publishing() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    std::fs::write(home.path().join("mcp.json"), "{ not json").unwrap();
+    let account = Account {
+        config: config.clone(),
+        ..Account::default()
+    };
+    let server = Server::new(account, None, fixed(transcript("deploy", in_org()).place));
+    let Err(named) = server.agent().await else {
+        panic!("a corrupt mcp.json is no credential");
+    };
+    assert_eq!(
+        named,
+        format!(
+            "The sign-in stored at {}/mcp.json is unreadable.",
+            home.path().display()
+        )
+    );
+    assert_eq!(
+        publishing_setup(&config, None, None).cloud,
+        Setup::beside(&config, None).cloud
     );
 }
 
@@ -2082,6 +2123,8 @@ mod published {
         run: (&'static str, Value),
         down: bool,
         slow: Duration,
+        /// How long a run takes to answer.
+        lag: Duration,
         /// The revision replies name, when it is not the manifest's own.
         named: Option<&'static str>,
     }
@@ -2092,6 +2135,7 @@ mod published {
             run: ("200 OK", json!({ "output": {} })),
             down: false,
             slow: Duration::ZERO,
+            lag: Duration::ZERO,
             named: None,
         }))
     }
@@ -2104,7 +2148,7 @@ mod published {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let seen = incoming(&stream);
-                let (status, reply, revision, slow) = {
+                let (status, reply, revision, slow, lag) = {
                     let state = state.lock().unwrap();
                     let revision = state.named.map_or_else(
                         || state.manifest["revision"].as_str().unwrap().to_owned(),
@@ -2132,8 +2176,13 @@ mod published {
                         )
                     };
                     let slow = (seen.path == "/api/cli/manifest").then_some(state.slow);
-                    (status, reply, revision, slow)
+                    let lag = seen.path.starts_with("/api/cli/run/").then_some(state.lag);
+                    (status, reply, revision, slow, lag)
                 };
+                if let Some(lag) = lag {
+                    // real-wait: holds the fake Cloud's run reply past the server's deadline on a real socket; that wait emits no event
+                    std::thread::sleep(lag);
+                }
                 if let Some(slow) = slow {
                     // real-wait: holds the fake Cloud's manifest reply on a real socket so a second call reaches the in-process reread lock; that wait emits no event
                     std::thread::sleep(slow);
@@ -2699,6 +2748,78 @@ mod published {
             "{refused}"
         );
         assert_eq!(content["retry"]["tool"], "org_member_role", "{refused}");
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_gated_published_command_takes_its_approval_as_one_string() {
+        let fake = fake_publisher(publisher());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = org_member_role();
+        let mut sent = arguments(&entry);
+        sent["approval"] = json!(5);
+        let refused = client.call(2, name(&entry), sent).await;
+        assert_eq!(refused["error"]["code"], -32602, "{refused}");
+        assert_eq!(
+            refused["error"]["message"], "`approval` takes one string",
+            "{refused}"
+        );
+        assert!(
+            fake.requests()
+                .iter()
+                .all(|seen| seen.path == "/api/cli/manifest"),
+            "nothing ran"
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn an_ungated_published_command_keeps_an_approval_field_as_its_input() {
+        let fake = fake_publisher(publisher());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = agent_facing()
+            .into_iter()
+            .find(|entry| entry["gate"] != "ask")
+            .expect("the fixture has an agent-facing command that never asks");
+        let mut sent = arguments(&entry);
+        sent["approval"] = json!("kept");
+        let done = client.call(2, name(&entry), sent.clone()).await;
+        assert_eq!(done["id"], 2, "{done}");
+        let seen = fake.requests();
+        let run = seen
+            .iter()
+            .find(|seen| seen.path.starts_with("/api/cli/run/"))
+            .expect("one run");
+        assert_eq!(run.body, json!({ "input": sent }));
+        assert_eq!(run.approval, None);
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_published_call_past_the_deadline_says_where_to_look() {
+        let publisher = publisher();
+        let fake = fake_publisher(publisher.clone());
+        let home = tempfile::tempdir().unwrap();
+        let mut server = on_published(&fake, home.path()).await;
+        server.deadline = Duration::from_secs(1);
+        let mut client = Client::initialized(server, json!({})).await;
+        publisher.lock().unwrap().lag = Duration::from_secs(3);
+        let entry = agent_facing()
+            .into_iter()
+            .find(|entry| name(entry) == "server_upgrade_policy_show")
+            .unwrap();
+        let done = client.call(2, name(&entry), arguments(&entry)).await;
+        assert_eq!(done["result"]["isError"], true, "{done}");
+        assert_eq!(
+            done["result"]["content"][0]["text"],
+            "ployz mcp stopped `server_upgrade_policy_show` after 1 seconds. What it started \
+             may still be running; check with `server_show`.",
+            "{done}"
+        );
     }
 
     #[tokio::test]

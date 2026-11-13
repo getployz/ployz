@@ -1999,6 +1999,49 @@ fn expecting(byte: u8, allow_unverified: bool) -> ClusterExpectation {
     }
 }
 
+#[test]
+fn an_entrys_sealing_state_decides_whether_it_is_this_cluster() {
+    let key = |byte| ployz_core::SealingPublicKey::from_bytes([byte; 32]);
+    let awaits = |byte| {
+        Some(ployz_core::Sealing::AwaitsRecovery {
+            public_key: key(byte),
+        })
+    };
+    let id = MachineId::parse("a".repeat(32)).unwrap();
+    let predates = || Some(ployz_core::MachineVersion::parse("0.3.2").unwrap());
+    let outcome = |sealing, allow_unverified, predates| match expecting(1, allow_unverified)
+        .check(id, sealing, predates)
+    {
+        Ok(check) if check.verified => "verified".to_owned(),
+        Ok(_) => "unchecked".to_owned(),
+        Err(error) => format!("{error:?}"),
+    };
+    for allow in [false, true] {
+        assert_eq!(outcome(held(1), allow, None), "verified");
+        assert_eq!(outcome(awaits(1), allow, None), "verified");
+        assert_eq!(
+            outcome(held(2), allow, None),
+            format!("ClusterMismatch {{ machine_id: {id:?} }}")
+        );
+        assert_eq!(
+            outcome(awaits(2), allow, predates()),
+            format!("ClusterMismatch {{ machine_id: {id:?} }}")
+        );
+    }
+    let needs_access = Some(ployz_core::Sealing::NeedsAccess);
+    assert_eq!(outcome(needs_access, true, None), "unchecked");
+    assert_eq!(outcome(None, true, predates()), "unchecked");
+    assert_eq!(
+        outcome(needs_access, false, predates()),
+        format!("ClusterUnverified {{ machine_id: {id:?} }}")
+    );
+    assert_eq!(
+        outcome(None, false, None),
+        format!("ClusterUnverified {{ machine_id: {id:?} }}")
+    );
+    assert!(outcome(None, false, predates()).starts_with("PredatesSealing"));
+}
+
 fn cluster_entries(
     sealings: Vec<Option<ployz_core::Sealing>>,
 ) -> (Arc<ClusterConnector>, Vec<MachineId>) {

@@ -8,7 +8,7 @@
 ../ployz-testkit/tests/fake_fleet.rs::an_unmodeled_command_is_recorded_and_answers_unimplemented	op::EnsureContainer	call	unary	-	redial	keyed
 ../ployz-testkit/tests/fake_fleet.rs::set_ingress_doors_runs_the_holder_and_caddy_once	op::SetIngressDoors	call	unary	-	redial	keyed
 ../ployz-testkit/tests/fake_fleet.rs::set_ingress_doors_runs_the_holder_and_caddy_once	op::SetIngressDoors	call	unary	-	redial	keyed
-src/checkin/mod.rs::local_machine	op::Inspect	call_repeatable	setup	wait(WAIT)	redial	read
+src/checkin/host.rs::local_machine	op::Inspect	call_repeatable	setup	wait(WAIT)	redial	read
 src/cloud_enroll/recovery_compat.rs::supported	op::DescribeContract	call_repeatable	setup	wait(WAIT)	redial	read
 src/cluster.rs::depart	op::Leave	call	unary	-	redial	keyed
 src/cluster.rs::ensure_retried	op::EnsureContainer	call	unary	-	redial	keyed
@@ -120,14 +120,10 @@ src/handlers/status_servers.rs::observe	op::ReadRoutedAddresses	invoke	single	ta
 src/handlers/volume/approve.rs::running_spec	op::InspectContainer	-	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/handlers/volume/restore.rs::copies	op::InspectVolumeCopy	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/handlers/volume/restore.rs::set	op::SetVolumeCopy	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
-src/image.rs::copy_running_image	op::EnsureImageIngest	call	unary	-	redial	keyed
-src/image.rs::copy_running_image	op::PullImageFromMachine	call	unary	-	redial	keyed
-src/image.rs::ensure_cluster_image	op::EnsureImageIngest	call	unary	-	redial	keyed
-src/image.rs::ensure_cluster_image	op::PullImageFromMachine	call	unary	-	redial	keyed
 src/image.rs::pull_cluster_image	op::PullImage	call	unary	-	redial	keyed
-src/image/built.rs::deliver	op::PullImageFromMachine	call	unary	-	redial	keyed
-src/image/built.rs::open	op::EnsureImageIngest	call	unary	-	redial	keyed
 src/image/built.rs::open	op::ListImages	call	unary	-	redial	read
+src/image/peer.rs::open	op::EnsureImageIngest	call	unary	-	redial	keyed
+src/image/peer.rs::pull_into	op::PullImageFromMachine	call	unary	-	redial	keyed
 src/image/cleanup.rs::clean	op::DescribeContract	invoke	single	-	-	once
 src/image/cleanup.rs::clean	op::PruneImages	invoke	single	-	-	once
 src/ingress.rs::declaration_of	op::DescribeContract	call	unary	-	redial	read

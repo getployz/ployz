@@ -23,6 +23,41 @@ const DOCKER_STAGE: &str = "checking Docker";
 const ROOT_STAGE: &str = "inspect host-root capacity for ZFS storage preparation";
 const DISKS_STAGE: &str = "list disks";
 
+/// What the host answered to a question about itself, or why it didn't. A caller that goes on
+/// without an answer says so where it asks: [`Fact::or_report`] names the cause and the fallback,
+/// and a caller that stops matches `Unknown` and refuses.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Fact<T> {
+    Known(T),
+    Unknown(String),
+}
+
+impl<T> From<Result<T, String>> for Fact<T> {
+    fn from(result: Result<T, String>) -> Self {
+        result.map_or_else(Self::Unknown, Self::Known)
+    }
+}
+
+impl<T> Fact<T> {
+    pub(super) fn map<U>(self, change: impl FnOnce(T) -> U) -> Fact<U> {
+        match self {
+            Self::Known(answer) => Fact::Known(change(answer)),
+            Self::Unknown(cause) => Fact::Unknown(cause),
+        }
+    }
+
+    /// The answer, or `fallback` after printing that `what` couldn't be asked and why.
+    pub(super) fn or_report(self, what: &str, fallback: T) -> T {
+        match self {
+            Self::Known(answer) => answer,
+            Self::Unknown(cause) => {
+                eprintln!("Couldn't {what}: {cause}");
+                fallback
+            }
+        }
+    }
+}
+
 pub(super) fn read_root_filesystem() -> Result<Filesystem, Error> {
     let (size_bytes, available_bytes) = crate::host_capacity::filesystem_space(Path::new("/"))
         .map_err(|source| Error::Io {

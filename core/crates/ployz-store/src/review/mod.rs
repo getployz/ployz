@@ -557,6 +557,17 @@ pub(crate) enum Shipping<'a> {
     Publish,
 }
 
+impl Shipping<'_> {
+    /// When this deletes what a refusal to delete data names: a deploy deletes it, a
+    /// publish leaves the deletion to the next deploy.
+    const fn deletes(self) -> crate::removal::Deletes {
+        match self {
+            Self::Deploy { .. } => crate::removal::Deletes::Now,
+            Self::Publish => crate::removal::Deletes::NextDeploy,
+        }
+    }
+}
+
 /// The Volume data shipping `target` would delete, each accepted by name in
 /// `accepted` under the reviewed `version`, or covered by `consent` saved with it.
 /// A full Deploy removes what Applied State holds, or a Deployment in flight puts in
@@ -601,7 +612,7 @@ pub(crate) fn destructive(
         tx,
         who,
         &review.view.environment.id,
-        (&review.view.version, version),
+        (&review.view.version, version, shipping.deletes()),
         removed,
         observed,
         (accepted, consent),

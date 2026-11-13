@@ -117,6 +117,53 @@ pub(crate) fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
     }
 }
 
+/// Appends one JSON line to `path`. A line an earlier append left unfinished
+/// is cut off first, and a failed append is cut back off, so every line the
+/// file ends up with is whole.
+pub(crate) fn append_line(path: &Path, value: &impl Serialize) -> io::Result<()> {
+    use std::{io::Read as _, os::unix::fs::OpenOptionsExt as _};
+    let mut line = serde_json::to_vec(value).map_err(io::Error::other)?;
+    line.push(b'\n');
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?;
+    let mut recorded = Vec::new();
+    file.read_to_end(&mut recorded)?;
+    let whole = recorded
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |end| end + 1);
+    if whole < recorded.len() {
+        file.set_len(whole as u64)?;
+    }
+    let appended = write_line(&mut file, &line);
+    if appended.is_err() {
+        drop(file.set_len(whole as u64));
+    }
+    appended
+}
+
+#[cfg(test)]
+thread_local! {
+    /// When set, each appended line writes this many bytes of itself and then
+    /// fails, as a write that runs out of disk does.
+    pub(crate) static GAP_WRITES_FAIL_AFTER: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn write_line(file: &mut fs::File, line: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+    #[cfg(test)]
+    if let Some(written) = GAP_WRITES_FAIL_AFTER.get() {
+        file.write_all(line.get(..written).unwrap_or(line))?;
+        return Err(io::Error::from(io::ErrorKind::StorageFull));
+    }
+    file.write_all(line)
+}
+
 pub const METRICS_DIR: &str = "metrics";
 pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";

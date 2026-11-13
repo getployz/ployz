@@ -13,7 +13,7 @@ use super::NameMatches;
 use crate::{
     AdvertisedEndpoint, DeviceKey, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue,
     MachineName, MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement,
-    Sealing, SelectedEndpoint, ValueError, WireGuardPublicKey,
+    Sealing, SealingPublicKey, SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -137,6 +137,24 @@ impl Machine {
             RowStanding::Leaving { .. } => false,
         }
     }
+
+    /// The Cluster's Sealing public key when this Machine's row says it holds it.
+    #[must_use]
+    pub const fn held_sealing_key(&self) -> Option<SealingPublicKey> {
+        match self.runtime.sealing {
+            Some(sealing) => sealing.held_key(),
+            None => None,
+        }
+    }
+}
+
+/// The Cluster's Sealing public key as the first of `machines` that holds one claims it.
+/// A seal trusts it only through a check of the key's own source.
+#[must_use]
+pub fn cluster_sealing_key<'a>(
+    machines: impl IntoIterator<Item = &'a Machine>,
+) -> Option<SealingPublicKey> {
+    machines.into_iter().find_map(Machine::held_sealing_key)
 }
 
 /// Where a Machine's row stands in this observer's copy of it. It is neither the
@@ -786,6 +804,14 @@ impl MachineObservation {
         )
     }
 
+    /// Whether a command that sets something on every Server may ask this one: it
+    /// responds, and its row is not marked leaving. A role or a capability narrows the set
+    /// further, where the command has one.
+    #[must_use]
+    pub fn can_be_asked(&self) -> bool {
+        self.invites_rpc() && self.machine.takes_part()
+    }
+
     /// An Unarrived Machine: omitted, never recorded by this observer's admin, and with
     /// no daemon version in its row. Cloud's Register writes an empty runtime, and a
     /// daemon publishes its own row, version included, only once it participates, so
@@ -1064,11 +1090,15 @@ impl MembershipObservation {
 
 #[cfg(test)]
 mod placement_tests {
-    use crate::{MachineId, MachineName, MachineSubnet, Placement, WireGuardPublicKey};
+    use crate::{
+        MachineId, MachineName, MachineSubnet, Placement, Sealing, SealingPublicKey,
+        WireGuardPublicKey,
+    };
 
     use super::{
         BuildConcurrency, BuildConcurrencyUpdate, Machine, MachineObservation, MachineUpdate,
-        MembershipEvidence, MembershipObservation, RowStanding, machine_matches_placement,
+        MembershipEvidence, MembershipObservation, RowStanding, cluster_sealing_key,
+        machine_matches_placement,
     };
 
     fn machine(hex: char, name: &str) -> Machine {
@@ -1242,6 +1272,59 @@ mod placement_tests {
                 "daemon version {version:?}, leaving {leaving}"
             );
         }
+    }
+
+    #[test]
+    fn a_command_asks_only_a_responding_machine_that_is_not_leaving() {
+        for (membership, leaving, asked) in [
+            (MembershipObservation::Up, false, true),
+            (MembershipObservation::Suspect, false, true),
+            (MembershipObservation::Down, false, false),
+            (MembershipObservation::Up, true, false),
+        ] {
+            let mut row = machine('a', "row");
+            row.runtime.leaving = leaving;
+            let observed = MachineObservation::new(row, membership.clone());
+            assert_eq!(
+                observed.can_be_asked(),
+                asked,
+                "{membership:?}, leaving {leaving}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cluster_key_is_the_first_machines_held_one() {
+        let key = |byte| SealingPublicKey::from_bytes([byte; 32]);
+        let with = |letter, sealing| {
+            let mut row = machine(letter, "row");
+            row.runtime.sealing = sealing;
+            row
+        };
+        let held = |byte| {
+            Some(Sealing::Held {
+                public_key: key(byte),
+            })
+        };
+        let awaits = Some(Sealing::AwaitsRecovery { public_key: key(9) });
+        let rows = [
+            with('a', None),
+            with('b', Some(Sealing::NeedsAccess)),
+            with('c', awaits),
+            with('d', held(1)),
+            with('e', held(2)),
+        ];
+        assert_eq!(rows[3].held_sealing_key(), Some(key(1)));
+        for row in &rows[..3] {
+            assert_eq!(row.held_sealing_key(), None);
+        }
+        assert_eq!(cluster_sealing_key(&rows), Some(key(1)));
+        assert_eq!(
+            cluster_sealing_key(rows[4..].iter().chain(&rows[..4])),
+            Some(key(2))
+        );
+        assert_eq!(cluster_sealing_key(&rows[..3]), None);
+        assert_eq!(cluster_sealing_key(&[]), None);
     }
 
     #[test]

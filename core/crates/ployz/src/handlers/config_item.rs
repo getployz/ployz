@@ -3,7 +3,6 @@
 //! rename and delete it. Every change is staged in Working State until a Deploy.
 //! A file reads Service variables as `${{ SERVICE.KEY }}`.
 
-use crate::ui::Next;
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::{FileMode, ReviewLifecycleKind};
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
@@ -13,8 +12,10 @@ use ployz_store::{
     RemoveConfigFile, RenameConfig,
 };
 
+use super::input::{self, InputError, Source};
+use super::shared::staged::{StagedReport, Then};
 use super::store;
-use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded, required};
+use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, switch, value};
 use crate::failure::io_code;
 use crate::ui::{Cell, Fields, Table, Tone};
@@ -151,26 +152,20 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (bytes, from) = match matches
+    let source = matches
         .get_one::<String>("from")
-        .filter(|path| *path != "-")
-    {
-        Some(path) => (
-            std::fs::File::open(path)
-                .and_then(|from| read_bounded(from, MAX_CLI_INPUT_BYTES))
-                .map_err(|error| {
-                    Error::caused(io_code(&error), format!("Can't read --from {path}"), error)
-                })?,
-            path.as_str(),
-        ),
-        None => (
-            read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?,
-            "stdin",
-        ),
-    };
-    let bytes = bytes.ok_or_else(|| input_too_long(from, "a Config file"))?;
+        .map_or(Source::Stdin, |from| Source::of(from));
+    let input = input::read(source, "a Config file").map_err(|error| match error {
+        InputError::Unreadable {
+            source: Source::Path(path),
+            error,
+        } => Error::caused(io_code(&error), format!("Can't read --from {path}"), error),
+        other @ (InputError::Unreadable { .. }
+        | InputError::TooLong { .. }
+        | InputError::NotText { .. }) => other.into(),
+    })?;
     let file = file_name(matches)?;
-    let content = String::from_utf8(bytes).map_err(|_| {
+    let content = input.text().map_err(|_| {
         Error::usage(format!(
             "{file}: a Config file is UTF-8 text; this one is binary"
         ))
@@ -379,21 +374,15 @@ fn staged(
     what: &str,
     unchanged: &str,
 ) -> Result<(), Error> {
-    if result.staged.is_empty() {
-        return crate::ui::done(
-            &Next::new(result, None),
-            format_args!(
-                "Nothing changed in {}/{}; {unchanged}.",
-                result.environment.project, result.environment.name
-            ),
-        );
-    }
-    let hint = store::next(matches, &["diff"]);
-    crate::ui::finish(&Next::new(result, Some(hint)), || {
-        crate::ui::stream(format_args!(
-            "{what} {} in {}/{}.",
-            result.config.name, result.environment.project, result.environment.name
-        ));
+    // A person is never told the next command here; `--json` carries it.
+    StagedReport::of(
+        matches,
+        result,
+        format!("{what} {}", result.config.name),
+        unchanged.to_owned(),
+        Then::Diff,
+    )
+    .print_changes(|| {
         for file in &result.config.files {
             crate::ui::stream(format_args!(
                 "  {} ({} bytes, mode {})",
@@ -402,7 +391,8 @@ fn staged(
                 file.mode
             ));
         }
-    })
+    })?;
+    Ok(())
 }
 
 fn config_name(matches: &ArgMatches, arg: &str) -> Result<ConfigName, Error> {

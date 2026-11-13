@@ -362,9 +362,13 @@ impl ConfigStore {
     /// already prepared it, or its values can't deploy, which fails it with why; or
     /// a storage error.
     pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
-        self.storage
-            .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))
-            .and_then(|claimed| claimed)
+        match self
+            .storage
+            .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))?
+        {
+            deployment::Taken::Claimed(claimed) => Ok(*claimed),
+            deployment::Taken::Refused(refusal) => Err(refusal.into_error()),
+        }
     }
 
     /// Record what `runner` did with the Deployment it claimed; confirmed Node Outcomes

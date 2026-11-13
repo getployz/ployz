@@ -1,6 +1,6 @@
 ---
 name: verify-removal-marks
-description: Model-check the Config Store's removal mark lifecycle (remove, sweep, cancel, pull-request close, the removal Deployment ending) on Postgres and SQLite with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz-store/src/removal/ (due.rs sweep, settle, finish, close; mark.rs live, of, save, finish; mod.rs cancel_removal, stop), the mark SQL spliced into branch/idle.rs and pr_environment.rs, the row locks and purge in scope.rs, on_servers and ran in deployment/history.rs, the Deployment record path in deployment/lifecycle.rs, the transaction isolation in storage/pg.rs or storage/sqlite.rs, or Cloud's sweep triggers in dashboard/src/modules/config-store/.
+description: Model-check the Config Store's removal mark lifecycle (remove, sweep, cancel, pull-request close, the removal Deployment ending) on Postgres and SQLite with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz-store/src/removal/ (due.rs sweep, settle, finish, close; mark.rs live, of, save, finish; mod.rs cancel_removal, stop), the mark SQL spliced into branch/idle.rs and pr_environment.rs, the row locks and purge in scope.rs, on_servers and ran in deployment/history.rs, the Deployment record path in deployment/lifecycle.rs and deployment/record.rs, the transaction isolation in storage/pg.rs or storage/sqlite.rs, or Cloud's sweep triggers in dashboard/src/modules/config-store/.
 ---
 
 # Verify removal marks
@@ -77,7 +77,8 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployz-store/src/removal/mark.rs`: `live`, `of`, `save` and its `ON CONFLICT` update, `finish` and its `WHERE state = 'removing'`, and the helpers other modules call: `unmarked` and `marks_holding`, which return SQL they splice in, and `drop_live`, which deletes the live mark.
 - `core/crates/ployz-store/src/removal/mod.rs`: `cancel_removal`, `stop`, `lock_project`.
 - `core/crates/ployz-store/src/scope.rs`: `environment`, `lock`, `lock_all`, `lock_id`, `owned`, `load_by_id`, `purge`.
-- `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`, `record` and its `Applied`/`Failed` choice, `end` and its `(Cancelling, Failed)` to `Cancelled` mapping.
+- `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`.
+- `core/crates/ployz-store/src/deployment/record.rs`: `record` and its `Applied`/`Failed` choice, `end` and its `(Cancelling, Failed)` to `Cancelled` mapping.
 - `core/crates/ployz-store/src/deployment/history.rs`: `in_flight`, `last_ran`, `on_servers`, `ran`.
 - `core/crates/ployz-store/src/storage/pg.rs`: `begin` and its READ COMMITTED level, `TIMEOUT`.
 - `core/crates/ployz-store/src/storage/sqlite.rs`: `transaction` and `BEGIN IMMEDIATE`.

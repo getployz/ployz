@@ -1167,7 +1167,9 @@ async fn contract() {
         .unwrap();
     let removal_connection = observed.recv().await.unwrap();
     let replaced =
-        match ployz::sdk::connect_answered(vec![connection(&abandoned)], connector.clone()).await {
+        match ployz::sdk::connect_expecting(vec![connection(&abandoned)], connector.clone(), None)
+            .await
+        {
             Ok(_) => panic!("abandoned capability must be refused"),
             Err(error) => refused(error),
         };
@@ -1265,7 +1267,9 @@ async fn contract() {
         .unwrap();
     drop(device_session);
     let error =
-        match ployz::sdk::connect_answered(vec![connection(&device)], connector.clone()).await {
+        match ployz::sdk::connect_expecting(vec![connection(&device)], connector.clone(), None)
+            .await
+        {
             Ok(_) => panic!("a cleared device capability must be refused"),
             Err(error) => refused(error),
         };
@@ -1282,12 +1286,13 @@ async fn contract() {
         .unwrap();
     drop(session);
     // A lost Clear response is confirmed by the redial.
-    let error = match ployz::sdk::connect_answered(vec![connection(&capability)], connector.clone())
-        .await
-    {
-        Ok(_) => panic!("removed capability must not reconnect through the SDK"),
-        Err(error) => refused(error),
-    };
+    let error =
+        match ployz::sdk::connect_expecting(vec![connection(&capability)], connector.clone(), None)
+            .await
+        {
+            Ok(_) => panic!("removed capability must not reconnect through the SDK"),
+            Err(error) => refused(error),
+        };
     assert_eq!(error.code, RpcErrorCode::Unauthenticated);
     assert_eq!(
         error.details,

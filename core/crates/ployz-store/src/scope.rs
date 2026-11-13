@@ -33,6 +33,17 @@ pub struct EnvironmentRef {
     pub environment: Option<EnvironmentName>,
 }
 
+impl EnvironmentRef {
+    /// The Environment a result named, as a request addresses it.
+    #[must_use]
+    pub fn of(environment: &EnvironmentSummary) -> Self {
+        Self {
+            project: Some(environment.project.clone()),
+            environment: Some(environment.name.clone()),
+        }
+    }
+}
+
 /// An Environment as every result names it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentSummary {

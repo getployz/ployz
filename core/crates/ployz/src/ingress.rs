@@ -5,15 +5,14 @@
 use ployz_core::error_chain;
 use std::collections::BTreeMap;
 
-use futures_util::{StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerObservation, ContainerRuntimeObservation, DescribeContractRequest,
     DoorChange, DoorOutcome, EnvironmentValues, IngressDoor, IngressDoors, IngressDoorsFailure,
     IngressDoorsSet, IngressPorts, IngressStage, IngressWiring, Machine, MachineFailure, MachineId,
     MachineName, MachineObservation, MachineTarget, PartialResult, PlatformPurpose,
-    QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_CLUSTER_DOORS_CAPABILITY,
+    QualifiedService, RpcError, RpcErrorCode, SET_CLUSTER_DOORS_CAPABILITY,
     SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing, SealingPublicKey,
-    ServiceId, ServiceObservation, SetClusterDoorsRequest, op, seal_platform,
+    ServiceId, ServiceObservation, SetClusterDoorsRequest, cluster_sealing_key, op, seal_platform,
     validate_ingress_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
@@ -24,7 +23,7 @@ use ts_rs::TS;
 use crate::{
     cluster::Call,
     connect::{Client, ConnectError},
-    deploy::{ProxyPlacement, RestartTolerant, SlotAction},
+    deploy::{ProxyPlacement, RestartTolerant, SlotAction, set_each},
     failure::Failure,
     sealing_pin::{SealFor, SealTo},
     ui::progress::{Detail, Diagnostic, StartFailure},
@@ -85,14 +84,7 @@ impl DoorMachine {
 pub(crate) fn door_machines(observed: &[MachineObservation]) -> Vec<DoorMachine> {
     observed
         .iter()
-        .filter(|machine| {
-            machine.invites_rpc()
-                && machine.machine.accepts_ingress
-                && match machine.machine.standing() {
-                    RowStanding::Registered | RowStanding::Versioned => true,
-                    RowStanding::Leaving { .. } => false,
-                }
-        })
+        .filter(|machine| machine.can_be_asked() && machine.machine.accepts_ingress)
         .map(|machine| DoorMachine::of(&machine.machine))
         .collect()
 }
@@ -150,12 +142,7 @@ pub(crate) fn proxy_service(services: &[ServiceObservation]) -> ServiceId {
 }
 
 /// What one Server's daemon answered, or why it wasn't asked to the end.
-#[derive(Debug)]
-enum Answer {
-    Set(Box<IngressDoorsSet>),
-    Refused(RpcError),
-    Cancelled,
-}
+type Answer = crate::deploy::Answer<IngressDoorsSet>;
 
 /// A Server that serves SetClusterDoors, reached through the entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -318,18 +305,13 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
             failure.error.clone(),
         ));
     }
-    let sealing = machines
-        .iter()
-        .find_map(|machine| match &machine.machine.runtime.sealing {
-            Some(Sealing::Held { public_key }) => Some(*public_key),
-            Some(Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. }) | None => None,
-        });
+    let sealing = cluster_sealing_key(machines.iter().map(|machine| &machine.machine));
     let recipient = match sealing {
         Some(identity) => client
             .call::<op::Inspect>(ployz_core::InspectRequest::default(), Call::read())
             .await
             .ok()
-            .filter(|details| matches!(details.sealing, Some(Sealing::Held { public_key }) if public_key == identity))
+            .filter(|details| details.sealing.and_then(Sealing::held_key) == Some(identity))
             .and_then(|details| details.sealing_recipient),
         None => None,
     };
@@ -373,8 +355,7 @@ fn declarers_of(machines: &[MachineObservation]) -> Vec<Declarer> {
     machines
         .iter()
         .filter(|observation| {
-            observation.invites_rpc()
-                && !matches!(observation.machine.standing(), RowStanding::Leaving { .. })
+            observation.can_be_asked()
                 && observation
                     .machine
                     .runtime
@@ -453,33 +434,18 @@ async fn set_doors<C: ProxyPlacement>(
     cancel: &CancellationToken,
 ) -> Vec<Answer> {
     let client = &RestartTolerant::new(client, cancel);
-    // Each future owns its Server, since one borrowing from the slice leaves the
-    // caller's future Send for one lifetime only, and a spawned Deploy runner needs all.
-    stream::iter(machines.to_vec())
-        .map(|machine| set_door(client, machine, proxy, doors, cancel))
-        .buffered(at_once)
-        .collect()
-        .await
-}
-
-async fn set_door<C: ProxyPlacement>(
-    client: &C,
-    machine: DoorMachine,
-    proxy: ServiceId,
-    doors: &ClusterDoors,
-    cancel: &CancellationToken,
-) -> Answer {
-    if let Some(refusal) = machine.refusal(&doors.doors) {
-        return Answer::Refused(refusal);
-    }
-    let request = doors.request(proxy);
-    tokio::select! {
-        answer = client.set_ingress_doors(&machine.id, request) => match answer {
-            Ok(set) => Answer::Set(Box::new(set)),
-            Err(error) => Answer::Refused(error),
+    set_each(
+        machines,
+        at_once,
+        cancel,
+        |machine| machine.refusal(&doors.doors),
+        |machine| async move {
+            client
+                .set_ingress_doors(&machine.id, doors.request(proxy))
+                .await
         },
-        () = cancel.cancelled() => Answer::Cancelled,
-    }
+    )
+    .await
 }
 
 /// The refusal for a Server whose daemon predates `capability`.

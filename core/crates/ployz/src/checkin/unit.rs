@@ -1,6 +1,12 @@
 //! The two systemd units a waiting host runs: the check-in loop and preparation.
 
-use std::path::Path;
+use std::{fs, path::Path};
+
+use ployz_core::RpcErrorCode;
+
+use crate::failure::Failure;
+
+const UNIT_DIR: &str = "/etc/systemd/system";
 
 pub(crate) const CHECKIN: &str = "ployz-checkin.service";
 pub(crate) const PREPARE: &str = "ployz-prepare.service";
@@ -73,4 +79,15 @@ ExecStart=\"{ployzd}\" install --prepare{skip}
 TimeoutStartSec=infinity
 "
     ))
+}
+
+pub(crate) fn write(name: &str, text: &str) -> Result<(), Failure> {
+    let path = Path::new(UNIT_DIR).join(name);
+    fs::write(&path, text).map_err(|error| {
+        Failure::caused(
+            RpcErrorCode::Internal,
+            format!("Could not write {}.", path.display()),
+            error,
+        )
+    })
 }

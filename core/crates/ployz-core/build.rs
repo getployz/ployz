@@ -5,18 +5,18 @@ fn main() {
     macro_rules! build_service {
         (
             package $package:literal
-            unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-            server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
+            unary { $($unary_variant:ident: ($unary_name:ident, $unary_request:ty, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident $(, $($unary_more:tt)*)?),)+ }
+            server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_request:ty, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident $(, $($stream_more:tt)*)?),)+ }
+            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident $(, $($bidi_more:tt)*)?),)+ }
             capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
         ) => {{
             let mut service = tonic_build::manual::Service::builder()
                 .name("MachineRpc")
                 .package($package)
                 .comment("Machine control RPCs with schema-blind protobuf envelopes.");
-            $(service = service.method(method(stringify!($unary_name), $unary_route));)+
-            $(service = service.method(streaming_method(stringify!($stream_name), $stream_route));)+
-            $(service = service.method(bidi_method(stringify!($bidi_method), $bidi_route));)+
+            $(service = service.method(method(stringify!($unary_name), stringify!($unary_variant)));)+
+            $(service = service.method(streaming_method(stringify!($stream_name), stringify!($stream_variant)));)+
+            $(service = service.method(bidi_method(stringify!($bidi_method), stringify!($bidi_variant)));)+
             service
         }};
     }

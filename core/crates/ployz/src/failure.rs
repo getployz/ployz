@@ -968,7 +968,9 @@ mod tests {
 
     #[test]
     fn bad_log_tail_is_invalid_argument() {
-        let failure = Failure::from(OperatorError::InvalidTail("bad".into()));
+        let failure = Failure::from(crate::operator::input::InputError::InvalidTail(
+            "bad".into(),
+        ));
         assert_eq!(failure.report().code, RpcErrorCode::InvalidArgument);
     }
 

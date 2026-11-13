@@ -32,6 +32,7 @@ mod deploy;
 mod github_build;
 mod logs;
 mod metrics;
+pub(crate) mod metrics_rows;
 mod observe;
 mod payloads;
 pub(crate) mod preparation;
@@ -272,6 +273,42 @@ pub struct PreparedDeploy {
     prune_targets: Vec<ployz_core::PruneTarget>,
 }
 
+impl PreparedDeploy {
+    /// A Deploy planned without preparing: nothing built, nothing retained.
+    fn new(preview: DeployPlan, session: std::sync::Weak<SessionInner>) -> Self {
+        Self {
+            preview,
+            build_receipts: Default::default(),
+            session,
+            confirmed: AtomicBool::new(false),
+            retained: std::sync::Mutex::new(None),
+            prune_targets: Vec::new(),
+        }
+    }
+
+    /// A Deploy prepared from a Build: its receipts and the images it retains until
+    /// confirmed or closed.
+    fn prepared(
+        preview: DeployPlan,
+        session: std::sync::Weak<SessionInner>,
+        build_receipts: std::collections::BTreeMap<
+            ployz_core::ServiceName,
+            preparation::BuildReceipt,
+        >,
+        retained: Vec<crate::build::BuiltService>,
+        prune_targets: Vec<ployz_core::PruneTarget>,
+    ) -> Self {
+        Self {
+            preview,
+            build_receipts,
+            session,
+            confirmed: AtomicBool::new(false),
+            retained: std::sync::Mutex::new(Some(retained)),
+            prune_targets,
+        }
+    }
+}
+
 type DeployTask = tokio::task::JoinHandle<Result<DeployOutcome<ExecutionError>, RpcError>>;
 
 /// In-flight execution of one Deploy Preview.
@@ -338,21 +375,11 @@ pub async fn connect_connections(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,
 ) -> Result<Session, RpcError> {
-    Ok(connect_answered(connections, connector).await?)
+    Ok(connect_expecting(connections, connector, None).await?)
 }
 
-/// [`connect_connections`], keeping whether a Machine refused or none answered.
-///
-/// # Errors
-/// As [`connect_connections`].
-pub async fn connect_answered(
-    connections: Vec<Connection>,
-    connector: Arc<dyn Connector>,
-) -> Result<Session, CallError> {
-    connect_expecting(connections, connector, None).await
-}
-
-/// [`connect_answered`], keeping only an entry in `expect`'s Cluster when it names one.
+/// [`connect_connections`], keeping whether a Machine refused or none answered, and only
+/// an entry in `expect`'s Cluster when it names one.
 ///
 /// # Errors
 /// As [`connect_connections`]; when every entry belongs to another Cluster, the last one's
@@ -629,8 +656,7 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<ployz_core::MachineDetails, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let client = self.client()?;
         self.until_closed(async {
             client
@@ -775,10 +801,7 @@ impl Session {
             ployz_core::ServiceName,
             ployz_core::RegistryAuth,
         >,
-        runner: Option<(
-            ployz_core::Operator,
-            std::collections::BTreeSet<ployz_core::DeploymentLogId>,
-        )>,
+        runner: Option<ployz_core::RunnerOptions>,
     ) -> Result<Running<PreparedDeploy, E>, RpcError>
     where
         E: From<RpcError> + From<Unprepared> + Send + 'static,
@@ -789,8 +812,8 @@ impl Session {
         Ok(Running::spawn(token.clone(), move |reporter| async move {
             let mut captured = capture(input).await?;
             captured.intent.registry_auth = registry_auth;
-            if let Some((operator, ended_runs)) = runner {
-                captured.intent.options = captured.intent.options.as_runner(operator, ended_runs);
+            if let Some(runner) = runner {
+                captured.intent.options = captured.intent.options.as_runner(runner);
             }
             if token.is_cancelled() {
                 return Err(E::from(preparation_error(
@@ -813,14 +836,13 @@ impl Session {
             let build_receipts =
                 preparation::receipts(&captured.fingerprints, &captured.reused, &retained);
             let prune_targets = crate::image::prune_targets(&preview, &retained);
-            Ok(PreparedDeploy {
+            Ok(PreparedDeploy::prepared(
                 preview,
-                build_receipts,
                 session,
-                confirmed: AtomicBool::new(false),
-                retained: std::sync::Mutex::new(Some(retained)),
+                build_receipts,
+                retained,
                 prune_targets,
-            })
+            ))
         }))
     }
 
@@ -882,14 +904,7 @@ impl Session {
             () = self.inner.cancel.cancelled() => return Err(closed().into()),
             preview = client.preview(intent) => preview?,
         };
-        Ok(PreparedDeploy {
-            preview,
-            build_receipts: Default::default(),
-            session: Arc::downgrade(&self.inner),
-            confirmed: AtomicBool::new(false),
-            retained: std::sync::Mutex::new(None),
-            prune_targets: Vec::new(),
-        })
+        Ok(PreparedDeploy::new(preview, Arc::downgrade(&self.inner)))
     }
 
     /// Calculate a Namespace-removal preview. Confirming executes these operations.
@@ -909,14 +924,7 @@ impl Session {
             () = self.inner.cancel.cancelled() => return Err(closed()),
             preview = client.preview_namespace_removal(&namespace, volumes) => preview?,
         };
-        Ok(PreparedDeploy {
-            preview,
-            build_receipts: Default::default(),
-            session: Arc::downgrade(&self.inner),
-            confirmed: AtomicBool::new(false),
-            retained: std::sync::Mutex::new(None),
-            prune_targets: Vec::new(),
-        })
+        Ok(PreparedDeploy::new(preview, Arc::downgrade(&self.inner)))
     }
 
     /// Preview, auto-confirm, and return the Deploy Outcome.
@@ -1013,8 +1021,7 @@ impl Session {
     /// `unanswered`: the Machine may have taken the request. One whose entry Machine
     /// could not dial `machine` is not, since `machine` never got it.
     pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, CallError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let body: RpcRequestBody = serde_json::from_value(request)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let path = volume_switch_path(&body)?;
@@ -1054,8 +1061,7 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         self.until_closed(client.data_loss_if_machine_removed(&target))
             .await
@@ -1082,8 +1088,7 @@ impl Session {
         confirm_data_loss: &DataLossConfirmation,
         teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<LocalMachineRemoved, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.remove_machine(
             &target,
@@ -1113,8 +1118,7 @@ impl Session {
         machine: &str,
         scope: &crate::drain::DrainScope,
     ) -> Result<crate::drain::DrainReport, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         client
             .drain(&target, scope, &self.inner.cancel, &mut |_| {})
@@ -1156,8 +1160,7 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<crate::ingress::IngressCheck, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         let cancel = &self.inner.cancel;
         self.until_closed(async {
@@ -1169,14 +1172,7 @@ impl Session {
                 cancel,
             )
             .await
-            .map_err(|error| match error {
-                crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
-                error @ (crate::cluster::RoleWaitError::NotObserved(_)
-                | crate::cluster::RoleWaitError::ChangeNotObserved
-                | crate::cluster::RoleWaitError::Cancelled) => {
-                    RpcError::unavailable(error.to_string())
-                }
-            })?;
+            .map_err(RpcError::from)?;
             crate::ingress::fill_slots(&mut client, cancel)
                 .await
                 .map_err(|failure| failure.report())
@@ -1299,8 +1295,7 @@ impl Session {
     /// Machine Target or not visible, this entry hasn't observed the role within 30 s, or
     /// the Machine does not acknowledge a listing, stop or removal.
     pub async fn stop_ingress(&self, machine: &str) -> Result<(), RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         let cancel = &self.inner.cancel;
         self.until_closed(async {
@@ -1312,14 +1307,7 @@ impl Session {
                 cancel,
             )
             .await
-            .map_err(|error| match error {
-                crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
-                error @ (crate::cluster::RoleWaitError::NotObserved(_)
-                | crate::cluster::RoleWaitError::ChangeNotObserved
-                | crate::cluster::RoleWaitError::Cancelled) => {
-                    RpcError::unavailable(error.to_string())
-                }
-            })?;
+            .map_err(RpcError::from)?;
             crate::global_slot::retire_ingress_proxy(&client, &id, cancel).await
         })
         .await
@@ -1338,8 +1326,7 @@ impl Session {
         machine: &str,
         teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<(), RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.remove_machine_membership(&target))
             .await
@@ -1357,8 +1344,7 @@ impl Session {
         machine: &str,
         container: &str,
     ) -> Result<Value, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let container_id = ployz_core::ContainerId::parse(container)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let client = self.client()?;
@@ -1394,11 +1380,7 @@ impl Session {
         container: &str,
         dest: &str,
     ) -> Result<(), RpcError> {
-        let parse = |machine: &str| {
-            MachineTarget::parse(machine)
-                .map_err(|error| RpcError::invalid_argument(error.to_string()))
-        };
-        let (source, dest) = (parse(source)?, parse(dest)?);
+        let (source, dest) = (resolve_target(source)?, resolve_target(dest)?);
         let container_id = ployz_core::ContainerId::parse(container)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
@@ -1447,8 +1429,7 @@ impl Session {
         machine: &str,
         update: ployz_core::MachineUpdate,
     ) -> Result<ployz_core::MachineUpdated, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let client = self.client()?;
         self.until_closed(async {
             client
@@ -1479,8 +1460,7 @@ impl Session {
         machine: &str,
         request: ployz_core::RequestMachineUpgradeRequest,
     ) -> Result<ployz_core::MachineUpgradeAttempt, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         self.until_closed(async {
             client
@@ -1509,8 +1489,7 @@ impl Session {
         machine: &str,
         request: ployz_core::ActivateEnforcementRequest,
     ) -> Result<ployz_core::DeviceEnforcementSet, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let client = self.client()?;
         self.until_closed(async {
             client
@@ -1538,8 +1517,7 @@ impl Session {
         machine: &str,
         request: ployz_core::SetRecipientKeyRequest,
     ) -> Result<ployz_core::RecipientKeySet, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         self.until_closed(async {
             client
@@ -1567,8 +1545,7 @@ impl Session {
         machine: &str,
         request: ployz_core::ResealValuesRequest,
     ) -> Result<ployz_core::ValuesResealed, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         self.until_closed(async {
             client
@@ -1819,11 +1796,62 @@ async fn visible_machine_id(
         .id)
 }
 
+/// `machine` as the Machine Target it names, or the `invalid_argument` that says why not.
+fn resolve_target(machine: &str) -> Result<MachineTarget, RpcError> {
+    MachineTarget::parse(machine).map_err(|error| RpcError::invalid_argument(error.to_string()))
+}
+
+impl From<crate::cluster::RoleWaitError> for RpcError {
+    fn from(error: crate::cluster::RoleWaitError) -> Self {
+        use crate::cluster::RoleWaitError;
+        match error {
+            RoleWaitError::Connect(error) => Self::from(error),
+            error @ (RoleWaitError::NotObserved(_)
+            | RoleWaitError::ChangeNotObserved
+            | RoleWaitError::Cancelled) => RpcError::unavailable(error.to_string()),
+        }
+    }
+}
+
 /// Capture checkouts off the async runtime.
 async fn capture(input: PreparationInput) -> Result<preparation::CapturedPreparation, RpcError> {
     tokio::task::spawn_blocking(move || preparation::capture(input))
         .await
         .map_err(|_| RpcError::invalid_argument("source capture task failed"))?
+}
+
+/// The code a plan refusal carries through preparation: `InvalidArgument` where planning
+/// directly says so, and `Internal` for every other refusal, as it always was here. Each
+/// variant is named so a new one has to choose.
+fn plan_refusal_code(error: &crate::deploy::PlanError) -> RpcErrorCode {
+    use crate::deploy::PlanError;
+    match error {
+        PlanError::Service { source, .. } => plan_refusal_code(source),
+        PlanError::ConflictingHostPublications { .. }
+        | PlanError::HostPortConflict { .. }
+        | PlanError::CapacityUnknown
+        | PlanError::InsufficientCapacity
+        | PlanError::NoEligibleMachines { .. }
+        | PlanError::ServiceModeCannotChange
+        | PlanError::ConflictingDockerVolumeDefinitions { .. }
+        | PlanError::DuplicateTargetService { .. }
+        | PlanError::ProvisionedVolumeStorageRequired { .. }
+        | PlanError::ProvisionedVolumeStorageUnavailable
+        | PlanError::ProvisionedVolumeStorageUnknown { .. }
+        | PlanError::ExistingPlainVolume { .. }
+        | PlanError::ExistingProvisionedVolumeMismatch { .. }
+        | PlanError::MixedVolumeModes { .. }
+        | PlanError::DependencyCycle { .. }
+        | PlanError::HostnameConflict { .. }
+        | PlanError::RemovalInTarget { .. }
+        | PlanError::RemovalNotSelected { .. }
+        | PlanError::RemovalInReservedNamespace { .. } => RpcErrorCode::InvalidArgument,
+        PlanError::Storage { .. }
+        | PlanError::NoWriter { .. }
+        | PlanError::VolumeServerTakesNoServices { .. }
+        | PlanError::CopiesUnknown { .. }
+        | PlanError::VolumeHolderUnknown { .. } => RpcErrorCode::Internal,
+    }
 }
 
 pub(crate) fn preparation_error(
@@ -1888,11 +1916,20 @@ pub(crate) fn preparation_error(
                 work: None,
             }),
         ),
-        PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
-            RpcError::internal(message.clone()).with_evidence(
+        PreparationError::Plan(error) => {
+            let code = match &error {
+                crate::deploy::DeployError::Connect(_) => RpcErrorCode::Internal,
+                crate::deploy::DeployError::Plan(plan) => plan_refusal_code(plan),
+                crate::deploy::DeployError::Namespace(_) => RpcErrorCode::InvalidArgument,
+            };
+            RpcError::new(code, message.clone()).with_evidence(
                 &PreparationFailure::of(Preparation::failed(message)).again(same_again),
             )
         }
+        PreparationError::Build(_) | PreparationError::Delivery(_) => RpcError::internal(
+            message.clone(),
+        )
+        .with_evidence(&PreparationFailure::of(Preparation::failed(message)).again(same_again)),
     }
 }
 

@@ -127,15 +127,7 @@ pub(crate) fn build(
                 "read assembled image identity",
                 &["image", "digest", "ocidir:///tmp/layout:complete"],
             )?;
-            let digest = digest.trim();
-            if !digest
-                .strip_prefix("sha256:")
-                .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-            {
-                return Err(BuildError::Result(
-                    "assembly returned an invalid image digest".into(),
-                ));
-            }
+            let digest = checked_digest(digest.trim())?;
             regctl(
                 "export assembled Railpack image",
                 &[
@@ -211,6 +203,38 @@ pub(crate) fn build(
     )
 }
 
+/// `digest` when it is `sha256:` and 64 hex of either case, as the assembled image's identity.
+fn checked_digest(digest: &str) -> Result<&str, BuildError> {
+    ployz_core::ReportedImageDigest::parse(digest)
+        .map(|_| digest)
+        .map_err(|_| BuildError::Result("assembly returned an invalid image digest".into()))
+}
+
 fn result_error(error: impl std::fmt::Display) -> BuildError {
     BuildError::Result(format!("read Railpack image result: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sha256_digest_of_either_case_identifies_the_assembled_image() {
+        let digest = format!("sha256:{}", "ab01".repeat(16));
+        assert_eq!(checked_digest(&digest).unwrap(), digest);
+        let upper = digest.to_uppercase().replace("SHA256", "sha256");
+        assert_eq!(checked_digest(&upper).unwrap(), upper);
+        for refused in [
+            format!("sha256:{}", "a".repeat(63)),
+            format!("sha256:{}g", "a".repeat(63)),
+            "a".repeat(64),
+            String::new(),
+        ] {
+            let error = checked_digest(&refused).unwrap_err().to_string();
+            assert!(
+                error.contains("assembly returned an invalid image digest"),
+                "{refused}: {error}"
+            );
+        }
+    }
 }

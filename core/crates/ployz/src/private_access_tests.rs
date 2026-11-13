@@ -1,4 +1,4 @@
-use ployz_core::MachineName;
+use ployz_core::{MachineName, MembershipObservation};
 use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
 
 use super::*;
@@ -26,6 +26,33 @@ async fn client_of(fleet: &FakeFleet) -> Client {
 
 fn sealed() -> Ciphertext {
     Ciphertext::from_bytes(vec![3; 48])
+}
+
+// Catches a router set on a Machine that is leaving or unreachable, and one left off a
+// Machine that holds no ingress role, which a router doesn't need.
+#[test]
+fn only_reachable_staying_machines_run_a_router() {
+    let row = |letter: char, name: &str| crate::global_fixtures::machine(letter, name);
+    let up = |machine| MachineObservation::new(machine, MembershipObservation::Up);
+    let mut leaving = row('c', "leaving");
+    leaving.runtime.leaving = true;
+    let mut no_ingress = row('d', "no-ingress");
+    no_ingress.accepts_ingress = false;
+
+    let machines = access_machines(&[
+        up(row('a', "one")),
+        MachineObservation::new(row('b', "down"), MembershipObservation::Down),
+        up(leaving),
+        up(no_ingress),
+    ]);
+
+    assert_eq!(
+        machines
+            .iter()
+            .map(|machine| machine.name.to_string())
+            .collect::<Vec<_>>(),
+        ["one", "no-ingress"]
+    );
 }
 
 // Catches `on` leaving a Machine without a router, and `off` leaving one behind: one

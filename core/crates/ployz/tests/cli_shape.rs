@@ -3965,3 +3965,32 @@ fn server_reject_reports_an_attempt_cloud_spared_as_joining_not_rejected() {
         ])
     );
 }
+
+#[test]
+fn the_sdk_does_not_reach_up_into_the_cli() {
+    let sdk = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/sdk"));
+    let mut found = Vec::new();
+    let mut dirs = vec![sdk.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            if source.contains("crate::cli") || source.contains("super::super::cli") {
+                found.push(path.display().to_string());
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the SDK is the library tier and the CLI presents it; move what these share into the SDK:\n{}",
+        found.join("\n")
+    );
+}

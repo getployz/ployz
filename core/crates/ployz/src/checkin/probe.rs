@@ -8,7 +8,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{
-        Mutex, PoisonError,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime},
@@ -70,7 +70,7 @@ impl Handout {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "String")]
-enum Port {
+pub(crate) enum Port {
     Tcp(u16),
     Udp(u16),
 }
@@ -111,13 +111,56 @@ pub(super) struct Report {
     bind_failed: Vec<String>,
 }
 
-#[derive(Default)]
+/// What a window leaves to its host: the sockets it opens, and the pace it binds and saves at.
+/// Every method does what the host does, so only a test overrides one, to fail a bind, stall it or
+/// shorten the schedule.
+pub(crate) trait Binder: Send + Sync + 'static {
+    /// A fresh socket, before the window configures and binds it.
+    fn open(&self, domain: Domain, kind: Type) -> io::Result<socket2::Socket> {
+        socket2::Socket::new(domain, kind, None)
+    }
+
+    /// How long before `window` ends its binds must be done, in place of D8's schedule.
+    fn lead(&self, _window: Duration) -> Option<Duration> {
+        None
+    }
+
+    /// Runs on the runtime thread as `open` hands a bind out. What it returns drops when the bind
+    /// returns.
+    fn handed_out(&self, _port: Port) -> Box<dyn Send> {
+        Box::new(())
+    }
+
+    /// Runs on the bind's thread as it starts, before it checks its deadline.
+    fn began(&self, _port: Port) {}
+
+    /// Runs on the bind's thread before it opens a socket.
+    fn binding(&self, _port: Port) {}
+
+    /// Runs `write`, which saves the report.
+    fn saving(&self, write: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+        write()
+    }
+}
+
+/// The host's own sockets.
+pub(crate) struct Sockets;
+
+impl Binder for Sockets {}
+
 pub(super) struct Probes {
     finished: Option<Report>,
     window: Option<Window>,
     saving: Option<JoinHandle<()>>,
     saved: Option<PathBuf>,
     owed_until: Option<Instant>,
+    binder: Arc<dyn Binder>,
+}
+
+impl Default for Probes {
+    fn default() -> Self {
+        Self::new(Arc::new(Sockets))
+    }
 }
 
 struct Window {
@@ -139,7 +182,18 @@ struct Ended {
 impl Probes {
     /// Picks up the last window that ran to its end, since Cloud hands each one out once. A window
     /// cut short by a restart left nothing, so Cloud reads no report rather than a partial one.
-    pub(super) fn load(saved: PathBuf) -> Self {
+    pub(super) fn new(binder: Arc<dyn Binder>) -> Self {
+        Self {
+            finished: None,
+            window: None,
+            saving: None,
+            saved: None,
+            owed_until: None,
+            binder,
+        }
+    }
+
+    pub(super) fn load(saved: PathBuf, binder: Arc<dyn Binder>) -> Self {
         let finished = fs::read(&saved)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Report>(&bytes).ok());
@@ -148,7 +202,7 @@ impl Probes {
             finished,
             owed_until,
             saved: Some(saved),
-            ..Self::default()
+            ..Self::new(binder)
         }
     }
 
@@ -156,7 +210,7 @@ impl Probes {
     /// replies cannot start listeners after Cloud's last attempt. Never waits on an older save.
     pub(super) async fn open(&mut self, handout: Handout, key: &CheckinKey, sent: Instant) {
         let expires = sent + handout.window();
-        let deadline = sent + bind_deadline(handout.window());
+        let deadline = sent + bind_deadline(self.binder.as_ref(), handout.window());
         self.close().await;
         self.finished = None;
         self.saving = None;
@@ -172,6 +226,7 @@ impl Probes {
             saved,
             stop.clone(),
             expires,
+            Arc::clone(&self.binder),
         ));
         self.window = Some(Window {
             task,
@@ -181,16 +236,17 @@ impl Probes {
             if Instant::now() >= deadline || stop.is_cancelled() {
                 break;
             }
-            #[cfg(test)]
-            let faults = tests::BindFaults::capture();
+            let binder = Arc::clone(&self.binder);
+            let handed_out = binder.handed_out(port);
             let binding_stop = stop.clone();
             let binding = tokio::task::spawn_blocking(move || {
-                #[cfg(test)]
-                let _faults = faults.enter();
+                let _handed_out = handed_out;
+                binder.began(port);
                 if Instant::now() >= deadline || binding_stop.is_cancelled() {
                     return None;
                 }
-                bind(port).filter(|_| Instant::now() < deadline && !binding_stop.is_cancelled())
+                bind(binder.as_ref(), port)
+                    .filter(|_| Instant::now() < deadline && !binding_stop.is_cancelled())
             });
             if let Ok(Ok(Some(socket))) = tokio::time::timeout_at(deadline, binding).await {
                 let _ = bound.send((port, socket));
@@ -252,9 +308,8 @@ impl Probes {
 
 /// D8 hands out ten-second windows and tries TCP at 1, 2.5, 4, 5.5, 7 and 8.5 seconds.
 /// Bind before its last attempt with time for the greeting. Windows without an attempt cannot bind.
-fn bind_deadline(window: Duration) -> Duration {
-    #[cfg(test)]
-    if let Some(lead) = tests::LEAD.get() {
+fn bind_deadline(binder: &dyn Binder, window: Duration) -> Duration {
+    if let Some(lead) = binder.lead(window) {
         return window.saturating_sub(lead);
     }
     let first = Duration::from_millis(PROBE_FIRST_ATTEMPT_MS);
@@ -297,6 +352,7 @@ async fn window(
     saved: Option<(u64, PathBuf)>,
     stop: CancellationToken,
     expires: Instant,
+    binder: Arc<dyn Binder>,
 ) -> Option<Ended> {
     let report = Mutex::new(Report {
         handout: handout.handout.clone(),
@@ -340,7 +396,7 @@ async fn window(
     let saving = saved.map(|(generation, saved)| {
         let written = report.clone();
         tokio::task::spawn_blocking(move || {
-            if let Err(error) = save(&saved, &written, generation) {
+            if let Err(error) = save(binder.as_ref(), &saved, &written, generation) {
                 crate::ui::note(format!("Could not write {}: {error}", saved.display()));
             }
         })
@@ -348,9 +404,11 @@ async fn window(
     Some(Ended { report, saving })
 }
 
-fn save(path: &Path, report: &Report, generation: u64) -> io::Result<()> {
-    #[cfg(test)]
-    let _held = tests::SAVES.lock().unwrap_or_else(PoisonError::into_inner);
+fn save(binder: &dyn Binder, path: &Path, report: &Report, generation: u64) -> io::Result<()> {
+    binder.saving(&mut || write(path, report, generation))
+}
+
+fn write(path: &Path, report: &Report, generation: u64) -> io::Result<()> {
     let directory = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(directory)?;
     let mut file = tempfile::NamedTempFile::new_in(directory)?;
@@ -368,25 +426,18 @@ enum Socket {
     Udp(UdpSocket),
 }
 
-fn bind(port: Port) -> Option<Socket> {
-    #[cfg(test)]
-    if tests::STALL_PORT
-        .get()
-        .is_none_or(|stalled| stalled == port)
-        && let Some(gate) = tests::BIND_GATE.with_borrow(Clone::clone)
-    {
-        gate.wait();
-    }
+fn bind(binder: &dyn Binder, port: Port) -> Option<Socket> {
+    binder.binding(port);
     match port {
         Port::Tcp(number) => {
-            let socket = any_address(number, Type::STREAM)?;
+            let socket = any_address(binder, number, Type::STREAM)?;
             socket.listen(LISTEN_BACKLOG).ok()?;
             TcpListener::from_std(socket.into())
                 .ok()
                 .map(|listener| Socket::Tcp(listener, number))
         }
         Port::Udp(number) => {
-            let socket = any_address(number, Type::DGRAM)?;
+            let socket = any_address(binder, number, Type::DGRAM)?;
             UdpSocket::from_std(socket.into()).ok().map(Socket::Udp)
         }
     }
@@ -394,10 +445,10 @@ fn bind(port: Port) -> Option<Socket> {
 
 /// One socket for both families whatever `net.ipv6.bindv6only` says, or IPv4 alone on a host
 /// without IPv6. Any other IPv6 failure, such as a port held in either family, fails the port.
-fn any_address(number: u16, kind: Type) -> Option<socket2::Socket> {
-    match bound(Domain::IPV6, number, kind) {
+fn any_address(binder: &dyn Binder, number: u16, kind: Type) -> Option<socket2::Socket> {
+    match bound(binder, Domain::IPV6, number, kind) {
         Ok(socket) => Some(socket),
-        Err(error) if without_ipv6(&error) => bound(Domain::IPV4, number, kind).ok(),
+        Err(error) if without_ipv6(&error) => bound(binder, Domain::IPV4, number, kind).ok(),
         Err(_) => None,
     }
 }
@@ -413,19 +464,14 @@ fn without_ipv6(error: &io::Error) -> bool {
     })
 }
 
-fn bound(domain: Domain, number: u16, kind: Type) -> io::Result<socket2::Socket> {
-    #[cfg(test)]
-    if domain == Domain::IPV6
-        && let Some(errno) = tests::IPV6_FAILS_WITH.get()
-    {
-        return Err(io::Error::from_raw_os_error(errno));
-    }
-    let socket = socket2::Socket::new(domain, kind, None)?;
+fn bound(
+    binder: &dyn Binder,
+    domain: Domain,
+    number: u16,
+    kind: Type,
+) -> io::Result<socket2::Socket> {
+    let socket = binder.open(domain, kind)?;
     let any = if domain == Domain::IPV6 {
-        #[cfg(test)]
-        if tests::ONLY_V6_BY_DEFAULT.get() {
-            socket.set_only_v6(true)?;
-        }
         socket.set_only_v6(false)?;
         IpAddr::V6(Ipv6Addr::UNSPECIFIED)
     } else {

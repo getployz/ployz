@@ -33,7 +33,8 @@ ployz metrics web
 
 Ployz prints one row per metric. **NOW** is the newest reading, and **AVG** and **PEAK** cover
 the last hour. NOW shows a dash when the newest reading is more than a few samples old. Add
-`--since` for another range, such as `--since 6h`, `--since 7d` or an RFC 3339 timestamp. Add
+`--since` for another range, such as `--since 6h`, `--since 7d`, `--since 2026-01-31` or an RFC 3339
+timestamp. Add
 `--json` for the full reply.
 
 A service's numbers add up all of its replicas, on every server that runs one.

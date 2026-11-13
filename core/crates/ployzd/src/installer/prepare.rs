@@ -9,12 +9,12 @@ use std::{
 use chrono::{SecondsFormat, Utc};
 use nix::fcntl::{FcntlArg, FdFlag};
 use ployz_core::host_preparation::{
-    Begun, DockerOutcome, PrepState, PrepStep, StateError, ZfsBuild, ZfsOutcome, encode_state,
-    read_state,
+    Begun, DockerOutcome, PrepState, StateError, Step, StepOutcome, ZfsBuild, ZfsOutcome,
+    encode_state, read_state,
 };
 use ployz_core::probe_document::OsRelease;
 
-use super::assess::{assess, read_facts};
+use super::assess::{Fact, assess, read_facts};
 use super::host::{install_docker, verify_docker};
 use super::os_release;
 use super::storage::{
@@ -29,6 +29,7 @@ use super::{
 };
 
 const STAGE: &str = "prepare the host";
+const READ_STATE_STAGE: &str = "read the host preparation state";
 
 /// The Debian packages a DKMS build of `zfs-dkms` needs beyond the toolchain `dkms` pulls in.
 const DEBIAN_ZFS_DKMS_DEPENDENCIES: [&str; 4] = ["file", "libc6-dev", "lsb-release", "perl"];
@@ -73,44 +74,26 @@ pub(super) async fn prepare_at(
         return Ok(());
     };
     mark(&held);
-    let previous = load(paths);
+    let mut job = match Job::open(paths) {
+        Fact::Known(job) => job,
+        Fact::Unknown(cause) => return Err(refuse(READ_STATE_STAGE, cause)),
+    };
     // The lock is free, so a step an earlier run began and left `installing` died with it.
-    let interrupted: Vec<String> = [
-        (
-            "docker",
-            matches!(previous.docker, PrepStep::Running { .. }),
-        ),
-        ("zfs", matches!(previous.zfs, PrepStep::Running { .. })),
-    ]
-    .into_iter()
-    .filter(|(_, unfinished)| *unfinished)
-    .map(|(step, _)| step.to_owned())
-    .collect();
-    for step in &interrupted {
+    for step in job.restart() {
         println!("Redoing the {step} step an earlier run left unfinished");
     }
-    let mut job = Job {
-        path: state_path(paths),
-        state: PrepState {
-            added_packages: previous.added_packages,
-            zfs_build: previous.zfs_build,
-            added_contrib_source: previous.added_contrib_source,
-            interrupted,
-            ..PrepState::default()
-        },
-    };
     if debian_family(paths) {
         finish_interrupted_package_installs();
     }
-    let begun = job.begin_docker()?;
+    let begun = job.begin(Step::Docker)?;
     let docker = match docker().await {
         Ok(()) => DockerOutcome::Ready,
         Err(message) => DockerOutcome::Failed { message },
     };
     let summary = format!("Docker {}", docker_summary(&docker));
     let failed = matches!(docker, DockerOutcome::Failed { .. });
-    job.finish_docker(begun, docker)?;
-    let begun = job.begin_zfs()?;
+    job.finish(begun, StepOutcome::Docker(docker))?;
+    let begun = job.begin(Step::Zfs)?;
     let zfs = if skip_zfs {
         ZfsOutcome::Off
     } else {
@@ -118,7 +101,7 @@ pub(super) async fn prepare_at(
     };
     let summary = format!("{summary}, ZFS {}", zfs_summary(&zfs));
     let failed = failed || matches!(zfs, ZfsOutcome::Failed { .. });
-    job.finish_zfs(begun, zfs)?;
+    job.finish(begun, StepOutcome::Zfs(zfs))?;
     if failed {
         Err(refuse(STAGE, summary))
     } else {
@@ -171,15 +154,20 @@ fn finish_interrupted_package_installs() {
     }
 }
 
-pub(super) fn load(paths: &InstallPaths) -> PrepState {
+/// The preparation record on this host. A file this release can't parse starts from nothing, as
+/// it always has; a file that can't be read at all is `Unknown`, because starting from nothing
+/// would forget the packages and build it recorded.
+pub(super) fn load(paths: &InstallPaths) -> Fact<PrepState> {
     let path = state_path(paths);
     match read_state(&path) {
-        Ok(state) => state.unwrap_or_default(),
+        Ok(state) => Fact::Known(state.unwrap_or_default()),
         Err(StateError::Malformed(error)) => {
             eprintln!("ignoring unreadable {}: {error}", path.display());
-            PrepState::default()
+            Fact::Known(PrepState::default())
         }
-        Err(StateError::Unreadable(_)) => PrepState::default(),
+        Err(error @ StateError::Unreadable(_)) => {
+            Fact::Unknown(ployz_core::error_chain::inline(&error))
+        }
     }
 }
 
@@ -232,9 +220,11 @@ fn mark(held: &File) {
     }
 }
 
+/// The preparation record and where it is kept. It changes only through [`PrepState`]'s
+/// transitions, run by [`Job::apply`], which saves.
 pub(super) struct Job {
     path: PathBuf,
-    pub(super) state: PrepState,
+    state: PrepState,
 }
 
 fn now() -> String {
@@ -242,7 +232,46 @@ fn now() -> String {
 }
 
 impl Job {
-    pub(super) fn save(&self) -> Result<(), Error> {
+    /// The record on this host, or why it can't be read.
+    pub(super) fn open(paths: &InstallPaths) -> Fact<Self> {
+        load(paths).map(|state| Self {
+            path: state_path(paths),
+            state,
+        })
+    }
+
+    pub(super) const fn state(&self) -> &PrepState {
+        &self.state
+    }
+
+    /// Whether the record is on disk, which a discard needs to keep up to date.
+    pub(super) fn is_recorded(&self) -> bool {
+        self.path.exists()
+    }
+
+    /// Starts a run over the record in memory; the first `begin` saves it.
+    pub(super) fn restart(&mut self) -> Vec<String> {
+        self.state.restart()
+    }
+
+    pub(super) fn begin(&mut self, step: Step) -> Result<Begun, Error> {
+        let begun = Begun::at(now());
+        self.apply(|state| state.begin(step, &begun))?;
+        Ok(begun)
+    }
+
+    pub(super) fn finish(&mut self, begun: Begun, outcome: StepOutcome) -> Result<(), Error> {
+        let finished_at = now();
+        self.apply(|state| state.finish(begun, outcome, finished_at))
+    }
+
+    /// Runs `edit` on the record and saves it.
+    pub(super) fn apply(&mut self, edit: impl FnOnce(&mut PrepState)) -> Result<(), Error> {
+        edit(&mut self.state);
+        self.save()
+    }
+
+    fn save(&self) -> Result<(), Error> {
         let stage = "write the host preparation state";
         let bytes = encode_state(&self.state).map_err(|error| Error::Io {
             stage,
@@ -250,44 +279,6 @@ impl Job {
         })?;
         crate::filesystem::atomic_write(&self.path, &bytes, 0o644)
             .map_err(|source| Error::Io { stage, source })
-    }
-
-    fn begin_docker(&mut self) -> Result<Begun, Error> {
-        let begun = Begun::at(now());
-        self.state.docker = begun.running();
-        self.save()?;
-        Ok(begun)
-    }
-
-    fn finish_docker(&mut self, begun: Begun, outcome: DockerOutcome) -> Result<(), Error> {
-        self.state.docker = begun.finish(outcome, now());
-        self.save()
-    }
-
-    fn begin_zfs(&mut self) -> Result<Begun, Error> {
-        let begun = Begun::at(now());
-        self.state.zfs = begun.running();
-        self.save()?;
-        Ok(begun)
-    }
-
-    fn finish_zfs(&mut self, begun: Begun, outcome: ZfsOutcome) -> Result<(), Error> {
-        self.state.zfs = begun.finish(outcome, now());
-        self.save()
-    }
-
-    fn add_packages(&mut self, packages: &[String]) -> Result<(), Error> {
-        for package in packages {
-            if !self.state.added_packages.contains(package) {
-                self.state.added_packages.push(package.clone());
-            }
-        }
-        self.save()
-    }
-
-    fn set_build(&mut self, build: ZfsBuild) -> Result<(), Error> {
-        self.state.zfs_build = Some(build);
-        self.save()
     }
 }
 
@@ -327,8 +318,10 @@ fn download_ubuntu_zfs(job: &mut Job) -> Result<(), Error> {
         ["install", "--download-only", "-y", "-qq", "zfsutils-linux"],
         None,
     )?;
-    job.set_build(ZfsBuild::Ubuntu {
-        downloaded: vec!["zfsutils-linux".into()],
+    job.apply(|state| {
+        state.set_build(ZfsBuild::Ubuntu {
+            downloaded: vec!["zfsutils-linux".into()],
+        });
     })
 }
 
@@ -344,8 +337,7 @@ fn build_debian_zfs(
     }
     let flavour = debian_kernel_flavour_step(kernel).map_err(build_error)?;
     if !debian_contrib_source(&paths.apt_dir).exists() {
-        job.state.added_contrib_source = true;
-        job.save()?;
+        job.apply(PrepState::note_contrib_source)?;
     }
     enable_debian_contrib(&paths.apt_dir, codename, keyring).map_err(build_error)?;
     let wanted = [
@@ -355,9 +347,14 @@ fn build_debian_zfs(
     ]
     .into_iter()
     .chain(DEBIAN_ZFS_DKMS_DEPENDENCIES.map(str::to_owned));
-    let lacked: Vec<String> = wanted.filter(|package| !deb_installed(package)).collect();
+    let lacked: Vec<String> = wanted
+        .filter(|package| {
+            !deb_installed(package)
+                .or_report(&format!("ask dpkg whether {package} is installed"), false)
+        })
+        .collect();
     if !lacked.is_empty() {
-        job.add_packages(&lacked)?;
+        job.apply(|state| state.note_packages(&lacked))?;
         let mut install = apt_get();
         install
             .args(["install", "-y", "-qq", "--no-install-recommends"])
@@ -395,10 +392,13 @@ fn build_amazon_zfs(
     let tarball = download_openzfs(&dir, sha256).map_err(build_error)?;
     let lacked: Vec<String> = std::iter::once(kernel_devel(kernel))
         .chain(OPENZFS_BUILD_DEPENDENCIES.map(str::to_owned))
-        .filter(|package| !rpm_provided(package))
+        .filter(|package| {
+            !rpm_provided(package)
+                .or_report(&format!("ask rpm whether {package} is installed"), false)
+        })
         .collect();
     if !lacked.is_empty() {
-        job.add_packages(&lacked)?;
+        job.apply(|state| state.note_packages(&lacked))?;
         let mut install = Command::new("dnf");
         install.args(["install", "-y"]).args(&lacked);
         run_command("install ZFS build dependencies", &mut install)?;
@@ -493,7 +493,7 @@ fn dkms_build(
         source_dir: source_dir.clone(),
     };
     let registered = dkms_registered(&version);
-    let recorded = job.state.zfs_build.as_ref() == Some(&build);
+    let recorded = job.state().zfs_build.as_ref() == Some(&build);
     // A package may have shipped the same version since this Machine recorded it.
     let packaged = match package_ownership(package_manager, &build) {
         Ownership::Packaged => true,
@@ -512,8 +512,7 @@ fn dkms_build(
     };
     if packaged || (registered && !recorded) {
         if recorded {
-            job.state.zfs_build = None;
-            job.save()?;
+            job.apply(PrepState::forget_build)?;
         }
         let built = run_host(
             "build ZFS with DKMS",
@@ -541,7 +540,7 @@ fn dkms_build(
         built?;
         return Ok(());
     }
-    job.set_build(build)?;
+    job.apply(|state| state.set_build(build))?;
     if registered {
         run_host(
             "remove the earlier ZFS build",
@@ -594,11 +593,15 @@ pub(super) struct PreparedBuild {
 }
 
 pub(super) fn prepared_dkms_build(paths: &InstallPaths, kernel: &str) -> Option<PreparedBuild> {
-    let Some(ZfsBuild::Dkms {
-        version,
-        source_dir,
+    let PrepState {
+        zfs_build:
+            Some(ZfsBuild::Dkms {
+                version,
+                source_dir,
+                ..
+            }),
         ..
-    }) = load(paths).zfs_build
+    } = load(paths).or_report("read the host preparation state", PrepState::default())
     else {
         return None;
     };
@@ -645,23 +648,41 @@ fn dkms_registered(version: &str) -> bool {
     command_exists("dkms") && !dkms_status(&["-m", "zfs", "-v", version]).trim().is_empty()
 }
 
+/// What `dkms status` printed for `args`, whatever its exit code. DKMS that can't run has built
+/// nothing this Machine can use, so it answers no text, after saying why.
 fn dkms_status(args: &[&str]) -> String {
-    Command::new("dkms")
-        .arg("status")
-        .args(args)
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default()
+    Fact::from(
+        Command::new("dkms")
+            .arg("status")
+            .args(args)
+            .output()
+            .map_err(|error| format!("`dkms status` couldn't run: {error}")),
+    )
+    .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    .or_report("read the DKMS status of the ZFS build", String::new())
 }
 
-fn deb_installed(package: &str) -> bool {
-    Command::new("dpkg-query")
+/// Whether dpkg leaves `package`'s files on the Machine. Only a status dpkg printed counts as an
+/// answer: dpkg-query exits 1 for a package it doesn't know, and anything else, such as exit 2 or
+/// a status that isn't `<want> <flag> <state>`, is no answer.
+fn deb_installed(package: &str) -> Fact<bool> {
+    let query = format!("dpkg-query -W -f=${{Status}} {package}");
+    let output = match Command::new("dpkg-query")
         .args(["-W", "-f=${Status}", package])
         .output()
-        .is_ok_and(|output| {
-            output.status.success()
-                && dpkg_status_installed(&String::from_utf8_lossy(&output.stdout)) == Some(true)
-        })
+    {
+        Ok(output) => output,
+        Err(error) => return Fact::Unknown(format!("`{query}` couldn't run: {error}")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match output.status.code() {
+        Some(0) => dpkg_status_installed(&stdout).map_or_else(
+            || Fact::Unknown(format!("`{query}` printed {:?}", stdout.trim())),
+            Fact::Known,
+        ),
+        Some(1) => Fact::Known(false),
+        _ => Fact::Unknown(format!("`{query}` {}", output.status)),
+    }
 }
 
 /// Whether a dpkg `${Status}` (`<want> <flag> <state>`) leaves the package's files on the
@@ -676,11 +697,16 @@ fn dpkg_status_installed(status: &str) -> Option<bool> {
     }
 }
 
-fn rpm_provided(capability: &str) -> bool {
-    Command::new("rpm")
-        .args(["-q", "--whatprovides", capability])
-        .output()
-        .is_ok_and(|output| output.status.success())
+/// Whether an installed package provides `capability`. rpm exits 1 for any failed query, so a
+/// refusal to answer is the same as no provider; only an rpm that can't run is no answer.
+fn rpm_provided(capability: &str) -> Fact<bool> {
+    Fact::from(
+        Command::new("rpm")
+            .args(["-q", "--whatprovides", capability])
+            .output()
+            .map_err(|error| format!("`rpm -q --whatprovides {capability}` couldn't run: {error}")),
+    )
+    .map(|output| output.status.success())
 }
 
 /// Whether a package ships a build's source, by the package manager's own answer.
@@ -693,8 +719,11 @@ enum Ownership {
 
 fn package_ownership(package_manager: &str, build: &ZfsBuild) -> Ownership {
     match build {
-        ZfsBuild::Ubuntu { .. } if deb_installed("zfsutils-linux") => Ownership::Packaged,
-        ZfsBuild::Ubuntu { .. } => Ownership::Unpackaged,
+        ZfsBuild::Ubuntu { .. } => match deb_installed("zfsutils-linux") {
+            Fact::Known(true) => Ownership::Packaged,
+            Fact::Known(false) => Ownership::Unpackaged,
+            Fact::Unknown(cause) => Ownership::Unknown(cause),
+        },
         // rpm exits 1 for any failed query, and prints its negative even when the database
         // didn't open. Only that negative for this path, alone, says no package owns it.
         ZfsBuild::Dkms { source_dir, .. } if package_manager == "dnf" => {
@@ -741,7 +770,7 @@ fn path_ownership(
 }
 
 /// Whether `zfs-dkms` is installed, or why the package manager couldn't say.
-fn zfs_dkms_installed(package_manager: &str) -> Result<bool, String> {
+fn zfs_dkms_installed(package_manager: &str) -> Fact<bool> {
     let dnf = package_manager == "dnf";
     let (command, args) = if dnf {
         ("rpm", ["-q", "zfs-dkms"].as_slice())
@@ -749,24 +778,23 @@ fn zfs_dkms_installed(package_manager: &str) -> Result<bool, String> {
         ("dpkg-query", ["-W", "-f=${Status}", "zfs-dkms"].as_slice())
     };
     let query = format!("{command} {}", args.join(" "));
-    let output = Command::new(command)
-        .args(args)
-        .env("LC_ALL", "C")
-        .output()
-        .map_err(|error| format!("`{query}` couldn't run: {error}"))?;
+    let output = match Command::new(command).args(args).env("LC_ALL", "C").output() {
+        Ok(output) => output,
+        Err(error) => return Fact::Unknown(format!("`{query}` couldn't run: {error}")),
+    };
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     match output.status.code() {
-        Some(0) if dnf => Ok(true),
-        Some(0) if let Some(installed) = dpkg_status_installed(&stdout) => Ok(installed),
+        Some(0) if dnf => Fact::Known(true),
+        Some(0) if let Some(installed) = dpkg_status_installed(&stdout) => Fact::Known(installed),
         // dpkg-query exits 1 only for a package it doesn't know; errors exit 2.
-        Some(1) if !dnf => Ok(false),
+        Some(1) if !dnf => Fact::Known(false),
         Some(1)
             if stdout.trim_end() == "package zfs-dkms is not installed" && stderr.is_empty() =>
         {
-            Ok(false)
+            Fact::Known(false)
         }
-        _ => Err(format!(
+        _ => Fact::Unknown(format!(
             "`{query}` {}: {} {}",
             output.status,
             stdout.trim(),
@@ -842,17 +870,18 @@ pub(super) fn install_waiting_for_preparation(
 }
 
 fn take_over_preparation(paths: &InstallPaths, package_manager: &str) {
-    let mut job = Job {
-        path: state_path(paths),
-        state: load(paths),
+    let mut job = match Job::open(paths) {
+        Fact::Known(job) => job,
+        Fact::Unknown(cause) => {
+            eprintln!("Couldn't record that ZFS is installed from packages: {cause}");
+            return;
+        }
     };
-    job.state.zfs_build = remove_unowned_build(package_manager, job.state.zfs_build.take());
-    job.state.added_packages.clear();
-    job.state.added_contrib_source = false;
+    let kept = remove_unowned_build(package_manager, job.state().zfs_build.clone());
     if let Err(error) = remove_dir(&paths.layout.prepare_zfs_dir()) {
         eprintln!("Couldn't remove the ZFS build files preparation downloaded: {error}");
     }
-    if let Err(error) = job.save() {
+    if let Err(error) = job.apply(|state| state.take_over(kept)) {
         eprintln!("Couldn't record that ZFS is installed from packages: {error}");
     }
 }
@@ -869,17 +898,24 @@ fn remove_dir(dir: &Path) -> Result<(), Error> {
 
 pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
     let _lock = lock(paths, Wait::Yes)?;
-    let mut job = Job {
-        path: state_path(paths),
-        state: load(paths),
+    let mut job = match Job::open(paths) {
+        Fact::Known(job) => job,
+        Fact::Unknown(cause) => {
+            return Err(refuse(
+                "discard the ZFS build",
+                format!(
+                    "couldn't read the host preparation state, so nothing was removed: {cause}"
+                ),
+            ));
+        }
     };
+    let state = job.state();
     let package_manager = os_release::read(&paths.os_release)
         .ok()
         .as_ref()
         .and_then(ZfsRoute::for_os)
         .map_or("apt-get", ZfsRoute::package_manager);
-    match job
-        .state
+    match state
         .zfs_build
         .as_ref()
         .map(|build| package_ownership(package_manager, build))
@@ -896,30 +932,34 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         }
         Some(Ownership::Unpackaged) | None => {}
     }
-    let keep_packages = (!job.state.added_packages.is_empty() || job.state.added_contrib_source)
-        && zfs_dkms_installed(package_manager).map_err(|cause| {
-            refuse(
-                "discard the ZFS build",
-                format!(
-                    "couldn't tell whether zfs-dkms is installed, so nothing was removed: {cause}"
-                ),
-            )
-        })?;
+    let keep_packages = (!state.added_packages.is_empty() || state.added_contrib_source)
+        && match zfs_dkms_installed(package_manager) {
+            Fact::Known(installed) => installed,
+            Fact::Unknown(cause) => {
+                return Err(refuse(
+                    "discard the ZFS build",
+                    format!(
+                        "couldn't tell whether zfs-dkms is installed, so nothing was removed: {cause}"
+                    ),
+                ));
+            }
+        };
     if let Some(ZfsBuild::Dkms {
         module,
         version,
         source_dir,
-    }) = &job.state.zfs_build
+    }) = &state.zfs_build
     {
         remove_build(module, version, source_dir)?;
     }
     remove_dir(&paths.layout.prepare_zfs_dir())?;
-    if keep_packages {
+    let (added_packages, added_contrib_source) = if keep_packages {
         println!("Keeping the packages ZFS was built with, which the installed zfs-dkms needs");
-        job.state.added_packages.clear();
-        job.state.added_contrib_source = false;
-    }
-    if job.state.added_contrib_source {
+        (&[][..], false)
+    } else {
+        (state.added_packages.as_slice(), state.added_contrib_source)
+    };
+    if added_contrib_source {
         match fs::remove_file(debian_contrib_source(&paths.apt_dir)) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => {
                 return Err(Error::Io {
@@ -930,7 +970,7 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
             _ => {}
         }
     }
-    if !job.state.added_packages.is_empty() {
+    if !added_packages.is_empty() {
         let mut remove = if package_manager == "dnf" {
             let mut dnf = Command::new("dnf");
             dnf.args(["remove", "-y"]);
@@ -940,22 +980,15 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
             apt.args(["remove", "-y", "-qq"]);
             apt
         };
-        remove.args(&job.state.added_packages);
+        remove.args(added_packages);
         run_command("remove ZFS build dependencies", &mut remove)?;
     }
-    if matches!(job.state.zfs_build, Some(ZfsBuild::Ubuntu { .. })) {
+    if matches!(state.zfs_build, Some(ZfsBuild::Ubuntu { .. })) {
         run_apt("clear downloaded ZFS packages", ["clean"], None)?;
     }
-    job.state.added_packages.clear();
-    job.state.zfs_build = None;
-    job.state.added_contrib_source = false;
-    job.state.zfs = PrepStep::Finished {
-        started_at: None,
-        finished_at: now(),
-        outcome: ZfsOutcome::Off,
-    };
-    if job.path.exists() {
-        job.save()?;
+    if job.is_recorded() {
+        let finished_at = now();
+        job.apply(|state| state.discard(finished_at))?;
     }
     println!("Discarded the ZFS build");
     Ok(())

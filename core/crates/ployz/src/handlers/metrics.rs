@@ -15,10 +15,11 @@ use super::{
 use crate::{
     cli::{
         base,
-        metrics::{Window, behind_notes, report},
+        metrics::{Window, report},
         positional, value,
     },
-    sdk::{MetricSubject, metric_history},
+    operator::input::TIME_FORMATS,
+    sdk::{MetricSubject, metric_history, metrics_rows::behind_notes},
     ui::{self, Gaps},
 };
 
@@ -36,7 +37,7 @@ pub(super) fn command(command: Command) -> Command {
     .arg(
         value("since", None)
             .default_value("1h")
-            .help("Range start: 10m, 2h, 7d or an RFC 3339 timestamp"),
+            .help(format!("Range start: {TIME_FORMATS}")),
     )
     .group(
         ArgGroup::new("subject")
@@ -53,7 +54,7 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
         .expect("since has a default")
         .clone();
     let now = Utc::now();
-    let since_seconds = crate::operator::parse_log_time("since", &since, now.timestamp())?
+    let since_seconds = crate::operator::input::parse_log_time("since", &since, now.timestamp())?
         .ok_or_else(|| Error::usage("--since needs a time, such as 1h"))?;
     let until_nanos = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
     let range = MetricRange {

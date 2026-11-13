@@ -74,10 +74,9 @@ impl LocalMachine {
             .sealed_auth_key
             .as_ref()
             .ok_or(Error::PrivateAccessKeyMissing)?;
-        let cluster = match self.held_sealing(record.phase()) {
-            Some(Sealing::Held { public_key }) => Some(public_key),
-            _ => None,
-        };
+        let cluster = self
+            .held_sealing(record.phase())
+            .and_then(Sealing::held_key);
         let approver = private_access::verify(
             approval,
             &PrivateAccessFacts {
@@ -144,10 +143,9 @@ impl LocalMachine {
         let identity = observed.identity();
         let machine = record.id();
         let now = Timestamp::now();
-        let cluster = match self.held_sealing(record.phase()) {
-            Some(Sealing::Held { public_key }) => Some(public_key),
-            _ => None,
-        };
+        let cluster = self
+            .held_sealing(record.phase())
+            .and_then(Sealing::held_key);
         let approved = restart::verify(
             approval,
             &RestartFacts {

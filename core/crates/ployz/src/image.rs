@@ -2,10 +2,10 @@ use crate::cluster::Call;
 use std::future::Future;
 
 use ployz_core::{
-    EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason,
-    ImagePulled, Machine, MachineFailure, MachineId, MachineImages, MachineSuccess, MachineTarget,
-    PULL_IMAGE_CAPABILITY, PartialResult, PeerImagePull, PullImageFromMachineRequest,
-    PullImageRequest, PullPolicy, RegistryAuth, RpcError, op, resolve_machine_selectors,
+    FanoutSelector, ImageIngestReason, ImagePulled, Machine, MachineFailure, MachineId,
+    MachineImages, MachineSuccess, MachineTarget, PULL_IMAGE_CAPABILITY, PartialResult,
+    PeerImagePull, PullImageRequest, PullPolicy, RegistryAuth, RpcError, op,
+    resolve_machine_selectors,
 };
 use thiserror::Error;
 
@@ -16,6 +16,7 @@ use crate::{
 
 mod built;
 mod cleanup;
+mod peer;
 mod pin;
 pub use built::push_from_machine;
 pub(crate) use built::{
@@ -23,6 +24,7 @@ pub(crate) use built::{
 };
 pub use cleanup::prune_images;
 pub(crate) use cleanup::prune_targets;
+use peer::PeerSource;
 pub use pin::{PinError, PinnedImage, pin_public};
 
 #[derive(Debug, Error)]
@@ -189,26 +191,19 @@ pub(crate) async fn ensure_cluster_image(
     let Some((peer, platform)) = holders.iter().find(|(machine_id, _)| machine_id != dest) else {
         return Ok(());
     };
-    let opened = listing_client
-        .call::<op::EnsureImageIngest>(
-            EnsureImageIngestRequest {},
-            Call::keyed().to(&MachineTarget::from(peer)),
-        )
+    let source = PeerSource::open(&mut listing_client, *peer)
         .await
         .map_err(|error| answered_by(peer, error))?;
-    listing_client
-        .call::<op::PullImageFromMachine>(
-            PullImageFromMachineRequest {
-                pull: PeerImagePull::Reference {
-                    image: image.to_owned(),
-                },
-                source: opened.destination,
-                platform: (*platform).to_owned(),
+    source
+        .pull_into(
+            &mut listing_client,
+            dest,
+            PeerImagePull::Reference {
+                image: image.to_owned(),
             },
-            Call::keyed().to(&MachineTarget::from(dest)),
+            platform,
         )
         .await
-        .map(|_| ())
         .map_err(|error| answered_by(dest, error))
 }
 
@@ -316,24 +311,12 @@ pub(crate) async fn copy_running_image(
             tag: image.to_owned(),
         }
     };
-    let opened = client
-        .call::<op::EnsureImageIngest>(
-            EnsureImageIngestRequest {},
-            Call::keyed().to(&MachineTarget::from(&source.id)),
-        )
+    let source = PeerSource::open(&mut client, source.id)
         .await
         .map_err(|error| ingest_error(rpc_error(error)))?;
-    client
-        .call::<op::PullImageFromMachine>(
-            PullImageFromMachineRequest {
-                pull,
-                source: opened.destination,
-                platform: platform.to_owned(),
-            },
-            Call::keyed().to(&MachineTarget::from(&dest.id)),
-        )
+    source
+        .pull_into(&mut client, &dest.id, pull, platform)
         .await
-        .map(drop)
         .map_err(|error| PushError::PeerPull(rpc_error(error)))
 }
 

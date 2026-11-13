@@ -49,8 +49,9 @@ use crate::{
     machine::store,
     network::DOCKER_NETWORK_NAME,
     observe::{
-        harvest,
+        clock::now_nanos,
         layout::{SegmentName, StoreRoot},
+        meta::container_meta,
     },
 };
 
@@ -140,7 +141,7 @@ async fn sample_every_interval(
         refresh(&docker, &roots, &mut tracked).await;
         let containers: Vec<Tracked> = tracked.values().cloned().collect();
         let (roots, store, data_dir) = (roots.clone(), store.clone(), data_dir.clone());
-        let ts = harvest::now_nanos();
+        let ts = now_nanos();
         let hour = SegmentName::containing(ts);
         let fold = hour != folded;
         folded = hour;
@@ -236,7 +237,7 @@ fn track(
     id: ContainerId,
     inspected: &ContainerInspectResponse,
 ) -> Option<Tracked> {
-    let meta = harvest::container_meta(inspected)?;
+    let meta = container_meta(inspected)?;
     let pid = inspected
         .state
         .as_ref()?

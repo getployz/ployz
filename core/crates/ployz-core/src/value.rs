@@ -465,6 +465,16 @@ impl ImageDigest {
 }
 
 validated_string_newtype!(
+    /// An image digest as a builder, Docker or regctl reported it: `sha256:` and 64 hex digits
+    /// of either case, kept exactly as given. The Build boundaries that took either case before
+    /// ask this; [`ImageDigest`], lowercase only, is what a Machine stores and approvals name.
+    ReportedImageDigest, "reported image digest", "`sha256:` followed by 64 hexadecimal characters",
+    |value| value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+);
+
+validated_string_newtype!(
     /// The one repository a Build Grant may push into, in Docker's short form:
     /// lowercase path components and no registry or tag (`ployz-build/web`).
     BuildGrantRepository, "Build Grant repository", "a Docker repository path without a registry or tag",
@@ -1677,6 +1687,33 @@ mod tests {
         assert!(super::is_built_image("ployz-build/web"));
         assert!(!super::is_built_image("ployz-builder/web"));
         assert!(!super::is_built_image("nginx:latest"));
+    }
+
+    #[test]
+    fn a_reported_image_digest_keeps_either_case_and_an_image_digest_only_lowercase() {
+        let upper = format!("sha256:{}", "AB".repeat(32));
+        assert_eq!(
+            super::ReportedImageDigest::parse(upper.clone())
+                .unwrap()
+                .as_str(),
+            upper
+        );
+        assert!(
+            super::ReportedImageDigest::parse(format!("sha256:{}", "aB1".repeat(21) + "f")).is_ok()
+        );
+        assert!(super::ImageDigest::parse(upper).is_err());
+        for refused in [
+            "a".repeat(64),
+            format!("sha256:{}", "a".repeat(63)),
+            format!("sha256:{}g", "a".repeat(63)),
+            format!("SHA256:{}", "a".repeat(64)),
+            String::new(),
+        ] {
+            assert!(
+                super::ReportedImageDigest::parse(refused.clone()).is_err(),
+                "{refused}"
+            );
+        }
     }
 
     #[test]

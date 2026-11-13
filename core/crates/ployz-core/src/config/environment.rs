@@ -221,6 +221,13 @@ pub struct Attachment<'a> {
     pub at: &'a str,
 }
 
+/// A mount of a Service found by where it appears: the attachment itself, whichever kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mounted<'a> {
+    Volume(&'a VolumeAttachment),
+    Config(&'a ConfigAttachment),
+}
+
 /// How one node of an Environment depends on another.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Link {
@@ -260,6 +267,33 @@ impl SavedServiceIntent {
                 })
                 .collect(),
         }
+    }
+
+    /// The mounts that appear at directory `dir`, Volumes first and then Configs, each
+    /// in the order the document holds them, leaving out the one mount `except` names
+    /// (its kind and resource id). A Volume's path is compared as
+    /// [`VolumeAttachment::container_path`] gives it, a Config's directory as written.
+    pub fn mounts_at<'a>(
+        &'a self,
+        dir: &'a str,
+        except: Option<(MountKind, &'a str)>,
+    ) -> impl Iterator<Item = Mounted<'a>> {
+        let left_out = move |kind, resource_id: &str| except == Some((kind, resource_id));
+        let volumes = self
+            .volume_attachments
+            .iter()
+            .filter(move |a| {
+                !left_out(MountKind::Volume, &a.volume_resource_id) && a.container_path() == dir
+            })
+            .map(Mounted::Volume);
+        let configs = self
+            .config_attachments
+            .iter()
+            .filter(move |a| {
+                !left_out(MountKind::Config, &a.config_resource_id) && a.mount_dir.as_str() == dir
+            })
+            .map(Mounted::Config);
+        volumes.chain(configs)
     }
 
     /// Mount `resource_id` at `at`, replacing the mount it had.
@@ -1213,9 +1247,11 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         )?;
         if service.config_attachments.iter().any(|config| {
             service
-                .volume_attachments
-                .iter()
-                .any(|volume| volume.container_path() == config.mount_dir.as_str())
+                .mounts_at(
+                    config.mount_dir.as_str(),
+                    Some((MountKind::Config, &config.config_resource_id)),
+                )
+                .any(|mounted| matches!(mounted, Mounted::Volume(_)))
         }) {
             return Err(ConfigError::at(
                 "mountPath",

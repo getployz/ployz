@@ -11,6 +11,7 @@ use std::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use iroh::SecretKey;
+use ployz_core::RpcErrorCode;
 use ployz_core::cloud_contract::MAX_SKEW_SECONDS;
 use reqwest::{
     StatusCode,
@@ -19,6 +20,9 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::failure::Failure;
+
+use super::token_file::FleetToken;
 use super::wire::{self, Answer, CheckinRequest};
 
 const SIGNATURE_CONTEXT: &[u8] = b"ployz-checkin-v1\0";
@@ -27,9 +31,6 @@ const SIGNATURE_HEADER: &str = "Ployz-Signature";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const BACKOFF: Duration = Duration::from_secs(60);
 pub(super) const OUTDATED_BACKOFF: Duration = Duration::from_secs(60 * 60);
-const FLEET_TOKEN_PREFIX: &str = "pflt_";
-const FLEET_TOKEN_SECRET_CHARS: usize = 43;
-const TOKEN_MODE: u32 = 0o600;
 const TRUSTED_SKEW_SECONDS: i64 = MAX_SKEW_SECONDS - 60;
 // Cloud's own words. Only these mean Cloud refused the token or held a check-in back; any other
 // 401 or 429 may come from something in between.
@@ -56,6 +57,20 @@ pub enum KeyError {
     Token { path: PathBuf, source: io::Error },
     #[error("{path} doesn't hold a Fleet Token (pflt_…)")]
     NotAToken { path: PathBuf },
+}
+
+pub(crate) fn key_failure(error: KeyError) -> Failure {
+    let message = error.to_string();
+    match error {
+        KeyError::Token { source, .. } => {
+            Failure::caused(RpcErrorCode::InvalidArgument, message, source)
+        }
+        KeyError::NotAToken { .. } => Failure::usage(message),
+        KeyError::Read { source, .. } | KeyError::Write { source, .. } => {
+            Failure::caused(RpcErrorCode::Internal, message, source)
+        }
+        KeyError::Malformed { .. } => Failure::coded(RpcErrorCode::Internal, message),
+    }
 }
 
 pub(crate) struct CheckinKey {
@@ -133,36 +148,6 @@ impl CheckinKey {
     }
 }
 
-#[derive(PartialEq, Eq)]
-pub(crate) struct FleetToken(String);
-
-impl FleetToken {
-    pub(crate) fn read(path: &Path) -> Result<Self, KeyError> {
-        let text = fs::read_to_string(path).map_err(|source| KeyError::Token {
-            path: path.to_owned(),
-            source,
-        })?;
-        Self::parse(&text).ok_or_else(|| KeyError::NotAToken {
-            path: path.to_owned(),
-        })
-    }
-
-    pub(crate) fn parse(text: &str) -> Option<Self> {
-        let token = text.trim();
-        let secret = token.strip_prefix(FLEET_TOKEN_PREFIX).unwrap_or_default();
-        (secret.len() == FLEET_TOKEN_SECRET_CHARS
-            && secret
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'))
-        .then(|| Self(token.to_owned()))
-    }
-
-    #[cfg(test)]
-    pub(super) fn literal(token: &str) -> Self {
-        Self(token.to_owned())
-    }
-}
-
 pub(crate) struct CheckinClient {
     http: reqwest::Client,
     url: String,
@@ -198,27 +183,18 @@ impl CheckinClient {
         self.token = token;
     }
 
-    pub(crate) fn sends(&self, token: &FleetToken) -> bool {
-        self.token == *token
+    pub(crate) fn token(&self) -> &FleetToken {
+        &self.token
     }
 
-    /// Writes the token this client sends to `path` in one step, readable by root only.
-    pub(crate) fn write_token(&self, path: &Path) -> io::Result<()> {
-        let directory = path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(directory)?;
-        let mut file = tempfile::NamedTempFile::new_in(directory)?;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(TOKEN_MODE))?;
-        writeln!(file, "{}", self.token.0)?;
-        file.as_file().sync_all()?;
-        file.persist(path).map_err(|error| error.error)?;
-        Ok(())
+    pub(crate) fn sends(&self, token: &FleetToken) -> bool {
+        self.token == *token
     }
 
     /// Names the token in status.json without writing the token itself there.
     pub(super) fn fingerprint(&self) -> String {
         hex::encode(
-            Sha256::digest(self.token.0.as_bytes())
+            Sha256::digest(self.token.as_str().as_bytes())
                 .get(..8)
                 .unwrap_or_default(),
         )
@@ -233,7 +209,7 @@ impl CheckinClient {
         let sent = self
             .http
             .post(&self.url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token.0))
+            .header(AUTHORIZATION, format!("Bearer {}", self.token.as_str()))
             .header(CONTENT_TYPE, "application/json")
             .header(TIMESTAMP_HEADER, ts.to_string())
             .header(SIGNATURE_HEADER, format!("v1={}", key.sign(ts, &body)))

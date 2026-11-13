@@ -282,9 +282,9 @@ async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it(
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(source_dir.join("dkms.conf"), "package\n").unwrap();
         fs::create_dir_all(prepare_dir(&paths)).unwrap();
-        let claim = claimed_build(&paths, &source_dir);
+        let claim = claimed_build(&source_dir);
         if case != "foreign-query-failed" {
-            claim.save().unwrap();
+            seed(&paths, &claim);
         }
         run_contract_child_with_environment(
             "installer::prepare::tests::debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it",
@@ -336,7 +336,7 @@ async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it(
                 );
                 assert_eq!(conf, "PACKAGE_NAME=\"zfs\"\nAUTOINSTALL=\"no\"\n");
                 assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Ready));
-                assert_eq!(state.zfs_build, claim.state.zfs_build);
+                assert_eq!(state.zfs_build, claim.zfs_build);
             }
             _ => {
                 assert!(dkms_changes.is_empty(), "{log}");
@@ -346,7 +346,7 @@ async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it(
                         && failure.contains("unexpected end of file"),
                     "{failure}"
                 );
-                assert_eq!(state.zfs_build, claim.state.zfs_build);
+                assert_eq!(state.zfs_build, claim.zfs_build);
             }
         }
     }
@@ -419,10 +419,7 @@ fn amazon_linux_build_stops_at_dkms_build() {
         let paths = InstallPaths::at(&root);
         let os = os_release::read(&paths.os_release).unwrap();
         let sha256 = hex::encode(Sha256::digest(fs::read(root.join("tarball")).unwrap()));
-        let mut job = Job {
-            path: state_path(&paths),
-            state: PrepState::default(),
-        };
+        let mut job = opened(&paths);
         fs::create_dir_all(prepare_dir(&paths)).unwrap();
         build_amazon_zfs(&paths, &mut job, &os, AMAZON_KERNEL, &sha256).unwrap();
         fs::write(root.join("child-completed"), name).unwrap();
@@ -566,10 +563,7 @@ async fn a_refused_host_records_zfs_skipped() {
 fn zfs_is_skipped_only_by_a_storage_stage_refusal() {
     let fixture = fixture("zfs-step-outcomes");
     let paths = InstallPaths::at(fixture.path());
-    let mut job = Job {
-        path: state_path(&paths),
-        state: PrepState::default(),
-    };
+    let mut job = opened(&paths);
 
     fs::write(
         &paths.os_release,
@@ -660,30 +654,27 @@ fn discard_removes_only_what_preparation_added_case(case: &str, name: &str, inst
     fs::create_dir_all(prepare_dir(&paths).join("zfs/root")).unwrap();
     let contrib = debian_contrib_source(&paths.apt_dir);
     fs::write(&contrib, "Components: contrib\n").unwrap();
-    let job = Job {
-        path: state_path(&paths),
-        state: PrepState {
-            docker: PrepStep::Finished {
-                started_at: None,
-                finished_at: now(),
-                outcome: DockerOutcome::Ready,
-            },
-            zfs: PrepStep::Finished {
-                started_at: None,
-                finished_at: now(),
-                outcome: ZfsOutcome::Ready,
-            },
-            added_packages: vec!["linux-headers-amd64".into(), "lsb-release".into()],
-            zfs_build: Some(ZfsBuild::Dkms {
-                module: "zfs".into(),
-                version: "2.1.11".into(),
-                source_dir: source_dir.clone(),
-            }),
-            added_contrib_source: true,
-            interrupted: vec![],
+    let state = PrepState {
+        docker: PrepStep::Finished {
+            started_at: None,
+            finished_at: now(),
+            outcome: DockerOutcome::Ready,
         },
+        zfs: PrepStep::Finished {
+            started_at: None,
+            finished_at: now(),
+            outcome: ZfsOutcome::Ready,
+        },
+        added_packages: vec!["linux-headers-amd64".into(), "lsb-release".into()],
+        zfs_build: Some(ZfsBuild::Dkms {
+            module: "zfs".into(),
+            version: "2.1.11".into(),
+            source_dir: source_dir.clone(),
+        }),
+        added_contrib_source: true,
+        interrupted: vec![],
     };
-    job.save().unwrap();
+    seed(&paths, &state);
     run_contract_child_with_environment(
         "installer::prepare::tests::discard_removes_only_what_preparation_added",
         root,
@@ -720,19 +711,30 @@ fn discard_removes_only_what_preparation_added_case(case: &str, name: &str, inst
     assert_eq!(state.zfs_build, None);
 }
 
-fn claimed_build(paths: &InstallPaths, source_dir: &Path) -> Job {
-    Job {
-        path: state_path(paths),
-        state: PrepState {
-            added_packages: vec!["dkms".into(), "lsb-release".into()],
-            zfs_build: Some(ZfsBuild::Dkms {
-                module: "zfs".into(),
-                version: "2.1.11".into(),
-                source_dir: source_dir.to_owned(),
-            }),
-            ..PrepState::default()
-        },
+fn claimed_build(source_dir: &Path) -> PrepState {
+    PrepState {
+        added_packages: vec!["dkms".into(), "lsb-release".into()],
+        zfs_build: Some(ZfsBuild::Dkms {
+            module: "zfs".into(),
+            version: "2.1.11".into(),
+            source_dir: source_dir.to_owned(),
+        }),
+        ..PrepState::default()
     }
+}
+
+/// Puts `state` on disk as ployzd saves it.
+fn seed(paths: &InstallPaths, state: &PrepState) {
+    fs::create_dir_all(prepare_dir(paths)).unwrap();
+    crate::filesystem::atomic_write(&state_path(paths), &encode_state(state).unwrap(), 0o644)
+        .unwrap();
+}
+
+fn opened(paths: &InstallPaths) -> Job {
+    let Fact::Known(job) = Job::open(paths) else {
+        panic!("the record reads");
+    };
+    job
 }
 
 #[test]
@@ -755,9 +757,7 @@ fn discard_leaves_a_build_its_package_ships_alone() {
     assert!(source_dir.exists());
     assert_eq!(
         read_state(root).zfs_build,
-        claimed_build(&InstallPaths::at(root), &source_dir)
-            .state
-            .zfs_build
+        claimed_build(&source_dir).zfs_build
     );
 }
 
@@ -867,9 +867,7 @@ fn discard_keeps_a_build_whose_owner_is_unknown() {
     );
     assert_eq!(
         read_state(root).zfs_build,
-        claimed_build(&InstallPaths::at(root), &source_dir)
-            .state
-            .zfs_build
+        claimed_build(&source_dir).zfs_build
     );
 }
 
@@ -931,8 +929,8 @@ fn amazon_linux_discard_needs_rpms_plain_answer() {
         let source_dir = root.join("usr/src/zfs-2.1.11");
         fs::create_dir_all(&source_dir).unwrap();
         fs::create_dir_all(prepare_dir(&paths)).unwrap();
-        let claim = claimed_build(&paths, &source_dir);
-        claim.save().unwrap();
+        let claim = claimed_build(&source_dir);
+        seed(&paths, &claim);
         run_contract_child_with_environment(
             "installer::prepare::tests::amazon_linux_discard_needs_rpms_plain_answer",
             root,
@@ -965,7 +963,7 @@ fn amazon_linux_discard_needs_rpms_plain_answer() {
             _ => {
                 assert!(changes.is_empty(), "{case}: {log}");
                 assert!(source_dir.exists(), "{case}");
-                assert_eq!(state.zfs_build, claim.state.zfs_build, "{case}");
+                assert_eq!(state.zfs_build, claim.zfs_build, "{case}");
                 let refusal = if case == "package-query-failed" {
                     "couldn't tell whether zfs-dkms is installed"
                 } else {
@@ -1020,7 +1018,7 @@ fn discard_beside_installed_zfs(
     let source_dir = root.join("usr/src/zfs-2.1.11");
     fs::create_dir_all(&source_dir).unwrap();
     fs::create_dir_all(prepare_dir(&paths)).unwrap();
-    claimed_build(&paths, &source_dir).save().unwrap();
+    seed(&paths, &claimed_build(&source_dir));
     run_contract_child_with_environment(
         test,
         root,
@@ -1234,12 +1232,7 @@ fn waiting_installs_and_discards_leave_no_mark() {
     }
     let paths = InstallPaths::at(fixture.path());
     fs::create_dir_all(prepare_dir(&paths)).unwrap();
-    Job {
-        path: state_path(&paths),
-        state: PrepState::default(),
-    }
-    .save()
-    .unwrap();
+    seed(&paths, &PrepState::default());
     let marked_while_installing = Cell::new(true);
     install_waiting_for_preparation(&paths, "apt-get", || {
         marked_while_installing.set(marked(&paths));
@@ -1303,9 +1296,9 @@ async fn a_step_left_installing_is_redone_and_recorded() {
     let paths = InstallPaths::at(fixture.path());
     fs::create_dir_all(prepare_dir(&paths)).unwrap();
     let started = now();
-    Job {
-        path: state_path(&paths),
-        state: PrepState {
+    seed(
+        &paths,
+        &PrepState {
             docker: PrepStep::Running {
                 started_at: started.clone(),
             },
@@ -1314,9 +1307,7 @@ async fn a_step_left_installing_is_redone_and_recorded() {
             },
             ..PrepState::default()
         },
-    }
-    .save()
-    .unwrap();
+    );
     let ran = Cell::new(false);
     prepare_at(&paths, true, async || {
         ran.set(true);
@@ -1346,18 +1337,253 @@ fn a_state_file_ployzd_cannot_read_back_loads_as_nothing_prepared() {
         String::new(),
     ] {
         fs::write(state_path(&paths), &text).unwrap();
-        assert_eq!(load(&paths), PrepState::default(), "{text}");
+        assert_eq!(load(&paths), Fact::Known(PrepState::default()), "{text}");
     }
     fs::remove_file(state_path(&paths)).unwrap();
-    assert_eq!(load(&paths), PrepState::default());
+    assert_eq!(load(&paths), Fact::Known(PrepState::default()));
 
     fs::write(
         state_path(&paths),
         format!("{{{STEPS}, \"added_packages\": [\"dkms\"], \"added_contrib_source\": true}}"),
     )
     .unwrap();
-    let loaded = load(&paths);
+    let Fact::Known(loaded) = load(&paths) else {
+        panic!("the record reads");
+    };
     assert_eq!(loaded.added_packages, ["dkms"]);
     assert!(loaded.added_contrib_source);
     assert_eq!(loaded.docker.outcome(), Some(&DockerOutcome::Ready));
+}
+
+/// A state file that can't be read at all is no record, not an empty one: starting from nothing
+/// would forget the packages and the build it holds. Each caller says what it does without it.
+#[tokio::test]
+async fn a_state_file_that_cannot_be_read_stops_the_runs_that_would_overwrite_it() {
+    let fixture = fixture("state-unreadable");
+    let paths = InstallPaths::at(fixture.path());
+    fs::create_dir_all(state_path(&paths)).unwrap();
+    assert!(matches!(load(&paths), Fact::Unknown(_)));
+
+    let ran = Cell::new(false);
+    let refused = prepare_at(&paths, true, async || {
+        ran.set(true);
+        Ok(())
+    })
+    .await
+    .unwrap_err();
+    assert!(!ran.get());
+    assert!(
+        matches!(&refused, Error::Refused { stage, .. } if stage == "read the host preparation state"),
+        "{refused:?}"
+    );
+
+    let refused = discard_at(&paths).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Refused { stage, message }
+            if stage == "discard the ZFS build"
+                && message.starts_with("couldn't read the host preparation state, so nothing was removed: ")),
+        "{refused:?}"
+    );
+
+    take_over_preparation(&paths, "apt-get");
+    assert!(state_path(&paths).is_dir());
+}
+
+/// The host questions the build steps ask, answered by fake commands: a command that can't run,
+/// or answers in a way the question doesn't allow, is `Unknown`, not a no.
+#[test]
+fn a_host_query_that_cannot_answer_is_unknown_rather_than_no() {
+    const CASE: &str = "PLOYZ_PREPARE_QUERY_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let known = |answer| Fact::Known(answer);
+        assert_eq!(deb_installed("kept"), known(true));
+        assert_eq!(deb_installed("removed"), known(false));
+        assert_eq!(deb_installed("unheard-of"), known(false));
+        assert!(
+            matches!(deb_installed("broken"), Fact::Unknown(cause) if cause.contains("exit status: 2"))
+        );
+        assert!(
+            matches!(deb_installed("odd"), Fact::Unknown(cause) if cause.contains("\"weird\""))
+        );
+        assert_eq!(rpm_provided("present"), known(true));
+        assert_eq!(rpm_provided("absent"), known(false));
+        assert_eq!(
+            dkms_status(&["-m", "zfs"]),
+            "zfs/2.1.11, 6.1.0, x86_64: built\n"
+        );
+        fs::write(contract_root().join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "query-facts",
+        DEBIAN_12,
+        &[
+            (
+                "dpkg-query",
+                "case \"$3\" in kept) printf 'install ok installed' ;; removed) printf 'deinstall ok config-files' ;; broken) exit 2 ;; odd) printf weird ;; *) exit 1 ;; esac",
+            ),
+            ("rpm", "case \"$3\" in present) exit 0 ;; *) exit 1 ;; esac"),
+            ("dkms", "echo 'zfs/2.1.11, 6.1.0, x86_64: built'"),
+        ],
+    );
+    run_contract_child_with_environment(
+        "installer::prepare::tests::a_host_query_that_cannot_answer_is_unknown_rather_than_no",
+        fixture.path(),
+        OsString::from(CASE),
+        OsString::from("query-facts"),
+        "query-facts",
+        [],
+    );
+}
+
+#[test]
+fn a_host_query_whose_command_cannot_start_is_unknown() {
+    const CASE: &str = "PLOYZ_PREPARE_MISSING_QUERY_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        assert!(
+            matches!(deb_installed("any"), Fact::Unknown(cause) if cause.contains("couldn't run"))
+        );
+        assert!(
+            matches!(rpm_provided("any"), Fact::Unknown(cause) if cause.contains("couldn't run"))
+        );
+        assert!(
+            matches!(zfs_dkms_installed("dnf"), Fact::Unknown(cause) if cause.contains("couldn't run"))
+        );
+        assert_eq!(dkms_status(&["-m", "zfs"]), "");
+        fs::write(contract_root().join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host("query-missing", DEBIAN_12, &[]);
+    run_contract_child_with_environment(
+        "installer::prepare::tests::a_host_query_whose_command_cannot_start_is_unknown",
+        fixture.path(),
+        OsString::from(CASE),
+        OsString::from("query-missing"),
+        "query-missing",
+        [],
+    );
+}
+
+/// Whether `zfsutils-linux` is installed decides whether an Ubuntu download is a package's; a
+/// dpkg that can't say leaves the download where it is.
+#[test]
+fn discard_keeps_an_ubuntu_download_when_dpkg_cannot_say_who_owns_it() {
+    const CASE: &str = "PLOYZ_PREPARE_UBUNTU_OWNER_UNKNOWN_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        fs::create_dir_all(prepare_dir(&paths)).unwrap();
+        seed(
+            &paths,
+            &PrepState {
+                zfs_build: Some(ZfsBuild::Ubuntu {
+                    downloaded: vec!["zfsutils-linux".into()],
+                }),
+                ..PrepState::default()
+            },
+        );
+        let refused = discard_at(&paths).unwrap_err();
+        assert!(
+            matches!(&refused, Error::Refused { stage, message }
+                if stage == "discard the ZFS build"
+                    && message.starts_with("couldn't tell whether a package owns it, so it stays: ")),
+            "{refused:?}"
+        );
+        assert!(read_state(&root).zfs_build.is_some());
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "ubuntu-owner-unknown",
+        UBUNTU_24,
+        &[("dpkg-query", "exit 2")],
+    );
+    run_contract_child_with_environment(
+        "installer::prepare::tests::discard_keeps_an_ubuntu_download_when_dpkg_cannot_say_who_owns_it",
+        fixture.path(),
+        OsString::from(CASE),
+        OsString::from("ubuntu-owner-unknown"),
+        "ubuntu-owner-unknown",
+        [],
+    );
+}
+
+fn finished_earlier<O>(outcome: O) -> PrepStep<O> {
+    PrepStep::Finished {
+        started_at: Some("2026-10-16T00:00:00Z".into()),
+        finished_at: "2026-10-16T00:01:00Z".into(),
+        outcome,
+    }
+}
+
+/// A run starts its steps over but keeps what an earlier run added, and writes each step as it
+/// begins and as it finishes.
+#[tokio::test]
+async fn a_run_keeps_what_the_last_one_added_and_saves_each_step_as_it_goes() {
+    let fixture = fixture("run-keeps");
+    let root = fixture.path();
+    let paths = InstallPaths::at(root);
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    let earlier = PrepState {
+        docker: finished_earlier(DockerOutcome::Ready),
+        zfs: finished_earlier(ZfsOutcome::Ready),
+        added_packages: vec!["dkms".into()],
+        zfs_build: Some(ZfsBuild::Ubuntu {
+            downloaded: vec!["zfsutils-linux".into()],
+        }),
+        added_contrib_source: true,
+        interrupted: vec!["zfs".into()],
+    };
+    seed(&paths, &earlier);
+    let seen = Cell::new(false);
+    prepare_at(&paths, true, async || {
+        let during = read_state(root);
+        assert!(matches!(during.docker, PrepStep::Running { .. }));
+        assert_eq!(during.zfs, PrepStep::NotStarted);
+        assert_eq!(during.added_packages, ["dkms"]);
+        assert!(during.zfs_build.is_some());
+        assert!(during.added_contrib_source);
+        assert!(during.interrupted.is_empty());
+        seen.set(true);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(seen.get());
+    let after = read_state(root);
+    assert_eq!(after.docker.outcome(), Some(&DockerOutcome::Ready));
+    assert_eq!(after.zfs.outcome(), Some(&ZfsOutcome::Off));
+    assert_eq!(after.added_packages, ["dkms"]);
+    assert!(after.zfs_build.is_some());
+    assert!(after.added_contrib_source);
+}
+
+/// Taking over after packages installed ZFS keeps no record of what preparation added, and the
+/// steps stay as the run left them.
+#[test]
+fn taking_over_records_nothing_added_and_leaves_the_steps() {
+    let fixture = fixture("take-over");
+    let root = fixture.path();
+    let paths = InstallPaths::at(root);
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    let state = PrepState {
+        docker: PrepStep::Finished {
+            started_at: None,
+            finished_at: "2026-10-16T00:01:00Z".into(),
+            outcome: DockerOutcome::Ready,
+        },
+        added_packages: vec!["dkms".into()],
+        added_contrib_source: true,
+        ..PrepState::default()
+    };
+    seed(&paths, &state);
+    take_over_preparation(&paths, "apt-get");
+    let after = read_state(root);
+    assert_eq!(after.docker.outcome(), Some(&DockerOutcome::Ready));
+    assert!(after.added_packages.is_empty());
+    assert!(!after.added_contrib_source);
+    assert_eq!(after.zfs_build, None);
 }

@@ -49,7 +49,7 @@ const addServer = Effect.fn(function* (index: number) {
   });
 });
 
-it.live("opens checkout with one unit per Server", () =>
+it.live("opens checkout with one unit per Server, at least two", () =>
   Effect.gen(function* () {
     const polar = makePolar();
     const cloud = yield* storeTestCloud({ polar: polar.service });
@@ -58,11 +58,11 @@ it.live("opens checkout with one unit per Server", () =>
 
       const none = yield* createEmbeddedCheckout({ userId }, slug);
       assert.deepStrictEqual(none, { url: "https://polar.test/checkout" });
-      assert.strictEqual(polar.checkouts.at(-1)?.units, 1, "no Servers opens at the one unit Polar requires");
+      assert.strictEqual(polar.checkouts.at(-1)?.units, 2, "no Servers opens at the two units Polar requires");
 
       yield* enrollStoreServer(ORGANIZATION, { secret: SECRET, server: machineId("0") });
       yield* createEmbeddedCheckout({ userId }, slug);
-      assert.strictEqual(polar.checkouts.at(-1)?.units, 1, "one Server opens at one unit");
+      assert.strictEqual(polar.checkouts.at(-1)?.units, 2, "one Server opens at the two-unit minimum");
 
       for (const index of [1, 2, 3, 4]) yield* addServer(index);
       yield* createEmbeddedCheckout({ userId }, slug);

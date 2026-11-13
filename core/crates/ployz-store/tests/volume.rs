@@ -884,6 +884,10 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     let refused = admit(&store, &who, 2, &[], Some(observed(&['a', 'b']))).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(refused.details["accept"], json!(["data"]));
+    assert_eq!(
+        refused.message,
+        "This permanently deletes the data of data. Accept each by name"
+    );
     let bound = refused.details["version"].as_str().unwrap().to_owned();
     assert!(bound.starts_with(&format!("{}:", diff(&store, &who).version)));
     assert_eq!(

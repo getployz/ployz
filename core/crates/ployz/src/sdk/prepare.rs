@@ -461,10 +461,16 @@ async fn reuse_without_source(
             .target
             .iter()
             .find(|spec| spec.name == receipt.name)
-            .filter(|spec| {
-                crate::build::runs_everywhere(&receipt.built, spec, &intent.namespace, machines)
-            })
-            .and_then(|_| crate::build::holder(&stores, &receipt.built, receipt.machine_id));
+            .and_then(|spec| {
+                crate::build::place(
+                    &receipt.built,
+                    receipt.machine_id,
+                    spec,
+                    &intent.namespace,
+                    machines,
+                    &stores,
+                )
+            });
         if let Some(machine_id) = holder {
             missing.retain(|name| name != &receipt.name);
             reused.push(BuiltService {

@@ -2,17 +2,16 @@
 //! Cluster network to a tailnet, through SetPrivateAccess. The CLI seals the auth key to
 //! the Cluster and asks each Machine; nothing here builds a spec or names an image.
 
-use futures_util::{StreamExt, stream};
 use ployz_core::{
     Ciphertext, EnvironmentValues, Machine, MachineFailure, MachineId, MachineName,
     MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem, PrivateAccessSet,
-    QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_PRIVATE_ACCESS_CAPABILITY, Sealing,
-    SealingPublicKey, ServiceObservation, SetPrivateAccessRequest,
+    QualifiedService, RpcError, RpcErrorCode, SET_PRIVATE_ACCESS_CAPABILITY, SealingPublicKey,
+    ServiceObservation, SetPrivateAccessRequest,
     authority::{
         KeyApproval, PrivateAccessApproval, PrivateAccessTerms, Signed, Signer, SignerKey,
         Timestamp,
     },
-    private_access_router_joined, private_access_sealed_key, seal_platform,
+    cluster_sealing_key, private_access_router_joined, private_access_sealed_key, seal_platform,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -20,7 +19,7 @@ use ts_rs::TS;
 
 use crate::{
     connect::Client,
-    deploy::{ProxyPlacement, RestartTolerant},
+    deploy::{ProxyPlacement, RestartTolerant, set_each},
     failure::Failure,
     ingress::unsupported,
 };
@@ -63,13 +62,7 @@ impl AccessMachine {
 pub(crate) fn access_machines(observed: &[MachineObservation]) -> Vec<AccessMachine> {
     observed
         .iter()
-        .filter(|machine| {
-            machine.invites_rpc()
-                && match machine.machine.standing() {
-                    RowStanding::Registered | RowStanding::Versioned => true,
-                    RowStanding::Leaving { .. } => false,
-                }
-        })
+        .filter(|machine| machine.can_be_asked())
         .map(|machine| AccessMachine::of(&machine.machine))
         .collect()
 }
@@ -114,12 +107,7 @@ pub(crate) async fn observe_access(client: &mut Client) -> Result<Access, Failur
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
     let services = live.services();
-    let sealing = machines
-        .iter()
-        .find_map(|machine| match &machine.machine.runtime.sealing {
-            Some(Sealing::Held { public_key }) => Some(*public_key),
-            Some(Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. }) | None => None,
-        });
+    let sealing = cluster_sealing_key(machines.iter().map(|machine| &machine.machine));
     Ok(Access {
         machines: access_machines(&machines),
         running: running(&services),
@@ -210,11 +198,7 @@ pub(crate) fn device_approval(
 }
 
 /// What one Machine's daemon answered, or why it wasn't asked to the end.
-enum Answer {
-    Set(Box<PrivateAccessSet>),
-    Refused(RpcError),
-    Cancelled,
-}
+type Answer = crate::deploy::Answer<PrivateAccessSet>;
 
 async fn set_all<C: ProxyPlacement>(
     client: &C,
@@ -223,19 +207,18 @@ async fn set_all<C: ProxyPlacement>(
     cancel: &CancellationToken,
 ) -> Vec<Answer> {
     let client = &RestartTolerant::new(client, cancel);
-    stream::iter(machines.to_vec())
-        .map(|machine| async move {
-            tokio::select! {
-                answer = client.set_private_access(&machine.id, request.clone()) => match answer {
-                    Ok(set) => Answer::Set(Box::new(set)),
-                    Err(error) => Answer::Refused(error),
-                },
-                () = cancel.cancelled() => Answer::Cancelled,
-            }
-        })
-        .buffered(AT_ONCE)
-        .collect()
-        .await
+    set_each(
+        machines,
+        AT_ONCE,
+        cancel,
+        |_| None,
+        |machine| async move {
+            client
+                .set_private_access(&machine.id, request.clone())
+                .await
+        },
+    )
+    .await
 }
 
 /// Place the router on every Machine, with the auth key `sealed` and a person's

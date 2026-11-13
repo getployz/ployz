@@ -8,10 +8,10 @@ use crate::cli::{base, positional, value};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     CopyRotation, HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId,
-    MachineName, MachineObservation, OperationId, QualifiedService, RpcError, Sealing,
-    ServiceContainer, ServiceObservation, ServiceSelector,
-    authority::{RestartApproval, Signed, Signer, SignerKey, Timestamp, WorkflowKind},
-    select_service,
+    MachineName, MachineObservation, OperationId, QualifiedService, RpcError, ServiceContainer,
+    ServiceObservation, ServiceSelector,
+    authority::{RestartApproval, Signed, WorkflowKind},
+    cluster_sealing_key, select_service,
 };
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
@@ -543,21 +543,14 @@ fn restart_approvals(
     services: &[&ServiceObservation],
     action: ContainerAction,
 ) -> Result<HashMap<ContainerId, Signed<RestartApproval>>, Error> {
-    let Ok(Some(secret)) = super::device::key::load(device_key) else {
+    let Ok(Some(signing)) = super::device::DeviceSigning::load(device_key) else {
         return Ok(HashMap::new());
     };
-    let Some(cluster) =
-        machines
-            .iter()
-            .find_map(|observed| match observed.machine.runtime.sealing {
-                Some(Sealing::Held { public_key }) => Some(public_key),
-                _ => None,
-            })
+    let Some(cluster) = cluster_sealing_key(machines.iter().map(|observed| &observed.machine))
     else {
         return Ok(HashMap::new());
     };
-    let signer = Signer::from_seed(&secret);
-    let issued_at = Timestamp::now();
+    let window = signing.window();
     services
         .iter()
         .flat_map(|service| {
@@ -579,14 +572,14 @@ fn restart_approvals(
                 service: service.identity.name.clone(),
                 machines: vec![container.machine_id],
                 container: container.container_id,
-                issued_at,
-                expires_at: issued_at.plus(ployz_core::authority::restart::MAX_LIFETIME_MILLIS),
-                signer: SignerKey::Device(signer.public().into()),
+                issued_at: window.issued_at,
+                expires_at: window.expires_at,
+                signer: window.signer,
                 proposal: None,
             };
-            Signed::sign(&approval, &signer)
+            signing
+                .sign(&approval)
                 .map(|signed| (container.container_id, signed))
-                .map_err(Error::command)
         })
         .collect()
 }

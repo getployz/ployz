@@ -13,16 +13,15 @@ pub(super) mod pr;
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
-    CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentRemoval,
-    EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment,
-    SetEnvironmentProtected,
+    CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRemoval, EnvironmentSummary,
+    EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment, SetEnvironmentProtected,
 };
 use serde_json::json;
 
 use super::config::expect;
 use super::deploy;
 use super::shared::confirm::confirm;
-use super::store::{self, mint, project, project_arg, store};
+use super::store::{self, mint, named_environment, project, project_arg, store};
 use super::teardown::{self, Inventory, Removed, inventory};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
@@ -384,26 +383,18 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn default(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let name = EnvironmentName::parse(required(matches, "name")?)?;
-    let set = SetDefaultEnvironment {
-        environment: EnvironmentRef {
-            project: project(matches)?,
-            environment: Some(name),
-        },
-    };
+    let (_, environment) = named_environment(matches, "name")?;
+    let set = SetDefaultEnvironment { environment };
     let listed = store(root)?.write(&set)?;
     crate::ui::list(&listed, &environments(&listed))
 }
 
 pub(super) fn protect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let name = EnvironmentName::parse(required(matches, "name")?)?;
+    let (name, environment) = named_environment(matches, "name")?;
     let protected = !matches.get_flag("off");
     let set = SetEnvironmentProtected {
-        environment: EnvironmentRef {
-            project: project(matches)?,
-            environment: Some(name.clone()),
-        },
+        environment,
         protected,
         seen: None,
     };
@@ -497,11 +488,7 @@ struct Removal<'a> {
 /// retries it.
 pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let name = EnvironmentName::parse(required(matches, "name")?)?;
-    let at = EnvironmentRef {
-        project: project(matches)?,
-        environment: Some(name.clone()),
-    };
+    let (name, at) = named_environment(matches, "name")?;
     let store = store(root)?.args([name.as_str()]);
     let inventory = inventory(&store, &at)?;
     // Typed where it is: PROJECT/ENV.

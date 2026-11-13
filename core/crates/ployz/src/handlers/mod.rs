@@ -30,6 +30,7 @@ pub(crate) mod github;
 mod github_preview;
 mod github_rule;
 pub(crate) mod ingress;
+mod input;
 pub(crate) mod link;
 pub(crate) mod login;
 pub(crate) mod mcp;

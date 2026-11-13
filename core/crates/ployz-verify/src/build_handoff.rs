@@ -21,12 +21,12 @@
 //! - **GitHub**, which ends the run once its job exits or Cloud cancelled it, and sends the
 //!   `workflow_run` webhook (dashboard/src/routes/api/github/-webhook.handler.ts:78-83).
 //! - **The Deployment runner** on the Deployment's Servers, which reports a build it runs
-//!   through `record` (core/crates/ployz-store/src/deployment/lifecycle.rs:1850). Its
+//!   through `deployment::record::record` (core/crates/ployz-store/src/deployment/record.rs). Its
 //!   `run-deployment` step runs once every walk returned
 //!   (dashboard/src/modules/config-store/store-deployment.inngest.ts:62, :79).
 //! - **The Store**, Postgres. Each write runs in one transaction that first locks the
 //!   Deployment's Environment row (`deployment::locked`, core/crates/ployz-store/src/deployment/mod.rs:1604-1608;
-//!   core/crates/ployz-store/src/scope.rs:583-595) and then re-reads the build. Writers run read
+//!   `scope::lock_all` in core/crates/ployz-store/src/scope.rs) and then re-reads the build. Writers run read
 //!   committed (core/crates/ployz-store/src/storage/pg.rs:107-120), so each write sees every
 //!   write committed before it took the lock, and each model write is one atomic step.
 //!
@@ -158,7 +158,7 @@ impl Row {
 enum Deployment {
     Queued,
     /// `cancel` turned a queued Deployment Cancelled
-    /// (core/crates/ployz-store/src/deployment/lifecycle.rs:1492-1493).
+    /// (`deployment::cancel`, core/crates/ployz-store/src/deployment/lifecycle.rs).
     Cancelled,
 }
 
@@ -2189,7 +2189,7 @@ impl BuildHandoff {
     fn user(state: &mut State) {
         state.user = match state.user {
             User::Idle => {
-                // `cancel` (core/crates/ployz-store/src/deployment/lifecycle.rs:1485-1503).
+                // `deployment::cancel` (core/crates/ployz-store/src/deployment/lifecycle.rs).
                 state.deployment = Deployment::Cancelled;
                 state.took = Some(Branch::UserCancelled);
                 User::Stopping(Stop::Outstanding)
@@ -2806,7 +2806,7 @@ fn reads_as(model: &BuildHandoff, before: &State, action: Action, after: &State)
                 ", which no wait receives"
             }
         ),
-        Branch::UserCancelled => "cancel turns the queued Deployment Cancelled (core/crates/ployz-store/src/deployment/lifecycle.rs:1492-1493); afterWrite's cancelStoreGithubBuilds is next (dashboard/src/modules/config-store/config-store.server.ts:306-310)".to_owned(),
+        Branch::UserCancelled => "cancel turns the queued Deployment Cancelled (`deployment::cancel`, core/crates/ployz-store/src/deployment/lifecycle.rs); afterWrite's cancelStoreGithubBuilds is next (dashboard/src/modules/config-store/config-store.server.ts:306-310)".to_owned(),
         Branch::ServersReported { ok: true } => format!(
             "run-deployment: record takes the Servers' Building report (core/crates/ployz-store/src/build.rs:264-314){}",
             if before.row.github.is_some() {

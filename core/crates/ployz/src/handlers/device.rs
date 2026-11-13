@@ -32,9 +32,11 @@ use ployz_core::Hint;
 mod enforce;
 mod known;
 mod pin;
+mod signing;
 pub(crate) use enforce::{enforce, enforce_command};
 pub(super) use pin::seal_to;
 pub(crate) use pin::{pin, pin_command};
+pub(super) use signing::DeviceSigning;
 
 pub(crate) fn group(command: Command) -> Command {
     command.about("Approve the devices that can exec and port-forward")
@@ -293,10 +295,9 @@ struct PendingPasskey {
 async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error> {
     let mut client = route::connect(leaf, context(leaf)).await?;
     let reach = Reach::of(&mut client).await?;
-    let secret = key::load(&key::path(&config_path(leaf)?))?.ok_or_else(|| {
+    let signing = DeviceSigning::load(&key::path(&config_path(leaf)?))?.ok_or_else(|| {
         Error::conflict("Approving a Server join needs this computer's approved Device key.")
     })?;
-    let signer = ployz_core::authority::Signer::from_seed(&secret);
     let mut matching = Vec::new();
     let asked = if leaf.get_one::<String>("connect").is_some() {
         reach.entry.into_iter().collect()
@@ -332,8 +333,7 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
         });
     };
     show_join(body);
-    body.signer = signer.public().into();
-    let approval = ployz_core::authority::Signed::sign(body, &signer).map_err(Error::command)?;
+    let approval = sign_join(&signing, body)?;
     client
         .call_shared::<op::ApproveJoin>(
             ployz_core::ApproveJoinRequest { approval },
@@ -348,6 +348,15 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
             "Approved the Server join. Enroll it again from the dashboard, or rerun its join command.",
         )
     })
+}
+
+/// `body` with this Device named as its signer, signed by it.
+fn sign_join(
+    signing: &DeviceSigning,
+    body: &mut ployz_core::authority::JoinApproval,
+) -> Result<ployz_core::authority::Signed<ployz_core::authority::JoinApproval>, Error> {
+    body.signer = signing.device_key();
+    signing.sign(body)
 }
 
 fn show_join(body: &ployz_core::authority::JoinApproval) {
@@ -395,10 +404,9 @@ pub(super) async fn sign_waiting_join(
     expected: &ployz_core::RegisterRequest,
     pinned: bool,
 ) -> Result<bool, Error> {
-    let Some(secret) = key::load(&key::path(config))? else {
+    let Some(signing) = DeviceSigning::load(&key::path(config))? else {
         return Ok(false);
     };
-    let signer = ployz_core::authority::Signer::from_seed(&secret);
     let pending = client
         .call::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, Call::read())
         .await?;
@@ -418,8 +426,7 @@ pub(super) async fn sign_waiting_join(
         body.passkeys.clear();
     }
     show_join(&body);
-    body.signer = signer.public().into();
-    let approval = ployz_core::authority::Signed::sign(&body, &signer).map_err(Error::command)?;
+    let approval = sign_join(&signing, &mut body)?;
     client
         .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, Call::keyed())
         .await?;

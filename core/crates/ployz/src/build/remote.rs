@@ -402,12 +402,7 @@ fn validate_outcome(
             if *machine_id == expected && images.len() == count =>
         {
             if images.iter().any(|image| {
-                !image
-                    .reference
-                    .strip_prefix("sha256:")
-                    .is_some_and(|digest| {
-                        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
+                ployz_core::ReportedImageDigest::parse(image.reference.as_str()).is_err()
                     || image.tags.is_empty()
                     || image.platforms.is_empty()
                     || image
@@ -508,18 +503,55 @@ mod tests {
             };
             assert_eq!(retained.0, work.0);
         }
-        assert!(matches!(
-            validate_outcome(
+        for reference in [
+            format!("sha256:{}", "1".repeat(63)),
+            format!("sha256:{}g", "1".repeat(63)),
+            "1".repeat(64),
+        ] {
+            let Outcome::Unknown { message, .. } = validate_outcome(
                 Outcome::Images {
                     machine_id,
-                    images: vec![image]
+                    images: vec![BuiltImage {
+                        reference: reference.clone(),
+                        ..image.clone()
+                    }],
                 },
                 machine_id,
                 1,
-                work
-            ),
-            Outcome::Images { .. }
-        ));
+                work.clone(),
+            ) else {
+                panic!("{reference} was accepted")
+            };
+            assert_eq!(
+                message,
+                "Build returned an invalid image identity or platform"
+            );
+        }
+        // Either case of hex is an image identity, as the report carried it.
+        for reference in [
+            image.reference.clone(),
+            format!("sha256:{}", "A".repeat(64)),
+            format!("sha256:{}", "aB1".repeat(21) + "f"),
+        ] {
+            let Outcome::Images { images, .. } = validate_outcome(
+                Outcome::Images {
+                    machine_id,
+                    images: vec![BuiltImage {
+                        reference: reference.clone(),
+                        ..image.clone()
+                    }],
+                },
+                machine_id,
+                1,
+                work.clone(),
+            ) else {
+                panic!("{reference} was refused")
+            };
+            assert_eq!(
+                images.first().map(|image| image.reference.as_str()),
+                Some(reference.as_str())
+            );
+        }
     }
 
     #[tokio::test]

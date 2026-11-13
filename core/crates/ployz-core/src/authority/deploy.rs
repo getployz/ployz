@@ -106,12 +106,7 @@ pub fn content_addressed(image: &str) -> bool {
         Some(_) => return false,
         None => image,
     };
-    digest.strip_prefix("sha256:").is_some_and(|hex| {
-        hex.len() == 64
-            && hex
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    })
+    crate::ImageDigest::parse(digest).is_ok()
 }
 
 /// One Service a Deploy approves, by the digest of the spec its Containers run.

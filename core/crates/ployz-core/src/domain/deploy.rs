@@ -82,22 +82,44 @@ impl PlanOptions {
         }
     }
 
-    /// These options as a runner plans them: driven as `operator`, recording each
-    /// Service's outcome, with `ended_runs` as the runs that can no longer change the
-    /// Namespace. The one place a runner sets what `mode` reads.
+    /// These options as `runner` plans them: driven as its operator, recording each
+    /// Service's outcome, with its `ended_runs` as the runs that can no longer change
+    /// the Namespace. The one place a runner sets what `mode` reads.
     #[must_use]
-    pub fn as_runner(
-        self,
-        operator: Operator,
-        ended_runs: BTreeSet<crate::DeploymentLogId>,
-    ) -> Self {
+    pub fn as_runner(self, runner: RunnerOptions) -> Self {
         Self {
-            operator,
+            operator: runner.operator,
             block_unmountable: true,
-            ended_runs,
+            ended_runs: runner.ended_runs,
             ..self
         }
     }
+
+    /// The runner these options plan as, or none for a command a person runs.
+    #[must_use]
+    pub fn runner(&self) -> Option<RunnerOptions> {
+        match self.mode() {
+            PlanMode::Runner {
+                operator,
+                ended_runs,
+            } => Some(RunnerOptions {
+                operator,
+                ended_runs: ended_runs.clone(),
+            }),
+            PlanMode::Interactive { .. } => None,
+        }
+    }
+}
+
+/// What a runner sets on the `PlanOptions` it plans with, which the Store's lowering
+/// cannot know: who drives the Deploy, and the runs that can no longer change the
+/// Namespace. Applied by `PlanOptions::as_runner`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunnerOptions {
+    /// Who drives the Deploy, which a refusal's way back depends on.
+    pub operator: Operator,
+    /// The runs that can no longer change the Namespace.
+    pub ended_runs: BTreeSet<crate::DeploymentLogId>,
 }
 
 /// How the planner treats a Deploy, read from `PlanOptions::mode`. Never serialized: the
@@ -1593,7 +1615,10 @@ mod tests {
             "an Intent that names its operator keeps it without block_unmountable"
         );
 
-        let runner = interactive.as_runner(Operator::Cli, ended.clone());
+        let runner = interactive.as_runner(RunnerOptions {
+            operator: Operator::Cli,
+            ended_runs: ended.clone(),
+        });
         assert_eq!(
             runner.mode(),
             PlanMode::Runner {
@@ -1618,6 +1643,23 @@ mod tests {
     }
 
     #[test]
+    fn a_runner_reads_back_as_the_options_it_was_given() {
+        let ended: BTreeSet<_> = ["run-1", "run-2"]
+            .into_iter()
+            .map(|run| crate::DeploymentLogId::parse(run).unwrap())
+            .collect();
+        let given = RunnerOptions {
+            operator: Operator::Cli,
+            ended_runs: ended,
+        };
+        assert_eq!(PlanOptions::default().runner(), None);
+        assert_eq!(
+            PlanOptions::default().as_runner(given.clone()).runner(),
+            Some(given)
+        );
+    }
+
+    #[test]
     fn a_runner_keeps_the_options_the_store_lowered() {
         let lowered = PlanOptions {
             force_recreate: true,
@@ -1625,7 +1667,10 @@ mod tests {
             prune: PruneScope::Removals,
             ..PlanOptions::default()
         };
-        let runner = lowered.clone().as_runner(Operator::Cloud, BTreeSet::new());
+        let runner = lowered.clone().as_runner(RunnerOptions {
+            operator: Operator::Cloud,
+            ended_runs: BTreeSet::new(),
+        });
         assert_eq!(
             runner,
             PlanOptions {

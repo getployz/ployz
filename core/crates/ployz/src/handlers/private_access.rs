@@ -4,7 +4,7 @@
 use std::io::Read;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{Hint, MachineFailure, PartialResult, RpcError, RpcErrorCode, authority::Signer};
+use ployz_core::{Hint, MachineFailure, RpcError, RpcErrorCode, authority::Signer};
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
@@ -68,12 +68,7 @@ pub(crate) fn show(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let observed = observe_access(client).await?;
             let rows = shown(&observed);
-            let listing: PartialResult<(), RpcError> = PartialResult {
-                successes: Vec::new(),
-                failures: observed.listed.failures.clone(),
-                omissions: observed.listed.omissions.clone(),
-            };
-            let gaps = Gaps::of(&listing).named(
+            let gaps = Gaps::of(&observed.listed).named(
                 observed
                     .machines
                     .iter()
@@ -186,12 +181,8 @@ fn table(rows: &[MachineAccess]) -> Table {
 /// The gaps in a change, naming every Machine the command addressed: one whose answer
 /// was a failure has no row, and its warning still carries its name.
 fn gaps_of(addressed: &[AccessMachine], failures: Vec<MachineFailure<RpcError>>) -> Gaps {
-    let listing: PartialResult<(), RpcError> = PartialResult {
-        successes: Vec::new(),
-        failures,
-        omissions: Vec::new(),
-    };
-    Gaps::of(&listing).named(addressed.iter().map(|machine| (machine.id, &machine.name)))
+    Gaps::from_parts(failures, Vec::new())
+        .named(addressed.iter().map(|machine| (machine.id, &machine.name)))
 }
 
 fn read_key(stdin: impl Read) -> Result<String, Error> {

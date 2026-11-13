@@ -1021,6 +1021,272 @@ async fn an_old_copy_refused_out_keeps_its_move_and_stays() {
     assert!(!report.complete());
 }
 
+/// One Service's rows for every convergence beside every kind of leftover, and whether an
+/// old copy was refused out as the last one serving.
+#[tokio::test(start_paused = true)]
+async fn a_service_s_rows_follow_from_its_convergence_its_leftovers_and_a_refused_old_copy() {
+    let held = || left_on_server(CopyRotation::Held(DeploymentLogId::parse("you").unwrap()));
+    let out = || left_on_server(CopyRotation::Out);
+    let refused_move = || {
+        one_move()
+            .into_iter()
+            .map(|step| Move {
+                old: OldCopyEnd::In {
+                    unconfirmed: Unconfirmed::Failed {
+                        detail: format!(
+                            "{} still counted it as the last copy serving",
+                            step.from.name
+                        ),
+                    },
+                },
+                ..step
+            })
+            .collect::<Vec<_>>()
+    };
+    let last_in = || MoveFailure::Refused {
+        reason: StayReason::LastIn,
+    };
+    let failed = |moves, failure| DrainOutcome::Failed { moves, failure };
+    let old_copies = || DrainOutcome::OldCopies {
+        ends: vec![OldCopyEnd::Stopped],
+    };
+    let stays = || DrainOutcome::Stays {
+        reason: StayReason::LastIn,
+    };
+    let other = || Converged::Moved {
+        moves: vec![a_move_off_web_3()],
+    };
+    let own = || Converged::Moved { moves: one_move() };
+    let both = || Converged::Moved {
+        moves: [one_move(), vec![a_move_off_web_3()]].concat(),
+    };
+    let own_failed = || Converged::Failed {
+        moves: one_move(),
+        failure: web_3_failed(),
+    };
+    let stopped = || Converged::Stopped {
+        moves: one_move(),
+        stop: DrainStop::Cancelled,
+    };
+    // (case, convergence, copies left on the Server, old copy refused out, rows, stop)
+    type Case = (
+        &'static str,
+        Converged,
+        Vec<Copy>,
+        bool,
+        Vec<DrainOutcome>,
+        Option<DrainStop>,
+    );
+    let table: Vec<Case> = vec![
+        (
+            "nothing to move",
+            Converged::NothingToMove,
+            vec![],
+            false,
+            vec![DrainOutcome::NothingToMove],
+            None,
+        ),
+        (
+            "nothing to move beside a held copy",
+            Converged::NothingToMove,
+            vec![held()],
+            false,
+            vec![DrainOutcome::Held],
+            None,
+        ),
+        (
+            "nothing to move beside an out copy",
+            Converged::NothingToMove,
+            vec![out()],
+            false,
+            vec![old_copies()],
+            None,
+        ),
+        (
+            "nothing to move beside both",
+            Converged::NothingToMove,
+            vec![held(), out()],
+            false,
+            vec![DrainOutcome::Held, old_copies()],
+            None,
+        ),
+        (
+            "stays",
+            Converged::Stays {
+                reason: StayReason::LastIn,
+            },
+            vec![],
+            false,
+            vec![stays()],
+            None,
+        ),
+        (
+            "stays beside both",
+            Converged::Stays {
+                reason: StayReason::LastIn,
+            },
+            vec![held(), out()],
+            false,
+            vec![stays(), DrainOutcome::Held, old_copies()],
+            None,
+        ),
+        ("moved", own(), vec![], false, vec![moved()], None),
+        (
+            "moved beside a held copy",
+            own(),
+            vec![held()],
+            false,
+            vec![moved(), DrainOutcome::Held],
+            None,
+        ),
+        (
+            "moved beside an out copy",
+            both(),
+            vec![out()],
+            false,
+            vec![moved(), old_copies()],
+            None,
+        ),
+        (
+            "only another Server's move",
+            other(),
+            vec![],
+            false,
+            vec![DrainOutcome::NothingToMove],
+            None,
+        ),
+        (
+            "only another Server's move beside a held copy",
+            other(),
+            vec![held()],
+            false,
+            vec![DrainOutcome::Held],
+            None,
+        ),
+        (
+            "only another Server's move beside an out copy",
+            other(),
+            vec![out()],
+            false,
+            vec![old_copies()],
+            None,
+        ),
+        (
+            "moved but refused out",
+            own(),
+            vec![],
+            true,
+            vec![failed(refused_move(), last_in())],
+            None,
+        ),
+        (
+            "moved but refused out beside an out copy",
+            own(),
+            vec![out()],
+            true,
+            vec![failed(refused_move(), last_in()), old_copies()],
+            None,
+        ),
+        (
+            "failed",
+            own_failed(),
+            vec![],
+            false,
+            vec![failed(one_move(), web_3_failed())],
+            None,
+        ),
+        (
+            "failed beside a held copy",
+            own_failed(),
+            vec![held()],
+            false,
+            vec![failed(one_move(), web_3_failed()), DrainOutcome::Held],
+            None,
+        ),
+        (
+            "failed and refused out",
+            own_failed(),
+            vec![],
+            true,
+            vec![
+                failed(refused_move(), web_3_failed()),
+                failed(Vec::new(), last_in()),
+            ],
+            None,
+        ),
+        (
+            "failed and refused out beside an out copy",
+            own_failed(),
+            vec![out()],
+            true,
+            vec![
+                failed(refused_move(), web_3_failed()),
+                failed(Vec::new(), last_in()),
+                old_copies(),
+            ],
+            None,
+        ),
+        (
+            "interrupted",
+            stopped(),
+            vec![],
+            false,
+            vec![DrainOutcome::Interrupted { moves: one_move() }],
+            Some(DrainStop::Cancelled),
+        ),
+        (
+            "interrupted beside leftovers reports none of them",
+            stopped(),
+            vec![held(), out()],
+            false,
+            vec![DrainOutcome::Interrupted { moves: one_move() }],
+            Some(DrainStop::Cancelled),
+        ),
+        (
+            "interrupted and refused out",
+            stopped(),
+            vec![],
+            true,
+            vec![
+                DrainOutcome::Interrupted {
+                    moves: refused_move(),
+                },
+                failed(Vec::new(), last_in()),
+            ],
+            Some(DrainStop::Cancelled),
+        ),
+    ];
+    for (case, convergence, copies, refused, rows, stop) in table {
+        let ends = copies
+            .iter()
+            .filter(|copy| copy.rotation == CopyRotation::Out)
+            .map(|_| OldCopyEnd::Stopped)
+            .collect();
+        let mut client = Scripted {
+            observations: [nothing_left()].into(),
+            convergences: [convergence].into(),
+            copies: [Ok(copies)].into(),
+            ends,
+            retire_delay: Some(|| tokio::time::sleep(Duration::from_secs(1))),
+            last_in: if refused {
+                vec![qualified("web")]
+            } else {
+                vec![]
+            },
+            ..Scripted::default()
+        };
+        let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+        assert_eq!(
+            outcomes(&report),
+            rows.into_iter()
+                .map(|row| entry("web", row))
+                .collect::<Vec<_>>(),
+            "{case}"
+        );
+        assert_eq!(report.stopped, stop, "{case}");
+    }
+}
+
 /// What the CLI reads off each outcome: whether an old copy is still on the Server, and
 /// whether the Drain went wrong on the Service.
 #[test]

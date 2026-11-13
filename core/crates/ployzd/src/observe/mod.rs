@@ -6,12 +6,17 @@
 
 pub mod cleanup;
 mod client;
+mod clock;
 mod exit_ledger;
+#[cfg(test)]
+mod fixtures;
 pub mod frame;
 mod harvest;
+mod hold;
 #[cfg(test)]
 mod integration_tests;
 pub mod layout;
+mod meta;
 pub(crate) mod metrics;
 mod query;
 mod request;
@@ -19,6 +24,7 @@ mod salts;
 mod serve;
 mod settled;
 mod ship;
+mod signal;
 pub(crate) mod unit;
 mod wire;
 

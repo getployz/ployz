@@ -8,7 +8,6 @@
 //! the `values` object that `set SERVICE --patch` takes back.
 
 use crate::ui;
-use crate::ui::Next;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 use std::io::{IsTerminal as _, Read};
@@ -21,8 +20,10 @@ use ployz_store::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::input::{self, InputError, Source};
+use super::shared::staged::{StagedReport, Then};
 use super::store::{environment, next, scoped, store, with_refresh_hint};
-use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded};
+use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 
 pub(super) fn get_command(command: Command) -> Command {
@@ -240,7 +241,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         let patch = if inline {
             patch.clone()
         } else {
-            std::io::read_to_string(std::io::stdin())?
+            input::read_text(Source::Stdin, "a patch")?
         };
         let value: Value = serde_json::from_str(&patch).map_err(|_| {
             Error::usage("--patch expects a JSON object, for example '{\"replicas\":3}'")
@@ -437,15 +438,16 @@ fn read_secret(path: &str, stdin: impl Read, stdin_is_terminal: bool) -> Result<
             "Cancelled. Nothing was staged.",
         );
     }
-    let secret = read_bounded(stdin, MAX_CLI_INPUT_BYTES)?
-        .ok_or_else(|| input_too_long("stdin", "a secret"))?;
     // `internal`, as when stdin was read as a string.
-    let mut secret = String::from_utf8(secret).map_err(|_| {
-        Error::coded(
-            RpcErrorCode::Internal,
-            format!("{path}: the secret on stdin isn't UTF-8 text"),
-        )
-    })?;
+    let mut secret = input::read_from(stdin, Source::Stdin, "a secret")?
+        .text()
+        .map_err(|error| match error {
+            InputError::NotText { .. } => Error::coded(
+                RpcErrorCode::Internal,
+                format!("{path}: the secret on stdin isn't UTF-8 text"),
+            ),
+            other @ (InputError::Unreadable { .. } | InputError::TooLong { .. }) => other.into(),
+        })?;
     // `echo VALUE |` ends it with a newline that is not part of the secret.
     if secret.ends_with('\n') {
         secret.pop();
@@ -471,34 +473,27 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
         "--from-env-file takes one SERVICE: set web --from-env-file .env",
     )?;
     let service = SettingPath::parse(&service)?;
-    let (bytes, from) = if file == "-" {
-        (
-            read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?,
-            "stdin",
-        )
-    } else {
-        (
-            std::fs::File::open(file)
-                .and_then(|from| read_bounded(from, MAX_CLI_INPUT_BYTES))
-                .map_err(|error| {
-                    Error::caused(
-                        RpcErrorCode::InvalidArgument,
-                        format!("Can't read the env file {file}"),
-                        error,
-                    )
-                })?,
-            file,
-        )
-    };
-    let bytes = bytes.ok_or_else(|| input_too_long(from, "an env file"))?;
-    // Stdin that isn't text stays `internal`, as when it was read as a string.
-    let text = String::from_utf8(bytes).map_err(|_| {
-        let code = if file == "-" {
-            RpcErrorCode::Internal
-        } else {
-            RpcErrorCode::InvalidArgument
-        };
-        Error::coded(code, format!("{from}: an env file is UTF-8 text"))
+    let text = input::read_text(Source::of(file), "an env file").map_err(|error| match error {
+        InputError::Unreadable {
+            source: Source::Path(_),
+            error,
+        } => Error::caused(
+            RpcErrorCode::InvalidArgument,
+            format!("Can't read the env file {file}"),
+            error,
+        ),
+        // Stdin that isn't text stays `internal`, as when it was read as a string.
+        InputError::NotText { source } => {
+            let code = match source {
+                Source::Stdin => RpcErrorCode::Internal,
+                Source::Path(_) => RpcErrorCode::InvalidArgument,
+            };
+            Error::coded(
+                code,
+                format!("{}: an env file is UTF-8 text", source.name()),
+            )
+        }
+        other @ (InputError::Unreadable { .. } | InputError::TooLong { .. }) => other.into(),
     })?;
     // A key the file repeats takes its last value, in its first place; variables are
     // uppercase, so case doesn't make a new key.
@@ -598,25 +593,20 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let fail = |error| store.fail(with_refresh_hint(error, matches, "get"));
     let edit = store.seal_edit(edit, fail)?;
     let edited = store.try_write(&edit).map_err(fail)?;
-    let hint = (!edited.staged.is_empty()).then(|| next(matches, &["deploy"]));
-    let followed = Next::new(&edited, hint);
-    ui::finish(&followed, || {
-        let where_ = edited.environment.to_string();
-        if !edited.staged.is_empty() {
-            crate::ui::stream(format_args!(
-                "Staged {} in {where_}.",
-                super::joined(&edited.staged)
-            ));
-        }
+    let followed = StagedReport::of(
+        matches,
+        &edited,
+        format!("Staged {}", super::joined(&edited.staged)),
+        unchanged,
+        Then::Deploy,
+    )
+    .print(|| {
         if !edited.immediate.is_empty() {
             crate::ui::stream(format_args!(
-                "Applied {} in {where_}.",
-                super::joined(&edited.immediate)
+                "Applied {} in {}.",
+                super::joined(&edited.immediate),
+                edited.environment
             ));
-        }
-        // A mutation always says what it did, nothing included.
-        if edited.staged.is_empty() && edited.immediate.is_empty() {
-            ui::stream(format_args!("Nothing changed in {where_}; {unchanged}."));
         }
         for typed in &edited.typed_addresses {
             say_typed_addresses(matches, typed);
@@ -624,8 +614,9 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         for note in noted(edited.notes.iter().map(|noted| &noted.note)) {
             ui::note(note);
         }
-        followed.say();
-    })
+    })?;
+    followed.say();
+    Ok(())
 }
 
 /// Why an edit that changed nothing had nothing to change.

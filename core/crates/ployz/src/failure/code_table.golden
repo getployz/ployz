@@ -110,6 +110,7 @@ operator/invalid-time | invalid_argument | null
 operator/invalid-proxy-port | invalid_argument | null
 operator/invalid-local-port | invalid_argument | null
 operator/invalid-remote-port | invalid_argument | null
+operator/input | invalid_argument | null
 operator/no-servable-container | unavailable | null
 operator/no-machines | not_found | null
 operator/no-services | not_found | null
