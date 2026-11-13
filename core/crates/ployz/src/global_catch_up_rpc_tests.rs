@@ -268,12 +268,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 recorded.lock().unwrap().push("run new");
                                 assert_eq!(new, expected);
                                 if outcome == "conflict" {
-                                    RpcResponse::from(RpcError {
-                                        code: ployz_core::RpcErrorCode::Conflict,
-                                        message: "creation key conflict".into(),
-                                        details: serde_json::Value::Null,
-                                        cause: Vec::new(),
-                                    })
+                                    RpcResponse::from(RpcError::conflict("creation key conflict"))
                                 } else {
                                     present_on(
                                         &target,
@@ -1096,12 +1091,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                     )]
                     let response = match rpc.into_inner().decode_request().unwrap().body {
                         RpcRequestBody::Inspect(_) if inspection_error => {
-                            RpcResponse::from(RpcError {
-                                code: ployz_core::RpcErrorCode::Conflict,
-                                message: "storage inspection failed".into(),
-                                details: serde_json::Value::Null,
-                                cause: Vec::new(),
-                            })
+                            RpcResponse::from(RpcError::conflict("storage inspection failed"))
                         }
                         RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
                             activation: None,

@@ -267,17 +267,11 @@ pub struct RunningDeployHandle {
 #[cfg(test)]
 mod dial_diagnostic_tests {
     use super::*;
-    use ployz_core::RpcErrorCode;
 
     #[test]
     fn only_a_fired_deadline_is_timed_out() {
         let failure = sdk::CallError {
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "no answer".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error: RpcError::unavailable("no answer"),
             unanswered: true,
             target_unreached: false,
         };

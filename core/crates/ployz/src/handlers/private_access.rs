@@ -246,14 +246,10 @@ mod tests {
         }];
         let failures = vec![MachineFailure {
             machine_id: id,
-            error: RpcError {
-                code: RpcErrorCode::Internal,
-                message:
-                    "Could not remove Private Access router abc, so this Server is not off yet."
-                        .to_owned(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error: RpcError::internal(
+                "Could not remove Private Access router abc, so this Server is not off yet."
+                    .to_owned(),
+            ),
         }];
         let gaps = gaps_of(&machines, failures);
         assert!(!gaps.is_complete());

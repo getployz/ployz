@@ -5,7 +5,7 @@ use ployz_core::{
     DockerVolumeName, DockerVolumeStorageObservation, HealthObservation, Machine, MachinePath,
     MembershipObservation, Namespace, ServiceId, ServiceName, WireGuardPublicKey,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::*;
 use crate::connect::stop_rpc_timeout;
@@ -485,12 +485,7 @@ fn docker_volume(machine: char, name: &str) -> DockerVolume {
 }
 
 fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(message)
 }
 
 #[test]

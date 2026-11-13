@@ -119,10 +119,9 @@ async fn a_failed_update_fails_the_operation_and_leaves_the_copy_serving() {
             "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set".into(),
         ]);
     // The failure names the Server; the Machine's own message and cause survive as is.
-    let named = RpcError {
-        details: serde_json::json!({"machine_id": machine}),
-        ..docker.clone()
-    };
+    let named = docker
+        .clone()
+        .with_details(serde_json::json!({"machine_id": machine}));
     let client = Scripted::new(vec![Step(
         Call::UpdateLimits(machine, old),
         Reply::Error(docker.clone()),

@@ -21,12 +21,11 @@ use ployz_core::{
     Machine, MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
     MachineRpcServer, MachineStorageObservation, MembershipObservation, ObservedDataLoss,
     OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RoutesRead, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
-    WireGuardPublicKey, encode_runtime_watch_frame, labels, op,
+    RoutesRead, RpcError, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
+    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
+    encode_runtime_watch_frame, labels, op,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
-use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
@@ -963,12 +962,9 @@ impl FakeMachine for DiscoveryService {
         let reply = if attempt.attempt_id == body.attempt_id {
             RpcResponse::from(attempt.clone())
         } else {
-            RpcResponse::from(RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "a Machine upgrade or mutation is active".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            })
+            RpcResponse::from(RpcError::conflict(
+                "a Machine upgrade or mutation is active",
+            ))
         };
         if self.lose_upgrade_reply.swap(false, Ordering::SeqCst) {
             return Err(Status::unavailable("reply lost after dispatch"));
@@ -1057,12 +1053,7 @@ impl FakeMachine for DiscoveryService {
             ));
         }
         let response = if machine_id.as_str().starts_with('b') {
-            RpcResponse::from(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "target unavailable".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            })
+            RpcResponse::from(RpcError::unavailable("target unavailable"))
         } else {
             RpcResponse::from(VolumeInventory {
                 volumes: vec![DockerVolume {
@@ -1096,26 +1087,11 @@ impl FakeMachine for DiscoveryService {
             std::future::pending::<()>().await;
         }
         let response = if machine_id.as_str().starts_with('b') {
-            RpcResponse::from(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "target unavailable".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            })
+            RpcResponse::from(RpcError::unavailable("target unavailable"))
         } else if remove.name.as_str() == "missing" {
-            RpcResponse::from(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: "volume not found".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            })
+            RpcResponse::from(RpcError::not_found("volume not found"))
         } else if remove.name.as_str() == "busy" && !remove.force {
-            RpcResponse::from(RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "volume is in use".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            })
+            RpcResponse::from(RpcError::conflict("volume is in use"))
         } else {
             self.removed_volumes.lock().unwrap().push(DockerVolumeId {
                 machine_id,
@@ -1597,14 +1573,9 @@ impl FakeMachine for DiscoveryService {
             .is_ok()
         {
             return Ok(Response::new(
-                RpcResponse::from(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "the Cluster store is unavailable".into(),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                })
-                .encode()
-                .unwrap(),
+                RpcResponse::from(RpcError::unavailable("the Cluster store is unavailable"))
+                    .encode()
+                    .unwrap(),
             ));
         }
         self.removed_machines.lock().unwrap().push(machine_id);

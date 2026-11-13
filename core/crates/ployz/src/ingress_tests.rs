@@ -21,12 +21,7 @@ fn door(hex: char, name: &str) -> DoorMachine {
 }
 
 fn error(code: RpcErrorCode, message: &str) -> RpcError {
-    RpcError {
-        code,
-        message: message.into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::new(code, message)
 }
 
 fn outcome(runtime: ContainerRuntimeObservation, change: DoorChange) -> DoorOutcome {
