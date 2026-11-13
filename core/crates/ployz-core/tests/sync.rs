@@ -690,7 +690,7 @@ fn a_needs_value_pick_lands_the_sealed_value_it_is_given() {
         format!("{API}:variables.NEW_SECRET").parse().unwrap(),
         format!("{API}:startCommand").parse().unwrap(),
     );
-    let picks = BTreeSet::from([new_secret.clone(), start.clone()]);
+    let picks = BTreeSet::from([new_secret.clone(), start]);
     let values = BTreeMap::from([(
         new_secret.clone(),
         SealedCell::Secret(sealed("given-cipher", "fp-given")),
@@ -752,19 +752,11 @@ fn a_merge_lands_over_the_receivers_change_and_takes_a_value_in_place_of_the_sen
             ..
         }
     ));
-    let picks = BTreeSet::from([
-        start.clone(),
-        migrate.clone(),
-        plain.clone(),
-        new_secret.clone(),
-    ]);
+    let picks = BTreeSet::from([start, migrate.clone(), plain, new_secret.clone()]);
     let values = BTreeMap::from([
+        (migrate, SealedCell::Cell(val(json!("edited-migrate")))),
         (
-            migrate.clone(),
-            SealedCell::Cell(val(json!("edited-migrate"))),
-        ),
-        (
-            new_secret.clone(),
+            new_secret,
             SealedCell::Secret(sealed("given-cipher", "fp-given")),
         ),
     ]);
@@ -2455,7 +2447,7 @@ fn a_landed_variables_labels_reach_the_base_and_a_real_merge_conflict_stays() {
             ..
         })
     ));
-    let mut relabelled = into.clone();
+    let mut relabelled = into;
     var(&mut relabelled, API, "NEW")["exported"] = json!(false);
     assert!(matches!(
         verdict(&relabelled),

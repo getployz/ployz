@@ -729,7 +729,7 @@ mod tests {
             .unwrap();
             assert!(matches!(approved.by, Approver::Browser { .. }));
         }
-        let mut narrower = grant_body.clone();
+        let mut narrower = grant_body;
         narrower.families = vec![ActionFamily::Stop];
         let narrower_text = canonical::to_canonical(&narrower).unwrap();
         let assertion = passkey.answer(&Answer {

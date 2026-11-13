@@ -19,12 +19,7 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
     let first = machine('2', "duplicate", 2);
     let second = machine('3', "duplicate", 3);
     let collision = machine('4', first.id.as_str(), 4);
-    let visible = vec![
-        local.clone(),
-        first.clone(),
-        second.clone(),
-        collision.clone(),
-    ];
+    let visible = vec![local.clone(), first.clone(), second.clone(), collision];
 
     assert_eq!(
         resolve_route(RoutingRequest::Local, &visible).unwrap(),

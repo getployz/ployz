@@ -35,7 +35,7 @@ fn spec_comparison_distinguishes_mutable_resources_from_recreation() {
     raised.container.resources.memory_bytes =
         Some(ployz_core::ByteQuantity::try_from(1024 * 1024 * 1024).unwrap());
     assert_eq!(compare_specs(&limited, &raised), SpecChange::NeedsUpdate);
-    let mut lowered = resources_changed.clone();
+    let mut lowered = resources_changed;
     lowered.container.resources.memory_bytes =
         Some(ployz_core::ByteQuantity::try_from(256 * 1024 * 1024).unwrap());
     assert_eq!(

@@ -1136,7 +1136,7 @@ mod tests {
         changed
             .try_update(|parts| parts.display_name = "renamed".into())
             .unwrap();
-        let mut new = observation.clone();
+        let mut new = observation;
         new.try_update(|parts| parts.container_id = ContainerId::parse("d".repeat(64)).unwrap())
             .unwrap();
 

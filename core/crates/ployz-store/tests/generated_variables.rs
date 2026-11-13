@@ -364,7 +364,7 @@ fn sync_moves_a_generator_and_never_a_value() {
                 from: at("fix-db"),
                 into: Some(at("production")),
                 close_after: false,
-                version: view.version.clone(),
+                version: view.version,
                 picks: None,
                 skip: Vec::new(),
                 values: std::collections::BTreeMap::new(),
@@ -404,7 +404,7 @@ fn a_synced_generator_awaits_its_value_only_in_the_sync_base() {
                 from: at("fix-db"),
                 into: Some(at("production")),
                 close_after: false,
-                version: view.version.clone(),
+                version: view.version,
                 picks: None,
                 skip: Vec::new(),
                 values: std::collections::BTreeMap::new(),
@@ -490,7 +490,7 @@ fn undoing_a_sync_puts_back_the_value_the_receiver_held() {
                 from: at("fix-db"),
                 into: Some(at("production")),
                 close_after: false,
-                version: view.version.clone(),
+                version: view.version,
                 picks: None,
                 skip: Vec::new(),
                 values: std::collections::BTreeMap::new(),
@@ -499,14 +499,7 @@ fn undoing_a_sync_puts_back_the_value_the_receiver_held() {
         )
         .unwrap();
     assert!(password(&store, &who, "production") != before);
-    store
-        .write(
-            &who,
-            &UndoSync {
-                sync: synced.sync.clone(),
-            },
-        )
-        .unwrap();
+    store.write(&who, &UndoSync { sync: synced.sync }).unwrap();
     assert!(
         password(&store, &who, "production") == before,
         "undo made a new value"

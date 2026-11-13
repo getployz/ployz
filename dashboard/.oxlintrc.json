@@ -1,6 +1,8 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript"],
+  "plugins": [
+    "typescript"
+  ],
   "categories": {},
   "ignorePatterns": [
     "**/.output/**",
@@ -23,7 +25,8 @@
     ".roo/**",
     ".windsurf/**",
     "tools/oxlint/anti-slop/**",
-    "tools/oxlint/settings-rows/**"
+    "tools/oxlint/settings-rows/**",
+    "tools/oxlint/design/**"
   ],
   "jsPlugins": [
     {
@@ -33,6 +36,10 @@
     {
       "name": "settings-rows",
       "specifier": "./tools/oxlint/settings-rows/index.ts"
+    },
+    {
+      "name": "design",
+      "specifier": "./tools/oxlint/design/index.ts"
     }
   ],
   "rules": {
@@ -44,7 +51,12 @@
     "anti-slop/no-real-time-wait-in-tests": "error",
     "anti-slop/no-reflect-apply": "error",
     "anti-slop/no-reflect-get": "error",
-    "anti-slop/no-runtime-typeof": ["error", { "allowInTypeGuards": true }],
+    "anti-slop/no-runtime-typeof": [
+      "error",
+      {
+        "allowInTypeGuards": true
+      }
+    ],
     "anti-slop/no-shape-in-symbol-names": "error",
     "anti-slop/no-unknown-parameters": "error",
     "anti-slop/no-unknown-returns": "error",
@@ -70,11 +82,14 @@
     "typescript/no-redundant-type-constituents": "off",
     "typescript/no-useless-default-assignment": "off",
     "typescript/restrict-template-expressions": "off",
-    "typescript/unbound-method": "off"
+    "typescript/unbound-method": "off",
+    "design/type-scale": "error"
   },
   "overrides": [
     {
-      "files": ["src/components/ui/**"],
+      "files": [
+        "src/components/ui/**"
+      ],
       "rules": {
         "typescript/consistent-type-assertions": "off",
         "anti-slop/require-safety-comment-for-type-assertion": "off",
@@ -82,7 +97,9 @@
       }
     },
     {
-      "files": ["src/components/settings/**"],
+      "files": [
+        "src/components/settings/**"
+      ],
       "rules": {
         "settings-rows/no-hand-drawn-tone": "off"
       }
@@ -98,6 +115,14 @@
       "rules": {
         "typescript/consistent-type-assertions": "off",
         "anti-slop/require-safety-comment-for-type-assertion": "off"
+      }
+    },
+    {
+      "files": [
+        "src/modules/mail/**"
+      ],
+      "rules": {
+        "design/type-scale": "off"
       }
     }
   ],

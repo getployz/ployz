@@ -179,7 +179,7 @@ fn every_other_outcome_keeps_its_line() {
                 "api",
                 DrainOutcome::Failed {
                     moves: vec![step(&web1, OldCopyEnd::Stopped)],
-                    failure: failure.clone(),
+                    failure,
                 }
             ),
             line(

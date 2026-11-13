@@ -1193,7 +1193,7 @@ fn local_record_refuses_unknown_management_client_slot_fields() {
         valid.get("management_clients"),
         Some(&serde_json::json!({}))
     );
-    serde_json::from_value::<LocalMachineRecord>(valid.clone()).unwrap();
+    serde_json::from_value::<LocalMachineRecord>(valid).unwrap();
 }
 
 /// A record from a build before Management Clients has no `management_clients`.

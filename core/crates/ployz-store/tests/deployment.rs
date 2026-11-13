@@ -722,7 +722,7 @@ fn a_config_deploys_with_the_services_that_mount_it() {
             &who,
             &DetachConfig {
                 environment: EnvironmentRef::default(),
-                service: web_name.clone(),
+                service: web_name,
                 config: ConfigName::parse("sentry").unwrap(),
             },
         )
@@ -1673,7 +1673,7 @@ fn a_row_history_lists_every_state_change_and_keeps_recurring_phases() {
             phase: RowPhase::Compensating,
             serving: false,
         },
-        health.clone(),
+        health,
     ];
     assert_eq!(history(), expected);
 
@@ -4114,7 +4114,7 @@ fn deployments_page_newest_first_within_the_organization() {
             .collect::<Vec<_>>(),
         [Some(3), Some(2)]
     );
-    let last = page(first.next_cursor.clone());
+    let last = page(first.next_cursor);
     assert_eq!(
         last.deployments
             .iter()
@@ -5310,7 +5310,7 @@ fn discard_config_mount_preserves_same_name_replacement() {
     put_sentry(&store, &who, "REPLACEMENT_TEXT_MUST_SURVIVE");
     let query = ployz_store::ConfigItemQuery {
         environment: EnvironmentRef::default(),
-        config: replacement.clone().into(),
+        config: replacement.into(),
     };
     let before = store.read(&who, &query).unwrap();
     let review = diff(&store, &who);

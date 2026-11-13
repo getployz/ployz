@@ -1097,7 +1097,7 @@ fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
             omissions: Vec::new(),
             names: vec![
                 (up.machine.id, up.machine.name.clone()),
-                (down.machine.id, down.machine.name.clone()),
+                (down.machine.id, down.machine.name),
             ],
         },
     };

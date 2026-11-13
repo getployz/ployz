@@ -214,7 +214,7 @@ fn a_build_reading_a_sealed_value_runs_only_where_the_daemon_opens_them() {
     let behind = machine('b', "behind");
     let visible = vec![
         MachineObservation::new(behind.clone(), MembershipObservation::Up),
-        MachineObservation::new(able.clone(), MembershipObservation::Up),
+        MachineObservation::new(able, MembershipObservation::Up),
     ];
 
     let plain = crate::sealed_compat::builders(&visible, None).unwrap();

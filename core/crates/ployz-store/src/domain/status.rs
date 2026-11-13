@@ -727,7 +727,7 @@ mod tests {
                 (DomainStatus::NeedsAttention, Some(reason.into()), None)
             );
         }
-        let mut down = ready.clone();
+        let mut down = ready;
         down.cluster_domain = down.cluster_domain.map(|cluster| ClusterDomain {
             status: ClusterDomainStatus::IngressDown {
                 servers: vec!["web-1".into()],

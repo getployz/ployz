@@ -1807,7 +1807,10 @@ pub(crate) fn preparation_error(
 /// The mock Machine RPC the SDK's flow tests share with `tests/deploy_client`.
 #[cfg(test)]
 #[path = "../tests/deploy_client/support.rs"]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "these unit tests use part of the shared integration support"
+)]
 mod test_support;
 
 #[cfg(test)]

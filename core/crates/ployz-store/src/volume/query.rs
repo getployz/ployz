@@ -173,7 +173,7 @@ pub(crate) fn removals(
     // Removing the Environment reviews Applied State alone.
     let (held, target) = if query.remove {
         (
-            review.head.applied.clone(),
+            review.head.applied,
             crate::scope::empty(&environment.working.environment_slug),
         )
     } else {

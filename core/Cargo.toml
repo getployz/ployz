@@ -28,6 +28,9 @@ fallible_impl_from = "deny"
 wildcard_enum_match_arm = "deny"
 fn_params_excessive_bools = "deny"
 must_use_candidate = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+redundant_clone = "deny"
 
 [profile.dev]
 # Line tables keep backtraces readable; full DWARF made each test binary ~85% debug info.

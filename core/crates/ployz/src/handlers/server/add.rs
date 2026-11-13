@@ -330,7 +330,7 @@ mod tests {
             &joined,
         )
         .unwrap();
-        joined.machines.push(saved.machine.clone());
+        joined.machines.push(saved.machine);
         assert!(
             resumes(&joined, returning.id, returning.public_key),
             "a Server the Cluster lists resumes its join"
@@ -397,7 +397,7 @@ mod tests {
             ..joining.clone()
         };
         let duplicated = EnrollmentSnapshot {
-            machines: vec![live.clone(), twin.clone()],
+            machines: vec![live, twin.clone()],
             ..snapshot.clone()
         };
         assert!(

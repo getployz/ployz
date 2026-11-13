@@ -375,7 +375,7 @@ fn each_refusal_names_what_the_approval_lacks() {
         })
     );
 
-    let mut unsigned = signed.clone();
+    let mut unsigned = signed;
     unsigned.signatures.clear();
     assert_eq!(
         check(&unsigned, &a(), &cut(), 200_000),
@@ -704,7 +704,7 @@ fn a_receipt_for_this_move_and_machine_stands_in_for_the_window() {
     assert_eq!(late(&b(), None), Err(AuthorityRefusal::Expired));
     let receipt = handed(&signed);
     assert!(late(&b(), Some(&receipt)).is_ok());
-    let other = Signed::sign(&approval(moving()).clone(), &Signer::from_seed(&[8; 32])).unwrap();
+    let other = Signed::sign(&approval(moving()), &Signer::from_seed(&[8; 32])).unwrap();
     for receipt in [
         HandoffReceipt {
             operation: OperationId::parse("1f8fad5bd9cb469fa16570867728950e").unwrap(),
@@ -728,7 +728,7 @@ fn a_machine_statement_verifies_only_under_its_own_key_and_never_as_a_devices() 
     let receipt = handed(&Signed::sign(&approval(moving()), &signer()).unwrap());
     let cluster_key = Signer::from_seed(&[3; 32]);
     let signed = MachineSigned::sign(&receipt, &cluster_key).unwrap();
-    assert_eq!(signed.verify(cluster_key.public()), Ok(receipt.clone()));
+    assert_eq!(signed.verify(cluster_key.public()), Ok(receipt));
     assert_eq!(
         signed.verify(Signer::from_seed(&[4; 32]).public()),
         Err(AuthorityRefusal::ForeignMachineKey {

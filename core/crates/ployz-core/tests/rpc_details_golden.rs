@@ -149,7 +149,7 @@ fn an_undialed_mark_never_creates_details() {
     assert!(silent.target_unanswered());
     assert!(!silent.undialed());
 
-    let undialed = silent.clone().undialed_target();
+    let undialed = silent.undialed_target();
     assert_eq!(
         undialed.details,
         json!({ "reason": "target_unanswered", "undialed": true })

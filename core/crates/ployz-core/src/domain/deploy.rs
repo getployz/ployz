@@ -1593,7 +1593,7 @@ mod tests {
             "an Intent that names its operator keeps it without block_unmountable"
         );
 
-        let runner = interactive.clone().as_runner(Operator::Cli, ended.clone());
+        let runner = interactive.as_runner(Operator::Cli, ended.clone());
         assert_eq!(
             runner.mode(),
             PlanMode::Runner {

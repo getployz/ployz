@@ -529,7 +529,7 @@ fn unknown_observation_variants_preserve_the_raw_value() {
     );
     let wrapped = json!({ "state": "unrecognized", "raw": future });
     assert_eq!(serde_json::to_value(&observation).unwrap(), wrapped);
-    let reread: ContainerRuntimeObservation = serde_json::from_value(wrapped.clone()).unwrap();
+    let reread: ContainerRuntimeObservation = serde_json::from_value(wrapped).unwrap();
     assert_eq!(reread, observation);
 
     // Docker's own inspect State object has no `state` key at all.
@@ -1371,7 +1371,7 @@ fn history_requests_name_what_is_outside_the_contract() {
         LogHistoryRequest {
             since_nanos: Some(2),
             until_nanos: Some(1),
-            ..selected.clone()
+            ..selected
         },
     ] {
         assert!(request.validate().is_err(), "{request:?}");

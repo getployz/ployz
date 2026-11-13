@@ -1081,7 +1081,7 @@ mod tests {
                 &format!("/v2/ployz-build/web/manifests/sha256:{digest}"),
                 None
             ),
-            Some(Route::ManifestByDigest(pushed.clone()))
+            Some(Route::ManifestByDigest(pushed))
         );
         for (method, path, query) in [
             // Reading content back, or any other repository, is not a push.

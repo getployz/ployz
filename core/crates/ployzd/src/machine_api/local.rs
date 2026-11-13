@@ -306,7 +306,6 @@ impl MachineService {
     /// [`Self::volume_verb`] for a step a Volume approval admitted: once `landed` reads the
     /// step's effect in the reply, `operation` ends here, so the approval never runs again.
     /// A reply that fails to end it fails the call, and the resend finds it still open.
-    #[allow(clippy::result_large_err)]
     async fn landing_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
         &self,
         (verb, route): (&'static str, &str),
@@ -334,7 +333,6 @@ impl MachineService {
     /// A Volume verb that takes no switch lock. A read may land beside a cut's drain: the
     /// write that follows it rechecks the copy under the lock, so a stale view ends in a
     /// refusal, never a wrong flip.
-    #[allow(clippy::result_large_err)]
     async fn volume_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
         &self,
         verb: &'static str,
@@ -1413,13 +1411,19 @@ fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
         .copied()
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
     respond(local_failure(error)?)
 }
 
 /// `error` as the [`RpcError`] it answers, or the [`Status`] it fails the call with.
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
     match error {
         // A source that fails the call outright has no details to mark.
@@ -1806,7 +1810,10 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, St
     Ok(RpcError::caused(code, &error))
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn finish(
     result: Result<impl Into<RpcResponse>, LocalMachineError>,
 ) -> Result<Response<OpaquePayload>, Status> {
@@ -1853,7 +1860,10 @@ fn cluster_store_error(error: crate::corrosion::Error) -> RpcError {
     RpcError::caused(RpcErrorCode::Internal, &error)
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn respond(response: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, Status> {
     Ok(Response::new(
         response.into().encode().map_err(internal_response)?,
@@ -1864,7 +1874,10 @@ fn invalid_request(error: impl std::error::Error + 'static) -> Status {
     ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Status> {
     request
         .into_inner()
@@ -1894,7 +1907,10 @@ fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &
     }
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
 fn expect<T: Rpc>(request: Request<OpaquePayload>) -> Result<T::Request, Status> {
     T::from_request_body(request_body(request)?).map_err(invalid_request)
 }

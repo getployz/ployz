@@ -1115,7 +1115,7 @@ fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
     let version = asked.retry.input["version"].as_str().unwrap().to_owned();
 
     image("v4", "update-3");
-    let stale = call(&store, "history", asked.retry.input.clone(), "history-3").refused();
+    let stale = call(&store, "history", asked.retry.input, "history-3").refused();
     assert_eq!(stale.code, RpcErrorCode::Conflict, "{stale:?}");
     assert_eq!(stale.writes, Writes::None);
     assert_eq!(stale.next, [Call::new("history", json!({ "revision": 1 }))]);
