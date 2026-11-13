@@ -1100,7 +1100,7 @@ mod tests {
         assert!(
             fs::read_to_string(root.0.join("cleaned"))
                 .unwrap()
-                .contains("buildx rm")
+                .contains("rm --force buildx_buildkit_")
         );
         // A mark from before marks named processes, and no Buildx process left.
         assert!(fs::read_to_string(marker).unwrap().is_empty());

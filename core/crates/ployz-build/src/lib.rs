@@ -929,7 +929,7 @@ impl<'a> Docker<'a> {
             .get("DOCKER_HOST")
             .filter(|host| !host.is_empty())
             .cloned()
-            .unwrap_or_else(|| "unix:///var/run/docker.sock".into())
+            .unwrap_or_else(|| owner::DEFAULT_ENDPOINT.into())
     }
 
     /// Host policy and builder ownership apply only to this Machine's Docker.
@@ -1051,13 +1051,18 @@ impl<'a> Docker<'a> {
         if self.deadline.remaining().is_zero() {
             return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
         }
-        let mut command = Command::new(self.program);
+        let mut command = match self.recorder {
+            Some(_) => builder::gated(self.program),
+            None => Command::new(self.program),
+        };
         command
             .env_clear()
             .envs(self.environment)
             .current_dir(self.working_dir)
-            .args(arguments)
-            .stdin(Stdio::null());
+            .args(arguments);
+        if self.recorder.is_none() {
+            command.stdin(Stdio::null());
+        }
         // Captured output goes to files rather than pipes: nothing reads a
         // pipe until the child exits, so a chatty command would fill one and
         // block until its deadline.
@@ -1115,9 +1120,8 @@ impl<'a> Docker<'a> {
         })?;
         drop(command);
         if let Some(recorder) = self.recorder
-            && let Err(error) = recorder.record(child.id())
+            && let Err(error) = recorder.record(&mut child, &self.location())
         {
-            let _ = child.kill();
             let _ = child.wait();
             return Err(error);
         }

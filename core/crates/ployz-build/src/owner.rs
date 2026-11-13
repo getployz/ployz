@@ -8,6 +8,7 @@
 use std::{fmt, fs, path::Path};
 
 const HEADER: &str = "termination unconfirmed";
+pub(crate) const DEFAULT_ENDPOINT: &str = "unix:///var/run/docker.sock";
 
 /// One process, told apart from any later process reusing its PID.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -76,6 +77,8 @@ pub(crate) enum Mark {
     Named {
         boot: String,
         processes: Vec<(Role, Process)>,
+        /// Each Docker endpoint the attempt's Docker CLIs used.
+        endpoints: Vec<String>,
     },
 }
 
@@ -90,16 +93,38 @@ impl Mark {
         ))
     }
 
-    pub(crate) fn docker_line(process: Process) -> String {
-        line(Role::Docker, process)
+    pub(crate) fn docker_line(process: Process, endpoint: &str) -> String {
+        format!("{} {endpoint}\n", line(Role::Docker, process).trim_end())
+    }
+
+    /// Where the attempt's builder and helpers may live. A mark that names no
+    /// endpoint predates them, or spawned no Docker CLI, so it used the default.
+    pub(crate) fn endpoints(&self) -> Vec<String> {
+        match self {
+            Self::Named { endpoints, .. } if !endpoints.is_empty() => endpoints.clone(),
+            Self::Unnamed | Self::Named { .. } => vec![DEFAULT_ENDPOINT.to_owned()],
+        }
     }
 
     pub(crate) fn parse(text: &str) -> Self {
         let mut boot = None;
         let mut processes = Vec::new();
-        for words in text.lines().map(|line| line.split(' ').collect::<Vec<_>>()) {
+        let mut endpoints = Vec::<String>::new();
+        for words in text
+            .lines()
+            .map(|line| line.splitn(4, ' ').collect::<Vec<_>>())
+        {
             match words.as_slice() {
                 ["boot", id] => boot = Some((*id).to_owned()),
+                ["docker", pid, start, endpoint] => {
+                    let (Ok(pid), Ok(start)) = (pid.parse(), start.parse()) else {
+                        continue;
+                    };
+                    processes.push((Role::Docker, Process { pid, start }));
+                    if !endpoints.iter().any(|known| known == endpoint) {
+                        endpoints.push((*endpoint).to_owned());
+                    }
+                }
                 [role @ ("owner" | "docker"), pid, start] => {
                     let (Ok(pid), Ok(start)) = (pid.parse(), start.parse()) else {
                         continue;
@@ -115,7 +140,11 @@ impl Mark {
             }
         }
         match boot {
-            Some(boot) => Self::Named { boot, processes },
+            Some(boot) => Self::Named {
+                boot,
+                processes,
+                endpoints,
+            },
             None => Self::Unnamed,
         }
     }
@@ -127,7 +156,9 @@ impl Mark {
     /// Fails when `/proc` cannot be read, since nothing is then known.
     pub(crate) fn survivors(&self, builder: &str) -> std::io::Result<Vec<Survivor>> {
         let mut survivors = Vec::new();
-        if let Self::Named { boot, processes } = self
+        if let Self::Named {
+            boot, processes, ..
+        } = self
             && *boot == boot_id()?
         {
             for &(role, process) in processes {

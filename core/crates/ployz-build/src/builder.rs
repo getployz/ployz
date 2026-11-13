@@ -387,8 +387,35 @@ struct LockedFile {
 #[derive(Clone)]
 pub(crate) struct Recorder(std::sync::Weak<LockedFile>);
 
+/// Waits on its stdin for `start` before it runs `program`, so a Docker CLI
+/// never runs unless the mark names it first. A parent killed before then
+/// closes the pipe, and the child exits without running anything.
+const GATE: &str = r#"IFS= read -r go && [ "$go" = start ] && exec "$0" "$@" </dev/null; exit 125"#;
+
+pub(crate) fn gated(program: &std::path::Path) -> std::process::Command {
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args(["-c", GATE])
+        .arg(program)
+        .stdin(std::process::Stdio::piped());
+    command
+}
+
 impl Recorder {
-    pub(crate) fn record(&self, pid: u32) -> Result<(), BuildError> {
+    /// Name a [`gated`] child in the mark, with the Docker endpoint it uses,
+    /// then let it run. On failure the child is released without running.
+    pub(crate) fn record(
+        &self,
+        child: &mut std::process::Child,
+        endpoint: &str,
+    ) -> Result<(), BuildError> {
+        use std::io::Write as _;
+        let mut gate = child.stdin.take().expect("a gated child has a piped stdin");
+        self.append(child.id(), endpoint)?;
+        gate.write_all(b"start\n").map_err(lock_error)
+    }
+
+    fn append(&self, pid: u32, endpoint: &str) -> Result<(), BuildError> {
         use std::os::unix::fs::FileExt as _;
         let Some(locked) = self.0.upgrade() else {
             return Ok(());
@@ -404,7 +431,10 @@ impl Recorder {
         };
         locked
             .file
-            .write_all_at(crate::owner::Mark::docker_line(process).as_bytes(), length)
+            .write_all_at(
+                crate::owner::Mark::docker_line(process, endpoint).as_bytes(),
+                length,
+            )
             .map_err(lock_error)
     }
 }
@@ -518,27 +548,34 @@ impl Lock {
                     .join(", ")
             )));
         }
-        let environment = crate::upload::environment(&self.upload_directory());
-        let docker = Docker {
-            program: docker,
-            environment: &environment,
-            working_dir: &self.directory,
-            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
-            cancellation: None,
-            progress: None,
-            recorder: None,
-        };
-        remove(&docker, &name)
-            .and_then(|()| {
-                HELPERS
-                    .iter()
-                    .try_for_each(|helper| docker.remove_container(&format!("{name}-{helper}")))
-            })
-            .map_err(|error| {
-                quarantined(format!(
-                    "none of its processes is running, but removing its builder failed: {error}"
-                ))
-            })?;
+        for endpoint in mark.endpoints() {
+            // Builds refuse any other Docker, so a mark naming one was not written by them.
+            if !endpoint.starts_with("unix://") {
+                return Err(quarantined(format!(
+                    "none of its processes is running, but it used Docker at {endpoint}, which is not this Machine's"
+                )));
+            }
+            let mut environment = crate::upload::environment(&self.upload_directory());
+            environment.insert("DOCKER_HOST".into(), endpoint.clone());
+            let docker = Docker {
+                program: docker,
+                environment: &environment,
+                working_dir: &self.directory,
+                deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
+                cancellation: None,
+                progress: None,
+                recorder: None,
+            };
+            // Ask Docker itself, not a Buildx configuration the attempt may not have shared.
+            std::iter::once(format!("buildx_buildkit_{name}0"))
+                .chain(HELPERS.iter().map(|helper| format!("{name}-{helper}")))
+                .try_for_each(|container| docker.remove_container(&container))
+                .map_err(|error| {
+                    quarantined(format!(
+                        "none of its processes is running, but removing its builder from {endpoint} failed: {error}"
+                    ))
+                })?;
+        }
         self.clear()
     }
 
@@ -978,13 +1015,60 @@ esac
         let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
         let name = slot_name(slot);
         for removed in [
-            format!("buildx rm --keep-state {name}"),
+            format!("rm --force buildx_buildkit_{name}0"),
             format!("rm --force {name}-railpack"),
             format!("rm --force {name}-prepare"),
             format!("rm --force {name}-assemble"),
         ] {
             assert!(calls.lines().any(|call| call == removed), "{calls}");
         }
+    }
+
+    #[test]
+    fn a_gated_child_whose_parent_never_records_it_runs_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let ran = directory.path().join("ran");
+        let mut child = gated(std::path::Path::new("touch"))
+            .arg(&ran)
+            .spawn()
+            .unwrap();
+        drop(child.stdin.take());
+        assert_eq!(child.wait().unwrap().code(), Some(125));
+        assert!(!ran.exists(), "the child ran before it was recorded");
+    }
+
+    #[test]
+    fn recovery_removes_the_builder_from_the_docker_the_build_used() {
+        use crate::owner::Process;
+        let slot = 10;
+        let mut gone = sleeper(&[]);
+        let docker_process = Process::observe(gone.id()).unwrap().unwrap();
+        gone.kill().unwrap();
+        gone.wait().unwrap();
+        let mark = format!(
+            "{}{}",
+            crate::owner::named(&[]),
+            crate::owner::Mark::docker_line(docker_process, "unix:///run/user/7/docker.sock")
+        );
+        let (directory, docker) = quarantined_slot(slot, &mark);
+        crate::tests::executable(
+            &docker,
+            &format!(
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf '%s %s\\n' \"$DOCKER_HOST\" \"$*\" >> '{}/calls'\n",
+                directory.path().display()
+            ),
+        );
+        drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
+        let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
+        assert!(
+            calls.lines().any(|call| call
+                == format!(
+                    "unix:///run/user/7/docker.sock rm --force buildx_buildkit_{}0",
+                    slot_name(slot)
+                )),
+            "{calls}"
+        );
+        assert!(!calls.contains("unix:///var/run/docker.sock"), "{calls}");
     }
 
     #[test]
@@ -1029,7 +1113,7 @@ esac
         assert!(
             refused
                 .to_string()
-                .contains("none of its processes is running, but removing its builder failed"),
+                .contains("none of its processes is running, but removing its builder from"),
             "{refused}"
         );
         assert!(

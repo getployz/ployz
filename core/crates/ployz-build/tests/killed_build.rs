@@ -80,6 +80,15 @@ fn kill_a_build_mid_solve(root: &Path, solve_survives: bool) -> (HostPolicy, Str
         matches!(Admission::try_acquire_with(&policy), Err(BuildError::Busy)),
         "a running Build lost its slot"
     );
+    let marker = root.join(format!("{}.lock", builder_name()));
+    let solve = fs::read_to_string(&bake).unwrap();
+    assert!(
+        fs::read_to_string(&marker)
+            .unwrap()
+            .lines()
+            .any(|line| line.starts_with(&format!("docker {} ", solve.trim()))),
+        "the solve ran before the mark named it"
+    );
 
     // The runner ends a cancelled job's process tree with SIGKILL once its grace runs out.
     let bake = fs::read_to_string(&bake).unwrap().trim().to_owned();
@@ -106,7 +115,6 @@ fn kill_a_build_mid_solve(root: &Path, solve_survives: bool) -> (HostPolicy, Str
         // real-wait: signal delivery to another process has no event to await
         std::thread::sleep(Duration::from_millis(20));
     }
-    let marker = root.join(format!("{}.lock", builder_name()));
     assert!(
         !fs::read_to_string(&marker).unwrap().is_empty(),
         "the killed Build left no mark"
