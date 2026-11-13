@@ -106,7 +106,7 @@ pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
 mod teardown;
 pub(crate) use sealing_recovery::Error as RecoveryError;
-pub(crate) use teardown::{HeldStep, HeldTeardown};
+pub(crate) use teardown::HeldTeardown;
 mod upgrade;
 mod volume_approval;
 pub(crate) use volume_approval::{Admitted, CopyStep};
@@ -997,11 +997,9 @@ impl LocalMachine {
             "enrolled"
         );
         let join_confirmation = match &machine.join_approval {
-            Some(approval) => {
-                SealingKey::load(self.owner.data_dir())
-                    .map_err(Error::JoinRecord)?
-                    .map(|key| key.confirm_join(approval))
-            }
+            Some(approval) => SealingKey::load(self.owner.data_dir())
+                .map_err(Error::JoinRecord)?
+                .map(|key| key.confirm_join(approval)),
             _ => None,
         };
         Ok(Enrolled::Enrolled {

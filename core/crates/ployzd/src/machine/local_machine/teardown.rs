@@ -25,8 +25,7 @@ use super::{Error, LocalMachine, restart_approval::pinned};
 impl LocalMachine {
     /// Admit an Operator's step on an existing Container under `approval`: one that starts
     /// nothing, in a Namespace the teardown names, on this Server. Returns the want pinned
-    /// to the Container seen, and the teardown each of its turns checks again. A Machine not
-    /// enforcing passes the want untouched.
+    /// to the Container seen, and the teardown each of its turns checks again.
     ///
     /// # Errors
     /// Returns [`Error::TeardownRefused`] for a creation, a start, or a step the teardown
@@ -50,7 +49,7 @@ impl LocalMachine {
         let identity = observed.identity();
         let held = HeldTeardown {
             approval: Some(approval),
-            step: HeldStep::Container(Some((identity.namespace.clone(), step))),
+            step: HeldStep::Container(identity.namespace.clone(), step),
         };
         held.admit(self)?;
         tracing::info!(?step, "teardown step on {identity} admitted");
@@ -125,21 +124,13 @@ pub(crate) struct HeldTeardown {
 pub(crate) enum HeldStep {
     /// A step on an existing Container, with its Namespace. None when admitted with no
     /// teardown while this Machine did not enforce: a turn under enforcement refuses it.
-    Container(Option<(Namespace, RestartStep)>),
+    Container(Namespace, RestartStep),
     Volume(DockerVolumeName),
     Leave,
     Forget(MachineId),
 }
 
 impl HeldTeardown {
-    /// A step sent to a Machine not enforcing, held with no teardown it could check.
-    pub(crate) fn unsigned(step: HeldStep) -> Self {
-        Self {
-            approval: None,
-            step,
-        }
-    }
-
     fn admit(&self, machine: &LocalMachine) -> Result<(), Error> {
         self.check(machine, true)
     }
@@ -158,7 +149,7 @@ impl HeldTeardown {
                     capability: ployz_core::FORGET_MACHINE_CAPABILITY,
                     refusal,
                 },
-                HeldStep::Container(_) | HeldStep::Volume(_) => Error::TeardownRefused(refusal),
+                HeldStep::Container(..) | HeldStep::Volume(_) => Error::TeardownRefused(refusal),
             }
         };
         let unsigned = AuthorityRefusal::Unsigned {
@@ -168,11 +159,10 @@ impl HeldTeardown {
             return Err(refused(unsigned));
         };
         let step = match &self.step {
-            HeldStep::Container(Some((namespace, step))) => TeardownStep::Container {
+            HeldStep::Container(namespace, step) => TeardownStep::Container {
                 namespace,
                 step: *step,
             },
-            HeldStep::Container(None) => return Err(refused(unsigned)),
             HeldStep::Volume(name) => TeardownStep::Volume(name),
             HeldStep::Leave => TeardownStep::Leave,
             HeldStep::Forget(forgotten) => TeardownStep::Forget(forgotten),

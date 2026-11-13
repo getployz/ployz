@@ -45,7 +45,7 @@ pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    Admitted, CopyStep, CutRefusal, HeldStep, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
+    Admitted, CopyStep, CutRefusal, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
     SealingError,
 };
 #[cfg(test)]
@@ -470,8 +470,8 @@ impl LocalMachineRecord {
 
     /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
     /// the IDs a complete snapshot has an accepted row or a removal for, and is `None` while
-    /// the store can't say who left. With enforcement off the peer stays until such a
-    /// snapshot. Under enforcement only a trusted Member stays, until the snapshot answers
+    /// the store can't say who left. A record that doesn't filter peers keeps the peer until
+    /// such a snapshot. Otherwise only a trusted Member stays, until the snapshot answers
     /// for its ID, so a missing or refused row never cuts the peers carrying gossip.
     pub(crate) fn keeps_unlisted_peer(
         &self,
@@ -486,9 +486,9 @@ impl LocalMachineRecord {
         })
     }
 
-    /// Trusted Members whose key is `installed` and whose ID `listed` lacks. Under
-    /// enforcement each stays until the store shows its row deleted, so only these need
-    /// that evidence. Empty with enforcement off.
+    /// Trusted Members whose key is `installed` and whose ID `listed` lacks. Each stays until
+    /// the store shows its row deleted, so only these need that evidence. Empty on a record
+    /// that doesn't filter peers.
     pub(crate) fn unlisted_trusted_machines(
         &self,
         installed: impl Fn(&WireGuardPublicKey) -> bool,

@@ -12,8 +12,7 @@ use ployz_core::{
     ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
     LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, ManagementScope,
     OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy,
-    authority::RestartStep, op,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -22,8 +21,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        HeldStep, HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord,
-        RecordOwner, RecoveryError, SealingError, StoreError,
+        HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner,
+        RecoveryError, SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -657,12 +656,6 @@ impl MachineRpc for MachineService {
                 Err(error) => return local_error(error),
             }
         } else if operator {
-            // A step that starts nothing, sent with no statement, passes only while this
-            // Machine doesn't enforce: each turn checks that again.
-            let unsigned = (teardown_only
-                && RestartStep::of(&request.want)
-                    .is_some_and(|(step, _)| step != RestartStep::Start))
-            .then(|| HeldTeardown::unsigned(HeldStep::Container(None)));
             match self
                 .local
                 .admit_operator_restart(
@@ -674,7 +667,7 @@ impl MachineRpc for MachineService {
                 )
                 .await
             {
-                Ok(want) => (want, unsigned),
+                Ok(want) => (want, None),
                 Err(error) => return local_error(error),
             }
         } else {
