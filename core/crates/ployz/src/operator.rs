@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, HashMap, HashSet},
+    collections::{BinaryHeap, HashMap, HashSet},
     future::Future,
     pin::Pin,
     time::Duration,
@@ -167,9 +167,10 @@ fn unanswered_names(gaps: &PartialResult<(), RpcError>, names: &MachineNames) ->
 }
 
 /// Every Server's name by id, for the sentences that name a Server the way its
-/// person does.
+/// person does. It keeps the Server listing's order: `LogScope::answered` and the
+/// history tie-break read it.
 #[derive(Clone, Debug, Default)]
-pub struct MachineNames(BTreeMap<MachineId, MachineName>);
+pub struct MachineNames(Vec<(MachineId, MachineName)>);
 
 impl MachineNames {
     #[must_use]
@@ -186,10 +187,12 @@ impl MachineNames {
     #[must_use]
     pub fn name_of(&self, id: MachineId) -> String {
         self.0
-            .get(&id)
-            .map_or_else(|| id.to_string(), ToString::to_string)
+            .iter()
+            .find(|(listed, _)| *listed == id)
+            .map_or_else(|| id.to_string(), |(_, name)| name.to_string())
     }
 
+    /// The Servers in the order they were listed.
     pub fn iter(&self) -> impl Iterator<Item = (MachineId, &MachineName)> {
         self.0.iter().map(|(id, name)| (*id, name))
     }

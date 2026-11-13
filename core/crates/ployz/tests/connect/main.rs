@@ -1109,6 +1109,72 @@ async fn history_read_cancels_a_blocked_request_and_propagates_output_errors() {
     server.abort();
 }
 
+/// The Server listing's order, not Machine ID order, is the order a history read takes
+/// its Servers in: `alpha` (id `bb…`) is listed before `zulu` (id `aa…`), both hold a
+/// line with the same timestamp, and the last line wins the tie.
+#[tokio::test]
+async fn history_reads_the_answered_servers_in_listing_order() {
+    use ployz::operator::{
+        history::{HistoryEvent, HistorySelector, HistoryWindow, read_history},
+        observe_service_logs,
+    };
+    let mut service = DiscoveryService::new(test_description());
+    service.machines = vec![machine('b', "alpha"), machine('a', "zulu")];
+    let (mut client, server, _) = connected_client(service).await;
+    let scope = observe_service_logs(&mut client, &[]).await.unwrap();
+    let answered = scope.answered();
+    let answered_names: Vec<_> = answered.iter().map(|(_, name)| name.to_string()).collect();
+    assert_eq!(answered_names, ["alpha", "zulu"]);
+    let selectors = [HistorySelector {
+        namespace: Some("app".into()),
+        service: Some("gone".into()),
+        deployment: Some("dep_old".into()),
+        container_id: None,
+    }];
+    for (lines, expected) in [(1, vec!["zulu"]), (2, vec!["alpha", "zulu"])] {
+        let mut read = Vec::new();
+        let failures = read_history(
+            &client,
+            &answered,
+            &selectors,
+            HistoryWindow::Last {
+                lines,
+                since: None,
+                until: None,
+            },
+            &CancellationToken::new(),
+            |record| -> Result<(), ()> {
+                assert!(matches!(record.event, HistoryEvent::Line { .. }));
+                read.push(record.machine.to_string());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert!(failures.is_empty());
+        assert_eq!(read, expected, "-n {lines}");
+    }
+    let mut first = Vec::new();
+    read_history(
+        &client,
+        &answered,
+        &selectors,
+        HistoryWindow::All {
+            since: None,
+            until: None,
+        },
+        &CancellationToken::new(),
+        |record| -> Result<(), ()> {
+            first.push(record.machine.to_string());
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(first, ["alpha", "zulu"]);
+    server.abort();
+}
+
 #[tokio::test]
 async fn an_unreachable_daemon_is_named_in_user_words() {
     let closed = TcpListener::bind("127.0.0.1:0")

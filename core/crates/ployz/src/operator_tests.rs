@@ -972,6 +972,43 @@ fn exact_history_preserves_selectors_and_rejects_live_resolution() {
 }
 
 #[test]
+fn answered_servers_and_names_keep_the_server_listing_order() {
+    // Listed alpha then zulu; zulu has the lower id, so id order would flip them.
+    let alpha = machine_observation(2, "alpha");
+    let zulu = machine_observation(1, "zulu");
+    let listed = [alpha.clone(), zulu.clone()];
+    let names = MachineNames::of(&listed);
+    let scope = LogScope {
+        asked: HashSet::from([alpha.machine.id, zulu.machine.id]),
+        live: ployz_core::derive_live_services(ployz_core::PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        }),
+        unanswered: Unanswered {
+            failures: Vec::new(),
+            omissions: Vec::new(),
+            names: names.clone(),
+        },
+    };
+    let expected = vec![
+        (alpha.machine.id, alpha.machine.name),
+        (zulu.machine.id, zulu.machine.name.clone()),
+    ];
+    assert_eq!(scope.answered(), expected);
+    assert_eq!(
+        names
+            .iter()
+            .map(|(id, name)| (id, name.clone()))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(names.name_of(zulu.machine.id), "zulu");
+    let unlisted = MachineId::parse(format!("{:032x}", 9)).unwrap();
+    assert_eq!(names.name_of(unlisted), unlisted.to_string());
+}
+
+#[test]
 fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
     let up = machine_observation(1, "edge");
     let down = machine_observation(3, "down");
