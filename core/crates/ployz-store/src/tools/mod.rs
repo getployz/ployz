@@ -12,7 +12,13 @@ mod environment;
 mod github;
 mod history;
 mod input;
-pub mod logs;
+
+/// The log-safety names the agent tools expose, kept at their old path; their owner is `ployz_core::scrub`.
+pub mod logs {
+    pub use ployz_core::scrub::excerpt::{LineCap, LogExcerpt, LogText, Withheld};
+    pub use ployz_core::scrub::{Channel, FrameScrub, SealedForms, SealedValues};
+}
+
 mod machine;
 mod metrics;
 mod project;

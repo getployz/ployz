@@ -10,8 +10,7 @@ use super::ToolId;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
-use super::release::version_for_loss;
-use super::step::Gate;
+use super::step::{Gate, version_for_loss};
 use crate::{
     Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
     DeploymentWarning, DeploymentsQuery, EnvironmentRef, EnvironmentSummary, NodeOutcome,

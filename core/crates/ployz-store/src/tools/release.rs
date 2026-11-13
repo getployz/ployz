@@ -11,7 +11,7 @@ use super::deployment::follow_call;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, written};
 use super::refusal::Refusal;
-use super::step::{AcceptedLoss, Gate};
+use super::step::{Gate, version_for_loss};
 use crate::catalog::NODE_NAME;
 use crate::{
     Admit, BatchCommand, Deploy, DiffQuery, Discard, DomainChange, NodeChange, Publish,
@@ -20,18 +20,6 @@ use crate::{
 
 /// The longest value a review line shows before it cuts.
 const VALUE_CHARS: usize = 80;
-
-/// Refuse loss accepted without the version a confirmation handed back.
-pub(crate) fn version_for_loss(
-    accept: &[VolumeName],
-    version: Option<&String>,
-) -> Result<(), Stop> {
-    AcceptedLoss::from_input(
-        accept.iter().map(ToString::to_string).collect(),
-        version.cloned(),
-    )
-    .map(drop)
-}
 
 tool_input! {
     pub(crate) struct Review {

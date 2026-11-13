@@ -10,7 +10,7 @@
 use super::*;
 use crate::Trusted;
 use crate::digest::short_digest;
-use crate::settings::ServiceSetting;
+use crate::settings::{SecretCell, ServiceSetting};
 
 /// What a write checks the receiver against before anything lands. Only the Store
 /// builds one: a client always sends the version it reviewed.
@@ -495,8 +495,8 @@ pub(crate) fn shown(
 ) -> Value {
     match cell {
         Cell::Absent => Value::Null,
-        Cell::Secret { .. } => json!({ "secret": true }),
-        Cell::SecretWithoutValue => json!({ "secret": false }),
+        Cell::Secret { .. } => SecretCell::Set.to_value(),
+        Cell::SecretWithoutValue => SecretCell::NotSet.to_value(),
         // Each Environment makes its own value: a row moves the generator, never a value.
         Cell::Value(_) if let Some(generator) = ployz_core::config::cell_generator(cell) => {
             json!(generator.to_string())

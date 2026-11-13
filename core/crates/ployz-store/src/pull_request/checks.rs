@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use serde_json::Value;
 
 use super::*;
+use crate::settings::SecretCell;
 
 pub(crate) fn view(
     tx: &mut dyn Tx,
@@ -93,7 +94,7 @@ pub(super) fn check(
         .collect();
     let mut not_set: Vec<String> = Vec::new();
     for row in &riding {
-        if row.lands == json!({ "secret": false }) && !not_set.contains(&key(row)) {
+        if SecretCell::of(&row.lands) == Some(SecretCell::NotSet) && !not_set.contains(&key(row)) {
             not_set.push(key(row));
         }
     }
@@ -314,12 +315,13 @@ fn to(value: &Value) -> String {
 fn shown(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
-        Value::Object(object) => match object.get("secret") {
-            Some(Value::Bool(true)) => "set".to_owned(),
-            Some(_) => "not set".to_owned(),
-            None => value.to_string(),
+        Value::Object(_) if SecretCell::is_cell(value) => match SecretCell::of(value) {
+            Some(SecretCell::Set) => "set".to_owned(),
+            Some(SecretCell::NotSet) | None => "not set".to_owned(),
         },
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => value.to_string(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+            value.to_string()
+        }
     }
 }
 
@@ -340,7 +342,7 @@ fn file_move(before: &Value, after: &Value) -> String {
 }
 
 fn is_secret(value: &Value) -> bool {
-    value.get("secret").is_some()
+    SecretCell::is_cell(value)
 }
 
 /// The row's setting within its node: `A` for `env.A`.

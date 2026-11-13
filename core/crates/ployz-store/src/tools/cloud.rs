@@ -7,9 +7,9 @@ use ployz_core::{MachineId, Namespace, ServiceName};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::logs::LogText;
 use super::step::{AttemptId, Freshness, ServerName, ServerRef, Timestamp};
 use crate::{DeploymentId, VolumeName};
+use ployz_core::scrub::excerpt::LogText;
 
 /// The answer to `CloudQuery::Servers`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -273,4 +273,18 @@ pub enum Receipt {
 pub struct Kept {
     pub service: ServiceName,
     pub why: String,
+}
+
+/// The answer to `CloudQuery::GithubConnection`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct GithubAnswer {
+    /// Whether GitHub is connected.
+    #[serde(default)]
+    pub connected: bool,
+    /// The repositories Ployz may read, as `owner/name`.
+    #[serde(default)]
+    pub repositories: Vec<String>,
+    /// The page that connects more.
+    #[serde(default)]
+    pub connect_at: Option<String>,
 }

@@ -34,11 +34,12 @@ use outcomes::*;
 pub(crate) use record::*;
 pub(crate) use retry::*;
 pub(crate) use rows::server_names;
-pub use rows::{
+pub(crate) use status::*;
+
+pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
     StoppedBy,
 };
-pub(crate) use status::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 

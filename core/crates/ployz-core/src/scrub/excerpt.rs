@@ -8,7 +8,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use ployz_core::scrub::{Channel, FrameScrub, SealedForms, SealedValues};
+use super::{SealedForms, SealedValues};
 
 const LINE_BYTES: usize = 500;
 const TOTAL_BYTES: usize = 16 * 1024;
@@ -227,5 +227,5 @@ fn capped(text: &str, cap: LineCap) -> (Vec<String>, bool) {
 }
 
 #[cfg(test)]
-#[path = "logs_tests.rs"]
+#[path = "excerpt_tests.rs"]
 mod tests;

@@ -1074,7 +1074,7 @@ pub(crate) fn changed(
     }
     let Some(domains) = ployz_store::DomainChange::of(row) else {
         let value = |value: &serde_json::Value| match value.as_f64() {
-            Some(gb) if row.path.ends_with(".memLimit") => ployz_store::memory_size(gb),
+            Some(gb) if row.path.ends_with(".memLimit") => ployz_core::memory_size::memory_size(gb),
             Some(1.0) if row.path.ends_with(".cpuLimit") => "1 vCPU".to_owned(),
             Some(cpus) if row.path.ends_with(".cpuLimit") => format!("{cpus} vCPUs"),
             _ => shown(value),

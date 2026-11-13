@@ -22,6 +22,7 @@ use crate::branch::{
 };
 use crate::id::ServiceLineageId;
 use crate::scope::RemovedServices;
+use crate::settings::SecretCell;
 use crate::storage;
 use crate::trusted::Evidence;
 use crate::variables::{self, VariableKey};
@@ -238,7 +239,7 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
         let lands = match (stored.get(&row.id), arrives) {
             _ if ride == Ride::Kept => production.clone(),
             (Some(edit), _) if ride == Ride::Edited => shown_edit(edit, &names),
-            (_, Arrives::NeedsValue) => json!({ "secret": false }),
+            (_, Arrives::NeedsValue) => SecretCell::NotSet.to_value(),
             _ => preview.clone(),
         };
         rows.push(MergeRow {
@@ -373,7 +374,7 @@ fn merge_names(from: &Environment, into: &Environment) -> BTreeMap<String, Strin
 /// An Edit as reads show it.
 fn shown_edit(edit: &SealedCell, names: &BTreeMap<String, String>) -> Value {
     match edit {
-        SealedCell::Secret(_) => json!({ "secret": true }),
+        SealedCell::Secret(_) => SecretCell::Set.to_value(),
         SealedCell::Cell(cell @ Cell::Value(_))
             if let Some(generator) = ployz_core::config::cell_generator(cell) =>
         {

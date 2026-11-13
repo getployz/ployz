@@ -439,6 +439,75 @@ fn an_unclaimed_organization_without_builds_still_sets_up_its_environment() {
     );
 }
 
+#[test]
+fn environment_setup_lists_what_the_servers_answer_leaves_missing() {
+    let setup = |answer: Value| {
+        drive(
+            &shop(),
+            in_org(),
+            "environment_setup",
+            json!({}),
+            "call-1",
+            &mut |cloud| match cloud {
+                Cloud::Ask(CloudQuery::Servers { .. }) => Ok(answer.clone()),
+                Cloud::Ask(CloudQuery::GithubConnection) => Ok(json!({})),
+                Cloud::Ask(_) | Cloud::Act(_) => panic!("unexpected Cloud call"),
+            },
+        )
+        .ok()
+    };
+    let none = setup(servers(&[]));
+    assert_eq!(none["ready"], json!(false));
+    assert_eq!(
+        none["needs"],
+        json!([
+            { "what": "servers", "where": "servers" },
+            { "what": "cluster domain", "where": "servers" },
+        ])
+    );
+    let mut named = servers(&[("web-1", 'a')]);
+    assert_eq!(
+        setup(named.clone())["needs"],
+        json!([{ "what": "cluster domain", "where": "servers" }])
+    );
+    named["cluster_domain"] = json!("acme.ployz.app");
+    let ready = setup(named);
+    assert_eq!(ready["ready"], json!(true));
+    assert_eq!(ready["needs"], json!([]));
+}
+
+#[test]
+fn github_connect_reads_cloud_s_answer_with_every_field_optional() {
+    let connect = |answer: Value| {
+        drive(
+            &shop(),
+            in_org(),
+            "github_connect",
+            json!({}),
+            "call-1",
+            &mut |cloud| match cloud {
+                Cloud::Ask(CloudQuery::GithubConnection) => Ok(answer.clone()),
+                Cloud::Ask(_) | Cloud::Act(_) => panic!("unexpected Cloud call"),
+            },
+        )
+        .ok()
+    };
+    assert_eq!(
+        connect(json!({
+            "connected": true, "repositories": ["acme/api"],
+            "connect_at": "https://ployz.app/github",
+        })),
+        json!({
+            "connected": true, "repositories": ["acme/api"],
+            "connect_at": "https://ployz.app/github",
+        })
+    );
+    assert_eq!(
+        connect(json!({})),
+        json!({ "connected": false, "repositories": [], "connect_at": null })
+    );
+}
+
 /// Cloud's side of github_ls for `acme/api` at `main`: a tree query keeps the
 /// named path and everything under it, then what a `*suffix` glob matches, and
 /// a file query returns its text.

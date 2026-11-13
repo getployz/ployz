@@ -1,6 +1,7 @@
 //! Memory sizes with a unit, as `memLimit` takes them: `1GiB`, `512MiB`, `0.5 GB`.
 
 use ployz_core::config::MEM_LIMIT_MAX;
+use ployz_core::memory_size::{GIB, MIB, unit};
 
 /// The units a size takes, and their bytes.
 const UNITS: [(&str, f64); 6] = [
@@ -11,8 +12,6 @@ const UNITS: [(&str, f64); 6] = [
     ("GiB", GIB),
     ("TiB", 1_099_511_627_776.0),
 ];
-const MIB: f64 = 1_048_576.0;
-const GIB: f64 = 1_073_741_824.0;
 /// The least GB `memLimit` takes: Docker refuses a limit under 6 MiB. Checked where
 /// a limit is written, so an Environment holding a smaller one still opens.
 pub(crate) const MEM_LIMIT_MIN: f64 = 0.01;
@@ -42,25 +41,6 @@ pub(crate) fn looks_like_bytes(number: f64) -> Option<(String, String)> {
     }
     let (amount, unit) = unit(number.round());
     Some((format!("{amount} {unit}"), format!("{amount}{unit}")))
-}
-
-/// A `memLimit` in GB as people read it, in the unit it was likely given: `192 MiB`,
-/// `1 GiB`, `0.5 GB`.
-#[must_use]
-pub fn memory_size(gb: f64) -> String {
-    let (amount, unit) = unit((gb * 1e9).round());
-    format!("{amount} {unit}")
-}
-
-/// Whole `bytes` in GiB or MiB when they divide evenly, else in GB.
-fn unit(bytes: f64) -> (f64, &'static str) {
-    if bytes % GIB == 0.0 {
-        (bytes / GIB, "GiB")
-    } else if bytes % MIB == 0.0 {
-        (bytes / MIB, "MiB")
-    } else {
-        (bytes / 1e9, "GB")
-    }
 }
 
 #[cfg(test)]
@@ -104,14 +84,5 @@ mod tests {
         );
         assert_eq!(looks_like_bytes(1024.0), None);
         assert_eq!(looks_like_bytes(2000.0), None);
-    }
-
-    #[test]
-    fn a_memory_limit_reads_in_the_unit_it_was_given() {
-        assert_eq!(memory_size(0.201_326_592), "192 MiB");
-        assert_eq!(memory_size(1.073_741_824), "1 GiB");
-        assert_eq!(memory_size(0.5), "0.5 GB");
-        assert_eq!(memory_size(2.0), "2 GB");
-        assert_eq!(memory_size(0.001), "0.001 GB");
     }
 }

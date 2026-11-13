@@ -5,17 +5,18 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ToolId;
+use super::cloud::{GithubAnswer, ServersAnswer};
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Reach, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
+use super::schema::REPOSITORY;
+use super::service::source;
 use super::step::{Ask, CloudQuery, DashboardPage, Gate};
 use crate::{
     ConfigsQuery, DeploymentsQuery, DiffQuery, DomainName, DomainRow, DomainsQuery, PrPlansQuery,
     ProjectsQuery, RepositoryName, ServicesQuery, SetEnvironmentProtected, SetPrPlan, SourceKind,
     VolumesQuery,
 };
-
-pub(crate) const REPOSITORY: &str = "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$";
 
 tool_input! {
     pub(crate) struct EnvironmentShow {
@@ -128,15 +129,6 @@ pub(crate) fn domain_label(name: &DomainName) -> String {
         } => hostname.clone(),
         DomainName::Generated { prefix, .. } => prefix.clone(),
         DomainName::Custom { hostname } => hostname.to_string(),
-    }
-}
-
-pub(crate) const fn source(kind: SourceKind) -> &'static str {
-    match kind {
-        SourceKind::Empty => "empty",
-        SourceKind::Uploaded => "uploaded",
-        SourceKind::Git => "repository",
-        SourceKind::Image => "image",
     }
 }
 
@@ -269,24 +261,14 @@ tool_input! {
     }
 }
 
-/// Cloud's answer about Servers. Provisional: the Cloud adapter fixes it.
+/// Cloud's answer about Servers, with the Cluster Domain a Cloud that knows it names
+/// beside them.
 #[derive(Deserialize)]
-struct ServersAnswer {
-    #[serde(default)]
-    servers: Vec<Value>,
+struct SetupServers {
+    #[serde(flatten)]
+    answer: ServersAnswer,
     #[serde(default)]
     cluster_domain: Option<String>,
-}
-
-/// Cloud's answer about GitHub. Provisional: the Cloud adapter fixes it.
-#[derive(Deserialize)]
-pub(crate) struct GithubAnswer {
-    #[serde(default)]
-    pub(crate) connected: bool,
-    #[serde(default)]
-    pub(crate) repositories: Vec<String>,
-    #[serde(default)]
-    pub(crate) connect_at: Option<String>,
 }
 
 impl Tool for EnvironmentSetup {
@@ -310,7 +292,7 @@ impl Tool for EnvironmentSetup {
                 store(&ServicesQuery { environment })?,
             ])?
             .into_iter();
-        let servers = cx.cloud::<ServersAnswer>(answers.next())?;
+        let servers = cx.cloud::<SetupServers>(answers.next())?;
         let github_unless_unclaimed = cx.cloud::<GithubAnswer>(answers.next());
         let services = cx.view::<ServicesQuery>(answers.next())?;
         let builds = services
@@ -320,7 +302,7 @@ impl Tool for EnvironmentSetup {
         let unconnected = builds && !github_unless_unclaimed?.connected;
         let needs = [
             (
-                servers.servers.is_empty(),
+                servers.answer.servers.is_empty(),
                 "servers",
                 DashboardPage::Servers,
             ),

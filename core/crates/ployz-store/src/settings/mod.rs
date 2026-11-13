@@ -6,6 +6,9 @@
 pub(crate) mod edit;
 mod path;
 pub(crate) mod query;
+mod secret;
+
+pub use secret::{SecretCell, SecretInput};
 
 pub(crate) use path::{
     ConfigField, NodeField, Target, config_name, domains_are_read_only, name_a_setting,
@@ -397,7 +400,7 @@ impl ServiceSetting {
             Self::MemLimit => json!(["1GiB", "512MiB", 0.5]),
             Self::PreDeployCommand => json!(["npm run migrate"]),
             Self::PrivateDns => json!(["api", "api-v2"]),
-            Self::RegistryCredential => json!([{ "secret": true }]),
+            Self::RegistryCredential => json!([SecretInput::Keep.to_value()]),
             Self::Replicas => json!([3]),
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
@@ -492,7 +495,7 @@ impl ServiceSetting {
             Self::Git(git) => git.shown(value),
             // Never the stored credential reference: only whether one is on.
             Self::RegistryCredential => match value.get("type").and_then(Value::as_str) {
-                Some("configured") => json!({ "secret": true }),
+                Some("configured") => SecretCell::Set.to_value(),
                 _ => Value::Null,
             },
             Self::Healthcheck => match value.get("type").and_then(Value::as_str) {
@@ -797,7 +800,9 @@ pub(crate) fn healthcheck_text(service: &ServiceName, summary: &EnvironmentSumma
 pub(crate) fn shown(field: &str, value: Value) -> Value {
     if field.starts_with("env.") || field.starts_with("variables.") {
         return match value.get("kind").and_then(Value::as_str) {
-            Some("secret") => json!({ "secret": value.get("valued") != Some(&json!(false)) }),
+            Some("secret") => {
+                SecretCell::from(value.get("valued") != Some(&json!(false))).to_value()
+            }
             Some(_) => value.get("value").cloned().unwrap_or_default(),
             None => value,
         };
