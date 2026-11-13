@@ -296,6 +296,73 @@ async fn a_machine_installs_only_the_recipient_a_verified_rotation_names() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A rotation brings its own Member list. Cloud can have one name a WireGuard key of its
+/// own beside the real Members; the Machine must neither take a key from that Member nor
+/// share its key with it. Only Members its snapshot holds count.
+#[tokio::test]
+async fn a_rotation_naming_a_member_outside_the_snapshot_installs_and_shares_nothing() {
+    let console_key = Signer::from_seed(&[1; 32]);
+    let (entry, founder, operation, directory, server) =
+        activated(&console_key, &Signer::from_seed(&[3; 32])).await;
+    let identity = SealingKey::load(&directory).unwrap().unwrap().public_key();
+    let RecipientKeySet::Generated { recipient } = entry
+        .set_recipient_key(SetRecipientKeyRequest::Generate { operation })
+        .await
+        .unwrap()
+    else {
+        panic!("not generated");
+    };
+    let injected = Member {
+        id: MachineId::parse("f".repeat(32)).unwrap(),
+        public_key: crate::network::WireGuardPrivateKey::generate().public_key(),
+        subnet: "10.210.250.0/24".parse().unwrap(),
+    };
+    let widened = rotation(
+        &console_key,
+        identity,
+        operation,
+        recipient,
+        vec![(&founder).into(), injected.clone()],
+    );
+
+    let installed = entry
+        .set_recipient_key(SetRecipientKeyRequest::Install {
+            rotation: widened.clone(),
+            sealed: None,
+        })
+        .await;
+    assert!(
+        matches!(installed, Err(LocalMachineError::RecipientRefused { .. })),
+        "{installed:?}"
+    );
+    entry
+        .set_recipient_key(SetRecipientKeyRequest::Install {
+            rotation: rotation(
+                &console_key,
+                identity,
+                operation,
+                recipient,
+                vec![(&founder).into()],
+            ),
+            sealed: None,
+        })
+        .await
+        .unwrap();
+    let shared = entry
+        .set_recipient_key(SetRecipientKeyRequest::Share {
+            rotation: widened,
+            to: injected.id,
+        })
+        .await;
+    assert!(
+        matches!(shared, Err(LocalMachineError::RecipientRefused { .. })),
+        "{shared:?}"
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[tokio::test]
 async fn a_machine_reseals_only_to_its_installed_recipient() {
     let console_key = Signer::from_seed(&[1; 32]);

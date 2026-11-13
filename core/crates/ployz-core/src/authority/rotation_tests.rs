@@ -143,7 +143,8 @@ fn under_a_passkey_a_key_only_a_member_sealed_installs() {
     let (generator, holder) = wireguard(2);
     let (outsider, _) = wireguard(3);
     let planted = crate::RecipientSecret::generate();
-    let body = rotating(planted.public(), vec![me.clone(), holder], PASSKEY);
+    let holders = vec![me.clone(), holder];
+    let body = rotating(planted.public(), holders.clone(), PASSKEY);
     let binding = sealed_key_binding(&body.cluster, &body.operation);
 
     let by_anyone = planted.seal_to(&me.public_key, &binding).unwrap();
@@ -158,10 +159,10 @@ fn under_a_passkey_a_key_only_a_member_sealed_installs() {
         crate::RecipientSecret::open(own.secret(), &binding, &by_anyone).is_some(),
         "an unauthenticated blob opens, so the rotation's signer must vouch for it"
     );
-    assert!(opened_key(&body, own.secret(), &by_anyone).is_none());
-    assert!(opened_key(&body, own.secret(), &by_outsider).is_none());
+    assert!(opened_key(&body, &holders, own.secret(), &by_anyone).is_none());
+    assert!(opened_key(&body, &holders, own.secret(), &by_outsider).is_none());
     assert_eq!(
-        opened_key(&body, own.secret(), &by_member).map(|key| key.public()),
+        opened_key(&body, &holders, own.secret(), &by_member).map(|key| key.public()),
         Some(planted.public())
     );
 }
@@ -183,8 +184,24 @@ fn under_a_device_the_key_it_sealed_installs_and_no_other() {
     let swapped = other.seal_to(&me.public_key, &binding).unwrap();
 
     assert_eq!(
-        opened_key(&body, own.secret(), &sealed).map(|key| key.public()),
+        opened_key(&body, &[], own.secret(), &sealed).map(|key| key.public()),
         Some(chosen.public())
     );
-    assert!(opened_key(&body, own.secret(), &swapped).is_none());
+    assert!(opened_key(&body, &[], own.secret(), &swapped).is_none());
+}
+
+/// Cloud can have a passkey sign a rotation that names a WireGuard key of its own as a
+/// Member, then seal its own key from that Member. Only Members the Machine holds count.
+#[test]
+fn a_member_the_rotation_adds_vouches_for_nothing() {
+    let (own, me) = wireguard(1);
+    let (injected_key, injected) = wireguard(9);
+    let planted = crate::RecipientSecret::generate();
+    let body = rotating(planted.public(), vec![me.clone(), injected], PASSKEY);
+    let binding = sealed_key_binding(&body.cluster, &body.operation);
+    let from_injected = planted
+        .seal_from(injected_key.secret(), &me.public_key, &binding)
+        .unwrap();
+
+    assert!(opened_key(&body, &[me], own.secret(), &from_injected).is_none());
 }

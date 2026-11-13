@@ -94,22 +94,24 @@ pub fn sealed_key_binding(cluster: &SealingPublicKey, operation: &OperationId) -
 }
 
 /// The recipient key `sealed` carries for this Machine, whose WireGuard private key is
-/// `own`, when `body` lets it take that key: a Member `body` names sealed it with
+/// `own`, when `body` lets it take that key: one of `holders` sealed it with
 /// [`crate::RecipientSecret::seal_from`], which only that Member's own key can do, or a
-/// Device signed `body` and so chose the key itself. A passkey answers a page Cloud serves,
-/// and anyone can seal to a public WireGuard key, so under a passkey only a Member that
-/// holds the key vouches for it. `None` for anything else, or a key other than the one
-/// `body` names.
+/// Device signed `body` and so chose the key itself. `holders` are the Members this Machine
+/// holds evidence for, never the rotation's own list, which Cloud could widen with a key of
+/// its own. A passkey answers a page Cloud serves, and anyone can seal to a public WireGuard
+/// key, so under a passkey only a holder vouches for the key. `None` for anything else, or
+/// a key other than the one `body` names.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn opened_key(
     body: &SealingRotation,
+    holders: &[Member],
     own: &[u8; 32],
     sealed: &crate::Ciphertext,
 ) -> Option<crate::RecipientSecret> {
     let binding = sealed_key_binding(&body.cluster, &body.operation);
-    let from_member = || {
-        body.members.iter().find_map(|member| {
+    let from_holder = || {
+        holders.iter().find_map(|member| {
             crate::RecipientSecret::open_from(own, &member.public_key, &binding, sealed)
         })
     };
@@ -117,7 +119,7 @@ pub fn opened_key(
         SignerKey::Device(_) => crate::RecipientSecret::open(own, &binding, sealed),
         SignerKey::Browser { .. } | SignerKey::Passkey(_) => None,
     };
-    from_member()
+    from_holder()
         .or_else(from_signer)
         .filter(|key| key.public() == body.recipient)
 }

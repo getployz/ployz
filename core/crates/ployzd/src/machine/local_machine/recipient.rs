@@ -87,6 +87,7 @@ impl LocalMachine {
                 let key = match sealed {
                     Some(sealed) => rotation::opened_key(
                         &body,
+                        holders(&record),
                         record.wireguard_private_key.as_bytes(),
                         &sealed,
                     )
@@ -134,8 +135,7 @@ impl LocalMachine {
                     .map_err(Error::RecipientKey)?
                     .filter(|held| held.public_key() == body.recipient)
                     .ok_or_else(|| refused("the recipient key"))?;
-                let member = body
-                    .members
+                let member = holders(&record)
                     .iter()
                     .find(|member| member.id == to)
                     .ok_or_else(|| refused("a Member"))?;
@@ -233,8 +233,17 @@ impl LocalMachine {
     }
 }
 
+/// The Members this Machine holds evidence for: the only ones it takes the recipient key
+/// from or shares it with. A rotation's own list never adds to them.
+fn holders(record: &LocalMachineRecord) -> &[Member] {
+    record
+        .trusted_snapshot()
+        .map_or(&[], |snapshot| snapshot.members())
+}
+
 /// Open `rotation` against this activated record's trusted keys, for its identity, naming
-/// this Machine and the activation it committed.
+/// this Machine and the activation it committed, and only Members this Machine holds
+/// evidence for.
 fn verified(
     record: &LocalMachineRecord,
     rotation: &Signed<SealingRotation>,
@@ -258,6 +267,10 @@ fn verified(
         return Err(refused(AuthorityRefusal::Mismatch {
             field: "an activation",
         }));
+    }
+    let held = holders(record);
+    if !body.members.iter().all(|member| held.contains(member)) {
+        return Err(refused(AuthorityRefusal::Mismatch { field: "a Member" }));
     }
     tracing::info!(%approver, recipient = %body.recipient, "recipient key approved");
     Ok(body)

@@ -137,6 +137,18 @@ impl Client {
         )
     }
 
+    /// Whether `machine` answers for itself through this client: over SSH or the local
+    /// socket, on a route the person chose and a session Cloud didn't pick. Cloud's Server
+    /// Access can hand over an SSH endpoint of its own, so its routes never do.
+    pub(crate) fn answers_for_itself(&self, machine: &MachineId) -> bool {
+        !matches!(self.connection_source(), ConnectionSource::Cloud)
+            && self.routes.answers_for_itself(
+                machine,
+                self.session.entry.as_ref(),
+                self.session.connection(),
+            )
+    }
+
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         self.session.ended()?;
         if self.routes.is_empty()

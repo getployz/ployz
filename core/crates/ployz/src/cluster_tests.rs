@@ -1017,7 +1017,7 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
     let target = machine_id('b');
     let full = client
         .clone()
-        .with_full_routes(FullRoutes::new(
+        .with_full_routes(FullRoutes::chosen(
             vec![
                 Connection::unix("/scripted/full.sock")
                     .unwrap()
@@ -1353,6 +1353,37 @@ fn a_leave_goes_to_its_target_itself_as_full_routes_do() {
     assert!(!dials_direct(op::EnsureContainer::PATH));
 }
 
+/// Cloud's Server Access can hand over an SSH endpoint of its own, which reports the
+/// pinned Member with a key Cloud chose. SSH is a Full route, but only one the person chose
+/// answers for the Server.
+#[tokio::test]
+async fn only_a_route_the_person_chose_answers_for_its_server() {
+    let (client, server) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::unimplemented(""))
+    })
+    .await;
+    let target = machine_id('b');
+    let ssh = || {
+        vec![
+            Connection::ssh(crate::context::SshDestination::parse("root@203.0.113.7").unwrap())
+                .with_machine_id(target),
+        ]
+    };
+
+    let from_cloud = client
+        .clone()
+        .with_full_routes(FullRoutes::from_cloud(ssh(), false));
+    let chosen = client.with_full_routes(FullRoutes::chosen(ssh(), false));
+
+    assert!(
+        from_cloud.reaches_full(&target, false),
+        "Cloud's SSH route is still a Full route to call through"
+    );
+    assert!(!from_cloud.answers_for_itself(&target));
+    assert!(chosen.answers_for_itself(&target));
+    server.abort();
+}
+
 #[tokio::test]
 async fn a_client_reaches_a_machine_with_full_scope_only_over_ssh_the_socket_or_a_device() {
     let (client, server) = crate::connect::test_support::rpc_client(|_| async {
@@ -1369,7 +1400,7 @@ async fn a_client_reaches_a_machine_with_full_scope_only_over_ssh_the_socket_or_
         [2; 32],
     );
     let over = |connection: Connection| {
-        client.clone().with_full_routes(FullRoutes::new(
+        client.clone().with_full_routes(FullRoutes::chosen(
             vec![connection.with_machine_id(target)],
             false,
         ))

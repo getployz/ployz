@@ -132,12 +132,13 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         let found: Vec<Found> = found.into_iter().map(|(_, server)| server).collect();
         let known = KnownMachines::beside(&config);
         let pinned = known.load()?;
-        // A Server reached over its own SSH or local socket answers for itself, and takes the
-        // set from there whatever it holds from before.
+        // A Server reached over its own SSH or local socket, on a route the person chose,
+        // answers for itself, and takes the set from there whatever it holds from before.
+        // An SSH endpoint Cloud's Server Access handed over answers for nobody.
         let direct: BTreeSet<MachineId> = reach
             .asked
             .iter()
-            .filter(|machine| client.reaches_full(machine, false))
+            .filter(|machine| client.answers_for_itself(machine))
             .copied()
             .collect();
         let Pinning {

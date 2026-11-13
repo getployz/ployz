@@ -162,7 +162,7 @@ async fn pinned(full: bool) -> (Pinned, Vec<Seen>) {
     .await
     .unwrap();
     if full {
-        client = client.with_full_routes(FullRoutes::new(vec![connection('b')], false));
+        client = client.with_full_routes(FullRoutes::chosen(vec![connection('b')], false));
     }
     let confirmed = std::mem::take(&mut *log.lock().unwrap());
     (Pinned { client, log, fleet }, confirmed)
