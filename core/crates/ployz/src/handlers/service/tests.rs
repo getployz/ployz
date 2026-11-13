@@ -697,7 +697,7 @@ fn each_copy_gets_its_own_container_bound_approval() {
             join_approval: None,
             build_concurrency: None,
             runtime: ployz_core::MachineRuntime {
-                sealing: Some(Sealing::Held {
+                sealing: Some(ployz_core::Sealing::Held {
                     public_key: ployz_core::SealingPublicKey::from_bytes([9; 32]),
                 }),
                 ..Default::default()

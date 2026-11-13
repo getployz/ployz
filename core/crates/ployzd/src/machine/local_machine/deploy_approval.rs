@@ -162,10 +162,7 @@ impl LocalMachine {
         &self,
         phase: ployz_core::LocalMachinePhase,
     ) -> Option<ployz_core::SealingPublicKey> {
-        match self.held_sealing(phase) {
-            Some(Sealing::Held { public_key }) => Some(public_key),
-            _ => None,
-        }
+        self.held_sealing(phase).and_then(Sealing::held_key)
     }
 }
 

@@ -8,10 +8,10 @@ use crate::cli::{base, positional, value};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     CopyRotation, HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId,
-    MachineName, MachineObservation, OperationId, QualifiedService, RpcError, Sealing,
-    ServiceContainer, ServiceObservation, ServiceSelector,
+    MachineName, MachineObservation, OperationId, QualifiedService, RpcError, ServiceContainer,
+    ServiceObservation, ServiceSelector,
     authority::{RestartApproval, Signed, Signer, SignerKey, Timestamp, WorkflowKind},
-    select_service,
+    cluster_sealing_key, select_service,
 };
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
@@ -546,13 +546,7 @@ fn restart_approvals(
     let Ok(Some(secret)) = super::device::key::load(device_key) else {
         return Ok(HashMap::new());
     };
-    let Some(cluster) =
-        machines
-            .iter()
-            .find_map(|observed| match observed.machine.runtime.sealing {
-                Some(Sealing::Held { public_key }) => Some(public_key),
-                _ => None,
-            })
+    let Some(cluster) = cluster_sealing_key(machines.iter().map(|observed| &observed.machine))
     else {
         return Ok(HashMap::new());
     };

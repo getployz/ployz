@@ -12,8 +12,8 @@ use ployz_core::authority::{
     deploy::content_addressed,
 };
 use ployz_core::{
-    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, Sealing,
-    SealingPublicKey, ServiceName,
+    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, SealingPublicKey,
+    ServiceName, cluster_sealing_key,
 };
 use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
 use serde_json::json;
@@ -249,13 +249,7 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
     {
         return Probe::Off;
     }
-    let Some(cluster) =
-        observed
-            .iter()
-            .find_map(|observed| match observed.machine.runtime.sealing {
-                Some(Sealing::Held { public_key }) => Some(public_key),
-                _ => None,
-            })
+    let Some(cluster) = cluster_sealing_key(observed.iter().map(|observed| &observed.machine))
     else {
         return Probe::NoClusterKey;
     };

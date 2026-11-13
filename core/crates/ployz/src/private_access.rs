@@ -6,13 +6,13 @@ use futures_util::{StreamExt, stream};
 use ployz_core::{
     Ciphertext, EnvironmentValues, Machine, MachineFailure, MachineId, MachineName,
     MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem, PrivateAccessSet,
-    QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_PRIVATE_ACCESS_CAPABILITY, Sealing,
+    QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_PRIVATE_ACCESS_CAPABILITY,
     SealingPublicKey, ServiceObservation, SetPrivateAccessRequest,
     authority::{
         KeyApproval, PrivateAccessApproval, PrivateAccessTerms, Signed, Signer, SignerKey,
         Timestamp,
     },
-    private_access_router_joined, private_access_sealed_key, seal_platform,
+    cluster_sealing_key, private_access_router_joined, private_access_sealed_key, seal_platform,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -114,12 +114,7 @@ pub(crate) async fn observe_access(client: &mut Client) -> Result<Access, Failur
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
     let services = live.services();
-    let sealing = machines
-        .iter()
-        .find_map(|machine| match &machine.machine.runtime.sealing {
-            Some(Sealing::Held { public_key }) => Some(*public_key),
-            Some(Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. }) | None => None,
-        });
+    let sealing = cluster_sealing_key(machines.iter().map(|machine| &machine.machine));
     Ok(Access {
         machines: access_machines(&machines),
         running: running(&services),

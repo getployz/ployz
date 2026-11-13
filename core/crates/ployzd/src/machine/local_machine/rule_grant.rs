@@ -217,14 +217,10 @@ impl LocalMachine {
             tracing::warn!(rule = %rule.rule, field, "refused a rule build's grant");
             Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field })
         };
-        let cluster =
-            self.held_sealing(record.phase())
-                .and_then(|sealing| match sealing {
-                    ployz_core::Sealing::Held { public_key } => Some(public_key),
-                    ployz_core::Sealing::NeedsAccess
-                    | ployz_core::Sealing::AwaitsRecovery { .. } => None,
-                })
-                .ok_or(Error::RuleGrantRefused(AuthorityRefusal::NoClusterIdentity))?;
+        let cluster = self
+            .held_sealing(record.phase())
+            .and_then(ployz_core::Sealing::held_key)
+            .ok_or(Error::RuleGrantRefused(AuthorityRefusal::NoClusterIdentity))?;
         if rule.cluster != cluster {
             return Err(refused("a Cluster"));
         }

@@ -13,7 +13,7 @@ use ployz_core::{
     MachineName, MachineObservation, MachineTarget, PartialResult, PlatformPurpose,
     QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_CLUSTER_DOORS_CAPABILITY,
     SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing, SealingPublicKey,
-    ServiceId, ServiceObservation, SetClusterDoorsRequest, op, seal_platform,
+    ServiceId, ServiceObservation, SetClusterDoorsRequest, cluster_sealing_key, op, seal_platform,
     validate_ingress_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
@@ -318,18 +318,13 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
             failure.error.clone(),
         ));
     }
-    let sealing = machines
-        .iter()
-        .find_map(|machine| match &machine.machine.runtime.sealing {
-            Some(Sealing::Held { public_key }) => Some(*public_key),
-            Some(Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. }) | None => None,
-        });
+    let sealing = cluster_sealing_key(machines.iter().map(|machine| &machine.machine));
     let recipient = match sealing {
         Some(identity) => client
             .call::<op::Inspect>(ployz_core::InspectRequest::default(), Call::read())
             .await
             .ok()
-            .filter(|details| matches!(details.sealing, Some(Sealing::Held { public_key }) if public_key == identity))
+            .filter(|details| details.sealing.and_then(Sealing::held_key) == Some(identity))
             .and_then(|details| details.sealing_recipient),
         None => None,
     };

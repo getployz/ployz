@@ -310,22 +310,15 @@ fn unlisted_participation(details: &MachineDetails, assigned: &Machine) -> Resul
     )))
 }
 
-fn sealing_public_key(sealing: &ployz_core::Sealing) -> Option<ployz_core::SealingPublicKey> {
-    match sealing {
-        ployz_core::Sealing::Held { public_key }
-        | ployz_core::Sealing::AwaitsRecovery { public_key } => Some(*public_key),
-        ployz_core::Sealing::NeedsAccess => None,
-    }
-}
-
 fn another_cluster(details: &MachineDetails, registration: &ployz_core::Registered) -> bool {
-    let Some(local) = details.sealing.as_ref().and_then(sealing_public_key) else {
+    let Some(local) = details.sealing.and_then(ployz_core::Sealing::public_key) else {
         return false;
     };
-    let mut keys = registration
-        .visible_peers
-        .iter()
-        .filter_map(|peer| peer.runtime.sealing.as_ref().and_then(sealing_public_key));
+    let mut keys = registration.visible_peers.iter().filter_map(|peer| {
+        peer.runtime
+            .sealing
+            .and_then(ployz_core::Sealing::public_key)
+    });
     let Some(target) = keys.next() else {
         return false;
     };

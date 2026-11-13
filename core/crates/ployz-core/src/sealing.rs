@@ -213,6 +213,28 @@ pub enum Sealing {
     },
 }
 
+impl Sealing {
+    /// The key a Machine holds: only `Held` holds one. A Machine that awaits recovery
+    /// names a key it cannot open sealed values with.
+    #[must_use]
+    pub const fn held_key(self) -> Option<SealingPublicKey> {
+        match self {
+            Self::Held { public_key } => Some(public_key),
+            Self::NeedsAccess | Self::AwaitsRecovery { .. } => None,
+        }
+    }
+
+    /// The key a Machine names as its Cluster's, held or awaited, for a check of which
+    /// Cluster it belongs to.
+    #[must_use]
+    pub const fn public_key(self) -> Option<SealingPublicKey> {
+        match self {
+            Self::Held { public_key } | Self::AwaitsRecovery { public_key } => Some(public_key),
+            Self::NeedsAccess => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -251,6 +273,19 @@ mod tests {
             serde_json::to_value(awaits).unwrap(),
             serde_json::json!({ "kind": "awaits_recovery", "public_key": STANDARD.encode([2; 32]) })
         );
+    }
+
+    #[test]
+    fn only_a_held_key_is_held_and_an_awaited_one_is_still_named() {
+        let key = SealingPublicKey::from_bytes([4; 32]);
+        let held = Sealing::Held { public_key: key };
+        let awaits = Sealing::AwaitsRecovery { public_key: key };
+        assert_eq!(held.held_key(), Some(key));
+        assert_eq!(awaits.held_key(), None);
+        assert_eq!(Sealing::NeedsAccess.held_key(), None);
+        assert_eq!(held.public_key(), Some(key));
+        assert_eq!(awaits.public_key(), Some(key));
+        assert_eq!(Sealing::NeedsAccess.public_key(), None);
     }
 
     #[test]

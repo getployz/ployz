@@ -881,24 +881,15 @@ impl ClusterExpectation {
         sealing: Option<ployz_core::Sealing>,
         predates: Option<ployz_core::MachineVersion>,
     ) -> Result<ClusterCheck, ConnectError> {
-        match sealing {
-            Some(
-                ployz_core::Sealing::Held { public_key }
-                | ployz_core::Sealing::AwaitsRecovery { public_key },
-            ) if public_key == self.sealing_public_key => Ok(ClusterCheck {
+        match (sealing.and_then(ployz_core::Sealing::public_key), sealing) {
+            (Some(public_key), _) if public_key == self.sealing_public_key => Ok(ClusterCheck {
                 verified: true,
                 foreign: Vec::new(),
             }),
-            Some(ployz_core::Sealing::Held { .. } | ployz_core::Sealing::AwaitsRecovery { .. }) => {
-                Err(ConnectError::ClusterMismatch { machine_id })
-            }
-            Some(ployz_core::Sealing::NeedsAccess) | None if self.allow_unverified => {
-                Ok(ClusterCheck::default())
-            }
-            Some(ployz_core::Sealing::NeedsAccess) => {
-                Err(ConnectError::ClusterUnverified { machine_id })
-            }
-            None => Err(match predates {
+            (Some(_), _) => Err(ConnectError::ClusterMismatch { machine_id }),
+            (None, _) if self.allow_unverified => Ok(ClusterCheck::default()),
+            (None, Some(_)) => Err(ConnectError::ClusterUnverified { machine_id }),
+            (None, None) => Err(match predates {
                 Some(version) => ConnectError::PredatesSealing {
                     machine_id,
                     version,
