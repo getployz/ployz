@@ -197,7 +197,7 @@ fn show(view: &DeploymentView) -> Value {
 }
 
 /// How long a call that follows a Deployment waits for its outcome.
-const FOLLOW_WAIT_SECONDS: u32 = 120;
+pub(crate) const FOLLOW_WAIT_SECONDS: u32 = 120;
 
 /// The `deployment_show` call that follows a Deployment in `place`: the one `number`
 /// names, or the latest when none.

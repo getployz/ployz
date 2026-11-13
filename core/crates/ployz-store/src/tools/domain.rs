@@ -9,8 +9,8 @@ use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
-    AddDomain, Domain, DomainAction, DomainName, DomainQuery, DomainRow, DomainStatus,
-    DomainsQuery, DomainsView, Hostname, RemoveDomain, SetGeneratedDomain,
+    AddDomain, DestructiveKind, Domain, DomainAction, DomainName, DomainQuery, DomainRow,
+    DomainStatus, DomainsQuery, DomainsView, Hostname, RemoveDomain, SetGeneratedDomain,
 };
 
 const HOSTNAME: &str = "^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$";
@@ -304,14 +304,19 @@ impl Tool for DomainRemove {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(&self);
         let view = domains(cx, scope.clone(), self.expect_revision)?;
-        let found = find(&view, &self.domain)?;
-        // Only a domain waiting for its first Deploy goes without approval.
-        let asks_approval = !(found.status == DomainStatus::SettingUp
-            && matches!(found.action, Some(DomainAction::Deploy)));
+        find(&view, &self.domain)?;
         let staged = cx.write(&RemoveDomain {
-            environment: scope,
+            environment: scope.clone(),
             domain: self.domain,
         })?;
+        // Only a domain waiting for its first Deploy goes without approval.
+        let effects = cx.effects_after_write(scope)?;
+        let service = format!("{}.", staged.domain.service);
+        let asks_approval = effects.iter().any(|effect| {
+            effect.kind == DestructiveKind::RemovesDomain
+                && effect.path.starts_with(&service)
+                && staged.domain.is_named(&effect.name)
+        });
         Ok(json!({
             "at": staged.environment.to_string(),
             "removed": staged.domain.shown(),

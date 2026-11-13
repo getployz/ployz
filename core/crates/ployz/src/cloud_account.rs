@@ -44,6 +44,6 @@ pub(crate) use servers::{
 };
 pub(crate) use store::{config_store, config_store_if_routed, upload};
 pub(crate) use token::{
-    CredentialKind, Removed, ServerClears, TokenKind, TokenPreset, credential_id, credentials,
-    new_token, remove_token,
+    CredentialKind, PresetKind, Removed, ServerClears, TokenKind, TokenPreset, credential_id,
+    credentials, new_token, remove_token,
 };

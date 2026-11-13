@@ -1293,6 +1293,60 @@ fn a_removal_waits_on_each_server_that_did_not_answer_cloud_by_its_name() {
 }
 
 #[test]
+fn a_removal_names_a_server_as_its_newest_deployment_named_it() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    branch(&store, &who, "fix");
+    admit_deploy(&store, &who, "fix", 2);
+    run_named(&store, &id(2), &["web"], "web-1");
+    admit_deploy(&store, &who, "fix", 3);
+    run_named(&store, &id(3), &["web"], "web-2");
+    // A later row that carries no name does not take the name away.
+    admit_deploy(&store, &who, "fix", 4);
+    run(&store, &id(4), &["web"], Vec::new());
+    let silent = Trusted {
+        servers: Some(1),
+        unanswered: Some(vec![server('a')]),
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &silent).unwrap();
+    let Removal::Removing { waiting_on, .. } = removing else {
+        panic!("removed");
+    };
+    assert_eq!(waiting_on[0].server, "web-2");
+}
+
+/// Naming the Servers that did not answer reads only their rows: a stored row of
+/// another Machine, even one that no longer decodes, does not stop the removal from
+/// saying what it waits on.
+#[test]
+fn a_removal_names_its_waiting_servers_past_an_undecodable_row_of_another_machine() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    backend::execute(
+        &url,
+        "INSERT INTO config_deployment_row (deployment_id,service,machine,organization_id,server,state) \
+         SELECT id, 'web', 'corrupt-machine', 'org', 'unrelated', 'running' FROM config_deployment LIMIT 1",
+    );
+    let mut seen = observed();
+    seen.held.clear();
+    seen.unanswered = vec![server('a')];
+    let error = store
+        .write_trusted(&who, &request(None), &observing(seen))
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable, "{error:?}");
+    assert_eq!(
+        error.message,
+        "Some Servers didn't answer whether they hold this data, so nothing was removed. Remove those Servers, or give up every copy of it wherever one turns up"
+    );
+    let waiting = &error.details["waiting_on"];
+    assert_eq!(waiting[0]["server_id"], server('a').to_string());
+    assert_eq!(error.details["every_copy"]["tool"], "remove");
+}
+
+#[test]
 fn a_removal_from_a_store_without_server_ids_still_reads() {
     let older = json!({
         "removal": "removing", "id": uuid(9), "left": [],

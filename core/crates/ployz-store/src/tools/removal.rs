@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 use super::ToolId;
 use super::act::{server_show, servers};
 use super::cloud::ServersAnswer;
+use super::deployment::FOLLOW_WAIT_SECONDS;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal, Writes, from_store_with};
@@ -201,7 +202,7 @@ fn remove(
         Err(Stop::Refuse(refusal)) => return Err(named(cx, *refusal)?.into()),
         Err(step) => return Err(step),
     };
-    let (id, mut left, waiting_on, mut residuals) = match removal {
+    let (id, left, waiting_on, mut residuals) = match removal {
         Removal::Removed { residuals } => (None, Vec::new(), Vec::new(), residuals),
         Removal::Removing {
             id,
@@ -212,24 +213,29 @@ fn remove(
     let query = EnvironmentsQuery {
         project: Some(command.project.clone()),
     };
-    let mut attempt = 0;
-    while !left.is_empty() {
-        let Some(answers) = cx.poll(wait_seconds, attempt, vec![store(&query)?])? else {
-            break;
-        };
-        let answer = answers.into_iter().next();
-        if matches!(&answer, Some(Err(error)) if error.code == RpcErrorCode::NotFound) {
-            left.clear();
-            break;
-        }
-        let view = cx.view::<EnvironmentsQuery>(answer)?;
-        left.retain(|left| {
-            view.environments
-                .iter()
-                .any(|listed| listed.id == left.environment.id)
-        });
-        attempt += 1;
-    }
+    let left = cx.follow(
+        wait_seconds,
+        left,
+        |left| {
+            if left.is_empty() {
+                return Ok(None);
+            }
+            store(&query).map(Some)
+        },
+        |cx, mut left, answer| {
+            if matches!(&answer, Some(Err(error)) if error.code == RpcErrorCode::NotFound) {
+                left.clear();
+                return Ok(left);
+            }
+            let view = cx.view::<EnvironmentsQuery>(answer)?;
+            left.retain(|left| {
+                view.environments
+                    .iter()
+                    .any(|listed| listed.id == left.environment.id)
+            });
+            Ok(left)
+        },
+    )?;
     if let (Some(id), true) = (id, left.is_empty()) {
         residuals = cx.one(&RemovedQuery { id })?.residuals;
     }
@@ -261,7 +267,7 @@ fn remove(
                 json!({
                     "project": command.project,
                     "environment": first.environment.name,
-                    "wait_seconds": 120,
+                    "wait_seconds": FOLLOW_WAIT_SECONDS,
                 }),
             )),
         );

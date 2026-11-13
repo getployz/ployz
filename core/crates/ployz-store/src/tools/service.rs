@@ -7,18 +7,17 @@ use serde_json::{Map, Value, json};
 use super::domain::row;
 use super::environment::{REPOSITORY, source};
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, written};
+use super::machine::{Cx, Effect, Stop, Tool, effects_ask, written};
 use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting_sentence};
 use super::schema;
 use super::step::{DashboardPage, Fix};
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
 use crate::followup::FollowUp;
 use crate::{
-    BatchCommand, BranchName, Change, CreateGitService, CreateService, DomainsQuery, Edit,
-    EnvironmentRef, RemoveService, RenameService, RepositoryName, ServiceQuery, ServicesQuery,
-    SettingPath, Written,
+    BatchCommand, BranchName, Change, CreateGitService, CreateService, DestructiveKind,
+    DomainsQuery, Edit, EnvironmentRef, RemoveService, RenameService, RepositoryName, ServiceQuery,
+    ServicesQuery, SettingPath, Written,
 };
-use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 
 tool_input! {
@@ -565,16 +564,20 @@ impl Tool for ServiceRemove {
             environment: scope.clone(),
         })?;
         cx.fresh(&services.environment, self.expect_revision)?;
-        // A Service never deployed goes without asking anyone.
-        let asks_approval = services
-            .services
-            .iter()
-            .find(|listing| listing.service.name == self.service)
-            .is_some_and(|listing| listing.change != Some(ReviewLifecycleKind::Create));
         let staged = cx.write(&RemoveService {
-            environment: scope,
+            environment: scope.clone(),
             service: self.service,
         })?;
+        // A Service never deployed goes without asking anyone.
+        let effects = cx.effects_after_write(scope)?;
+        let asks_approval = effects_ask(
+            &effects,
+            &[
+                DestructiveKind::RemovesService,
+                DestructiveKind::StopsService,
+            ],
+            &staged.service.id.to_string(),
+        );
         Ok(json!({
             "at": staged.environment.to_string(),
             "removed": staged.service.name,

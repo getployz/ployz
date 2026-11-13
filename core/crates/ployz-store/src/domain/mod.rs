@@ -708,12 +708,20 @@ fn refuse_taken(
             format!("Another generated domain of this Organization is {prefix}"),
             json!({ "prefix": prefix }),
         )),
-        Some((_, Holder::Custom { hostname, holder })) => Err(error::conflict(
-            format!("{hostname} is already the custom domain of {holder}"),
-            json!({ "prefix": prefix, "hostname": hostname }),
-        )),
+        Some((_, Holder::Custom { hostname, holder })) => {
+            Err(custom_domain_conflict(hostname, holder, prefix))
+        }
         None => Ok(()),
     }
+}
+
+/// The refusal of a generated domain whose `prefix` is the first label of the custom
+/// domain `hostname`, which `holder` (`service in project/environment`) has.
+fn custom_domain_conflict(hostname: &str, holder: &str, prefix: &str) -> RpcError {
+    error::conflict(
+        format!("{hostname} is already the custom domain of {holder}"),
+        json!({ "prefix": prefix, "hostname": hostname }),
+    )
 }
 
 /// The longest label a hostname can carry.
@@ -747,19 +755,10 @@ fn taken_prefixes<'t>(
     own: &str,
     (trusted, cluster): (&'t Trusted, Option<&Hostname>),
 ) -> Result<Vec<(String, Holder<'t>)>, RpcError> {
-    let others = crate::names::other_environments(tx, environment)?;
-    let summary = &environment.summary;
-    let environments = others
-        .iter()
-        .map(|other| {
-            (
-                crate::scope::environment_label(&other.project, &other.name),
-                &other.working,
-            )
-        })
-        .chain(std::iter::once((summary.to_string(), &environment.working)));
+    let neighbourhood = crate::names::Neighbourhood::of(tx, environment)?;
     let mut taken = Vec::new();
-    for (environment, intent) in environments {
+    for (environment, intent) in neighbourhood.places((&environment.summary, &environment.working))
+    {
         for service in &intent.services {
             let holder = || format!("{} in {environment}", service.slug);
             if service.id != own {
@@ -787,15 +786,10 @@ fn taken_prefixes<'t>(
         let namespace = crate::deployment::namespace(tx, who, &environment.summary, false)?;
         let under = format!(".{cluster}");
         taken.extend(
-            trusted
-                .domains
-                .published
-                .iter()
-                .filter(|published| published.namespace != namespace)
-                .filter_map(|published| {
-                    let prefix = published.hostname.as_str().strip_suffix(&under)?;
-                    Some((prefix.to_owned(), Holder::Published(published)))
-                }),
+            published_elsewhere(trusted, &namespace).filter_map(|published| {
+                let prefix = published.hostname.as_str().strip_suffix(&under)?;
+                Some((prefix.to_owned(), Holder::Published(published)))
+            }),
         );
     }
     Ok(taken)
@@ -952,32 +946,15 @@ pub(crate) fn refuse_new_shared_hostnames(
     if prefixes.is_empty() && labels.is_empty() {
         return Ok(());
     }
-    let others = crate::names::other_environments(tx, environment)?;
-    let summary = &environment.summary;
-    let environments = others
-        .iter()
-        .map(|other| {
-            (
-                crate::scope::environment_label(&other.project, &other.name),
-                &other.working,
-            )
-        })
-        .chain(std::iter::once((summary.to_string(), after)));
-    for (place, intent) in environments {
+    let neighbourhood = crate::names::Neighbourhood::of(tx, environment)?;
+    for (place, intent) in neighbourhood.places((&environment.summary, after)) {
         for service in &intent.services {
             let holder = || format!("{} in {place}", service.slug);
             for route in &service.config.routes {
                 if let Some(label) = under.prefix(&route.hostname)
                     && prefixes.contains(&label)
                 {
-                    return Err(error::conflict(
-                        format!(
-                            "{} is already the custom domain of {}",
-                            route.hostname,
-                            holder()
-                        ),
-                        json!({ "prefix": label, "hostname": route.hostname }),
-                    ));
+                    return Err(custom_domain_conflict(&route.hostname, &holder(), label));
                 }
             }
             for managed in &service.config.managed_hostnames {
@@ -1038,7 +1015,7 @@ pub(crate) fn name_generated<'a>(
 /// may take it.
 fn published_elsewhere<'t>(
     trusted: &'t Trusted,
-    own: &'t Namespace,
+    own: &Namespace,
 ) -> impl Iterator<Item = &'t PublishedHostname> {
     trusted
         .domains

@@ -3,7 +3,7 @@ use ployz_core::config::SavedEnvironmentIntent;
 use serde_json::json;
 
 use crate::error;
-use crate::scope::Environment;
+use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 
 /// A name one node holds. No other node may hold it: a Service name or Private
@@ -164,19 +164,30 @@ pub(crate) fn refuse_new_reserved(
     Ok(())
 }
 
-/// Refuse each name `target` gives a node that the node doesn't hold in
-/// `environment` now, when another node holds it.
+/// Refuse each name `environment`'s Working State gives a node that the node doesn't
+/// hold in `before`, the Working State it replaces, when another node holds it. A
+/// Service, Volume or Config name a document of `coming` already gave the node is not
+/// new: it only comes back. A hostname or generated domain prefix is checked against
+/// the Organization as it is now, so it is.
 pub(crate) fn refuse_new_taken(
     tx: &mut dyn Tx,
     environment: &Environment,
-    target: &SavedEnvironmentIntent,
+    before: &SavedEnvironmentIntent,
+    coming: &[&SavedEnvironmentIntent],
 ) -> Result<(), RpcError> {
-    let now = &environment.working;
+    let now = before;
+    let target = &environment.working;
     let mut claims: Vec<(&str, Name<'_>)> = Vec::new();
     for service in &target.services {
         let held = now.services.iter().find(|held| held.id == service.id);
         for name in [service.slug.as_str(), service.config.private_dns.as_str()] {
-            if held.is_none_or(|held| held.slug != name && held.config.private_dns.as_str() != name)
+            let gives = |held: &ployz_core::config::SavedServiceIntent| {
+                held.slug == name || held.config.private_dns.as_str() == name
+            };
+            if !held.is_some_and(gives)
+                && !coming
+                    .iter()
+                    .any(|from| from.services.iter().any(|s| s.id == service.id && gives(s)))
             {
                 claims.push((&service.id, Name::Service(name)));
             }
@@ -203,41 +214,37 @@ pub(crate) fn refuse_new_taken(
         }
     }
     for volume in &target.volumes {
-        if !now
-            .volumes
-            .iter()
-            .any(|held| held.resource_id == volume.resource_id && held.name == volume.name)
-        {
+        let held = |intent: &SavedEnvironmentIntent| {
+            intent
+                .volumes
+                .iter()
+                .any(|held| held.resource_id == volume.resource_id && held.name == volume.name)
+        };
+        if !held(now) && !coming.iter().any(|from| held(from)) {
             claims.push((&volume.resource_id, Name::Volume(&volume.name)));
         }
     }
     for config in &target.configs {
-        if !now
-            .configs
-            .iter()
-            .any(|held| held.resource_id == config.resource_id && held.name == config.name)
-        {
+        let held = |intent: &SavedEnvironmentIntent| {
+            intent
+                .configs
+                .iter()
+                .any(|held| held.resource_id == config.resource_id && held.name == config.name)
+        };
+        if !held(now) && !coming.iter().any(|from| held(from)) {
             claims.push((&config.resource_id, Name::Config(config.name.as_str())));
         }
     }
     if claims.is_empty() {
         return Ok(());
     }
-    let target = Environment {
-        summary: environment.summary.clone(),
-        working: target.clone(),
-        live: environment.live.clone(),
-        removed: environment.removed.clone(),
-        inherited: environment.inherited.clone(),
-    };
     let mut others = None;
     for (owner, name) in claims {
-        refuse_taken_among(tx, &target, name, Some(owner), &mut others).map_err(
-            |error| match name {
+        refuse_taken_among(tx, environment, name, Some(owner), &mut others).map_err(|error| {
+            match name {
                 Name::Service(name)
                     if error.code == ployz_core::RpcErrorCode::Conflict
                         && !target
-                            .working
                             .services
                             .iter()
                             .any(|service| service.id != owner && service.slug == name) =>
@@ -257,8 +264,8 @@ pub(crate) fn refuse_new_taken(
                 | Name::Config(_)
                 | Name::Hostname(_)
                 | Name::Prefix(_) => error,
-            },
-        )?;
+            }
+        })?;
     }
     Ok(())
 }
@@ -282,8 +289,40 @@ pub(crate) struct OtherEnvironment {
     pub(crate) working: SavedEnvironmentIntent,
 }
 
+/// Every other Environment of the Organization, and the one `project/environment`
+/// walk over them with the Environment being written that every domain check shares.
+pub(crate) struct Neighbourhood {
+    others: Vec<OtherEnvironment>,
+}
+
+impl Neighbourhood {
+    pub(crate) fn of(tx: &mut dyn Tx, environment: &Environment) -> Result<Self, RpcError> {
+        Ok(Self {
+            others: other_environments(tx, environment)?,
+        })
+    }
+
+    /// Each place of the Organization as people name it, with the Working State
+    /// there: the other Environments first, then `this` with the intent the caller
+    /// passes for it.
+    pub(crate) fn places<'a>(
+        &'a self,
+        this: (&'a EnvironmentSummary, &'a SavedEnvironmentIntent),
+    ) -> impl Iterator<Item = (String, &'a SavedEnvironmentIntent)> {
+        self.others
+            .iter()
+            .map(|other| {
+                (
+                    crate::scope::environment_label(&other.project, &other.name),
+                    &other.working,
+                )
+            })
+            .chain(std::iter::once((this.0.to_string(), this.1)))
+    }
+}
+
 /// Every other Environment of the Organization.
-pub(crate) fn other_environments(
+fn other_environments(
     tx: &mut dyn Tx,
     environment: &Environment,
 ) -> Result<Vec<OtherEnvironment>, RpcError> {

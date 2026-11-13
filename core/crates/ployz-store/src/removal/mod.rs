@@ -462,7 +462,8 @@ fn waiting_on(
         false => trusted.unanswered.as_deref().unwrap_or_default(),
     };
     let unanswered = reviews.iter().flat_map(|reviewed| &reviewed.unanswered);
-    let names = &deployment::server_names(tx, who, unanswered.chain(silent).copied())?;
+    let asked = unanswered.chain(silent).copied().collect();
+    let names = &deployment::server_names(tx, &who.organization, Some(&asked))?;
     let mut waiting: Vec<Waiting> = reviews
         .iter()
         .flat_map(|reviewed| {
@@ -557,7 +558,8 @@ fn refuse_unanswered(
     let unanswered = uncovered
         .iter()
         .flat_map(|(reviewed, _)| &reviewed.unanswered);
-    let names = &deployment::server_names(tx, who, unanswered.copied())?;
+    let asked = unanswered.copied().collect();
+    let names = &deployment::server_names(tx, &who.organization, Some(&asked))?;
     let waiting_on: Vec<Waiting> = uncovered
         .iter()
         .flat_map(|(reviewed, volumes)| {

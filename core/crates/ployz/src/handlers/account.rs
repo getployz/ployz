@@ -10,7 +10,7 @@ use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;
 
 use crate::approval;
-use crate::cloud_account::{self, Credential, ServerClears, TokenKind, TokenPreset};
+use crate::cloud_account::{self, Credential, PresetKind, ServerClears, TokenKind, TokenPreset};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Table, Tone};
 use ployz_core::Hint;
@@ -32,14 +32,16 @@ pub(super) fn token_new_command(command: Command) -> Command {
         )
         .arg(
             value("preset", None)
-                .value_parser(["full", "read", "deploy"])
-                .default_value("full")
+                .value_parser(PossibleValuesParser::new(
+                    PresetKind::ALL.map(PresetKind::as_str),
+                ))
+                .default_value(PresetKind::Full.as_str())
                 .help("What it may do: full acts as you, read only reads, deploy stages and deploys one Environment"),
         )
         .arg(
             value("env", None)
                 .value_name("ENVIRONMENT")
-                .required_if_eq("preset", "deploy")
+                .required_if_eq("preset", PresetKind::Deploy.as_str())
                 .help("The one Environment a deploy token may change, by name"),
         )
         .after_help("Examples:\n  ployz token new ci\n  ployz token new ci --preset deploy --env staging")
@@ -147,15 +149,12 @@ pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
     let days = *matches
         .get_one::<u16>("expires-in")
         .expect("expires-in has a default");
-    let preset = match (
-        matches.get_one::<String>("preset").map(String::as_str),
-        matches.get_one::<String>("env").cloned(),
-    ) {
-        (Some("deploy"), Some(environment)) => TokenPreset::Deploy { environment },
-        (Some("read"), None) => TokenPreset::Read,
-        (Some("full") | None, None) => TokenPreset::Full,
-        _ => return Err(Error::usage("only --preset deploy takes --env")),
-    };
+    let kind = matches
+        .get_one::<String>("preset")
+        .map_or(Ok(PresetKind::Full), |name| name.parse())
+        .map_err(|()| Error::usage("unknown --preset"))?;
+    let preset = TokenPreset::of(kind, matches.get_one::<String>("env").cloned())
+        .ok_or_else(|| Error::usage("only --preset deploy takes --env"))?;
     let token = in_cloud(root, async |_, credential| {
         cloud_account::new_token(credential, name, TokenKind::Cli, &preset, days).await
     })?;

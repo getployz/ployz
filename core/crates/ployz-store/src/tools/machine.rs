@@ -3,6 +3,8 @@
 //! stops the run with the step that gets them. Replay keeps a plan straight-line
 //! code while [`State`] stays plain data a host can store between steps.
 
+use std::collections::BTreeSet;
+
 use ployz_core::decode::{DecodeError, decode};
 use ployz_core::{RpcError, RpcErrorCode};
 use schemars::JsonSchema;
@@ -20,9 +22,22 @@ use super::step::{
     Act, Action, Ask, AttemptId, BodyDigest, Fix, Gate, RequestKey, Step, Write, WriteSlot,
 };
 use crate::{
-    Batch, BatchCommand, Command, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    OrganizationId, ProjectName, Query, Revision, ServicesQuery, Tell, View, Written,
+    Batch, BatchCommand, Command, DestructiveEffect, DestructiveKind, DiffQuery, EnvironmentName,
+    EnvironmentRef, EnvironmentSummary, OrganizationId, ProjectName, Query, Revision,
+    ServicesQuery, Tell, View, Written,
 };
+
+/// Whether the next deploy destroys, among `effects`, a `kinds` thing with ID `node`:
+/// the deployed identity, which a rename since the last Deploy leaves alone.
+pub(crate) fn effects_ask(
+    effects: &BTreeSet<DestructiveEffect>,
+    kinds: &[DestructiveKind],
+    node: &str,
+) -> bool {
+    effects
+        .iter()
+        .any(|effect| kinds.contains(&effect.kind) && effect.node == node)
+}
 
 /// Read and write steps one call may take; waits are bounded by time instead.
 pub const STEP_BUDGET: u8 = 3;
@@ -106,14 +121,35 @@ pub(crate) enum Effect {
     Remove,
 }
 
+/// Where a tool can run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    Anywhere,
+    /// It needs Ployz Cloud: a call against a local Store is refused before the
+    /// tool plans anything, pointing to `local_next`, the Store read to make
+    /// instead. `None` is a choice: nothing local says what the Cloud tool would.
+    CloudOnly {
+        local_next: Option<ToolId>,
+    },
+}
+
+impl Reach {
+    const fn local_next(self) -> Option<ToolId> {
+        match self {
+            Self::Anywhere => None,
+            Self::CloudOnly { local_next } => local_next,
+        }
+    }
+}
+
 /// One tool: its input type, how it describes itself, and its plan.
 pub(crate) trait Tool: DeserializeOwned + JsonSchema {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const GATE: Gate = Gate::Never;
     const EFFECT: Effect;
-    /// The Store read a local call is pointed to when this tool needs Cloud.
-    const LOCAL_NEXT: Option<ToolId> = None;
+    /// Where it can run, declared once; a tool that only Cloud can run says so here.
+    const REACH: Reach = Reach::Anywhere;
 
     /// A complete input that decodes.
     fn example() -> Value;
@@ -223,11 +259,44 @@ impl Cx<'_> {
         &self,
         answer: Option<Result<Value, RpcError>>,
     ) -> Result<Q::View, Stop> {
-        let answer = answer.ok_or_else(|| Refusal::internal("A read came back short"))?;
-        let value = answer.map_err(|error| from_store(error, &self.call, Writes::None))?;
+        self.view_after::<Q>(answer, Writes::None)
+    }
+
+    /// [`Cx::view`], its refusal naming what the call already wrote.
+    fn view_after<Q: crate::Ask>(
+        &self,
+        answer: Option<Result<Value, RpcError>>,
+        writes: Writes,
+    ) -> Result<Q::View, Stop> {
+        let internal = |message: &str| Refusal {
+            writes,
+            ..Refusal::internal(message)
+        };
+        let answer = answer.ok_or_else(|| internal("A read came back short"))?;
+        let value = answer.map_err(|error| from_store(error, &self.call, writes))?;
         let view = serde_json::from_value::<View>(value)
-            .map_err(|_| Refusal::internal("The Config Store answered in an unknown shape"))?;
-        Q::view(view).map_err(|error| from_store(error, &self.call, Writes::None).into())
+            .map_err(|_| internal("The Config Store answered in an unknown shape"))?;
+        Q::view(view).map_err(|error| from_store(error, &self.call, writes).into())
+    }
+
+    /// What the next deploy of `environment` destroys, read after this call's
+    /// write: a refusal here says the write committed.
+    pub(crate) fn effects_after_write(
+        &mut self,
+        environment: EnvironmentRef,
+    ) -> Result<BTreeSet<DestructiveEffect>, Stop> {
+        let mut answers = self
+            .read(vec![store(&DiffQuery { environment })?])
+            .map_err(|stop| match stop {
+                Stop::Refuse(refusal) => Stop::Refuse(Box::new(Refusal {
+                    writes: Writes::Committed,
+                    ..*refusal
+                })),
+                step @ Stop::Step(..) => step,
+            })?
+            .into_iter();
+        let diff = self.view_after::<DiffQuery>(answers.next(), Writes::Committed)?;
+        Ok(diff.effects)
     }
 
     /// A Cloud answer decoded as `T`.
@@ -275,14 +344,6 @@ impl Cx<'_> {
         C::written(written).map_err(|error| from_store(error, &self.call, Writes::Committed).into())
     }
 
-    /// Refuse a call only Cloud can run before it reads anything.
-    pub(crate) fn cloud_only(&self) -> Result<(), Stop> {
-        match self.is_local() {
-            true => Err(Refusal::not_here(self.local_next()).into()),
-            false => Ok(()),
-        }
-    }
-
     /// The call's one write: an operation Cloud runs on Servers, keyed so a
     /// retry with the same key returns the same run. A refusal names `subject`,
     /// the read that shows what happened.
@@ -292,7 +353,9 @@ impl Cx<'_> {
         given: Option<RequestKey>,
         subject: Call,
     ) -> Result<Operation, Stop> {
-        self.cloud_only()?;
+        if self.is_local() {
+            return Err(Refusal::not_here(self.local_next()).into());
+        }
         let Some(slot) = self.slot.take() else {
             return Err(Refusal::internal("A call writes at most once").into());
         };
@@ -549,7 +612,7 @@ pub(crate) struct Entry {
     pub(crate) def: fn() -> ToolDef,
     pub(crate) example: fn() -> Value,
     run: fn(&mut Cx<'_>, &Value) -> Result<Value, Stop>,
-    local_next: Option<ToolId>,
+    pub(crate) reach: Reach,
 }
 
 pub(crate) const fn entry<T: Tool>() -> Entry {
@@ -558,7 +621,7 @@ pub(crate) const fn entry<T: Tool>() -> Entry {
         def: def::<T>,
         example: T::example,
         run: run::<T>,
-        local_next: T::LOCAL_NEXT,
+        reach: T::REACH,
     }
 }
 
@@ -594,6 +657,9 @@ fn run<T: Tool>(cx: &mut Cx<'_>, input: &Value) -> Result<Value, Stop> {
                 &declared(&schema::input::<T>(), error.path().unwrap_or_default()).to_string(),
             ),
         })?;
+    if T::REACH != Reach::Anywhere && cx.is_local() {
+        return Err(Refusal::not_here(cx.local_next()).into());
+    }
     decoded.plan(cx)
 }
 
@@ -710,9 +776,21 @@ pub fn resume(mut state: State, answers: Vec<Result<Value, RpcError>>) -> (Step,
         );
     };
     if answers.len() != kind.answers() {
+        let wrote = state
+            .rounds
+            .iter()
+            .any(|round| round.kind == Kind::Write && matches!(round.answers.first(), Some(Ok(_))));
+        let refusal = Refusal::internal("The answers do not match the step that asked for them");
         return done(
             state,
-            Refusal::internal("The answers do not match the step that asked for them"),
+            Refusal {
+                writes: if wrote {
+                    Writes::Committed
+                } else {
+                    refusal.writes
+                },
+                ..refusal
+            },
         );
     }
     state.rounds.push(Round { kind, answers });
@@ -737,7 +815,7 @@ fn advance(mut state: State) -> (Step, State) {
         place: &state.place,
         call: Call::new(&state.tool, state.input.clone()),
         call_key: &state.call_key,
-        local_next: entry.local_next,
+        local_next: entry.reach.local_next(),
     };
     let outcome = (entry.run)(&mut cx, &state.input);
     let call = cx.call;

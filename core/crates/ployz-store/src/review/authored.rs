@@ -2202,7 +2202,7 @@ impl Prepared {
         environment: &Environment,
         saved: Option<&SavedEnvironmentIntent>,
         target: SavedEnvironmentIntent,
-        from: Option<&SavedEnvironmentIntent>,
+        write: scope::Write<'_>,
         trusted: &Trusted,
     ) -> Result<Self, RpcError> {
         prevent_plaintext(&environment.working, &target)?;
@@ -2215,14 +2215,8 @@ impl Prepared {
                 removed: environment.removed.clone(),
                 inherited: environment.inherited.clone(),
             },
-            from,
+            write,
             trusted,
-        )?;
-        crate::volume::check_storage(
-            tx,
-            &environment.summary.id,
-            &working.environment().working.volumes,
-            crate::volume::StorageRule::Replay,
         )?;
         let actual = Plan::between(&environment.working, &working.environment().working)?;
         let (preview, _) = actual.render(&environment.working, &working.environment().working)?;
@@ -2297,8 +2291,14 @@ pub(super) fn prepare_history(
         selected.clone()
     };
     let not_set = keep_sealed(environment, ledger, &mut target)?;
-    crate::names::refuse_new_taken(tx, environment, &target)?;
-    let mut prepared = Prepared::from_target(tx, environment, saved, target, None, trusted)?;
+    let mut prepared = Prepared::from_target(
+        tx,
+        environment,
+        saved,
+        target,
+        scope::Write::arriving(None),
+        trusted,
+    )?;
     prepared.not_set = not_set;
     Ok(prepared)
 }
@@ -2484,14 +2484,14 @@ pub(super) fn prepare_discard(
         };
         plan.reverse_into(&mut working, &selected)?;
     } else {
-        working = baseline;
+        working = baseline.clone();
     }
     Prepared::from_target(
         tx,
         environment,
         saved,
         working,
-        Some(&reviewed.head.intent),
+        scope::Write::restoring(Some(&reviewed.head.intent), &baseline),
         trusted,
     )
     .map_err(|failure| {

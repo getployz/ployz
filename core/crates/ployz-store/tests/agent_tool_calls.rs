@@ -706,6 +706,32 @@ fn domain_check_reads_one_domain_and_refuses_an_unknown_one() {
     assert_eq!(missing.code.as_str(), "not_found", "{missing:?}");
 }
 
+/// An element of a list that does not decode is refused at its own position,
+/// and what fits there is the element's schema, not the whole list's.
+#[test]
+fn a_bad_list_element_is_refused_at_its_position_with_the_elements_schema() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let refused = call(
+        &store,
+        "service_update",
+        json!({ "service": "web", "unset": ["env.A", 7] }),
+        "update-1",
+    )
+    .refused();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert_eq!(refused.field.as_deref(), Some("unset[1]"), "{refused:?}");
+    // The element is one of the three kinds of text `unset` takes.
+    let expected = refused.expected.as_ref().unwrap();
+    assert_eq!(
+        expected["anyOf"].as_array().map(Vec::len),
+        Some(3),
+        "{refused:?}"
+    );
+    assert!(expected.get("items").is_none(), "{refused:?}");
+}
+
 #[test]
 fn a_service_goes_from_staged_to_deployed() {
     let store = shop();
@@ -1410,6 +1436,28 @@ fn a_local_store_refuses_every_cloud_tool_before_it_asks_or_writes() {
         assert_eq!(refusal.code.as_str(), "not_here", "{tool}");
         assert_eq!(refusal.fix(), Some(Fix::UseCloud), "{tool}");
     }
+}
+
+/// Where a tool can run is settled before it plans, so a local `server_set` that
+/// sets nothing is told it needs Ployz Cloud, not that it must set a value.
+#[test]
+fn a_local_server_set_with_no_value_is_refused_as_cloud_only_before_it_is_read() {
+    let run = drive(
+        &shop(),
+        StoreAt::Local,
+        "server_set",
+        json!({ "server": "web-1" }),
+        "local-empty",
+        &mut no_cloud,
+    );
+    assert_eq!(run.writes, 0);
+    let refusal = run.refused();
+    assert_eq!(refusal.code.as_str(), "not_here");
+    assert_eq!(
+        refusal.message,
+        "This needs Ployz Cloud; a local Config Store cannot answer it"
+    );
+    assert_eq!(refusal.fix(), Some(Fix::UseCloud));
 }
 
 #[test]
@@ -2285,8 +2333,14 @@ fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
 /// `outcome`.
 fn ended(row: Value, outcome: Value) -> (ConfigStore, DeploymentId) {
     let (store, id) = deploying();
+    finish(&store, &id, row, outcome);
+    (store, id)
+}
+
+/// The claimed Deployment `id` run to its end, its one row left in `row`.
+fn finish(store: &ConfigStore, id: &DeploymentId, row: Value, outcome: Value) {
     let runner = RunnerId::parse("runner").unwrap();
-    let claimed = store.claim(&id, &runner).unwrap();
+    let claimed = store.claim(id, &runner).unwrap();
     let operation = json!({
         "index": 0, "machine_id": machine('a'), "service_name": "web",
         "operation": remove_container(),
@@ -2299,14 +2353,14 @@ fn ended(row: Value, outcome: Value) -> (ConfigStore, DeploymentId) {
     }))
     .unwrap();
     store
-        .record(&id, &runner, RunEvidence::Prepared(preview))
+        .record(id, &runner, RunEvidence::Prepared(preview))
         .unwrap();
     let mut done = operation;
     done["status"] = row;
     let rows: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([done])).unwrap();
     store
         .record(
-            &id,
+            id,
             &runner,
             RunEvidence::Executed {
                 progress: RowTracker::default().changes(&rows),
@@ -2315,7 +2369,351 @@ fn ended(row: Value, outcome: Value) -> (ConfigStore, DeploymentId) {
             },
         )
         .unwrap();
-    (store, id)
+}
+
+/// [`shop`] with `web` (Volume `data`, domain `app.example.com`) and `api` run by
+/// one finished Deploy.
+fn deployed_shop() -> ConfigStore {
+    let store = shop();
+    let added = |store: &ConfigStore, tool: &str, input: Value, key: &str| {
+        call(store, tool, input, key).ok()
+    };
+    added(
+        &store,
+        "service_add",
+        json!({ "name": "web", "image": "traefik/whoami" }),
+        "add-web",
+    );
+    added(
+        &store,
+        "service_add",
+        json!({ "name": "api", "image": "traefik/whoami" }),
+        "add-api",
+    );
+    added(
+        &store,
+        "volume_add",
+        json!({ "name": "data", "service": "web", "path": "/data" }),
+        "add-data",
+    );
+    added(
+        &store,
+        "domain_add",
+        json!({ "service": "web", "hostname": "app.example.com", "port": 80 }),
+        "add-app",
+    );
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write(
+            &who(),
+            &Admit::Deploy(Deploy {
+                teardown: None,
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            }),
+        )
+        .unwrap();
+    finish(
+        &store,
+        &id,
+        json!({ "type": "completed" }),
+        json!({ "type": "success", "completed": [remove_container()] }),
+    );
+    store
+}
+
+/// A removal says it asks a human only when what it removes already ran: a
+/// Service, Volume or domain staged since the last Deploy goes without.
+#[test]
+fn a_removal_asks_approval_only_for_what_a_deploy_already_ran() {
+    let store = deployed_shop();
+    let added = |store: &ConfigStore, tool: &str, input: Value, key: &str| {
+        call(store, tool, input, key).ok()
+    };
+
+    // Staged after the Deploy: nothing ran, so nothing to approve.
+    added(
+        &store,
+        "service_add",
+        json!({ "name": "worker", "image": "traefik/whoami" }),
+        "add-worker",
+    );
+    added(
+        &store,
+        "volume_add",
+        json!({ "name": "cache", "service": "worker", "path": "/cache" }),
+        "add-cache",
+    );
+    added(
+        &store,
+        "domain_add",
+        json!({ "service": "worker", "hostname": "jobs.example.com", "port": 80 }),
+        "add-jobs",
+    );
+    let asks = |tool: &str, input: Value, key: &str| {
+        let run = call(&store, tool, input, key);
+        assert!(run.writes <= 1, "{tool}");
+        run.ok()["asks_approval"].clone()
+    };
+    assert_eq!(
+        asks(
+            "domain_remove",
+            json!({ "domain": "jobs.example.com" }),
+            "rm-jobs"
+        ),
+        false
+    );
+    assert_eq!(
+        asks("volume_remove", json!({ "volume": "cache" }), "rm-cache"),
+        false
+    );
+    assert_eq!(
+        asks(
+            "service_remove",
+            json!({ "service": "worker" }),
+            "rm-worker"
+        ),
+        false
+    );
+
+    // Run by the Deploy: removing it loses something.
+    assert_eq!(
+        asks(
+            "domain_remove",
+            json!({ "domain": "app.example.com" }),
+            "rm-app"
+        ),
+        true
+    );
+    assert_eq!(
+        asks("volume_remove", json!({ "volume": "data" }), "rm-data"),
+        true
+    );
+    assert_eq!(
+        asks("service_remove", json!({ "service": "web" }), "rm-web"),
+        true
+    );
+}
+
+/// A removal asks by what the Deploy ran, not by what the staged Environment now
+/// calls it: a deployed Service or Volume renamed since still asks.
+#[test]
+fn a_renamed_deployed_service_or_volume_still_asks_approval_when_removed() {
+    let asks = |rename: (&str, Value), remove: (&str, Value)| {
+        let store = deployed_shop();
+        call(&store, rename.0, rename.1, "rename").ok();
+        call(&store, remove.0, remove.1, "remove").ok()["asks_approval"].clone()
+    };
+    assert_eq!(
+        asks(
+            (
+                "service_rename",
+                json!({ "service": "web", "to": "frontend" })
+            ),
+            ("service_remove", json!({ "service": "frontend" })),
+        ),
+        true
+    );
+    assert_eq!(
+        asks(
+            ("volume_update", json!({ "volume": "data", "to": "files" })),
+            ("volume_remove", json!({ "volume": "files" })),
+        ),
+        true
+    );
+    assert_eq!(
+        asks(
+            (
+                "service_rename",
+                json!({ "service": "web", "to": "frontend" })
+            ),
+            ("domain_remove", json!({ "domain": "app.example.com" })),
+        ),
+        true
+    );
+}
+
+/// A removal reads the Store's effects once more after its write. Whatever goes
+/// wrong with that read, the refusal says the write committed.
+#[test]
+fn a_removal_whose_read_after_the_write_fails_says_the_write_committed() {
+    let unreadable: [Vec<Result<Value, RpcError>>; 2] = [
+        vec![Err(RpcError::new(RpcErrorCode::Unavailable, "read failed"))],
+        vec![Ok(json!({ "unexpected": true }))],
+    ];
+    for bad in unreadable {
+        let store = shop();
+        call(
+            &store,
+            "service_add",
+            json!({ "name": "web", "image": "nginx" }),
+            "add",
+        )
+        .ok();
+        let (mut step, mut state) = start(
+            "service_remove",
+            json!({ "service": "web" }),
+            &place(in_org()),
+            "remove",
+        );
+        let mut wrote = false;
+        let result = loop {
+            let answers = match step {
+                Step::Read { asks } if wrote => {
+                    assert_eq!(asks.len(), 1);
+                    bad.clone()
+                }
+                Step::Read { asks } => asks
+                    .into_iter()
+                    .map(|ask| answer(&store, &who(), &mut no_cloud, ask))
+                    .collect(),
+                Step::Write { write } => {
+                    wrote = true;
+                    let Write::Store(command) = *write else {
+                        panic!("a Store write");
+                    };
+                    vec![
+                        store
+                            .write(&who(), &command)
+                            .map(|written| serde_json::to_value(written).unwrap()),
+                    ]
+                }
+                Step::Done { result } => break result,
+                Step::Wait { .. } => panic!("a removal tool does not wait"),
+            };
+            (step, state) = resume(state, answers);
+        };
+        let ToolResult::Refused(refusal) = result else {
+            panic!("{bad:?} refused nothing: {result:?}");
+        };
+        assert_eq!(refusal.writes, Writes::Committed, "{bad:?}: {refusal:?}");
+    }
+}
+
+/// A removal's read after its write, resumed with too few or too many answers,
+/// is refused by the step machine before the plan sees it. The write committed
+/// by then, so the refusal says so; the same mismatch before any write says
+/// nothing was written.
+#[test]
+fn a_removal_resumed_with_the_wrong_number_of_answers_after_its_write_says_it_committed() {
+    let wrong: [Vec<Result<Value, RpcError>>; 2] = [
+        Vec::new(),
+        vec![
+            Ok(json!({ "type": "services", "environment": null })),
+            Ok(json!({ "type": "services", "environment": null })),
+        ],
+    ];
+    for bad in wrong {
+        let store = shop();
+        call(
+            &store,
+            "service_add",
+            json!({ "name": "web", "image": "nginx" }),
+            "add",
+        )
+        .ok();
+        let (mut step, mut state) = start(
+            "service_remove",
+            json!({ "service": "web" }),
+            &place(in_org()),
+            "remove",
+        );
+        let mut wrote = false;
+        let result = loop {
+            let answers = match step {
+                Step::Read { asks } if wrote => {
+                    assert_eq!(asks.len(), 1);
+                    bad.clone()
+                }
+                Step::Read { asks } => asks
+                    .into_iter()
+                    .map(|ask| answer(&store, &who(), &mut no_cloud, ask))
+                    .collect(),
+                Step::Write { write } => {
+                    wrote = true;
+                    let Write::Store(command) = *write else {
+                        panic!("a Store write");
+                    };
+                    vec![
+                        store
+                            .write(&who(), &command)
+                            .map(|written| serde_json::to_value(written).unwrap()),
+                    ]
+                }
+                Step::Done { result } => break result,
+                Step::Wait { .. } => panic!("a removal tool does not wait"),
+            };
+            (step, state) = resume(state, answers);
+        };
+        let ToolResult::Refused(refusal) = result else {
+            panic!("{} answers refused nothing: {result:?}", bad.len());
+        };
+        assert_eq!(refusal.code, RpcErrorCode::Internal, "{refusal:?}");
+        assert_eq!(
+            refusal.message, "The answers do not match the step that asked for them",
+            "{refusal:?}"
+        );
+        assert_eq!(refusal.writes, Writes::Committed, "{refusal:?}");
+    }
+
+    let (step, state) = start(
+        "service_remove",
+        json!({ "service": "web" }),
+        &place(in_org()),
+        "remove",
+    );
+    assert!(matches!(step, Step::Read { .. }));
+    let (step, _) = resume(state, Vec::new());
+    let Step::Done {
+        result: ToolResult::Refused(refusal),
+    } = step
+    else {
+        panic!("{step:?}");
+    };
+    assert_eq!(refusal.writes, Writes::None, "{refusal:?}");
+}
+
+/// Removing a Service asks approval when a Deploy may have run what it removes:
+/// one in flight, one that completed, and a first Deploy that failed with no
+/// operation completed all do, for the Store reads a failed first Deploy as
+/// possibly having run.
+#[test]
+fn removing_a_service_asks_approval_for_a_deploy_in_flight_completed_or_failed_first() {
+    let error = json!({
+        "type": "machine", "action": "RemoveContainer",
+        "error": { "code": "internal", "message": "failed", "details": {} },
+    });
+    for phase in ["in flight", "completed", "failed with nothing completed"] {
+        let (store, _) = match phase {
+            "in flight" => deploying(),
+            "completed" => ended(
+                json!({ "type": "completed" }),
+                json!({ "type": "success", "completed": [remove_container()] }),
+            ),
+            _ => ended(
+                json!({ "type": "failed", "error": error }),
+                json!({
+                    "type": "failed", "completed": [], "unexecuted": [],
+                    "failed": { "type": "operation", "operation": remove_container(), "error": error },
+                }),
+            ),
+        };
+        let run = call(
+            &store,
+            "service_remove",
+            json!({ "service": "web" }),
+            "rm-web",
+        );
+        assert_eq!(run.ok()["asks_approval"], true, "{phase}");
+    }
 }
 
 #[test]

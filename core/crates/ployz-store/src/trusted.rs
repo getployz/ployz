@@ -194,7 +194,7 @@ impl Trusted {
         else {
             return Ok(Cow::Borrowed(self));
         };
-        let deployed = crate::deployment::servers(tx, &who.organization)?;
+        let deployed = crate::deployment::server_names(tx, &who.organization, None)?;
         let named = |server: &MachineId| {
             deployed
                 .get(server)

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::error::{Accept, Confirmation, data_loss_message};
-use crate::id::{Revision, VolumeName};
+use crate::id::{EnvironmentId, Revision, VolumeName};
 use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::SettingPath;
@@ -152,13 +152,35 @@ impl WayBack {
     }
 }
 
+/// The Environment's summary once its proposals ended and nothing else moved
+/// its revision: ending them still moves it, so a review taken before is stale.
+/// `None` when `ended` is false.
+fn after_ending(
+    tx: &mut dyn Tx,
+    trusted: &Trusted,
+    id: &EnvironmentId,
+    ended: bool,
+) -> Result<Option<EnvironmentSummary>, RpcError> {
+    if !ended {
+        return Ok(None);
+    }
+    let mut whole = scope::load_by_id(tx, id)?;
+    scope::write_working(
+        tx,
+        Evidence::Caller(trusted),
+        &mut whole,
+        scope::WorkingWrite::Trusted(scope::Reason::Publish),
+    )?;
+    Ok(Some(whole.summary))
+}
+
 pub(crate) fn publish(
     tx: &mut dyn Tx,
     who: &Actor,
     publish: &Publish,
     trusted: &Trusted,
 ) -> Result<Published, RpcError> {
-    let mut environment = scope::lock(tx, who, &publish.environment)?;
+    let environment = scope::lock(tx, who, &publish.environment)?;
     trusted.writes(&environment.summary.name)?;
     crate::removal::marked(tx, &environment)?;
     let review = review::review(tx, &environment)?;
@@ -183,18 +205,11 @@ pub(crate) fn publish(
         && canonicalize_environment_intent(environment.working.clone())
             == canonicalize_environment_intent(review.head.intent.clone())
     {
-        // Nothing staged: Head already is Working State. Proposals ending still
-        // moves the revision, so a review of them is stale.
-        if consumed {
-            scope::write_working(
-                tx,
-                Evidence::Caller(trusted),
-                &mut environment,
-                scope::WorkingWrite::Trusted(scope::Reason::Publish),
-            )?;
-        }
+        // Nothing staged: Head already is Working State.
+        let summary = after_ending(tx, trusted, &environment.summary.id, consumed)?
+            .unwrap_or(environment.summary);
         return Ok(Published {
-            environment: environment.summary,
+            environment: summary,
             saved: None,
             created: false,
         });
@@ -263,18 +278,9 @@ pub(crate) fn publish(
     {
         review::reconsent(tx, &environment.summary.id, latest.revision, &lost)?;
     }
-    // Saved State already held it: proposals ending still moves the revision.
-    let mut summary = environment.summary;
-    if consumed && !created {
-        let mut whole = scope::load_by_id(tx, &summary.id)?;
-        scope::write_working(
-            tx,
-            Evidence::Caller(trusted),
-            &mut whole,
-            scope::WorkingWrite::Trusted(scope::Reason::Publish),
-        )?;
-        summary = whole.summary;
-    }
+    // Saved State already held it.
+    let summary = after_ending(tx, trusted, &environment.summary.id, consumed && !created)?
+        .unwrap_or(environment.summary);
     Ok(Published {
         environment: summary,
         saved: Some(saved),
@@ -301,16 +307,9 @@ pub(crate) fn discard(
     )?;
     let (mut environment, changed) = prepared.persist(tx, Evidence::Caller(trusted))?;
     // Discarding the whole draft ends its proposals; a path keeps them.
-    if discard.path.is_none() && crate::branch::end_included(tx, &environment.id, None)? && !changed
-    {
-        let mut whole = scope::load_by_id(tx, &environment.id)?;
-        scope::write_working(
-            tx,
-            Evidence::Caller(trusted),
-            &mut whole,
-            scope::WorkingWrite::Trusted(scope::Reason::Publish),
-        )?;
-        environment = whole.summary;
+    let ended = discard.path.is_none() && crate::branch::end_included(tx, &environment.id, None)?;
+    if let Some(summary) = after_ending(tx, trusted, &environment.id, ended && !changed)? {
+        environment = summary;
     }
     let before = reviewed.view.review_changes();
     let view = if changed {

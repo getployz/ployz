@@ -1637,14 +1637,8 @@ pub(crate) fn land(
 ) -> Result<Vec<NodeName>, RpcError> {
     crate::domain::refuse_too_long_copies(trusted.cluster_domain(), (&branch.working, &next))?;
     let before = std::mem::replace(&mut branch.working, next);
-    crate::volume::check_storage(
-        tx,
-        &branch.summary.id,
-        &branch.working.volumes,
-        crate::volume::StorageRule::Replay,
-    )?;
     // What arrives from `from` may bring a rule it already broke; that's not new.
-    scope::save_working_from(tx, branch, Some(from), trusted)?;
+    scope::save_working_from(tx, branch, scope::Write::arriving(Some(from)), trusted)?;
     let id = branch.summary.id.clone();
     let source_of = |lineage: &str| {
         from.services

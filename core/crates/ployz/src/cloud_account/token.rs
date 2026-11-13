@@ -41,6 +41,53 @@ pub(crate) enum TokenPreset {
     Full,
 }
 
+/// The `--preset` names a token is made by: each [`TokenPreset`] without what it carries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PresetKind {
+    Full,
+    Read,
+    Deploy,
+}
+
+impl PresetKind {
+    /// Every preset, in the order `ployz token new --help` lists them.
+    pub(crate) const ALL: [Self; 3] = [Self::Full, Self::Read, Self::Deploy];
+
+    /// The name it is typed by.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Read => "read",
+            Self::Deploy => "deploy",
+        }
+    }
+}
+
+impl std::str::FromStr for PresetKind {
+    type Err = ();
+
+    fn from_str(name: &str) -> Result<Self, ()> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == name)
+            .ok_or(())
+    }
+}
+
+impl TokenPreset {
+    /// The preset `kind` names, with the Environment a deploy token is for. `None`
+    /// where `environment` is given to a preset that takes none, or not given to one
+    /// that needs it.
+    pub(crate) fn of(kind: PresetKind, environment: Option<String>) -> Option<Self> {
+        match (kind, environment) {
+            (PresetKind::Deploy, Some(environment)) => Some(Self::Deploy { environment }),
+            (PresetKind::Read, None) => Some(Self::Read),
+            (PresetKind::Full, None) => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TokenKind {
