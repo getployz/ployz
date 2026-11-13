@@ -589,31 +589,27 @@ async fn execute<C: DrainClient>(
                     (Shape::Done(DrainOutcome::Stays { reason }), Vec::new())
                 }
                 Converged::Stopped { moves, stop } => {
-                    behind.moved(service.clone(), Shape::Interrupted, moves);
+                    behind.moved(
+                        service.clone(),
+                        Shape::Interrupted,
+                        moves,
+                        Leftovers::default(),
+                    );
                     behind.finish(&mut record).await;
                     record.stop(stop, after);
                     break 'work;
                 }
             };
-            let held = left_behind
-                .iter()
-                .any(|copy| matches!(copy.rotation, CopyRotation::Held(_)));
-            let out = left_behind
-                .iter()
-                .filter(|copy| copy.rotation == CopyRotation::Out)
-                .collect::<Vec<_>>();
-            let only_leftovers = matches!(shape, Shape::Done(DrainOutcome::NothingToMove))
-                && (held || !out.is_empty());
-            if !only_leftovers {
-                // Rows for the leftovers follow, so a convergence that moved only other
-                // Servers' copies adds none of its own.
-                let beside_leftovers = held || !out.is_empty();
-                behind.moved_beside(service.clone(), shape, moves, beside_leftovers);
-            }
-            if held {
+            let leftovers = Leftovers::of(&left_behind);
+            behind.moved(service.clone(), shape, moves, leftovers);
+            if leftovers.held {
                 behind.done(service.clone(), DrainOutcome::Held);
             }
-            if !out.is_empty() {
+            if leftovers.out {
+                let out = left_behind
+                    .iter()
+                    .filter(|copy| copy.rotation == CopyRotation::Out)
+                    .collect::<Vec<_>>();
                 let mut ends = Vec::with_capacity(out.len());
                 for copy in out {
                     ends.push(if cancellation.is_cancelled() {
@@ -666,8 +662,33 @@ struct Pending {
     service: QualifiedService,
     shape: Shape,
     moves: Vec<Step>,
-    /// The Service's leftover rows follow this one.
-    beside_leftovers: bool,
+    leftovers: Leftovers,
+}
+
+/// What an earlier move left on the Server for one Service, listed before its convergence.
+/// Rows for them follow the Service's own, so a convergence that moved only other Servers'
+/// copies adds none of its own.
+#[derive(Clone, Copy, Default)]
+struct Leftovers {
+    /// A copy the user stopped.
+    held: bool,
+    /// A copy rotated Out.
+    out: bool,
+}
+
+impl Leftovers {
+    fn of(copies: &[Copy]) -> Self {
+        Self {
+            held: copies
+                .iter()
+                .any(|copy| matches!(copy.rotation, CopyRotation::Held(_))),
+            out: copies.iter().any(|copy| copy.rotation == CopyRotation::Out),
+        }
+    }
+
+    fn any(self) -> bool {
+        self.held || self.out
+    }
 }
 
 enum Shape {
@@ -691,19 +712,20 @@ struct Ended {
 
 impl Behind {
     fn done(&mut self, service: QualifiedService, outcome: DrainOutcome) {
-        self.moved(service, Shape::Done(outcome), Vec::new());
+        self.moved(
+            service,
+            Shape::Done(outcome),
+            Vec::new(),
+            Leftovers::default(),
+        );
     }
 
-    fn moved(&mut self, service: QualifiedService, shape: Shape, moves: Vec<Moving>) {
-        self.moved_beside(service, shape, moves, false);
-    }
-
-    fn moved_beside(
+    fn moved(
         &mut self,
         service: QualifiedService,
         shape: Shape,
         moves: Vec<Moving>,
-        beside_leftovers: bool,
+        leftovers: Leftovers,
     ) {
         let entry = self.flushed + self.entries.len();
         let moves = moves
@@ -723,7 +745,7 @@ impl Behind {
             service,
             shape,
             moves,
-            beside_leftovers,
+            leftovers,
         });
     }
 
@@ -766,7 +788,7 @@ impl Behind {
                 service,
                 shape,
                 moves,
-                beside_leftovers,
+                leftovers,
             } = self.entries.pop_front().expect("just checked");
             self.flushed += 1;
             let mut last_in = false;
@@ -798,35 +820,43 @@ impl Behind {
                     step
                 })
                 .collect::<Vec<_>>();
-            let refused = || MoveFailure::Refused {
-                reason: StayReason::LastIn,
-            };
-            let (outcome, stays) = match shape {
-                Shape::Done(outcome) => (outcome, false),
-                Shape::Moved if last_in => (
-                    DrainOutcome::Failed {
-                        moves,
-                        failure: refused(),
-                    },
-                    false,
-                ),
-                Shape::Moved if moves.is_empty() && beside_leftovers => continue,
-                Shape::Moved if moves.is_empty() => (DrainOutcome::NothingToMove, false),
-                Shape::Moved => (DrainOutcome::Moved { moves }, false),
-                Shape::Failed(failure) => (DrainOutcome::Failed { moves, failure }, last_in),
-                Shape::Interrupted => (DrainOutcome::Interrupted { moves }, last_in),
-            };
-            record.push(service.clone(), outcome);
-            if stays {
-                record.push(
-                    service,
-                    DrainOutcome::Failed {
-                        moves: Vec::new(),
-                        failure: refused(),
-                    },
-                );
+            for outcome in rows(shape, moves, last_in, leftovers) {
+                record.push(service.clone(), outcome);
             }
         }
+    }
+}
+
+/// The rows one Service's convergence reports, in order. `moves` are the ones this Drain
+/// reports and `last_in` says an old copy was refused out as the last one serving. The
+/// Service's own row is none when its leftover rows say all there is, and a Failed or
+/// Interrupted one is followed by a Failed refusal when an old copy was refused out.
+fn rows(shape: Shape, moves: Vec<Move>, last_in: bool, leftovers: Leftovers) -> Vec<DrainOutcome> {
+    let refused = || MoveFailure::Refused {
+        reason: StayReason::LastIn,
+    };
+    let then_refused = |outcome| {
+        let mut rows = vec![outcome];
+        if last_in {
+            rows.push(DrainOutcome::Failed {
+                moves: Vec::new(),
+                failure: refused(),
+            });
+        }
+        rows
+    };
+    match shape {
+        Shape::Done(DrainOutcome::NothingToMove) if leftovers.any() => Vec::new(),
+        Shape::Done(outcome) => vec![outcome],
+        Shape::Moved if last_in => vec![DrainOutcome::Failed {
+            moves,
+            failure: refused(),
+        }],
+        Shape::Moved if moves.is_empty() && leftovers.any() => Vec::new(),
+        Shape::Moved if moves.is_empty() => vec![DrainOutcome::NothingToMove],
+        Shape::Moved => vec![DrainOutcome::Moved { moves }],
+        Shape::Failed(failure) => then_refused(DrainOutcome::Failed { moves, failure }),
+        Shape::Interrupted => then_refused(DrainOutcome::Interrupted { moves }),
     }
 }
 
