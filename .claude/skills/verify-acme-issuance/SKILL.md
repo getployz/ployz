@@ -94,7 +94,7 @@ Expected: the summary line ends with `18 tests run: 18 passed, 193 skipped`. `th
 
 Read the tests in four groups.
 - **The code as it is.** `the_code_keeps_every_property` runs `as_is()` with `assert_properties`: every `always` holds, and every row is reached. The three route tests and `a_read_error_keeps_rank_1_s_delay` replay each schedule on it, and `a_pass_on_each_edge_state` steps one pass of rank 1 from each state `step` must handle, on the code and on the code as it was: no clock, an Authority clock not yet due, an unchanged DoesNotResolve clock not yet due, a clock that is due, a DoesNotResolve clock whose verdict changed, a DoesNotResolve verdict with no clock, and material present, where the pass skips at `:481-482`. It then steps rank 0 and rank 1 from a state where neither has `orderable_since`: rank 0 owes no delay and pushes, and rank 1 waits.
-- **The code as it was.** The three route tests' old-code replays; `the_old_route_survived_a_late_recheck`, `the_old_route_survived_an_early_restart` and `a_late_restart_ended_the_old_route`, which pin the timing condition; and `the_code_as_it_was_breaks_only_the_rank_delay`, which expects `RANK_DELAY_KEPT` to break, `HOLD_KEPT`, `NO_ORDER_OVER_MATERIAL` and `AUTHORITY_BACKOFF_KEPT` to hold, and every `COVERAGE` row `Reach::on` keeps for `AS_IT_WAS` to be reached. It also prints the checker's first broken path.
+- **The code as it was.** The three route tests' old-code replays; `the_old_route_survived_a_late_recheck`, `the_old_route_survived_an_early_restart` and `a_late_restart_ended_the_old_route`, which pin the timing condition; and `the_code_as_it_was_breaks_only_the_rank_delay`, which expects `RANK_DELAY_KEPT` to break, `HOLD_KEPT`, `NO_ORDER_OVER_MATERIAL` and `AUTHORITY_BACKOFF_KEPT` to hold, and every `COVERAGE` row whose `on` keeps for `AS_IT_WAS` to be reached. It also prints the checker's first broken path.
 - **The guards**, each with one flag set on the code as it is through `without(..)`:
   - `the_gate_holds_while_the_clock_holds` sets `hold_orders` and expects `HOLD_KEPT` to break. It then keeps to a path whose last pass's probe finds the hostname does not resolve: a held Refused verdict has no route to order along, so the break orders along Direct, the model's only route.
   - `obtain_rechecks_material` sets `obtain_skips_recheck` and expects `NO_ORDER_OVER_MATERIAL` to break.
@@ -378,9 +378,7 @@ and run this test, put at the end of `mod tests`, before the file's last closing
         assert!(checker.discovery(HOLD_KEPT).is_none(), "{HOLD_KEPT} breaks");
         assert!(checker.discovery(NO_ORDER_OVER_MATERIAL).is_none(), "{NO_ORDER_OVER_MATERIAL} breaks");
         assert!(checker.discovery(AUTHORITY_BACKOFF_KEPT).is_none(), "{AUTHORITY_BACKOFF_KEPT} breaks");
-        for row in COVERAGE.iter().filter(|row| row.reach.on(model.broken)) {
-            assert!(checker.discovery(row.name).is_some(), "{} is never reached", row.name);
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
 ```
 
@@ -437,7 +435,7 @@ When a change alters when a pass pushes a hostname, what it records, or what `ob
    - `action_due`, `wake`, `rank_delay`, `issuance_step` and `machine_rank`: `AcmeIssuance::pass`, which calls them, and `wait_words`.
 2. If the change adds a guard, add a `Broken` flag that removes it, and a test naming the property it keeps.
 3. If the change fixes a finding, model it as the code writes it and make it the default. Then add the old code as `Broken` flags, and keep the finding tests as replays on that model, since their printed paths are the record of what the fix keeps out.
-4. If the change adds a branch, add a `COVERAGE` row whose predicate requires the branch it names and reads the field the name claims, and give it the `Reach` of the models that take it.
+4. If the change adds a branch, add a `COVERAGE` row whose predicate requires the branch it names and reads the field the name claims, and give it the `on` of the models that take it, `everywhere` for every model.
 5. Every `State` field is read: `row`, `policy`, each Machine's `verdict`, `orderable_since`, `obtaining` and `unblocked` (by `RANK_DELAY_KEPT`), and `took` (by the properties and rows). A field that is only written still splits states, so remove one that nothing reads.
 6. Move the sync commit below forward only after you confirmed each covered function still reads as the model says.
 

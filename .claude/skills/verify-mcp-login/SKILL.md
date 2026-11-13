@@ -30,7 +30,7 @@ The model in `core/crates/ployz-verify/src/mcp_login.rs` explores every interlea
 
 **The reads, audited against the other login's steps.**
 - **`stored` at `:92` against the other's rename (`:79`).** The rename can land just before the read or just after it, and between the read and this login's own rename. The read and the rename are separate steps, so the model reaches each order. The rename reads nothing (`:79`), so the model's rename reads nothing: it never compares `mcp.json` with what its login read.
-- **The list at `:255` against the other's `DELETE`.** The `DELETE` can land before the list, so the list misses the token (`Ok(false)`, `:147`), or between the list and this login's `DELETE` (a 404). Both are separate steps, and both orders are reached (two `Reach::AsIs` rows).
+- **The list at `:255` against the other's `DELETE`.** The `DELETE` can land before the list, so the list misses the token (`Ok(false)`, `:147`), or between the list and this login's `DELETE` (a 404). Both are separate steps, and both orders are reached (two `is_shipped` rows).
 - **The `DELETE` at `:263` against the other's `DELETE`.** Each is one statement. The second finds no row and gets a 404.
 
 **Every writer and reader of `mcp.json`.** This grep lists them:
@@ -127,7 +127,7 @@ How far this departs from the docs (`docs/user/cli/overview.md:116`): a login th
 - its list lands after the first `DELETE`: it finds no `P` and says nothing (`Ok(false)`, `:147`). The finding's replay takes this way;
 - its list lands before the first `DELETE`, and its `DELETE` after: Cloud has no row, and with no Server Clear pending for `P`, `pendingRevocation` re-raises the `NotFound` (`dashboard/src/routes/api/cli/-cli.handler.ts:572-577`). The CLI reads the 404 as `UnknownCredential` (`remove_token` in `core/crates/ployz/src/cloud_account/token.rs`), and the login warns that `P` "is still live" though its row is gone (`:148-154`).
 
-Both are `Reach::AsIs` rows, and no property covers them: `P` is revoked either way.
+Both are `is_shipped` rows, and no property covers them: `P` is revoked either way.
 
 **Nothing a later login does ends the orphan.** `fate`'s id is the token that login read (`:212`), and the orphan is in no file. Things that do end it: `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:243-268`), the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), the member leaving the Organization (`dashboard/src/modules/organization/membership.server.ts:44-45`), and expiry after `LIFETIME_DAYS` (`:13`, `:106`; `dashboard/src/modules/identity/organization-token.server.ts:71`), after which Cloud refuses the token as a bearer (`tokenRuns`, `dashboard/src/modules/identity/caller.server.ts:129-130`, `dashboard/src/modules/identity/claim-required.server.ts:40`), though `ployz token ls` still lists its row as `expired` (`dashboard/src/modules/identity/organization-token.server.ts:157`). `AgentTokenRefused`'s text also names the Organization's deletion (`core/crates/ployz/src/cloud_login.rs:80`). This list may not be complete.
 
@@ -162,10 +162,10 @@ Read the tests in five groups.
   - `a_login_that_reads_the_other_s_token_makes_its_note_stale` replays the second route, and asserts every token is accounted at its end.
   - `the_first_stale_note_follows_another_login_s_rename` asserts only that another login's rename lands between the printing login's rename and its note. BFS may return either route, so it doesn't assert which.
   - `only_a_race_orphans_a_token` and `the_unraced_stale_note_is_the_second_route` are the unraced searches above.
-  - `current_code_breaks_only_the_finding` expects `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED` to break, the other three to hold, and every row that is not `Reach::Fix` to be reached.
+  - `current_code_breaks_only_the_finding` expects `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED` to break, the other three to hold, and every row that is not `is_proposed` to be reached.
 - **The code's guards.** `the_temp_file_is_flushed_before_the_rename`, `an_unflushed_save_keeps_the_token_before`, `fate_leaves_a_token_in_another_cloud`, `fate_leaves_a_token_in_another_organization`, `revoke_deletes_only_a_listed_agent_token`, `the_kind_check_refuses_a_cli_token` and `a_failed_save_revokes_the_token_just_made` each set one flag on `as_is_without(..)` (Breaking a guard yourself). The three that break `EVERY_TOKEN_ACCOUNTED` search with every raced state rejected, so the flag, not the race, is what breaks it.
-- **The fix.** `the_fix_holds` runs `fixed()` with `assert_properties`: all five `always` hold, and every row that is not `Reach::AsIs` is reached. `the_fix_serializes_the_finding_s_logins`, `the_fix_holds_off_a_second_login`, `the_fix_releases_the_lock_when_a_login_fails`, `the_fix_revokes_a_first_login_s_token` and `the_fix_revokes_the_holder_s_token_and_keeps_the_earlier_one_named` check its edge states (The fix).
-- **The fix's parts.** `the_fix_needs_the_lock_from_the_read` and `the_fix_needs_the_lock_through_the_report` each set one flag on `fixed_without(..)`.
+- **The fix.** `the_fix_holds` runs `proposed()` with `assert_properties`: all five `always` hold, and every row that is not `is_shipped` is reached. `the_fix_serializes_the_finding_s_logins`, `the_fix_holds_off_a_second_login`, `the_fix_releases_the_lock_when_a_login_fails`, `the_fix_revokes_a_first_login_s_token` and `the_fix_revokes_the_holder_s_token_and_keeps_the_earlier_one_named` check its edge states (The fix).
+- **The fix's parts.** `the_fix_needs_the_lock_from_the_read` and `the_fix_needs_the_lock_through_the_report` each set one flag on `proposed_without(..)`.
 - **The predicate.** `a_token_is_accounted_only_when_held_revoked_or_named` checks `accounted` and `counts` at their edges.
 
 ## The fix
@@ -185,11 +185,11 @@ In the model, `McpLogin::locks` turns it on. `McpLogin::read` takes the lock and
 
 **Each part, and what keeps it.**
 
-| Part | Flag | What breaks without it | Test |
+| Part | `Fix` field | What breaks without it | Test |
 |---|---|---|---|
-| The lock from the read | `fix_unlocked` | `EVERY_TOKEN_ACCOUNTED`, through the race | `the_fix_needs_the_lock_from_the_read` |
-| Holding it through the report | `fix_releases_before_report`, which releases after the rename | `NOTE_HOLDS_WHEN_PRINTED`, through the second route; `EVERY_TOKEN_ACCOUNTED` holds | `the_fix_needs_the_lock_through_the_report` |
-| Releasing it as the login returns | none: K12 deletes the release in `McpLogin::step` | no `always`. The other login waits forever, and only two rows go unreached: the `Reach::Fix` row and "every login returns Ok" (176 states) | `the_fix_holds`, through its rows |
+| The lock from the read | `unlocked` | `EVERY_TOKEN_ACCOUNTED`, through the race | `the_fix_needs_the_lock_from_the_read` |
+| Holding it through the report | `releases_before_report`, which releases after the rename | `NOTE_HOLDS_WHEN_PRINTED`, through the second route; `EVERY_TOKEN_ACCOUNTED` holds | `the_fix_needs_the_lock_through_the_report` |
+| Releasing it as the login returns | none: K12 deletes the release in `McpLogin::step` | no `always`. The other login waits forever, and only two rows go unreached: the `is_proposed` row and "every login returns Ok" (176 states) | `the_fix_holds`, through its rows |
 
 The model has no liveness property, so a lock that is never released shows only as unreached `COVERAGE` rows. An early release (the flag) and no release (K12) are different breaks.
 
@@ -228,7 +228,7 @@ Some tests print a story before they fail, and some print none. To see the story
 ```rust
     #[test]
     fn scratch_story() {
-        let model = fixed_without(Broken { fix_unlocked: true, ..Broken::default() });
+        let model = proposed_without(Fix { unlocked: true, ..Fix::default() });
         breaks(model, EVERY_TOKEN_ACCOUNTED);
     }
 ```
@@ -267,12 +267,12 @@ Each `Broken` flag is already set by its own test, so setting one in a test of y
 | `revoke`'s listed-as-agent check (`:256-262`) | `revoke_unlisted` | `McpLogin::list` sets `found` to true | `NO_CLI_TOKEN_REVOKED` | `revoke_deletes_only_a_listed_agent_token` |
 | The kind check and refusal (`:109`, `:119-124`) | `keep_non_agent` | `McpLogin::save` saves a `cli` token | `ONLY_AGENT_TOKEN_HELD` | `the_kind_check_refuses_a_cli_token` |
 | The revoke of the token just made, and its warning (`:125-136`) | `failed_save_keeps_new_token` | `McpLogin::unmaking` returns `Pc::Done(Outcome::Err)` | `EVERY_TOKEN_ACCOUNTED` | `a_failed_save_revokes_the_token_just_made` |
-| The fix's lock from the read | `fix_unlocked` | `McpLogin::locks` is false | `EVERY_TOKEN_ACCOUNTED` | `the_fix_needs_the_lock_from_the_read` |
-| The fix's lock through the report | `fix_releases_before_report` | `McpLogin::save` releases the lock after the rename | `NOTE_HOLDS_WHEN_PRINTED` | `the_fix_needs_the_lock_through_the_report` |
+| The fix's lock from the read | `unlocked` | `McpLogin::locks` is false | `EVERY_TOKEN_ACCOUNTED` | `the_fix_needs_the_lock_from_the_read` |
+| The fix's lock through the report | `releases_before_report` | `McpLogin::save` releases the lock after the rename | `NOTE_HOLDS_WHEN_PRINTED` | `the_fix_needs_the_lock_through_the_report` |
 
-**Which kind of property each flag breaks**, from a scratch run that checked each flag on `fixed()`. It lists the `always` properties that break on the flagged model but not on `fixed()`, and the rows `fixed()` reaches but the flagged model doesn't. The code guards run on `fixed()` too, because on the code as it is `EVERY_TOKEN_ACCOUNTED` already breaks through the race.
+**Which kind of property each flag breaks**, from a scratch run that checked each flag on `proposed()`. It lists the `always` properties that break on the flagged model but not on `proposed()`, and the rows `proposed()` reaches but the flagged model doesn't. The code guards run on `proposed()` too, because on the code as it is `EVERY_TOKEN_ACCOUNTED` already breaks through the race.
 
-| Flag on `fixed()` | States | `always` properties that break | `sometimes` rows left unreached |
+| Flag or `Fix` field on `proposed()` | States | `always` properties that break | `sometimes` rows left unreached |
 |---|---|---|---|
 | `persist_unflushed_bytes` | 1114 | `REVOKED_ONLY_WHEN_DURABLE` | none |
 | `revoke_after_unflushed` | 1366 | `REVOKED_ONLY_WHEN_DURABLE` | "a save is Unflushed, and the login warns that it may not survive a crash and that the token before is still live" |
@@ -281,8 +281,8 @@ Each `Broken` flag is already set by its own test, so setting one in a test of y
 | `revoke_unlisted` | 1166 | `NO_CLI_TOKEN_REVOKED` | "the token before is of kind cli, and the login leaves it and says nothing" |
 | `keep_non_agent` | 1686 | `ONLY_AGENT_TOKEN_HELD` | "Cloud answers a cli token, and the login refuses it and revokes it" |
 | `failed_save_keeps_new_token` | 694 | `EVERY_TOKEN_ACCOUNTED` | "Cloud answers a cli token, and the login refuses it and revokes it", "a save fails before the rename, and the login revokes the token it just made" and "the revoke of the token just made fails, and the login warns \"Could not revoke the token … just made\"" |
-| `fix_unlocked` | 4104 | `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED` | none |
-| `fix_releases_before_report` | 2354 | `NOTE_HOLDS_WHEN_PRINTED` | none |
+| `unlocked` | 4104 | `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED` | none |
+| `releases_before_report` | 2354 | `NOTE_HOLDS_WHEN_PRINTED` | none |
 
 The scratch test that printed it follows. Put it at the end of `mod tests`, before the file's last closing brace, and run it alone.
 
@@ -297,12 +297,17 @@ The scratch test that printed it follows. Put it at the end of `mod tests`, befo
             ("revoke_unlisted", Broken { revoke_unlisted: true, ..Broken::default() }),
             ("keep_non_agent", Broken { keep_non_agent: true, ..Broken::default() }),
             ("failed_save_keeps_new_token", Broken { failed_save_keeps_new_token: true, ..Broken::default() }),
-            ("fix_unlocked", Broken { fix_unlocked: true, ..Broken::default() }),
-            ("fix_releases_before_report", Broken { fix_releases_before_report: true, ..Broken::default() }),
         ];
-        let baseline = check(fixed());
-        for (name, broken) in flags {
-            let model = fixed_without(broken);
+        let fix_parts = [
+            ("unlocked", proposed_without(Fix { unlocked: true, ..Fix::default() })),
+            ("releases_before_report", proposed_without(Fix { releases_before_report: true, ..Fix::default() })),
+        ];
+        let baseline = check(proposed());
+        let models = flags
+            .into_iter()
+            .map(|(name, broken)| (name, McpLogin { broken, ..proposed() }))
+            .chain(fix_parts);
+        for (name, model) in models {
             let checker = check(model);
             println!("{name} on fixed: {} states", checker.unique_state_count());
             for property in model.properties() {
@@ -344,8 +349,8 @@ Each quoted statement occurs once in the function or const its row names. Most a
 | K05. `McpLogin::list`: `self.broken.revoke_unlisted \|\| listed_as_agent(state.token(state.previous(who)));` replaced by `listed_as_agent(state.token(state.previous(who)));` | `revoke_deletes_only_a_listed_agent_token` |
 | K06. `McpLogin::save`: `if state.token(made).kind != Kind::Agent && !self.broken.keep_non_agent {` replaced by `if state.token(made).kind != Kind::Agent {`, and in `McpLogin::offers`, `let saves = state.token(Tok::of(who)).kind == Kind::Agent \|\| self.broken.keep_non_agent;` replaced by `let saves = state.token(Tok::of(who)).kind == Kind::Agent;` | `the_kind_check_refuses_a_cli_token` |
 | K07. `McpLogin::unmaking`: `if self.broken.failed_save_keeps_new_token {` replaced by `if false {` | `a_failed_save_revokes_the_token_just_made` |
-| K08. `McpLogin::locks`: its body `self.fix && !self.broken.fix_unlocked` replaced by `self.fix` | `the_fix_needs_the_lock_from_the_read` |
-| K09. `McpLogin::save`: `if self.locks() && self.broken.fix_releases_before_report {` replaced by `if false {` | `the_fix_needs_the_lock_through_the_report` |
+| K08. `McpLogin::locks`: its body `self.fix.proposal().is_some_and(|fix| !fix.unlocked)` replaced by `self.fix.is_proposed()` | `the_fix_needs_the_lock_from_the_read` |
+| K09. `McpLogin::save`: `if self.locks() && self.proposal().releases_before_report {` replaced by `if false {` | `the_fix_needs_the_lock_through_the_report` |
 | K10. `McpLogin::read`: the three lines `if self.locks() {`, `state.lock = Some(who);` and `}` deleted, so the fix takes no lock | `the_fix_holds`, `the_fix_holds_off_a_second_login`, `the_fix_needs_the_lock_through_the_report`, `the_fix_releases_the_lock_when_a_login_fails`, `the_fix_serializes_the_finding_s_logins` |
 | K11. `McpLogin::offers`: `if pc == Pc::Idle && self.locks() && state.lock.is_some() {` replaced by `if false {`, so no login waits on the lock | `the_fix_holds`, `the_fix_holds_off_a_second_login`, `the_fix_needs_the_lock_through_the_report`, `the_fix_serializes_the_finding_s_logins` |
 | K12. `McpLogin::step`: the three lines `if matches!(next, Pc::Done(_)) && state.lock == Some(who) {`, `state.lock = None;` and `}` deleted, so a returned login keeps the lock | `the_fix_holds`, `the_fix_holds_off_a_second_login`, `the_fix_releases_the_lock_when_a_login_fails`, `the_fix_revokes_a_first_login_s_token`, `the_fix_revokes_the_holder_s_token_and_keeps_the_earlier_one_named`, `the_fix_serializes_the_finding_s_logins` |
@@ -366,7 +371,7 @@ Each quoted statement occurs once in the function or const its row names. Most a
 | K27. `McpLogin::save`: `state.raced = true;` deleted, so the `raced` mark is never set | `fate_leaves_a_token_in_another_cloud`, `fate_leaves_a_token_in_another_organization`, `only_a_race_orphans_a_token`, `the_first_orphan_is_a_race`, `the_fix_needs_the_lock_from_the_read`, `two_first_logins_orphan_the_first_rename`, `two_logins_that_read_the_same_token_orphan_the_first_rename` |
 | K28. `McpLogin::save`: `state.file = File::Holds(made);` wrapped in `if match state.login(who).previous { Some(previous) => state.file == File::Holds(previous), None => !matches!(state.file, File::Holds(_)) } { … }`, so the rename happens only while `mcp.json` holds what its login read | `two_first_logins_orphan_the_first_rename`, `two_logins_that_read_the_same_token_orphan_the_first_rename` |
 
-K10, K11 and K12 edit the fix's code directly; K08 is the same as deleting the lock everywhere. Run with `scratch_unreached` on `fixed()`: K10 gives 4104 states, and K11 5838, and under each `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED` break, which is where `the_fix_holds` fails. K12 gives 176 states, breaks no `always`, and leaves the `Reach::Fix` row and "every login returns Ok" unreached, because the logins deadlock. K13 to K18 are the bounds dropped by one, and K13 to K17 are the choices removed. K19 to K24 are the start files removed. K25 to K27 break the properties' own bookkeeping, and K27 must turn the unraced searches red, which it does through `only_a_race_orphans_a_token` (the guard tests that search unraced go red too, since their filter then finds the race first). Under K28 the losing login renames nothing but still goes on to revoke its token before, so its own token is left unaccounted; only the replays, which pin `mcp.json`'s end, go red.
+K10, K11 and K12 edit the fix's code directly; K08 is the same as deleting the lock everywhere. Run with `scratch_unreached` on `proposed()`: K10 gives 4104 states, and K11 5838, and under each `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED` break, which is where `the_fix_holds` fails. K12 gives 176 states, breaks no `always`, and leaves the `is_proposed` row and "every login returns Ok" unreached, because the logins deadlock. K13 to K18 are the bounds dropped by one, and K13 to K17 are the choices removed. K19 to K24 are the start files removed. K25 to K27 break the properties' own bookkeeping, and K27 must turn the unraced searches red, which it does through `only_a_race_orphans_a_token` (the guard tests that search unraced go red too, since their filter then finds the race first). Under K28 the losing login renames nothing but still goes on to revoke its token before, so its own token is left unaccounted; only the replays, which pin `mcp.json`'s end, go red.
 
 A side-effect failure is a test whose pinned path or expected rows your edit already moved, such as `fate_leaves_a_token_in_another_cloud` under K25. A guard that no longer earns its keep fails with its flag alone, on a model with no other edit.
 
@@ -396,14 +401,14 @@ The first is "a login reads no mcp.json"; the second is "Cloud answers a cli tok
 cd core && cargo nextest run -p ployz-verify mcp_login --no-fail-fast
 ```
 
-Each of the 21 rows was made unreachable alone this way at this PR's head. Each `Reach::Both` row turned `current_code_breaks_only_the_finding` and `the_fix_holds` red, each `Reach::AsIs` row only `current_code_breaks_only_the_finding`, and the `Reach::Fix` row only `the_fix_holds`. No other test went red.
+Each of the 21 rows was made unreachable alone this way at this PR's head. Each `everywhere` row turned `current_code_breaks_only_the_finding` and `the_fix_holds` red, each `is_shipped` row only `current_code_breaks_only_the_finding`, and the `is_proposed` row only `the_fix_holds`. No other test went red.
 
 **Listing unreached rows.** To see every row a model leaves unreached in one run, put this at the end of `mod tests`:
 
 ```rust
     #[test]
     fn scratch_unreached() {
-        for (name, model) in [("as is", as_is()), ("fixed", fixed())] {
+        for (name, model) in [("as is", as_is()), ("fixed", proposed())] {
             let checker = check(model);
             println!("{name}: {} states", checker.unique_state_count());
             for property in model.properties() {
@@ -430,7 +435,7 @@ Expected at this head: `as is: 4104 states` with `EVERY_TOKEN_ACCOUNTED`'s and `
 
 | Bound | Value | Dropped by one: states, and unreached rows | Lifted by one |
 |---|---|---|---|
-| `MAX_LOGINS` | 2 | 91 and 91; every `Reach::AsIs` row and the `Reach::Fix` row | see below |
+| `MAX_LOGINS` | 2 | 91 and 91; every `is_shipped` row and the `is_proposed` row | see below |
 | `CLI_ANSWERS` | 1 | 2752 and 652; "Cloud answers a cli token, and the login refuses it and revokes it" | 4266 and 1192 states; no new `always` breaks; every row reached; the suite passes |
 | `SAVE_FAILURES` | 1 | 3028 and 690; "a save fails before the rename, and the login revokes the token it just made" | 4188 and 1168; the same |
 | `FLUSH_FAILURES` | 1 | 2836 and 802; "a save is Unflushed, and the login warns that it may not survive a crash and that the token before is still live" | 4224 and 1134; the same |
@@ -445,7 +450,7 @@ The state counts are as is, then fixed. Each drop's `always` results are unchang
 | `Cli` | 3159 and 879 | "the token before is of kind cli, and the login leaves it and says nothing" |
 | `OtherCloud` | 3583 and 943 | "the token before is in another Cloud, and the login warns that it is still live" |
 | `OtherOrganization` | 3583 and 943 | "the token before is in another Organization, and the login warns that it is still live" |
-| `Here` | 2673 and 827 | the two revoke-side `Reach::AsIs` rows, since only a `P` both logins read can be revoked twice; as is only |
+| `Here` | 2673 and 827 | the two revoke-side `is_shipped` rows, since only a `P` both logins read can be revoked twice; as is only |
 | `Absent` | 3939 and 1035 | "a login reads no mcp.json" |
 
 The lifts ran `scratch_unreached`, then the suite with `--no-fail-fast`; it lists every red test, though only the `MAX_LOGINS` lift turned any red.
@@ -461,7 +466,7 @@ cd core && cargo nextest run -p ployz-verify -E 'test(=mcp_login::tests::scratch
 It printed `as is: 363558 states` and `fixed: 15615 states`, the same two `always` breaking as is, none on the fix, and no row unreached; it took 4.1 s of nextest time and 9.3 s of wall time with the release build warm. In the `mcp_login` suite at 3, `two_first_logins_orphan_the_first_rename` and `two_logins_that_read_the_same_token_orphan_the_first_rename` go red: their replays leave Login C unstarted, so `every_token_accounted` holds at their end. What the third login adds, as a scratch search showed: three overlapping first logins leave two tokens unaccounted (TA and TB, each replaced by the next rename), and no path leaves three.
 
 **Left out, and argued.**
-- **Kills, power loss and lost replies (risk 2).** A kill between `new_token` and the rename, or between the rename and the warnings, leaves a token unnamed. A reply lost after Cloud minted is an Err to the CLI (`call` and `exchange` retry nothing, `core/crates/ployz/src/cloud_account/calls.rs` and `core/crates/ployz/src/cloud_account/http.rs`; `REQUEST_TIMEOUT`, `core/crates/ployz/src/cloud_account/http.rs`), and the login returns at `:108` naming nothing. Each leaves a token unnamed on the fix too, so it is not this finding. A scratch lift added a kill action that ends any started login and releases its lock, and counted a killed login as returned: on `fixed()`, 3168 states, `EVERY_TOKEN_ACCOUNTED` broke, the other four `always` held, and a search that rejected every state with a killed login found no break of any of the five.
+- **Kills, power loss and lost replies (risk 2).** A kill between `new_token` and the rename, or between the rename and the warnings, leaves a token unnamed. A reply lost after Cloud minted is an Err to the CLI (`call` and `exchange` retry nothing, `core/crates/ployz/src/cloud_account/calls.rs` and `core/crates/ployz/src/cloud_account/http.rs`; `REQUEST_TIMEOUT`, `core/crates/ployz/src/cloud_account/http.rs`), and the login returns at `:108` naming nothing. Each leaves a token unnamed on the fix too, so it is not this finding. A scratch lift added a kill action that ends any started login and releases its lock, and counted a killed login as returned: on `proposed()`, 3168 states, `EVERY_TOKEN_ACCOUNTED` broke, the other four `always` held, and a search that rejected every state with a killed login found no break of any of the five.
 - **The unreadable file's token (risk 3).** `login` replaces a `Corrupt` file without revoking or naming the token it held (`:94-97`). Nobody can know that token, so the property counts none (`counts`).
 - **A token Cloud refuses while `mcp.json` still holds it, and no `ployz mcp logout` (risk 5).** Expiry, `ployz token rm` and a member leaving are not steps; nor is any way back to no file.
 - **The other writers of a token row** (What the model copies).

@@ -38,6 +38,8 @@ use ployz_decide::issuance::{
 };
 use stateright::{Model, Property};
 
+use crate::harness::{self, everywhere};
+
 /// Machines in the model. Slot `who` holds the Machine whose id sorts `who`th, so its rank is
 /// `who`.
 const MACHINES: usize = 2;
@@ -479,45 +481,21 @@ impl State {
     }
 }
 
-/// Which models a `COVERAGE` row is reached on: every model, or only those that keep or that
-/// take out one guard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reach {
-    Both,
-    /// Unless `Broken::hold_keeps_orderable_since`.
-    HoldResets,
-    /// Unless `Broken::early_return_keeps_orderable_since`.
-    EarlyReturnResets,
-}
-
-impl Reach {
-    fn on(self, broken: Broken) -> bool {
-        match self {
-            Self::Both => true,
-            Self::HoldResets => !broken.hold_keeps_orderable_since,
-            Self::EarlyReturnResets => !broken.early_return_keeps_orderable_since,
-        }
-    }
-}
-
 /// One `sometimes`: a branch the code handles, read from the state that took it.
-struct Coverage {
-    name: &'static str,
-    reach: Reach,
-    reached: fn(&AcmeIssuance, &State) -> bool,
-}
+type Coverage = harness::Coverage<AcmeIssuance>;
 
 fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
 }
 
-/// Each branch the bounds reach, on every model or only on those `Reach` names.
+/// Each branch the bounds reach, on every model or only on those a row's `on` names.
 /// `the_code_keeps_every_property` and `the_code_as_it_was_breaks_only_the_rank_delay` expect
 /// every row their model reaches.
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "the policy refusal records its reason and drops the row's clock",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -531,7 +509,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the policy refusal writes nothing over its own reason",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -544,7 +523,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the policy refusal's record_certificate_error returns Err",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -557,17 +537,20 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "with no directory, the pass returns before the gate",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::NoDirectory { .. })),
     },
     Coverage {
         name: "a call before the gate returns Err",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Errored { .. })),
     },
     Coverage {
         name: ERROR_KEEPS_THE_DELAY,
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -578,27 +561,32 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a pass skips the hostname once the row holds material",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::HasMaterial { .. })),
     },
     Coverage {
         name: "rank 1 waits out its rank delay with the gate open",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Waiting { who: 1, .. })),
     },
     Coverage {
         name: "the gate holds a Machine still in its rank delay",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Held { due: false, .. })),
     },
     Coverage {
         name: "the gate holds an Order-due Machine",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Held { due: true, .. })),
     },
     Coverage {
         name: "rank 0 refuses and records the refusal and its clock",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -615,7 +603,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a refusal's record_certificate_failure returns Err",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -628,7 +617,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: RANK_1_RECORDS_NOTHING,
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -642,7 +632,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "rank 0 pushes the hostname with no clock",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -656,7 +647,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "rank 1 pushes the hostname once its rank delay passed",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -670,7 +662,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a Machine pushes the hostname once the clock passed",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -683,7 +676,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a verdict change opens the gate before a refused clock passes",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -696,17 +690,20 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "obtain's recheck finds material and returns",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Rechecked { .. })),
     },
     Coverage {
         name: "obtain publishes the certificate",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Issued { .. })) && state.row.material,
     },
     Coverage {
         name: "a failed order records an Authority clock",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -722,7 +719,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a failed order's record_certificate_failure returns Err",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -735,7 +733,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a second failure of the same kind doubles the backoff",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -753,7 +752,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a failed order after a refusal counts from one",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -767,7 +767,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "an order that ends ticks after its pass counts its clock from the pass",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -784,7 +785,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a restart empties hosts",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -797,7 +799,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "rank 1 pushes the hostname over a passed clock once its rank delay passed",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -811,7 +814,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "rank 1 pushes the hostname on a changed verdict once its rank delay passed",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -825,7 +829,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a held pass drops orderable_since",
-        reach: Reach::HoldResets,
+        on: |model| !model.broken.hold_keeps_orderable_since,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -836,7 +841,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a pass that stops before the gate drops orderable_since",
-        reach: Reach::EarlyReturnResets,
+        on: |model| !model.broken.early_return_keeps_orderable_since,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -849,7 +855,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a restart ends an obtain in flight",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -1320,12 +1327,7 @@ impl Model for AcmeIssuance {
                 !state.sleeps_past_the_delay()
             }),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| row.reach.on(self.broken))
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -2213,13 +2215,7 @@ mod tests {
             "{WAKES_BY_THE_DELAY} breaks"
         );
         assert!(last(&breaks(model, RANK_DELAY_KEPT)).early());
-        for row in COVERAGE.iter().filter(|row| row.reach.on(model.broken)) {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
 
     /// The gate's hold (core/crates/ployz-decide/src/issuance.rs:186). With it read as an order along Direct, a pass orders while the

@@ -37,6 +37,8 @@ use std::fmt::Write as _;
 
 use stateright::{Model, Property};
 
+use crate::harness::{self, Variant, everywhere};
+
 /// The most `ployz login` processes a model runs. The default model runs two.
 const MAX_LOGINS: usize = 3;
 /// The slot of the other Cloud command, whose `signed_in` reads the file.
@@ -388,43 +390,34 @@ impl State {
     }
 }
 
-/// A guard taken out, to show the check catches what it prevents. The first is a guard the
-/// code has; the other four are parts of the fix.
+/// A guard of the code as it is taken out, to show the check catches what it prevents.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag removes one independent guard"
-)]
 struct Broken {
     /// `save` writes the file in place, in two steps, instead of a temp file renamed over
     /// it (:215-220).
     save_tears: bool,
+}
+
+/// A part of the fix taken out, to show the check catches what it prevents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag removes one independent part of the fix"
+)]
+struct Fix {
     /// The fix's `forget` removes the file whatever it holds, as the code's does.
-    fix_forgets_any_file: bool,
+    forgets_any_file: bool,
     /// The fix's `forget` compares and removes in two steps, with no lock between them.
-    fix_forget_unlocked: bool,
+    forget_unlocked: bool,
     /// The fix's `request_code` compares before its POST, and saves after it with no compare.
-    fix_compares_before_post: bool,
+    compares_before_post: bool,
     /// The fix's `request_code` saves over whatever the file holds, as the code's does.
-    fix_request_overwrites: bool,
+    request_overwrites: bool,
 }
 
-/// Which model a `COVERAGE` row is reached on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reach {
-    Both,
-    /// Only on the code as it is: the row is a removal the fix takes away.
-    AsIs,
-    /// Only with the fix.
-    Fix,
-}
-
-/// One `sometimes`: a branch the code handles, read from the state that took it.
-struct Coverage {
-    name: &'static str,
-    reach: Reach,
-    reached: fn(&SignInStore, &State) -> bool,
-}
+/// One `sometimes`: a branch the code handles, read from the state that took it. A row is
+/// reached only on the code as it is when it is a removal the fix takes away.
+type Coverage = harness::Coverage<SignInStore>;
 
 fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
@@ -454,34 +447,40 @@ fn logins_waiting_on(state: &State, code: Code) -> usize {
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "start finds no cloud.json and requests a code",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::StartRequests(File::Absent)),
     },
     Coverage {
         name: "start reads an unreadable cloud.json as none and requests a code",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::StartRequests(File::Unreadable)),
     },
     Coverage {
         name: "start skips an expired Pending and requests a code",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::StartRequests(File::Pending(code))) if state.grant(code) == Grant::Lapsed),
     },
     Coverage {
         name: "start finds a SignedIn whose session Cloud ended and requests a code",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::StartRequests(File::SignedIn(code))) if !state.honoured(code)),
     },
     Coverage {
         name: "request_code saves a new Pending",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::Requested) && matches!(state.file, File::Pending(_))
         },
     },
     Coverage {
         name: "start refreshes a stored SignedIn and returns it",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::Refreshed)
                 && matches!(state.file, File::SignedIn(code) if state.honoured(code))
@@ -489,7 +488,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "start's refresh saves a SignedIn whose session a logout ended meanwhile",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::Refreshed)
                 && matches!(state.file, File::SignedIn(code) if !state.honoured(code))
@@ -497,7 +497,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a second waiter resumes the code",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             polled(state, Poller::Resume, Answer::Pending)
                 && state
@@ -507,64 +508,76 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "start's poll_once gets the token of a stored Pending",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| polled(state, Poller::Resume, Answer::Token),
     },
     Coverage {
         name: "start's poll_once gets access_denied",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| polled(state, Poller::Resume, Answer::Denied),
     },
     Coverage {
         name: "start's poll_once gets invalid_grant for a spent code",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| polled(state, Poller::Resume, Answer::Spent),
     },
     Coverage {
         name: "a waiter signs in",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::Finished(Role::Login)) && matches!(state.file, File::SignedIn(_))
         },
     },
     Coverage {
         name: "the wait loop gets access_denied",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| polled(state, Poller::Wait, Answer::Denied),
     },
     Coverage {
         name: "the wait loop finds its code expired",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| polled(state, Poller::Wait, Answer::Lapsed),
     },
     Coverage {
         name: "the wait loop gets invalid_grant for a spent code",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| polled(state, Poller::Wait, Answer::Spent),
     },
     Coverage {
         name: "the wait loop gets invalid_grant for a code access_denied deleted",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| polled(state, Poller::Wait, Answer::Swept),
     },
     Coverage {
         name: "signed_in answers SignedOut with no cloud.json",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::CommandSignedOut),
     },
     Coverage {
         name: "signed_in fails on an unreadable cloud.json",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::CommandUnreadable),
     },
     Coverage {
         name: "signed_in returns a stored SignedIn",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::CommandReturnsStored),
     },
     Coverage {
         name: "signed_in's poll_once answers AwaitingApproval",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             polled(state, Poller::Command, Answer::Pending)
                 && state.pc(COMMAND) == Pc::Done(Outcome::AwaitingApproval)
@@ -572,19 +585,22 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "signed_in's poll_once gets the token and finish saves SignedIn",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::Finished(Role::Command)) && matches!(state.file, File::SignedIn(_))
         },
     },
     Coverage {
         name: "signed_in's poll_once gets invalid_grant for a spent code",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| polled(state, Poller::Command, Answer::Spent),
     },
     Coverage {
         name: "logout signs a SignedIn out at Cloud",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::LogoutSignsOut)
                 && matches!(state.pc(LOGOUT), Pc::Clearing(File::SignedIn(code)) if !state.honoured(code))
@@ -592,7 +608,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "logout clears a Pending it did not send to Cloud",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -605,7 +622,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "logout clears an unreadable cloud.json",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -618,7 +636,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "logout finds no cloud.json",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -631,7 +650,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a logout's clear removes a SignedIn saved after its read",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -641,7 +661,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a waiter signs in after a logout read its Pending and cleared cloud.json",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::Finished(Role::Login))
                 && matches!(
@@ -653,7 +674,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a forget removes a SignedIn",
-        reach: Reach::AsIs,
+        on: |model| model.fix.is_shipped(),
+        omit: None,
         reached: |_, state| {
             forgot(state, Role::Login, Found::SignedIn, true)
                 || forgot(state, Role::Command, Found::SignedIn, true)
@@ -661,14 +683,16 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the fix's forget removes its own Pending",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             forgot(state, Role::Login, Found::Own, true) && state.file == File::Absent
         },
     },
     Coverage {
         name: "the fix's forget leaves a SignedIn",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             forgot(state, Role::Login, Found::SignedIn, false)
                 && matches!(state.file, File::SignedIn(_))
@@ -676,7 +700,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the fix's forget leaves another code's Pending",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             forgot(state, Role::Login, Found::Other, false)
                 && matches!(state.file, File::Pending(_))
@@ -684,12 +709,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the fix's forget finds no cloud.json",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| forgot(state, Role::Login, Found::Absent, false),
     },
     Coverage {
         name: "signed_in's forget leaves a SignedIn under the fix",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             forgot(state, Role::Command, Found::SignedIn, false)
                 && matches!(state.file, File::SignedIn(_))
@@ -697,12 +724,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the fix's request_code finds cloud.json changed and start reads it again",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| took(state, Branch::RequestRereads),
     },
     Coverage {
         name: "under the fix, a waiter whose poll got invalid_grant still fails Expired beside the SignedIn",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             state.took
                 == Some(Branch::Forgot {
@@ -722,7 +751,7 @@ struct SignInStore {
     logins: usize,
     /// The fix: a locked `forget` that removes only its own Pending, and a locked
     /// `request_code` save that writes only over the file `start` read.
-    fix: bool,
+    fix: Variant<Fix>,
     broken: Broken,
 }
 
@@ -744,12 +773,17 @@ impl SignInStore {
     /// What `request_code`'s save must still find: the file `start` read under the fix, and
     /// nothing, so it writes over anything, as the code does.
     fn expect(&self, read: File) -> Option<File> {
-        (self.fix && !self.broken.fix_request_overwrites).then_some(read)
+        (self.fix.is_proposed() && !self.proposal().request_overwrites).then_some(read)
     }
 
     /// The fix's `forget` reads and compares the file before it removes it.
     fn compares(&self) -> bool {
-        self.fix && !self.broken.fix_forgets_any_file
+        self.fix.is_proposed() && !self.proposal().forgets_any_file
+    }
+
+    /// The proposal's parts taken out, none on the shipped code.
+    fn proposal(&self) -> Fix {
+        self.fix.proposal().unwrap_or_default()
     }
 
     /// `request_code` (:489-518): Cloud mints the next code.
@@ -819,7 +853,7 @@ impl SignInStore {
             code,
         );
         let removes = !self.compares() || forgets(state.file, code);
-        if removes && self.compares() && self.broken.fix_forget_unlocked {
+        if removes && self.compares() && self.proposal().forget_unlocked {
             return Pc::Removing { code, answer, then };
         }
         if removes {
@@ -864,7 +898,7 @@ impl SignInStore {
             state.took = Some(Branch::RequestRereads);
             return Pc::Idle;
         }
-        if expect.is_some() && self.broken.fix_compares_before_post {
+        if expect.is_some() && self.proposal().compares_before_post {
             return Pc::Posting;
         }
         self.post_and_save(state)
@@ -1066,16 +1100,7 @@ impl Model for SignInStore {
             }),
             Property::always(NO_TORN_READ, |_, state: &State| !state.torn_read),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| match row.reach {
-                    Reach::Both => true,
-                    Reach::AsIs => !self.fix,
-                    Reach::Fix => self.fix,
-                })
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -1117,7 +1142,7 @@ fn story(model: &SignInStore, path: &[(State, Option<Action>)]) -> String {
         );
         // A row that skips a guard is reached by a flag or by a direct edit to the model;
         // it names Broken only when a flag is set.
-        let what = if model.broken == Broken::default() {
+        let what = if model.broken == Broken::default() && model.proposal() == Fix::default() {
             what.replace(" (under Broken)", "")
         } else {
             what
@@ -1357,7 +1382,7 @@ fn reads_as(model: &SignInStore, before: &State, action: Action, after: &State) 
                 format!(
                     "forget: clear removes cloud.json, which held {}{} (:617-618, :224-229)",
                     before.file,
-                    if model.fix { " (under Broken)" } else { "" }
+                    if model.fix.is_proposed() { " (under Broken)" } else { "" }
                 )
             } else if removed {
                 format!(
@@ -1484,26 +1509,26 @@ mod tests {
     fn as_is() -> SignInStore {
         SignInStore {
             logins: 2,
-            fix: false,
+            fix: Variant::Shipped,
             broken: Broken::default(),
         }
     }
 
     /// The fix: a locked `forget` of its own Pending, and a locked `request_code` save over
     /// the file `start` read.
-    fn fixed() -> SignInStore {
-        SignInStore {
-            fix: true,
-            ..as_is()
-        }
+    fn proposed() -> SignInStore {
+        proposed_without(Fix::default())
     }
 
     fn as_is_without(broken: Broken) -> SignInStore {
         SignInStore { broken, ..as_is() }
     }
 
-    fn fixed_without(broken: Broken) -> SignInStore {
-        SignInStore { broken, ..fixed() }
+    fn proposed_without(fix: Fix) -> SignInStore {
+        SignInStore {
+            fix: Variant::Proposed(fix),
+            ..as_is()
+        }
     }
 
     /// Each step `who` took, as the process's place before and after it.
@@ -1783,33 +1808,22 @@ mod tests {
     /// does not add.
     #[test]
     fn current_code_breaks_only_the_finding() {
-        let checker = check(as_is());
+        let model = as_is();
+        let checker = check(model);
         println!("as is: {} states", checker.unique_state_count());
         assert!(checker.discovery(APPROVED_SIGN_IN_KEPT).is_some());
         assert!(
             checker.discovery(NO_TORN_READ).is_none(),
             "{NO_TORN_READ} breaks"
         );
-        for row in COVERAGE.iter().filter(|row| row.reach != Reach::Fix) {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
 
     /// If `save` wrote the file in place, a reader would see it half-written: `start` reads
     /// it as none and requests a code (:204-209, :338-340).
     #[test]
     fn save_writes_a_temp_file_and_renames_it() {
-        let path = breaks(
-            as_is_without(Broken {
-                save_tears: true,
-                ..Broken::default()
-            }),
-            NO_TORN_READ,
-        );
+        let path = breaks(as_is_without(Broken { save_tears: true }), NO_TORN_READ);
         let broken = last(&path);
         assert!(broken.torn_read);
         assert_eq!(broken.file, File::Unreadable);
@@ -1824,10 +1838,7 @@ mod tests {
     #[test]
     fn forget_reads_nothing() {
         let path = follow(
-            as_is_without(Broken {
-                save_tears: true,
-                ..Broken::default()
-            }),
+            as_is_without(Broken { save_tears: true }),
             &[
                 Action::Step(A),
                 Action::Step(A),
@@ -1850,7 +1861,7 @@ mod tests {
     /// The fix holds, and every `sometimes` it reaches is reached.
     #[test]
     fn the_fix_keeps_an_approved_sign_in() {
-        let checker = check(fixed());
+        let checker = check(proposed());
         println!("fixed: {} states", checker.unique_state_count());
         checker.assert_properties();
     }
@@ -1859,7 +1870,7 @@ mod tests {
     /// Pending, and leaves it. B still fails Expired.
     #[test]
     fn the_fix_keeps_the_finding_s_sign_in() {
-        let path = follow(fixed(), &THE_FINDING);
+        let path = follow(proposed(), &THE_FINDING);
         let kept = last(&path);
         assert_eq!(kept.file, File::SignedIn(Code(0)));
         assert_eq!(kept.pc(A), Pc::Done(Outcome::SignedIn));
@@ -1872,9 +1883,9 @@ mod tests {
     #[test]
     fn the_fix_needs_the_comparison() {
         let path = breaks(
-            fixed_without(Broken {
-                fix_forgets_any_file: true,
-                ..Broken::default()
+            proposed_without(Fix {
+                forgets_any_file: true,
+                ..Fix::default()
             }),
             APPROVED_SIGN_IN_KEPT,
         );
@@ -1892,9 +1903,9 @@ mod tests {
     /// `finish` save lands, and `remove_file` removes the SignedIn.
     #[test]
     fn the_fix_needs_the_forget_lock() {
-        let unlocked = fixed_without(Broken {
-            fix_forget_unlocked: true,
-            ..Broken::default()
+        let unlocked = proposed_without(Fix {
+            forget_unlocked: true,
+            ..Fix::default()
         });
         let path = breaks_where(unlocked, APPROVED_SIGN_IN_KEPT, |path| {
             forgot(&last(path), Role::Login, Found::SignedIn, true)
@@ -1913,9 +1924,9 @@ mod tests {
     /// request route, back.
     #[test]
     fn the_fix_compares_at_the_save() {
-        let early = fixed_without(Broken {
-            fix_compares_before_post: true,
-            ..Broken::default()
+        let early = proposed_without(Fix {
+            compares_before_post: true,
+            ..Fix::default()
         });
         let path = breaks_where(early, APPROVED_SIGN_IN_KEPT, |path| {
             let [.., (before, Some(Action::Step(who))), (after, None)] = path.as_slice() else {
@@ -1934,9 +1945,9 @@ mod tests {
     /// `start`: its `forget` leaves A's SignedIn, and its `request_code` replaces it.
     #[test]
     fn the_fix_needs_the_request_guard() {
-        let overwrites = fixed_without(Broken {
-            fix_request_overwrites: true,
-            ..Broken::default()
+        let overwrites = proposed_without(Fix {
+            request_overwrites: true,
+            ..Fix::default()
         });
         let path = breaks(overwrites, APPROVED_SIGN_IN_KEPT);
         assert_eq!(last_took(&path), Some(Branch::Requested));
@@ -1970,7 +1981,7 @@ mod tests {
     fn the_fix_rereads_after_the_resume_branch() {
         let mut schedule = THE_LATE_RESUME.to_vec();
         schedule.extend([Action::Step(B), Action::Step(B)]);
-        let path = follow(fixed(), &schedule);
+        let path = follow(proposed(), &schedule);
         assert!(
             path.iter()
                 .any(|(state, _)| state.took == Some(Branch::RequestRereads))
@@ -1988,7 +1999,7 @@ mod tests {
     #[test]
     fn the_fix_requests_after_forgetting_its_own_pending() {
         let path = follow(
-            fixed(),
+            proposed(),
             &[
                 Action::Step(A),
                 Action::Step(A),
@@ -2029,7 +2040,7 @@ mod tests {
         }
         // No step leaves cloud.json unreadable once a process saved, so the model never
         // reaches a forget beside one. Step one from a state built for it.
-        let start = fixed()
+        let start = proposed()
             .init_states()
             .into_iter()
             .find(|start| start.file == File::Unreadable)
@@ -2044,7 +2055,7 @@ mod tests {
                 then: Then::Return,
             },
         );
-        let fixed_step = fixed()
+        let fixed_step = proposed()
             .next_state(&beside, Action::Step(B))
             .expect("B forgets");
         assert_eq!(fixed_step.file, File::Unreadable);
@@ -2069,7 +2080,7 @@ mod tests {
     #[test]
     fn the_fix_still_reports_expired() {
         let path = breaks(
-            fixed(),
+            proposed(),
             "under the fix, a waiter whose poll got invalid_grant still fails Expired beside the SignedIn",
         );
         assert!(matches!(last(&path).file, File::SignedIn(_)));

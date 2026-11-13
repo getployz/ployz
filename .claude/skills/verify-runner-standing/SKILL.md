@@ -70,10 +70,10 @@ The run is green when all nineteen tests pass. Read them as five groups.
 
 - **What is left of finding 1.** `the_code_still_loses_the_volumes_a_run_deleted_once_taken_over` passes by finding a counterexample on the code as it is, and prints it: a takeover after the read that let `remove_volumes` start. Read it under What is still open.
 - **The whole model.**
-  - `the_code_loses_an_outcome_only_after_deleting_volumes` runs `failing(as_is())`. `NO_WORK_AFTER_END`, `HEEDS_CANCEL` and `TAKEN_OVER_INTERRUPTED` hold. `TAKEOVER_KEEPS_OUTCOME` and `DELETIONS_KEPT` break, and every state that breaks them (`every_break`) has Volumes deleted. Every `COVERAGE` row that is not `StoreFix` is reached.
+  - `the_code_loses_an_outcome_only_after_deleting_volumes` runs `failing(as_is())`. `NO_WORK_AFTER_END`, `HEEDS_CANCEL` and `TAKEN_OVER_INTERRUPTED` hold. `TAKEOVER_KEEPS_OUTCOME` and `DELETIONS_KEPT` break, and every state that breaks them (`every_break`) has Volumes deleted. Every `COVERAGE` row that `on` keeps for it is reached, which leaves out the one row only the store fix reaches.
   - `the_code_as_it_was_breaks_only_the_findings` runs `failing(as_was())`. The three properties the findings name break, the other two hold, and every `Always` row is reached.
   - `a_converting_store_would_keep_the_outcome_and_the_deletions` runs `failing(store_fixed())`. Every property holds and every `sometimes` is reached.
-  - `every_sometimes_needs_what_it_names` takes each `COVERAGE` row's `omit` out of the model that reaches it, and expects the row unreached. Each `sometimes` is one row naming a branch the code handles, and its `reach` says which models have it: `Always` (every shape), `Standing` (the code as it is, with or without the store fix), `Resend` (the code as it is without the store fix, since the store fix never refuses a lost run's `Executed`), or `StoreFix`.
+  - `every_sometimes_needs_what_it_names` takes each `COVERAGE` row's `omit` out of the model that reaches it, and expects the row unreached. Each `sometimes` is one row naming a branch the code handles, and its `on` says which models have it: `everywhere`, `reads_standing` (every site reads `Standing`, with or without the store fix), the code as it is without the store fix and without `no_resend` (the store fix never refuses a lost run's `Executed`), or `store_fix.is_proposed()`.
 - **What `Standing` added.** Six tests each drop one part `Standing` added from `as_is()` and expect the property it keeps to break. The first four flags together make `as_was()`, so each of those stories is the finding its part closes.
 
   | Part of the code | `Broken` flag | Test | Property it keeps |
@@ -113,11 +113,11 @@ No `standing()` read fails on this path. The runner cannot keep this outcome alo
 
 On the CLI, the refusal makes the run's command say the Deployment was replaced. On Cloud, `runStoreDeployment` catches the conflict as `{ nothingToRun }` (`dashboard/src/modules/config-store/store-deployment.server.ts:107`). The function then marks the Volumes done, skips `retire-old` (`dashboard/src/modules/config-store/store-deployment.inngest.ts:85`), and skips `mail-failure`, which runs only for a `ran` result that failed or is unknown (`:105-107`). `onFailure`, which calls `stopStoreDeploymentRun` (`:44-50`), never runs. A run that sent its outcome again as Interrupted returns `Ok` with the Deployment Unknown instead, so Cloud reads `ran` and mails the failure.
 
-Closing it needs the store change `store_fixed()` models. `record` keeps a non-Interrupted `Executed` for an Unknown Deployment as Interrupted, in the same transaction, where the code refuses it (`lifecycle.rs:1641-1644`). `removed_volume` shows an Interrupted outcome's deleted Volumes, where the code reads them NotAttempted for anything but a Success (`lifecycle.rs:2186-2190`). Each part has a `Broken` flag and a test that breaks the property it keeps on `store_fixed()`:
+Closing it needs the store change `store_fixed()` models. `record` keeps a non-Interrupted `Executed` for an Unknown Deployment as Interrupted, in the same transaction, where the code refuses it (`lifecycle.rs:1641-1644`). `removed_volume` shows an Interrupted outcome's deleted Volumes, where the code reads them NotAttempted for anything but a Success (`lifecycle.rs:2186-2190`). Each part is a field of `StoreFix`, and a test sets that field on `Variant::Proposed(StoreFix { .. })` to break the property it keeps on `store_fixed()`:
 
-| Part of the store fix | `Broken` flag | Test | Property it keeps |
+| Part of the store fix | `StoreFix` field | Test | Property it keeps |
 |---|---|---|---|
-| `record` keeps a late `Executed` as Interrupted | `store_refuses_late_executed` | `the_store_fix_needs_record_to_keep_a_late_executed` | `TAKEOVER_KEEPS_OUTCOME` |
+| `record` keeps a late `Executed` as Interrupted | `refuses_late_executed` | `the_store_fix_needs_record_to_keep_a_late_executed` | `TAKEOVER_KEEPS_OUTCOME` |
 | The projection shows an Interrupted outcome's deletions | `projection_hides_interrupted_deletions` | `the_store_fix_needs_the_projection_to_show_interrupted_deletions` | `DELETIONS_KEPT` |
 
 When the store change lands, model it as the code writes it, make `store_fix` the default, and turn `the_code_still_loses_the_volumes_a_run_deleted_once_taken_over` into a `Broken` flag that restores the old store, as the four tests under What `Standing` added did for the runner.
@@ -183,7 +183,7 @@ When a change intentionally alters how the runner reads its standing or how the 
 2. If the change adds a guard, add a `Broken` flag that removes it and a `breaks` test naming the property it keeps. A guard with no failing variant is untested.
 3. If the change ships the store fix, follow What is still open. Do not delete the finding test, since its printed path is the record of what the fix keeps out.
 4. If a property's meaning changes, change its text and say why in the PR body. Narrow a property only when the code is right and the property was wrong about the design.
-5. If the change adds a branch, add a `COVERAGE` row naming it, with the `omit` that takes it out and the `reach` that says which models have it.
+5. If the change adds a branch, add a `COVERAGE` row naming it, with the `omit` that takes it out and the `on` that says which models have it.
 6. Move the sync commit below forward only after you confirmed each covered function still reads as the model says.
 
 ## Bounds and blind spots

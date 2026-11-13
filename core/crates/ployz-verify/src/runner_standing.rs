@@ -57,6 +57,8 @@ use std::fmt::Write as _;
 use ployz_decide::standing::{self as decide, Latch, Over, Read};
 use stateright::{Model, Property};
 
+use crate::harness::{self, Variant, everywhere};
+
 /// The Deployment's status as `record` reads it. `stored` (deployment/mod.rs) remaps a
 /// lapsed lease to Unknown, which the model leaves out.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -397,9 +399,14 @@ struct Broken {
     check_ignores_ended: bool,
     /// The gate before `fill_ingress` (store_runner.rs `execute`) fills when it says Ended.
     gate_ignores_ended: bool,
+}
+
+/// A part of the store fix taken out, to show the check catches what it prevents.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+struct StoreFix {
     /// The store fix's `record` refuses a non-Interrupted `Executed` for an Unknown
     /// Deployment, as the code does (lifecycle.rs:1641-1644).
-    store_refuses_late_executed: bool,
+    refuses_late_executed: bool,
     /// The store fix's projection reads the deletions of an Interrupted outcome
     /// NotAttempted, as the code does (lifecycle.rs:2186-2190).
     projection_hides_interrupted_deletions: bool,
@@ -415,28 +422,9 @@ enum Omit {
     Branch(Branch),
 }
 
-/// Which models reach a `sometimes`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reach {
-    /// The code before `Standing` (`as_was`), the code as it is, and the store fix.
-    Always,
-    /// The code as it is, with or without the store fix.
-    Standing,
-    /// The code as it is without the store fix, which never refuses the `Executed` of a
-    /// lost run.
-    Resend,
-    /// Only the store fix.
-    StoreFix,
-}
-
 /// One `sometimes`: a branch the code handles, read from the state that took it, and
 /// what to take out of the model to show nothing else reaches it.
-struct Coverage {
-    name: &'static str,
-    reach: Reach,
-    omit: Omit,
-    reached: fn(&RunnerStanding, &State) -> bool,
-}
+type Coverage = harness::Coverage<RunnerStanding, Omit>;
 
 /// The last step took `branch`.
 fn took(state: &State, branch: Branch) -> bool {
@@ -448,30 +436,30 @@ fn took(state: &State, branch: Branch) -> bool {
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "connecting reads a cancel: Cancelled before connecting",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::ConnectingCancelled),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::ConnectingCancelled)),
         reached: |_, state| took(state, Branch::ConnectingCancelled),
     },
     Coverage {
         name: "renewing aborts the prepare",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::Aborts),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
             took(state, Branch::Aborts) && state.phase == (Phase::Preparing { aborted: true })
         },
     },
     Coverage {
         name: "renewing aborts executing",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::Aborts),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
             took(state, Branch::Aborts) && state.phase == (Phase::Executing { aborted: true })
         },
     },
     Coverage {
         name: "renewing stops fill_ingress",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::Aborts),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
             took(state, Branch::Aborts)
                 && matches!(state.phase, Phase::Filling { stopped: true, .. })
@@ -479,58 +467,58 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "an aborted prepare records NotExecuted",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::Unprepared),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::Unprepared)),
         reached: |_, state| {
             took(state, Branch::Unprepared) && state.store.outcome == Some(Outcome::NotExecuted)
         },
     },
     Coverage {
         name: "record(Prepared) refuses a run that is over",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::PreparedRefused),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::PreparedRefused)),
         reached: |_, state| took(state, Branch::PreparedRefused),
     },
     Coverage {
         name: "record(Prepared) reads a cancel: Cancelled before it executed",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::PreparedCancelling),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::PreparedCancelling)),
         reached: |_, state| took(state, Branch::PreparedCancelling),
     },
     Coverage {
         name: "the session ends mid-execution and Abandoned leaves the run Unknown",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::Abandons),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::Abandons)),
         reached: |_, state| took(state, Branch::Abandons) && state.store.status == Status::Unknown,
     },
     Coverage {
         name: "the read after executing reads the takeover and the run records Interrupted",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::CheckFindsLost),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::CheckFindsLost)),
         reached: |_, state| {
             took(state, Branch::CheckFindsLost) && state.last_read == Some(Read::Unknown)
         },
     },
     Coverage {
         name: "the read after executing fails and the run goes on",
-        reach: Reach::Always,
-        omit: Omit::Actions(&[Action::Check(Call::Fails)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Check(Call::Fails)])),
         reached: |_, state| {
             took(state, Branch::CheckGoesOn) && state.last_read == Some(Read::Unavailable)
         },
     },
     Coverage {
         name: "the gate skips fill_ingress on a cancel",
-        reach: Reach::Always,
-        omit: Omit::Branch(Branch::GateSkips),
+        on: everywhere,
+        omit: Some(Omit::Branch(Branch::GateSkips)),
         reached: |_, state| {
             took(state, Branch::GateSkips) && state.last_read == Some(Read::Cancelling)
         },
     },
     Coverage {
         name: "the store keeps a Success and shows the deleted Volumes removed",
-        reach: Reach::Always,
-        omit: Omit::Actions(&[Action::Removed]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Removed])),
         reached: |_, state| {
             took(state, Branch::Records)
                 && state.store.outcome
@@ -543,8 +531,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "record refuses the Executed of a run cancel_in_flight ended",
-        reach: Reach::Always,
-        omit: Omit::Actions(&[Action::CancelInFlight]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::CancelInFlight])),
         reached: |_, state| {
             took(state, Branch::Records)
                 && state
@@ -554,34 +542,34 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "cancel_in_flight ends the run under its runner",
-        reach: Reach::Always,
-        omit: Omit::Actions(&[Action::CancelInFlight]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::CancelInFlight])),
         reached: |_, state| {
             state.last == Some(Action::CancelInFlight) && state.phase != Phase::Returned
         },
     },
     Coverage {
         name: "renewing latches a takeover during remove_volumes",
-        reach: Reach::Standing,
-        omit: Omit::Branch(Branch::Latches),
+        on: RunnerStanding::reads_standing,
+        omit: Some(Omit::Branch(Branch::Latches)),
         reached: |_, state| took(state, Branch::Latches) && state.standing == Standing::Lost,
     },
     Coverage {
         name: "record keeps a late Executed as Interrupted and shows the deleted Volumes",
-        reach: Reach::StoreFix,
-        omit: Omit::Branch(Branch::Converted),
+        on: |model| model.store_fix.is_proposed(),
+        omit: Some(Omit::Branch(Branch::Converted)),
         reached: |_, state| took(state, Branch::Converted) && state.store.shows_removed,
     },
     Coverage {
         name: "renewing aborts once a read says the run ended",
-        reach: Reach::Standing,
-        omit: Omit::Branch(Branch::Aborts),
+        on: RunnerStanding::reads_standing,
+        omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| took(state, Branch::Aborts) && state.last_read == Some(Read::Ended),
     },
     Coverage {
         name: "the gate skips fill_ingress once the latch says the run is over",
-        reach: Reach::Standing,
-        omit: Omit::Branch(Branch::GateSkips),
+        on: RunnerStanding::reads_standing,
+        omit: Some(Omit::Branch(Branch::GateSkips)),
         reached: |_, state| {
             took(state, Branch::GateSkips)
                 && state.standing != Standing::Keep
@@ -590,8 +578,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the run stops in connecting once a read says it lost",
-        reach: Reach::Standing,
-        omit: Omit::Branch(Branch::StopsOver),
+        on: RunnerStanding::reads_standing,
+        omit: Some(Omit::Branch(Branch::StopsOver)),
         reached: |_, state| {
             took(state, Branch::StopsOver)
                 && state.standing == Standing::Lost
@@ -600,14 +588,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the run stops once a read says it ended",
-        reach: Reach::Standing,
-        omit: Omit::Branch(Branch::StopsOver),
+        on: RunnerStanding::reads_standing,
+        omit: Some(Omit::Branch(Branch::StopsOver)),
         reached: |_, state| took(state, Branch::StopsOver) && state.standing == Standing::Ended,
     },
     Coverage {
         name: "record refuses a lost run's Executed and keeps it sent again as Interrupted",
-        reach: Reach::Resend,
-        omit: Omit::Branch(Branch::Resends),
+        on: |model| model.store_fix.is_shipped() && !model.broken.no_resend,
+        omit: Some(Omit::Branch(Branch::Resends)),
         reached: |_, state| {
             took(state, Branch::Resends)
                 && state.store.outcome
@@ -623,7 +611,7 @@ const COVERAGE: &[Coverage] = &[
 struct RunnerStanding {
     /// The store fix, which the code does not have: `record` keeps a late `Executed` as
     /// Interrupted, and the projection shows an Interrupted outcome's deletions.
-    store_fix: bool,
+    store_fix: Variant<StoreFix>,
     broken: Broken,
     /// How many `standing()` calls' reads may fail.
     failures: u8,
@@ -652,6 +640,18 @@ fn finish(store: &mut Store, outcome: Outcome) -> Answer {
 }
 
 impl RunnerStanding {
+    /// The store fix's parts taken out, none on the code as it is.
+    fn proposal(&self) -> StoreFix {
+        self.store_fix.proposal().unwrap_or_default()
+    }
+
+    /// Every site reads `Standing`, as the code before it did not (`as_was`).
+    fn reads_standing(&self) -> bool {
+        !(self.broken.latch_does_not_stick
+            || self.broken.ended_reads_as_keep
+            || self.broken.unknown_reads_as_keep)
+    }
+
     /// `Run::standing` (store_runner.rs): the latch with no call once it is
     /// set, else `record(RunEvidence::Alive)` read through `read_of` and
     /// `ployz_decide::standing::Latch::settle`, which latches Lost and Ended. The Alive arm of `record` (lifecycle.rs) answers an Unknown
@@ -759,7 +759,7 @@ impl RunnerStanding {
             (finish(store, outcome), interrupted)
         } else if interrupted || broken.store_takes_any_outcome {
             (Answer::Kept, interrupted)
-        } else if self.store_fix && !broken.store_refuses_late_executed {
+        } else if self.store_fix.is_proposed() && !self.proposal().refuses_late_executed {
             (Answer::Converted, true)
         } else {
             (Answer::RefusedUnknown, interrupted)
@@ -772,7 +772,9 @@ impl RunnerStanding {
         }
         if matches!(answer, Answer::Kept | Answer::Converted) {
             store.shows_removed = removed
-                && (!kept || (self.store_fix && !broken.projection_hides_interrupted_deletions));
+                && (!kept
+                    || (self.store_fix.is_proposed()
+                        && !self.proposal().projection_hides_interrupted_deletions));
         }
         state.sent = Some(Sent {
             interrupted,
@@ -1070,16 +1072,7 @@ impl Model for RunnerStanding {
                     ))
             }),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| match row.reach {
-                    Reach::Always | Reach::Standing => true,
-                    Reach::Resend => !self.store_fix,
-                    Reach::StoreFix => self.store_fix,
-                })
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -1313,7 +1306,7 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
             };
             let shown = match (sent.removed, after.store.outcome, after.store.shows_removed) {
                 (true, Some(_), true) => "; removed_volume reads the deleted Volumes Removed",
-                (true, Some(_), false) if model.broken.projection_hides_interrupted_deletions => {
+                (true, Some(_), false) if model.proposal().projection_hides_interrupted_deletions => {
                     "; removed_volume reads the deleted Volumes NotAttempted for an Interrupted outcome (under Broken)"
                 }
                 (true, Some(_), false) => {
@@ -1346,7 +1339,7 @@ mod tests {
     /// The code as it is, with every `standing()` call's read answering.
     fn as_is() -> RunnerStanding {
         RunnerStanding {
-            store_fix: false,
+            store_fix: Variant::Shipped,
             broken: Broken::default(),
             failures: 0,
             omit: None,
@@ -1374,7 +1367,7 @@ mod tests {
     /// deletions shown.
     fn store_fixed() -> RunnerStanding {
         RunnerStanding {
-            store_fix: true,
+            store_fix: Variant::Proposed(StoreFix::default()),
             ..as_is()
         }
     }
@@ -1455,7 +1448,8 @@ mod tests {
     /// it has.
     #[test]
     fn the_code_loses_an_outcome_only_after_deleting_volumes() {
-        let checker = check(failing(as_is()));
+        let model = failing(as_is());
+        let checker = check(model);
         println!("as is: {} states", checker.unique_state_count());
         for property in [NO_WORK_AFTER_END, HEEDS_CANCEL, TAKEN_OVER_INTERRUPTED] {
             assert!(checker.discovery(property).is_none(), "{property} fails");
@@ -1468,20 +1462,15 @@ mod tests {
                 "{property} breaks with no Volume deleted"
             );
         }
-        for row in COVERAGE.iter().filter(|row| row.reach != Reach::StoreFix) {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
 
     /// The code before `Standing`, with one failed read, breaks only the properties the
     /// findings name, and reaches every `sometimes` it had.
     #[test]
     fn the_code_as_it_was_breaks_only_the_findings() {
-        let checker = check(failing(as_was()));
+        let model = failing(as_was());
+        let checker = check(model);
         println!("as was: {} states", checker.unique_state_count());
         for property in [HEEDS_CANCEL, TAKEN_OVER_INTERRUPTED] {
             assert!(checker.discovery(property).is_none(), "{property} fails");
@@ -1489,13 +1478,7 @@ mod tests {
         for property in [TAKEOVER_KEEPS_OUTCOME, DELETIONS_KEPT, NO_WORK_AFTER_END] {
             assert!(checker.discovery(property).is_some(), "{property} holds");
         }
-        for row in COVERAGE.iter().filter(|row| row.reach == Reach::Always) {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
 
     /// The store fix, which the code does not have, holds with a failed read, and every
@@ -1511,26 +1494,11 @@ mod tests {
     /// that reaches it, no other path reaches its predicate.
     #[test]
     fn every_sometimes_needs_what_it_names() {
-        for row in COVERAGE {
-            let model = match row.reach {
-                Reach::Always | Reach::Standing | Reach::Resend => failing(as_is()),
-                Reach::StoreFix => failing(store_fixed()),
-            };
-            assert!(
-                check(model).discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-            let cut = check(RunnerStanding {
-                omit: Some(row.omit),
-                ..model
+        for model in [failing(as_is()), failing(store_fixed())] {
+            let _ = harness::assert_omissions(COVERAGE, &model, |model, omit| RunnerStanding {
+                omit: Some(omit),
+                ..*model
             });
-            assert!(
-                cut.discovery(row.name).is_none(),
-                "{} is reached without {:?}",
-                row.name,
-                row.omit
-            );
         }
     }
 
@@ -1765,11 +1733,11 @@ mod tests {
     fn the_store_fix_needs_record_to_keep_a_late_executed() {
         let path = breaks(
             RunnerStanding {
-                broken: Broken {
-                    store_refuses_late_executed: true,
-                    ..Broken::default()
-                },
-                ..store_fixed()
+                store_fix: Variant::Proposed(StoreFix {
+                    refuses_late_executed: true,
+                    ..StoreFix::default()
+                }),
+                ..as_is()
             },
             TAKEOVER_KEEPS_OUTCOME,
         );
@@ -1784,11 +1752,11 @@ mod tests {
     fn the_store_fix_needs_the_projection_to_show_interrupted_deletions() {
         let path = breaks(
             RunnerStanding {
-                broken: Broken {
+                store_fix: Variant::Proposed(StoreFix {
                     projection_hides_interrupted_deletions: true,
-                    ..Broken::default()
-                },
-                ..store_fixed()
+                    ..StoreFix::default()
+                }),
+                ..as_is()
             },
             DELETIONS_KEPT,
         );

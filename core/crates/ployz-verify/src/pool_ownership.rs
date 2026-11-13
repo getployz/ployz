@@ -91,6 +91,8 @@ use std::fmt::Write as _;
 
 use stateright::{Model, Property};
 
+use crate::harness::{self, Variant, everywhere};
+
 /// The disk the installer was given (`StoragePreparation::Zfs { device: Some(..) }`,
 /// installer/storage.rs `prepare_storage`).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -346,8 +348,7 @@ struct State {
     last: Option<Action>,
 }
 
-/// A guard taken out, to show the check catches what it prevents. The first six are
-/// guards the code has; the last six are parts of the fix.
+/// A guard of the code as it is taken out, to show the check catches what it prevents.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -373,6 +374,15 @@ struct Broken {
     /// (installer/storage.rs:48-53) and no `ployz` refusal in `existing_device_pool`
     /// (:178-187).
     installer_ignores_root: bool,
+}
+
+/// A part of the fix taken out, to show the check catches what it prevents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag removes one independent part of the fix"
+)]
+struct Fix {
     /// The fix's installer writes no intent.
     no_intent: bool,
     /// The fix's `recover` ignores the intent.
@@ -391,12 +401,7 @@ struct Broken {
 }
 
 /// One `sometimes`: a branch the code handles, read from the state that took it.
-struct Coverage {
-    name: &'static str,
-    /// Reached only with the fix.
-    fix_only: bool,
-    reached: fn(&PoolOwnership, &State) -> bool,
-}
+type Coverage = harness::Coverage<PoolOwnership>;
 
 fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
@@ -408,49 +413,58 @@ fn took(state: &State, branch: Branch) -> bool {
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "the gate refuses a Volume create while the installer runs",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::InstallationActive) && state.installer.running(),
     },
     Coverage {
         name: "the gate refuses the installer while a Volume create runs",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::InstallerBusy) && state.plugin.holds_gate(),
     },
     Coverage {
         name: "the installer refuses beside a root-backed Pool",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::InstallerRefusesRoot) && state.host.root,
     },
     Coverage {
         name: "the installer records CONFIRMED after its check",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Records) && state.disk.label,
     },
     Coverage {
         name: "one_usable confirms a device Pool the installer stopped before recording",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Confirms) && state.installer == Installer::Stopped,
     },
     Coverage {
         name: "one_usable returns the recorded device Pool",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::UsesDevice) && state.host.marker,
     },
     Coverage {
         name: "recover imports the device Pool once its disk returns",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::RecoverImports) && state.went_missing,
     },
     Coverage {
         name: "recover refuses a root-backed Pool while the recorded device is missing",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::RefusesOwned) && state.host.marker && !state.disk.present
         },
     },
     Coverage {
         name: "a List across the install refuses on the marker while ployz-device is imported",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::RefusesOwned)
                 && state.disk.imported
@@ -459,14 +473,16 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the plugin creates a root-backed Pool on a host whose disk carries no label",
-        fix_only: false,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::CreatesRoot) && state.host.root && !state.disk.label
         },
     },
     Coverage {
         name: "recover refuses while the unrecorded device Pool's disk is missing",
-        fix_only: true,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             took(state, Branch::RefusesIntent)
                 && state.host.intent
@@ -477,7 +493,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "recover refuses while the disk of an intent left before zpool create is missing",
-        fix_only: true,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             took(state, Branch::RefusesIntent)
                 && state.host.intent
@@ -487,7 +504,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a List across zpool create refuses on the intent while ployz-device is imported",
-        fix_only: true,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             took(state, Branch::RefusesIntent)
                 && state.host.intent
@@ -497,7 +515,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "recover clears an intent the installer left before zpool create",
-        fix_only: true,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             took(state, Branch::ClearsStale)
                 && !state.host.intent
@@ -507,7 +526,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "List leaves the intent of an installer still before zpool create",
-        fix_only: true,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             took(state, Branch::KeepsIntent)
                 && state.host.intent
@@ -516,7 +536,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "local_storage reads None while the owned disk is missing",
-        fix_only: true,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             took(state, Branch::ObservesUnresolved)
                 && state.observed == Some(Observed::Unresolved)
@@ -531,7 +552,7 @@ struct PoolOwnership {
     /// The fix: the installer writes an intent before `zpool create`; `recover` refuses on
     /// an intent that stands, and clears a stale one only for a caller that holds the
     /// installation gate; `local_storage` reads None where `recover` would refuse.
-    fix: bool,
+    fix: Variant<Fix>,
     broken: Broken,
     /// How many Volume creates the plugin admits.
     requests: u8,
@@ -542,13 +563,20 @@ struct PoolOwnership {
 }
 
 impl PoolOwnership {
+    /// The proposal's parts taken out, none on the shipped code.
+    fn proposal(&self) -> Fix {
+        self.fix.proposal().unwrap_or_default()
+    }
+
     /// The installer's next step from `installer`, if it has one.
     fn installer_step(&self, installer: Installer) -> Option<Action> {
         let broken = self.broken;
         match installer {
             Installer::Start => Some(Action::Assess),
             Installer::Assessed if broken.records_before_create => Some(Action::Record),
-            Installer::Assessed if self.fix && !broken.no_intent => Some(Action::WriteIntent),
+            Installer::Assessed if self.fix.is_proposed() && !self.proposal().no_intent => {
+                Some(Action::WriteIntent)
+            }
             Installer::Assessed | Installer::Intended | Installer::RecordedEarly => {
                 Some(Action::ZpoolCreate)
             }
@@ -568,7 +596,7 @@ impl PoolOwnership {
     /// The fix's intent no longer stands: its disk is present and carries no label, so
     /// `zpool create` never landed.
     fn intent_is_stale(&self, disk: Disk) -> bool {
-        disk.present && !disk.label && !self.broken.intent_never_clears
+        disk.present && !disk.label && !self.proposal().intent_never_clears
     }
 
     fn step(&self, state: &mut State, action: Action) {
@@ -709,10 +737,13 @@ impl PoolOwnership {
                 Branch::RecoverImports
             } else if state.host.marker && !broken.recover_ignores_marker {
                 Branch::RefusesOwned
-            } else if self.fix && state.host.intent && !broken.recover_ignores_intent {
+            } else if self.fix.is_proposed()
+                && state.host.intent
+                && !self.proposal().recover_ignores_intent
+            {
                 if !self.intent_is_stale(state.disk) {
                     Branch::RefusesIntent
-                } else if gated || broken.ungated_clears_intent {
+                } else if gated || self.proposal().ungated_clears_intent {
                     state.host.intent = false;
                     state.plugin = Plugin::Creating;
                     Branch::ClearsStale
@@ -735,11 +766,11 @@ impl PoolOwnership {
             (true, false) | (false, true) => Observed::Pool,
             (false, false) => {
                 let importable = state.disk.present && state.disk.label;
-                let marker = state.host.marker && !self.broken.observation_ignores_marker;
+                let marker = state.host.marker && !self.proposal().observation_ignores_marker;
                 let intent = state.host.intent
                     && !self.intent_is_stale(state.disk)
-                    && !self.broken.observation_ignores_intent;
-                if self.fix && !importable && (marker || intent) {
+                    && !self.proposal().observation_ignores_intent;
+                if self.fix.is_proposed() && !importable && (marker || intent) {
                     state.took = Some(Branch::ObservesUnresolved);
                     Observed::Unresolved
                 } else {
@@ -792,7 +823,7 @@ impl Model for PoolOwnership {
             return vec![fresh];
         }
         let mut states = vec![fresh, rerun];
-        if self.fix {
+        if self.fix.is_proposed() {
             states.push(State {
                 disk: Disk {
                     present: true,
@@ -882,12 +913,7 @@ impl Model for PoolOwnership {
                     && !state.disk.present)
             }),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| self.fix || !row.fix_only)
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -929,7 +955,7 @@ fn story(model: &PoolOwnership, path: &[(State, Option<Action>)]) -> String {
             state.host.release,
             state.host.marker,
             state.host.root,
-            if model.fix {
+            if model.fix.is_proposed() {
                 format!(" intent={}", state.host.intent)
             } else {
                 String::new()
@@ -1136,7 +1162,7 @@ mod tests {
     /// The code as it is, with two Volume creates.
     fn as_is() -> PoolOwnership {
         PoolOwnership {
-            fix: false,
+            fix: Variant::Shipped,
             broken: Broken::default(),
             requests: 2,
             fresh_only: false,
@@ -1145,19 +1171,19 @@ mod tests {
 
     /// The fix: the installer's intent, `recover`'s intent check, and `local_storage`'s
     /// None.
-    fn fixed() -> PoolOwnership {
-        PoolOwnership {
-            fix: true,
-            ..as_is()
-        }
+    fn proposed() -> PoolOwnership {
+        proposed_without(Fix::default())
     }
 
     fn as_is_without(broken: Broken) -> PoolOwnership {
         PoolOwnership { broken, ..as_is() }
     }
 
-    fn fixed_without(broken: Broken) -> PoolOwnership {
-        PoolOwnership { broken, ..fixed() }
+    fn proposed_without(fix: Fix) -> PoolOwnership {
+        PoolOwnership {
+            fix: Variant::Proposed(fix),
+            ..as_is()
+        }
     }
 
     fn first(path: &Path) -> State {
@@ -1271,7 +1297,7 @@ mod tests {
     #[test]
     fn the_fix_refuses_a_list_across_zpool_create() {
         let path = replay(
-            fixed(),
+            proposed(),
             &[
                 Action::Assess,
                 Action::WriteIntent,
@@ -1360,25 +1386,20 @@ mod tests {
     /// `sometimes` the fix does not add.
     #[test]
     fn current_code_breaks_only_the_findings() {
-        let checker = check(as_is());
+        let model = as_is();
+        let checker = check(model);
         println!("as is: {} states", checker.unique_state_count());
         assert!(checker.discovery(NOTHING_STRANDED).is_none());
         for property in [NO_ROOT_BESIDE_DEVICE, READY_ONLY_WITH_THE_DISK] {
             assert!(checker.discovery(property).is_some(), "{property} holds");
         }
-        for row in COVERAGE.iter().filter(|row| !row.fix_only) {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
 
     /// The fix holds, and every `sometimes` is reached.
     #[test]
     fn an_intent_keeps_one_owner() {
-        let checker = check(fixed());
+        let checker = check(proposed());
         println!("fixed: {} states", checker.unique_state_count());
         checker.assert_properties();
     }
@@ -1407,7 +1428,7 @@ mod tests {
             (Branch::Conflict, markers),
             (Branch::CreateRefusesOwned, gate),
         ] {
-            for model in [as_is(), fixed()] {
+            for model in [as_is(), proposed()] {
                 assert!(
                     !reaches(model, move |state| state.took == Some(branch)),
                     "{branch:?} under {model:?}"
@@ -1553,9 +1574,9 @@ mod tests {
     #[test]
     fn the_fix_needs_the_intent() {
         let path = breaks(
-            fixed_without(Broken {
+            proposed_without(Fix {
                 no_intent: true,
-                ..Broken::default()
+                ..Fix::default()
             }),
             NO_ROOT_BESIDE_DEVICE,
         );
@@ -1567,9 +1588,9 @@ mod tests {
     #[test]
     fn the_fix_needs_recover_to_heed_the_intent() {
         let path = breaks(
-            fixed_without(Broken {
+            proposed_without(Fix {
                 recover_ignores_intent: true,
-                ..Broken::default()
+                ..Fix::default()
             }),
             NO_ROOT_BESIDE_DEVICE,
         );
@@ -1586,9 +1607,9 @@ mod tests {
     #[test]
     fn the_fix_needs_a_stale_intent_to_clear() {
         let path = breaks_where(
-            fixed_without(Broken {
+            proposed_without(Fix {
                 intent_never_clears: true,
-                ..Broken::default()
+                ..Fix::default()
             }),
             NOTHING_STRANDED,
             |path| last(path).installer == Installer::Stopped,
@@ -1605,9 +1626,9 @@ mod tests {
     #[test]
     fn the_fix_needs_list_to_leave_a_live_intent() {
         let path = breaks(
-            fixed_without(Broken {
+            proposed_without(Fix {
                 ungated_clears_intent: true,
-                ..Broken::default()
+                ..Fix::default()
             }),
             NO_ROOT_BESIDE_DEVICE,
         );
@@ -1627,9 +1648,9 @@ mod tests {
     #[test]
     fn the_fix_needs_local_storage_to_read_the_marker() {
         let path = breaks(
-            fixed_without(Broken {
+            proposed_without(Fix {
                 observation_ignores_marker: true,
-                ..Broken::default()
+                ..Fix::default()
             }),
             READY_ONLY_WITH_THE_DISK,
         );
@@ -1647,9 +1668,9 @@ mod tests {
     #[test]
     fn the_fix_needs_local_storage_to_read_the_intent() {
         let path = breaks(
-            fixed_without(Broken {
+            proposed_without(Fix {
                 observation_ignores_intent: true,
-                ..Broken::default()
+                ..Fix::default()
             }),
             READY_ONLY_WITH_THE_DISK,
         );

@@ -82,7 +82,7 @@ Read the tests in three groups.
   - `timed_out_breaks_only_the_finding` expects `STARTED_RUN_KEPT` to break, `NO_GRANT_AFTER_CANCEL`, `ONE_GRANT_PER_RUN`, `NO_SERVER_ON_GITHUB_BUILD` and `SERVERS_REPORT_LANDS` to hold, and every `COVERAGE` row to be reached.
   - `timed_out_needs_the_unstarted_guard` also sets `unstarted_ignores_grant`, and keeps to broken paths whose last step is an Unstarted settle: `github_finish`'s re-read found no grant, and a check-in committed after it.
 - **The code.**
-  - `the_code_keeps_a_started_run` runs `code()` with `assert_properties`: every `always` holds, and every row that is not `Reach::TimedOut` is reached.
+  - `the_code_keeps_a_started_run` runs `code()` with `assert_properties`: every `always` holds, and every row that `on` keeps for `code()` is reached.
   - `the_start_limit_waits_for_the_finding_s_run` replays the finding's schedule on the code: the start limit's Unstarted is refused, `github_finish` answers Waiting, Cloud does not cancel, and the walk opens its next look.
   - `a_later_look_ends_the_run_the_start_limit_waited_for` asks for the first path to each of the rows "after the start limit waited for a run that checked in, an Ended look settles it" and "… the budget settles it".
   - `a_retried_start_follows_the_held_run` asks for the first path, from the retried start, on which the start limit ends the cancelled run Unstarted and the Servers' report lands.
@@ -428,7 +428,7 @@ fn scratch_lifts() {
             .collect();
         let unreached: Vec<_> = COVERAGE
             .iter()
-            .filter(|row| row.reach == Reach::Both || model.broken.start_limit_reads_the_grant)
+            .filter(|row| (row.on)(&model))
             .filter(|row| checker.discovery(row.name).is_none())
             .map(|row| row.name)
             .collect();
