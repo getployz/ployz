@@ -1206,7 +1206,10 @@ mod tests {
             devices: Vec::new(),
             recipient: None,
         };
-        let EnrollAs::Member { registration: join, pin: None } = join_request(&first, &registration).role
+        let EnrollAs::Member {
+            registration: join,
+            pin: None,
+        } = join_request(&first, &registration).role
         else {
             panic!("join_request enrolls a member");
         };

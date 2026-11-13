@@ -44,7 +44,10 @@ impl Cluster {
         self.join(
             target,
             EnrollRequest {
-                role: EnrollAs::Member { registration, pin: None },
+                role: EnrollAs::Member {
+                    registration,
+                    pin: None,
+                },
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
