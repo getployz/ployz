@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Display,
     future::Future,
     io,
     net::{IpAddr, SocketAddr},
@@ -449,15 +450,10 @@ async fn read_pass(
             let containers = store.containers().await?;
             let rows = store.certificate_state().await?;
             for hostname in wanted_certificate_hosts(containers.observations.iter(), &rows) {
-                match store
+                let write = store
                     .record_certificate_error(&hostname, refusal.reason())
-                    .await?
-                {
-                    AcmeWrite::Changed | AcmeWrite::Kept => {}
-                    AcmeWrite::Moved => eprintln!(
-                        "did not record the certificate policy refusal for {hostname}: its row changed on every attempt"
-                    ),
-                }
+                    .await?;
+                note_acme_write(&hostname, write, "record the certificate policy refusal");
             }
             return Ok(None);
         }
@@ -475,15 +471,10 @@ async fn read_pass(
     let standing = door_standing(&containers.observations);
     if standing.public.is_empty() && !standing.closed.is_empty() {
         for hostname in &wanted {
-            match store
+            let write = store
                 .record_certificate_error(hostname, TUNNEL_SERVES_CERTIFICATE)
-                .await?
-            {
-                AcmeWrite::Changed | AcmeWrite::Kept => {}
-                AcmeWrite::Moved => eprintln!(
-                    "did not record why no certificate is ordered for {hostname}: its row changed on every attempt"
-                ),
-            }
+                .await?;
+            note_acme_write(hostname, write, "record why no certificate is ordered");
         }
         return Ok(None);
     }
@@ -582,12 +573,11 @@ async fn issue_wanted(
                     .record_certificate_failure(hostname, tried, reason, clock)
                     .await
                 {
-                    Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
-                    Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
-                        "did not record certificate refusal for {hostname}: its row no longer holds the failed material as ACME material"
-                    ),
-                    Ok(AcmeWrite::Moved) => eprintln!(
-                        "did not record certificate refusal for {hostname}: its row changed on every attempt"
+                    Ok(write) => note_failure_write(
+                        hostname,
+                        write,
+                        "record certificate refusal",
+                        tried.is_some(),
                     ),
                     Err(error) => eprintln!(
                         "failed to record certificate refusal for {hostname}: {error}",
@@ -643,12 +633,11 @@ async fn issue_wanted(
                     )
                     .await
                 {
-                    Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
-                    Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
-                        "did not record certificate authority failure for {hostname}: its row no longer holds the failed material as ACME material"
-                    ),
-                    Ok(AcmeWrite::Moved) => eprintln!(
-                        "did not record certificate authority failure for {hostname}: its row changed on every attempt"
+                    Ok(write) => note_failure_write(
+                        hostname,
+                        write,
+                        "record certificate authority failure",
+                        tried.is_some(),
                     ),
                     Err(record_error) => eprintln!(
                         "failed to record certificate authority failure for {hostname}: {record_error}"
@@ -697,15 +686,10 @@ async fn obtain(
         let store = store.clone();
         let hostname = hostname.clone();
         async move {
-            match store
+            let write = store
                 .publish_certificate_challenge(&hostname, &challenge)
-                .await?
-            {
-                AcmeWrite::Changed | AcmeWrite::Kept => {}
-                AcmeWrite::Moved => eprintln!(
-                    "did not publish the HTTP-01 challenge for {hostname}: its row changed on every attempt"
-                ),
-            }
+                .await?;
+            note_acme_write(&hostname, write, "publish the HTTP-01 challenge");
             let resolved = resolve_host(&hostname).await;
             let machines = store.machines().await?;
             let containers = store.containers().await?;
@@ -716,16 +700,39 @@ async fn obtain(
         }
     })
     .await?;
-    match store
+    let write = store
         .publish_certificate(hostname, &material, route)
-        .await?
-    {
-        AcmeWrite::Changed | AcmeWrite::Kept => {}
-        AcmeWrite::Moved => eprintln!(
-            "did not record the certificate issued for {hostname}: its row changed on every attempt"
-        ),
-    }
+        .await?;
+    note_acme_write(hostname, write, "record the certificate issued");
     Ok(())
+}
+
+/// Says on stderr that an ACME write was given up because the row kept changing. A write that
+/// landed, or was kept, needs no word.
+fn note_acme_write(hostname: &impl Display, write: AcmeWrite, what: &str) {
+    if let Some(line) = unwritten(hostname, write, what, false) {
+        eprintln!("{line}");
+    }
+}
+
+/// `note_acme_write` for a failure record, whose no-material guard also moves when the row
+/// stopped holding the `tried` material as ACME material.
+fn note_failure_write(hostname: &impl Display, write: AcmeWrite, what: &str, tried: bool) {
+    if let Some(line) = unwritten(hostname, write, what, tried) {
+        eprintln!("{line}");
+    }
+}
+
+fn unwritten(hostname: &impl Display, write: AcmeWrite, what: &str, tried: bool) -> Option<String> {
+    match write {
+        AcmeWrite::Changed | AcmeWrite::Kept => None,
+        AcmeWrite::Moved if tried => Some(format!(
+            "did not {what} for {hostname}: its row no longer holds the failed material as ACME material"
+        )),
+        AcmeWrite::Moved => Some(format!(
+            "did not {what} for {hostname}: its row changed on every attempt"
+        )),
+    }
 }
 
 /// Order one certificate. `present` publishes the HTTP-01 answer before validation.

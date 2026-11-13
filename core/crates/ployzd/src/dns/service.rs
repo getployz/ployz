@@ -12,12 +12,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     ABDICATED,
-    process::{InstalledExe, identity_of},
     spec::{DnsSpec, SpecFile},
 };
 use crate::{
     machine::LocalMachineRecord,
-    runtime_unit::{self, UNIT_DIR, UnitSupervision, restart_needed, systemctl},
+    runtime_unit::{
+        self, UNIT_DIR, UnitSupervision,
+        process_identity::{InstalledExe, identity_of},
+        restart_needed, systemctl,
+    },
     units::Unit,
 };
 

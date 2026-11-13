@@ -2,20 +2,15 @@
 //! on its own binary, so a release's processes never depend on what an older
 //! installer left in `/etc`.
 
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
-};
+use std::{fs, io, path::Path, process::Stdio, time::Duration};
 
 use tokio::process::Command;
 
-use crate::{
-    dns::{InstalledExe, identity_of},
-    filesystem::atomic_write,
-    units::Unit,
-};
+use crate::{filesystem::atomic_write, units::Unit};
+
+pub(crate) mod process_identity;
+
+use process_identity::{Identity, InstalledExe, UnitProcess};
 
 pub(crate) const UNIT_DIR: &str = "/run/systemd/system";
 const SYSTEMCTL_BOUND: Duration = Duration::from_secs(5);
@@ -97,19 +92,21 @@ async fn loaded_copy_is_stale(unit: &str) -> bool {
 
 /// Whether `unit`'s main process runs a binary other than `own`, as it does
 /// after the binary was swapped beneath it.
+///
+/// Only proof of other software counts: a failed `systemctl`, no process and an
+/// unreadable process all leave the unit as it is.
 pub(crate) async fn runs_other_software(unit: &str, own: &InstalledExe) -> bool {
-    let Some(output) = systemctl(&["show", "-p", "MainPID", "--value", unit]).await else {
-        return false;
-    };
-    let pid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if pid.is_empty() || pid == "0" {
-        return false;
-    }
-    let theirs = identity_of(&PathBuf::from(format!("/proc/{pid}/exe"))).ok();
-    restart_needed(theirs, own.identity())
+    other_software_runs(UnitProcess::of(unit).await, own.identity())
 }
 
-pub(crate) fn restart_needed(theirs: Option<(u64, u64)>, ours: Option<(u64, u64)>) -> bool {
+fn other_software_runs(process: UnitProcess, ours: Option<Identity>) -> bool {
+    match process {
+        UnitProcess::Running(theirs) => restart_needed(Some(theirs), ours),
+        UnitProcess::NoProcess | UnitProcess::Unknown => false,
+    }
+}
+
+pub(crate) fn restart_needed(theirs: Option<Identity>, ours: Option<Identity>) -> bool {
     matches!((theirs, ours), (Some(theirs), Some(ours)) if theirs != ours)
 }
 
@@ -154,6 +151,23 @@ mod tests {
         assert!(!restart_needed(Some((1, 2)), Some((1, 2))));
         assert!(!restart_needed(None, Some((1, 2))));
         assert!(!restart_needed(Some((1, 2)), None));
+    }
+
+    #[test]
+    fn only_proof_of_other_software_restarts_a_unit() {
+        for (process, ours, restarts) in [
+            (UnitProcess::Running((1, 2)), Some((1, 3)), true),
+            (UnitProcess::Running((1, 2)), Some((1, 2)), false),
+            (UnitProcess::Running((1, 2)), None, false),
+            (UnitProcess::NoProcess, Some((1, 2)), false),
+            (UnitProcess::Unknown, Some((1, 2)), false),
+        ] {
+            assert_eq!(
+                other_software_runs(process, ours),
+                restarts,
+                "{process:?} {ours:?}"
+            );
+        }
     }
 
     #[test]

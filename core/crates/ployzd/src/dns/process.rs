@@ -1,7 +1,6 @@
 use std::{
     fs, io,
     net::SocketAddrV4,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -28,6 +27,7 @@ use crate::{
         ReplicatedStore, Subscription,
     },
     route_acks::load_down,
+    runtime_unit::process_identity::InstalledExe,
 };
 
 /// Exit status for "the installed binary cannot serve DNS; port 53 was handed
@@ -499,7 +499,7 @@ impl Tick<'_> {
                         }
                         return DnsExit::Abdicated;
                     }
-                    Probe::Serves => self.exe.identity = Some(identity),
+                    Probe::Serves => self.exe.adopt(identity),
                     Probe::Unknown => {}
                 }
             }
@@ -507,45 +507,6 @@ impl Tick<'_> {
             keeper.ticked();
         }
     }
-}
-
-/// `/proc/self/exe` reads `(deleted)` after a swap, so the path is captured at
-/// start and stat'ed afterwards.
-pub(crate) struct InstalledExe {
-    path: PathBuf,
-    identity: Option<(u64, u64)>,
-}
-
-impl InstalledExe {
-    pub(crate) fn current() -> io::Result<Self> {
-        Self::at(fs::read_link("/proc/self/exe")?)
-    }
-
-    pub(crate) fn at(path: PathBuf) -> io::Result<Self> {
-        let identity = identity_of(&path)?;
-        Ok(Self {
-            path,
-            identity: Some(identity),
-        })
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub(crate) fn identity(&self) -> Option<(u64, u64)> {
-        self.identity
-    }
-
-    fn changed(&self) -> Option<(u64, u64)> {
-        let identity = identity_of(&self.path).ok()?;
-        (self.identity != Some(identity)).then_some(identity)
-    }
-}
-
-pub(crate) fn identity_of(path: &Path) -> io::Result<(u64, u64)> {
-    let metadata = fs::metadata(path)?;
-    Ok((metadata.dev(), metadata.ino()))
 }
 
 async fn idle_until_spec(
