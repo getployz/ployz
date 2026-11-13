@@ -192,7 +192,7 @@ async fn an_activated_entry_without_a_recipient_key_gives_no_pin() {
     details.sealing = Some(Sealing::Held { public_key: key(1) });
     details.activation = Some(ployz_core::ActivationReport {
         state: ActivationState::Activated,
-        operation: None,
+        operation: Some(ployz_core::OperationId::random()),
         legacy_members: Vec::new(),
         legacy_keys: Vec::new(),
         private_access: None,
@@ -203,6 +203,32 @@ async fn an_activated_entry_without_a_recipient_key_gives_no_pin() {
     assert_eq!(refusal.report().code, RpcErrorCode::Conflict);
     details.sealing_recipient = Some(key(7));
     assert_eq!(pin_from(details).unwrap().seal_for().recipient, key(7));
+}
+
+/// A Cluster born enforcing has no recipient key and nothing planted before it, so a pin
+/// read from it seals through Cloud to its identity instead of refusing for ever.
+#[tokio::test]
+async fn a_pin_from_a_server_born_enforcing_seals_through_cloud_to_its_identity() {
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(planted_row(), Scenario::default(), sockets.path(), None).unwrap();
+    let mut client = direct_client(&fleet).await;
+    let mut details = client
+        .call::<op::Inspect>(InspectRequest::default(), crate::cluster::Call::read())
+        .await
+        .unwrap();
+    details.sealing = Some(Sealing::Held { public_key: key(1) });
+    details.sealing_recipient = None;
+    details.activation = Some(ployz_core::ActivationReport {
+        state: ActivationState::Activated,
+        operation: None,
+        legacy_members: Vec::new(),
+        legacy_keys: Vec::new(),
+        private_access: None,
+    });
+
+    let pin = pin_from(details).unwrap();
+
+    assert_eq!(check(Some(&pin), key(1)).unwrap(), to_identity(1));
 }
 
 #[tokio::test]
