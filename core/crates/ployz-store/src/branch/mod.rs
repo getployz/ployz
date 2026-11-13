@@ -512,7 +512,8 @@ pub(crate) fn not_set(
         for variable in &service.variables {
             if variable.value == VariableValue::NotSet {
                 not_set.push(review::history::NotSetVariable {
-                    service: service.slug.clone(),
+                    service: ServiceName::parse(&service.slug)
+                        .map_err(|_| error::corrupt("Service name"))?,
                     key: variable.key.clone(),
                 });
             }
@@ -604,7 +605,7 @@ pub(crate) fn lineage_named(
         NodeName::Service(name) => intent
             .services
             .iter()
-            .find(|service| service.slug == *name)
+            .find(|service| service.slug == name.as_str())
             .map(|service| service.lineage_id.clone()),
         NodeName::Volume(name) => intent
             .volumes
@@ -651,7 +652,8 @@ pub(crate) fn node_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
         .services
         .iter()
         .find(|service| service.lineage_id == lineage)
-        .map(|service| NodeName::Service(service.slug.clone()));
+        .and_then(|service| ServiceName::parse(service.slug.as_str()).ok())
+        .map(NodeName::Service);
     service.or_else(|| {
         intent
             .volumes

@@ -247,7 +247,7 @@ pub(crate) fn plan(
         .services
         .iter()
         .filter_map(|service| {
-            let name = service.slug.clone();
+            let name = ServiceName::parse(service.slug.as_str()).ok()?;
             let generated: BTreeMap<String, Generator> = service
                 .variables
                 .iter()

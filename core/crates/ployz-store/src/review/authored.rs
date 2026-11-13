@@ -85,7 +85,7 @@ impl VersionedValue {
 }
 
 enum ServiceField {
-    Name(Delta<ServiceName>),
+    Name(Delta<String>),
     Source(Delta<ServiceSource>),
     GitSource(Delta<GitSelection>),
     Branch(Delta<ServiceGitBranch>),
@@ -1306,14 +1306,14 @@ impl Effect {
         let (before, after) = match self {
             Self::ServiceLifecycle(change) => lifecycle(change, |service| {
                 vec![
-                    Slot::Service(service.slug.as_str()),
+                    Slot::Service(&service.slug),
                     Slot::Service(service.config.private_dns.as_str()),
                 ]
             }),
             Self::Service {
                 field: ServiceField::Name(name),
                 ..
-            } => delta(name, |name| Some(Slot::Service(name.as_str()))),
+            } => delta(name, |name| Some(Slot::Service(name))),
             Self::Service {
                 field: ServiceField::PrivateDns(dns),
                 ..
@@ -2013,7 +2013,7 @@ impl Plan {
         }
         for change in &mut changes {
             change.data = super::data_effect(&change.node, change.lifecycle, before, after);
-            change.restarts = super::restarts(&change.node, change.lifecycle, after, before);
+            change.restarts = super::restarts(&change.node, change.lifecycle, after, before)?;
         }
         let total_count = changes
             .iter()
@@ -2337,7 +2337,8 @@ fn keep_sealed(
                 None if sealed(&variable.value) || ledger.holds(&service.id, variable) => {
                     variable.value = VariableValue::NotSet;
                     not_set.push(NotSetVariable {
-                        service: service.slug.clone(),
+                        service: ServiceName::parse(&service.slug)
+                            .map_err(|_| error::corrupt("Service name"))?,
                         key: variable.key.clone(),
                     });
                 }
@@ -2564,7 +2565,7 @@ fn resolve_node(
             [working, baseline]
                 .into_iter()
                 .flat_map(|intent| &intent.services)
-                .find(|owner| owner.slug == name)
+                .find(|owner| owner.slug == name.as_str())
                 .map(|owner| owner.id.clone())
                 .ok_or_else(|| scope::no_service(&name, &environment.summary.name, working))?,
         ),
@@ -2780,14 +2781,11 @@ mod tests {
             },
         }
     }
-    fn service_name(name: &str) -> ServiceName {
-        ServiceName::parse(name).unwrap()
-    }
     fn service(source: ServiceSource) -> SavedServiceIntent {
         SavedServiceIntent {
             id: "svc".to_owned(),
             lineage_id: "lineage".to_owned(),
-            slug: service_name("web"),
+            slug: "web".to_owned(),
             config: AuthoredServiceConfig {
                 version: 2,
                 source,
@@ -2878,7 +2876,7 @@ mod tests {
         };
         vec![
             case(
-                ServiceField::Name(delta(service_name("api"), service_name("web"))),
+                ServiceField::Name(delta("api".to_owned(), "web".to_owned())),
                 "name",
                 None,
                 (json!("api"), json!("web")),

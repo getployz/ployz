@@ -95,7 +95,7 @@ pub(crate) fn create_branch(
             .into_iter()
             .filter(|setup| {
                 working.services.iter().any(|service| {
-                    service.slug == setup.service && own.contains(&service.lineage_id)
+                    service.slug == setup.service.as_str() && own.contains(&service.lineage_id)
                 })
             })
             .collect(),
@@ -109,7 +109,7 @@ pub(crate) fn create_branch(
             let service = working
                 .services
                 .iter()
-                .find(|service| service.slug == setup.service)
+                .find(|service| service.slug == setup.service.as_str())
                 .filter(|service| own.contains(&service.lineage_id))
                 .ok_or_else(|| {
                     error::invalid(

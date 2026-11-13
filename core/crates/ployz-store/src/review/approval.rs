@@ -269,11 +269,7 @@ fn destructive_effects(
             .find(|service| service.id == deployed.id)
         else {
             let slug = &deployed.slug;
-            effects.insert(effect(
-                DestructiveKind::RemovesService,
-                slug.as_str(),
-                slug.to_string(),
-            ));
+            effects.insert(effect(DestructiveKind::RemovesService, slug, slug.clone()));
             continue;
         };
         let slug = &service.slug;
@@ -892,9 +888,9 @@ pub(crate) fn approve_retry(
         })
         .map(|service| DestructiveEffect {
             kind: DestructiveKind::RemovesService,
-            name: service.slug.to_string(),
+            name: service.slug.clone(),
             node: service.id.clone(),
-            path: service.slug.to_string(),
+            path: service.slug.clone(),
             lost_after: None,
         });
     let effects: BTreeSet<DestructiveEffect> = rollback

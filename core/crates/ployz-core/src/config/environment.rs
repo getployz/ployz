@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::{ConfigFileName, ConfigName, ContainerPath, ServiceName};
+use crate::{ConfigFileName, ConfigName, ContainerPath};
 
 use super::{
     AWAITING_FINGERPRINT, AuthoredServiceConfig, ConfigError, EnvironmentNodeType, Generator,
@@ -172,7 +172,7 @@ impl SavedEnvironmentIntent {
 pub struct SavedServiceIntent {
     pub id: String,
     pub lineage_id: String,
-    pub slug: ServiceName,
+    pub slug: String,
     pub config: AuthoredServiceConfig,
     pub variables: Vec<SavedVariableIntent>,
     pub volume_attachments: Vec<VolumeAttachment>,

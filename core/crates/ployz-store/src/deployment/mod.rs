@@ -673,7 +673,8 @@ impl TargetNode {
     fn service(service: &SavedServiceIntent) -> Result<Self, RpcError> {
         Ok(Self::Service {
             id: parse_stored(&service.id)?,
-            name: service.slug.clone(),
+            name: ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?,
             runtime: service.config.private_dns.clone(),
             removals: ServiceRemovals::default(),
         })

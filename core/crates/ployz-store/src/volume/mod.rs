@@ -354,10 +354,9 @@ pub(crate) fn remove_volume(
         .detach_resource(EnvironmentNodeType::Volume, volume.id.as_str());
     for service in &environment.working.services {
         if detached.contains(&service.lineage_id) {
-            staged.push(SettingPath::at(
-                &service.slug,
-                Target::Mount(volume.name.clone()),
-            ));
+            let name =
+                ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            staged.push(SettingPath::at(&name, Target::Mount(volume.name.clone())));
         }
     }
     environment
@@ -496,7 +495,7 @@ fn broken(intent: &SavedEnvironmentIntent) -> Vec<Found> {
     for (key, (node, volume, mount)) in mounts(intent) {
         let service = node.lineage_id.clone();
         let at = key.2.clone();
-        if let Some(refused) = kernel_refusal(node.slug.as_str(), &volume.name, mount) {
+        if let Some(refused) = kernel_refusal(&node.slug, &volume.name, mount) {
             let rule = Broken::Kernel {
                 service: service.clone(),
                 at: at.clone(),

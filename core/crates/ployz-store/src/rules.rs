@@ -108,7 +108,7 @@ pub(crate) fn broken(
             Some(BrokenReference {
                 at: match at {
                     Referrer::Variable(service, variable) => ReferenceAt::Variable {
-                        service: service.slug.clone(),
+                        service: named(&service.slug)?,
                         variable: variable.to_owned(),
                     },
                     Referrer::File(config, file) => ReferenceAt::File {
@@ -122,10 +122,10 @@ pub(crate) fn broken(
                         from: names.get(&lineage).and_then(|name| named(name)),
                     },
                     Wants::Variable { owner } => Missing::Variable {
-                        from: match service(working, &owner) {
-                            Some(owner) => owner.slug.clone(),
-                            None => named(names.get(&owner)?)?,
-                        },
+                        from: named(service(working, &owner).map_or_else(
+                            || names.get(&owner).map(String::as_str),
+                            |owner| Some(owner.slug.as_str()),
+                        )?)?,
                     },
                 },
             })
@@ -328,7 +328,7 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
         if !working
             .services
             .iter()
-            .any(|service| service.slug == command.service)
+            .any(|service| service.slug == command.service.as_str())
         {
             found.insert(Problem::NoSetupService(command.service.clone()));
         }
@@ -510,7 +510,7 @@ impl<'a> Refusing<'a> {
             .iter()
             .find_map(|facts| {
                 service(facts.working, lineage)
-                    .map(|service| service.slug.to_string())
+                    .map(|service| service.slug.clone())
                     .or_else(|| facts.live.get(lineage).cloned())
                     .or_else(|| {
                         facts
@@ -581,7 +581,7 @@ impl<'a> Refusing<'a> {
                 format!(
                     "{name} is already mounted by {}; allow shared writes first: {allow}",
                     if old.is_empty() {
-                        first.slug.to_string()
+                        first.slug.clone()
                     } else {
                         slugs(&old)
                     }
@@ -676,7 +676,7 @@ impl<'a> Refusing<'a> {
             .working
             .services
             .iter()
-            .any(|old| old.slug == *service);
+            .any(|old| old.slug == service.as_str());
         if !had {
             return error::choices(
                 format!(
@@ -986,7 +986,7 @@ pub(crate) mod tests {
             logs.name = "logs".into();
             working.volumes.push(logs);
             for service in &mut working.services {
-                let at = if service.slug.as_str() == "db" {
+                let at = if service.slug == "db" {
                     "/data/"
                 } else {
                     "/sys/logs"
@@ -1079,7 +1079,7 @@ pub(crate) mod tests {
             let redis = working
                 .services
                 .iter_mut()
-                .find(|service| service.slug.as_str() == "redis")
+                .find(|service| service.slug == "redis")
                 .unwrap();
             redis.variables[0].value = VariableValue::Plain {
                 text: PlainText::Template(vec![ValuePart::Ref {
@@ -1133,9 +1133,7 @@ pub(crate) mod tests {
 
         // Saved with db gone, production keeps editing and changing its other Setup Commands.
         seed(&store, &who, |working| {
-            working
-                .services
-                .retain(|service| service.slug.as_str() != "db");
+            working.services.retain(|service| service.slug != "db");
         });
         unrelated(&store, &who).unwrap();
         setup(&store, &who, &["db", "redis"]).unwrap();

@@ -178,7 +178,7 @@ pub(crate) fn freeze(
             error::conflict(
                 format!("{} has no registry credential: set one", service.slug),
                 FollowUp::SetRegistryCredential {
-                    service: service.slug.to_string(),
+                    service: service.slug.clone(),
                 }
                 .details(),
             )
