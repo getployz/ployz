@@ -1,9 +1,8 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    CertificateHost, ContainerAddress, ContainerId, ContainerRuntimeObservation, HttpProtocol,
-    Machine, MachineId, ProxyRoutes, QualifiedService, ServiceContainer, proxy_routes,
-    reachable_routes, service_containers,
+    CertificateHost, ContainerAddress, ContainerId, HttpProtocol, Machine, MachineId, ProxyRoutes,
+    QualifiedService, ServiceContainer, proxy_routes, reachable_routes, service_containers,
 };
 use ployz_decide::caddy_load::{self as load, Applied, CaddyFile, Input, Probe};
 use std::{
@@ -106,17 +105,7 @@ fn serves_nothing(
     if local.peek().is_none() {
         return !takes_ingress;
     }
-    local.all(|observation| at_rest(&observation.runtime))
-}
-
-/// True when a container's process isn't running and can serve nothing.
-pub(crate) fn at_rest(runtime: &ContainerRuntimeObservation) -> bool {
-    matches!(
-        runtime,
-        ContainerRuntimeObservation::Created
-            | ContainerRuntimeObservation::Exited { .. }
-            | ContainerRuntimeObservation::Dead
-    )
+    local.all(|observation| observation.runtime.at_rest())
 }
 
 fn newest_local_ingress(machine: &Machine, containers: &[ServiceContainer]) -> Option<ContainerId> {

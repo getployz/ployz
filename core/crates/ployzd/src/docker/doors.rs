@@ -94,7 +94,7 @@ impl DoorFacts {
     }
 
     pub(crate) fn at_rest(&self) -> bool {
-        crate::ingress::at_rest(&self.runtime)
+        self.runtime.at_rest()
     }
 }
 

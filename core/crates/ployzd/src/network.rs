@@ -22,13 +22,13 @@ mod firewall;
 mod linux;
 mod path;
 
+pub use crate::docker::DOCKER_NETWORK_NAME;
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
 pub use firewall::{BridgeFence, Installed, Restored, apply_firewall_rules, fence_builder};
 pub use linux::{Leftover, NetworkPlane};
 pub(crate) use path::PathBook;
 
-pub const DOCKER_NETWORK_NAME: &str = "ployz";
 pub const WIREGUARD_INTERFACE_NAME: &str = "ployz-wg";
 pub const WIREGUARD_KEEPALIVE_SECONDS: u16 = 25;
 pub const ENDPOINT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
