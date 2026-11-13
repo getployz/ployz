@@ -18,9 +18,9 @@ use crate::storage::Tx;
 const WATCH_PATHS: usize = 50;
 
 /// A Service's Preferred Builder: GitHub, or one Server. None is Auto. It is stored
-/// as `github` or the Server's Machine ID.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+/// as `github` or the Server's Machine ID, and parsed where it is used, so a stored
+/// value that names neither fails only there.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Preferred {
     Github,
     Server(MachineId),
@@ -50,14 +50,6 @@ impl Preferred {
     }
 }
 
-impl TryFrom<String> for Preferred {
-    type Error = String;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
-        Self::parse(&Value::String(text)).map_err(|refused| refused.message)
-    }
-}
-
 impl From<Preferred> for String {
     fn from(preferred: Preferred) -> Self {
         match preferred {
@@ -77,7 +69,7 @@ pub(crate) struct Policy {
     /// Who builds it first: `github`, or a Server's Machine ID. None follows the
     /// Organization's Build Order; see [`crate::builders`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) preferred_builder: Option<Preferred>,
+    pub(crate) preferred_builder: Option<String>,
 }
 
 impl Default for Policy {
@@ -234,7 +226,9 @@ impl PolicySetting {
     fn write(self, policy: &mut Policy, value: Option<Value>) -> Result<(), RpcError> {
         let setting = ServiceSetting::Policy(self);
         if self == Self::PreferredBuilder {
-            policy.preferred_builder = value.map(|value| Preferred::parse(&value)).transpose()?;
+            policy.preferred_builder = value
+                .map(|value| Preferred::parse(&value).map(String::from))
+                .transpose()?;
             return Ok(());
         }
         let value = value.unwrap_or_else(|| self.default());
@@ -532,7 +526,7 @@ mod tests {
             ),
         ] {
             let policy = Policy {
-                preferred_builder: Some(preferred),
+                preferred_builder: Some(String::from(preferred)),
                 ..Policy::default()
             };
             let stored = json!({
@@ -549,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_preferred_builder_that_names_neither_is_refused_on_decode() {
+    fn a_stored_preferred_builder_that_names_neither_decodes_and_fails_when_parsed() {
         for text in [
             "",
             "GitHub",
@@ -563,10 +557,9 @@ mod tests {
                 "watchPaths": [],
                 "preferredBuilder": text,
             });
-            assert!(
-                serde_json::from_value::<Policy>(stored).is_err(),
-                "{text:?}"
-            );
+            let policy = serde_json::from_value::<Policy>(stored).unwrap();
+            assert_eq!(policy.preferred_builder.as_deref(), Some(text));
+            assert!(Preferred::parse(&json!(text)).is_err(), "{text:?}");
         }
     }
 

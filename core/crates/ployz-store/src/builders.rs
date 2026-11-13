@@ -5,9 +5,11 @@
 
 use ployz_core::{MachineId, RpcError};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::error;
 use crate::id::EnvironmentId;
 use crate::policy::Preferred;
 use crate::storage::{Tx, name_of};
@@ -150,7 +152,10 @@ pub(crate) fn walk(
     service_id: &str,
 ) -> Result<(Vec<Builder>, Option<MachineId>), RpcError> {
     let order = chosen(tx, organization)?.unwrap_or(BuildOrder::AUTO);
-    let preferred = crate::policy::load(tx, environment, service_id)?.preferred_builder;
+    let preferred = crate::policy::load(tx, environment, service_id)?
+        .preferred_builder
+        .map(|text| Preferred::parse(&json!(text)).map_err(|_| error::corrupt("Preferred Builder")))
+        .transpose()?;
     let (first, machine) = match preferred {
         None => (None, None),
         Some(Preferred::Github) => (Some(Builder::Github), None),
