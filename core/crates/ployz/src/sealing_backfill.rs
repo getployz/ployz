@@ -136,10 +136,7 @@ pub(crate) struct Can {
 
 impl Seen {
     fn held(&self) -> Option<SealingPublicKey> {
-        match self.sealing {
-            Sealing::Held { public_key } => Some(public_key),
-            Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. } => None,
-        }
+        self.sealing.held_key()
     }
 
     fn participating(&self) -> bool {

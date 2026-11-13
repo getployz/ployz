@@ -35,6 +35,7 @@ mod health;
 mod hooks;
 mod machine_ops;
 mod publish;
+mod set_each;
 mod start;
 mod stop_first;
 mod transport;
@@ -50,6 +51,7 @@ use publish::{
     Done, GroupCopies, Published, ack_tick, gaps_still_routing, old_copies, publish_group,
     rolling_step, route_new,
 };
+pub(crate) use set_each::{Answer, set_each};
 use start::{Attempt, FailedStart, Row, SlotRun, answer_when, out_of_memory, remove_stray, start};
 pub(crate) use start::{MoveEnd, MoveError, move_container};
 use stop_first::{

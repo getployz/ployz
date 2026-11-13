@@ -8,16 +8,16 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    ApprovedChange, DeployApproval, DeployTerms, Signed, Signer, SignerKey, Timestamp,
-    deploy::content_addressed,
+    ApprovedChange, DeployApproval, DeployTerms, Signed, deploy::content_addressed,
 };
 use ployz_core::{
-    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, Sealing,
-    SealingPublicKey, ServiceName,
+    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, SealingPublicKey,
+    ServiceName, cluster_sealing_key,
 };
 use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
 use serde_json::json;
 
+use super::super::device::DeviceSigning;
 use super::super::store::Store;
 use super::super::{Error, route};
 use crate::image::{PinError, pin_public};
@@ -63,7 +63,7 @@ pub(in crate::handlers) fn sign(
     (environment, services): (&EnvironmentRef, &[ServiceName]),
 ) -> Result<Option<DeviceApproval>, Error> {
     let key = super::super::device::key::path(&super::super::config_path(matches)?);
-    let Ok(Some(secret)) = super::super::device::key::load(&key) else {
+    let Ok(Some(signing)) = DeviceSigning::load(&key) else {
         return Ok(None);
     };
     let (probe, plan) = std::thread::scope(|scope| {
@@ -97,15 +97,14 @@ pub(in crate::handlers) fn sign(
     let plan = plan?;
     let target = signable(plan.target)?;
     let pins = pin_tags(matches, &target)?;
-    let signer = Signer::from_seed(&secret);
-    let issued_at = Timestamp::now();
+    let window = signing.window();
     let terms = DeployTerms {
         cluster: enforcing.cluster,
         operation: OperationId::from_uuid(id.as_str()).map_err(Error::command)?,
         machines: enforcing.machines,
-        issued_at,
-        expires_at: issued_at.plus(ployz_core::authority::restart::MAX_LIFETIME_MILLIS),
-        signer: SignerKey::Device(signer.public().into()),
+        issued_at: window.issued_at,
+        expires_at: window.expires_at,
+        signer: window.signer,
         proposal: None,
     };
     let (body, approved) =
@@ -122,7 +121,7 @@ pub(in crate::handlers) fn sign(
     consent(&approved, yes, |question, refusal, declined| {
         crate::ui::confirm(question, || refusal, declined)
     })?;
-    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
+    let signed = signing.sign(&body)?;
     Ok(Some(DeviceApproval {
         signed,
         version: plan.version,
@@ -249,13 +248,7 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
     {
         return Probe::Off;
     }
-    let Some(cluster) =
-        observed
-            .iter()
-            .find_map(|observed| match observed.machine.runtime.sealing {
-                Some(Sealing::Held { public_key }) => Some(public_key),
-                _ => None,
-            })
+    let Some(cluster) = cluster_sealing_key(observed.iter().map(|observed| &observed.machine))
     else {
         return Probe::NoClusterKey;
     };
