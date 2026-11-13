@@ -1641,12 +1641,10 @@ mod tests {
             words: vec!["deploy".to_owned()],
             secrets: false,
         };
-        let refused = ployz_core::RpcError {
-            code: RpcErrorCode::ConfirmationRequired,
-            message: "This Deploy permanently deletes the data of data".into(),
-            details: json!({ "version": "3:1:0.1", "accept": ["data"] }),
-            cause: Vec::new(),
-        };
+        let refused = ployz_core::RpcError::confirmation_required(
+            "This Deploy permanently deletes the data of data",
+        )
+        .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
         let error = store.accepting(StoreCallError::Refused(refused));
         let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --approval apr_1 --env staging";
         assert_eq!(error.hints(), [Hint::Retry(retry.into())]);
@@ -1728,12 +1726,10 @@ mod tests {
             words: vec!["deploy".to_owned(), "--skip-deploy".to_owned()],
             secrets: false,
         };
-        let refused = ployz_core::RpcError {
-            code: RpcErrorCode::ConfirmationRequired,
-            message: "Next deploy deletes the data of pg-data, logs. Accept each by name".into(),
-            details: json!({ "version": "3:1:0.1:9f2c", "accept": ["pg-data", "logs"] }),
-            cause: Vec::new(),
-        };
+        let refused = ployz_core::RpcError::confirmation_required(
+            "Next deploy deletes the data of pg-data, logs. Accept each by name",
+        )
+        .with_details(json!({ "version": "3:1:0.1:9f2c", "accept": ["pg-data", "logs"] }));
         let loss = "ployz deploy --skip-deploy --accept-volume-loss pg-data --accept-volume-loss logs \
                     --expect-version 3:1:0.1:9f2c --approval apr_1 --project shop --env production";
         assert_eq!(
@@ -1801,12 +1797,10 @@ mod tests {
                 words: words.iter().map(|word| (*word).to_owned()).collect(),
                 secrets: false,
             };
-            let refused = ployz_core::RpcError {
-                code: RpcErrorCode::ConfirmationRequired,
-                message: "This permanently deletes the data of data".into(),
-                details: json!({ "version": "3:1:0.1", "accept": ["data"] }),
-                cause: Vec::new(),
-            };
+            let refused = ployz_core::RpcError::confirmation_required(
+                "This permanently deletes the data of data",
+            )
+            .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
             let hints = store.accepting(StoreCallError::Refused(refused)).hints();
             let [Hint::Retry(retry)] = &hints[..] else {
                 panic!("{words:?} names no retry");
@@ -1845,12 +1839,10 @@ mod tests {
             words: vec!["deploy".to_owned()],
             secrets: false,
         };
-        let refused = ployz_core::RpcError {
-            code: RpcErrorCode::ConfirmationRequired,
-            message: "Deploying loses data of data. Accept each by name".into(),
-            details: json!({ "version": "5:1:0.1#loss-fzfjky", "accept": ["data"] }),
-            cause: Vec::new(),
-        };
+        let refused = ployz_core::RpcError::confirmation_required(
+            "Deploying loses data of data. Accept each by name",
+        )
+        .with_details(json!({ "version": "5:1:0.1#loss-fzfjky", "accept": ["data"] }));
         let hints = store.accepting(StoreCallError::Refused(refused)).hints();
         let retry = "ployz deploy --accept-volume-loss data --expect-version '5:1:0.1#loss-fzfjky' \
                      --project mirrors --env production";
@@ -1896,13 +1888,12 @@ mod tests {
         };
         let next_of = |details| {
             let refusal = store.at_review(
-                StoreCallError::Refused(ployz_core::RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "This draft includes a pull request: review it and pass its version"
-                        .into(),
-                    details,
-                    cause: Vec::new(),
-                }),
+                StoreCallError::Refused(
+                    ployz_core::RpcError::conflict(String::from(
+                        "This draft includes a pull request: review it and pass its version",
+                    ))
+                    .with_details(details),
+                ),
                 "diff",
             );
             Error::from(refusal.error).hint(refusal.hint).hints()
@@ -1949,17 +1940,16 @@ mod tests {
         };
         let next = |accept: serde_json::Value| {
             let refusal = store.at_review(
-                StoreCallError::Refused(ployz_core::RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "The Environment changed after this review. Review the latest \
-                              changes and try again"
-                        .into(),
-                    details: json!({
+                StoreCallError::Refused(
+                    ployz_core::RpcError::conflict(String::from(
+                        "The Environment changed after this review. Review the latest \
+                              changes and try again",
+                    ))
+                    .with_details(json!({
                         "diff": { "version": "33:4:0.4" },
                         "volume_loss": { "version": "33:4:0.4:cafe", "accept": accept },
-                    }),
-                    cause: Vec::new(),
-                }),
+                    })),
+                ),
                 "diff",
             );
             let message = match &refusal.error {
@@ -2018,14 +2008,13 @@ mod tests {
             secrets: false,
         };
         let refusal = store.at_review(
-            StoreCallError::Refused(ployz_core::RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "The Environment changed after this review. Review the latest changes \
-                          and try again"
-                    .into(),
-                details: json!({ "diff": { "version": "33:4:0.4" } }),
-                cause: Vec::new(),
-            }),
+            StoreCallError::Refused(
+                ployz_core::RpcError::conflict(String::from(
+                    "The Environment changed after this review. Review the latest changes \
+                          and try again",
+                ))
+                .with_details(json!({ "diff": { "version": "33:4:0.4" } })),
+            ),
             "diff",
         );
         assert_eq!(
@@ -2052,16 +2041,15 @@ mod tests {
                 words: vec!["deploy".to_owned()],
                 secrets: false,
             };
-            let refused = StoreCallError::Refused(ployz_core::RpcError {
-                code: RpcErrorCode::ConfirmationRequired,
-                message: "This permanently deletes the data of big1, big2. Accept each by name"
-                    .into(),
-                details: json!({
+            let refused = StoreCallError::Refused(
+                ployz_core::RpcError::confirmation_required(String::from(
+                    "This permanently deletes the data of big1, big2. Accept each by name",
+                ))
+                .with_details(json!({
                     "version": "33:4:0.4:481da69fb1927724",
                     "accept": ["big1", "big2"],
-                }),
-                cause: Vec::new(),
-            });
+                })),
+            );
             let error = if deploy {
                 store.accepting(store.at_review(refused, "diff"))
             } else {
@@ -2120,12 +2108,7 @@ mod tests {
             .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
             .unwrap();
         let refused = |details| {
-            StoreCallError::Refused(ployz_core::RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "refused".into(),
-                details,
-                cause: Vec::new(),
-            })
+            StoreCallError::Refused(ployz_core::RpcError::conflict("refused").with_details(details))
         };
         let next_of = |error| {
             let refusal = with_refresh_hint(error, leaf_matches(&root), "diff");

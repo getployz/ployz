@@ -1,8 +1,6 @@
 use ployz_core::{
     MachineFailure, MachineId, MachineSuccess, PartialResult, RequestedServiceSpec, RpcError,
-    RpcErrorCode,
 };
-use serde_json::Value;
 
 use super::*;
 use crate::deploy::{ObservationKind, observation_warnings};
@@ -65,12 +63,7 @@ fn observation_warnings_keep_failures_and_omissions_distinct() {
         }],
         failures: vec![MachineFailure {
             machine_id: MachineId::parse("b".repeat(32)).unwrap(),
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "container listing failed".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            },
+            error: RpcError::unavailable("container listing failed"),
         }],
         omissions: vec![MachineId::parse("c".repeat(32)).unwrap()],
     };

@@ -57,12 +57,7 @@ async fn register_on_a_machine_not_participating_is_rpc_error() {
     let description = advertised_description();
     let session = UnixSession::start().await;
     let service = enrollment_service(description.clone());
-    service.set_register_error(RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "Machine is not participating".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    });
+    service.set_register_error(RpcError::unavailable("Machine is not participating"));
     let _machine = session.spawn_machine(description.machine_id, service).await;
 
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
@@ -95,12 +90,7 @@ async fn node_smoke_covers_session_register() {
         machine_id: not_participating_id,
         ..description.clone()
     });
-    not_participating.set_register_error(RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "Machine is not participating".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    });
+    not_participating.set_register_error(RpcError::unavailable("Machine is not participating"));
     let _not_participating = session
         .spawn_machine(not_participating_id, not_participating)
         .await;

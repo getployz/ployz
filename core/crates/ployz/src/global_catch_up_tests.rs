@@ -62,12 +62,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
         if failed {
             client.failures = vec![ployz_core::MachineFailure {
                 machine_id: peer.id,
-                error: RpcError {
-                    code: ployz_core::RpcErrorCode::Unavailable,
-                    message: "peer unavailable".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                },
+                error: RpcError::unavailable("peer unavailable"),
             }];
         } else {
             client.omissions = vec![unlisted.id];
@@ -1407,12 +1402,7 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         Placement::default(),
         running_on(&joiner, 'b'),
     )]);
-    client.run_result = Err(RpcError {
-        code: ployz_core::RpcErrorCode::Conflict,
-        message: "creation key conflict".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    });
+    client.run_result = Err(RpcError::conflict("creation key conflict"));
     let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert!(message(error, &joiner).contains("creation key conflict"));
 }

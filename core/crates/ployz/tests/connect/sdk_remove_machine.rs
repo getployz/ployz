@@ -211,12 +211,7 @@ async fn an_unreachable_leave_forgets_and_a_resend_still_cannot_confirm_the_rese
 #[tokio::test]
 async fn a_leave_the_entry_no_longer_routes_still_forgets_without_confirming_the_reset() {
     let (_description, worker, _empty, mut service) = removal_cluster();
-    service.leave_error = Some(RpcError {
-        code: RpcErrorCode::NotFound,
-        message: "unknown Machine".into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    });
+    service.leave_error = Some(RpcError::not_found("unknown Machine"));
     let (mut client, server, _) = connected_client(service.clone()).await;
     let confirmed = confirmation([
         volume(worker.machine.id, "data"),
@@ -860,12 +855,7 @@ async fn a_removal_says_how_its_machine_departed() {
     );
 
     let (_description, _worker, _empty, mut unroutable) = removal_cluster();
-    unroutable.leave_error = Some(RpcError {
-        code: RpcErrorCode::NotFound,
-        message: "unknown Machine".into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    });
+    unroutable.leave_error = Some(RpcError::not_found("unknown Machine"));
     assert_eq!(
         departed(unroutable, &target).await,
         json!({ "kind": "already_forgotten" })

@@ -899,12 +899,7 @@ mod tests {
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
             Err(crate::setup_retry::Error::Permanent(ConnectError::Remote(
-                RpcError {
-                    code: RpcErrorCode::Internal,
-                    message: "upgrade record is unreadable".into(),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                },
+                RpcError::internal("upgrade record is unreadable"),
             )))
         }
 
@@ -1350,12 +1345,7 @@ mod tests {
         let attempt_id = MachineUpgradeAttemptId::parse("1".repeat(32)).unwrap();
         let mut client = FakeRequests {
             request: Some(Err(crate::setup_retry::Error::Permanent(
-                ConnectError::Remote(RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "a Server upgrade or mutation is active".into(),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                }),
+                ConnectError::Remote(RpcError::conflict("a Server upgrade or mutation is active")),
             ))),
             seen: Vec::new(),
         };

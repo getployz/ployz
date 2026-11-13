@@ -685,12 +685,7 @@ async fn a_cloud_removal_whose_reset_committed_reads_as_a_reset() {
 /// confirmed reset: the removal is partial.
 #[tokio::test]
 async fn a_removal_whose_reset_is_unproven_is_partial() {
-    let unroutable = RpcError {
-        code: RpcErrorCode::NotFound,
-        message: "unknown Machine".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    };
+    let unroutable = RpcError::not_found("unknown Machine");
     for (unavailable, error, kind, doubt) in [
         (
             true,

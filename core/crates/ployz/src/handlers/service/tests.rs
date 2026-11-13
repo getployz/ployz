@@ -1,6 +1,6 @@
 use ployz_core::{
-    HookContainer, MachineFailure, MachineId, PartialResult, RpcError, RpcErrorCode,
-    ServiceContainer, ServiceId, ServiceName, derive_live_services,
+    HookContainer, MachineFailure, MachineId, PartialResult, RpcError, ServiceContainer, ServiceId,
+    ServiceName, derive_live_services,
 };
 use serde_json::json;
 
@@ -352,12 +352,7 @@ fn observation(
 #[test]
 fn action_result_keeps_machine_failures_apart_from_container_failures() {
     let failed_id = MachineId::parse("2".repeat(32)).unwrap();
-    let error = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "offline".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    };
+    let error = RpcError::unavailable("offline");
     let live = derive_live_services(PartialResult::<Vec<ployz_core::ContainerObservation>, _> {
         successes: Vec::new(),
         failures: vec![MachineFailure {
@@ -518,12 +513,7 @@ async fn a_restart_that_fails_a_copy_exits_partial() {
         container_failures: vec![ContainerFailure {
             machine_id: MachineId::parse("a".repeat(32)).unwrap(),
             container_id: ContainerId::parse("c".repeat(64)).unwrap(),
-            error: RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "Container c is left Held and not routed".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error: RpcError::conflict("Container c is left Held and not routed"),
         }],
         ..changed(true)
     };

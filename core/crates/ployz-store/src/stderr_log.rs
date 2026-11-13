@@ -413,12 +413,11 @@ mod tests {
     /// logged: by a field the line doesn't name, formatted, or on a later line.
     #[test]
     fn a_sealed_value_in_a_warning_never_reaches_the_line() {
-        let sealed = ployz_core::RpcError {
-            code: ployz_core::RpcErrorCode::Conflict,
-            message: "couldn't seal\nDETAIL: Key (value)=(plain-secret-3786)".to_owned(),
-            details: json!({ "value": "plain-secret-3786", "sealed": "sealed-ciphertext-3786" }),
-            cause: vec!["plain-secret-3786".to_owned()],
-        };
+        let sealed = ployz_core::RpcError::conflict(
+            "couldn't seal\nDETAIL: Key (value)=(plain-secret-3786)".to_owned(),
+        )
+        .with_details(json!({ "value": "plain-secret-3786", "sealed": "sealed-ciphertext-3786" }))
+        .with_causes(vec!["plain-secret-3786".to_owned()]);
         let lines = logged(|| {
             tracing::warn!(
                 target: "ployz_store",

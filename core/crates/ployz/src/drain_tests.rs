@@ -676,13 +676,7 @@ async fn a_failed_copy_listing_leaves_the_leftovers_to_remaining() {
     let mut client = Scripted {
         observations: [Ok(vec![qualified("web")])].into(),
         convergences: [Converged::NothingToMove].into(),
-        copies: [Err(RpcError {
-            code: ployz_core::RpcErrorCode::Unavailable,
-            message: "the Server did not answer".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })]
-        .into(),
+        copies: [Err(RpcError::unavailable("the Server did not answer"))].into(),
         ..Scripted::default()
     };
     let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;

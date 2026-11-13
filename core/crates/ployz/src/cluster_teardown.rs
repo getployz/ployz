@@ -191,8 +191,7 @@ fn cluster_volume_loss(snapshot: &DeploySnapshot) -> ObservedDataLoss {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        DockerVolumeId, DockerVolumeName, MachineId, RpcError, RpcErrorCode,
-        VolumeObservationFailure,
+        DockerVolumeId, DockerVolumeName, MachineId, RpcError, VolumeObservationFailure,
     };
 
     use super::*;
@@ -209,12 +208,7 @@ mod tests {
                 Vec::new(),
                 vec![VolumeObservationFailure {
                     id: id.clone(),
-                    error: RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: "inspect failed".into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    },
+                    error: RpcError::unavailable("inspect failed"),
                 }],
                 Vec::new(),
                 Vec::new(),

@@ -1,7 +1,7 @@
 use super::support::*;
 use ployz_core::{
     DependencyCondition, DeployWarning, MachineFailure, MembershipEvidence, ObservationGapReason,
-    PruneScope, QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceRemovals,
+    PruneScope, QualifiedService, RpcError, ServiceDependency, ServiceRemovals,
 };
 
 fn snapshot() -> DeploySnapshot {
@@ -72,12 +72,7 @@ fn only_recognized_evidence_or_an_actual_failure_qualifies_a_relevant_gap() {
     failed.container_omissions.clear();
     failed.container_failures.push(MachineFailure {
         machine_id: machine_id('2'),
-        error: RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "listing failed".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        },
+        error: RpcError::unavailable("listing failed"),
     });
     assert_eq!(
         gaps(&plan_deploy([&requested], &failed, PlanOptions::default()).unwrap()),
@@ -236,12 +231,7 @@ fn a_named_removal_makes_every_server_the_deploy_could_not_check_a_gap() {
         machines: vec![machine('1', "available"), machine('2', "unread")],
         container_failures: vec![MachineFailure {
             machine_id: machine_id('2'),
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "listing failed".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error: RpcError::unavailable("listing failed"),
         }],
         ..Default::default()
     };
@@ -338,12 +328,7 @@ fn a_machine_the_deploy_could_not_observe_is_named_as_one_that_can_serve_old_cop
 
 #[test]
 fn a_volume_failure_on_a_server_outside_the_work_names_that_server() {
-    let error = || RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "listing failed".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    };
+    let error = || RpcError::unavailable("listing failed");
     let mut snapshot = DeploySnapshot {
         machines: vec![
             machine('1', "available"),

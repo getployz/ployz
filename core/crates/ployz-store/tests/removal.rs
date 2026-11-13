@@ -222,12 +222,7 @@ fn succeed(store: &ConfigStore, id: &DeploymentId, services: &[&str], removed: V
 
 /// Run Deployment `id` for `services` to a failure on Server `a…`.
 fn fail(store: &ConfigStore, id: &DeploymentId, services: &[&str]) {
-    let busy = RpcError {
-        code: RpcErrorCode::Internal,
-        message: "busy".into(),
-        details: json!({}),
-        cause: Vec::new(),
-    };
+    let busy = RpcError::internal("busy").with_details(json!({}));
     fail_with(store, id, services, busy);
 }
 
@@ -1383,12 +1378,9 @@ fn a_sweep_that_could_not_look_at_the_servers_forgets_none_that_were_silent() {
         volumes: Some(VolumeObservation::failed(
             Vec::new(),
             Vec::new(),
-            ployz_store::ObservationFailure::unreachable(ployz_core::RpcError {
-                code: ployz_core::RpcErrorCode::Unavailable,
-                message: "Could not connect to the Machine.".to_owned(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            }),
+            ployz_store::ObservationFailure::unreachable(ployz_core::RpcError::unavailable(
+                "Could not connect to the Machine.".to_owned(),
+            )),
         )),
         ..unseen(2)
     };

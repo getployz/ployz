@@ -11,12 +11,7 @@ fn created_later(call: Call, container_id: &ContainerId) -> Step {
 
 #[tokio::test(start_paused = true)]
 async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
-    let answered = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "Docker is restarting".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    };
+    let answered = RpcError::unavailable("Docker is restarting");
     let silent = || {
         RpcError::unanswered_target(
             RpcErrorCode::Unavailable,
@@ -164,13 +159,7 @@ async fn a_target_silent_after_a_redial_is_reported_not_the_closed_session() {
 
 #[tokio::test(start_paused = true)]
 async fn a_target_silent_after_a_lost_reply_and_a_redial_is_reported_silent() {
-    let lost = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "connection lost".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
-    .reply_lost_from(&machine('1'));
+    let lost = RpcError::unavailable("connection lost").reply_lost_from(&machine('1'));
     let attempts = std::cell::Cell::new(0);
     let error = wait_out_restart(
         &CancellationToken::new(),
@@ -197,13 +186,7 @@ async fn a_target_silent_after_a_lost_reply_and_a_redial_is_reported_silent() {
 
 #[tokio::test(start_paused = true)]
 async fn a_target_silent_after_a_lost_reply_stays_silent_when_its_session_then_closes() {
-    let lost = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "connection lost".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
-    .reply_lost_from(&machine('1'));
+    let lost = RpcError::unavailable("connection lost").reply_lost_from(&machine('1'));
     let attempts = std::cell::Cell::new(0);
     let error = wait_out_restart(
         &CancellationToken::new(),
@@ -230,13 +213,7 @@ async fn a_target_silent_after_a_lost_reply_stays_silent_when_its_session_then_c
 
 #[tokio::test(start_paused = true)]
 async fn a_target_silent_after_a_lost_reply_stays_silent_when_later_sends_never_reach_it() {
-    let lost = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "connection lost".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
-    .reply_lost_from(&machine('1'));
+    let lost = RpcError::unavailable("connection lost").reply_lost_from(&machine('1'));
     let attempts = std::cell::Cell::new(0);
     let error = wait_out_restart(
         &CancellationToken::new(),
@@ -248,13 +225,7 @@ async fn a_target_silent_after_a_lost_reply_stays_silent_when_later_sends_never_
                     RpcErrorCode::Unavailable,
                     "Machine did not answer: deadline has elapsed".into(),
                 ),
-                _ => RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "couldn't dial the target".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                }
-                .unreached(),
+                _ => RpcError::unavailable("couldn't dial the target").unreached(),
             };
             async move { Err::<(), _>(error) }
         },
@@ -460,13 +431,7 @@ fn still_may_have_happened(error: &RpcError, refusal: &RpcError, machine: Machin
 #[tokio::test(start_paused = true)]
 async fn a_refusal_after_a_lost_reply_still_says_the_create_may_have_happened() {
     let machine = machine('1');
-    let lost = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "connection lost".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
-    .reply_lost_from(&machine);
+    let lost = RpcError::unavailable("connection lost").reply_lost_from(&machine);
     for refusal in refusals(machine) {
         for refused in [Refused::OnRedial, Refused::AtTheGate] {
             let error = refused_after(machine, lost.clone(), &refusal, refused).await;
@@ -777,12 +742,9 @@ async fn a_run_waits_out_a_log_store_upgrade() {
     let client = Scripted::new(vec![
         Step(
             call(),
-            Reply::Error(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "the Log Store still runs the software from before an upgrade".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            }),
+            Reply::Error(RpcError::unavailable(
+                "the Log Store still runs the software from before an upgrade",
+            )),
         ),
         created(call(), &container('a')),
     ]);

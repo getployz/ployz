@@ -1,6 +1,6 @@
 //! Provisioned storage admission through the public planner and SDK error contract.
 use super::support::*;
-use ployz_core::{RpcError, RpcErrorCode, STORAGE_GIB, StorageBacking, StorageCapacity};
+use ployz_core::{RpcError, STORAGE_GIB, StorageBacking, StorageCapacity};
 use std::collections::BTreeSet;
 
 fn capacity(free_gib: u64) -> StorageCapacity {
@@ -191,12 +191,7 @@ fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
     // Both omitted and failed observations leave possible existing datasets unknown.
     for failure in [
         None,
-        Some(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "storage inspection failed".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
+        Some(RpcError::unavailable("storage inspection failed")),
     ] {
         if let Some(error) = failure {
             snapshot.storage_capacity.insert(owner_id, Err(error));

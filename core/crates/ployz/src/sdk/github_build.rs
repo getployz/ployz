@@ -683,12 +683,9 @@ async fn rule_build(
     let claims = claims.clone();
     let commit = commit.to_owned();
     store_call(store, move |store| {
-        let id = store.github_by_run(run_id)?.ok_or_else(|| RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "No build holds this run yet".to_owned(),
-            details: Value::Null,
-            cause: Vec::new(),
-        })?;
+        let id = store
+            .github_by_run(run_id)?
+            .ok_or_else(|| RpcError::not_found("No build holds this run yet".to_owned()))?;
         let build = store.github_authorize(&id, &claims)?;
         if build.status != BuildStatus::Building || build.grant.is_some() {
             return Err(ployz_core::RpcError::conflict(
@@ -720,12 +717,10 @@ async fn rule_build(
 }
 
 fn claims_run(claims: &GithubClaims) -> Result<u64, RpcError> {
-    claims.run_id.parse().map_err(|_| RpcError {
-        code: RpcErrorCode::Unauthenticated,
-        message: "The token names no run".to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    })
+    claims
+        .run_id
+        .parse()
+        .map_err(|_| RpcError::unauthenticated("The token names no run".to_owned()))
 }
 
 const OLD_MINT_SKIPS: &str =
@@ -1182,12 +1177,7 @@ mod tests {
     #[test]
     fn a_machine_that_cannot_read_grants_fails_the_build_by_name() {
         let machine = ployz_core::MachineId::random();
-        let error = |code| RpcError {
-            code,
-            message: "refused".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        };
+        let error = |code| RpcError::new(code, "refused");
         let GrantRead::Refused(message) =
             grant_read(Err(error(RpcErrorCode::Unsupported)), &machine)
         else {
@@ -1209,11 +1199,12 @@ mod tests {
 
     #[test]
     fn only_an_enforcing_machines_refusal_of_the_mint_ends_the_build_by_name() {
-        let refusal = |code: &str, capability: &str| RpcError {
-            code: RpcErrorCode::from(code),
-            message: "This server runs only builds an approved device starts.".into(),
-            details: serde_json::json!({ "capability": capability }),
-            cause: Vec::new(),
+        let refusal = |code: &str, capability: &str| {
+            RpcError::new(
+                RpcErrorCode::from(code),
+                "This server runs only builds an approved device starts.",
+            )
+            .with_details(serde_json::json!({ "capability": capability }))
         };
         let mint = ployz_core::MINT_BUILD_GRANT_CAPABILITY;
         let refused = |error| crate::connect::refused_by_enforcement(&error, mint);

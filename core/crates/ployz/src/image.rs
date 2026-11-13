@@ -369,10 +369,8 @@ mod tests {
     use super::*;
     use ployz_core::error_chain;
     use ployz_core::{
-        MachineId, MachineName, MachineObservation, MembershipObservation, RpcErrorCode,
-        WireGuardPublicKey,
+        MachineId, MachineName, MachineObservation, MembershipObservation, WireGuardPublicKey,
     };
-    use serde_json::Value;
 
     fn machine(seed: u8) -> MachineObservation {
         MachineObservation::new(
@@ -458,20 +456,14 @@ mod tests {
 
     #[test]
     fn a_daemon_without_image_pull_is_left_to_pull_on_create() {
-        let refusal = |capability: &str| RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: "unimplemented".into(),
-            details: serde_json::json!({"capability": capability, "target": "a".repeat(32)}),
-            cause: Vec::new(),
+        let refusal = |capability: &str| {
+            RpcError::unsupported("unimplemented").with_details(
+                serde_json::json!({"capability": capability, "target": "a".repeat(32)}),
+            )
         };
         assert!(pulls_on_create(refusal(PULL_IMAGE_CAPABILITY)).is_ok());
         assert!(pulls_on_create(refusal("ployz.serving.routes.v1")).is_err());
-        let failed = RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "registry unreachable".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        };
+        let failed = RpcError::unavailable("registry unreachable");
         assert_eq!(pulls_on_create(failed.clone()), Err(failed));
     }
 
@@ -500,12 +492,7 @@ mod tests {
             ));
         }
         assert!(matches!(
-            ingest_error(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "ingest unavailable".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            }),
+            ingest_error(RpcError::unavailable("ingest unavailable")),
             PushError::ImageIngest(_)
         ));
         let error = ingest_error(rpc_error(crate::connect::ConnectError::from(

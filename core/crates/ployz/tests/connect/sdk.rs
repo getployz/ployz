@@ -163,12 +163,7 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.emit_watch_frame_on_open(empty_watch_frame());
-    service.create_container_error = Some(RpcError {
-        code: RpcErrorCode::Conflict,
-        message: "Volume Ensure failed".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    });
+    service.create_container_error = Some(RpcError::conflict("Volume Ensure failed"));
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
         .await
@@ -616,12 +611,7 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
         target,
         vec![ployz_core::VolumeObservationFailure {
             id: volume.id.clone(),
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "Pool is not imported".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error: RpcError::unavailable("Pool is not imported"),
         }],
     );
     service.recover_volume_on_storage_inspect = Some(volume);

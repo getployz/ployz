@@ -628,12 +628,10 @@ async fn a_removal_deployed_while_its_server_fails_the_check_names_the_error() {
     let service = DeployService::new(machine('a', "one"));
     let machines_error = std::sync::Arc::clone(&service.machines_error);
     let (address, server) = removing_deployed_data(&db, service).await;
-    *machines_error.lock().unwrap() = Some(ployz_core::RpcError {
-        code: ployz_core::RpcErrorCode::Internal,
-        message: "The Machine list is unavailable.".into(),
-        details: Value::Null,
-        cause: vec!["database is locked".into()],
-    });
+    *machines_error.lock().unwrap() = Some(
+        ployz_core::RpcError::internal("The Machine list is unavailable.")
+            .with_causes(vec!["database is locked".into()]),
+    );
 
     let (code, refused) = ployz(Some(&db), &address, &["deploy", "--skip-deploy"]).await;
     assert_eq!(code, 1, "{refused}");

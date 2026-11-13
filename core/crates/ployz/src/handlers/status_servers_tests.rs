@@ -79,12 +79,7 @@ fn listed(up: &[&Machine], down: &[&Machine]) -> Vec<MachineObservation> {
 }
 
 fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.to_owned(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(message.to_owned())
 }
 
 fn listing(failed: &[&Machine]) -> LiveServices<RpcError> {

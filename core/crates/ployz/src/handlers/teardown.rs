@@ -1027,18 +1027,18 @@ mod tests {
     fn asks_in(version: &str, environment: &str, service: &str) -> StoreCallError {
         let effect =
             json!({ "kind": "removes_service", "name": service, "node": "n", "path": "p" });
-        StoreCallError::Refused(ployz_core::RpcError {
-            code: RpcErrorCode::ConfirmationRequired,
-            message: format!("Removing this will remove Service {service}. Pass the version"),
-            details: json!({
+        StoreCallError::Refused(
+            ployz_core::RpcError::confirmation_required(format!(
+                "Removing this will remove Service {service}. Pass the version"
+            ))
+            .with_details(json!({
                 "volumes": {},
                 "accept": {},
                 "effects": [effect],
                 "effects_by_environment": { environment: [effect] },
                 "version": version,
-            }),
-            cause: Vec::new(),
-        })
+            })),
+        )
     }
 
     fn request() -> Remove {
@@ -1172,12 +1172,8 @@ mod tests {
             ),
         ];
         for (name, details) in table {
-            let refused = ployz_core::RpcError {
-                code: RpcErrorCode::ConfirmationRequired,
-                message: "refused".to_owned(),
-                details,
-                cause: Vec::new(),
-            };
+            let refused = ployz_core::RpcError::confirmation_required("refused".to_owned())
+                .with_details(details);
             let now = Reviewed::of(&refused, &accepted)
                 .map(|reviewed| (reviewed.version, reviewed.unaccepted));
             assert_eq!(now, reviewed_before(&refused, &accepted), "{name}");
@@ -1190,12 +1186,12 @@ mod tests {
             let mut sent = Vec::new();
             let refused = bound(&mut request(), "shop", unprompted(), |request| {
                 sent.push(request.version.clone());
-                Err(StoreCallError::Refused(ployz_core::RpcError {
-                    code: RpcErrorCode::ConfirmationRequired,
-                    message: "Removing this will remove Service web. Pass the version".to_owned(),
-                    details: json!({ "accept": accept, "effects": [], "version": "v1" }),
-                    cause: Vec::new(),
-                }))
+                Err(StoreCallError::Refused(
+                    ployz_core::RpcError::confirmation_required(
+                        "Removing this will remove Service web. Pass the version".to_owned(),
+                    )
+                    .with_details(json!({ "accept": accept, "effects": [], "version": "v1" })),
+                ))
             });
             assert_eq!(sent, [None], "{accept}: it sends nothing it was not shown");
             let Some(refused) = refusal(refused) else {

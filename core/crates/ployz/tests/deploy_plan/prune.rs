@@ -4,8 +4,8 @@ use super::support::*;
 use ployz::deploy::{Stage, plan_deploy, preview_deploy};
 use ployz_core::{
     ContainerKind, ContainerRuntimeObservation, DependencyCondition, DeployWarning, DockerVolumeId,
-    MachineFailure, PruneRefusal, PruneScope, QualifiedService, RpcError, RpcErrorCode,
-    ServiceDependency, ServiceName, ServiceRemovals, VolumeObservationFailure,
+    MachineFailure, PruneRefusal, PruneScope, QualifiedService, RpcError, ServiceDependency,
+    ServiceName, ServiceRemovals, VolumeObservationFailure,
 };
 
 #[test]
@@ -64,12 +64,8 @@ fn required_container_failure_makes_the_snapshot_incomplete() {
         machines: vec![machine('1', "first")],
         container_failures: vec![MachineFailure {
             machine_id: machine_id('1'),
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "container listing failed".into(),
-                details: Default::default(),
-                cause: Vec::new(),
-            },
+            error: RpcError::unavailable("container listing failed")
+                .with_details(Default::default()),
         }],
         ..Default::default()
     };
@@ -87,12 +83,7 @@ fn required_named_volume_failure_makes_the_snapshot_incomplete() {
                     machine_id: machine_id('1'),
                     name: app_volume("data"),
                 },
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "detail failed".into(),
-                    details: Default::default(),
-                    cause: Vec::new(),
-                },
+                error: RpcError::unavailable("detail failed").with_details(Default::default()),
             }],
             Vec::new(),
             Vec::new(),
@@ -531,12 +522,7 @@ fn a_removal_on_an_incomplete_snapshot_is_planned_on_the_servers_observed() {
     snapshot.machines.push(machine('2', "second"));
     snapshot.container_failures.push(MachineFailure {
         machine_id: machine_id('2'),
-        error: RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "no answer".into(),
-            details: Default::default(),
-            cause: Vec::new(),
-        },
+        error: RpcError::unavailable("no answer").with_details(Default::default()),
     });
     let plan = preview_deploy(&retiring(&[web], &["debug"], &["debug"]), &snapshot).unwrap();
     assert!(removes(&plan, 'd'));

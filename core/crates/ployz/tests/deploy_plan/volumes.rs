@@ -82,12 +82,8 @@ fn assert_only_web_runs(preview: &DeployPreview) {
 fn listing_failure(machine: char) -> MachineFailure<RpcError> {
     MachineFailure {
         machine_id: machine_id(machine),
-        error: RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "target Machine RPC timed out".into(),
-            details: Default::default(),
-            cause: Vec::new(),
-        },
+        error: RpcError::unavailable("target Machine RPC timed out")
+            .with_details(Default::default()),
     }
 }
 
@@ -106,12 +102,8 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
                     machine_id: machine_id('1'),
                     name: app_volume("data"),
                 },
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "volume detail failed".into(),
-                    details: Default::default(),
-                    cause: Vec::new(),
-                },
+                error: RpcError::unavailable("volume detail failed")
+                    .with_details(Default::default()),
             }],
             Vec::new(),
             Vec::new(),
@@ -150,12 +142,8 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
             Vec::new(),
             vec![MachineFailure {
                 machine_id: machine_id('1'),
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "Docker did not answer".into(),
-                    details: Default::default(),
-                    cause: Vec::new(),
-                },
+                error: RpcError::unavailable("Docker did not answer")
+                    .with_details(Default::default()),
             }],
             Vec::new(),
         )
@@ -324,12 +312,8 @@ fn inspect_gap_snapshot(
                     machine_id: machine_id('3'),
                     name: app_volume(name),
                 },
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "volume detail failed".into(),
-                    details: Default::default(),
-                    cause: Vec::new(),
-                },
+                error: RpcError::unavailable("volume detail failed")
+                    .with_details(Default::default()),
             })
             .collect(),
         Vec::new(),
@@ -1089,12 +1073,7 @@ fn a_silent_machine_leaves_the_writer_unknown_instead_of_naming_a_copy() {
         ("not asked", None),
         (
             "storage read failed",
-            Some(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "connection lost".into(),
-                details: Default::default(),
-                cause: Vec::new(),
-            }),
+            Some(RpcError::unavailable("connection lost").with_details(Default::default())),
         ),
     ] {
         let mut snapshot = copies_snapshot(&[('2', CopyRole::Slot)], vec![]);
@@ -1381,12 +1360,7 @@ fn listing_failed(_: &mut MachineObservation, volumes: &mut VolumeSnapshot) {
         Vec::new(),
         vec![MachineFailure {
             machine_id: machine_id('3'),
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "Docker did not answer".into(),
-                details: Default::default(),
-                cause: Vec::new(),
-            },
+            error: RpcError::unavailable("Docker did not answer").with_details(Default::default()),
         }],
         Vec::new(),
     )
@@ -2675,12 +2649,8 @@ fn a_silent_volume_server_blocks_only_the_service_that_mounts_its_volume() {
         PlanOptions::default(),
     )
     .with_deployed_volumes([app_volume("data")].into());
-    let timed_out = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "target Machine RPC timed out".into(),
-        details: Default::default(),
-        cause: Vec::new(),
-    };
+    let timed_out =
+        RpcError::unavailable("target Machine RPC timed out").with_details(Default::default());
     for (case, copies, silent, down) in [
         ("copies unknown, not asked", vec![], None, false),
         (
@@ -2929,12 +2899,7 @@ fn a_global_service_with_an_unread_server_keeps_its_replicas() {
             machine_id: machine_id('3'),
             name: app_volume("data"),
         },
-        error: RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "volume detail failed".into(),
-            details: Default::default(),
-            cause: Vec::new(),
-        },
+        error: RpcError::unavailable("volume detail failed").with_details(Default::default()),
     };
     for (named, machines) in [
         (Vec::new(), vec![listing_failure('3')]),

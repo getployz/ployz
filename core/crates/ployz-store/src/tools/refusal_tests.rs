@@ -3,12 +3,7 @@ use crate::followup::{SetupLeft, Storage};
 use crate::{EnvironmentName, ProjectName};
 
 fn store_error(code: RpcErrorCode, message: &str, details: Value) -> RpcError {
-    RpcError {
-        code,
-        message: message.to_owned(),
-        details,
-        cause: Vec::new(),
-    }
+    RpcError::new(code, message.to_owned()).with_details(details)
 }
 
 #[test]

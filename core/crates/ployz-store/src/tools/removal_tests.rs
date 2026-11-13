@@ -1,12 +1,7 @@
 use super::*;
 
 fn store_error(code: RpcErrorCode, details: Value) -> RpcError {
-    RpcError {
-        code,
-        message: "refused".to_owned(),
-        details,
-        cause: Vec::new(),
-    }
+    RpcError::new(code, "refused".to_owned()).with_details(details)
 }
 
 #[test]

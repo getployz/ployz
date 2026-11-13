@@ -189,12 +189,7 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
         }],
         unanswered: vec![MachineFailure {
             machine_id: two.machine.id,
-            error: RpcError {
-                code: RpcErrorCode::Unsupported,
-                message: "unknown operation metric_history".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error: RpcError::unsupported("unknown operation metric_history"),
         }],
     };
     let ours = DeploymentId::parse(ours).unwrap();

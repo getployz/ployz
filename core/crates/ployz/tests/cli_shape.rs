@@ -1975,9 +1975,7 @@ enum Discovery {
 /// Inspect with an ambiguous name.
 #[cfg(unix)]
 fn fake_daemon(socket: &std::path::Path, discovery: Discovery) {
-    use ployz_core::{
-        ContractDescription, MachineRpcServer, OpaquePayload, RpcError, RpcErrorCode, RpcResponse,
-    };
+    use ployz_core::{ContractDescription, MachineRpcServer, OpaquePayload, RpcError, RpcResponse};
     use ployz_testkit::fake_machine::{Fake, FakeMachine};
     use tonic::{Request, Response, Status};
 
@@ -2016,12 +2014,8 @@ fn fake_daemon(socket: &std::path::Path, discovery: Discovery) {
             &self,
             _request: Request<OpaquePayload>,
         ) -> Result<Response<OpaquePayload>, Status> {
-            let refusal = RpcError {
-                code: RpcErrorCode::Ambiguous,
-                message: "Two enrolled Servers are named web-1.".into(),
-                details: Default::default(),
-                cause: vec![],
-            };
+            let refusal = RpcError::ambiguous("Two enrolled Servers are named web-1.")
+                .with_details(Default::default());
             Ok(Response::new(RpcResponse::from(refusal).encode().unwrap()))
         }
     }
