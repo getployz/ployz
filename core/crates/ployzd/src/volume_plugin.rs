@@ -331,6 +331,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_volume_name_gate_accepts_and_refuses_today_s_names() {
+        for name in [
+            "data", "0", "a", "Z9", "a-b", "a_b", "a.b", "9lives", "data.v2", "a--b", "a..b", "x_",
+            "x-", "x.",
+        ] {
+            assert_eq!(
+                name.parse::<DockerVolumeName>().unwrap().to_string(),
+                name,
+                "{name:?}"
+            );
+        }
+        for name in [
+            "", "-a", "_a", ".a", "..", "../data", "a/b", "/a", "a b", " a", "a\n", "a:b", "a@b",
+            "a#b", "a%b", "é", "aé", "a\0",
+        ] {
+            let error = name.parse::<DockerVolumeName>().err().unwrap();
+            assert_eq!(
+                error.to_string(),
+                format!("invalid Docker Volume name {name:?}")
+            );
+        }
+    }
+
+    #[test]
     fn dataset_missing_usage_is_not_zero() {
         assert!(Dataset::parse("tank/ployz/data\t1073741824\t-\t/data\tyes\toff", "tank").is_err());
     }
