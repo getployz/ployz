@@ -6,7 +6,7 @@ use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ConfiguredHealthcheck, ContainerRuntimeObservation, DependencyCondition, DeployWarning,
     HealthObservation, HealthcheckCommand, HealthcheckSpec, MachineFailure, PreDeployHook,
-    RpcError, RpcErrorCode, ServiceDependency, ServiceName,
+    RpcError, ServiceDependency, ServiceName,
 };
 
 #[test]
@@ -582,12 +582,8 @@ fn a_server_whose_containers_went_unobserved_is_unchecked_not_repaired() {
         machines: vec![unlisted, machine('2', "omitted"), machine('3', "missing")],
         container_failures: vec![MachineFailure {
             machine_id: machine_id('1'),
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "container listing failed".into(),
-                details: Default::default(),
-                cause: Vec::new(),
-            },
+            error: RpcError::unavailable("container listing failed")
+                .with_details(Default::default()),
         }],
         container_omissions: vec![machine_id('2')],
         ..Default::default()

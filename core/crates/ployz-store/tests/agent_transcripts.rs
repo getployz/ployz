@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 mod backend;
 
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::RpcError;
 use ployz_store::tools::{
     Answer, Ask, Place, Step, StoreAt, Write, catalog, example, resume, start,
 };
@@ -54,12 +54,9 @@ fn shop() -> ConfigStore {
 }
 
 fn no_cloud() -> Answer {
-    Answer::Error(RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "no Ployz Cloud in this transcript".to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    })
+    Answer::Error(RpcError::unavailable(
+        "no Ployz Cloud in this transcript".to_owned(),
+    ))
 }
 
 fn ask(store: &ConfigStore, ask: &Ask) -> Answer {

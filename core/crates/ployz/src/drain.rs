@@ -306,12 +306,7 @@ pub enum DrainError {
 
 impl From<DrainError> for RpcError {
     fn from(error: DrainError) -> Self {
-        let coded = |code, error: &DrainError| Self {
-            code,
-            message: error.to_string(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        };
+        let coded = |code, error: &DrainError| Self::new(code, error.to_string());
         match error {
             DrainError::Refused(error) => error,
             DrainError::Connect(error) => error.into(),

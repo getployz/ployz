@@ -152,12 +152,7 @@ async fn a_target_that_does_not_answer_is_named_with_an_unknown_outcome() {
 async fn a_target_that_refuses_says_nothing_changed() {
     let mut refusing = entry('b');
     refusing.update_unavailable = false;
-    refusing.update_refusal = Some(RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "Cluster store is not available".into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    });
+    refusing.update_refusal = Some(RpcError::unavailable("Cluster store is not available"));
     let (address, _two) = serve_discovery(refusing).await;
     let config = std::env::temp_dir().join(format!("ployz-endpoint-{}.yaml", MachineId::random()));
     std::fs::write(

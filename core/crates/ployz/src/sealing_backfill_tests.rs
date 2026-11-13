@@ -5,7 +5,7 @@ use ployz_core::{
     Evidence, LocalMachinePhase, MachineId, RpcError, RpcErrorCode, SealedSealingKey, Sealing,
     SealingPublicKey, SealingRefusal, WireGuardPublicKey,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::{
     BackfillClient, BackfillSealingKeyReport, BackfillSealingKeyRequest, Can, Distribution, Listed,
@@ -80,21 +80,11 @@ fn request(expected: Option<u8>, generator: Option<u8>) -> BackfillSealingKeyReq
 }
 
 fn refusal(refusal: SealingRefusal) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: "refused".into(),
-        details: refusal.to_details(),
-        cause: Vec::new(),
-    }
+    RpcError::conflict("refused").with_details(refusal.to_details())
 }
 
 fn failure(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(String::from(message))
 }
 
 #[test]

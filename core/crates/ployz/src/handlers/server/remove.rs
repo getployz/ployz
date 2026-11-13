@@ -892,7 +892,7 @@ mod tests {
         LiveServices, MachineId, MachineSuccess, PartialResult, QualifiedService, RpcError,
         RpcErrorCode, ServiceId, ServiceMode, ServiceName, derive_live_services,
     };
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     use super::{
         Stopped, VolumeOwner, left_short, machine_removal_refusal, movable_services_on,
@@ -932,12 +932,7 @@ mod tests {
 
     #[test]
     fn unreachable_removal_names_forget() {
-        let error = RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Server fra-1 did not respond".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        };
+        let error = RpcError::unavailable("Server fra-1 did not respond");
         let refusal = machine_removal_refusal(error, "fra-1");
         assert_eq!(
             refusal.to_string(),
@@ -955,12 +950,8 @@ mod tests {
 
     #[test]
     fn a_reset_server_still_listed_names_forget() {
-        let error = RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "the entry could not reach the Cluster store".into(),
-            details: json!({ "left": true, "reset_warning": null }),
-            cause: Vec::new(),
-        };
+        let error = RpcError::unavailable("the entry could not reach the Cluster store")
+            .with_details(json!({ "left": true, "reset_warning": null }));
         let refusal = reset_removal_refusal(error, "fra-1");
         assert_eq!(
             refusal.to_string(),
@@ -975,12 +966,7 @@ mod tests {
 
     #[test]
     fn other_data_loss_errors_keep_their_message() {
-        let error = RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "Server \"gone\" was not found".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        };
+        let error = RpcError::not_found("Server \"gone\" was not found");
         assert_eq!(
             machine_removal_refusal(error, "gone").to_string(),
             "Server \"gone\" was not found"
@@ -1274,21 +1260,14 @@ mod tests {
 
     /// Cloud's refusal of a forget of a Server it has no row for.
     fn no_such_server() -> RpcError {
-        RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "No such Server.".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }
+        RpcError::not_found("No such Server.")
     }
 
     #[test]
     fn only_a_missing_server_reads_as_no_cloud_row() {
-        let approval = RpcError {
-            message: "No such approval.".into(),
-            details: json!({ "approval_id": "087221d0-f16b-441f-9b93-aae6248bcd9c" }),
-            ..no_such_server()
-        };
+        let approval = no_such_server()
+            .with_message("No such approval.")
+            .with_details(json!({ "approval_id": "087221d0-f16b-441f-9b93-aae6248bcd9c" }));
 
         assert!(super::no_cloud_row(&no_such_server()));
         assert!(!super::no_cloud_row(&approval));

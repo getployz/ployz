@@ -1530,12 +1530,9 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
         .describe_outcomes
         .lock()
         .unwrap()
-        .push_back(DescribeOutcome::Remote(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "already a member".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }));
+        .push_back(DescribeOutcome::Remote(RpcError::conflict(
+            "already a member",
+        )));
     let error = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await

@@ -54,12 +54,9 @@ fn empty_batch() -> Batch {
 fn a_stale_write_reads_again_at_the_place_the_call_named() {
     let moved = Round {
         kind: Kind::Write,
-        answers: vec![Err(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "moved".into(),
-            details: json!({ "revision": 4 }),
-            cause: Vec::new(),
-        })],
+        answers: vec![Err(
+            RpcError::conflict("moved").with_details(json!({ "revision": 4 }))
+        )],
     };
     for (input, next) in [
         (json!({}), Call::new("environment_show", json!({}))),
@@ -318,12 +315,8 @@ fn an_ambiguous_refusal_leaves_the_choice_to_the_agent_instead_of_a_retry() {
     let call = Call::new("domain_check", json!({ "domain": "example.com" }));
     let refusal = finish(
         from_store(
-            RpcError {
-                code: RpcErrorCode::Ambiguous,
-                message: "Name a Project: this Organization has more than one".into(),
-                details: json!({ "projects": ["blog", "shop"] }),
-                cause: Vec::new(),
-            },
+            RpcError::ambiguous("Name a Project: this Organization has more than one")
+                .with_details(json!({ "projects": ["blog", "shop"] })),
             &call,
             Writes::None,
         ),
@@ -347,12 +340,8 @@ fn a_move_to_where_the_volume_already_is_offers_no_retry() {
     );
     let shown = Call::new("volume_show", json!({ "volume": "files" }));
     let Stop::Refuse(refusal) = refused_act(
-        RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "files's writer is already on machine-1".into(),
-            details: json!({ "settled": true }),
-            cause: Vec::new(),
-        },
+        RpcError::conflict("files's writer is already on machine-1")
+            .with_details(json!({ "settled": true })),
         &call,
         shown.clone(),
     ) else {

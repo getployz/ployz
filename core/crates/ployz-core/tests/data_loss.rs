@@ -130,21 +130,15 @@ fn unconfirmed_data_loss_names_missing_identities_in_the_rpc_error() {
 #[test]
 fn from_rpc_error_is_none_when_the_error_is_not_unconfirmed_data_loss() {
     assert!(
-        UnconfirmedDataLoss::from_rpc_error(&RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: "Machine was not found".into(),
-            details: json!(null),
-            cause: Vec::new(),
-        })
+        UnconfirmedDataLoss::from_rpc_error(
+            &RpcError::invalid_argument("Machine was not found").with_details(json!(null))
+        )
         .is_none()
     );
     assert!(
-        UnconfirmedDataLoss::from_rpc_error(&RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "gone".into(),
-            details: json!({ "missing": [] }),
-            cause: Vec::new(),
-        })
+        UnconfirmedDataLoss::from_rpc_error(
+            &RpcError::not_found("gone").with_details(json!({ "missing": [] }))
+        )
         .is_none()
     );
 }

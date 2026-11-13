@@ -3,7 +3,6 @@
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use axum::http::Method;
-use ployz_core::RpcErrorCode;
 
 use super::*;
 use crate::docker::test_support::*;
@@ -948,12 +947,7 @@ fn unverified_create_returns_named_observation_failure() {
         machine_id: MachineId::random(),
         name: DockerVolumeName::parse("data").unwrap(),
     };
-    let error = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "inspect failed".into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    };
+    let error = RpcError::unavailable("inspect failed");
 
     let failure = CreateVolumeReport::Unverified {
         id: id.clone(),

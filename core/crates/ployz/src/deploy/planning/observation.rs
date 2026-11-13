@@ -296,12 +296,7 @@ mod tests {
             "target Machine RPC timed out",
             "a path the entry didn't find dropping large packets names no cause"
         );
-        let refused = RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "refused".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        };
+        let refused = RpcError::conflict("refused");
         assert_eq!(
             failed_message(dropped, refused),
             "refused",
@@ -381,12 +376,7 @@ mod tests {
             "target Machine RPC timed out",
             "nor does its notice blame large packets"
         );
-        let refused = RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "refused".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        };
+        let refused = RpcError::conflict("refused");
         assert!(!gap(
             &observed(MembershipObservation::Up, dropped),
             &refused

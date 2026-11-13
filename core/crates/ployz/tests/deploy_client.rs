@@ -1116,19 +1116,15 @@ async fn observing_a_server_that_cannot_be_reached_names_it_and_why() {
 
 #[tokio::test]
 async fn observing_a_server_that_fails_the_check_returns_without_asking_it_again() {
-    use ployz_core::{DockerVolumeName, RpcError, RpcErrorCode};
+    use ployz_core::{DockerVolumeName, RpcError};
     use ployz_store::ObservationStage;
 
     let one = machine('a', "one").machine.id;
     let mut service = DeployService::new(machine('a', "one"));
     let described = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     service.describe_once = Some(std::sync::Arc::clone(&described));
-    *service.machines_error.lock().unwrap() = Some(RpcError {
-        code: RpcErrorCode::Internal,
-        message: "The Machine list is unavailable.".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    });
+    *service.machines_error.lock().unwrap() =
+        Some(RpcError::internal("The Machine list is unavailable."));
     let (address, server) = listening(service).await;
     let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
 
@@ -1183,17 +1179,15 @@ async fn observing_through_a_daemon_that_refuses_does_not_name_a_server_it_did_n
 
 #[tokio::test]
 async fn observing_a_server_that_answers_with_an_error_names_it_and_the_error() {
-    use ployz_core::{DockerVolumeName, RpcError, RpcErrorCode};
+    use ployz_core::{DockerVolumeName, RpcError};
     use ployz_store::ObservationStage;
 
     let one = machine('a', "one").machine.id;
     let service = DeployService::new(machine('a', "one"));
-    *service.machines_error.lock().unwrap() = Some(RpcError {
-        code: RpcErrorCode::Internal,
-        message: "The Machine list is unavailable.".into(),
-        details: serde_json::Value::Null,
-        cause: vec!["database is locked".into()],
-    });
+    *service.machines_error.lock().unwrap() = Some(
+        RpcError::internal("The Machine list is unavailable.")
+            .with_causes(vec!["database is locked".into()]),
+    );
     let (address, server) = listening(service).await;
     let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
 

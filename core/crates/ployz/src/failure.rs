@@ -594,12 +594,7 @@ mod tests {
     use ployz_core::{ContainerSelectorError, MachineSelectorError, ValueError};
 
     fn unsupported(details: Value) -> RpcError {
-        RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: "unimplemented".into(),
-            details,
-            cause: Vec::new(),
-        }
+        RpcError::unsupported("unimplemented").with_details(details)
     }
 
     #[test]
@@ -676,12 +671,10 @@ mod tests {
 
     #[test]
     fn context_keeps_the_inner_details_and_next() {
-        let inner = Failure::from(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Machine is starting".into(),
-            details: serde_json::json!({ "next": "ployz server ls", "machine": "alpha" }),
-            cause: Vec::new(),
-        });
+        let inner = Failure::from(
+            RpcError::unavailable("Machine is starting")
+                .with_details(serde_json::json!({ "next": "ployz server ls", "machine": "alpha" })),
+        );
         let outer = inner.context("Could not deploy.");
         let report = outer.report();
         assert_eq!(report.code, RpcErrorCode::Unavailable);
@@ -876,12 +869,8 @@ mod tests {
 
     #[test]
     fn a_daemon_that_answered_with_an_error_is_not_blamed_for_the_call() {
-        let sent = RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Corrosion HTTP request failed".into(),
-            details: Value::Null,
-            cause: vec!["Connection refused (os error 111)".into()],
-        };
+        let sent = RpcError::internal("Corrosion HTTP request failed")
+            .with_causes(vec!["Connection refused (os error 111)".into()]);
         let failure = Failure::from(ConnectError::Rpc(crate::connect::TransportError::from(
             ployz_core::rpc::caused_status(tonic::Code::Internal, &sent),
         )));
@@ -931,12 +920,7 @@ mod tests {
 
     #[test]
     fn rpc_error_keeps_the_rpc_error() {
-        let failure = Failure::from(RpcError {
-            code: RpcErrorCode::Internal,
-            message: "boom".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        let failure = Failure::from(RpcError::internal("boom"));
         assert_eq!(failure.to_string(), "boom");
         assert_eq!(source::<RpcError>(&failure).message, "boom");
         assert_eq!(source::<RpcError>(&failure).code, RpcErrorCode::Internal);

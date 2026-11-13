@@ -66,12 +66,8 @@ fn failed(failure: crate::ObservationFailure, servers: &[&str]) -> VolumeObserva
 }
 
 fn refused_connection() -> RpcError {
-    RpcError {
-        code: ployz_core::RpcErrorCode::Unavailable,
-        message: "All 1 connections from the explicit connection failed.".to_owned(),
-        details: serde_json::Value::Null,
-        cause: vec!["Connection refused (os error 111)".to_owned()],
-    }
+    RpcError::unavailable("All 1 connections from the explicit connection failed.".to_owned())
+        .with_causes(vec!["Connection refused (os error 111)".to_owned()])
 }
 
 #[test]
@@ -102,12 +98,7 @@ fn a_check_that_could_not_reach_its_server_names_it_and_carries_why() {
 #[test]
 fn a_server_that_answered_the_check_with_an_error_is_named_with_it() {
     let server = MachineId::parse("a".repeat(32)).unwrap();
-    let error = RpcError {
-        code: ployz_core::RpcErrorCode::Internal,
-        message: "The Machine list is unavailable.".to_owned(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    };
+    let error = RpcError::internal("The Machine list is unavailable.".to_owned());
     let failure = crate::ObservationFailure::answered(Some(server), error);
 
     let refused = held(removing_data(), Some(&failed(failure, &["one"]))).unwrap_err();

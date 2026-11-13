@@ -191,12 +191,7 @@ impl CopyLifecycle for Cluster {
             ContainerWant::Gone { container, .. } => {
                 let id = id_of(&container);
                 if self.stuck.contains(&id) {
-                    return Err(RpcError {
-                        code: RpcErrorCode::Internal,
-                        message: "Docker refused the removal".into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    });
+                    return Err(RpcError::internal("Docker refused the removal"));
                 }
                 containers.retain(|observation| observation.container_id != id);
                 Ok(EnsuredContainer::Ensured {
@@ -783,12 +778,7 @@ async fn retirement_reports_every_global_and_stops_at_the_next_once_cancelled() 
     assert_eq!(client.retire_calls, [globals[0].clone()]);
 
     let mut client = retiring(&drained, services);
-    client.retire_error = Some(RpcError {
-        code: RpcErrorCode::Conflict,
-        message: "the Server accepts it again".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    });
+    client.retire_error = Some(RpcError::conflict("the Server accepts it again"));
     let gone = qualified("gone", "api");
     let outcomes = retire_globals(
         &mut client,

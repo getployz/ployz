@@ -527,26 +527,18 @@ mod tests {
     /// not-found answer carries (#3277). A Server that didn't answer keeps its cause.
     #[test]
     fn a_server_the_entry_stopped_listing_is_named_without_its_id() {
-        use ployz_core::RpcErrorCode;
-
         let machine_id = MachineId::parse("4".repeat(32)).unwrap();
         let name = MachineName::parse("machine-4").unwrap();
-        let unlisted = RpcError {
-            code: RpcErrorCode::NotFound,
-            message: format!("No Server named {:?}", machine_id.to_string()),
-            details: serde_json::json!({
+        let unlisted = RpcError::not_found(format!("No Server named {:?}", machine_id.to_string()))
+            .with_details(serde_json::json!({
                 "inspect": ["ployz server ls"],
                 "reason": "no_such_server",
                 "targets": [machine_id.to_string()],
-            }),
-            cause: Vec::new(),
-        };
-        let silent = RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: format!("Machine {machine_id} did not answer: target Machine RPC timed out"),
-            details: serde_json::Value::Null,
-            cause: vec!["deadline has elapsed".into()],
-        };
+            }));
+        let silent = RpcError::unavailable(format!(
+            "Machine {machine_id} did not answer: target Machine RPC timed out"
+        ))
+        .with_causes(vec!["deadline has elapsed".into()]);
         let gaps = Gaps::default().named([(machine_id, &name)]);
         let warning = |error: RpcError| gaps.warning(&MachineFailure { machine_id, error });
 
@@ -570,17 +562,13 @@ mod tests {
     /// word stand, never "did not answer".
     #[test]
     fn a_server_whose_router_is_not_serving_says_so() {
-        use ployz_core::RpcErrorCode;
-
         let machine_id = MachineId::parse("4".repeat(32)).unwrap();
         let name = MachineName::parse("machine-4").unwrap();
-        let error = RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Tailscale refused the auth key on machine-4. It may be revoked or expired."
-                .into(),
-            details: serde_json::json!({ "problem": "key_refused" }),
-            cause: vec!["invalid key: unable to validate API key".into()],
-        };
+        let error = RpcError::unavailable(String::from(
+            "Tailscale refused the auth key on machine-4. It may be revoked or expired.",
+        ))
+        .with_details(serde_json::json!({ "problem": "key_refused" }))
+        .with_causes(vec!["invalid key: unable to validate API key".into()]);
         let gaps = Gaps::default().named([(machine_id, &name)]);
 
         assert_eq!(

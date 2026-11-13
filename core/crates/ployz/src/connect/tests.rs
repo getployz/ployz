@@ -220,12 +220,8 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
 
 #[test]
 fn a_daemon_status_carries_its_causes_to_cause_lines() {
-    let sent = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "transport error".into(),
-        details: Value::Null,
-        cause: vec!["keep-alive timed out".into()],
-    };
+    let sent =
+        RpcError::unavailable("transport error").with_causes(vec!["keep-alive timed out".into()]);
     let status = ployz_core::rpc::caused_status(tonic::Code::Unavailable, &sent);
     let error = TransportError::from(status);
     assert_eq!(error.to_string(), "transport error");
@@ -249,15 +245,7 @@ fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
         )))
         .is_unreachable()
     );
-    assert!(
-        !ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Docker is unavailable".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })
-        .is_unreachable()
-    );
+    assert!(!ConnectError::Remote(RpcError::unavailable("Docker is unavailable")).is_unreachable());
 }
 
 #[test]
@@ -282,14 +270,7 @@ fn setup_retry_waits_for_an_answer_but_not_past_one() {
 
 #[test]
 fn each_connect_failure_names_one_retry_class() {
-    let remote = |code| {
-        ConnectError::Remote(RpcError {
-            code,
-            message: "x".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })
-    };
+    let remote = |code| ConnectError::Remote(RpcError::new(code, "x"));
     for (error, retry) in [
         (
             ConnectError::Io(io::ErrorKind::ConnectionRefused.into()),
@@ -438,12 +419,7 @@ fn only_a_call_that_got_no_status_back_is_unreplied() {
             false,
         ),
         (
-            ConnectError::Remote(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "Cluster store is not available".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            }),
+            ConnectError::Remote(RpcError::unavailable("Cluster store is not available")),
             false,
         ),
     ] {
@@ -1196,12 +1172,7 @@ async fn a_bare_unimplemented_status_names_the_capability_and_the_target() {
 
 #[tokio::test]
 async fn a_daemon_refusal_keeps_its_own_sentence() {
-    let refusal = RpcError {
-        code: RpcErrorCode::Unsupported,
-        message: "this Machine cannot host a mounted Provisioned Volume".into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    };
+    let refusal = RpcError::unsupported("this Machine cannot host a mounted Provisioned Volume");
     assert_eq!(
         prepare_volumes_answered_with(Ok(refusal.clone())).await,
         refusal

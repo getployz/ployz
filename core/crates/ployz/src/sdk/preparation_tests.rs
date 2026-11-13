@@ -460,12 +460,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
     );
     builds.pull_failures.lock().unwrap().insert(
         failed.machine.id,
-        RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: "containerd image store unavailable".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        },
+        RpcError::unsupported("containerd image store unavailable"),
     );
     let (mut client, server) = connected(service.with_machines(vec![
         source.clone(),

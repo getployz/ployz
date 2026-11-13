@@ -1070,12 +1070,7 @@ fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
     let down = machine_observation(3, "down");
     let failure = ployz_core::MachineFailure {
         machine_id: down.machine.id,
-        error: ployz_core::RpcError {
-            code: ployz_core::RpcErrorCode::Unavailable,
-            message: "down".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        },
+        error: ployz_core::RpcError::unavailable("down"),
     };
     let running = observed_service();
     let scope = LogScope {

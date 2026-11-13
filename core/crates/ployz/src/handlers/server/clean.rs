@@ -418,7 +418,9 @@ fn owner<'a>(owned: &'a [OwnedNamespace], namespace: &Namespace) -> Option<&'a O
 
 /// Removing `namespace`, reaching the same Servers as this command.
 fn retry(matches: &ArgMatches, namespace: &Namespace) -> String {
-    let mut words = vec!["ployz", "server", "clean"];
+    let mut words = vec!["ployz"];
+    words.extend(super::super::config_flag(matches).into_iter().flatten());
+    words.extend(["server", "clean"]);
     for flag in ["context", "connect"] {
         if let Some(value) = matches.get_one::<String>(flag) {
             words.extend([
@@ -452,7 +454,44 @@ fn volume_names(volumes: &[DockerVolumeId]) -> String {
 mod tests {
     use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, Namespace};
 
-    use super::{Doomed, deletes};
+    use super::{Doomed, deletes, retry};
+    use crate::handlers::leaf_matches;
+
+    fn retry_of(args: &[&str]) -> String {
+        let root = crate::cli::command()
+            .try_get_matches_from(args.iter().copied())
+            .unwrap();
+        retry(leaf_matches(&root), &Namespace::parse("stray").unwrap())
+    }
+
+    #[test]
+    fn a_clean_retry_reaches_the_same_servers_and_keeps_the_typed_config() {
+        assert_eq!(
+            retry_of(&[
+                "ployz",
+                "server",
+                "clean",
+                "--context",
+                "prod",
+                "--connect",
+                "ssh://a"
+            ]),
+            "ployz server clean --context prod --connect ssh://a --namespace stray --confirm stray"
+        );
+        assert_eq!(
+            retry_of(&[
+                "ployz",
+                "--ployz-config",
+                "/home/me/my ployz/config.yaml",
+                "server",
+                "clean",
+                "--context",
+                "prod",
+            ]),
+            "ployz --ployz-config '/home/me/my ployz/config.yaml' server clean --context prod \
+             --namespace stray --confirm stray"
+        );
+    }
 
     #[test]
     fn a_clean_names_a_volume_by_its_label_and_falls_back_to_its_docker_name() {

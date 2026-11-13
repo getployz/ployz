@@ -425,12 +425,7 @@ async fn a_lost_run_that_tried_to_delete_a_volume_keeps_the_refusal() {
         (ployz_core::VolumeRemovalOutcome::Removed, false),
         (
             ployz_core::VolumeRemovalOutcome::Failed {
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "no reply".into(),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                },
+                error: RpcError::unavailable("no reply"),
             },
             false,
         ),
@@ -470,14 +465,7 @@ async fn a_read_is_the_standing_its_status_or_error_code_names() {
         summary.status = status;
         standing(read_of(&Ok(summary)))
     };
-    let failed = |code| {
-        standing(read_of(&Err(RpcError {
-            code,
-            message: String::new(),
-            details: Value::Null,
-            cause: Vec::new(),
-        })))
-    };
+    let failed = |code| standing(read_of(&Err(RpcError::new(code, String::new()))));
     assert_eq!(read(DeploymentStatus::Running), Standing::Keep);
     assert_eq!(read(DeploymentStatus::Cancelling), Standing::Cancel);
     assert_eq!(read(DeploymentStatus::Unknown), Standing::Over(Over::Lost));
@@ -570,24 +558,17 @@ async fn a_launch_or_initial_report_failure_settles_all_started_builds_and_keeps
                 super::super::running::Running::spawn(token, move |_reporter| async move {
                     cleanup.await.unwrap();
                     stopped.fetch_add(1, Ordering::SeqCst);
-                    Err(RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: "Remote termination is unknown".into(),
-                        details: serde_json::json!({"preparation":{"kind":"unknown"}}),
-                        cause: Vec::new(),
-                    })
+                    Err(RpcError::unavailable("Remote termination is unknown")
+                        .with_details(serde_json::json!({"preparation":{"kind":"unknown"}})))
                 });
             (target, running)
         })
         .collect();
     let error = stop_builds(
         &builds,
-        RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "The initial build report was refused".into(),
-            details: serde_json::json!({"revision":7}),
-            cause: vec!["runner lost ownership".into()],
-        },
+        RpcError::conflict("The initial build report was refused")
+            .with_details(serde_json::json!({"revision":7}))
+            .with_causes(vec!["runner lost ownership".into()]),
     )
     .await;
     assert_eq!(stopped.load(Ordering::SeqCst), 2);
@@ -1431,12 +1412,7 @@ fn cut_off(view: &mut DeploymentView, machine: &str) {
         ],
         container_failures: vec![MachineFailure {
             machine_id: away.id,
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "target Machine RPC timed out".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error: RpcError::unavailable("target Machine RPC timed out"),
         }],
         ..Default::default()
     };

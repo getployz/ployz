@@ -80,12 +80,7 @@ fn deploy_failures_keep_runtime_exit_and_secondary_stop_causes() {
         health.contains(container_id.as_str()) && health.contains("exited with code 137"),
         "{health}"
     );
-    let stop_error = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "Machine unreachable".into(),
-        details: json!(null),
-        cause: Vec::new(),
-    };
+    let stop_error = RpcError::unavailable("Machine unreachable").with_details(json!(null));
     for failure in [
         HookFailure::Cancelled {
             stop_error: Some(stop_error.clone()),
@@ -240,12 +235,7 @@ fn unconstrained_names_and_health_failures_escape_controls() {
         }
         .to_string(),
         HookFailure::TimedOut {
-            stop_error: Some(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: raw.into(),
-                details: json!(null),
-                cause: Vec::new(),
-            }),
+            stop_error: Some(RpcError::unavailable(String::from(raw)).with_details(json!(null))),
         }
         .to_string(),
     ] {

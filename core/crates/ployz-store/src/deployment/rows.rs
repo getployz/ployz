@@ -1350,12 +1350,7 @@ mod tests {
         let create = || {
             failed(ExecutionError::Machine {
                 action: MachineAction::CreateContainer,
-                error: RpcError {
-                    code: RpcErrorCode::Internal,
-                    message: "no space left on device".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                },
+                error: RpcError::internal("no space left on device"),
             })
         };
         let hook = |stop_error| {
@@ -1393,13 +1388,7 @@ mod tests {
         assert!(!stopped, "a real failure beside a cancel's is not stopped");
         assert_ne!(reason, "Cancelled", "the row names its real failure");
         assert!(
-            !tracked(&[hook(Some(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "stop timed out".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            }))])
-            .0,
+            !tracked(&[hook(Some(RpcError::unavailable("stop timed out")))]).0,
             "a hook the cancel could not stop may still run"
         );
     }
@@ -1417,13 +1406,8 @@ mod tests {
         let failed = Failure::of(
             &ExecutionError::Machine {
                 action: MachineAction::CreateContainer,
-                error: RpcError {
-                    code: RpcErrorCode::Internal,
-                    message: "detail temporarily unavailable".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                }
-                .overlapping_leave(&server),
+                error: RpcError::internal("detail temporarily unavailable")
+                    .overlapping_leave(&server),
             },
             &[],
         );
@@ -1484,12 +1468,7 @@ mod tests {
         .unwrap();
         let error = ExecutionError::Machine {
             action: MachineAction::PullImage,
-            error: RpcError {
-                code: RpcErrorCode::Unsupported,
-                message: "unimplemented".into(),
-                details: serde_json::json!({"capability": "ployz.serving.routes.v1", "target": machine_id}),
-                cause: vec!["unimplemented".into()],
-            },
+            error: RpcError::unsupported("unimplemented").with_details(serde_json::json!({"capability": "ployz.serving.routes.v1", "target": machine_id})).with_causes(vec!["unimplemented".into()]),
         };
         let named = Failure::of(&error, &operations);
         assert_eq!(
@@ -1520,12 +1499,8 @@ mod tests {
         .unwrap();
         let not_found = |details| ExecutionError::Machine {
             action: MachineAction::CreateContainer,
-            error: RpcError {
-                code: RpcErrorCode::NotFound,
-                message: format!("No Server named {machine_id:?}"),
-                details,
-                cause: Vec::new(),
-            },
+            error: RpcError::not_found(format!("No Server named {machine_id:?}"))
+                .with_details(details),
         };
         let removed = not_found(serde_json::json!({
             "reason": "no_such_server",
@@ -1692,12 +1667,9 @@ mod tests {
         let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
         let error = ExecutionError::Machine {
             action: MachineAction::UpdateContainerLimits,
-            error: RpcError {
-                code: RpcErrorCode::Internal,
-                message: "Docker operation failed".into(),
-                details: serde_json::json!({"machine_id": machine_id}),
-                cause: vec![docker.into()],
-            },
+            error: RpcError::internal("Docker operation failed")
+                .with_details(serde_json::json!({"machine_id": machine_id}))
+                .with_causes(vec![docker.into()]),
         };
         let named = Failure::of(&error, &operations);
         assert_eq!(
@@ -1722,13 +1694,8 @@ mod tests {
         .unwrap();
         let lost = |action| ExecutionError::Machine {
             action,
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "connection lost".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            }
-            .reply_lost_from(&machine_id.parse().unwrap()),
+            error: RpcError::unavailable("connection lost")
+                .reply_lost_from(&machine_id.parse().unwrap()),
         };
         let pull = Failure::of(&lost(MachineAction::PullImage), &operations);
         assert_eq!(
@@ -1761,12 +1728,8 @@ mod tests {
         let machine_id = "a".repeat(32);
         let refused = |reason: &str, message: &str| ExecutionError::Machine {
             action: MachineAction::UpdateContainerLimits,
-            error: RpcError {
-                code: RpcErrorCode::Conflict,
-                message: message.into(),
-                details: serde_json::json!({"machine_id": machine_id, "reason": reason}),
-                cause: Vec::new(),
-            },
+            error: RpcError::conflict(String::from(message))
+                .with_details(serde_json::json!({"machine_id": machine_id, "reason": reason})),
         };
         let message = "container c cannot take these limits in place: the Container runs with a higher memory limit";
         let before_any_change = Failure::of(&refused("would_lower_memory", message), &[]);
@@ -1898,13 +1861,9 @@ mod tests {
     }
 
     fn pull_failed(cause: &str) -> Failure {
-        let error = RpcError {
-            code: RpcErrorCode::Internal,
-            message: "api: pull image failed.".into(),
-            details: serde_json::Value::Null,
-            cause: vec![cause.to_owned()],
-        }
-        .pulling("ghcr.io/example/private:1", ployz_core::PullPolicy::Always);
+        let error = RpcError::internal("api: pull image failed.")
+            .with_causes(vec![cause.to_owned()])
+            .pulling("ghcr.io/example/private:1", ployz_core::PullPolicy::Always);
         Failure::of(
             &ExecutionError::Machine {
                 action: MachineAction::PullImage,
@@ -1943,14 +1902,11 @@ mod tests {
 
     #[test]
     fn a_lost_reply_that_names_an_unresolved_host_still_says_it_may_have_happened() {
-        let error = RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "transport error".into(),
-            details: serde_json::json!({"reply_lost": true}),
-            cause: vec![
+        let error = RpcError::unavailable("transport error")
+            .with_details(serde_json::json!({"reply_lost": true}))
+            .with_causes(vec![
                 "dial tcp: lookup peer.example.invalid on 127.0.0.53:53: no such host".into(),
-            ],
-        };
+            ]);
         let failure = Failure::of(
             &ExecutionError::Machine {
                 action: MachineAction::PullImage,

@@ -931,12 +931,8 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
         outcome,
     };
     let failed = VolumeRemovalOutcome::Failed {
-        error: RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "provider stderr token=review-sentinel".into(),
-            details: Value::Null,
-            cause: vec!["token=review-sentinel".into()],
-        },
+        error: RpcError::conflict("provider stderr token=review-sentinel")
+            .with_causes(vec!["token=review-sentinel".into()]),
     };
     let claimed = run(&store, 2, vec![removal(failed)]);
     assert_eq!(claimed.deletes, [held('a')]);

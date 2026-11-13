@@ -899,13 +899,12 @@ impl Scripted {
             return Err(no_server_named(machine_id));
         }
         if holding && self.refused_held.contains(&container_id) {
-            return Err(RpcError {
-                code: RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
-                message: "ployz.restart.device-approval.v2 needs a Device-signed restart approval"
-                    .into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::new(
+                RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+                String::from(
+                    "ployz.restart.device-approval.v2 needs a Device-signed restart approval",
+                ),
+            ));
         }
         if routing {
             let stopped = self
@@ -1798,26 +1797,18 @@ fn exited(code: i64) -> ContainerRuntimeObservation {
 }
 
 fn error(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Internal,
-        message: message.into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::internal(String::from(message))
 }
 
 /// What the entry Machine's routing answers for a Server it no longer lists.
 fn no_server_named(machine_id: &MachineId) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::NotFound,
-        message: format!("No Server named {:?}", machine_id.to_string()),
-        details: serde_json::json!({
+    RpcError::not_found(format!("No Server named {:?}", machine_id.to_string())).with_details(
+        serde_json::json!({
             "inspect": ["ployz server ls"],
             "reason": "no_such_server",
             "targets": [machine_id.to_string()],
         }),
-        cause: Vec::new(),
-    }
+    )
 }
 
 fn ok(call: Call) -> Step {
@@ -1889,12 +1880,7 @@ async fn no_redial() -> Option<Result<(), RedialFailure>> {
 }
 
 fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(String::from(message))
 }
 
 fn failed_unavailable(call: Call, message: &str) -> Step {
@@ -2053,15 +2039,7 @@ async fn application_failure_and_cancellation_retain_prepared_storage() {
 async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
     let machine = machine('1');
     // `Client::repeat` keeps a lost answer only when it was worth retrying.
-    let lost = || {
-        RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "connection lost".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }
-        .reply_lost_from(&machine)
-    };
+    let lost = || RpcError::unavailable("connection lost").reply_lost_from(&machine);
     let unreached = || {
         crate::cluster::answered_by(
             &machine,
@@ -2158,20 +2136,10 @@ async fn a_restart_wait_reports_what_its_attempts_showed_of_the_machine() {
 #[tokio::test(start_paused = true)]
 async fn a_lost_answer_never_hides_a_closed_session_or_a_refused_key() {
     let machine = machine('1');
-    let lost = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "connection lost".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
-    .reply_lost_from(&machine);
-    let closed = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "transport session closed".into(),
-        details: serde_json::json!({ "reason": "session_closed" }),
-        cause: Vec::new(),
-    }
-    .unreached();
+    let lost = RpcError::unavailable("connection lost").reply_lost_from(&machine);
+    let closed = RpcError::unavailable("transport session closed")
+        .with_details(serde_json::json!({ "reason": "session_closed" }))
+        .unreached();
     let refused_key = crate::cluster::answered_by(&machine, {
         use std::os::unix::process::ExitStatusExt;
         crate::connect::ConnectError::SshProbe {

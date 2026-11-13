@@ -93,12 +93,10 @@ fn a_failed_build_call_reports_only_the_diagnosis() {
 #[test]
 fn selection_failure_is_known_and_does_not_expose_provider_details() {
     let error = preparation_error(
-        crate::sdk::prepare::PreparationError::Selection(ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: "provider token=secret".into(),
-            details: serde_json::json!({"rejections":{"builds disabled":2}}),
-            cause: Vec::new(),
-        })),
+        crate::sdk::prepare::PreparationError::Selection(ConnectError::Remote(
+            RpcError::unsupported("provider token=secret")
+                .with_details(serde_json::json!({"rejections":{"builds disabled":2}})),
+        )),
         false,
     );
     assert_eq!(
@@ -206,11 +204,9 @@ fn a_hostname_two_requested_services_claim_fails_the_same_way_again() {
 
 #[test]
 fn a_remote_errors_own_same_again_key_suppresses_nothing() {
-    let remote = || RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "Machine is draining".into(),
-        details: serde_json::json!({"same_again": true}),
-        cause: Vec::new(),
+    let remote = || {
+        RpcError::unavailable("Machine is draining")
+            .with_details(serde_json::json!({"same_again": true}))
     };
     let passed_through = |unprepared: Unprepared| {
         assert!(!unprepared.same_again);
@@ -298,12 +294,9 @@ fn work() -> ployz_build::WorkEvidence {
 #[test]
 fn golden_selection_details() {
     let remote = |details| {
-        crate::sdk::prepare::PreparationError::Selection(ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: "provider token=secret".into(),
-            details,
-            cause: Vec::new(),
-        }))
+        crate::sdk::prepare::PreparationError::Selection(ConnectError::Remote(
+            RpcError::unsupported("provider token=secret").with_details(details),
+        ))
     };
     let with_reasons = preparation_error(
         remote(serde_json::json!({

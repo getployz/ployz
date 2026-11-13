@@ -115,14 +115,9 @@ async fn a_failed_update_fails_the_operation_and_leaves_the_copy_serving() {
     let operation =
         DeployOperation::UpdateContainer(update(&machine, &old, UpdateOrder::StopFirst));
     let plan = vec![operation.clone()];
-    let docker = RpcError {
-        code: RpcErrorCode::Internal,
-        message: "Docker operation failed".into(),
-        details: serde_json::Value::Null,
-        cause: vec![
+    let docker = RpcError::internal("Docker operation failed").with_causes(vec![
             "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set".into(),
-        ],
-    };
+        ]);
     // The failure names the Server; the Machine's own message and cause survive as is.
     let named = RpcError {
         details: serde_json::json!({"machine_id": machine}),

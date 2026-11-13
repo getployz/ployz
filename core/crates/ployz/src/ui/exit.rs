@@ -300,16 +300,13 @@ mod tests {
 
     #[test]
     fn json_text_of_a_refusal_carries_every_hint_key_beside_the_other_details() {
-        let near_miss = Failure::from(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "No Service wbe in production.".into(),
-            details: json!({
+        let near_miss = Failure::from(
+            RpcError::not_found("No Service wbe in production.").with_details(json!({
                 "did_you_mean": "web",
                 "valid_children": ["web", "db"],
                 "project": "blog",
-            }),
-            cause: Vec::new(),
-        })
+            })),
+        )
         .hint(Hint::Next("ployz ps".into()))
         .hint(Hint::Inspect("ployz service ls".into()))
         .hint(Hint::Inspect("ployz ps -a".into()));
@@ -337,12 +334,10 @@ mod tests {
 
     #[test]
     fn hints_from_the_wire_print_after_our_own() {
-        let failure = Failure::from(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "No Service nope in production.".into(),
-            details: json!({ "valid_children": ["web", "db"] }),
-            cause: Vec::new(),
-        });
+        let failure = Failure::from(
+            RpcError::not_found("No Service nope in production.")
+                .with_details(json!({ "valid_children": ["web", "db"] })),
+        );
         let ended = end(&failure, Mode::Plain, false);
         assert_eq!(ended.code, 1);
         assert_eq!(
@@ -353,12 +348,11 @@ mod tests {
 
     #[test]
     fn a_carriage_return_shows_as_its_code_and_json_keeps_it_raw() {
-        let failure = Failure::from(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "Config app has no file a.txt\r\nIt was removed.".into(),
-            details: json!({}),
-            cause: vec!["refused a.txt\r\n".into()],
-        });
+        let failure = Failure::from(
+            RpcError::conflict("Config app has no file a.txt\r\nIt was removed.")
+                .with_details(json!({}))
+                .with_causes(vec!["refused a.txt\r\n".into()]),
+        );
         let object: Value = serde_json::from_str(&end(&failure, Mode::Json, false).stdout).unwrap();
         assert_eq!(
             object.pointer("/error/message").unwrap(),

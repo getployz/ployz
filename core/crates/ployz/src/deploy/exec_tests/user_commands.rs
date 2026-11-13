@@ -501,12 +501,7 @@ async fn user_stop_start_restart_remove() {
 
     let fake = Scripted::new(vec![Step(
         Call::Inspect(machine('a'), container('1')),
-        Reply::Error(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "no such container".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
+        Reply::Error(RpcError::not_found("no such container")),
     )]);
     let ran = run_command(Command::Remove, Recording::of(fake)).await;
     ran.answer.unwrap();
@@ -537,15 +532,13 @@ async fn user_stop_start_restart_remove() {
 async fn a_remove_of_a_container_its_machine_holds_without_a_spec_says_it_stays() {
     let fake = Scripted::new(vec![Step(
         Call::Inspect(machine('a'), container('1')),
-        Reply::Error(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: format!(
+        Reply::Error(
+            RpcError::not_found(format!(
                 "resolved spec not found in machine.db for {}",
                 container('1')
-            ),
-            details: serde_json::json!({ "reason": "no_resolved_spec" }),
-            cause: Vec::new(),
-        }),
+            ))
+            .with_details(serde_json::json!({ "reason": "no_resolved_spec" })),
+        ),
     )]);
 
     let ran = run_command(Command::Remove, Recording::of(fake)).await;
