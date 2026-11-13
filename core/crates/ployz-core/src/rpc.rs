@@ -7,6 +7,8 @@ use std::collections::BTreeSet;
 
 mod activation;
 mod build_grant;
+#[cfg(test)]
+mod catalog_tests;
 mod container;
 mod error;
 mod evidence;
