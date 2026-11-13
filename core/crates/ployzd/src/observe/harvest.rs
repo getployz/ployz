@@ -32,7 +32,7 @@ use super::{
     cleanup::{self, Disk, Limits},
     clock::{now_nanos, rfc3339_nanos},
     exit_ledger::{ExitLedger, Late},
-    hold::{LogHolder, Noticed, Removed, Seen, foreign_log_driver, max_files},
+    hold::{Admitted, LogHolder, Noticed, Removed, Seen, foreign_log_driver, max_files},
     layout::{ContainerKind, ENV_FILE, NANOS_PER_SEC, RetainedEnv, StoreRoot},
     meta::{container_meta, write_meta},
     metrics::sampler,
@@ -226,8 +226,8 @@ impl Harvester {
         self.delivered.retain(|(id, _), _| present.contains(id));
         self.ledger.keep_present(&present);
         for id in present {
-            if self.holder.discovered(id) {
-                self.request_inspect(id);
+            if let Some(admitted) = self.holder.discovered(id) {
+                self.on_admitted(id, admitted);
             }
         }
     }
@@ -239,8 +239,17 @@ impl Harvester {
                 tracing::warn!("inotify queue overflowed; rescanning");
                 self.rescan();
             }
-            Noticed::Inspect(id) => self.request_inspect(id),
+            Noticed::Admitted(id, admitted) => self.on_admitted(id, admitted),
         }
+    }
+
+    /// Asks for the inspect before the files sync, so Docker answers while
+    /// they do.
+    fn on_admitted(&mut self, id: ContainerId, admitted: Admitted) {
+        if admitted.inspect {
+            self.request_inspect(id);
+        }
+        self.holder.hold_files(&id);
     }
 
     /// A Docker event only asks for an inspect: Docker can send a run's events
@@ -652,6 +661,7 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::{Harvester, Inspected, SETTLED_LIMIT, UNFINISHED_FOR_NANOS, read_resume_from};
+    use crate::observe::hold::{SYNC_STALL, SYNC_STALLED_UNTIL};
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
         network::WireGuardPrivateKey,
@@ -3279,5 +3289,69 @@ mod tests {
             super::docker_time(1_760_000_000_000_000_042),
             "1760000000.000000042"
         );
+    }
+
+    /// Runs `discover` with a Docker that accepts connections and a sync that
+    /// stalls, and says whether the harvester's inspect reached Docker before
+    /// the stalled sync returned. Docker answers an inspect on another worker,
+    /// so the inspect has to be asked for before the sync starts.
+    fn inspect_reaches_docker_during_sync(discover: impl FnOnce(&mut Running, &Host)) -> bool {
+        use std::{
+            os::unix::net::UnixListener,
+            time::{Duration, Instant},
+        };
+
+        let host = host();
+        let mut running = host.harvester();
+        let socket = host.root.0.join("no-docker.sock");
+        fs::remove_file(&socket).unwrap();
+        let docker = UnixListener::bind(socket).unwrap();
+        docker.set_nonblocking(true).unwrap();
+        let listener = std::thread::spawn(move || {
+            let give_up = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < give_up {
+                if docker.accept().is_ok() {
+                    return Some(Instant::now());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            None
+        });
+        SYNC_STALL.set(Some(Duration::from_millis(300)));
+        SYNC_STALLED_UNTIL.set(None);
+        discover(&mut running, &host);
+        SYNC_STALL.set(None);
+        let sync_returned = SYNC_STALLED_UNTIL.get().expect("the stalled sync ran");
+        listener
+            .join()
+            .unwrap()
+            .is_some_and(|asked| asked < sync_returned)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rescan_asks_for_the_inspect_before_it_syncs() {
+        assert!(inspect_reaches_docker_during_sync(|running, host| {
+            host.container(&[lines(T0 + 1, 3)]);
+            running.harvester.rescan();
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_inotify_discovery_asks_for_the_inspect_before_it_syncs() {
+        assert!(inspect_reaches_docker_during_sync(|running, host| {
+            fs::create_dir_all(host.root.0.join("containers")).unwrap();
+            running.harvester.rescan();
+            host.container(&[lines(T0 + 1, 3)]);
+            let mut buffer = [0; 1024];
+            let events: Vec<_> = running
+                ._inotify
+                .read_events(&mut buffer)
+                .unwrap()
+                .map(|event| (event.wd, event.mask, event.name.map(ToOwned::to_owned)))
+                .collect();
+            for (wd, mask, name) in events {
+                running.harvester.on_inotify(wd, mask, name.as_deref());
+            }
+        }));
     }
 }

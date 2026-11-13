@@ -36,6 +36,16 @@ const DIR_MASK: WatchMask = WatchMask::CREATE.union(WatchMask::ONLYDIR);
 const SYNC_ATTEMPTS: usize = 8;
 const GAP_BOUND_READ_BYTES: u64 = 1 << 20;
 
+#[cfg(test)]
+thread_local! {
+    /// When set, each sync of a container's files first stalls this long, then
+    /// notes when it did, as a sync that waits on a slow disk does.
+    pub(super) static SYNC_STALL: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+    pub(super) static SYNC_STALLED_UNTIL: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
 enum Watched {
     ContainersRoot,
     Container(ContainerId),
@@ -73,8 +83,18 @@ pub(super) enum Noticed {
     Nothing,
     /// The queue overflowed, so events were lost: rescan Docker's dir.
     Overflow,
-    /// Docker has not said whether Ployz owns this container yet.
-    Inspect(ContainerId),
+    /// The holder took in a container: the caller asks for its inspect when
+    /// `Admitted` says to, then calls `hold_files`.
+    Admitted(ContainerId, Admitted),
+}
+
+/// A container the holder took in, whose files it has not yet watched or
+/// synced. The caller asks for the inspect first, so Docker answers while the
+/// files sync.
+#[must_use]
+pub(super) struct Admitted {
+    /// Docker has not said whether Ployz owns the container yet.
+    pub(super) inspect: bool,
 }
 
 /// Whether Docker's removed container is Ployz's to keep.
@@ -173,13 +193,17 @@ impl LogHolder {
         if !mask.contains(EventMask::CREATE) {
             return Noticed::Nothing;
         }
-        let inspect = match self.watched.get(&wd) {
+        let admitted = match self.watched.get(&wd) {
             Some(Watched::ContainersRoot) => name
                 .and_then(container_id)
-                .filter(|id| self.discovered(*id)),
+                .and_then(|id| self.discovered(id).map(|admitted| (id, admitted))),
             Some(Watched::Container(id)) => {
                 let id = *id;
-                (name == Some(OsStr::new(LOCAL_LOGS_DIR)) && self.consider(&id)).then_some(id)
+                if name == Some(OsStr::new(LOCAL_LOGS_DIR)) {
+                    self.consider(&id).map(|admitted| (id, admitted))
+                } else {
+                    None
+                }
             }
             Some(Watched::LocalLogs(id)) => {
                 let id = *id;
@@ -188,46 +212,57 @@ impl LogHolder {
             }
             None => None,
         };
-        inspect.map_or(Noticed::Nothing, Noticed::Inspect)
+        admitted.map_or(Noticed::Nothing, |(id, admitted)| {
+            Noticed::Admitted(id, admitted)
+        })
     }
 
-    /// Starts holding a container found in Docker's dir. Says whether an
-    /// inspect should settle if Ployz owns it.
-    pub(super) fn discovered(&mut self, id: ContainerId) -> bool {
+    /// Starts holding a container found in Docker's dir. `None` when there is
+    /// nothing to hold yet.
+    pub(super) fn discovered(&mut self, id: ContainerId) -> Option<Admitted> {
         if self.is_ignored(&id) {
-            return false;
+            return None;
         }
         let dir = self.docker_containers.join(id.as_str());
         if let Err(error) = self.watch(&dir, DIR_MASK, Watched::Container(id)) {
             tracing::debug!(container = %id, %error, "cannot watch the container dir");
         }
-        dir.join(LOCAL_LOGS_DIR).is_dir() && self.consider(&id)
+        if dir.join(LOCAL_LOGS_DIR).is_dir() {
+            self.consider(&id)
+        } else {
+            None
+        }
     }
 
-    /// Holds a container's files as soon as its `local-logs` dir exists, and
-    /// says whether the inspect that settles whether Ployz owns it should be
-    /// asked for. That inspect runs alongside: Docker can rotate a busy
-    /// container's files away before it answers.
-    fn consider(&mut self, id: &ContainerId) -> bool {
+    /// Takes in a container as soon as its `local-logs` dir exists, and says
+    /// whether the inspect that settles whether Ployz owns it should be asked
+    /// for. The caller asks before `hold_files`: that inspect runs alongside
+    /// the sync, because Docker can rotate a busy container's files away
+    /// before it answers.
+    fn consider(&mut self, id: &ContainerId) -> Option<Admitted> {
         let inspect = match self.seen(id) {
-            Some(Seen::Ignored) => return false,
+            Some(Seen::Ignored) => return None,
             Some(Seen::Managed { .. }) => false,
             Some(Seen::Pending) => true,
             None => {
                 if let Err(error) = create_private_dir(&self.store.container(id)) {
                     tracing::error!(container = %id, %error, "cannot create the container's Log Store dir");
-                    return false;
+                    return None;
                 }
                 self.containers.entry(*id).or_default().seen = Some(Seen::Pending);
                 true
             }
         };
+        Some(Admitted { inspect })
+    }
+
+    /// Watches an admitted container's log dir and syncs its files.
+    pub(super) fn hold_files(&mut self, id: &ContainerId) {
         let local_logs = self.local_logs(id);
         if let Err(error) = self.watch(&local_logs, WatchMask::CREATE, Watched::LocalLogs(*id)) {
             tracing::debug!(container = %id, %error, "cannot watch the log dir");
         }
         self.sync(id);
-        inspect
     }
 
     pub(super) fn seen(&self, id: &ContainerId) -> Option<Seen> {
@@ -296,6 +331,11 @@ impl LogHolder {
         if let Err(error) = create_private_dir(&store_dir) {
             tracing::error!(container = %id, %error, "cannot recreate the container's Log Store dir");
             return;
+        }
+        #[cfg(test)]
+        if let Some(stall) = SYNC_STALL.get() {
+            std::thread::sleep(stall);
+            SYNC_STALLED_UNTIL.set(Some(std::time::Instant::now()));
         }
         match sync_container(&self.local_logs(id), &store_dir, max_files, created_nanos) {
             Ok(synced) => {
@@ -1583,7 +1623,7 @@ mod tests {
                 .get(&id)
                 .is_some_and(|state| state.owned_by_event.is_none())
         );
-        assert!(!holder.discovered(id));
+        assert!(holder.discovered(id).is_none());
     }
 
     #[test]
