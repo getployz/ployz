@@ -9,8 +9,8 @@ pub(crate) mod size;
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    EnvironmentNodeType, RestoredFrom, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVolumeIntent, VolumeAttachment, VolumeKind,
+    EnvironmentNodeType, MountKind, Mounted, RestoredFrom, SavedEnvironmentIntent,
+    SavedServiceIntent, SavedVolumeIntent, VolumeAttachment, VolumeKind,
 };
 use ployz_core::{ContainerPath, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -540,27 +540,16 @@ fn shared_path(
     mount: &VolumeAttachment,
 ) -> Option<RpcError> {
     let at = mount.container_path();
-    let same_volume = node
-        .volume_attachments
-        .iter()
-        .filter(|held| {
-            held.volume_resource_id != mount.volume_resource_id && held.container_path() == at
-        })
-        .find_map(|held| {
-            working
+    let what = node
+        .mounts_at(&at, Some((MountKind::Volume, &mount.volume_resource_id)))
+        .find_map(|held| match held {
+            Mounted::Volume(held) => working
                 .volume_of(held)
-                .map(|other| format!("Volume {}", other.name))
-        });
-    let same_config = node
-        .config_attachments
-        .iter()
-        .filter(|held| held.mount_dir.as_str() == at)
-        .find_map(|held| {
-            working
+                .map(|other| format!("Volume {}", other.name)),
+            Mounted::Config(held) => working
                 .config_of(held)
-                .map(|config| format!("Config {}", config.name))
-        });
-    let what = same_volume.or(same_config)?;
+                .map(|config| format!("Config {}", config.name)),
+        })?;
     let service = &node.slug;
     Some(error::conflict(
         format!("{service} already mounts {what} at {at}; pick another directory"),
@@ -596,11 +585,87 @@ pub(crate) fn summary(node: &SavedVolumeIntent) -> Result<VolumeSummary, RpcErro
 mod tests {
     use serde_json::json;
 
+    use ployz_core::config::SavedEnvironmentIntent;
+
+    use super::shared_path;
     use crate::{
         Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
         DeploymentId, Edit, EnvironmentId, EnvironmentRef, Mount, OrganizationId, ProjectId,
         ProjectName, ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
     };
+
+    /// A Service `web` mounting `volumes` (id, path) and `configs` (id, dir), over the
+    /// Volumes `data`, `cache` and the Config `app` the document holds.
+    fn web(volumes: &[(&str, &str)], configs: &[(&str, &str)]) -> SavedEnvironmentIntent {
+        let id = |n: &str| format!("00000000-0000-4000-8000-0000000000{n}");
+        let volume = |n: &str, name: &str| {
+            json!({"resourceId": id(n), "resourceLineageId": id(&format!("1{n}")), "name": name,
+                "storage": {"kind": "docker"}})
+        };
+        let volume_attachments: Vec<_> = volumes
+            .iter()
+            .map(|(n, at)| json!({"volumeResourceId": id(n), "mountPath": at}))
+            .collect();
+        let config_attachments: Vec<_> = configs
+            .iter()
+            .map(|(n, at)| json!({"configResourceId": id(n), "mountDir": at}))
+            .collect();
+        serde_json::from_value(json!({"version": 1, "environmentSlug": "production",
+            "services": [{"id": id("02"), "lineageId": id("03"), "slug": "web",
+                "config": {"version": 2, "privateDns": "web",
+                    "source": {"type": "image", "version": 1, "image": "nginx",
+                        "credentials": {"type": "none"}},
+                    "preDeployCommand": null, "startCommand": null,
+                    "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped"},
+                "variables": [], "volumeAttachments": volume_attachments,
+                "configAttachments": config_attachments}],
+            "volumes": [volume("06", "data"), volume("07", "cache")],
+            "configs": [{"resourceId": id("08"), "resourceLineageId": id("18"),
+                "name": "app", "files": {}}]}))
+        .unwrap()
+    }
+
+    fn refused(intent: &SavedEnvironmentIntent, mount: usize) -> Option<(String, String)> {
+        let node = intent.services.first().unwrap();
+        let mount = node.volume_attachments.get(mount).unwrap();
+        shared_path(intent, node, mount).map(|error| (error.message, error.details.to_string()))
+    }
+
+    #[test]
+    fn a_mount_shared_with_another_volume_or_a_config_is_named_by_what_it_clashes_with() {
+        let clash = |what: &str| {
+            Some((
+                format!("web already mounts {what} at /data; pick another directory"),
+                r#"{"dir":"/data","service":"web"}"#.to_owned(),
+            ))
+        };
+        let both = web(&[("06", "/data"), ("07", "/data/")], &[("08", "/data")]);
+        assert_eq!(refused(&both, 0), clash("Volume cache"));
+        assert_eq!(refused(&both, 1), clash("Volume data"));
+
+        let config = web(&[("06", "/./data")], &[("08", "/data")]);
+        assert_eq!(refused(&config, 0), clash("Config app"));
+
+        assert_eq!(
+            refused(&web(&[("06", "/data")], &[("08", "/etc")]), 0),
+            None
+        );
+        assert_eq!(refused(&web(&[("06", "/data")], &[]), 0), None);
+    }
+
+    #[test]
+    fn a_mount_of_something_the_document_lacks_is_not_a_clash() {
+        let ghost = web(&[("06", "/data"), ("09", "/data")], &[("08", "/data")]);
+        assert_eq!(
+            refused(&ghost, 0),
+            Some((
+                "web already mounts Config app at /data; pick another directory".to_owned(),
+                r#"{"dir":"/data","service":"web"}"#.to_owned(),
+            ))
+        );
+        let ghost = web(&[("06", "/data")], &[("19", "/data")]);
+        assert_eq!(refused(&ghost, 0), None);
+    }
 
     /// Working State saved before shared writes existed can hold two writers of a
     /// Volume without it; only the Store's own storage can write one now.

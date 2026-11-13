@@ -240,6 +240,26 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
 }
 
 #[test]
+fn a_volume_and_a_config_sharing_a_directory_are_refused_with_one_text() {
+    for (volume, config) in [
+        ("/data", "/data"),
+        ("/data/", "/data"),
+        ("/x/../data", "/data"),
+    ] {
+        let mut value = with_config(json!({"a":file(json!([]))}), mount(config));
+        *value
+            .pointer_mut("/services/0/volumeAttachments/0/mountPath")
+            .unwrap() = json!(volume);
+        let error = parse_environment_intent(value).unwrap_err();
+        assert_eq!(error.path, "mountPath", "{volume}");
+        assert_eq!(
+            error.message, "A Volume and a Config share one directory",
+            "{volume}"
+        );
+    }
+}
+
+#[test]
 fn a_stored_service_slug_that_is_not_a_service_name_still_decodes() {
     for slug in ["Web", "web_app", "web-", &"a".repeat(64)] {
         let mut value = intent();
