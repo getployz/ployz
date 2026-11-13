@@ -27,6 +27,7 @@ pub mod status;
 mod step;
 mod volume;
 
+pub use crate::error::{Accept, Confirmation};
 pub use logs::{
     Channel, FrameScrub, LineCap, LogExcerpt, LogText, SealedForms, SealedValues, Withheld,
 };

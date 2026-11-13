@@ -30,7 +30,7 @@ pub(crate) use self::review::{consented, review};
 use crate::deployment::loss::{VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::digest::short_digest;
-use crate::error;
+use crate::error::{self, Accept, Confirmation};
 use crate::followup::{FollowUp, Place};
 use crate::id::{
     ApprovalDigest, DeploymentId, EnvironmentId, EnvironmentName, ProjectId, ProjectName,
@@ -724,16 +724,29 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
         true => format!("{pass} to go ahead"),
         false => format!("{pass} and accept each lost Volume by name to go ahead"),
     };
-    Err(error::confirmation_required(
-        format!("{changed}Removing this will {deletes}. {ask}"),
-        json!({
-            "volumes": lost,
-            "accept": accept,
-            "effects": effects,
-            "effects_by_environment": by_environment,
-            "version": version,
-        }),
-    ))
+    Err(Confirmation {
+        volumes: json!(lost),
+        accept: Some(Accept::ByEnvironment(
+            accept
+                .into_iter()
+                .map(|(environment, names)| {
+                    (environment.clone(), names.into_iter().cloned().collect())
+                })
+                .collect(),
+        )),
+        version: Some(version.to_owned()),
+        effects: Some(effects.iter().map(|effect| (*effect).clone()).collect()),
+        effects_by_environment: Some(
+            by_environment
+                .into_iter()
+                .map(|(environment, effects)| {
+                    (environment.clone(), effects.iter().cloned().collect())
+                })
+                .collect(),
+        ),
+        ..Confirmation::default()
+    }
+    .refuse(format!("{changed}Removing this will {deletes}. {ask}")))
 }
 
 /// Ask a human once for everything a removal deletes, bound to `command`, so an

@@ -881,7 +881,7 @@ fn reset_removal_refusal(error: RpcError, name: &str) -> Error {
             .context(format!("Server {name} reset but is still listed."))
             .hint(Hint::Next(format!("ployz server forget {name}")))
     } else {
-        crate::failure::refusal_from_rpc(error)
+        crate::handlers::data_loss::refusal_from_rpc(error)
     }
 }
 

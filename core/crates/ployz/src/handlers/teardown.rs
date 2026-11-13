@@ -6,6 +6,7 @@ use ployz_core::authority::{TeardownApproval, TeardownScope};
 use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use std::collections::BTreeMap;
 
+use ployz_store::tools::{Accept, Confirmation};
 use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
     DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
@@ -545,10 +546,11 @@ impl Reviewed {
         if refused.code != RpcErrorCode::ConfirmationRequired {
             return None;
         }
-        let details = &refused.details;
-        let lost: BTreeMap<EnvironmentName, Vec<VolumeName>> = match details.get("accept") {
-            Some(accept) => serde_json::from_value(accept.clone()).ok()?,
-            None => BTreeMap::new(),
+        let confirmation = Confirmation::of(&refused.details);
+        let lost = match confirmation.accept {
+            None if confirmation.written_accept.is_none() => BTreeMap::new(),
+            Some(Accept::ByEnvironment(lost)) => lost,
+            None | Some(Accept::Names(_)) => return None,
         };
         let unaccepted = lost.iter().any(|(environment, volumes)| {
             volumes.iter().any(|volume| {
@@ -558,11 +560,9 @@ impl Reviewed {
             })
         });
         Some(Self {
-            version: details.get("version")?.as_str()?.to_owned(),
-            effects: serde_json::from_value(details.get("effects")?.clone()).ok()?,
-            by_environment: details
-                .get("effects_by_environment")
-                .and_then(|by| serde_json::from_value(by.clone()).ok()),
+            version: confirmation.version?,
+            effects: confirmation.effects?,
+            by_environment: confirmation.effects_by_environment,
             unaccepted,
         })
     }
@@ -1092,6 +1092,126 @@ mod tests {
              removes Service api. Run it again to go ahead"
         );
         assert_eq!(refused.details.get("version"), None);
+    }
+
+    /// What a refusal reviewed, read the way this command always read it: an `accept`
+    /// that is present but is not each Environment's Volumes reads as no review.
+    fn reviewed_before(
+        refused: &ployz_core::RpcError,
+        accepted: &BTreeMap<EnvironmentName, Vec<VolumeName>>,
+    ) -> Option<(String, bool)> {
+        if refused.code != RpcErrorCode::ConfirmationRequired {
+            return None;
+        }
+        let details = &refused.details;
+        let lost: BTreeMap<EnvironmentName, Vec<VolumeName>> = match details.get("accept") {
+            Some(accept) => serde_json::from_value(accept.clone()).ok()?,
+            None => BTreeMap::new(),
+        };
+        let unaccepted = lost.iter().any(|(environment, volumes)| {
+            volumes.iter().any(|volume| {
+                !accepted
+                    .get(environment)
+                    .is_some_and(|names| names.contains(volume))
+            })
+        });
+        let version = details.get("version")?.as_str()?.to_owned();
+        let _: Vec<DestructiveEffect> =
+            serde_json::from_value(details.get("effects")?.clone()).ok()?;
+        Some((version, unaccepted))
+    }
+
+    #[test]
+    fn a_refusal_is_reviewed_as_it_always_was_whatever_its_accept_holds() {
+        let effect = json!({ "kind": "removes_service", "name": "web", "node": "n", "path": "p" });
+        let accepted: BTreeMap<EnvironmentName, Vec<VolumeName>> = [(
+            EnvironmentName::parse("production").unwrap(),
+            vec![VolumeName::parse("data").unwrap()],
+        )]
+        .into();
+        let table = [
+            (
+                "accept absent",
+                json!({ "effects": [effect], "version": "v1" }),
+            ),
+            (
+                "accept null",
+                json!({ "accept": null, "effects": [], "version": "v1" }),
+            ),
+            (
+                "accept a number",
+                json!({ "accept": 3, "effects": [], "version": "v1" }),
+            ),
+            (
+                "accept a flat list",
+                json!({ "accept": ["data"], "effects": [], "version": "v1" }),
+            ),
+            (
+                "accept an empty list",
+                json!({ "accept": [], "effects": [], "version": "v1" }),
+            ),
+            (
+                "accept a map of the wrong shape",
+                json!({ "accept": { "production": 7 }, "effects": [], "version": "v1" }),
+            ),
+            (
+                "accept a map with an invalid Volume name",
+                json!({ "accept": { "production": ["Bad Name"] }, "effects": [], "version": "v1" }),
+            ),
+            (
+                "accept a map naming what was accepted",
+                json!({ "accept": { "production": ["data"] }, "effects": [], "version": "v1" }),
+            ),
+            (
+                "accept a map naming what was not accepted",
+                json!({ "accept": { "production": ["logs"] }, "effects": [], "version": "v1" }),
+            ),
+            (
+                "accept an empty map",
+                json!({ "accept": {}, "effects": [], "version": "v1" }),
+            ),
+        ];
+        for (name, details) in table {
+            let refused = ployz_core::RpcError {
+                code: RpcErrorCode::ConfirmationRequired,
+                message: "refused".to_owned(),
+                details,
+                cause: Vec::new(),
+            };
+            let now = Reviewed::of(&refused, &accepted)
+                .map(|reviewed| (reviewed.version, reviewed.unaccepted));
+            assert_eq!(now, reviewed_before(&refused, &accepted), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_whose_accept_cannot_be_read_is_returned_without_a_second_send() {
+        for accept in [json!(null), json!(3)] {
+            let mut sent = Vec::new();
+            let refused = bound(&mut request(), "shop", unprompted(), |request| {
+                sent.push(request.version.clone());
+                Err(StoreCallError::Refused(ployz_core::RpcError {
+                    code: RpcErrorCode::ConfirmationRequired,
+                    message: "Removing this will remove Service web. Pass the version".to_owned(),
+                    details: json!({ "accept": accept, "effects": [], "version": "v1" }),
+                    cause: Vec::new(),
+                }))
+            });
+            assert_eq!(sent, [None], "{accept}: it sends nothing it was not shown");
+            let Some(refused) = refusal(refused) else {
+                panic!("{accept}: the refusal goes back");
+            };
+            assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+            assert_eq!(
+                refused.message, "Removing this will remove Service web. Pass the version",
+                "{accept}"
+            );
+            assert_eq!(
+                refused.details,
+                json!({ "accept": accept, "effects": [], "version": "v1" }),
+                "{accept}"
+            );
+        }
     }
 
     type Reread = fn() -> Result<Shown, StoreCallError>;

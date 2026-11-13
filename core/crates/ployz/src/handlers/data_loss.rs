@@ -3,7 +3,9 @@
 use super::{Error, leaf_matches, string_values};
 use crate::{connect::Client, context::ConnectionSource};
 use clap::ArgMatches;
-use ployz_core::{DataLoss, DataLossConfirmation, Hint, ObservedDataLoss};
+use ployz_core::{
+    DataLoss, DataLossConfirmation, Hint, ObservedDataLoss, RpcError, UnconfirmedDataLoss,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ui::{self, Tree};
@@ -261,6 +263,24 @@ impl Request<'_> {
     }
 }
 
+fn pass_data_loss_names_message(missing: &[DataLoss]) -> String {
+    format!(
+        "Additional volume loss is not covered by the confirmation: {}. Rerun to review the updated volume list.",
+        missing
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+pub(super) fn refusal_from_rpc(error: RpcError) -> Error {
+    match UnconfirmedDataLoss::from_rpc_error(&error) {
+        Some(unconfirmed) => Error::usage(pass_data_loss_names_message(&unconfirmed.missing)),
+        None => error.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,10 +463,8 @@ mod tests {
         let changed = ObservedDataLoss {
             data_loss: vec![loss('c', "data")],
         };
-        let error = crate::failure::refusal_from_rpc(
-            changed.require(&confirmed).unwrap_err().into_rpc_error(),
-        )
-        .to_string();
+        let error =
+            refusal_from_rpc(changed.require(&confirmed).unwrap_err().into_rpc_error()).to_string();
         assert!(error.contains(&"c".repeat(32)) && error.contains("Rerun"));
     }
 

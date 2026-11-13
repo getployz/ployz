@@ -10,6 +10,7 @@ use ployz_core::config::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::error::{Accept, Confirmation, data_loss_message};
 use crate::id::{Revision, VolumeName};
 use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
@@ -217,10 +218,16 @@ pub(crate) fn publish(
     .map_err(|mut error| {
         // Volume loss is the one confirmation `destructive` asks; saving deletes
         // nothing itself, so the loss is the next deploy's.
-        if error.code == ployz_core::RpcErrorCode::ConfirmationRequired
-            && let Some(rest) = error.message.strip_prefix("This permanently deletes")
-        {
-            error.message = format!("Next deploy deletes{rest}");
+        if error.code == ployz_core::RpcErrorCode::ConfirmationRequired {
+            let confirmation = Confirmation::of(&error.details);
+            let lost = confirmation
+                .accept
+                .as_ref()
+                .map(Accept::names)
+                .unwrap_or_default();
+            if !lost.is_empty() {
+                error.message = data_loss_message("Next deploy deletes", lost);
+            }
         }
         error
     })?;

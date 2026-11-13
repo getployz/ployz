@@ -8,6 +8,7 @@ use ts_rs::TS;
 
 use super::ToolId;
 use super::step::{DashboardPage, Fix};
+use crate::error::Confirmation;
 use crate::followup::{FollowUp, Place};
 
 /// A tool's answer: a value, or a [`Refusal`] that says what to call instead.
@@ -242,6 +243,17 @@ impl Refusal {
 
 /// A Store error for `call` as a refusal, `writes` saying what the write did.
 pub(crate) fn from_store(error: RpcError, call: &Call, writes: Writes) -> Refusal {
+    from_store_with(error, call, writes, Confirmation::retry)
+}
+
+/// A Store error for `call` as a refusal whose confirmation, if it is one, is
+/// retried as `retry` builds it: each tool takes the Volumes to accept its own way.
+pub(crate) fn from_store_with(
+    error: RpcError,
+    call: &Call,
+    writes: Writes,
+    retry: impl FnOnce(&Confirmation, &Call) -> Call,
+) -> Refusal {
     let code = error.code.clone();
     let details = error.details;
     let mut refusal = Refusal::new(code.clone(), sanitize(&error.message, &code));
@@ -277,21 +289,35 @@ pub(crate) fn from_store(error: RpcError, call: &Call, writes: Writes) -> Refusa
         refusal = refusal.with_detail("settled", Value::Bool(true));
     }
     if code == RpcErrorCode::ConfirmationRequired {
-        // Only a confirmation's retry may accept loss: the one the Store named.
-        let mut input = call.input.clone();
-        if let Value::Object(fields) = &mut input {
-            fields.insert(
-                "accept_volume_loss".into(),
-                details.get("accept").cloned().unwrap_or_else(|| json!([])),
-            );
-            fields.insert(
-                "version".into(),
-                details.get("version").cloned().unwrap_or(Value::Null),
-            );
-        }
-        refusal.retry = Call::new(&call.tool, input);
+        refusal.retry = retry(&Confirmation::of(&details), call);
     }
     refusal
+}
+
+impl Confirmation {
+    /// The call again accepting the Volumes this names, at the version it binds,
+    /// each passed on as the refusal wrote it. Only a confirmation's retry may accept
+    /// loss: the one the Store named.
+    pub(crate) fn retry(&self, call: &Call) -> Call {
+        self.retry_accepting(
+            call,
+            self.written_accept.clone().unwrap_or_else(|| json!([])),
+        )
+    }
+
+    /// The call again with `accept` as the Volumes to accept, at the version the
+    /// refusal wrote.
+    pub(crate) fn retry_accepting(&self, call: &Call, accept: Value) -> Call {
+        let mut input = call.input.clone();
+        if let Value::Object(fields) = &mut input {
+            fields.insert("accept_volume_loss".into(), accept);
+            fields.insert(
+                "version".into(),
+                self.written_version.clone().unwrap_or(Value::Null),
+            );
+        }
+        Call::new(&call.tool, input)
+    }
 }
 
 /// A Store message up to any CLI clause it carries: the next tool says it instead.
