@@ -55,6 +55,10 @@ pub struct Confirmation {
     pub effects: Option<Vec<DestructiveEffect>>,
     /// The same effects by the Environment they remove from.
     pub effects_by_environment: Option<BTreeMap<EnvironmentName, Vec<DestructiveEffect>>>,
+    /// What a read found at `accept` before it was typed: a consumer that must tell
+    /// a key that is absent from one that is present in another shape reads it here.
+    /// A refusal being written ignores it.
+    pub written_accept: Option<Value>,
 }
 
 impl Confirmation {
@@ -83,13 +87,15 @@ impl Confirmation {
     }
 
     /// What `details` carries of a confirmation. A key that is absent or isn't in the
-    /// shape the Store writes reads as absent.
+    /// shape the Store writes reads as absent; `written_accept` still holds what
+    /// `accept` was.
     #[must_use]
     pub fn of(details: &Value) -> Self {
         let read = |key: &str| details.get(key).cloned();
         Self {
             volumes: read("volumes").unwrap_or(Value::Null),
             accept: read("accept").and_then(|accept| serde_json::from_value(accept).ok()),
+            written_accept: read("accept"),
             version: read("version").and_then(|version| version.as_str().map(str::to_owned)),
             effects: read("effects").and_then(|effects| serde_json::from_value(effects).ok()),
             effects_by_environment: read("effects_by_environment")
@@ -172,6 +178,7 @@ mod tests {
                 )]
                 .into(),
             ),
+            ..Confirmation::default()
         }
         .refuse("Removing this will delete Volume data");
         assert_eq!(
@@ -196,7 +203,14 @@ mod tests {
         assert_eq!(read.accept, None);
         assert_eq!(read.version, None);
         assert_eq!(read.effects, None);
+        assert_eq!(read.written_accept, Some(json!(3)));
         assert_eq!(Confirmation::of(&Value::Null), Confirmation::default());
+        assert_eq!(
+            Confirmation::of(&json!({ "accept": null })).written_accept,
+            Some(Value::Null),
+            "a null accept is present"
+        );
+        assert_eq!(Confirmation::of(&json!({})).written_accept, None);
     }
 
     #[test]

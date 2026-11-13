@@ -744,6 +744,7 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
                 })
                 .collect(),
         ),
+        ..Confirmation::default()
     }
     .refuse(format!("{changed}Removing this will {deletes}. {ask}")))
 }
