@@ -294,16 +294,20 @@ pub(crate) struct Join {
     pub registration: Registered,
 }
 
+/// Successful enroll `initialize` payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Initialize {
+    pub mode: InitializeMode,
+    pub pairing: CloudPairing,
+    pub storage: ployz_core::StoragePreparation,
+    pub recovery: Option<Recovery>,
+}
+
 /// Enroll outcome after `not_yet` retries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Outcome {
     Join(Box<Join>),
-    Initialize {
-        mode: InitializeMode,
-        pairing: CloudPairing,
-        storage: ployz_core::StoragePreparation,
-        recovery: Option<Recovery>,
-    },
+    Initialize(Initialize),
 }
 
 /// What Cloud asks of the founder's Sealing Key: back a new one up under a
@@ -324,13 +328,7 @@ pub(crate) enum InitializeMode {
 /// One enroll POST body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Response {
-    Join(Box<Join>),
-    Initialize {
-        mode: InitializeMode,
-        pairing: CloudPairing,
-        storage: ployz_core::StoragePreparation,
-        recovery: Option<Recovery>,
-    },
+    Ready(Outcome),
     NotYet {
         retry_after: Duration,
         waiting: Waiting,
@@ -513,20 +511,7 @@ pub(crate) async fn enroll(
             }
         })?;
         match parse_enroll(&response)? {
-            Response::Join(join) => return Ok(Outcome::Join(join)),
-            Response::Initialize {
-                mode,
-                pairing,
-                storage,
-                recovery,
-            } => {
-                return Ok(Outcome::Initialize {
-                    mode,
-                    pairing,
-                    storage,
-                    recovery,
-                });
-            }
+            Response::Ready(outcome) => return Ok(outcome),
             Response::NotYet {
                 retry_after,
                 waiting: Waiting::Queued { ahead },
@@ -947,11 +932,11 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             pairing,
             storage,
             registration,
-        } => Ok(Response::Join(Box::new(Join {
+        } => Ok(Response::Ready(Outcome::Join(Box::new(Join {
             pairing,
             storage,
             registration: *registration,
-        }))),
+        })))),
         EnrollWire::NotYet {
             retry_after,
             reason,
@@ -971,7 +956,7 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             pairing,
             storage,
             recovery,
-        } => Ok(Response::Initialize {
+        } => Ok(Response::Ready(Outcome::Initialize(Initialize {
             mode: if resumed {
                 InitializeMode::Resume
             } else {
@@ -980,7 +965,7 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             pairing,
             storage,
             recovery: recovery.map(Recovery::from),
-        }),
+        }))),
     }
 }
 
@@ -1324,7 +1309,7 @@ mod tests {
                 Some("/dev/vdb"),
             ),
         ] {
-            let Response::Initialize { storage, .. } = parse_enroll(&serde_json::to_vec(&serde_json::json!({
+            let Response::Ready(Outcome::Initialize(Initialize { storage, .. })) = parse_enroll(&serde_json::to_vec(&serde_json::json!({
                 "kind": "initialize", "resumed": false, "pairing": {"secret": "pairing-secret"}, "storage": wire,
             })).unwrap()).unwrap() else { panic!("initialize response") };
             assert_eq!(
@@ -1423,7 +1408,7 @@ mod tests {
             },
             "registration": registration(),
         });
-        let Response::Join(join) =
+        let Response::Ready(Outcome::Join(join)) =
             parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
         else {
             panic!("expected join");
@@ -1467,14 +1452,104 @@ mod tests {
                 "secret": "pairing-secret",
             },
         });
-        let Response::Initialize {
+        let Response::Ready(Outcome::Initialize(Initialize {
             mode, pairing: got, ..
-        } = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
+        })) = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
         else {
             panic!("expected initialize");
         };
         assert_eq!(mode, InitializeMode::New);
         assert_eq!(got, pairing());
+    }
+
+    #[test]
+    fn initialize_payload_carries_mode_pairing_storage_and_recovery() {
+        let key = ployz_core::SealingPublicKey::from_bytes([5; 32]);
+        for (body, mode, recovery) in [
+            (
+                serde_json::json!({"resumed": true, "recovery": {"kind": "back_up"}}),
+                InitializeMode::Resume,
+                Some(Recovery::BackUp),
+            ),
+            (
+                serde_json::json!({
+                    "resumed": false,
+                    "recovery": {"kind": "seed", "expectedPublicKey": key.to_string()},
+                }),
+                InitializeMode::New,
+                Some(Recovery::Seed(RecoverySeed {
+                    expected_public_key: key,
+                    backup: None,
+                })),
+            ),
+            (
+                serde_json::json!({"resumed": false}),
+                InitializeMode::New,
+                None,
+            ),
+        ] {
+            let mut wire = serde_json::json!({
+                "kind": "initialize",
+                "storage": "zfs",
+                "pairing": {"secret": "pairing-secret"},
+            });
+            wire.as_object_mut()
+                .unwrap()
+                .extend(body.as_object().unwrap().clone());
+            let Response::Ready(Outcome::Initialize(Initialize {
+                mode: got_mode,
+                pairing: got_pairing,
+                storage,
+                recovery: got_recovery,
+            })) = parse_enroll(&serde_json::to_vec(&wire).unwrap()).unwrap()
+            else {
+                panic!("expected initialize");
+            };
+            assert_eq!(got_mode, mode);
+            assert_eq!(got_pairing, pairing());
+            assert_eq!(storage, StorageChoice::Zfs.into());
+            assert_eq!(got_recovery, recovery);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_initialize_answer_ends_the_retry_loop_with_every_field() {
+        let (listener, origin) = listen().await;
+        let server = tokio::spawn(async move {
+            for body in [
+                br#"{"kind":"not_yet","retryAfter":0}"#.as_slice(),
+                br#"{"kind":"initialize","resumed":true,"storage":"zfs","pairing":{"secret":"pairing-secret"},"recovery":{"kind":"back_up"}}"#.as_slice(),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                tokio::io::AsyncWriteExt::write_all(&mut stream, &http_response(200, "OK", body))
+                    .await
+                    .unwrap();
+            }
+        });
+        let outcome = enroll(
+            Command::ServerAdd,
+            &CloudOrigin::new(&origin).enroll_url(),
+            &token(),
+            &identity(),
+            &|_| {},
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        let Outcome::Initialize(Initialize {
+            mode,
+            pairing: got_pairing,
+            storage,
+            recovery,
+        }) = outcome
+        else {
+            panic!("expected initialize");
+        };
+        assert_eq!(mode, InitializeMode::Resume);
+        assert_eq!(got_pairing, pairing());
+        assert_eq!(storage, StorageChoice::Zfs.into());
+        assert_eq!(recovery, Some(Recovery::BackUp));
     }
 
     #[test]
@@ -1501,7 +1576,7 @@ mod tests {
 
     #[test]
     fn enrollment_defaults_missing_storage_to_none() {
-        let Response::Initialize { storage, .. } = parse_enroll(
+        let Response::Ready(Outcome::Initialize(Initialize { storage, .. })) = parse_enroll(
             br#"{"kind":"initialize","resumed":false,"pairing":{"secret":"pairing-secret"}}"#,
         )
         .unwrap() else {

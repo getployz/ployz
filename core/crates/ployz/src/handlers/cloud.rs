@@ -17,8 +17,8 @@ use ployz_core::{
 use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cloud_enroll::{
-    self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, InitializeMode,
-    Join, Outcome, Recovery,
+    self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, Initialize,
+    InitializeMode, Join, Outcome, Recovery,
 };
 use crate::cloud_origin::{CloudOrigin, DEFAULT_CLOUD};
 use crate::connect::{Client, ConnectError};
@@ -243,12 +243,12 @@ where
             )
             .await
         }
-        Outcome::Initialize {
+        Outcome::Initialize(Initialize {
             mode,
             pairing,
             storage,
             recovery,
-        } => {
+        }) => {
             report.enrolled(storage.choice(), true);
             enroll_founder(
                 command,
