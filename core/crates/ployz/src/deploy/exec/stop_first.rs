@@ -170,7 +170,7 @@ pub(super) async fn replace_stop_first<C: MachineOperations>(
             let was_running = match old.runtime {
                 ContainerRuntimeObservation::Created
                 | ContainerRuntimeObservation::Exited { .. }
-                | ContainerRuntimeObservation::Dead => crate::ingress::is_system_ingress(&old),
+                | ContainerRuntimeObservation::Dead => old.is_system_ingress(),
                 ContainerRuntimeObservation::Removing => false,
                 ContainerRuntimeObservation::Running { .. }
                 | ContainerRuntimeObservation::Paused
@@ -213,7 +213,7 @@ pub(super) async fn withdraw<C: MachineOperations>(
     let mut copy = cleanup::Copy::observed(old);
     let (step, now) = match &copy.rotation {
         CopyRotation::Pending | CopyRotation::Out => return None,
-        _ if crate::ingress::is_system_ingress(old) => return None,
+        _ if old.is_system_ingress() => return None,
         CopyRotation::In => (
             cleanup::hold(client, &copy, rows.run.clone(), cancellation).await,
             CopyRotation::Held(rows.run.clone()),

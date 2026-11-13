@@ -423,6 +423,12 @@ impl ContainerObservation {
         QualifiedService::new(self.namespace.clone(), self.service_name().clone())
     }
 
+    /// Whether this is a Container of the reserved Ingress Proxy Service.
+    #[must_use]
+    pub fn is_system_ingress(&self) -> bool {
+        self.identity() == QualifiedService::system_ingress()
+    }
+
     /// Replace every Service and pre-deploy hook environment value, keeping the keys,
     /// and empty every Config's content, keeping its name and mounts.
     pub fn redact_values(&mut self) {
@@ -1173,6 +1179,27 @@ mod tests {
         let unparsed = read(&parts);
         assert_eq!(unparsed.deployment_label(), Some("not a run!"));
         assert_eq!(unparsed.deploy_label(), None);
+    }
+
+    #[test]
+    fn only_the_reserved_ingress_identity_is_a_system_ingress_container() {
+        let mut container = observation(ContainerKind::ServiceContainer);
+        assert!(!container.is_system_ingress());
+
+        let ingress = crate::QualifiedService::system_ingress();
+        container
+            .try_update(|parts| {
+                parts.namespace = ingress.namespace.clone();
+                parts.resolved_spec.name = ingress.name.clone();
+            })
+            .unwrap();
+        assert!(container.is_system_ingress());
+
+        let holder = crate::QualifiedService::system_ingress_holder();
+        container
+            .try_update(|parts| parts.resolved_spec.name = holder.name.clone())
+            .unwrap();
+        assert!(!container.is_system_ingress());
     }
 
     fn observation(kind: ContainerKind) -> ContainerObservation {

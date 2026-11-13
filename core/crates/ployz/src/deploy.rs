@@ -8,8 +8,8 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RowStanding, RpcError, ServiceName,
-    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName, ServiceObservation,
+    VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -384,6 +384,20 @@ pub struct DeploySnapshot {
 }
 
 impl DeploySnapshot {
+    /// The observation of the Machine `id`, if this snapshot read it.
+    pub(crate) fn machine(&self, id: MachineId) -> Option<&MachineObservation> {
+        self.machines
+            .iter()
+            .find(|machine| machine.machine.id == id)
+    }
+
+    /// The observation of the Machine called `name`, if this snapshot read it.
+    pub(crate) fn machine_named(&self, name: &MachineName) -> Option<&MachineObservation> {
+        self.machines
+            .iter()
+            .find(|machine| &machine.machine.name == name)
+    }
+
     /// The ingress Servers whose Ingress Proxy a Deploy brings back: eligible for the
     /// Ingress Proxy's placement, observed in full, and holding none running.
     #[must_use]
@@ -395,8 +409,7 @@ impl DeploySnapshot {
                     .containers
                     .iter()
                     .filter(|container| {
-                        container.machine_id == machine.machine.id
-                            && crate::ingress::is_system_ingress(container)
+                        container.machine_id == machine.machine.id && container.is_system_ingress()
                     })
                     .collect();
                 let (restarting, held): (Vec<_>, Vec<_>) =
@@ -477,10 +490,7 @@ impl DeploySnapshot {
         self.machines.iter().filter(move |machine| {
             machine.invites_rpc()
                 && machine.machine.accepts_ingress
-                && match machine.machine.standing() {
-                    RowStanding::Registered | RowStanding::Versioned => true,
-                    RowStanding::Leaving { .. } => false,
-                }
+                && machine.machine.takes_part()
                 && ployz_core::machine_matches_placement(&machine.machine, &placement)
         })
     }

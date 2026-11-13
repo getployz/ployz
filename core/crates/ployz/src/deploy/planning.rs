@@ -4,10 +4,9 @@ use ployz_core::{
     BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
     HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
     ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal, QualifiedService,
-    RequestedServiceSpec, RowStanding, RpcError, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
-    machine_matches_placement, same_service_mode_kind,
+    RequestedServiceSpec, RpcError, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, ServicePlacementEligibility, UpdateOrder, VolumeToCreate,
+    explicit_ingress_hosts, hostname_owners, same_service_mode_kind,
 };
 
 use super::{
@@ -17,6 +16,7 @@ use super::{
     schedule::{ServiceGroup, Stage, TaskKind, creates_container},
 };
 
+mod candidates;
 pub(super) mod capacity;
 #[cfg(test)]
 pub(super) mod ingress_repairs;
@@ -25,6 +25,7 @@ mod placement;
 mod storage;
 mod volumes;
 
+use candidates::{Candidates, Exclusion};
 use placement::{
     CapacityAdmission, GlobalPlacement, LimitsChange, PlacementReservations, PlacementState,
     ReplicatedPlacement, ReplicatedReservation, plan_global, plan_replicated,
@@ -591,11 +592,7 @@ pub fn without_departed(
         .filter(|repair| {
             !matches!(repair.action, SlotAction::Unchecked(_))
                 || reread.iter().any(|machine| {
-                    machine.machine.id == repair.machine_id
-                        && match machine.machine.standing() {
-                            RowStanding::Registered | RowStanding::Versioned => true,
-                            RowStanding::Leaving { .. } => false,
-                        }
+                    machine.machine.id == repair.machine_id && machine.machine.takes_part()
                 })
         })
         .collect()
@@ -670,9 +667,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
                 Some(VolumeToCreate {
                     machine_id,
                     machine_name: snapshot
-                        .machines
-                        .iter()
-                        .find(|machine| machine.machine.id == machine_id)
+                        .machine(machine_id)
                         .map(|machine| machine.machine.name.clone()),
                     name,
                     maximum_bytes,
@@ -974,15 +969,11 @@ fn volume_server_away(
             .volume_graph()
             .mounted_provisioned_volumes()
             .any(|mounted| mounted.source.docker_volume_name() == Some(volume));
-        snapshot
-            .machines
-            .iter()
-            .find(|machine| &machine.machine.name == name)
-            .is_some_and(|machine| {
-                machine.membership == MembershipObservation::Down
-                    || snapshot.silent(machine)
-                    || (provisioned && storage::capacity(snapshot, machine).is_err())
-            })
+        snapshot.machine_named(name).is_some_and(|machine| {
+            machine.membership == MembershipObservation::Down
+                || snapshot.silent(machine)
+                || (provisioned && storage::capacity(snapshot, machine).is_err())
+        })
     };
     let constraints = constraints.as_slice();
     let located = constraints
@@ -1023,10 +1014,7 @@ fn silent_volume_server(
                 .is_some_and(|spec| spec.volume_graph().has_mounted_provisioned_volume())
         })
         .find_map(|operation| {
-            let machine = snapshot
-                .machines
-                .iter()
-                .find(|machine| machine.machine.id == operation.machine_id())?;
+            let machine = snapshot.machine(operation.machine_id())?;
             storage::capacity(snapshot, machine).err()
         })
 }
@@ -1114,21 +1102,25 @@ fn assemble_plan(
                     .any(|entry| entry.service == dependency.service)
             })
         {
-            blocked.push(BlockedService {
-                service: spec.name.clone(),
-                error: dependency_blocked(&dependency.service),
-            });
-            budget.release(&spec.name);
+            block_service(
+                &mut blocked,
+                &mut budget,
+                &spec.name,
+                dependency_blocked(&dependency.service),
+                Reservation::Release,
+            );
             continue;
         }
         if let Some(handover) = handovers.iter().find(|handover| {
             handover.from == spec.name && blocked.iter().any(|entry| entry.service == handover.to)
         }) {
-            blocked.push(BlockedService {
-                service: spec.name.clone(),
-                error: handover_blocked(handover),
-            });
-            budget.release(&spec.name);
+            block_service(
+                &mut blocked,
+                &mut budget,
+                &spec.name,
+                handover_blocked(handover),
+                Reservation::Release,
+            );
             continue;
         }
         let first = service_operations.len();
@@ -1152,19 +1144,23 @@ fn assemble_plan(
                 | PlanError::VolumeHolderUnknown { .. }
                 | PlanError::VolumeServerTakesNoServices { .. }),
             ) if blocks_unmountable => {
-                blocked.push(BlockedService {
-                    service: spec.name.clone(),
-                    error: error.into_rpc_error(),
-                });
-                budget.release(&spec.name);
+                block_service(
+                    &mut blocked,
+                    &mut budget,
+                    &spec.name,
+                    error.into_rpc_error(),
+                    Reservation::Release,
+                );
                 continue;
             }
             Err(error) if blocks_unmountable && volume_server_away(&error, snapshot, spec) => {
-                blocked.push(BlockedService {
-                    service: spec.name.clone(),
-                    error: error.into_rpc_error(),
-                });
-                budget.release(&spec.name);
+                block_service(
+                    &mut blocked,
+                    &mut budget,
+                    &spec.name,
+                    error.into_rpc_error(),
+                    Reservation::Release,
+                );
                 continue;
             }
             Err(source) => {
@@ -1178,14 +1174,15 @@ fn assemble_plan(
         // A Volume on a Server that didn't return its storage can't be budgeted there, so
         // only the Service mounting it waits; the rest of the Deploy goes ahead (bet 4).
         if blocks_unmountable && let Some(error) = silent_volume_server(&operations, snapshot) {
-            blocked.push(BlockedService {
-                service: spec.name.clone(),
-                error: error.into_rpc_error(),
-            });
-            if let Some(before) = before {
-                budget = before;
-            }
-            budget.release(&spec.name);
+            block_service(
+                &mut blocked,
+                &mut budget,
+                &spec.name,
+                error.into_rpc_error(),
+                before.map_or(Reservation::Release, |before| {
+                    Reservation::Restore(Box::new(before))
+                }),
+            );
             continue;
         }
         if let Some(machine_id) = operations.iter().find_map(|operation| match operation {
@@ -1543,6 +1540,33 @@ struct ServiceBudget<'snapshot> {
     placement: PlacementState,
 }
 
+/// What a Service blocked once `plan_one_service` placed it does with the budget it spent.
+enum Reservation<'snapshot> {
+    /// Give back what the Service had committed.
+    Release,
+    /// Put back the budget as it was before the Service was placed, then give back what it
+    /// had committed.
+    Restore(Box<ServiceBudget<'snapshot>>),
+}
+
+/// Report `service` not attempted with `error` and settle its share of the budget.
+fn block_service<'snapshot>(
+    blocked: &mut Vec<BlockedService>,
+    budget: &mut ServiceBudget<'snapshot>,
+    service: &ServiceName,
+    error: RpcError,
+    reservation: Reservation<'snapshot>,
+) {
+    blocked.push(BlockedService {
+        service: service.clone(),
+        error,
+    });
+    if let Reservation::Restore(before) = reservation {
+        *budget = *before;
+    }
+    budget.release(service);
+}
+
 impl ServiceBudget<'_> {
     /// Give back everything `service`, which this Deploy does not attempt, had committed.
     fn release(&mut self, service: &ServiceName) {
@@ -1617,16 +1641,9 @@ fn plan_one_service<'snapshot>(
                 .can_update_in_place(current, requested, options),
             budget,
             |budget, limits| place_service(&target, None, budget, options, limits),
-            |operations| operations.iter().any(starts_copy),
+            |operations| operations.iter().any(creates_container),
         ),
     }
-}
-
-fn starts_copy(operation: &DeployOperation) -> bool {
-    matches!(
-        operation,
-        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_)
-    )
 }
 
 /// Place one Service under one way of landing its limits change.
@@ -1736,12 +1753,8 @@ fn eligible_machines<'snapshot>(
     let candidates = placement_candidates(requested, namespace, snapshot)?;
     let mut unknown = Vec::new();
     let mut machines = Vec::new();
-    for machine in &candidates {
-        match requested.placement_eligibility_in_namespace(
-            namespace,
-            &machine.machine,
-            machine.storage.as_ref(),
-        ) {
+    for (machine, eligibility) in &candidates {
+        match eligibility {
             ServicePlacementEligibility::Eligible => machines.push(*machine),
             ServicePlacementEligibility::Unknown(_) => {
                 unknown.push(machine.machine.name.clone());
@@ -1758,6 +1771,7 @@ fn eligible_machines<'snapshot>(
                 machine: candidates
                     .first()
                     .expect("explicit placement resolved exactly one Machine")
+                    .0
                     .machine
                     .name
                     .clone(),
@@ -1810,35 +1824,18 @@ pub(crate) fn place_one(
     }
 }
 
+/// The Machines that may take `requested`'s Containers, each with its storage eligibility.
 fn placement_candidates<'snapshot>(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
-) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
-    let candidates = snapshot
-        .machines
-        .iter()
-        .filter(|machine| machine.invites_rpc())
-        // A Machine whose silence is a listing gap would stall a start.
-        .filter(|machine| !snapshot.silent(machine))
-        .filter(|machine| {
-            !matches!(
-                requested.placement_eligibility_in_namespace(
-                    namespace,
-                    &machine.machine,
-                    machine.storage.as_ref()
-                ),
-                ServicePlacementEligibility::Ineligible(
-                    ServicePlacementIneligibleReason::PlacementMismatch
-                        | ServicePlacementIneligibleReason::WorkNotAccepted
-                )
-            )
-        })
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return Err(placement_error(requested, namespace, snapshot));
+) -> Result<Vec<(&'snapshot MachineObservation, ServicePlacementEligibility)>, PlanError> {
+    let candidates = snapshot.candidates(requested, namespace);
+    let placeable = candidates.placeable();
+    if placeable.is_empty() {
+        return Err(placement_error(requested, &candidates));
     }
-    Ok(candidates)
+    Ok(placeable)
 }
 
 fn storage_eligibility_warnings(
@@ -1873,52 +1870,32 @@ fn storage_eligibility_warnings(
         .collect()
 }
 
-fn placement_error(
-    spec: &RequestedServiceSpec,
-    namespace: &Namespace,
-    snapshot: &DeploySnapshot,
-) -> PlanError {
-    if snapshot.machines.is_empty() {
+fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> PlanError {
+    if candidates.is_empty() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
     }
-    let matched = snapshot
-        .machines
-        .iter()
-        .filter(|machine| machine_matches_placement(&machine.machine, &spec.placement))
-        .collect::<Vec<_>>();
-    if matched.is_empty() {
+    if candidates.matches_none() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::UnknownPlacement {
             targets: spec.placement.constraints.iter().cloned().collect(),
         }]);
     }
-    let mut down = Vec::new();
-    let mut silent = Vec::new();
-    let mut refused = Vec::new();
-    for machine in matched {
-        if machine.membership == MembershipObservation::Down {
-            down.push(machine.machine.name.clone());
-        } else if snapshot.silent(machine) {
-            silent.push(machine.machine.name.clone());
-        } else if matches!(
-            spec.placement_eligibility_in_namespace(
-                namespace,
-                &machine.machine,
-                machine.storage.as_ref()
-            ),
-            ServicePlacementEligibility::Ineligible(
-                ServicePlacementIneligibleReason::WorkNotAccepted
-            )
-        ) {
-            refused.push(machine.machine.name.clone());
-        }
-    }
+    let names = |why| {
+        candidates
+            .excluded(why)
+            .into_iter()
+            .map(|machine| machine.machine.name.clone())
+            .collect::<Vec<_>>()
+    };
     let mut constraints = Vec::new();
+    let down = names(Exclusion::Down);
     if !down.is_empty() {
         constraints.push(EliminatingConstraint::MachineDown { names: down });
     }
+    let silent = names(Exclusion::Silent);
     if !silent.is_empty() {
         constraints.push(EliminatingConstraint::Unanswered { names: silent });
     }
+    let refused = names(Exclusion::WorkNotAccepted);
     if !refused.is_empty() {
         constraints.push(EliminatingConstraint::WorkNotAccepted { names: refused });
     }

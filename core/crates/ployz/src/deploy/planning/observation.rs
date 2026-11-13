@@ -88,11 +88,7 @@ pub(super) fn warnings(
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::NotInStore { .. } => continue,
         };
-        let Some(machine) = snapshot
-            .machines
-            .iter()
-            .find(|machine| machine.machine.id == machine_id)
-        else {
+        let Some(machine) = snapshot.machine(machine_id) else {
             continue;
         };
         if !failed && machine.membership_evidence != Some(MembershipEvidence::Down) {
@@ -139,10 +135,7 @@ pub(super) fn warnings(
             gap: None,
             ..
         } = warning
-            && let Some(machine) = snapshot
-                .machines
-                .iter()
-                .find(|machine| machine.machine.id == *machine_id)
+            && let Some(machine) = snapshot.machine(*machine_id)
             && !snapshot.machines.iter().any(|other| {
                 other.machine.id != *machine_id && other.machine.name == machine.machine.name
             })
@@ -234,10 +227,7 @@ fn large_packets_note(
     let failure = failures
         .iter()
         .find(|failure| failure.machine_id == machine_id && failure.error.target_unanswered())?;
-    let machine = snapshot
-        .machines
-        .iter()
-        .find(|machine| machine.machine.id == machine_id)?;
+    let machine = snapshot.machine(machine_id)?;
     crate::deploy::large_packets_note(machine, &failure.error)
 }
 
