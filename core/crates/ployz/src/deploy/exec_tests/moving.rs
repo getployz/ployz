@@ -4,13 +4,15 @@ use ployz_core::{DeploymentLogId, Gen, MachineName};
 
 use super::*;
 use crate::deploy::cleanup::Copy;
-use crate::deploy::convergence::{LastIn, RelocateError, Relocated, relocate, retire_old};
-use crate::deploy::{MachineRef, OldCopyEnd, Unconfirmed};
+use crate::deploy::{MoveEnd, MoveError};
+use crate::drain::placement::{
+    LastIn, MachineRef, OldCopyEnd, Relocated, Unconfirmed, relocate, retire_old,
+};
 
 const FROM: char = '1';
 const TO: char = '2';
 
-async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError> {
+async fn move_with(client: &Scripted) -> Result<ContainerId, MoveError> {
     move_container(
         client,
         &test_namespace(),
@@ -58,7 +60,7 @@ fn name(id: &MachineId) -> MachineRef {
 async fn relocate_with(
     client: &Scripted,
     cancellation: &CancellationToken,
-) -> Result<Result<OldCopyEnd, LastIn>, RelocateError> {
+) -> Result<Result<OldCopyEnd, LastIn>, MoveError> {
     let relocated = relocate(
         client,
         &test_namespace(),
@@ -104,9 +106,9 @@ async fn a_refused_in_discards_the_new_copy_and_keeps_the_old_one() {
             departing: None,
         },
     );
-    let Err(RelocateError::NotServing {
+    let Err(MoveError {
+        end: MoveEnd::NotServing { .. },
         replacement_removed,
-        ..
     }) = relocate_with(&client, &CancellationToken::new()).await
     else {
         panic!("a copy that did not go In serves nothing");
@@ -248,7 +250,7 @@ async fn a_replacement_is_claimed_removed_only_when_its_removal_was_acknowledged
             ),
             removal,
         ]);
-        let Err(MoveContainerError {
+        let Err(MoveError {
             replacement_removed,
             ..
         }) = move_with(&client).await
@@ -320,7 +322,7 @@ async fn a_failed_run_removes_its_slot() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    let Err(MoveContainerError {
+    let Err(MoveError {
         replacement_removed,
         ..
     }) = move_with(&client).await
@@ -337,14 +339,14 @@ async fn an_unreadable_source_copy_starts_no_replacement() {
         Call::Inspect(machine(FROM), container('a')),
         "daemon unreachable",
     )]);
-    let Err(MoveContainerError {
-        error: ExecutionError::Machine { action, .. },
+    let Err(MoveError {
+        end: MoveEnd::NotServing { detail },
         replacement_removed,
     }) = move_with(&client).await
     else {
         panic!("the move stops at the inspect");
     };
-    assert_eq!(action, MachineAction::InspectContainer);
+    assert!(detail.starts_with("inspect Container failed: "), "{detail}");
     assert!(replacement_removed);
     client.assert_done();
 }
@@ -368,8 +370,8 @@ async fn cancelled_global_move(client: &Scripted) -> bool {
         () = tokio::task::yield_now() => {}
     }
     cancellation.cancel();
-    let Err(MoveContainerError {
-        error: ExecutionError::Cancelled,
+    let Err(MoveError {
+        end: MoveEnd::Cancelled,
         replacement_removed,
     }) = moving.await
     else {
@@ -457,4 +459,32 @@ async fn an_old_copy_that_does_not_retire_says_why_it_still_runs() {
             unconfirmed: Unconfirmed::Cancelled,
         }
     );
+}
+
+#[test]
+fn a_failed_move_reads_as_its_cancel_or_the_text_of_what_went_wrong() {
+    let machine_failure = ExecutionError::Machine {
+        action: MachineAction::CreateContainer,
+        error: RpcError::unavailable("connection refused"),
+    };
+    let newer = ExecutionError::NewerServing {
+        service: QualifiedService::parse("shop/api").unwrap(),
+    };
+    for (error, expected) in [
+        (ExecutionError::Cancelled, MoveEnd::Cancelled),
+        (
+            machine_failure,
+            MoveEnd::NotServing {
+                detail: "create Container failed: connection refused".into(),
+            },
+        ),
+        (
+            newer,
+            MoveEnd::NotServing {
+                detail: "a newer deploy is already serving shop/api".into(),
+            },
+        ),
+    ] {
+        assert_eq!(MoveEnd::from(error), expected);
+    }
 }

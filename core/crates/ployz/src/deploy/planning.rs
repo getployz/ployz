@@ -1774,7 +1774,7 @@ fn eligible_machines<'snapshot>(
 
 /// The Machine for one more Container of a running replicated Service: eligible, with a
 /// free bridge endpoint and its host ports, holding the fewest of this Service's Containers.
-pub(super) fn place_one(
+pub(crate) fn place_one(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &DeploySnapshot,
