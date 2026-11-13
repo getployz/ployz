@@ -21,8 +21,9 @@ use ployz_store::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::input::{self, InputError, Source};
 use super::store::{environment, next, scoped, store, with_refresh_hint};
-use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded};
+use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 
 pub(super) fn get_command(command: Command) -> Command {
@@ -240,7 +241,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         let patch = if inline {
             patch.clone()
         } else {
-            std::io::read_to_string(std::io::stdin())?
+            input::read_text(Source::Stdin, "a patch")?
         };
         let value: Value = serde_json::from_str(&patch).map_err(|_| {
             Error::usage("--patch expects a JSON object, for example '{\"replicas\":3}'")
@@ -437,15 +438,16 @@ fn read_secret(path: &str, stdin: impl Read, stdin_is_terminal: bool) -> Result<
             "Cancelled. Nothing was staged.",
         );
     }
-    let secret = read_bounded(stdin, MAX_CLI_INPUT_BYTES)?
-        .ok_or_else(|| input_too_long("stdin", "a secret"))?;
     // `internal`, as when stdin was read as a string.
-    let mut secret = String::from_utf8(secret).map_err(|_| {
-        Error::coded(
-            RpcErrorCode::Internal,
-            format!("{path}: the secret on stdin isn't UTF-8 text"),
-        )
-    })?;
+    let mut secret = input::read_from(stdin, Source::Stdin, "a secret")?
+        .text()
+        .map_err(|error| match error {
+            InputError::NotText { .. } => Error::coded(
+                RpcErrorCode::Internal,
+                format!("{path}: the secret on stdin isn't UTF-8 text"),
+            ),
+            other @ (InputError::Unreadable { .. } | InputError::TooLong { .. }) => other.into(),
+        })?;
     // `echo VALUE |` ends it with a newline that is not part of the secret.
     if secret.ends_with('\n') {
         secret.pop();
@@ -471,34 +473,27 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
         "--from-env-file takes one SERVICE: set web --from-env-file .env",
     )?;
     let service = SettingPath::parse(&service)?;
-    let (bytes, from) = if file == "-" {
-        (
-            read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?,
-            "stdin",
-        )
-    } else {
-        (
-            std::fs::File::open(file)
-                .and_then(|from| read_bounded(from, MAX_CLI_INPUT_BYTES))
-                .map_err(|error| {
-                    Error::caused(
-                        RpcErrorCode::InvalidArgument,
-                        format!("Can't read the env file {file}"),
-                        error,
-                    )
-                })?,
-            file,
-        )
-    };
-    let bytes = bytes.ok_or_else(|| input_too_long(from, "an env file"))?;
-    // Stdin that isn't text stays `internal`, as when it was read as a string.
-    let text = String::from_utf8(bytes).map_err(|_| {
-        let code = if file == "-" {
-            RpcErrorCode::Internal
-        } else {
-            RpcErrorCode::InvalidArgument
-        };
-        Error::coded(code, format!("{from}: an env file is UTF-8 text"))
+    let text = input::read_text(Source::of(file), "an env file").map_err(|error| match error {
+        InputError::Unreadable {
+            source: Source::Path(_),
+            error,
+        } => Error::caused(
+            RpcErrorCode::InvalidArgument,
+            format!("Can't read the env file {file}"),
+            error,
+        ),
+        // Stdin that isn't text stays `internal`, as when it was read as a string.
+        InputError::NotText { source } => {
+            let code = match source {
+                Source::Stdin => RpcErrorCode::Internal,
+                Source::Path(_) => RpcErrorCode::InvalidArgument,
+            };
+            Error::coded(
+                code,
+                format!("{}: an env file is UTF-8 text", source.name()),
+            )
+        }
+        other @ (InputError::Unreadable { .. } | InputError::TooLong { .. }) => other.into(),
     })?;
     // A key the file repeats takes its last value, in its first place; variables are
     // uppercase, so case doesn't make a new key.

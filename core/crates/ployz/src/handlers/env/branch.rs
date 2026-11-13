@@ -14,6 +14,7 @@ use ployz_store::{
 };
 
 use super::super::config::expected;
+use super::super::input::{self, Source};
 use super::super::store::{self, Store, mint, project, store};
 use super::super::{Error, leaf_matches, required};
 use crate::cloud_account::StoreCallError;
@@ -50,13 +51,7 @@ pub(crate) fn branch(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let made = store.write(&create)?;
     let branch = &made.branch.environment;
-    let ship = ship(
-        &store,
-        EnvironmentRef {
-            project: Some(branch.project.clone()),
-            environment: Some(branch.name.clone()),
-        },
-    );
+    let ship = ship(&store, EnvironmentRef::of(branch));
     let deploy = store::next(matches, &[ship, "--env", create.name.as_str()]);
     finish(&made, Some(deploy), "Made Branch")
 }
@@ -179,7 +174,7 @@ fn secret_values(matches: &ArgMatches) -> Result<Vec<(String, String)>, Error> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    let input = std::io::read_to_string(std::io::stdin())?;
+    let input = input::read_text(Source::Stdin, "secret values")?;
     let mut lines = input.lines();
     rows.into_iter()
         .map(|row| match lines.next() {

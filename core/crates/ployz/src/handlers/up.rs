@@ -85,10 +85,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     // Refuse before linking, so a refused directory stays as it was.
     let added = service_for_upload(&listed.services, name)?;
     let linked = super::link::record_unless_linked(&config, listed.environment.clone())?;
-    let environment = EnvironmentRef {
-        project: Some(listed.environment.project.clone()),
-        environment: Some(listed.environment.name),
-    };
+    let environment = EnvironmentRef::of(&listed.environment);
     if let Some(name) = added {
         add_service(&store, &environment, name, &directory)?;
     }

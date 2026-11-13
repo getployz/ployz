@@ -3,25 +3,21 @@
 use clap::ArgMatches;
 use ployz_core::config::At;
 use ployz_store::{
-    ApprovePullRequest, DeploymentStatus, EnvironmentName, EnvironmentRef, MergeRow,
-    OpenPullRequest, PrPlansQuery, PullRequestNumber, Ride, Standing,
+    ApprovePullRequest, DeploymentStatus, EnvironmentName, MergeRow, OpenPullRequest, PrPlansQuery,
+    PullRequestNumber, Ride, Standing,
 };
 use serde_json::{Value, json};
 
 use super::super::deploy;
-use super::super::store::{self, project, store};
-use super::super::{Error, leaf_matches, required};
+use super::super::store::{self, named_environment, project, store};
+use super::super::{Error, leaf_matches};
 use super::branch::setups;
 use crate::handlers::shared::accepted::{accepted, take_off, unfinished, with_accepted};
 
 /// Take an Environment off the Servers and keep everything else of it.
 pub(crate) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let name = EnvironmentName::parse(required(matches, "name")?)?;
-    let at = EnvironmentRef {
-        project: project(matches)?,
-        environment: Some(name.clone()),
-    };
+    let (name, at) = named_environment(matches, "name")?;
     let store = store(root)?.args([name.as_str()]);
     let accept = accepted(matches)?;
     let again = store.again(&with_accepted(&accept));

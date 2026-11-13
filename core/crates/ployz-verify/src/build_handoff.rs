@@ -26,7 +26,7 @@
 //!   (dashboard/src/modules/config-store/store-deployment.inngest.ts:62, :79).
 //! - **The Store**, Postgres. Each write runs in one transaction that first locks the
 //!   Deployment's Environment row (`deployment::locked`, core/crates/ployz-store/src/deployment/mod.rs:1604-1608;
-//!   core/crates/ployz-store/src/scope.rs:583-595) and then re-reads the build. Writers run read
+//!   `scope::lock_all` in core/crates/ployz-store/src/scope.rs) and then re-reads the build. Writers run read
 //!   committed (core/crates/ployz-store/src/storage/pg.rs:107-120), so each write sees every
 //!   write committed before it took the lock, and each model write is one atomic step.
 //!
