@@ -70,15 +70,21 @@ pub enum MachineUpgradeOutcome {
     },
 }
 
+impl MachineUpgradeOutcome {
+    /// Whether the outcome is durable terminal evidence.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded { .. } | Self::Failed { .. } | Self::Interrupted { .. }
+        )
+    }
+}
+
 impl MachineUpgradeAttempt {
     /// Whether the attempt has durable terminal evidence.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self.outcome,
-            MachineUpgradeOutcome::Succeeded { .. }
-                | MachineUpgradeOutcome::Failed { .. }
-                | MachineUpgradeOutcome::Interrupted { .. }
-        )
+    pub const fn is_terminal(&self) -> bool {
+        self.outcome.is_terminal()
     }
 }

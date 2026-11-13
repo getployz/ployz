@@ -1,13 +1,13 @@
 ---
 name: verify-runner-standing
-description: Model-check how a Deployment's runner reads its standing in the Config Store (the standing() reads every CANCEL_POLL inside connecting and renewing, renewing's abort, the read after executing, the gate before fill_ingress, the Run::over latch, and executed's record and resend) and how the store keeps the run's outcome and shows its deleted Volumes, against a user's cancel, a newer claim taking the Environment over, and forget_cluster's cancel_in_flight, with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz/src/sdk/store_runner.rs (run_deployment_expecting, execute, connecting, renewing, CANCEL_POLL, Standing, Over, the free standing fn, Run::standing, Run::over, executed, interrupted, fill_ingress, remove_volumes' call), core/crates/ployz-store/src/deployment/lifecycle.rs (record's Alive, Prepared, Executed, NotExecuted and Abandoned arms, claim's takeover and re-claim, cancel, cancel_in_flight, finish, end, the removed_volume projection), core/crates/ployz-store/src/deployment/mod.rs (running, ended, owned_elsewhere, lapsed), core/crates/ployz-core/src/config/runtime_outcome.rs (how an Interrupted outcome projects), or core/crates/ployz/src/sdk/store_call.rs.
+description: Model-check how a Deployment's runner reads its standing in the Config Store (the standing() reads every CANCEL_POLL inside connecting and renewing, renewing's abort, the read after executing, the gate before fill_ingress, the Run::over latch, and executed's record and resend) and how the store keeps the run's outcome and shows its deleted Volumes, against a user's cancel, a newer claim taking the Environment over, and forget_cluster's cancel_in_flight, with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz/src/sdk/store_runner.rs (run_deployment_expecting, execute, connecting, renewing, CANCEL_POLL, read_of, Run::standing, Run::over, executed, interrupted, fill_ingress, remove_volumes' call), core/crates/ployz-decide/src/standing.rs (Read, Standing, Over, standing, Latch), core/crates/ployz-store/src/deployment/lifecycle.rs (record's Alive, Prepared, Executed, NotExecuted and Abandoned arms, claim's takeover and re-claim, cancel, cancel_in_flight, finish, end, the removed_volume projection), core/crates/ployz-store/src/deployment/mod.rs (running, ended, owned_elsewhere, lapsed), core/crates/ployz-core/src/config/runtime_outcome.rs (how an Interrupted outcome projects), or core/crates/ployz/src/sdk/store_call.rs.
 ---
 
 # Verify the runner's standing
 
 The model in `core/crates/ployz-verify/src/runner_standing.rs` explores every interleaving of one Deployment's run with the Config Store that holds its status. The runner claims the Deployment (`core/crates/ployz/src/sdk/store_runner.rs:178`), dials under `connecting` (`:191-215`), then plans, or builds and prepares, under `renewing` (`:795-808`, `:953`, `:1115`). It records the Deploy Preview (`:813-824`), executes under `renewing` (`:830-834`), deletes the Volumes the Deploy removes (`:849-854`), fills ingress (`:855-861`, `:869-881`) and records what executing did through `executed` (`:862`, `:1336-1365`).
 
-While it awaits a piece of work, `connecting` and `renewing` call `standing()` every `CANCEL_POLL`, 2 s (`:40`, `:1259-1275`, `:1277-1292`), and the work can end before the next call (`:1272`, `:1284`). `execute` also calls it once after executing (`:837-846`) and once at the gate before `fill_ingress` (`:855`). `Run::standing` (`:1466-1478`) returns the latch `Run::over` (`:699-706`) once it is set, and otherwise sends `record(RunEvidence::Alive)` and reads the answer through the free fn `standing` (`:733-749`):
+While it awaits a piece of work, `connecting` and `renewing` call `standing()` every `CANCEL_POLL`, 2 s (`:40`, `:1259-1275`, `:1277-1292`), and the work can end before the next call (`:1272`, `:1284`). `execute` also calls it once after executing (`:837-846`) and once at the gate before `fill_ingress` (`:855`). `Run::standing` returns the latch `Run::over`, a `ployz_decide::standing::Latch`, once it holds an `Over`, and otherwise sends `record(RunEvidence::Alive)`, maps the answer to a `Read` with `read_of`, and `Latch::settle`s it through `ployz_decide::standing::standing`:
 
 | The read | `Standing` | Latches |
 |---|---|---|
@@ -79,9 +79,9 @@ The run is green when all nineteen tests pass. Read them as five groups.
   | Part of the code | `Broken` flag | Test | Property it keeps |
   |---|---|---|---|
   | `executed` sends a refused outcome again as Interrupted (`store_runner.rs:1359-1361`) | `no_resend` | `the_code_needs_to_send_a_refused_outcome_again` | `TAKEOVER_KEEPS_OUTCOME` |
-  | `standing` reads a Conflict as `Over(Ended)` (`:747`) | `ended_reads_as_keep` | `the_code_needs_an_ended_read_to_stop_it` | `NO_WORK_AFTER_END` |
+  | `read_of` reads a Conflict as `Read::Ended`, which `standing` reads as `Over(Ended)` | `ended_reads_as_keep` | `the_code_needs_an_ended_read_to_stop_it` | `NO_WORK_AFTER_END` |
   | `connecting` and the gate stop on `Over(Lost)` (`:1270`, `:860`) | `unknown_reads_as_keep` | `the_code_needs_connecting_and_the_gate_to_stop_on_lost` | `NO_WORK_AFTER_END` |
-  | `Run::over` latches the first `Over` read (`:1469-1477`) | `latch_does_not_stick` | `the_code_needs_its_latch_to_stick` | `NO_WORK_AFTER_END` |
+  | `Latch::settle` latches the first `Over` read | `latch_does_not_stick` | `the_code_needs_its_latch_to_stick` | `NO_WORK_AFTER_END` |
 | The read after executing stops on `Over(Ended)` (`:841-844`) | `check_ignores_ended` | `deleting_needs_the_read_after_executing_to_stop_on_ended` | `NO_WORK_AFTER_END` |
 | The gate skips `fill_ingress` on `Over(Ended)` (`:860`) | `gate_ignores_ended` | `fill_ingress_needs_the_gate_to_stop_on_ended` | `NO_WORK_AFTER_END` |
 
@@ -175,7 +175,7 @@ When a change intentionally alters how the runner reads its standing or how the 
    - `connecting` (`store_runner.rs`): the `Poll` arm of `RunnerStanding::step`.
    - `renewing`: `RunnerStanding::tick` and `Phase::abort`.
    - `execute`: the `Connected`, `Prepare`, `Executed`, `SessionEnds`, `Check`, `Removed`, `Gate`, `Filled` and `Record` arms of `RunnerStanding::step`, and `RunnerStanding::start`.
-   - `Run::standing`, `Run::over`, the free fn `standing` and `store_call`: `RunnerStanding::read`, with `Standing`, `Said`, `Read` and `Call`.
+   - `Run::standing`, `Run::over`, `read_of` and `store_call`: `RunnerStanding::read`, which calls `ployz_decide::standing::{standing, Latch}` on the `Read` it makes, with the model's `Standing` (the latch's `Option<Over>`), `Said` and `Call`. Each `Broken` flag that removes a rule changes what `read` hands to `Latch` or to `told_over`, never the rule itself.
    - `executed` and `interrupted`: `RunnerStanding::record`.
    - `record`'s Alive arm (`lifecycle.rs`): `RunnerStanding::read`. Its Executed arm and `removed_volume`: `RunnerStanding::executed`. Its Abandoned arm: `RunnerStanding::abandoned`. Its NotExecuted arm and `finish`/`end`: `finish` and `RunnerStanding::not_executed`. The Prepared arm's `running`: the `Prepare` arm of `step`.
    - `running` (`mod.rs`): `running`.
@@ -209,7 +209,8 @@ A green model says nothing about them. Cover them with `cargo nextest run -p plo
 
 Each model step is a copy of code at the sync commit. Reread these when a diff touches them:
 
-- `core/crates/ployz/src/sdk/store_runner.rs`: `run_deployment_expecting` from the claim to `execute`. All of `execute`: the plan or build and prepare, `record(Prepared)` read through `standing`, executing under `renewing`, the read after executing, `remove_volumes` with its no-op abort, the gate, `executed` and `Abandoned`. Also `fill_ingress`'s `renewing`, `prepare`'s and `build`'s `renewing`, `connecting`, `renewing`, `Standing`, `Over`, the free fn `standing`, `Run::standing`, `Run::over`, `executed`, `interrupted`, `not_executed`, and `CANCEL_POLL`.
+- `core/crates/ployz/src/sdk/store_runner.rs`: `run_deployment_expecting` from the claim to `execute`. All of `execute`: the plan or build and prepare, `record(Prepared)` read through `read_of` and `standing`, executing under `renewing`, the read after executing, `remove_volumes` with its no-op abort, the gate, `executed` and `Abandoned`. Also `fill_ingress`'s `renewing`, `prepare`'s and `build`'s `renewing`, `connecting`, `renewing`, `read_of`, `Run::standing`, `Run::over`, `executed`, `interrupted`, `not_executed`, and `CANCEL_POLL`.
+- `core/crates/ployz-decide/src/standing.rs`: `Read`, `Standing`, `Over`, `standing` and `Latch`, which the model calls.
 - `core/crates/ployz/src/sdk/store_call.rs`: `store_call`, `bounded` and `unavailable`.
 - `core/crates/ployz-store/src/deployment/lifecycle.rs`: `claim`'s re-claim and takeover. `cancel` and `cancel_in_flight`. `record`'s owner check, lease renewal, and its Alive, Prepared, Executed (every refusal, the `taken_over` refusal and keep), NotExecuted and Abandoned arms. Also `finish`, `end`, and the `removed_volume` projection.
 - `core/crates/ployz-store/src/deployment/mod.rs`: `running`, `ended`, `owned_elsewhere`, `lapsed`, and the remap to Unknown that `stored` reads through `Standing::status`.
