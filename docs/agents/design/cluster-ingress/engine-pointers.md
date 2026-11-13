@@ -32,14 +32,14 @@ Files:
 - `crates/ployzd/src/certificates.rs` (point 4) can land in E1 or E2.
 
 Nearest tests:
-- `crates/ployz-core/src/domain/ingress.rs` tests (`caddy_wiring_round_trips_through_both_validators`): `cargo test -p ployz-core --lib domain::ingress` (rung 1).
+- `crates/ployz-core/src/domain/ingress.rs` tests (`caddy_wiring_round_trips_through_both_validators`): `cargo test -p ployz-core --lib domain::ingress`.
 - `crates/ployz/src/ingress.rs:610-676` (`builds_the_caddy_service_spec`, `desired` tests): `cargo test -p ployz --lib ingress::tests`.
 - `crates/ployzd/src/docker/observe.rs:633-700` (stranded): `cargo test -p ployzd --lib docker::observe::tests`.
 - `crates/ployzd/src/docker/lifecycle.rs:1002-1030,1541`: `cargo test -p ployzd --lib docker::lifecycle`.
 - `crates/ployzd/src/docker/mod.rs:1981-2004` (pid_mode `container:` precedent): `cargo test -p ployzd --lib docker::tests`.
 - Caddyfile: `cargo test -p ployzd --lib caddy_tests` and `--lib ingress_tests`.
 - `crates/ployz/src/global_catch_up_tests.rs:548` `a_proxy_copy_skips_rotation`: `cargo test -p ployz --lib global_catch_up`.
-- Rung 4 (also run the `verify-caddy-load` model check): `crates/ployz/tests/ingress_cluster.rs`, listed in `scripts/run-layer3-tests.sh:62`. `PLOYZ_TESTKIT_IMAGE=$(scripts/testkit-image.sh ployz-testkit-checkout:dev) cargo test -p ployz --test ingress_cluster -- --ignored --test-threads=1`.
+- Cluster test (also run the `verify-caddy-load` model check): `crates/ployz/tests/ingress_cluster.rs`, listed in `scripts/run-layer3-tests.sh:62`. `PLOYZ_TESTKIT_IMAGE=$(scripts/testkit-image.sh ployz-testkit-checkout:dev) cargo test -p ployz --test ingress_cluster -- --ignored --test-threads=1`.
 
 ## E2. SetIngressDoors and the tunnel
 
@@ -56,13 +56,13 @@ Other files:
 - `QualifiedService::system_tunnel()` goes next to `system_ingress()` (`crates/ployz-core/src/value.rs:735`). A `tunnel_service_spec()` goes in a new `crates/ployz-core/src/domain/tunnel.rs`.
 - CLI: new `crates/ployz/src/handlers/ingress.rs`, wired in `crates/ployz/src/cli/mod.rs` and the handler table. `--json` per CODING_STANDARDS. Per-Server `DoorStep` rows finish through `ui::finish_fanout`.
 - `confirm_ingress_off` (`crates/ployz/src/handlers/server.rs:958-990`) keys "last" on `accepts_ingress && public_ip.is_some()`. Change it to "has an open door" (public-door Machine, or tunnel observed running). Its tests are at :2383 and :2414: `cargo test -p ployz --lib handlers::server`.
-- Rung 4: `certificates_cluster` (`scripts/run-layer3-tests.sh:87`) for the ACME skip. Same command shape as above with `--test certificates_cluster`.
+- Cluster test: `certificates_cluster` (`scripts/run-layer3-tests.sh:87`) for the ACME skip. Same command shape as above with `--test certificates_cluster`.
 
 ## E3. Cluster Name and the DNS alias
 
 - `Namespace::is_reserved` (`crates/ployz-core/src/value.rs:656`). Add `ployz`. The test is `crates/ployz-core/tests/contract.rs:247`: `cargo test -p ployz-core --test contract`. Callers that filter reserved Namespaces (`drain.rs:59,614`, `cluster_teardown.rs:55,118`, `deploy/planning.rs:1325,1346`, `ployz-store/src/deployment/mod.rs:1565`, `namespace.rs:21`) inherit the change. `ployz-store`'s refusal means Cloud can't create Namespace `ployz`, so run `cargo test -p ployz-store` filtered to deployment.
 - The Cluster Name newtype goes in `ployz-core/src/value.rs` (63-char DNS label, CONTEXT term). It is stored as an optional `cluster` key `name`. The write and read follow `sealing_public_key` (`crates/ployzd/src/corrosion/store.rs:158-166`, fake at `corrosion/fake_cluster.rs:476,543`). Writing it needs a route, `SetClusterName` / `ployz.cluster.name.v1`, using the E2 recipe.
-- DNS: `crates/ployzd/src/dns/query.rs:30-82`. `parse(name, cluster_name: Option<&ClusterName>)`. Strip `.<cluster>.ployz.internal.` and reuse `parse_internal`. Add `Query::NxDomain` for a foreign or unset label. Map it in `dns/service.rs`. Tests are in `query.rs:97-201` and `dns/tests.rs`: `cargo test -p ployzd --lib dns`. Rung 4 is `internal_dns_cluster` (`run-layer3-tests.sh:57`).
+- DNS: `crates/ployzd/src/dns/query.rs:30-82`. `parse(name, cluster_name: Option<&ClusterName>)`. Strip `.<cluster>.ployz.internal.` and reuse `parse_internal`. Add `Query::NxDomain` for a foreign or unset label. Map it in `dns/service.rs`. Tests are in `query.rs:97-201` and `dns/tests.rs`: `cargo test -p ployzd --lib dns`. The cluster test is `internal_dns_cluster` (`run-layer3-tests.sh:57`).
 - Founding: the commands are `server add --standalone|--token-stdin` (`crates/ployz/src/handlers/mod.rs:1349`). Add `--cluster-name`. Per CODING_STANDARDS, `--json` never prompts, so it fails with `invalid_argument` naming the flag. Add the `ployz cluster name` verb. Shape tests: `cli_shape.rs`.
 
 ## E4. Reserved tailscale

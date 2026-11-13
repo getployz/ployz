@@ -42,6 +42,7 @@ File names say where a source lives, not its kind: a Query file that projects or
 ### Keep
 
 - Chrome above the gate (rail, top bar) uses `useLiveQuery` or `useOrgStoreStatus` and handles pending state. Project creation (`_project/new`) renders outside the shell and its gate, so it must not use `useLiveSuspenseQuery`.
+- Preserve failures. Loading and failed reads are not empty collections: the Org Store gate shows a retryable error; Remote Reads expose Query's error state.
 - Match an environment with `findEnvironment` (project slug and namespace) or by id; a namespace alone is ambiguous across projects.
 
 ## Session replay

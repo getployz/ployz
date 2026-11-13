@@ -21,7 +21,7 @@ Every rule here is checkable. A reviewer confirms it from a screenshot or a grep
 
 ## Type
 
-3. **The type scale is 12, 14, 16 and 24px.** The `design/type-scale` lint enforces it.
+3. **The type scale is 12, 14, 16 and 24px.** The `design/type-scale` lint enforces it for `text-*` classes and `fontSize` styles in components. It doesn't read CSS or server-rendered HTML.
 
 4. **Each page has exactly one h1.** It is 24px semibold (`text-2xl font-semibold`). Section headings are smaller.
    The canvas is the one exception. It fills the page and the top bar already names the Environment, so its h1 is `sr-only`.
@@ -33,7 +33,7 @@ Every rule here is checkable. A reviewer confirms it from a screenshot or a grep
 
 ## Components
 
-6. **Use the shadcn primitives.** Build from `src/components/ui` and pick their variants and sizes. The shadcn rule in [AGENTS.md](AGENTS.md) bans padding overrides and ad-hoc colours such as `bg-primary/20`. It is the source for this rule.
+6. **Use the shadcn primitives.** Build from `src/components/ui` and pick their variants and sizes. The shadcn rule in [AGENTS.md](AGENTS.md) bans padding and text-size overrides and ad-hoc colours such as `bg-primary/20`. It is the source for this rule.
 
 7. **One primary action per surface.** A surface is a page body, a drawer, a dialog, a toolbar or the bottom bar. Each has at most one solid button (the `default`, `ink` or `intent` variant). Every other action is outline, secondary, ghost, destructive or link. `intent` is the pink button in the bottom bar (Deploy, or Add servers before there are any) and appears nowhere else.
    To check, count the solid buttons in a screenshot of each surface.

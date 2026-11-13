@@ -29,10 +29,11 @@ const typeScaleRule = defineRule({
       Literal: checkText,
       TemplateLiteral: checkText,
       Property(node) {
+        if (node.parent.type !== "ObjectExpression") return;
         const key = node.key.type === "Identifier" ? node.key.name : node.key.type === "Literal" ? node.key.value : null;
         if (key !== "fontSize" && key !== "font-size") return;
         const value = staticText(node.value);
-        if (value === null || !ON_SCALE_VALUE.test(value)) context.report({ node, messageId: "offScaleStyle" });
+        if (value !== null && !ON_SCALE_VALUE.test(value)) context.report({ node, messageId: "offScaleStyle" });
       },
     };
   },
