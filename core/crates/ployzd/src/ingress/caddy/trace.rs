@@ -6,7 +6,7 @@
 use ployz_core::{INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_PORT, MachineId};
 use std::fmt::Write as _;
 
-use crate::ingress::{IngressEndpoint, PublicationTrace};
+use crate::ingress::projection::{IngressEndpoint, PublicationTrace};
 
 /// Path the trace page answers on every routed hostname.
 pub(crate) const TRACE_PATH: &str = "/.well-known/ployz/trace";

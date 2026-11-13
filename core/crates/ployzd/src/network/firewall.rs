@@ -30,6 +30,18 @@ fn writer() -> MutexGuard<'static, u64> {
     WRITER.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Whether the Docker bridge was fenced from the mesh before the firewall is
+/// installed, so the install keeps that fence or says why it can't.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BridgeFence {
+    /// The fence went in before the bridge took IPv6. An install that can't keep it
+    /// fails, since the bridge's IPv6 would otherwise reach the mesh unfenced.
+    Required,
+    /// The bridge holds no IPv6, so the install adds the fence only while Docker
+    /// filters IPv6.
+    IfAvailable,
+}
+
 /// A firewall [`apply_firewall_rules`] installed. It applies again only while it
 /// is still the current one, so a re-apply queued before a teardown or a later
 /// install never puts back rules for addresses this Machine no longer holds.
@@ -38,6 +50,7 @@ pub struct Installed {
     generation: u64,
     subnet: MachineSubnet,
     management_address: ManagementAddress,
+    fence: BridgeFence,
 }
 
 /// What a re-apply had to put back.
@@ -64,7 +77,7 @@ impl Installed {
         if *generation != self.generation {
             return Ok(None);
         }
-        install(self.subnet, self.management_address).map(Some)
+        install(self.subnet, self.management_address, self.fence).map(Some)
     }
 }
 
@@ -83,18 +96,21 @@ impl Installed {
 /// # Errors
 ///
 /// Returns an error when an iptables command cannot be executed or rejects a
-/// required rule.
+/// required rule, or when `fence` is [`BridgeFence::Required`] and Docker no
+/// longer filters IPv6.
 pub fn apply_firewall_rules(
     subnet: MachineSubnet,
     management_address: ManagementAddress,
+    fence: BridgeFence,
 ) -> Result<Installed, NetworkError> {
     let mut generation = writer();
     *generation += 1;
-    install(subnet, management_address)?;
+    install(subnet, management_address, fence)?;
     Ok(Installed {
         generation: *generation,
         subnet,
         management_address,
+        fence,
     })
 }
 
@@ -102,6 +118,7 @@ pub fn apply_firewall_rules(
 fn install(
     subnet: MachineSubnet,
     management_address: ManagementAddress,
+    fence: BridgeFence,
 ) -> Result<Restored, NetworkError> {
     let mut restored = Restored::default();
     let moved = &mut restored.displaced;
@@ -152,7 +169,7 @@ fn install(
     }
     let mut ipv6_document =
         filter_document("ip6tables", &management_policy(management_address), moved)?;
-    if docker_ipv6_firewall().is_ok() {
+    if keeps_fence(fence, docker_ipv6_firewall())? {
         ipv6_document.push_str(&container_mesh_fence_document(moved)?);
     }
     ipv6_document.push_str(&build_forward_document(
@@ -162,6 +179,17 @@ fn install(
     )?);
     restore("ip6tables", &ipv6_document)?;
     Ok(restored)
+}
+
+/// Whether an install adds the mesh fence, given what the Docker probe found.
+fn keeps_fence(fence: BridgeFence, probe: Result<(), Ipv6Off>) -> Result<bool, NetworkError> {
+    match (fence, probe) {
+        (_, Ok(())) => Ok(true),
+        (BridgeFence::IfAvailable, Err(_)) => Ok(false),
+        (BridgeFence::Required, Err(off)) => Err(NetworkError::BridgeUnfenced {
+            cause: off.to_string(),
+        }),
+    }
 }
 
 /// A Service Container's TCP to a peer's Service crosses this Machine's router. Its SYN
@@ -802,6 +830,27 @@ mod tests {
     }
 
     #[test]
+    fn a_required_fence_fails_the_install_when_docker_stops_filtering_ipv6() {
+        let error = keeps_fence(BridgeFence::Required, Err(Ipv6Off::NoDockerd)).unwrap_err();
+        assert!(matches!(error, NetworkError::BridgeUnfenced { .. }));
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the Docker bridge was fenced from the mesh, but the fence can no longer be kept: {}",
+                Ipv6Off::NoDockerd
+            )
+        );
+    }
+
+    #[test]
+    fn an_available_fence_is_skipped_when_docker_does_not_filter_ipv6() {
+        assert!(!keeps_fence(BridgeFence::IfAvailable, Err(Ipv6Off::NoDockerd)).unwrap());
+        for fence in [BridgeFence::Required, BridgeFence::IfAvailable] {
+            assert!(keeps_fence(fence, Ok(())).unwrap());
+        }
+    }
+
+    #[test]
     fn the_worker_reaches_dns_and_its_image_contexts_but_nothing_else_on_the_host_or_a_private_network()
      {
         assert_eq!(
@@ -1025,9 +1074,12 @@ mod tests {
         if in_child() {
             xtables("iptables", &["-N", "DOCKER-USER"]).unwrap();
             let subnet = "10.210.1.0/24".parse().unwrap();
-            let installed =
-                apply_firewall_rules(subnet, ManagementAddress("fdcc::1".parse().unwrap()))
-                    .unwrap();
+            let installed = apply_firewall_rules(
+                subnet,
+                ManagementAddress("fdcc::1".parse().unwrap()),
+                BridgeFence::IfAvailable,
+            )
+            .unwrap();
             remove_firewall_rules(subnet).unwrap();
             assert!(installed.reapply().unwrap().is_none());
             return;

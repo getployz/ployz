@@ -2,7 +2,8 @@ use super::{CONFIG_FILE, CaddyAdmin, Error, render_caddyfile};
 use crate::{
     corrosion::{CertificateChallenge, CertificateRow},
     ingress::{
-        ApplyError, IngressProjection, apply_caddy,
+        ApplyError, apply_caddy,
+        projection::IngressProjection,
         tests::{renderer_projection, test_material},
     },
 };
@@ -785,7 +786,7 @@ fn a_covering_wildcard_replaces_the_own_material_of_a_hostname_whose_last_route_
     assert_eq!(web.pinned(), Some(&wildcard));
 
     let caddyfile = render_caddyfile(&projection, "TIMESTAMP");
-    let stem = crate::ingress::certificate_file_stem(&web.hostname, &wildcard);
+    let stem = crate::ingress::certificates::certificate_file_stem(&web.hostname, &wildcard);
     let pin = pinned_tls_line(&caddyfile, "web.apps.example.com").expect("web.apps is pinned");
     assert!(pin.contains(&stem), "{pin}");
     let https = automatic_site_block(&caddyfile, "https://web.apps.example.com");
