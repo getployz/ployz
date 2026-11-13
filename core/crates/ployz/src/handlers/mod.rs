@@ -506,6 +506,32 @@ async fn connect_context(
     .await?)
 }
 
+/// [`connect_context`], marking each connection as a route the person chose, so a Server
+/// reached over SSH or the local socket [answers for itself](crate::connect::Client::answers_for_itself).
+async fn connect_context_chosen(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<crate::connect::Client, Error> {
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let selected = crate::connect::resolve_connections(
+        &config_path(matches)?,
+        direct,
+        context,
+        &ployz_core::MachineLayout::production().socket(),
+    )?;
+    let connections = selected.connections.clone();
+    let connector = crate::connect::SystemConnector::default()
+        .with_ssh_timeout(crate::cli::ssh_timeout(matches));
+    Ok(
+        crate::connect::connect_selected_with(selected, std::sync::Arc::new(connector))
+            .await?
+            .with_full_routes(crate::cluster::FullRoutes::chosen(
+                connections,
+                direct.is_some(),
+            )),
+    )
+}
+
 /// Re-establish a management connection after setup has already started.
 async fn reconnect_client(
     matches: &ArgMatches,

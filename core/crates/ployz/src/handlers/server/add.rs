@@ -5,7 +5,7 @@ use ployz_core::{
     MachineId, MachineName, RegisterRequest, WireGuardPublicKey, op,
 };
 
-use super::super::{connect_context, runtime};
+use super::super::{connect_context_chosen, runtime};
 use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
@@ -34,7 +34,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         if !no_install {
             crate::provisioning::provision(matches, &storage).await?;
         }
-        let mut entry = connect_context(matches, options.context()).await?;
+        let mut entry = connect_context_chosen(matches, options.context()).await?;
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let entry_id = entry
             .call::<op::Inspect>(

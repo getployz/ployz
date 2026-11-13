@@ -434,10 +434,10 @@ nothing could start it again there, and says which server needs a newer Ployz.
 With enforcement on, `service restart`, `service stop` and `service start` from a device that
 isn't approved are refused with
 `ployz.restart.device-approval.v2 needs a Device-signed restart approval`. A server before 0.4
-refuses `service start` even from an approved device, so upgrade it first. `deploy` is refused
-through Ployz Cloud, since it starts and stops containers without an approval yet. That includes
-the first deploy of a new service. Run it over `--connect ssh://`, where everything works as
-before.
+refuses `service start` even from an approved device, so upgrade it first. Run `ployz deploy` from
+an approved device, which signs what it deploys, as in
+[Deploy to servers that enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval).
+Over `--connect ssh://` everything works as before.
 
 #### Upgrades on servers that enforce device approval
 

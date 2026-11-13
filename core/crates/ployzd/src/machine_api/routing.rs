@@ -517,7 +517,8 @@ impl Service<http::Request<Body>> for MachineProxy {
 
 /// An Operator's call to a route a statement must admit, refused while this Machine awaits
 /// its Cluster's activation: the keys it would check were never vouched for. An upgrade is
-/// served, since a Machine moves only forward through Ployz's signed releases.
+/// served, since a Machine moves only forward through Ployz's signed releases, and so is the
+/// activation itself, whose starting set names the keys this Machine may trust.
 fn refuse_awaiting(
     request: &http::Request<Body>,
     record: &crate::machine::LocalMachineRecord,
@@ -531,7 +532,11 @@ fn refuse_awaiting(
         return None;
     }
     let capability = ployz_core::capability_of(request.uri().path())?;
-    if capability == ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY
+    if [
+        ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY,
+        ployz_core::ACTIVATE_ENFORCEMENT_CAPABILITY,
+    ]
+    .contains(&capability)
         || !matches!(authorization(capability), Some(Authorization::Signed(_)))
     {
         return None;
