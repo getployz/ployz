@@ -28,6 +28,12 @@ pub(super) async fn participating() -> (
 }
 
 pub(super) fn open_store(prefix: &str) -> (std::path::PathBuf, RecordOwner, Machine) {
+    let (data_dir, store, founder) = founded_store(prefix);
+    (data_dir, RecordOwner::spawn(store).unwrap(), founder)
+}
+
+/// A founder's store, not yet owned by a running record owner.
+pub(super) fn founded_store(prefix: &str) -> (std::path::PathBuf, LocalMachineStore, Machine) {
     let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
     let mut store = LocalMachineStore::open(&data_dir).unwrap();
     store
@@ -45,7 +51,7 @@ pub(super) fn open_store(prefix: &str) -> (std::path::PathBuf, RecordOwner, Mach
         })
         .unwrap();
     let founder = store.record().machine().unwrap().clone();
-    (data_dir, RecordOwner::spawn(store).unwrap(), founder)
+    (data_dir, store, founder)
 }
 
 pub(super) fn machine_service(

@@ -101,6 +101,27 @@ pub(crate) fn state_kept(root: &Path) -> bool {
     state_dir(root).is_dir()
 }
 
+/// The tailnet the router's node joined, as its own `tailscaled.state` names it: the
+/// current profile's tailnet domain, else its MagicDNS name. `None` when there is no
+/// state, it names no profile, or it can't be read.
+pub(crate) fn tailnet(root: &Path) -> Option<String> {
+    use base64::Engine as _;
+    let state: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&fs::read(state_dir(root).join("tailscaled.state")).ok()?).ok()?;
+    let decoded = |key: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(state.get(key)?.as_str()?)
+            .ok()
+    };
+    let current = String::from_utf8(decoded("_current-profile")?).ok()?;
+    let profiles: serde_json::Value = serde_json::from_slice(&decoded("_profiles")?).ok()?;
+    let network = profiles.get(current.trim())?.get("NetworkProfile")?;
+    ["DomainName", "MagicDNSName"]
+        .into_iter()
+        .find_map(|field| network.get(field)?.as_str().filter(|name| !name.is_empty()))
+        .map(str::to_owned)
+}
+
 /// Write `key` where the router's bind mount finds it.
 pub(crate) fn write(root: &Path, key: &[u8]) -> io::Result<()> {
     let dir = key_dir(root);
@@ -164,6 +185,10 @@ impl ContainerRuntime {
         state_kept(&self.machine_root)
     }
 
+    pub(crate) fn private_access_tailnet(&self) -> Option<String> {
+        tailnet(&self.machine_root)
+    }
+
     /// Open `sealed` with this Machine's Sealing Key.
     ///
     /// # Errors
@@ -224,6 +249,28 @@ impl ContainerRuntime {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn the_tailnet_is_read_from_the_router_s_own_state() {
+        use base64::Engine as _;
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(tailnet(root.path()), None);
+        keep_state(root.path()).unwrap();
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let profiles = serde_json::json!({
+            "a1b2": {"Name": "ada@example.com", "NetworkProfile": {"MagicDNSName": "tail1234.ts.net", "DomainName": "example.com"}}
+        });
+        let state = serde_json::json!({
+            "_current-profile": encode(b"a1b2"),
+            "_profiles": encode(profiles.to_string().as_bytes()),
+        });
+        std::fs::write(
+            state_dir(root.path()).join("tailscaled.state"),
+            state.to_string(),
+        )
+        .unwrap();
+        assert_eq!(tailnet(root.path()).as_deref(), Some("example.com"));
+    }
 
     #[test]
     fn the_key_is_written_read_only_and_removed_with_its_directory() {

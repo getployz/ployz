@@ -59,6 +59,22 @@ export function metricsOnBeta({ version, channel, release, beta }: {
   return channel === "stable" && !isBehind(version, release) && isBehind(version, beta);
 }
 
+/** The first release whose Servers can turn device enforcement on, which a person does once per Cluster. */
+const ENFORCEMENT_RELEASE = [0, 4] as const;
+
+/**
+ * An upgrade from `version` to `release` crosses from 0.3 to 0.4, its betas included. Only a person starts one: it
+ * brings the activation they approve with a passkey or a Device.
+ */
+export function crossesIntoEnforcement(version: string, release: string) {
+  const before = (parts: readonly number[]) =>
+    (parts[0] ?? 0) < ENFORCEMENT_RELEASE[0]
+    || ((parts[0] ?? 0) === ENFORCEMENT_RELEASE[0] && (parts[1] ?? 0) < ENFORCEMENT_RELEASE[1]);
+  const from = versionParts(version);
+  const to = versionParts(release);
+  return from !== null && to !== null && before(from) && !before(to);
+}
+
 /** A Server runs `release` or newer. An unknown version is never current. */
 export function isCurrent(version: string, release: string) {
   const order = compareVersions(version, release);

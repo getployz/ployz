@@ -1226,13 +1226,17 @@ impl Session {
             // which checks the key with `SealTo`.
             let token = match token {
                 Some(token) if doors.has(ployz_core::IngressDoor::Tunnel) => {
+                    let cluster = observed.sealing.ok_or_else(|| {
+                        RpcError::unavailable(
+                            "No online Server holds the Cluster's Sealing Key, so the tunnel \
+                             token can't be sealed.",
+                        )
+                    })?;
                     Some(crate::ingress::NewToken {
-                        cluster: observed.sealing.ok_or_else(|| {
-                            RpcError::unavailable(
-                                "No online Server holds the Cluster's Sealing Key, so the tunnel \
-                                 token can't be sealed.",
-                            )
-                        })?,
+                        seal_for: crate::sealing_pin::SealFor {
+                            cluster,
+                            recipient: observed.recipient.unwrap_or(cluster),
+                        },
                         token,
                     })
                 }
@@ -1481,6 +1485,94 @@ impl Session {
         self.until_closed(async {
             client
                 .call::<op::RequestMachineUpgrade>(
+                    request,
+                    Call::keyed()
+                        .to(&target)
+                        .budget(crate::connect::target_read_timeout()),
+                )
+                .await
+                .map_err(crate::connect::rpc_error)
+        })
+        .await
+    }
+
+    /// Hand one Machine a person's signed starting set. The Machine checks it against its own
+    /// trusted snapshot and restarts to commit it, so this is sent once; Inspect's `activation`
+    /// reports how it settled.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when `machine` isn't a Machine target, the session is
+    /// closed, or the Machine refuses the set.
+    pub async fn activate_enforcement(
+        &self,
+        machine: &str,
+        request: ployz_core::ActivateEnforcementRequest,
+    ) -> Result<ployz_core::DeviceEnforcementSet, RpcError> {
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let client = self.client()?;
+        self.until_closed(async {
+            client
+                .call_shared::<op::ActivateEnforcement>(
+                    request,
+                    Call::once()
+                        .to(&target)
+                        .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
+                )
+                .await
+                .map_err(crate::connect::rpc_error)
+        })
+        .await
+    }
+
+    /// Generate, install or share the recipient key of one Machine's activation. Each request
+    /// answers the same when repeated.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when `machine` isn't a Machine target, the session is
+    /// closed, or the Machine refuses the rotation.
+    pub async fn set_recipient_key(
+        &self,
+        machine: &str,
+        request: ployz_core::SetRecipientKeyRequest,
+    ) -> Result<ployz_core::RecipientKeySet, RpcError> {
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        self.until_closed(async {
+            client
+                .call::<op::SetRecipientKey>(
+                    request,
+                    Call::keyed()
+                        .to(&target)
+                        .budget(crate::connect::target_read_timeout()),
+                )
+                .await
+                .map_err(crate::connect::rpc_error)
+        })
+        .await
+    }
+
+    /// Ask one activated Machine to seal values again to its own recipient key. It changes
+    /// nothing on the Machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when `machine` isn't a Machine target, the session is
+    /// closed, or the Machine holds no recipient key.
+    pub async fn reseal_values(
+        &self,
+        machine: &str,
+        request: ployz_core::ResealValuesRequest,
+    ) -> Result<ployz_core::ValuesResealed, RpcError> {
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        self.until_closed(async {
+            client
+                .call::<op::ResealValues>(
                     request,
                     Call::keyed()
                         .to(&target)

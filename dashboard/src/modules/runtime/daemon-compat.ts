@@ -19,6 +19,9 @@ export const requirements = {
   forget: { capability: "ployz.machine.forget.v1", feature: "Server removal" },
   ensureContainer: { capability: "ployz.container.ensure.v1", feature: "Deploys", plural: true },
   metrics: { capability: "ployz.metrics.history.v1", feature: "Metrics", plural: true },
+  enforced: { capability: "ployz.machine.enforced.v1", feature: "Device enforcement" },
+  activate: { capability: "ployz.machine.activate.v1", feature: "Turning device enforcement on" },
+  recipientKey: { capability: "ployz.sealing.recipient.v1", feature: "A new key for sealed values" },
 } as const satisfies Record<string, Requirement>;
 
 /**

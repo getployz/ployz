@@ -1,5 +1,6 @@
 //! Linux daemon runtime for one Ployz Machine.
 
+pub(crate) mod activation;
 pub(crate) mod boot_pass;
 mod build;
 pub(crate) mod forgotten_fence;

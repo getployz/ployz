@@ -5,6 +5,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+mod activation;
 mod build_grant;
 mod container;
 mod error;
@@ -19,6 +20,7 @@ mod sealing;
 mod sealing_recovery;
 mod upgrade;
 mod volume;
+pub use activation::*;
 pub use build_grant::*;
 pub use container::*;
 pub use error::*;
@@ -487,6 +489,8 @@ define_responses! {
     JoinApproved(JoinApproved) => "join_approved";
     PushTargetSet(PushTargetSet) => "push_target_set";
     DeviceEnforcementSet(DeviceEnforcementSet) => "device_enforcement_set";
+    RecipientKeySet(RecipientKeySet) => "recipient_key_set";
+    ValuesResealed(ValuesResealed) => "values_resealed";
     EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
@@ -710,6 +714,7 @@ mod set_management_client_wire {
                     target_versions: BTreeMap::new(),
                     sealing_key: None,
                     devices: Vec::new(),
+                    recipient: None,
                 },
             },
             wireguard_mtu: Some(1380),

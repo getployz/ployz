@@ -95,7 +95,8 @@ fn starting_set(fill: char) -> StartingSet {
         }],
         issued_at: at(0),
         expires_at: at(600_000),
-        signer: device(),
+        signer: SignerKey::Device(device()),
+        kept_keys: Vec::new(),
     }
 }
 
@@ -552,4 +553,40 @@ fn restart_approvals_json_keeps_its_bytes_through_every_verb() {
         reopened.mark_upgrade_channel(&channel(ployz_core::ReleaseChannel::Stable, 1)),
         Err(Error::UpgradeChannelRefused(_))
     ));
+}
+
+#[test]
+fn activation_keeps_joins_a_kept_key_signed_and_drops_every_accepted_build() {
+    let walk = Walk::start(SAMPLE);
+
+    let dropped = walk.log.at_activation(&[device()]).unwrap();
+
+    assert_eq!(
+        dropped,
+        AtActivation {
+            joins: Vec::new(),
+            accepted: 1,
+            grants: 0,
+        }
+    );
+    let written: serde_json::Value = serde_json::from_slice(&walk.bytes()).unwrap();
+    assert!(written.get("accepted").is_none());
+    assert!(
+        written
+            .get("joins")
+            .unwrap()
+            .get(machine('3').as_str())
+            .is_some()
+    );
+}
+
+#[test]
+fn activation_drops_a_join_no_kept_key_signed() {
+    let walk = Walk::start(SAMPLE);
+    let other = DeviceKey::from(Signer::from_seed(&[2; 32]).public());
+
+    let dropped = walk.log.at_activation(&[other]).unwrap();
+
+    assert_eq!(dropped.joins, vec![machine('3')]);
+    assert!(walk.log.join_result(machine('3')).unwrap().is_none());
 }

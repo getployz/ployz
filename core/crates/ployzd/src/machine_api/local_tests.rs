@@ -4136,7 +4136,7 @@ mod set_volume_copy {
             let device = DeviceKey::from(signer.public());
             store
                 .mutate(move |store| {
-                    store.approve_device(device).unwrap();
+                    store.approve_device(device, None).unwrap();
                     store.set_device_enforcement(true, Vec::new()).unwrap();
                 })
                 .await
@@ -5422,15 +5422,11 @@ mod ensure_container {
                 "stray".into(),
                 json!({"Id": stray, "Name":"/stray", "Config":{}, "State":{"Status":"running"}}),
             );
-        let api = crate::machine_api::MachineApi::from_local(service);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(
-            Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)),
-        );
-        let mut client = MachineRpcClient::connect(format!("http://{address}"))
-            .await
-            .unwrap();
+        let (mut client, server) = crate::machine_api::test_socket::served(
+            crate::machine_api::MachineApi::from_local(service),
+            &crate::machine_api::test_socket::socket_in(&data_dir),
+        )
+        .await;
 
         let unknown = ContainerId::parse("a".repeat(64)).unwrap();
         for (id, from_operator, code) in [
@@ -5530,7 +5526,7 @@ mod ensure_container {
             let device = DeviceKey::from(signer.public());
             store
                 .mutate(move |store| {
-                    store.approve_device(device).unwrap();
+                    store.approve_device(device, None).unwrap();
                     store.set_device_enforcement(true, Vec::new()).unwrap();
                 })
                 .await
@@ -5641,40 +5637,7 @@ mod ensure_container {
             );
         }
 
-        /// Connects to a Machine's local socket, the way a Full caller on the Machine does.
-        #[derive(Clone)]
-        struct LocalSocket(std::path::PathBuf);
-
-        impl tower_service::Service<tonic::transport::Uri> for LocalSocket {
-            type Response = hyper_util::rt::TokioIo<tokio::net::UnixStream>;
-            type Error = std::io::Error;
-            type Future = std::pin::Pin<
-                Box<dyn std::future::Future<Output = std::io::Result<Self::Response>> + Send>,
-            >;
-
-            fn poll_ready(
-                &mut self,
-                _: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                std::task::Poll::Ready(Ok(()))
-            }
-
-            fn call(&mut self, _: tonic::transport::Uri) -> Self::Future {
-                let path = self.0.clone();
-                Box::pin(async move {
-                    tokio::net::UnixStream::connect(path)
-                        .await
-                        .map(hyper_util::rt::TokioIo::new)
-                })
-            }
-        }
-
-        /// A socket path of its own under `dir`, short enough for a Unix socket.
-        fn socket_in(dir: &std::path::Path) -> std::path::PathBuf {
-            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            dir.join(format!("m{next}.sock"))
-        }
+        use crate::machine_api::test_socket::socket_in;
 
         /// A Machine's gRPC front over its local socket. A request with no Operator header
         /// reaches it as a Full caller, even under enforcement, and one with it as Cloud does.
@@ -5685,18 +5648,11 @@ mod ensure_container {
             MachineRpcClient<tonic::transport::Channel>,
             tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         ) {
-            let api = crate::machine_api::MachineApi::from_local(service.clone());
-            let listener = tokio::net::UnixListener::bind(socket).unwrap();
-            let server = tokio::spawn(Server::builder().serve_with_incoming(
-                api,
-                tokio_stream::wrappers::UnixListenerStream::new(listener),
-            ));
-            let channel = tonic::transport::Endpoint::try_from("http://machine.invalid")
-                .unwrap()
-                .connect_with_connector(LocalSocket(socket.to_owned()))
-                .await
-                .unwrap();
-            (MachineRpcClient::new(channel), server)
+            crate::machine_api::test_socket::served(
+                crate::machine_api::MachineApi::from_local(service.clone()),
+                socket,
+            )
+            .await
         }
 
         fn as_operator<T>(mut request: Request<T>, operator: bool) -> Request<T> {
@@ -6402,7 +6358,7 @@ mod ensure_container {
             fixture
                 .store
                 .mutate(move |store| {
-                    store.approve_passkey(trusted).unwrap();
+                    store.approve_passkey(trusted, None).unwrap();
                 })
                 .await
                 .unwrap();
@@ -6609,13 +6565,17 @@ mod ensure_container {
         }
 
         #[tokio::test]
-        async fn the_switch_answers_its_new_state_and_the_record_keeps_it() {
+        async fn the_switch_activates_at_the_next_boot_and_has_no_off() {
             let (data_dir, store, service, _fake) =
                 fake_docker_service("ployzd-enforce-switch").await;
             let signer = Signer::from_seed(&[7; 32]);
             let device = DeviceKey::from(signer.public());
             store
-                .mutate(move |store| store.approve_device(device).unwrap())
+                .mutate(move |store| {
+                    store
+                        .approve_device(device, Some(crate::machine::Evidence::LocalSocket))
+                        .unwrap()
+                })
                 .await
                 .unwrap();
             let issued_at = Timestamp::now();
@@ -6624,29 +6584,96 @@ mod ensure_container {
                 members: vec![service.local.record().machine().unwrap().into()],
                 issued_at,
                 expires_at: issued_at.plus(60_000),
-                signer: device,
+                signer: ployz_core::authority::SignerKey::Device(device),
+                kept_keys: Vec::new(),
             };
-            let starting_set = Signed::sign(&set, &signer).unwrap();
-            for enforced in [true, false] {
-                let reply = service
-                    .set_device_enforcement(Request::new(
-                        op::SetDeviceEnforcement::into_request(SetDeviceEnforcementRequest {
-                            enforced,
-                            starting_set: enforced.then(|| starting_set.clone()),
-                        })
-                        .encode()
-                        .unwrap(),
-                    ))
-                    .await
-                    .unwrap()
-                    .into_inner()
-                    .decode_response()
-                    .unwrap()
-                    .decode::<op::SetDeviceEnforcement>()
-                    .unwrap();
-                assert_eq!(reply.enforced, enforced);
-                assert_eq!(service.local.record().device_enforcement(), enforced);
-            }
+            let switch = |enforced: bool| {
+                Request::new(
+                    op::SetDeviceEnforcement::into_request(SetDeviceEnforcementRequest {
+                        enforced,
+                        starting_set: enforced.then(|| Signed::sign(&set, &signer).unwrap()),
+                    })
+                    .encode()
+                    .unwrap(),
+                )
+            };
+            let reply = service
+                .set_device_enforcement(switch(true))
+                .await
+                .unwrap()
+                .into_inner()
+                .decode_response()
+                .unwrap()
+                .decode::<op::SetDeviceEnforcement>()
+                .unwrap();
+            assert!(reply.enforced);
+            assert!(!service.local.record().device_enforcement());
+
+            service.local.commit_activation_as_if_restarted().await;
+
+            assert!(service.local.record().device_enforcement());
+            let off = service
+                .set_device_enforcement(switch(false))
+                .await
+                .unwrap_err();
+            assert_eq!(off.code(), tonic::Code::PermissionDenied);
+            assert!(service.local.record().device_enforcement());
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_set_over_the_local_socket_activates_a_server_whose_keys_predate_evidence() {
+            let (data_dir, store, service, _fake) =
+                fake_docker_service("ployzd-enforce-local-socket").await;
+            let signer = Signer::from_seed(&[8; 32]);
+            let device = DeviceKey::from(signer.public());
+            store
+                .mutate(move |store| store.approve_device(device, None).unwrap())
+                .await
+                .unwrap();
+            let issued_at = Timestamp::now();
+            let set = StartingSet {
+                operation: OperationId::random(),
+                members: vec![service.local.record().machine().unwrap().into()],
+                issued_at,
+                expires_at: issued_at.plus(60_000),
+                signer: ployz_core::authority::SignerKey::Device(device),
+                kept_keys: Vec::new(),
+            };
+            let request = || {
+                Request::new(
+                    op::SetDeviceEnforcement::into_request(SetDeviceEnforcementRequest {
+                        enforced: true,
+                        starting_set: Some(Signed::sign(&set, &signer).unwrap()),
+                    })
+                    .encode()
+                    .unwrap(),
+                )
+            };
+
+            let routed = service.set_device_enforcement(request()).await.unwrap_err();
+            assert_eq!(routed.code(), tonic::Code::PermissionDenied);
+
+            let mut local = request();
+            local
+                .extensions_mut()
+                .insert(tonic::transport::server::UdsConnectInfo {
+                    peer_addr: None,
+                    peer_cred: None,
+                });
+            let reply = service
+                .set_device_enforcement(local)
+                .await
+                .unwrap()
+                .into_inner()
+                .decode_response()
+                .unwrap()
+                .decode::<op::SetDeviceEnforcement>()
+                .unwrap();
+
+            assert!(reply.enforced);
+            service.local.commit_activation_as_if_restarted().await;
+            assert!(service.local.record().device_enforcement());
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
@@ -7702,7 +7729,7 @@ mod resize_and_seed_under_approval {
         let device = DeviceKey::from(signer.public());
         store
             .mutate(move |store| {
-                store.approve_device(device).unwrap();
+                store.approve_device(device, None).unwrap();
                 store.set_device_enforcement(enforcing, Vec::new()).unwrap();
             })
             .await

@@ -5,8 +5,7 @@
 use std::{io, path::Path};
 
 use crate::{
-    dns::InstalledExe,
-    runtime_unit::{self, UNIT_DIR, systemctl},
+    runtime_unit::{self, UNIT_DIR, process_identity::InstalledExe, systemctl},
     units::Unit,
 };
 

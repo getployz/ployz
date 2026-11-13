@@ -674,6 +674,12 @@ impl VolumeRecords {
             .retain(|grant| !(grant.volume == *volume && grant.recipient == *recipient));
     }
 
+    /// End every grant, and answer how many there were. Operations stay open, and a step
+    /// that grants again re-verifies its own approval.
+    pub fn drop_grants(&mut self) -> usize {
+        std::mem::take(&mut self.grants).len()
+    }
+
     #[must_use]
     pub fn withdrawals(&self) -> &[Withdrawal] {
         &self.withdrawals

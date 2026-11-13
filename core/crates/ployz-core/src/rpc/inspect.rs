@@ -69,6 +69,16 @@ pub struct MachineDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub sealing: Option<crate::Sealing>,
+    /// This Machine's own account of its activation. Absent from a daemon that predates
+    /// `ployz.machine.enforced.v1`, so absence claims nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub activation: Option<crate::ActivationReport>,
+    /// The key new values seal to once a person named one at activation. The Cluster's
+    /// identity stays `sealing`'s key. Absent before activation and from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub sealing_recipient: Option<crate::SealingPublicKey>,
     /// Present only when the request asked for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]

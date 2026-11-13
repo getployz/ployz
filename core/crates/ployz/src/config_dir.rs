@@ -31,6 +31,11 @@ impl<'a> ConfigDir<'a> {
         self.0.with_file_name("sealing-keys.json")
     }
 
+    /// The Servers this computer pinned for activation, by Machine.
+    pub(crate) fn known_machines(self) -> PathBuf {
+        self.0.with_file_name("known-machines.json")
+    }
+
     /// The links from directories to Projects and Environments.
     pub(crate) fn links(self) -> PathBuf {
         self.0.with_file_name("links.json")
@@ -56,6 +61,7 @@ mod tests {
             (dir.device_key(), "device.key"),
             (dir.store_key(), "store.key"),
             (dir.sealing_keys(), "sealing-keys.json"),
+            (dir.known_machines(), "known-machines.json"),
             (dir.links(), "links.json"),
             (dir.published(), "published"),
         ];

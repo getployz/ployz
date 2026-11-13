@@ -10,7 +10,7 @@ const Assertion = Schema.Struct({ credential_id: Base64Url, authenticator_data: 
 export const PasskeyAnswerInput = Schema.Struct({ passkey: Schema.Struct({ body: SignedBody, assertion: Assertion }) });
 
 /** A browser's approval as `ployz_core::authority::Signed` travels. Servers check every byte; Cloud only bounds its size. */
-const ApprovalInput = Schema.Struct({
+export const ApprovalInput = Schema.Struct({
   body: SignedBody,
   signatures: Schema.Array(Schema.Struct({ key: hexOf(64), signature: hexOf(128) })).check(Schema.isMaxLength(4)),
   grants: Schema.optionalKey(Schema.Array(Schema.Struct({

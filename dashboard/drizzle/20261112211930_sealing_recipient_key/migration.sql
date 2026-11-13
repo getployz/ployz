@@ -1,0 +1,2 @@
+ALTER TABLE "cluster_sealing_key" ADD COLUMN "recipient_public_key" text;--> statement-breakpoint
+ALTER TABLE "cluster_sealing_key" ADD CONSTRAINT "cluster_sealing_key_recipient_public_key_check" CHECK ("recipient_public_key" ~ '^[A-Za-z0-9+/]{43}=$');

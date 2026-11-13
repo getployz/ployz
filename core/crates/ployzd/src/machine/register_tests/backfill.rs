@@ -443,7 +443,13 @@ async fn recover_replaces_an_unusable_key_file() {
     let code = RecoveryCode::generate();
     let wrapped = holder
         .local
-        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() }, false)
+        .wrap_sealing_key(
+            WrapSealingKeyRequest {
+                code: code.clone(),
+                key: ployz_core::SealingKeyRole::Identity,
+            },
+            false,
+        )
         .unwrap();
     replicated
         .publish_sealing_public_key(wrapped.public_key)
@@ -462,6 +468,7 @@ async fn recover_replaces_an_unusable_key_file() {
             RecoverSealingKeyRequest {
                 code,
                 backup: Some(wrapped.backup),
+                rotation: None,
             },
             false,
         )
@@ -604,7 +611,13 @@ async fn routes_refuse_a_key_file_they_cannot_read_and_leave_it() {
     let code = RecoveryCode::generate();
     let wrapped = holder
         .local
-        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() }, false)
+        .wrap_sealing_key(
+            WrapSealingKeyRequest {
+                code: code.clone(),
+                key: ployz_core::SealingKeyRole::Identity,
+            },
+            false,
+        )
         .unwrap();
     replicated
         .publish_sealing_public_key(wrapped.public_key)
@@ -633,6 +646,7 @@ async fn routes_refuse_a_key_file_they_cannot_read_and_leave_it() {
             RecoverSealingKeyRequest {
                 code,
                 backup: Some(wrapped.backup),
+                rotation: None,
             },
             false,
         )

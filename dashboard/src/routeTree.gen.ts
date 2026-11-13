@@ -62,6 +62,7 @@ import { Route as ApiCliAgentActRouteImport } from './routes/api/cli/agent/act'
 import { Route as ApiCliAgentAskRouteImport } from './routes/api/cli/agent/ask'
 import { Route as ApiCliCloudResetRouteImport } from './routes/api/cli/cloud/reset'
 import { Route as ApiCliRunNameRouteImport } from './routes/api/cli/run/$name'
+import { Route as ApiCliSealingRecipientRouteImport } from './routes/api/cli/sealing/recipient'
 import { Route as ApiCliSealingRecoveryRouteImport } from './routes/api/cli/sealing/recovery'
 import { Route as ApiCliSealingRotateRouteImport } from './routes/api/cli/sealing/rotate'
 import { Route as ApiCliServersEnrollRouteImport } from './routes/api/cli/servers/enroll'
@@ -69,6 +70,7 @@ import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/se
 import { Route as ApiMachinesMachineObserveRouteImport } from './routes/api/machines/$machine/observe'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
+import { Route as ApiCliSealingRecipientRotateRouteImport } from './routes/api/cli/sealing/recipient/rotate'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/index'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126AccountRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/account'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/billing'
@@ -367,6 +369,11 @@ const ApiCliRunNameRoute = ApiCliRunNameRouteImport.update({
   path: '/api/cli/run/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCliSealingRecipientRoute = ApiCliSealingRecipientRouteImport.update({
+  id: '/api/cli/sealing/recipient',
+  path: '/api/cli/sealing/recipient',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiCliSealingRecoveryRoute = ApiCliSealingRecoveryRouteImport.update({
   id: '/api/cli/sealing/recovery',
   path: '/api/cli/sealing/recovery',
@@ -404,6 +411,12 @@ const ProtectedCloudOrganizationSlugProjectNewRoute =
     id: '/new',
     path: '/new',
     getParentRoute: () => ProtectedCloudOrganizationSlugProjectRouteRoute,
+  } as any)
+const ApiCliSealingRecipientRotateRoute =
+  ApiCliSealingRecipientRotateRouteImport.update({
+    id: '/rotate',
+    path: '/rotate',
+    getParentRoute: () => ApiCliSealingRecipientRoute,
   } as any)
 const ProtectedCloudOrganizationSlugOrgChar126IndexRoute =
   ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport.update({
@@ -652,6 +665,7 @@ export interface FileRoutesByFullPath {
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
+  '/api/cli/sealing/recipient': typeof ApiCliSealingRecipientRouteWithChildren
   '/api/cli/sealing/recovery': typeof ApiCliSealingRecoveryRoute
   '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
@@ -661,6 +675,7 @@ export interface FileRoutesByFullPath {
   '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/api/cli/sealing/recipient/rotate': typeof ApiCliSealingRecipientRotateRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
@@ -733,6 +748,7 @@ export interface FileRoutesByTo {
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
+  '/api/cli/sealing/recipient': typeof ApiCliSealingRecipientRouteWithChildren
   '/api/cli/sealing/recovery': typeof ApiCliSealingRecoveryRoute
   '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
@@ -740,6 +756,7 @@ export interface FileRoutesByTo {
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/cloud/account': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/api/cli/sealing/recipient/rotate': typeof ApiCliSealingRecipientRotateRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/cloud/$organizationSlug/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
@@ -816,6 +833,7 @@ export interface FileRoutesById {
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
+  '/api/cli/sealing/recipient': typeof ApiCliSealingRecipientRouteWithChildren
   '/api/cli/sealing/recovery': typeof ApiCliSealingRecoveryRoute
   '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
@@ -825,6 +843,7 @@ export interface FileRoutesById {
   '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/api/cli/sealing/recipient/rotate': typeof ApiCliSealingRecipientRotateRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_org/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/_protected/cloud/$organizationSlug/_org/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
@@ -901,6 +920,7 @@ export interface FileRouteTypes {
     | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
+    | '/api/cli/sealing/recipient'
     | '/api/cli/sealing/recovery'
     | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
@@ -910,6 +930,7 @@ export interface FileRouteTypes {
     | '/cloud/account/'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
+    | '/api/cli/sealing/recipient/rotate'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/account'
     | '/cloud/$organizationSlug/~/billing'
@@ -982,6 +1003,7 @@ export interface FileRouteTypes {
     | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
+    | '/api/cli/sealing/recipient'
     | '/api/cli/sealing/recovery'
     | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
@@ -989,6 +1011,7 @@ export interface FileRouteTypes {
     | '/api/machines/$machine/observe'
     | '/cloud/account'
     | '/cloud/$organizationSlug/new'
+    | '/api/cli/sealing/recipient/rotate'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/account'
     | '/cloud/$organizationSlug/~/billing'
@@ -1064,6 +1087,7 @@ export interface FileRouteTypes {
     | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
+    | '/api/cli/sealing/recipient'
     | '/api/cli/sealing/recovery'
     | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
@@ -1073,6 +1097,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud/account/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
+    | '/api/cli/sealing/recipient/rotate'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug'
     | '/_protected/cloud/$organizationSlug/_org/~/account'
     | '/_protected/cloud/$organizationSlug/_org/~/billing'
@@ -1145,6 +1170,7 @@ export interface RootRouteChildren {
   ApiCliAgentAskRoute: typeof ApiCliAgentAskRoute
   ApiCliCloudResetRoute: typeof ApiCliCloudResetRoute
   ApiCliRunNameRoute: typeof ApiCliRunNameRoute
+  ApiCliSealingRecipientRoute: typeof ApiCliSealingRecipientRouteWithChildren
   ApiCliSealingRecoveryRoute: typeof ApiCliSealingRecoveryRoute
   ApiCliSealingRotateRoute: typeof ApiCliSealingRotateRoute
   ApiCliServersEnrollRoute: typeof ApiCliServersEnrollRoute
@@ -1525,6 +1551,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiCliRunNameRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cli/sealing/recipient': {
+      id: '/api/cli/sealing/recipient'
+      path: '/api/cli/sealing/recipient'
+      fullPath: '/api/cli/sealing/recipient'
+      preLoaderRoute: typeof ApiCliSealingRecipientRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/cli/sealing/recovery': {
       id: '/api/cli/sealing/recovery'
       path: '/api/cli/sealing/recovery'
@@ -1573,6 +1606,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug/new'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectNewRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRoute
+    }
+    '/api/cli/sealing/recipient/rotate': {
+      id: '/api/cli/sealing/recipient/rotate'
+      path: '/rotate'
+      fullPath: '/api/cli/sealing/recipient/rotate'
+      preLoaderRoute: typeof ApiCliSealingRecipientRotateRouteImport
+      parentRoute: typeof ApiCliSealingRecipientRoute
     }
     '/_protected/cloud/$organizationSlug/_org/~/': {
       id: '/_protected/cloud/$organizationSlug/_org/~/'
@@ -1968,6 +2008,20 @@ const PublicRouteRouteWithChildren = PublicRouteRoute._addFileChildren(
   PublicRouteRouteChildren,
 )
 
+interface ApiCliSealingRecipientRouteChildren {
+  ApiCliSealingRecipientRotateRoute: typeof ApiCliSealingRecipientRotateRoute
+}
+
+const ApiCliSealingRecipientRouteChildren: ApiCliSealingRecipientRouteChildren =
+  {
+    ApiCliSealingRecipientRotateRoute: ApiCliSealingRecipientRotateRoute,
+  }
+
+const ApiCliSealingRecipientRouteWithChildren =
+  ApiCliSealingRecipientRoute._addFileChildren(
+    ApiCliSealingRecipientRouteChildren,
+  )
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ProtectedRouteRoute: ProtectedRouteRouteWithChildren,
@@ -2017,6 +2071,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCliAgentAskRoute: ApiCliAgentAskRoute,
   ApiCliCloudResetRoute: ApiCliCloudResetRoute,
   ApiCliRunNameRoute: ApiCliRunNameRoute,
+  ApiCliSealingRecipientRoute: ApiCliSealingRecipientRouteWithChildren,
   ApiCliSealingRecoveryRoute: ApiCliSealingRecoveryRoute,
   ApiCliSealingRotateRoute: ApiCliSealingRotateRoute,
   ApiCliServersEnrollRoute: ApiCliServersEnrollRoute,

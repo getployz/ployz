@@ -79,20 +79,25 @@ pub(crate) type PeerInspect = std::sync::Arc<
         + Sync,
 >;
 
+pub(crate) mod activation;
 mod container;
 mod deploy_approval;
 mod ingress_doors;
 mod private_access;
+pub(crate) use activation::{PendingActivation, Retired};
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 mod join_approval;
+pub(crate) use join_approval::reverify_join_proposals;
 mod management_client;
 pub(crate) mod preview_deploy;
 pub(crate) mod preview_grant;
 mod push_target;
+mod recipient;
 mod resize_seed_approval;
 pub(super) mod restart_approval;
+pub(crate) use restart_approval::ConsumptionLog;
 pub(crate) mod rule_deploy;
 pub(crate) mod rule_grant;
 pub(crate) use resize_seed_approval::Landing;
@@ -268,6 +273,27 @@ pub enum Error {
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]
     EnforcementRefused(ployz_core::authority::AuthorityRefusal),
+    /// A starting set this Server did not admit. The refusal names `capability`.
+    #[error("{capability}: {reason}")]
+    ActivationRefused {
+        capability: &'static str,
+        reason: activation::Refusal,
+    },
+    /// An activation is committing: the daemon restarts in a few seconds.
+    #[error(
+        "This Server is turning on Device enforcement and restarts in a few seconds. Try again then"
+    )]
+    Activating,
+    #[error("could not keep the pending activation")]
+    ActivationRecord(#[source] std::io::Error),
+    /// A recipient key step this Server did not admit. The refusal names `capability`.
+    #[error("{capability}: {refusal}")]
+    RecipientRefused {
+        capability: &'static str,
+        refusal: ployz_core::authority::AuthorityRefusal,
+    },
+    #[error("could not read or write the Cluster's recipient key")]
+    RecipientKey(#[source] std::io::Error),
     #[error("could not keep the record of join approvals")]
     JoinRecord(#[source] std::io::Error),
     #[error("the join of Machine {0} has already been admitted")]
@@ -423,6 +449,13 @@ impl LocalMachine {
     pub(crate) fn with_teardown(mut self, teardown: teardown::HeldTeardown) -> Self {
         self.teardown = Some(teardown);
         self
+    }
+
+    /// Whether an activation was admitted in this process, which then takes no new
+    /// management work before it restarts.
+    #[must_use]
+    pub(crate) fn activating(&self) -> bool {
+        self.owner.activating()
     }
 
     /// Mark subsequent calls as from this Server's local socket: its terminal, or SSH.
@@ -741,6 +774,8 @@ impl LocalMachine {
             upgrade,
             token,
             sealing: self.sealing(record.phase()).await,
+            activation: Some(self.activation_report().await),
+            sealing_recipient: self.held_recipient(record.phase()),
         })
     }
 
@@ -771,10 +806,10 @@ impl LocalMachine {
         ) {
             return None;
         }
-        SealingKey::load(self.owner.data_dir())
+        crate::sealing_key::ClusterKeys::load(self.owner.data_dir())
             .ok()
             .flatten()
-            .map(|key| key.attest().attest())
+            .map(|keys| keys.attest().attest())
     }
 
     /// The key this Machine's file holds, or, when it holds none, the key a recovery
@@ -1091,6 +1126,8 @@ impl LocalMachine {
             self.record().devices().collect(),
         );
         if let Some(approval) = approval {
+            registration.recipient =
+                self.join_recipient(&registration.assigned_machine.public_key)?;
             self.consume_join(restart_approval::JoinResult {
                 approval,
                 reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
@@ -1515,6 +1552,7 @@ fn registered(
         target_versions,
         sealing_key,
         devices,
+        recipient: None,
     }
 }
 

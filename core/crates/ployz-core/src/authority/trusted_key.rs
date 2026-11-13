@@ -504,7 +504,10 @@ impl TrustedKeys {
             .iter()
             .filter(|trusted| trusted.passkey.credential_id == assertion.credential_id);
         let first = candidates.next().ok_or(AuthorityRefusal::UnknownPasskey)?;
-        if !matches!(purpose, Purpose::Workflow | Purpose::Rule | Purpose::Volume) {
+        if !matches!(
+            purpose,
+            Purpose::Workflow | Purpose::Rule | Purpose::Volume | Purpose::Enforce
+        ) {
             return Err(AuthorityRefusal::ApproveOnly {
                 code: first.passkey.code(),
                 purpose,

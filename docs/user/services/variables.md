@@ -98,8 +98,9 @@ service still gets the real value when it deploys.
 - A value you seal in the dashboard trusts the dashboard: a compromised Ployz Cloud could
   change the page or the key it seals to, and read the value. The CLI doesn't trust Ployz Cloud
   for the key. It seals only to your cluster's key as
-  [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
-  `ployz device pin` once before you seal with the CLI.
+  [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key) after your
+  cluster was activated, so run `ployz device pin` once after activation before you seal with
+  the CLI. The computer you activated from already has it.
 - Your sealed values open only on your servers. Keep your organization's
   [recovery code](../servers/recovery-code.md): if you lose every server, it's the only way to
   open them again.

@@ -4,11 +4,13 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  readRecipientRecovery,
   readSealingRecovery,
   recordFirstRecoveryBackup,
   recordReportedSealingPublicKey,
   recordSealingPublicKey,
   recoveryDigest,
+  rotateRecipientRecovery,
   rotateRecoveryBackup,
   SealingKeyHeldElsewhere,
 } from "#/modules/machines/sealing-key.server";
@@ -347,6 +349,45 @@ describe("the Organization's Sealing Key", () => {
       await pair();
       expect(await run(readSealingRecovery(organizationId))).toMatchObject({ publicKey: sealingKey("A") });
       expect(await stored()).toEqual([{ public_key: sealingKey("A"), recovery_blob: null }]);
+    });
+  });
+
+  describe("the recipient key's backup", () => {
+    const rotation = { body: "{\"recipient\":\"r\"}", signatures: [{ key: "1".repeat(64), signature: "2".repeat(128) }] };
+    const rotate = (currentDigest: string | null, blob: string, publicKey = sealingKey("R")) =>
+      rotateRecipientRecovery(organizationId, { publicKey, rotation, currentDigest, backup: blob });
+    const recipient = async () => (await harness.pool.query(
+      "select recovery_blob, recipient_public_key, recipient_blob, recipient_rotation from organization_sealing_key where organization_id = $1",
+      [organizationId],
+    )).rows;
+
+    it("is stored beside the identity's backup, which it leaves alone, with the rotation that named it", async () => {
+      await store(sealingKey("A"), backup(2));
+
+      expect(await run(rotate(null, backup(5)))).toEqual({ digest: recoveryDigest(backup(5)) });
+      expect(await run(readRecipientRecovery(organizationId))).toEqual({
+        publicKey: sealingKey("R"), backup: backup(5), digest: recoveryDigest(backup(5)), rotation,
+      });
+      expect(await recipient()).toEqual([{
+        recovery_blob: backup(2), recipient_public_key: sealingKey("R"), recipient_blob: backup(5), recipient_rotation: rotation,
+      }]);
+    });
+
+    it("replaces only the backup the caller last read, and takes the same rotation again", async () => {
+      await store(sealingKey("A"), backup(2));
+      await run(rotate(null, backup(5)));
+
+      expect((await failure(rotate(null, backup(6))))._tag).toBe("Conflict");
+      expect(await run(rotate(recoveryDigest(backup(5)), backup(6)))).toEqual({ digest: recoveryDigest(backup(6)) });
+      expect(await run(rotate(recoveryDigest(backup(5)), backup(6)))).toEqual({ digest: recoveryDigest(backup(6)) });
+      expect((await run(readRecipientRecovery(organizationId))).backup).toBe(backup(6));
+    });
+
+    it("is not found before an activation stored one, or without a recorded key", async () => {
+      expect((await failure(rotate(null, backup(5))))._tag).toBe("NotFound");
+      await store(sealingKey("A"), backup(2));
+
+      expect((await failure(readRecipientRecovery(organizationId)))._tag).toBe("NotFound");
     });
   });
 

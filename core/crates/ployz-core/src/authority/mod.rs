@@ -8,6 +8,7 @@
 //! session grant, which travels in the same envelope. A proposal signs an ordered plan of
 //! such statements once, and each step travels unsigned with the bundle in its envelope.
 
+pub mod activation_draft;
 pub mod canonical;
 pub mod coverage;
 pub mod deploy;
@@ -18,6 +19,7 @@ pub mod private_access;
 pub mod proposal;
 pub mod refusal;
 pub mod restart;
+pub mod rotation;
 pub mod rule;
 pub mod rule_draft;
 pub mod session;
@@ -30,6 +32,7 @@ pub mod validity;
 pub mod volume;
 pub mod volume_draft;
 
+pub use activation_draft::{ActivationDraft, StartingSetTerms};
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{
     ApprovedChange, ApprovedService, BrowserDraft, BrowserDraftError, DeployApproval,
@@ -54,6 +57,7 @@ pub use refusal::AuthorityRefusal;
 pub use restart::{
     Approved, OwnPrompt, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind,
 };
+pub use rotation::SealingRotation;
 pub use rule::{
     ApprovalDigest, ApprovalFacts, AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage,
     CheckedCommitApproval, ClaimRule, CommitApproval, CommitAuthority, CommitNow, CommitSha,

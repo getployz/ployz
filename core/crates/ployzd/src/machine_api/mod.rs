@@ -27,6 +27,8 @@ pub use routing::{MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionErro
 
 #[cfg(test)]
 pub(crate) use local::MachineService;
+#[cfg(test)]
+pub(crate) mod test_socket;
 
 /// A servable Machine API. Every request it serves is routed.
 #[derive(Clone)]
@@ -174,6 +176,9 @@ impl Service<http::Request<Body>> for MachineApi {
     }
 
     fn call(&mut self, mut request: http::Request<Body>) -> Self::Future {
+        if self.service.local().activating() && !is_read(request.uri().path()) {
+            return Box::pin(async { Ok(activating().into_http()) });
+        }
         let Some(connection) = request
             .extensions()
             .get::<iroh::endpoint::WeakConnectionHandle>()
@@ -182,8 +187,10 @@ impl Service<http::Request<Body>> for MachineApi {
                 .extensions()
                 .get::<tonic::transport::server::UdsConnectInfo>()
                 .is_some();
-            let enforced = self.service.local().record().device_enforcement();
-            let scope = if (local || !enforced)
+            // A daemon that advertises `ployz.machine.enforced.v1` never gives a mesh
+            // caller Full scope: only this Server's local socket and a Device's own
+            // connection make Full calls, which is what the trusted snapshot rests on.
+            let scope = if local
                 && !request
                     .headers()
                     .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
@@ -192,7 +199,7 @@ impl Service<http::Request<Body>> for MachineApi {
             } else {
                 ManagementScope::Operator
             };
-            if enforced && !local && request.uri().path() == op::SetManagementClient::PATH {
+            if !local && request.uri().path() == op::SetManagementClient::PATH {
                 return Box::pin(async {
                     Ok(ployz_core::rpc::hinted_status(
                         tonic::Code::PermissionDenied,
@@ -207,10 +214,7 @@ impl Service<http::Request<Body>> for MachineApi {
                     http::HeaderValue::from_static("1"),
                 );
             }
-            if enforced
-                && !local
-                && ployz_core::scope_of(request.uri().path()) == Some(ManagementScope::Full)
-            {
+            if !local && ployz_core::scope_of(request.uri().path()) == Some(ManagementScope::Full) {
                 let capability =
                     ployz_core::capability_of(request.uri().path()).expect("catalogued Full route");
                 return Box::pin(async move {
@@ -306,6 +310,26 @@ impl Service<http::Request<Body>> for MachineApi {
     }
 }
 
+/// Whether `path` is a catalog route the coverage table classes as a read.
+fn is_read(path: &str) -> bool {
+    ployz_core::capability_of(path).is_some_and(|capability| {
+        ployz_core::authority::coverage::authorization(capability)
+            == Some(ployz_core::authority::coverage::Authorization::Read)
+    })
+}
+
+/// The answer to management work while an activation waits for its commit.
+fn activating() -> tonic::Status {
+    ployz_core::rpc::hinted_status(
+        tonic::Code::Unavailable,
+        &crate::machine::LocalMachineError::Activating,
+        serde_json::json!({
+            "capability": ployz_core::ENFORCED_CAPABILITY,
+            "reason": "activating",
+        }),
+    )
+}
+
 /// The way to Full access, said in the refusal itself: a v0.3.4 CLI prints only the
 /// message, and has no `device` command.
 const FULL_ACCESS_NEXT: &str =
@@ -323,7 +347,7 @@ struct NeedsManagementConnection;
 
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "This Server enforces Device approval. Connect directly as an approved Device, or over SSH."
+    "This Server takes this call only from an approved Device connected to it directly, or over SSH."
 )]
 struct NeedsDirectDevice;
 

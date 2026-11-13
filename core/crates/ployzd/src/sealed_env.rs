@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     logs::{LogLineStream, LogSource, RawLogEntry, RpcStream},
-    sealing_key::SealingKey,
+    sealing_key::ClusterKeys,
 };
 
 pub use ployz_core::SealedRecord;
@@ -126,7 +126,7 @@ impl Unseal for SealedRecord {
     }
 }
 
-fn opened<'a>(record: &'a SealedRecord, key: &SealingKey) -> Result<Vec<Opened<'a>>, OpenError> {
+fn opened<'a>(record: &'a SealedRecord, key: &ClusterKeys) -> Result<Vec<Opened<'a>>, OpenError> {
     record
         .values()
         .iter()
@@ -180,7 +180,7 @@ fn check_bindings(record: &SealedRecord) -> Result<(), OpenError> {
 
 fn open_value(
     record: &SealedRecord,
-    key: &SealingKey,
+    key: &ClusterKeys,
     name: &str,
     sealed: &SealedValue,
 ) -> Result<String, OpenError> {
@@ -419,9 +419,9 @@ pub(crate) fn attest_key(key_dir: Option<&Path>) -> Result<ployz_core::X25519Sec
     Ok(load(key_dir)?.attest())
 }
 
-fn load(key_dir: Option<&Path>) -> Result<SealingKey, OpenError> {
+fn load(key_dir: Option<&Path>) -> Result<ClusterKeys, OpenError> {
     let dir = key_dir.ok_or(OpenError::KeyMissing)?;
-    SealingKey::load(dir)
+    ClusterKeys::load(dir)
         .map_err(OpenError::KeyUnreadable)?
         .ok_or(OpenError::KeyMissing)
 }
@@ -431,7 +431,7 @@ pub(crate) mod test_support {
     use uuid::Uuid;
 
     use super::*;
-    use crate::test_dir::TestDir;
+    use crate::{sealing_key::SealingKey, test_dir::TestDir};
 
     pub(crate) struct Cluster {
         pub(crate) dir: TestDir,
@@ -499,7 +499,13 @@ pub(crate) mod test_support {
             purpose: PlatformPurpose,
             plaintext: &[u8],
         ) -> Ciphertext {
-            ployz_core::seal_platform(&self.key.public_key(), purpose, plaintext).unwrap()
+            ployz_core::seal_platform(
+                &self.key.public_key(),
+                &self.key.public_key(),
+                purpose,
+                plaintext,
+            )
+            .unwrap()
         }
     }
 }

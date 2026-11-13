@@ -1405,6 +1405,7 @@ mod tests {
             target_versions: Default::default(),
             sealing_key: None,
             devices: Vec::new(),
+            recipient: None,
         }
     }
 

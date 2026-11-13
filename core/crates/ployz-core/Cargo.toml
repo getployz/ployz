@@ -30,9 +30,12 @@ zeroize = "1.9.0"
 test-keypair = []
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc"] }
+hkdf = "0.12.4"
 hpke = { version = "0.13.0", default-features = false, features = ["x25519", "alloc"] }
 rand_core = { version = "0.9.5", features = ["os_rng"] }
 reqwest = { version = "0.13.4", default-features = false }
+sha2-0-10 = { package = "sha2", version = "0.10.9", default-features = false }
 tonic = { version = "0.13.1", features = ["transport"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

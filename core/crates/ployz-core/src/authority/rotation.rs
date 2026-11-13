@@ -1,0 +1,129 @@
+//! A person's approval of the recipient key a Cluster seals new values to after activation.
+//!
+//! The Cluster's Sealing public key stays its identity: statements, sealed values and pins
+//! keep naming it. Any Machine that was ever a Member may hold its private half, so
+//! activation adds a recipient key beside it. A Device's CLI generates that key, or on the
+//! dashboard path the lowest-ID activated Machine does, and a person names its public half
+//! here. A Machine installs, and re-seals to, only the recipient a verified rotation names.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use super::{
+    Approver, AuthorityRefusal, Purpose, Signed, Statement, Timestamp,
+    refusal::{field, first_mismatch},
+    restart::SignerKey,
+    rule::{RuleStatement, verify_signature},
+    starting_set::Member,
+    trusted_key::TrustedKeys,
+};
+use crate::{OperationId, SealingPublicKey};
+
+/// A person's approval that `cluster` seals new values to `recipient`, which only the
+/// Members named here receive.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SealingRotation {
+    /// The Cluster's identity: its first Sealing public key, which rotation keeps.
+    pub cluster: SealingPublicKey,
+    /// The activation this rotation finishes. A resend under it converges on one key.
+    pub operation: OperationId,
+    pub recipient: SealingPublicKey,
+    /// The Members of the signed starting set: the only Machines sealed the private half.
+    pub members: Vec<Member>,
+    pub signer: SignerKey,
+}
+
+impl Statement for SealingRotation {
+    const PURPOSE: Purpose = Purpose::Enforce;
+}
+
+impl RuleStatement for SealingRotation {
+    fn signer(&self) -> SignerKey {
+        self.signer
+    }
+}
+
+/// Open a rotation for `cluster` that names `own`, signed by a Device in `trusted` or
+/// answered by a trusted passkey's own prompt.
+///
+/// # Errors
+/// Returns the refusal of [`verify_signature`], and [`AuthorityRefusal::Mismatch`] naming a
+/// Cluster for a rotation of another one, or this Machine when it is not a named Member.
+pub fn verify(
+    signed: &Signed<SealingRotation>,
+    trusted: &TrustedKeys,
+    cluster: SealingPublicKey,
+    own: &Member,
+    now: Timestamp,
+) -> Result<(SealingRotation, Approver), AuthorityRefusal> {
+    let (body, approver) = verify_signature(signed, trusted, now)?;
+    first_mismatch([
+        (field::CLUSTER, body.cluster == cluster),
+        ("this Machine", body.members.contains(own)),
+    ])?;
+    Ok((body, approver))
+}
+
+/// Open a rotation for `cluster` as a Server joining after activation does: signed by one
+/// of `trusted`, the keys its verified join approval names. The joiner is not among the
+/// rotation's Members, so membership is not checked; the join approval vouches for it.
+///
+/// # Errors
+/// Returns the refusal of [`verify_signature`], and [`AuthorityRefusal::Mismatch`] naming a
+/// Cluster for a rotation of another one.
+pub fn verify_for_join(
+    signed: &Signed<SealingRotation>,
+    trusted: &TrustedKeys,
+    cluster: SealingPublicKey,
+    now: Timestamp,
+) -> Result<(SealingRotation, Approver), AuthorityRefusal> {
+    let (body, approver) = verify_signature(signed, trusted, now)?;
+    first_mismatch([(field::CLUSTER, body.cluster == cluster)])?;
+    Ok((body, approver))
+}
+
+/// HPKE associated data binding a recipient key's sealed private half to one rotation, so a
+/// blob sealed for one activation never installs under another.
+#[must_use]
+pub fn sealed_key_binding(cluster: &SealingPublicKey, operation: &OperationId) -> Vec<u8> {
+    let mut aad = b"ployz-recipient-key-v1".to_vec();
+    aad.extend(cluster.as_bytes());
+    aad.extend(operation.to_string().as_bytes());
+    aad
+}
+
+/// The recipient key `sealed` carries for this Machine, whose WireGuard private key is
+/// `own`, when `body` lets it take that key: one of `holders` sealed it with
+/// [`crate::RecipientSecret::seal_from`], which only that Member's own key can do, or a
+/// Device signed `body` and so chose the key itself. `holders` are the Members this Machine
+/// holds evidence for, never the rotation's own list, which Cloud could widen with a key of
+/// its own. A passkey answers a page Cloud serves, and anyone can seal to a public WireGuard
+/// key, so under a passkey only a holder vouches for the key. `None` for anything else, or
+/// a key other than the one `body` names.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn opened_key(
+    body: &SealingRotation,
+    holders: &[Member],
+    own: &[u8; 32],
+    sealed: &crate::Ciphertext,
+) -> Option<crate::RecipientSecret> {
+    let binding = sealed_key_binding(&body.cluster, &body.operation);
+    let from_holder = || {
+        holders.iter().find_map(|member| {
+            crate::RecipientSecret::open_from(own, &member.public_key, &binding, sealed)
+        })
+    };
+    let from_signer = || match body.signer {
+        SignerKey::Device(_) => crate::RecipientSecret::open(own, &binding, sealed),
+        SignerKey::Browser { .. } | SignerKey::Passkey(_) => None,
+    };
+    from_holder()
+        .or_else(from_signer)
+        .filter(|key| key.public() == body.recipient)
+}
+
+#[cfg(test)]
+#[path = "rotation_tests.rs"]
+mod tests;

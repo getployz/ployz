@@ -23,7 +23,10 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     corrosion::{CertificateChallenge, Error as CorrosionError, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
-    ingress::{IngressEndpoint, IngressProjection, IngressSite, prepare_directory},
+    ingress::{
+        certificates::certificate_file_stem,
+        projection::{IngressEndpoint, IngressProjection, IngressSite, prepare_directory},
+    },
 };
 
 mod trace;
@@ -376,7 +379,7 @@ https:// {{\n\
         let Some(material) = site.pinned() else {
             continue;
         };
-        let stem = super::certificate_file_stem(&site.hostname, material);
+        let stem = certificate_file_stem(&site.hostname, material);
         let certs = ingress_certs_dir();
         let tls = format!("\ttls {certs}/{stem}.crt {certs}/{stem}.key\n");
         // Pinned material with no HTTPS route left answers like the HTTP catch-all.

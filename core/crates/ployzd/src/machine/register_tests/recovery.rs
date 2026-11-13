@@ -1,11 +1,10 @@
 use ployz_core::{
     AdvertisedEndpoint, GenerateSealingKeyRequest, InstallSealingKeyRequest, MachineName,
-    MachineRpc, MachineRpcClient, RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal,
-    RecoverySeed, RpcErrorCode, RpcResponseBody, Sealing, SealingKeyBackup, SealingPublicKey,
+    MachineRpc, RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal, RecoverySeed,
+    RpcErrorCode, RpcResponseBody, Sealing, SealingKeyBackup, SealingPublicKey,
     ShareSealingKeyRequest, WrapSealingKeyRequest, op,
 };
-use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{Code, Request, transport::Server};
+use tonic::{Code, Request};
 
 use super::super::{
     LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner, RecoveryError, SealingError,
@@ -84,7 +83,13 @@ async fn seeded(
 
 fn wrap(local: &LocalMachine, code: &RecoveryCode) -> ployz_core::SealingKeyWrapped {
     local
-        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() }, false)
+        .wrap_sealing_key(
+            WrapSealingKeyRequest {
+                code: code.clone(),
+                key: ployz_core::SealingKeyRole::Identity,
+            },
+            false,
+        )
         .unwrap()
 }
 
@@ -98,6 +103,7 @@ async fn recover(
             RecoverSealingKeyRequest {
                 code: code.clone(),
                 backup,
+                rotation: None,
             },
             false,
         )
@@ -507,14 +513,18 @@ async fn the_management_tunnel_never_carries_a_recovery_code() {
     let service = machine_service(store, replicated, None);
     let code = RecoveryCode::generate();
     let wrap = || {
-        op::WrapSealingKey::into_request(WrapSealingKeyRequest { code: code.clone() })
-            .encode()
-            .unwrap()
+        op::WrapSealingKey::into_request(WrapSealingKeyRequest {
+            code: code.clone(),
+            key: ployz_core::SealingKeyRole::Identity,
+        })
+        .encode()
+        .unwrap()
     };
     let recover = || {
         op::RecoverSealingKey::into_request(RecoverSealingKeyRequest {
             code: code.clone(),
             backup: None,
+            rotation: None,
         })
         .encode()
         .unwrap()
@@ -554,13 +564,12 @@ async fn the_cloud_slot_needs_full_access_to_wrap_or_recover() {
     let (dir, store, founder) = open_store("ployzd-recover-scope");
     replicated.publish_local_machine(&founder).await.unwrap();
     let api = MachineApi::from_local(machine_service(store, replicated, None));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server =
-        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
-    let mut client = MachineRpcClient::connect(format!("http://{address}"))
-        .await
-        .unwrap();
+    let socket_dir = tempfile::tempdir().unwrap();
+    let (mut client, server) = crate::machine_api::test_socket::served(
+        api,
+        &crate::machine_api::test_socket::socket_in(socket_dir.path()),
+    )
+    .await;
     let code = RecoveryCode::generate();
     let operator = |body| {
         let mut request = Request::new(body);
@@ -572,17 +581,24 @@ async fn the_cloud_slot_needs_full_access_to_wrap_or_recover() {
 
     let wrap = client
         .wrap_sealing_key(operator(
-            op::WrapSealingKey::into_request(WrapSealingKeyRequest { code: code.clone() })
-                .encode()
-                .unwrap(),
+            op::WrapSealingKey::into_request(WrapSealingKeyRequest {
+                code: code.clone(),
+                key: ployz_core::SealingKeyRole::Identity,
+            })
+            .encode()
+            .unwrap(),
         ))
         .await
         .expect_err("the cloud slot must not wrap the Sealing Key");
     let recover = client
         .recover_sealing_key(operator(
-            op::RecoverSealingKey::into_request(RecoverSealingKeyRequest { code, backup: None })
-                .encode()
-                .unwrap(),
+            op::RecoverSealingKey::into_request(RecoverSealingKeyRequest {
+                code,
+                backup: None,
+                rotation: None,
+            })
+            .encode()
+            .unwrap(),
         ))
         .await
         .expect_err("the cloud slot must not recover the Sealing Key");

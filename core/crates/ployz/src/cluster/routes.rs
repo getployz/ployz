@@ -17,13 +17,45 @@ pub(crate) struct FullRoutes {
     /// Whether only the entry Machine is reachable with Full scope, however many
     /// connections name others.
     single: bool,
+    origin: Origin,
+}
+
+/// Who picked a route's endpoint. A Server reached over a route Cloud handed over doesn't
+/// answer for itself whatever the transport: Cloud can name an SSH endpoint of its own.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Origin {
+    /// `--connect`, a saved context, or the local socket.
+    Chosen,
+    /// Cloud's Server Access. The default, so a route answers for its Server only when it
+    /// was built as chosen.
+    #[default]
+    Cloud,
 }
 
 impl FullRoutes {
-    pub(crate) fn new(connections: Vec<Connection>, single: bool) -> Self {
+    /// Routes the person chose: `--connect`, a saved context, or the local socket.
+    pub(crate) fn chosen(connections: Vec<Connection>, single: bool) -> Self {
         Self {
             connections: Arc::new(connections),
             single,
+            origin: Origin::Chosen,
+        }
+    }
+
+    /// Routes Cloud's Server Access handed over.
+    pub(crate) fn from_cloud(connections: Vec<Connection>, single: bool) -> Self {
+        Self {
+            connections: Arc::new(connections),
+            single,
+            origin: Origin::Cloud,
+        }
+    }
+
+    /// These routes, every one of them dialable on its own.
+    pub(crate) fn spread(&self) -> Self {
+        Self {
+            single: false,
+            ..self.clone()
         }
     }
 
@@ -68,6 +100,17 @@ impl FullRoutes {
     /// Whether `machine` is reached with Full scope: over SSH or the local socket, or over
     /// a Management connection dialled as a Device when `device` says one is held. The entry
     /// is reached over `entry_connection`; any other Machine over its own connection.
+    /// Whether `machine` answers for itself: reached over SSH or the local socket on a
+    /// route the person chose, so what it reports is its own word and not Cloud's.
+    pub(crate) fn answers_for_itself(
+        &self,
+        machine: &MachineId,
+        entry: Option<&MachineId>,
+        entry_connection: &Connection,
+    ) -> bool {
+        self.origin == Origin::Chosen && self.reach(machine, false, entry, entry_connection)
+    }
+
     pub(crate) fn reach(
         &self,
         machine: &MachineId,

@@ -163,7 +163,7 @@ your services at their private addresses, on any port and protocol.
    the page or the key it seals to, and read your auth key. `ployz private-access on` doesn't
    trust Ployz Cloud for the key. It seals only to your cluster's key as
    [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
-   `ployz device pin` once first.
+   `ployz device pin` once after your cluster is activated.
 3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
    and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
    A server keeps its router's identity across restarts and reboots, so the route stays

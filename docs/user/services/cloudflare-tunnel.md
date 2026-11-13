@@ -125,7 +125,7 @@ its own.
 
 The CLI seals the token on your computer, to your cluster's key. Through Ployz Cloud, it seals only
 to the key [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
-`ployz device pin` once first. Until you do, or when Ployz Cloud sends another key, the command
+`ployz device pin` once after your cluster is activated. Until you do, or when Ployz Cloud sends another key, the command
 stops before it asks for the token and nothing changes. Over `--connect ssh://` it reads the key
 from that server and needs no pin.
 

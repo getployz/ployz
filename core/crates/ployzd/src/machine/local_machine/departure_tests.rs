@@ -118,6 +118,7 @@ fn join_request(record: &crate::machine::LocalMachineRecord) -> EnrollRequest {
                 target_versions: BTreeMap::new(),
                 sealing_key: None,
                 devices: Vec::new(),
+                recipient: None,
             },
         },
         wireguard_mtu: None,
