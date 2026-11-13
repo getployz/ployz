@@ -22,11 +22,12 @@ use ployz_core::{
 };
 
 use super::{
-    harvest::{Signal, append_line, ends_run, is_stop_signal},
-    layout::{EXITS_FILE, RunExit, StoreRoot},
+    clock::rfc3339_nanos,
+    layout::{EXITS_FILE, RunExit, StoreRoot, append_line},
     metrics::segment::{self, Prefilter, Row},
     settled::{Key, Settlement, Settlements, Unfinished},
     ship::Outbox,
+    signal::{Signal, is_stop_signal},
 };
 
 /// The raw segments one maintenance tick may read to resume settlements.
@@ -468,6 +469,15 @@ impl Settler {
                 .seq
                 .is_none_or(|seq| self.crashes.is_reserved(seq).unwrap_or(true))
     }
+}
+
+/// Whether `state` describes the run that died at `died`. Docker sets
+/// `FinishedAt` before it sends `die`, and starts any later run after it.
+fn ends_run(state: &ContainerState, died: i64) -> bool {
+    let at = |time: &Option<String>| time.as_deref().and_then(rfc3339_nanos);
+    at(&state.started_at)
+        .zip(at(&state.finished_at))
+        .is_some_and(|(started, finished)| started <= finished && finished <= died)
 }
 
 /// Whether a raw segment holds `marker`.
