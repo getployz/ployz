@@ -84,6 +84,8 @@ jobs:
           tar -xzf /tmp/minisign.tar.gz -C /tmp
           sudo install -m 0755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
           minisign -v
+      - name: Check the pinned builder installs a signed getployz/ployz release
+        run: bash core/scripts/check-builder-pin.sh
       - run: bash core/scripts/test-cli-installer.sh
       - run: bash core/scripts/test-release-packaging.sh
       - run: bash core/scripts/test-daemon-lifecycle.sh
