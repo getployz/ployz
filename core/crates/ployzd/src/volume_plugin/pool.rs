@@ -11,7 +11,7 @@ use ployz_core::MachineLayout;
 use ployzd::machine_pool::{self, MachinePool};
 
 use super::{
-    CapacityAdmission, DockerVolumeName, Result, VolumeError, VolumeStorage, checked_command,
+    CapacityAdmission, DockerVolumeName, PluginError, Result, VolumeStorage, checked_command,
     checked_output, parse_size, run_command,
 };
 
@@ -56,7 +56,7 @@ impl CreatedPool<'_> {
     }
 
     /// Destroys this newly created Pool and returns the original failure, with cleanup evidence.
-    pub(super) async fn cleanup(self, failure: VolumeError) -> VolumeError {
+    pub(super) async fn cleanup(self, failure: PluginError) -> PluginError {
         self.storage.cleanup(failure).await
     }
 }
@@ -528,7 +528,7 @@ impl PoolStorage {
             checked_command(&self.zpool, &["online", "-e", pool.name(), backing]).await?;
 
             let expanded = self.one_usable().await?.ok_or_else(|| {
-                VolumeError::from(format!(
+                PluginError::from(format!(
                     "expanded Machine Pool {}, but ZFS did not report it",
                     pool.name()
                 ))
@@ -557,7 +557,7 @@ impl PoolStorage {
         }
     }
 
-    async fn cleanup(&self, failure: VolumeError) -> VolumeError {
+    async fn cleanup(&self, failure: PluginError) -> PluginError {
         let pools = match checked_command(&self.zpool, &["list", "-H", "-o", "name"]).await {
             Ok(pools) => pools,
             Err(error) => {
@@ -622,7 +622,7 @@ impl PoolStorage {
             )
         })?;
         let backing_directory = self.backing.parent().ok_or_else(|| {
-            VolumeError::from(format!(
+            PluginError::from(format!(
                 "Machine Pool backing path has no parent: {}",
                 self.backing.display()
             ))
@@ -648,7 +648,7 @@ impl PoolStorage {
                 "-B1",
                 "--output=size,avail",
                 self.host_root.to_str().ok_or_else(|| {
-                    VolumeError::from(format!(
+                    PluginError::from(format!(
                         "host root path is not valid UTF-8: {}",
                         self.host_root.display()
                     ))
@@ -665,7 +665,7 @@ impl PoolStorage {
         let reserve = ployz_core::storage_host_reserve(capacity);
         let required = reserve
             .checked_add(allocation)
-            .ok_or_else(|| VolumeError::from("host-root reserve calculation overflowed u64"))?;
+            .ok_or_else(|| PluginError::from("host-root reserve calculation overflowed u64"))?;
         if available < required {
             return Err(ployz_core::StorageCapacityError::InsufficientStorage {
                 required_growth_bytes: allocation,
@@ -726,7 +726,7 @@ impl PoolStorage {
             return Err(format!("invalid allocation evidence for {backing}: {output}").into());
         };
         let length = length.parse::<u64>().map_err(|_| {
-            VolumeError::from(format!(
+            PluginError::from(format!(
                 "invalid allocation evidence for {backing}: {output}"
             ))
         })?;
@@ -740,7 +740,7 @@ impl PoolStorage {
                     .and_then(|block_size| blocks.checked_mul(block_size))
             })
             .ok_or_else(|| {
-                VolumeError::from(format!(
+                PluginError::from(format!(
                     "invalid allocation evidence for {backing}: {output}"
                 ))
             })?;
@@ -764,7 +764,7 @@ impl PoolStorage {
         Ok(())
     }
 
-    fn cleanup_backing(&self, failure: VolumeError) -> VolumeError {
+    fn cleanup_backing(&self, failure: PluginError) -> PluginError {
         match self.remove_backing() {
             Ok(()) => failure,
             Err(error) => format!(
@@ -789,11 +789,11 @@ fn parse_host_root_space(output: &str) -> Result<(u64, u64)> {
     let capacity = values
         .next()
         .and_then(|value| value.parse().ok())
-        .ok_or_else(|| VolumeError::from(format!("invalid host-root capacity output: {output}")))?;
+        .ok_or_else(|| PluginError::from(format!("invalid host-root capacity output: {output}")))?;
     let available = values
         .next()
         .and_then(|value| value.parse().ok())
-        .ok_or_else(|| VolumeError::from(format!("invalid host-root capacity output: {output}")))?;
+        .ok_or_else(|| PluginError::from(format!("invalid host-root capacity output: {output}")))?;
     if values.next().is_some() {
         return Err(format!("invalid host-root capacity output: {output}").into());
     }
@@ -806,7 +806,7 @@ fn safe_ashift(physical_block_size: u64) -> Result<u32> {
     }
     let sector = physical_block_size
         .checked_next_power_of_two()
-        .ok_or_else(|| VolumeError::from("host-root physical block size is too large"))?;
+        .ok_or_else(|| PluginError::from("host-root physical block size is too large"))?;
     let ashift = sector.ilog2().max(12);
     if ashift > 16 {
         return Err(format!(

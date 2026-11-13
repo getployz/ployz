@@ -18,10 +18,10 @@ fn unknown(error: impl std::fmt::Display) -> ployz_core::RpcError {
     .into_rpc_error()
 }
 
-fn storage_error(error: super::VolumeError) -> ployz_core::RpcError {
-    match error {
-        super::VolumeError::Capacity(error) => error.into_rpc_error(),
-        error => ployz_core::RpcError::internal("Storage preparation failed")
+fn storage_error(error: super::PluginError) -> ployz_core::RpcError {
+    match error.into_capacity() {
+        Ok(error) => error.into_rpc_error(),
+        Err(error) => ployz_core::RpcError::internal("Storage preparation failed")
             .with_details(serde_json::json!({"code": "storage_preparation_failed"}))
             .with_causes(
                 std::iter::once(error.to_string())
