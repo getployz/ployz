@@ -455,11 +455,10 @@ fn compare(
     };
     let mut view = DiffView {
         environment: environment.summary.clone(),
-        version: format!(
-            "{}:{}:{}",
+        version: version::of(
             environment.summary.revision,
-            saved.as_ref().map_or(0, |saved| saved.revision.0),
-            head.token
+            saved.as_ref().map(|saved| saved.revision),
+            &head.token,
         ),
         saved: saved.as_ref().map(|saved| saved.revision),
         published: saved.as_ref().is_some_and(|saved| {
@@ -893,15 +892,8 @@ fn restarts(
 /// deletes (see `crate::removal::review`). No version is refused only while the
 /// draft includes a pull request: whether it merged must have been reviewed.
 pub(crate) fn check(review: &Review, version: Option<&str>) -> Result<(), RpcError> {
-    let current = review.view.version.as_str();
-    let names_it = |version: &str| {
-        version == current
-            || version
-                .strip_prefix(current)
-                .is_some_and(|rest| rest.starts_with(':'))
-    };
     match version {
-        Some(version) if !names_it(version) => Err(error::conflict(
+        Some(given) if !version::names(&review.view.version, given) => Err(error::conflict(
             "The Environment changed after this review. Review the latest changes and try again",
             json!({ "diff": review.view }),
         )),

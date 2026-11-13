@@ -3,7 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::id::ProjectId;
+use crate::id::{ProjectId, Revision};
 
 /// A review's version is `REVISION:SAVED:TOKEN`, and a data-loss refusal's adds
 /// `:DIGEST`. Cloud binds a review's version to the copy loss it refused with
@@ -21,6 +21,21 @@ impl ReviewVersion {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// The version of a review of Working revision `revision` over Saved revision
+/// `saved` (0 when none) and the Head `token`.
+pub(crate) fn of(revision: Revision, saved: Option<Revision>, token: &str) -> String {
+    format!("{revision}:{}:{token}", saved.map_or(0, |saved| saved.0))
+}
+
+/// Whether `given` names the review whose version is `current`: it is that version
+/// as it was handed out, or that version followed by `:` and an approval digest.
+pub(crate) fn names(current: &str, given: &str) -> bool {
+    given == current
+        || given
+            .strip_prefix(current)
+            .is_some_and(|rest| rest.starts_with(':'))
 }
 
 impl fmt::Display for ReviewVersion {
@@ -72,7 +87,34 @@ impl FromStr for ReviewVersion {
 
 #[cfg(test)]
 mod tests {
-    use super::ReviewVersion;
+    use super::{ReviewVersion, names, of};
+    use crate::id::Revision;
+
+    #[test]
+    fn it_writes_the_version_as_revision_saved_and_token() {
+        assert_eq!(of(Revision(3), Some(Revision(2)), "0.1"), "3:2:0.1");
+        assert_eq!(of(Revision(16), None, "4.12"), "16:0:4.12");
+    }
+
+    #[test]
+    fn it_names_a_review_by_its_version_or_its_version_and_an_approval_digest() {
+        let current = "3:1:0.1";
+        for given in ["3:1:0.1", "3:1:0.1:ab12cd34ef56ab78", "3:1:0.1:"] {
+            assert!(names(current, given), "{given}");
+        }
+        for given in [
+            "",
+            "3:1:0.10",
+            "3:1:0.1x",
+            "3:1:0.1#loss-abc",
+            "3:1:0",
+            "13:1:0.1",
+            "3:1",
+            "3:1:0.2:ab12cd34ef56ab78",
+        ] {
+            assert!(!names(current, given), "{given}");
+        }
+    }
 
     #[test]
     fn it_reads_back_what_it_accepted_as_typed() {
