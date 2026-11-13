@@ -38,6 +38,7 @@ const WATCH_RESNAPSHOT: Duration = Duration::from_secs(5);
 
 pub(crate) mod caddy;
 mod certificates;
+mod error_page;
 mod projection;
 
 use caddy::CaddyAdmin;
