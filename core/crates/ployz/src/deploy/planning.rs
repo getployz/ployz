@@ -1179,7 +1179,9 @@ fn assemble_plan(
                 &mut budget,
                 &spec.name,
                 error.into_rpc_error(),
-                Reservation::Restore(before),
+                before.map_or(Reservation::Release, |before| {
+                    Reservation::Restore(Box::new(before))
+                }),
             );
             continue;
         }
@@ -1544,7 +1546,7 @@ enum Reservation<'snapshot> {
     Release,
     /// Put back the budget as it was before the Service was placed, then give back what it
     /// had committed.
-    Restore(Option<ServiceBudget<'snapshot>>),
+    Restore(Box<ServiceBudget<'snapshot>>),
 }
 
 /// Report `service` not attempted with `error` and settle its share of the budget.
@@ -1559,8 +1561,8 @@ fn block_service<'snapshot>(
         service: service.clone(),
         error,
     });
-    if let Reservation::Restore(Some(before)) = reservation {
-        *budget = before;
+    if let Reservation::Restore(before) = reservation {
+        *budget = *before;
     }
     budget.release(service);
 }

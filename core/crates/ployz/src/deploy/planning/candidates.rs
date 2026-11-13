@@ -46,25 +46,30 @@ impl DeploySnapshot {
             self.machines
                 .iter()
                 .map(|machine| {
-                    let candidacy = match requested.placement_eligibility_in_namespace(
+                    let eligibility = requested.placement_eligibility_in_namespace(
                         namespace,
                         &machine.machine,
                         machine.storage.as_ref(),
-                    ) {
-                        ServicePlacementEligibility::Ineligible(
-                            ServicePlacementIneligibleReason::PlacementMismatch,
-                        ) => Candidacy::Excluded(Exclusion::PlacementMismatch),
-                        _ if !machine.invites_rpc()
-                            && machine.membership == MembershipObservation::Down =>
-                        {
-                            Candidacy::Excluded(Exclusion::Down)
-                        }
-                        _ if self.silent(machine) => Candidacy::Excluded(Exclusion::Silent),
-                        ServicePlacementEligibility::Ineligible(
-                            ServicePlacementIneligibleReason::WorkNotAccepted,
-                        ) => Candidacy::Excluded(Exclusion::WorkNotAccepted),
-                        _ if !machine.invites_rpc() => Candidacy::Excluded(Exclusion::Unreached),
-                        eligibility => Candidacy::Candidate(eligibility),
+                    );
+                    let ineligible = |reason| ServicePlacementEligibility::Ineligible(reason);
+                    let candidacy = if eligibility
+                        == ineligible(ServicePlacementIneligibleReason::PlacementMismatch)
+                    {
+                        Candidacy::Excluded(Exclusion::PlacementMismatch)
+                    } else if !machine.invites_rpc()
+                        && machine.membership == MembershipObservation::Down
+                    {
+                        Candidacy::Excluded(Exclusion::Down)
+                    } else if self.silent(machine) {
+                        Candidacy::Excluded(Exclusion::Silent)
+                    } else if eligibility
+                        == ineligible(ServicePlacementIneligibleReason::WorkNotAccepted)
+                    {
+                        Candidacy::Excluded(Exclusion::WorkNotAccepted)
+                    } else if !machine.invites_rpc() {
+                        Candidacy::Excluded(Exclusion::Unreached)
+                    } else {
+                        Candidacy::Candidate(eligibility)
                     };
                     (machine, candidacy)
                 })
