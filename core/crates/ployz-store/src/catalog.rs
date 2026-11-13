@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use ts_rs::TS;
 
 use crate::settings::{ServiceSetting, SettingPath, Target};
-use crate::variables;
+use crate::variables::{self, VariableKey};
 
 /// Bumped whenever a published path, type or meaning changes.
 pub const CATALOG_VERSION: u32 = 1;
@@ -16,10 +16,10 @@ pub const CATALOG_VERSION: u32 = 1;
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// A node name: a lowercase DNS label.
-pub(crate) const NODE_NAME: &str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
+pub(crate) const NODE_NAME: &str = ServiceName::PATTERN;
 
 /// A variable name, as stored.
-pub(crate) const VARIABLE_KEY: &str = "^[A-Z_][A-Z0-9_]{0,127}$";
+pub(crate) const VARIABLE_KEY: &str = VariableKey::PATTERN;
 
 /// The whole catalog, or the part at `SERVICE` or `SERVICE.SETTING`.
 ///

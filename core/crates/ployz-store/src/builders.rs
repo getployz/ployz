@@ -5,14 +5,11 @@
 
 use ployz_core::{MachineId, RpcError};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::error;
 use crate::id::EnvironmentId;
-use crate::policy::PolicySetting;
-use crate::settings::ServiceSetting;
+use crate::policy::Preferred;
 use crate::storage::{Tx, name_of};
 
 /// Which Builders a Git build tries, in turn.
@@ -118,37 +115,6 @@ fn chosen(tx: &mut dyn Tx, organization: &str) -> Result<Option<BuildOrder>, Rpc
     .transpose()
 }
 
-/// A Service's Preferred Builder: GitHub, or one Server. None is Auto. It is kept
-/// in the Service's Deployment Policy ([`crate::policy`]).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Preferred {
-    Github,
-    Server(MachineId),
-}
-
-impl Preferred {
-    pub(crate) fn parse(value: &Value) -> Result<Self, RpcError> {
-        let invalid = || {
-            ServiceSetting::Policy(PolicySetting::PreferredBuilder)
-                .invalid("expected \"github\" or a Server's Machine ID")
-        };
-        match value.as_str() {
-            Some("github") => Ok(Self::Github),
-            Some(text) => MachineId::parse(text.trim())
-                .map(Self::Server)
-                .map_err(|_| invalid()),
-            None => Err(invalid()),
-        }
-    }
-
-    pub(crate) fn text(&self) -> String {
-        match self {
-            Self::Github => "github".to_owned(),
-            Self::Server(machine) => machine.to_string(),
-        }
-    }
-}
-
 /// The Builders a Git build of `service_id` tries, in turn, and the Server the
 /// servers try first, if one is preferred.
 pub(crate) fn walk(
@@ -158,10 +124,7 @@ pub(crate) fn walk(
     service_id: &str,
 ) -> Result<(Vec<Builder>, Option<MachineId>), RpcError> {
     let order = chosen(tx, organization)?.unwrap_or(BuildOrder::AUTO);
-    let preferred = crate::policy::load(tx, environment, service_id)?
-        .preferred_builder
-        .map(|text| Preferred::parse(&json!(text)).map_err(|_| error::corrupt("Preferred Builder")))
-        .transpose()?;
+    let preferred = crate::policy::load(tx, environment, service_id)?.preferred_builder;
     let (first, machine) = match preferred {
         None => (None, None),
         Some(Preferred::Github) => (Some(Builder::Github), None),

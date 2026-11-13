@@ -10,8 +10,18 @@ use crate::error;
 
 // Not core's `validated_string_newtype!`: that one derives `TS` and returns a
 // `ValueError` that quotes the rejected value, and the Store never echoes input.
+/// What a name of `$kind` is, the one rule Projects, Environments and Volumes share.
+macro_rules! name_sentence {
+    ($kind:literal) => {
+        concat!(
+            $kind,
+            ": up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
+        )
+    };
+}
+
 macro_rules! store_string {
-    ($(#[$doc:meta])* $name:ident, $what:literal, $valid:expr $(, normalize = $normalize:expr)?) => {
+    ($(#[$doc:meta])* $name:ident, $what:expr, $valid:expr $(, normalize = $normalize:expr)?) => {
         $(#[$doc])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
         #[serde(try_from = "String", into = "String")]
@@ -139,7 +149,7 @@ store_string!(
 );
 store_string!(
     /// A Volume's name, unique in its Environment: a lowercase DNS label.
-    VolumeName, "a Volume name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit", is_name
+    VolumeName, name_sentence!("a Volume name"), is_name
 );
 store_string!(
     /// A Sync's identity, minted by the Store when it lands: what Undo names.
@@ -165,11 +175,11 @@ store_string!(
 );
 store_string!(
     /// A Project's name, unique in its Organization: a lowercase DNS label.
-    ProjectName, "a Project name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit", is_name
+    ProjectName, name_sentence!("a Project name"), is_name
 );
 store_string!(
     /// An Environment's name, unique in its Project: a lowercase DNS label.
-    EnvironmentName, "an Environment name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit", is_name
+    EnvironmentName, name_sentence!("an Environment name"), is_name
 );
 
 store_string!(
@@ -636,5 +646,27 @@ mod commit_sha_tests {
         let commit = CommitSha::parse("0123456789abcdef0123456789abcdef01234567").unwrap();
         assert_eq!(commit.short(), "0123456");
         assert_eq!(CommitSha::SHORT_LEN, 7);
+    }
+}
+
+#[cfg(test)]
+mod name_sentence_tests {
+    use super::{EnvironmentName, ProjectName, VolumeName};
+
+    #[test]
+    fn each_kind_of_name_refuses_in_the_same_words() {
+        let rule =
+            "up to 63 lowercase letters, digits and -, starting and ending with a letter or digit";
+        let refused = [
+            ("a Volume name", VolumeName::parse("Data").unwrap_err()),
+            ("a Project name", ProjectName::parse("Shop").unwrap_err()),
+            (
+                "an Environment name",
+                EnvironmentName::parse("Prod").unwrap_err(),
+            ),
+        ];
+        for (kind, error) in refused {
+            assert_eq!(error.message, format!("Expected {kind}: {rule}"));
+        }
     }
 }
