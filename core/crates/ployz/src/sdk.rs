@@ -1808,7 +1808,7 @@ impl From<crate::cluster::RoleWaitError> for RpcError {
             RoleWaitError::Connect(error) => Self::from(error),
             error @ (RoleWaitError::NotObserved(_)
             | RoleWaitError::ChangeNotObserved
-            | RoleWaitError::Cancelled) => Self::unavailable(error.to_string()),
+            | RoleWaitError::Cancelled) => RpcError::unavailable(error.to_string()),
         }
     }
 }
