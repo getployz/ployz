@@ -627,6 +627,51 @@ enum Deploy {
     Reapprove(Vec<ServiceName>),
 }
 
+/// What a push deploys of an Environment: a shut-down PR Environment comes back as a whole
+/// Deploy, which names no Service and retires none; any other push names the Services it
+/// selects and retires those a merge or a Save removed.
+enum Plan {
+    ShutDown,
+    Push(Vec<deployment::Retire>),
+}
+
+impl Plan {
+    fn retire(&self) -> &[deployment::Retire] {
+        match self {
+            Self::ShutDown => &[],
+            Self::Push(retire) => retire,
+        }
+    }
+
+    fn names(
+        &self,
+        selected: &[(&SavedServiceIntent, bool)],
+    ) -> Result<Vec<ServiceName>, RpcError> {
+        self.shipped(selected)
+            .iter()
+            .map(|(service, _)| ServiceName::parse(service.slug.as_str()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| error::corrupt("Service name"))
+    }
+
+    fn ids(&self, selected: &[(&SavedServiceIntent, bool)]) -> Vec<String> {
+        self.shipped(selected)
+            .iter()
+            .map(|(service, _)| service.id.clone())
+            .collect()
+    }
+
+    fn shipped<'a, 'b>(
+        &self,
+        selected: &'a [(&'b SavedServiceIntent, bool)],
+    ) -> &'a [(&'b SavedServiceIntent, bool)] {
+        match self {
+            Self::ShutDown => &[],
+            Self::Push(_) => selected,
+        }
+    }
+}
+
 fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -701,12 +746,11 @@ fn admit(
             selected.push((service, follows));
         }
     }
-    // A push ships every Saved change, so what the merges or a Save removed goes
-    // with it, unless it never ran. A shut-down Environment deploys all of it,
-    // which tears every one down.
-    let retire = match shut_down {
-        true => Vec::new(),
+    let plan = match shut_down {
+        true => Plan::ShutDown,
         false => {
+            // A push ships every Saved change, so what the merges or a Save removed goes
+            // with it, unless it never ran.
             let head = deployment::head(tx, &environment)?;
             let mut removed = landed.removals.clone();
             for service in deployment::Landing::of(&head)
@@ -715,11 +759,14 @@ fn admit(
             {
                 removed.insert(ServiceLineageId::parse(service.id.as_str())?);
             }
-            deployment::retirements(tx, id, &saved.intent, &removed)?
+            Plan::Push(deployment::retirements(tx, id, &saved.intent, &removed)?)
         }
     };
     // Only what it selects or the merges removed makes a push deploy.
-    let merged_removal = retire.iter().any(|gone| landed.removals.contains(&gone.id));
+    let merged_removal = plan
+        .retire()
+        .iter()
+        .any(|gone| landed.removals.contains(&gone.id));
     if selected.is_empty() && !merged_removal {
         forget_landed(tx, id, push, &merges)?;
         return Ok(Some(Deploy::Idle));
@@ -730,14 +777,7 @@ fn admit(
     if trusted.runnable().is_err() {
         return Ok(Some(Deploy::NoServers));
     }
-    let names = match shut_down {
-        true => Vec::new(),
-        false => selected
-            .iter()
-            .map(|(service, _)| ServiceName::parse(service.slug.as_str()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| error::corrupt("Service name"))?,
-    };
+    let names = plan.names(&selected)?;
     // A push of a live rule's branch deploys only the settings the rule approves: any
     // other Deployment would fail on every Server, so it waits for a person instead.
     let rule = crate::auto_rule::stored(tx, id)?.and_then(|rule| rule.open().ok());
@@ -766,13 +806,7 @@ fn admit(
         }
     }
     if wait && !passed(tx, who, push.repository_id, &push.head)? {
-        let ids: Vec<String> = match shut_down {
-            true => Vec::new(),
-            false => selected
-                .iter()
-                .map(|(service, _)| service.id.clone())
-                .collect(),
-        };
+        let ids = plan.ids(&selected);
         deployment::hold(
             tx,
             who,
@@ -838,7 +872,7 @@ fn admit(
             tx,
             who,
             (&environment, &saved),
-            (&names, &retire),
+            (&names, plan.retire()),
             (cluster_domain.as_ref(), &pins),
             admission,
             trusted,
