@@ -6,7 +6,6 @@
 //!
 //! Mirror, Sync and Mirror removal are Volume runs in Ployz Cloud; see [`run`].
 
-use crate::ui::Next;
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::cloud_contract::MIN_MANAGED_VOLUME_BYTES;
 use ployz_core::config::VolumeKind;
@@ -18,6 +17,7 @@ use ployz_store::{
     VolumeListing, VolumeName, VolumeQuery, VolumeStaged, VolumesQuery,
 };
 
+use super::shared::staged::{StagedReport, Then};
 use super::store;
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
@@ -447,29 +447,23 @@ fn staged(
     already: &str,
     storage: bool,
 ) -> Result<(), Error> {
-    if result.staged.is_empty() {
-        return crate::ui::done(
-            &Next::new(result, None),
-            format_args!(
-                "Nothing changed in {}/{}; Volume {} {already}.",
-                result.environment.project, result.environment.name, result.volume.name
-            ),
-        );
-    }
-    let followed = Next::new(result, Some(store::next(matches, &["deploy"])));
-    crate::ui::finish(&followed, || {
-        crate::ui::stream(format_args!(
-            "{what} {} in {}/{}.",
-            result.volume.name, result.environment.project, result.environment.name
-        ));
+    let followed = StagedReport::of(
+        matches,
+        result,
+        format!("{what} {}", result.volume.name),
+        format!("Volume {} {already}", result.volume.name),
+        Then::Deploy,
+    )
+    .print_changes(|| {
         if storage {
             crate::ui::stream(format_args!(
                 "Storage: {}",
                 storage_word(result.volume.storage)
             ));
         }
-        followed.say();
-    })
+    })?;
+    followed.say();
+    Ok(())
 }
 
 use super::store::volume_name;

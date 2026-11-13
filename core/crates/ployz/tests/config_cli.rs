@@ -6506,6 +6506,139 @@ fn a_verb_that_changes_nothing_says_so_and_keeps_the_revision() {
     assert_eq!(renamed["links"], json!(0));
 }
 
+/// Every verb that stages a change reports it in one shape: the sentence and its detail
+/// lines on stdout, then the `next:` line on stderr. A Config verb names `ployz diff` only
+/// in its JSON; a change that was already so names no next command at all.
+#[test]
+fn a_staged_change_reports_the_same_way_whichever_noun_changed() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    let speaks = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        (
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    };
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "port: 80\n").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(store, &["config", "put", "app", "app.yml", "--from", from]);
+    ok(store, &["deploy", "--skip-deploy"]);
+
+    let deploy = "next: ployz deploy\n";
+    let said = |args: &[&str], stdout: &str, stderr: &str| {
+        let (out, err) = speaks(args);
+        assert_eq!((out.as_str(), err.as_str()), (stdout, stderr), "{args:?}");
+    };
+    said(
+        &["volume", "add", "extra"],
+        "Staged new Volume extra in shop/production.\nStorage: Managed volume (5 GB limit)\n",
+        deploy,
+    );
+    said(
+        &["volume", "rename", "extra", "extra2"],
+        "Staged rename of Volume extra2 in shop/production.\n",
+        deploy,
+    );
+    said(
+        &["volume", "rename", "extra2", "extra2"],
+        "Nothing changed in shop/production; Volume extra2 already has that name.\n",
+        "",
+    );
+    said(
+        &["volume", "rm", "extra2"],
+        "Staged removal of Volume extra2 in shop/production.\n",
+        deploy,
+    );
+    said(
+        &["service", "add", "api", "--image", "api:1"],
+        "Staged new Service api in shop/production.\n",
+        deploy,
+    );
+    said(
+        &["service", "rename", "api", "api2"],
+        "Staged rename of Service api2 in shop/production.\n",
+        deploy,
+    );
+    said(
+        &["service", "rename", "api2", "api2"],
+        "Nothing changed in shop/production; api2 already has that name.\n",
+        "",
+    );
+    said(
+        &["service", "rm", "api2"],
+        "Staged removal of Service api2 in shop/production.\n",
+        deploy,
+    );
+    said(
+        &["config", "put", "app", "b.yml", "--from", from],
+        "Staged Config app in shop/production.\n  app.yml (9 bytes, mode 0444)\n  b.yml (9 bytes, mode 0444)\n",
+        "",
+    );
+    said(
+        &["config", "rm-file", "app", "b.yml"],
+        "Staged Config app in shop/production.\n  app.yml (9 bytes, mode 0444)\n",
+        "",
+    );
+    said(
+        &["config", "unmount", "web", "app"],
+        "Staged unmount of Config app in shop/production.\n  app.yml (9 bytes, mode 0444)\n",
+        "",
+    );
+    said(
+        &["config", "add", "extra"],
+        "Staged new Config extra in shop/production.\n",
+        "",
+    );
+    said(
+        &["domain", "add", "web", "app.example.com"],
+        "Staged domain app.example.com on web in shop/production.\n",
+        deploy,
+    );
+    said(
+        &["domain", "add", "web", "app.example.com"],
+        "Nothing changed in shop/production; app.example.com is already on web.\n",
+        "",
+    );
+    said(
+        &["domain", "rm", "app.example.com"],
+        "Staged removal of domain app.example.com on web in shop/production.\n",
+        deploy,
+    );
+    said(
+        &["set", "web.image=web:2"],
+        "Staged web.image in shop/production.\n",
+        deploy,
+    );
+    said(
+        &["set", "web.image=web:2"],
+        "Nothing changed in shop/production; web.image already has that value.\n",
+        "",
+    );
+    said(
+        &["unset", "web.memLimit"],
+        "Nothing changed in shop/production; web.memLimit is already unset.\n",
+        "",
+    );
+
+    let staged = ok(store, &["config", "put", "app", "c.yml", "--from", from]);
+    assert_eq!(staged["next"], json!("ployz diff"));
+    let staged = ok(store, &["volume", "add", "more"]);
+    assert_eq!(staged["next"], json!("ployz deploy"));
+    let staged = ok(store, &["service", "add", "db", "--image", "db:1"]);
+    assert_eq!(staged["next"], json!("ployz deploy"));
+    let staged = ok(store, &["domain", "add", "web", "shop.example.com"]);
+    assert_eq!(staged["next"], json!("ployz deploy"));
+    assert_eq!(staged["added"], json!(true));
+    let staged = ok(store, &["set", "web.image=web:3"]);
+    assert_eq!(staged["next"], json!("ployz deploy"));
+}
+
 #[test]
 fn history_scope_flags_work_before_or_after_the_action() {
     for store in &targets() {

@@ -3,7 +3,6 @@
 //! rename and delete it. Every change is staged in Working State until a Deploy.
 //! A file reads Service variables as `${{ SERVICE.KEY }}`.
 
-use crate::ui::Next;
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::{FileMode, ReviewLifecycleKind};
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
@@ -14,6 +13,7 @@ use ployz_store::{
 };
 
 use super::input::{self, InputError, Source};
+use super::shared::staged::{StagedReport, Then};
 use super::store;
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, switch, value};
@@ -374,21 +374,15 @@ fn staged(
     what: &str,
     unchanged: &str,
 ) -> Result<(), Error> {
-    if result.staged.is_empty() {
-        return crate::ui::done(
-            &Next::new(result, None),
-            format_args!(
-                "Nothing changed in {}/{}; {unchanged}.",
-                result.environment.project, result.environment.name
-            ),
-        );
-    }
-    let hint = store::next(matches, &["diff"]);
-    crate::ui::finish(&Next::new(result, Some(hint)), || {
-        crate::ui::stream(format_args!(
-            "{what} {} in {}/{}.",
-            result.config.name, result.environment.project, result.environment.name
-        ));
+    // A person is never told the next command here; `--json` carries it.
+    StagedReport::of(
+        matches,
+        result,
+        format!("{what} {}", result.config.name),
+        unchanged.to_owned(),
+        Then::Diff,
+    )
+    .print_changes(|| {
         for file in &result.config.files {
             crate::ui::stream(format_args!(
                 "  {} ({} bytes, mode {})",
@@ -397,7 +391,8 @@ fn staged(
                 file.mode
             ));
         }
-    })
+    })?;
+    Ok(())
 }
 
 fn config_name(matches: &ArgMatches, arg: &str) -> Result<ConfigName, Error> {

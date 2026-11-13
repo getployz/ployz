@@ -8,7 +8,6 @@
 //! the `values` object that `set SERVICE --patch` takes back.
 
 use crate::ui;
-use crate::ui::Next;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 use std::io::{IsTerminal as _, Read};
@@ -22,6 +21,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::input::{self, InputError, Source};
+use super::shared::staged::{StagedReport, Then};
 use super::store::{environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
@@ -593,25 +593,20 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let fail = |error| store.fail(with_refresh_hint(error, matches, "get"));
     let edit = store.seal_edit(edit, fail)?;
     let edited = store.try_write(&edit).map_err(fail)?;
-    let hint = (!edited.staged.is_empty()).then(|| next(matches, &["deploy"]));
-    let followed = Next::new(&edited, hint);
-    ui::finish(&followed, || {
-        let where_ = edited.environment.to_string();
-        if !edited.staged.is_empty() {
-            crate::ui::stream(format_args!(
-                "Staged {} in {where_}.",
-                super::joined(&edited.staged)
-            ));
-        }
+    let followed = StagedReport::of(
+        matches,
+        &edited,
+        format!("Staged {}", super::joined(&edited.staged)),
+        unchanged,
+        Then::Deploy,
+    )
+    .print(|| {
         if !edited.immediate.is_empty() {
             crate::ui::stream(format_args!(
-                "Applied {} in {where_}.",
-                super::joined(&edited.immediate)
+                "Applied {} in {}.",
+                super::joined(&edited.immediate),
+                edited.environment
             ));
-        }
-        // A mutation always says what it did, nothing included.
-        if edited.staged.is_empty() && edited.immediate.is_empty() {
-            ui::stream(format_args!("Nothing changed in {where_}; {unchanged}."));
         }
         for typed in &edited.typed_addresses {
             say_typed_addresses(matches, typed);
@@ -619,8 +614,9 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         for note in noted(edited.notes.iter().map(|noted| &noted.note)) {
             ui::note(note);
         }
-        followed.say();
-    })
+    })?;
+    followed.say();
+    Ok(())
 }
 
 /// Why an edit that changed nothing had nothing to change.
