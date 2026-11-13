@@ -125,7 +125,7 @@ async fn a_join_refused_before_the_daemon_takes_it_names_how_to_forget_the_serve
 
 #[tokio::test]
 async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
-    use ployz::context::{Config, Connection, Context};
+    use ployz::context::{Config, Context};
     use std::collections::BTreeMap;
 
     for adding in [false, true] {
@@ -156,7 +156,7 @@ async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
                 BTreeMap::from([(
                     "test".into(),
                     Context {
-                        connections: vec![Connection::tcp(entry_address)],
+                        connections: vec![format!("ssh://root@{entry_address}").parse().unwrap()],
                     },
                 )]),
             )

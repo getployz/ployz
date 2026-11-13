@@ -1,48 +1,14 @@
-use ployz_core::{
-    AdvertisedEndpoint, EnrollAs, EnrollRequest, Machine, MachineId, MachineName, Registered,
-};
-
 use super::cluster_network;
 use crate::{
     corrosion::{AdminClient, ReplicatedStore, fake_cluster},
-    machine::{LocalMachine, LocalMachineStore, RecordOwner},
+    machine::{LocalMachine, LocalMachineStore, RecordOwner, test_support::ApprovingCluster},
 };
 
 /// A Machine that joined a Cluster and caught up, so its origin is `Join`.
 fn joined(dir: &std::path::Path) -> LocalMachineStore {
     let mut store = LocalMachineStore::open(dir).unwrap();
-    let record = store.record().clone();
-    let assigned_machine = Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id: record.id(),
-        name: MachineName::parse("joined").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        public_key: record.private_key().public_key(),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
-        runtime: Default::default(),
-        join_approval: None,
-        build_concurrency: None,
-    };
-    let mut founder = assigned_machine.clone();
-    founder.id = MachineId::random();
     store
-        .enroll(EnrollRequest {
-            role: EnrollAs::Member {
-                // From JSON, so it also builds where `Registered` has fewer fields.
-                registration: serde_json::from_value::<Registered>(serde_json::json!({
-                    "assigned_machine": assigned_machine,
-                    "visible_peers": [founder],
-                    "target_versions": {},
-                }))
-                .unwrap(),
-            },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        })
+        .enroll(ApprovingCluster::new(1).join(store.record()))
         .unwrap();
     store.complete_catch_up().unwrap();
     store

@@ -12,8 +12,7 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, EnrollAs,
-    EnrollRequest, Enrolled, InspectRequest, Machine, MachineId, MachineName, MachineRpcClient,
-    Registered, StorageDeparture, op,
+    EnrollRequest, Enrolled, InspectRequest, MachineName, MachineRpcClient, StorageDeparture, op,
 };
 use tonic::transport::{Channel, Endpoint};
 
@@ -140,7 +139,7 @@ fn volume_plugin_rejects_more_than_one_systemd_socket() {
 }
 
 #[test]
-fn join_leaves_a_journal_line_and_records_the_restart() {
+fn enrollment_leaves_a_journal_line_and_records_the_restart() {
     let root = TestDir::new("ployzd-process-join");
     fs::create_dir_all(&root.0).unwrap();
     let notify_socket = root.0.join("notify.sock");
@@ -154,15 +153,15 @@ fn join_leaves_a_journal_line_and_records_the_restart() {
         &[],
         &["--volume-plugin-socket", plugin_socket.to_str().unwrap()],
     );
-    join(&socket);
-    let stderr = wait_and_stderr(&mut daemon.0, "join");
+    found(&socket);
+    let stderr = wait_and_stderr(&mut daemon.0, "enrollment");
     assert!(
         stderr.contains("enrolled"),
         "enrollment missing from journal stderr: {stderr}"
     );
     assert!(
         stderr.contains("shutting down") && stderr.contains("restart requested"),
-        "join restart reason missing from journal stderr: {stderr}"
+        "enrollment restart reason missing from journal stderr: {stderr}"
     );
 }
 
@@ -403,54 +402,20 @@ fn inspect(path: &Path) -> ployz_core::MachineDetails {
     })
 }
 
-fn join(path: &Path) {
+fn found(path: &Path) {
     let details = inspect(path);
-    let peer_key = ployzd::network::WireGuardPrivateKey::generate().public_key();
-    let assigned = Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id: details.id,
-        name: MachineName::parse("joined").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        public_key: details.public_key,
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
-        runtime: Default::default(),
-        join_approval: None,
-        build_concurrency: None,
-    };
-    let peer = Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id: MachineId::random(),
-        name: MachineName::parse("peer").unwrap(),
-        subnet: "10.210.0.0/24".parse().unwrap(),
-        public_key: peer_key,
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-        runtime: Default::default(),
-        join_approval: None,
-        build_concurrency: None,
-    };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let enrolled = connect(path)
             .await
             .enroll(
                 op::Enroll::into_request(EnrollRequest {
-                    role: EnrollAs::Member {
-                        pin: None,
-                        registration: Registered {
-                            assigned_machine: assigned,
-                            visible_peers: vec![peer],
-                            target_versions: [("actor".into(), 1)].into(),
-                            sealing_key: None,
-                            devices: Vec::new(),
-                            recipient: None,
-                        },
+                    role: EnrollAs::Founder {
+                        initial_policy: Default::default(),
+                        name: MachineName::parse("founded").unwrap(),
+                        cluster_network: "10.210.0.0/16".parse().unwrap(),
+                        public_ip: None,
+                        advertised_endpoints: details.advertised_endpoints,
+                        grant: None,
                     },
                     wireguard_mtu: None,
                     pinned: Default::default(),

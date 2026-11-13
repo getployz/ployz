@@ -74,6 +74,7 @@ src/handlers/cloud.rs::wait_phase	op::Inspect	call_repeatable	setup	wait(WAIT)	r
 src/handlers/cluster.rs::read	op::ReadClusterName	invoke_entry	single	-	-	once
 src/handlers/cluster.rs::set	op::SetClusterName	invoke_entry	single	-	-	once
 src/handlers/debug.rs::send	-	invoke_raw	single	target(TARGET_RPC_TIMEOUT)	-	once
+src/handlers/device.rs::approve_own	op::SetDevice	call_shared	single	-	-	once
 src/handlers/device.rs::approve_waiting_join	op::ApproveJoin	invoke	single	-	-	once
 src/handlers/device.rs::approve_waiting_join	op::PendingJoins	invoke	single	-	-	once
 src/handlers/device.rs::devices_on	op::Inspect	invoke	single	-	-	once

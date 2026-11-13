@@ -109,7 +109,7 @@ fn activation_is_a_process_boundary() {
 
     let record = store.record();
     assert_eq!(record.activation(), Some(admitted.operation));
-    assert!(record.device_enforcement());
+    assert!(record.filters_peers());
     assert_eq!(*plugin.0.borrow(), ["stop", "start"]);
     assert!(PendingActivation::read(store.data_dir()).unwrap().is_none());
     assert_eq!(
@@ -192,7 +192,7 @@ fn enforcement_can_not_be_turned_off_after_activation_and_reload() {
 
     let store = LocalMachineStore::open(dir.path().join("data")).unwrap();
 
-    assert!(store.record().device_enforcement());
+    assert!(store.record().filters_peers());
 }
 
 fn join_approval(id: MachineId, signer: &Signer) -> (JoinApproval, Signed<JoinApproval>) {

@@ -4,6 +4,7 @@ mod catch_up;
 mod daemon_sync;
 mod founder_resumption;
 mod harness;
+mod pin;
 mod policy;
 mod recovery;
 mod setup_report;
@@ -188,6 +189,33 @@ async fn an_approved_join_to_a_server_that_cannot_confirm_stops_and_names_the_up
         1,
         "nothing is relayed without a confirmation"
     );
+}
+
+/// A Cloud that strips the capsule from its join reply can't make a Server join: the Server
+/// refuses, the command fails naming the refusal, and Cloud hears of no enrollment.
+#[tokio::test]
+async fn a_join_cloud_sent_without_its_capsule_fails_and_reports_nothing() {
+    let registration = registration();
+    assert!(registration.sealing_key.is_none());
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration).refusing_unsigned_joins();
+    let output = add_through_cloud(daemon.clone(), &enroll).await;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the join approval carries no signature"),
+        "{stderr}"
+    );
+    assert_eq!(daemon.join_attempts(), 1);
+    assert_eq!(enroll.posts().len(), 1, "only the identity reaches Cloud");
+    assert!(enroll.callbacks().is_empty(), "{:?}", enroll.callbacks());
 }
 
 /// `--public-ip` and `--wg-endpoint` reach Cloud's registration and stay pinned, as on a

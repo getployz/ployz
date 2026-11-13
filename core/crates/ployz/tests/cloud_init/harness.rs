@@ -94,6 +94,7 @@ pub struct FounderEnroll {
 #[derive(Clone, Debug)]
 pub struct MemberEnroll {
     pub registration: Registered,
+    pub pin: Option<ployz_core::JoinPin>,
     pub pinned: ployz_core::PinnedAddresses,
 }
 
@@ -146,6 +147,7 @@ struct JoinInner {
     recovery_rpcs: AtomicBool,
     recovery_seeds: Mutex<Vec<RecoverySeed>>,
     wrap_calls: AtomicUsize,
+    refuses_unsigned_joins: AtomicBool,
 }
 
 impl JoinDaemon {
@@ -194,6 +196,7 @@ impl JoinDaemon {
                 recovery_rpcs: AtomicBool::new(false),
                 recovery_seeds: Mutex::new(Vec::new()),
                 wrap_calls: AtomicUsize::new(0),
+                refuses_unsigned_joins: AtomicBool::new(false),
             }),
         }
     }
@@ -220,6 +223,10 @@ impl JoinDaemon {
 
     pub fn initialize_requests(&self) -> Vec<FounderEnroll> {
         self.inner.initialize_requests.lock().unwrap().clone()
+    }
+
+    pub fn registered(&self) -> bool {
+        self.inner.register_request.lock().unwrap().is_some()
     }
 
     pub fn register_request(&self) -> ployz_core::RegisterRequest {
@@ -283,6 +290,24 @@ impl JoinDaemon {
     /// Report `id` as this daemon's own, as an entry Machine other than the one being added does.
     pub fn with_id(self, id: MachineId) -> Self {
         *self.inner.own_id.lock().unwrap() = Some(id);
+        self
+    }
+
+    /// The Machine this daemon describes itself as.
+    fn id(&self) -> MachineId {
+        self.inner
+            .own_id
+            .lock()
+            .unwrap()
+            .unwrap_or(self.inner.registration.assigned_machine.id)
+    }
+
+    /// Answer a member enroll whose registration carries no capsule as ployzd does: refused,
+    /// with nothing enrolled.
+    pub fn refusing_unsigned_joins(self) -> Self {
+        self.inner
+            .refuses_unsigned_joins
+            .store(true, Ordering::SeqCst);
         self
     }
 
@@ -581,7 +606,7 @@ impl FakeMachine for JoinDaemon {
         }
         rpc_ok(ContractDescription {
             attest: None,
-            machine_id: self.inner.registration.assigned_machine.id,
+            machine_id: self.id(),
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: self.inner.daemon_version.lock().unwrap().clone(),
             capabilities: capabilities
@@ -644,12 +669,7 @@ impl FakeMachine for JoinDaemon {
         rpc_ok(MachineDetails {
             activation: None,
             sealing_recipient: None,
-            id: self
-                .inner
-                .own_id
-                .lock()
-                .unwrap()
-                .unwrap_or(self.inner.registration.assigned_machine.id),
+            id: self.id(),
             phase: if joined {
                 LocalMachinePhase::Participating
             } else if self.inner.resetting.load(Ordering::SeqCst) {
@@ -752,6 +772,22 @@ impl FakeMachine for JoinDaemon {
         let RpcRequestBody::Enroll(enroll) = decoded.body else {
             return Err(Status::invalid_argument("expected Enroll"));
         };
+        if let EnrollAs::Member { registration, .. } = &enroll.role
+            && registration.sealing_key.is_none()
+            && self.inner.refuses_unsigned_joins.load(Ordering::SeqCst)
+        {
+            self.inner.join_attempts.fetch_add(1, Ordering::SeqCst);
+            return Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &ployz_core::authority::AuthorityRefusal::Unsigned {
+                    purpose: ployz_core::authority::Purpose::Join,
+                },
+                serde_json::json!({
+                    "capability": ployz_core::JOIN_APPROVAL_CAPABILITY,
+                    "next": "ployz device approve --join CODE from an approved device",
+                }),
+            ));
+        }
         self.apply_enroll(enroll)
     }
 
@@ -1137,6 +1173,21 @@ impl FakeMachine for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(ployz_core::ImagePulled::default())
     }
+    async fn set_device(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::SetDevice(ployz_core::SetDeviceRequest::Approve { key }) = decoded.body
+        else {
+            return Err(Status::invalid_argument("expected a SetDevice approval"));
+        };
+        rpc_ok(ployz_core::DeviceSet::Approved { code: key.code() })
+    }
+
     async fn set_cluster_name(
         &self,
         request: Request<OpaquePayload>,
@@ -1326,7 +1377,7 @@ impl JoinDaemon {
             });
         }
         let machine = match enroll.role.clone() {
-            EnrollAs::Member { registration, .. } => {
+            EnrollAs::Member { registration, pin } => {
                 *self.inner.founding.lock().unwrap() = ployz_core::Founding::Joined;
                 if registration.assigned_machine.public_key != self.public_key() {
                     return rpc_ok(RpcError {
@@ -1339,6 +1390,7 @@ impl JoinDaemon {
                 let machine = registration.assigned_machine.clone();
                 *self.inner.join_request.lock().unwrap() = Some(MemberEnroll {
                     registration,
+                    pin,
                     pinned: enroll.pinned,
                 });
                 machine

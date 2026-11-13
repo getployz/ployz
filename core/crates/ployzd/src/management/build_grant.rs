@@ -720,7 +720,13 @@ mod tests {
         let machine = ManagementIdentity::from_bytes([7; 32]);
         let ingest = SocketAddr::from(([127, 0, 0, 1], 5000));
         grants
-            .mint(machine, Mint::check(request, None).unwrap(), ingest)
+            .mint(
+                machine,
+                Mint::check(request, None)
+                    .unwrap()
+                    .minted_by(ManagementScope::Full),
+                ingest,
+            )
             .unwrap()
     }
 
@@ -743,7 +749,9 @@ mod tests {
 
     fn sealed_grant(cluster: &Cluster) -> Arc<Grant> {
         let grants = BuildGrants::default();
-        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0)).unwrap();
+        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0))
+            .unwrap()
+            .minted_by(ManagementScope::Full);
         grants
             .mint(
                 ManagementIdentity::from_bytes([7; 32]),
@@ -949,7 +957,7 @@ mod tests {
                 machine: ManagementIdentity::from_bytes([7; 32])
             }
         );
-        assert!(grants.admit(holder.as_bytes(), &|| false).is_some());
+        assert!(grants.admit(holder.as_bytes()).is_some());
     }
 
     #[test]
@@ -962,7 +970,7 @@ mod tests {
         let public = SecretKey::from_bytes(grant.secret()).public();
         assert_eq!(minted.id.as_str(), hex::encode(public.as_bytes()));
         assert_eq!(grant.machine(), &ManagementIdentity::from_bytes([7; 32]));
-        assert!(grants.admit(public.as_bytes(), &|| false).is_some());
+        assert!(grants.admit(public.as_bytes()).is_some());
     }
 
     #[test]
@@ -1200,7 +1208,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_rule_grant_reaches_its_holder_through_enforcement() {
+        async fn a_rule_grant_reaches_its_holder() {
             let cluster = Cluster::new();
             let grant = rule_grant(&cluster, None, &X25519Secret::generate());
             let request = Request::builder()
@@ -1208,7 +1216,7 @@ mod tests {
                 .uri("/ployz/sealed")
                 .body(http_body_util::Empty::<Bytes>::new())
                 .unwrap();
-            let response = handle(request, &grant, &reqwest::Client::new(), &|| true).await;
+            let response = handle(request, &grant, &reqwest::Client::new()).await;
             assert_eq!(response.status(), StatusCode::OK);
         }
     }

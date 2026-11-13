@@ -828,8 +828,23 @@ async fn fake_docker_service_keeping_runtime(
     crate::docker::test_support::FakeDocker,
     crate::docker::ContainerRuntime,
 ) {
-    let (data_dir, store, service, fake, runtime) = fake_docker_service_built(prefix, None).await;
+    let (data_dir, store, service, fake, runtime) =
+        fake_docker_service_built(prefix, None, false).await;
     (data_dir, store, service, fake, runtime)
+}
+
+/// [`fake_docker_service`] on a record a daemon from before enforcement was the only mode
+/// wrote, so it awaits its Cluster's activation.
+async fn fake_docker_service_awaiting(
+    prefix: &str,
+) -> (
+    std::path::PathBuf,
+    RecordOwner,
+    MachineService,
+    crate::docker::test_support::FakeDocker,
+) {
+    let (data_dir, store, service, fake, _) = fake_docker_service_built(prefix, None, true).await;
+    (data_dir, store, service, fake)
 }
 
 /// [`fake_docker_service_keeping_runtime`] on a Machine that holds a Cluster's Sealing
@@ -846,13 +861,14 @@ async fn fake_docker_service_sealing(
 ) {
     let cluster = crate::sealed_env::test_support::Cluster::new();
     let (data_dir, store, service, fake, runtime) =
-        fake_docker_service_built(prefix, Some(cluster.dir.0.clone())).await;
+        fake_docker_service_built(prefix, Some(cluster.dir.0.clone()), false).await;
     (data_dir, store, service, fake, runtime, cluster)
 }
 
 async fn fake_docker_service_built(
     prefix: &str,
     sealing_key_dir: Option<std::path::PathBuf>,
+    before_f7: bool,
 ) -> (
     std::path::PathBuf,
     RecordOwner,
@@ -880,6 +896,11 @@ async fn fake_docker_service_built(
             pinned: Default::default(),
         })
         .unwrap();
+    if before_f7 {
+        drop(store);
+        crate::machine::test_support::written_before_f7(&data_dir, false);
+        store = LocalMachineStore::open(&data_dir).unwrap();
+    }
     let store = RecordOwner::spawn(store).unwrap();
     let (runtime, fake) = fake_runtime_with(FakeDocker {
         named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
@@ -1535,7 +1556,7 @@ mod ingress_doors {
     async fn an_operator_under_enforcement_places_the_pinned_doors() {
         let (data_dir, store, service, fake) = fake_docker_service("ployzd-doors-enforced").await;
         store
-            .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
+            .mutate(|store| store.trust_members(Vec::new()).unwrap())
             .await
             .unwrap();
         let set = set_doors(&service, doors_request(), true)
@@ -2105,8 +2126,8 @@ mod private_access {
     //! places, and what it leaves on the Machine.
 
     use ployz_core::{
-        DoorChange, OPERATOR_SCOPE_HEADER, PlatformPurpose, PrivateAccessSet, QualifiedService,
-        RpcError, SET_PRIVATE_ACCESS_CAPABILITY,
+        DoorChange, PlatformPurpose, PrivateAccessSet, QualifiedService, RpcError,
+        SET_PRIVATE_ACCESS_CAPABILITY,
     };
     use serde_json::{Value, json};
     use tonic::Status;
@@ -2118,14 +2139,11 @@ mod private_access {
         service: &MachineService,
         body: Value,
     ) -> Result<Result<PrivateAccessSet, RpcError>, Status> {
-        let mut request = Request::new(
+        let request = Request::new(
             op::SetPrivateAccess::into_request(serde_json::from_value(body).unwrap())
                 .encode()
                 .unwrap(),
         );
-        request
-            .metadata_mut()
-            .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
         let response = service
             .set_private_access(request)
             .await?
@@ -4115,7 +4133,7 @@ mod set_volume_copy {
 
         async fn enforce(store: &RecordOwner) {
             store
-                .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
+                .mutate(|store| store.trust_members(Vec::new()).unwrap())
                 .await
                 .unwrap();
         }
@@ -4137,7 +4155,7 @@ mod set_volume_copy {
             store
                 .mutate(move |store| {
                     store.approve_device(device, None).unwrap();
-                    store.set_device_enforcement(true, Vec::new()).unwrap();
+                    store.trust_members(Vec::new()).unwrap();
                 })
                 .await
                 .unwrap();
@@ -4686,20 +4704,6 @@ mod set_volume_copy {
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
-        #[tokio::test]
-        async fn an_operator_create_with_enforcement_off_is_admitted() {
-            let (data_dir, _store, service, fake) = fake_docker_service("ployzd-gate-off").await;
-            let plugin = promoting_plugin();
-            let (socket, server) = plugin.serve(&data_dir);
-            let service = service.with_volume_plugin(socket);
-
-            reply(&operator_set_copy(&service, create_start()).await.unwrap());
-            assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
-            assert_eq!(holder_status(&fake), vec![json!("running")]);
-            server.abort();
-            std::fs::remove_dir_all(data_dir).unwrap();
-        }
-
         fn seed_request() -> Value {
             json!({"name":"source", "into":VOLUME, "guid":"77"})
         }
@@ -4729,24 +4733,6 @@ mod set_volume_copy {
             // The same Seed from a Full caller reaches the plugin's Seed route.
             seed(&service, seed_request())
                 .await
-                .decode::<op::SeedVolume>()
-                .unwrap();
-            assert_eq!(plugin.routes_called(), vec![SEED_ROUTE]);
-            server.abort();
-            std::fs::remove_dir_all(data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        async fn an_operator_seed_with_enforcement_off_is_admitted() {
-            let (data_dir, _store, service, _fake) =
-                fake_docker_service("ployzd-gate-seed-off").await;
-            let plugin = pulled_mirror_plugin();
-            let (socket, server) = plugin.serve(&data_dir);
-            let service = service.with_volume_plugin(socket);
-
-            operator_seed(&service, seed_request())
-                .await
-                .unwrap()
                 .decode::<op::SeedVolume>()
                 .unwrap();
             assert_eq!(plugin.routes_called(), vec![SEED_ROUTE]);
@@ -4929,8 +4915,6 @@ mod ensure_container {
         ExecRequestFrame, MachineRpcClient,
     };
     use serde_json::{Value, json};
-    use tokio_stream::wrappers::TcpListenerStream;
-    use tonic::transport::Server;
 
     use super::*;
     use crate::docker::test_support::{FakeDocker, ordinary_source, spec_with_sources};
@@ -5383,18 +5367,14 @@ mod ensure_container {
                 .encode()
                 .unwrap();
         assert!(request.json.len() > 4 * 1024 * 1024);
-        let api = crate::machine_api::MachineApi::from_local(service);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(
-            Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)),
-        );
-        let mut client = MachineRpcClient::connect(format!("http://{address}"))
-            .await
-            .unwrap()
-            .max_decoding_message_size(ployz_core::RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
+        let (client, server) = crate::machine_api::test_socket::served(
+            crate::machine_api::MachineApi::from_local(service),
+            &crate::machine_api::test_socket::socket_in(&data_dir),
+        )
+        .await;
 
         let reply = client
+            .max_decoding_message_size(ployz_core::RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
             .ensure_container(Request::new(request))
             .await
             .unwrap()
@@ -5527,7 +5507,7 @@ mod ensure_container {
             store
                 .mutate(move |store| {
                     store.approve_device(device, None).unwrap();
-                    store.set_device_enforcement(true, Vec::new()).unwrap();
+                    store.trust_members(Vec::new()).unwrap();
                 })
                 .await
                 .unwrap();
@@ -5770,16 +5750,6 @@ mod ensure_container {
             std::fs::remove_dir_all(&fixture.data_dir).unwrap();
         }
 
-        #[tokio::test]
-        async fn an_operator_mint_is_admitted_with_enforcement_off() {
-            let (data_dir, _store, service, _fake, _runtime, _cluster) =
-                fake_docker_service_sealing("ployzd-enforce-off-mint").await;
-
-            opened_and_failed(&mint(&service, true).await.unwrap());
-            opened_and_failed(&mint(&service, false).await.unwrap());
-            std::fs::remove_dir_all(data_dir).unwrap();
-        }
-
         /// An Operator's mint under a rule: the rule's checks run before the record opens.
         async fn mint_under_rule(
             fixture: &Enforced,
@@ -5884,41 +5854,6 @@ mod ensure_container {
                 "expected a valid Build start frame"
             );
             std::fs::remove_dir_all(&fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        async fn builds_are_admitted_from_both_callers_with_enforcement_off() {
-            let (data_dir, _store, service, _fake) =
-                fake_docker_service("ployzd-enforce-off-build").await;
-
-            for operator in [true, false] {
-                assert_eq!(
-                    build_answer(&service, &data_dir, operator).await.unwrap(),
-                    "expected a valid Build start frame",
-                    "operator: {operator}"
-                );
-            }
-            std::fs::remove_dir_all(data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        async fn enforcement_off_leaves_an_unsigned_operator_restart_as_it_was() {
-            let (data_dir, _store, service, fake) = fake_docker_service("ployzd-enforce-off").await;
-            let id = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
-                .container_id;
-            let seen = requests(&fake).len();
-
-            let reply = operator_ensure(&service, stopped(&id), None).await.unwrap();
-
-            assert!(matches!(
-                present(&reply).runtime,
-                ContainerRuntimeObservation::Exited { .. }
-            ));
-            assert_eq!(
-                ends_with(&requests_since(&fake, seen), Method::POST, "/stop").count(),
-                1
-            );
-            std::fs::remove_dir_all(data_dir).unwrap();
         }
 
         #[tokio::test]
@@ -6544,7 +6479,7 @@ mod ensure_container {
                     .await,
                 Err(crate::machine::LocalMachineError::NeedsFullScope)
             ));
-            assert!(fixture.service.local.record().device_enforcement());
+            assert!(fixture.service.local.record().filters_peers());
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
@@ -6567,7 +6502,7 @@ mod ensure_container {
         #[tokio::test]
         async fn the_switch_activates_at_the_next_boot_and_has_no_off() {
             let (data_dir, store, service, _fake) =
-                fake_docker_service("ployzd-enforce-switch").await;
+                fake_docker_service_awaiting("ployzd-enforce-switch").await;
             let signer = Signer::from_seed(&[7; 32]);
             let device = DeviceKey::from(signer.public());
             store
@@ -6607,24 +6542,25 @@ mod ensure_container {
                 .decode::<op::SetDeviceEnforcement>()
                 .unwrap();
             assert!(reply.enforced);
-            assert!(!service.local.record().device_enforcement());
+            assert_eq!(service.local.record().activation(), None);
 
             service.local.commit_activation_as_if_restarted().await;
 
-            assert!(service.local.record().device_enforcement());
+            let activated = service.local.record().activation();
+            assert!(activated.is_some());
             let off = service
                 .set_device_enforcement(switch(false))
                 .await
                 .unwrap_err();
             assert_eq!(off.code(), tonic::Code::PermissionDenied);
-            assert!(service.local.record().device_enforcement());
+            assert_eq!(service.local.record().activation(), activated);
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
         #[tokio::test]
         async fn a_set_over_the_local_socket_activates_a_server_whose_keys_predate_evidence() {
             let (data_dir, store, service, _fake) =
-                fake_docker_service("ployzd-enforce-local-socket").await;
+                fake_docker_service_awaiting("ployzd-enforce-local-socket").await;
             let signer = Signer::from_seed(&[8; 32]);
             let device = DeviceKey::from(signer.public());
             store
@@ -6673,7 +6609,7 @@ mod ensure_container {
 
             assert!(reply.enforced);
             service.local.commit_activation_as_if_restarted().await;
-            assert!(service.local.record().device_enforcement());
+            assert!(service.local.record().activation().is_some());
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
@@ -7321,8 +7257,12 @@ mod read_routes {
                 .await
                 .unwrap();
         }
+        let mut local = enrolled(dir);
+        local
+            .trust_members(rows.iter().map(Into::into).collect())
+            .unwrap();
         let service = MachineService::with_cluster(
-            RecordOwner::spawn(enrolled(dir)).unwrap(),
+            RecordOwner::spawn(local).unwrap(),
             Some((replicated, AdminClient::new(admin_socket(dir, Vec::new())))),
         );
         (service, task)
@@ -7723,14 +7663,13 @@ mod resize_and_seed_under_approval {
         }
     }
 
-    async fn enforced(prefix: &str, enforcing: bool) -> Enforced {
+    async fn enforced(prefix: &str) -> Enforced {
         let (data_dir, store, service, _fake) = fake_docker_service(prefix).await;
         let signer = Signer::from_seed(&[7; 32]);
         let device = DeviceKey::from(signer.public());
         store
             .mutate(move |store| {
                 store.approve_device(device, None).unwrap();
-                store.set_device_enforcement(enforcing, Vec::new()).unwrap();
             })
             .await
             .unwrap();
@@ -7864,7 +7803,7 @@ mod resize_and_seed_under_approval {
 
     #[tokio::test]
     async fn a_resize_runs_only_at_the_size_direction_and_servers_its_approval_names() {
-        let machine = enforced("ployzd-resize-gate", true).await;
+        let machine = enforced("ployzd-resize-gate").await;
         machine.plugin.reply(SIZE_ROUTE, bound(20));
         let other = MachineId::random();
 
@@ -7905,7 +7844,7 @@ mod resize_and_seed_under_approval {
 
     #[tokio::test]
     async fn a_resend_runs_until_the_bound_lands_then_answers_it_without_a_write() {
-        let machine = enforced("ployzd-resize-resend", true).await;
+        let machine = enforced("ployzd-resize-resend").await;
         let shrink = machine.resize(vec![machine.this()], 10, true);
         machine.plugin.reply(
             SIZE_ROUTE,
@@ -7940,19 +7879,6 @@ mod resize_and_seed_under_approval {
         );
     }
 
-    #[tokio::test]
-    async fn a_resize_from_an_operator_needs_no_approval_on_a_machine_that_does_not_enforce() {
-        let machine = enforced("ployzd-resize-off", false).await;
-        machine.plugin.reply(SIZE_ROUTE, bound(20));
-        machine
-            .set_size(size_request(20, false, None))
-            .await
-            .unwrap()
-            .decode::<op::SetVolumeSize>()
-            .unwrap();
-        assert_eq!(machine.calls(SIZE_ROUTE), 1);
-    }
-
     fn seed_request(into: &str, guid: u64, approval: Option<Value>) -> Value {
         json!({"name": "app_source", "into": into, "guid": guid.to_string(), "approval": approval})
     }
@@ -7969,7 +7895,7 @@ mod resize_and_seed_under_approval {
 
     #[tokio::test]
     async fn a_seed_runs_only_into_the_volume_from_the_snapshot_its_approval_names() {
-        let machine = enforced("ployzd-seed-gate", true).await;
+        let machine = enforced("ployzd-seed-gate").await;
         machine.plugin.reply(SEED_ROUTE, copying());
         let approval = machine.seed("app_restored", 77);
 
@@ -8004,7 +7930,7 @@ mod resize_and_seed_under_approval {
 
     #[tokio::test]
     async fn a_seed_is_resent_while_it_copies_and_once_landed_is_only_read() {
-        let machine = enforced("ployzd-seed-resend", true).await;
+        let machine = enforced("ployzd-seed-resend").await;
         let approval = machine.seed("app_restored", 77);
         let request = seed_request("app_restored", 77, Some(approval));
         machine.plugin.reply(SEED_ROUTE, copying());
@@ -8037,7 +7963,7 @@ mod resize_and_seed_under_approval {
     #[tokio::test]
     async fn a_resend_queued_behind_the_resize_that_lands_writes_nothing() {
         use std::future::Future;
-        let machine = enforced("ployzd-resize-queued", true).await;
+        let machine = enforced("ployzd-resize-queued").await;
         let (calls, replies) = (machine.plugin.calls.clone(), machine.plugin.replies.clone());
         let applied = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = applied.clone();

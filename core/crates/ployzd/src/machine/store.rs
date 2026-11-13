@@ -1714,17 +1714,6 @@ mod device_slot_tests {
     }
 
     #[test]
-    fn device_enforcement_is_off_until_set_and_survives_reopening() {
-        let (dir, mut store) = founded();
-        assert!(!store.record().device_enforcement());
-        store.set_device_enforcement(true, Vec::new()).unwrap();
-
-        let store = reopened(&dir, store);
-
-        assert!(store.record().device_enforcement());
-    }
-
-    #[test]
     fn vetting_runs_once_so_a_later_approval_survives_reopening() {
         let (dir, store) = founded();
         let mut store = reopened_unvetted(&dir, store);

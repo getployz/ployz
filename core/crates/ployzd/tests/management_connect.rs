@@ -1581,16 +1581,15 @@ async fn holder_contract() {
     machine.stop().await;
 }
 
-/// A grant an Operator minted while enforcement was off reaches nothing once it is on:
-/// not on a new connection, and not on one admitted earlier. A Full caller's grant does.
+/// A grant an Operator minted reaches nothing, and a Full caller's grant does.
 #[tokio::test(flavor = "multi_thread")]
-async fn enforcement_closes_an_operators_grant_on_new_and_open_connections() {
-    tokio::time::timeout(Duration::from_secs(120), enforcement_contract())
+async fn only_a_full_callers_grant_reaches_the_machine() {
+    tokio::time::timeout(Duration::from_secs(120), grant_scope_contract())
         .await
         .expect("build grant test timed out");
 }
 
-async fn enforcement_contract() {
+async fn grant_scope_contract() {
     use ployz_core::{BuildGrant, BuildGrantId, ManagementScope, MintedKey};
 
     let machine = GrantMachine::start().await;
@@ -1628,38 +1627,16 @@ async fn enforcement_contract() {
             .ok()
     };
 
-    let operator = mint(ManagementScope::Operator);
-    let full = mint(ManagementScope::Full);
-    // Enforcement off: both reach the endpoint, which has no Sealed values to give.
-    let open_operator = open_grant_registry(&operator, &machine.relay)
+    let operator = open_grant_registry(&mint(ManagementScope::Operator), &machine.relay)
         .await
         .unwrap();
-    assert_eq!(
-        sealed_status(&open_operator).await,
-        Some(reqwest::StatusCode::NOT_FOUND)
-    );
-
-    machine
-        .local
-        .owner()
-        .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
+    assert_eq!(sealed_status(&operator).await, None);
+    let full = open_grant_registry(&mint(ManagementScope::Full), &machine.relay)
         .await
         .unwrap();
-
-    // (b) The connection admitted before enforcement came on is refused its next request.
+    // This grant carries no Sealed values.
     assert_eq!(
-        sealed_status(&open_operator).await,
-        Some(reqwest::StatusCode::FORBIDDEN)
-    );
-    // (a) A new connection on the same grant is refused at admission.
-    let redial = open_grant_registry(&operator, &machine.relay)
-        .await
-        .unwrap();
-    assert_eq!(sealed_status(&redial).await, None);
-    // A Full caller's grant is untouched by enforcement.
-    let open_full = open_grant_registry(&full, &machine.relay).await.unwrap();
-    assert_eq!(
-        sealed_status(&open_full).await,
+        sealed_status(&full).await,
         Some(reqwest::StatusCode::NOT_FOUND)
     );
     machine.stop().await;
@@ -1786,7 +1763,9 @@ impl GrantMachine {
         self.grants
             .mint(
                 self.local.record().management_secret().public_key(),
-                ployzd::management::Mint::check(request, None).unwrap(),
+                ployzd::management::Mint::check(request, None)
+                    .unwrap()
+                    .minted_by(ployz_core::ManagementScope::Full),
                 self.ingest,
             )
             .unwrap()

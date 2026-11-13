@@ -579,3 +579,66 @@ async fn client_streaming_methods_reject_fanout_before_reading_input() {
         assert_eq!(response.headers().get("grpc-status").unwrap(), "3");
     }
 }
+
+/// A Machine whose record predates enforcement serves an Operator no route a statement must
+/// admit, since the keys it would check them against were never vouched for. Its upgrade
+/// still runs, and so does a Full caller's call.
+#[tokio::test]
+async fn an_awaiting_machine_refuses_an_operators_signed_route_and_serves_its_upgrade() {
+    use crate::machine::{LocalMachine, LocalMachineStore, RecordOwner, test_support};
+    use ployz_core::{op, rpc::Rpc};
+
+    let dir = std::env::temp_dir().join(format!("ployzd-routing-awaiting-{}", MachineId::random()));
+    drop(test_support::founded(&dir));
+    test_support::written_before_f7(&dir, false);
+    let awaiting =
+        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&dir).unwrap()).unwrap());
+    assert!(awaiting.record().awaits_activation());
+    let local = machine('1', "local", 1);
+    let proxy = MachineProxy::new(Routes::new(EchoService::default()), local.id, 1, None)
+        .for_machine(awaiting);
+    let call = |path: &str, operator: bool| {
+        let request = http::Request::builder()
+            .uri(path)
+            .header("content-type", "application/grpc");
+        let request = if operator {
+            request.header(ployz_core::OPERATOR_SCOPE_HEADER, "1")
+        } else {
+            request
+        };
+        request.body(Body::empty()).unwrap()
+    };
+
+    let refused = proxy
+        .dispatch_with_snapshot(
+            call(op::EnsureContainer::PATH, true),
+            std::slice::from_ref(&local),
+        )
+        .await;
+    let status = tonic::Status::from_header_map(refused.headers()).unwrap();
+    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    let details = ployz_core::rpc::status_details(status.details()).unwrap();
+    assert_eq!(
+        details.get("capability"),
+        Some(&serde_json::json!(ployz_core::ENSURE_CONTAINER_CAPABILITY))
+    );
+    assert_eq!(
+        details.get("reason"),
+        Some(&serde_json::json!("awaiting_activation"))
+    );
+
+    for (path, operator) in [
+        (op::RequestMachineUpgrade::PATH, true),
+        (op::EnsureContainer::PATH, false),
+    ] {
+        let served = proxy
+            .dispatch_with_snapshot(call(path, operator), std::slice::from_ref(&local))
+            .await;
+        assert_eq!(
+            tonic::Status::from_header_map(served.headers()).map(|status| status.code()),
+            None,
+            "{path} from an Operator: {operator}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

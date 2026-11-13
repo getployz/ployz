@@ -1,11 +1,9 @@
 //! Departure runs on every path that resets this Machine or installs it afresh, and a
 //! plain Deploy mounts a Volume only on its writer.
 
-use std::collections::BTreeMap;
-
 use ployz_core::{
     AdvertisedEndpoint, DockerVolume, EnrollAs, EnrollRequest, Enrolled, LeaveRequest,
-    LocalMachinePhase, Machine, MachineId, MachineName, Registered, RpcErrorCode, VolumeGen,
+    LocalMachinePhase, MachineId, MachineName, RpcErrorCode, VolumeGen,
 };
 use serde_json::json;
 
@@ -93,38 +91,7 @@ fn forgot_data(docker: &FakeDocker) -> bool {
 }
 
 fn join_request(record: &crate::machine::LocalMachineRecord) -> EnrollRequest {
-    let assigned_machine = Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id: record.id(),
-        name: MachineName::parse("joining").unwrap(),
-        subnet: "10.210.0.0/24".parse().unwrap(),
-        public_key: record.private_key().public_key(),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-        runtime: Default::default(),
-        join_approval: None,
-        build_concurrency: None,
-    };
-    let mut peer = assigned_machine.clone();
-    peer.id = MachineId::random();
-    EnrollRequest {
-        role: EnrollAs::Member {
-            pin: None,
-            registration: Registered {
-                assigned_machine,
-                visible_peers: vec![peer],
-                target_versions: BTreeMap::new(),
-                sealing_key: None,
-                devices: Vec::new(),
-                recipient: None,
-            },
-        },
-        wireguard_mtu: None,
-        pinned: Default::default(),
-    }
+    crate::machine::test_support::ApprovingCluster::new(1).join(record)
 }
 
 #[tokio::test]
@@ -306,7 +273,15 @@ async fn participating() -> (Harness, MachineId) {
     let mut peer = me.clone();
     peer.id = other;
     peer.name = MachineName::parse("fsn-2").unwrap();
+    peer.subnet = "10.210.2.0/24".parse().unwrap();
+    peer.public_key = ployz_core::WireGuardPublicKey([2; 32]);
     replicated.publish_local_machine(&peer).await.unwrap();
+    let member = (&peer).into();
+    test.local
+        .owner()
+        .mutate(move |store| store.trust_members(vec![member]).unwrap())
+        .await
+        .unwrap();
     test.plugin
         .reply("Storage.Prepare", json!({"Ok": ["app_data"]}));
     (test, other)

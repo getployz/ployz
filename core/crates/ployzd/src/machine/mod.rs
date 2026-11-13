@@ -53,9 +53,13 @@ pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
 #[cfg(test)]
+mod enrollment_tests;
+#[cfg(test)]
 mod record_tests;
 #[cfg(test)]
 mod register_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);

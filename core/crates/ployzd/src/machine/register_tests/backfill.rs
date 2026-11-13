@@ -49,10 +49,22 @@ impl Peer {
         self.key().expect("holds a Sealing Key").public_key()
     }
 
+    /// Trust each of `others` as a Member, as a join approval or an activation would.
+    async fn trust(&self, others: &[&Peer]) {
+        let members = others.iter().map(|peer| (&peer.machine).into()).collect();
+        self.local
+            .owner()
+            .mutate(move |store| store.trust_members(members).unwrap())
+            .await
+            .unwrap();
+    }
+
     async fn share_to(&self, recipient: &Peer) -> ployz_core::SealedSealingKey {
+        self.trust(&[recipient]).await;
+        recipient.trust(&[self]).await;
         self.local
             .share_sealing_key(ShareSealingKeyRequest {
-                join_approval: None,
+                join_approval: Some(approve_recipient(&self.local, &recipient.machine).await),
                 machine: recipient.machine.id,
                 public_key: recipient.machine.public_key,
             })
@@ -229,6 +241,7 @@ async fn install_refuses_a_key_sealed_by_someone_other_than_the_named_sender() {
     let holder = Peer::participating("ployzd-backfill-sender", &replicated).await;
     let other = Peer::participating("ployzd-backfill-other-sender", &replicated).await;
     let joiner = Peer::needing_access("ployzd-backfill-sender-joiner", &replicated).await;
+    joiner.trust(&[&other]).await;
     let sealed = holder.share_to(&joiner).await;
 
     let wrong_sender = joiner
@@ -337,6 +350,8 @@ async fn share_refuses_a_recipient_the_cluster_does_not_publish_that_way() {
     let (replicated, server) = fake_cluster::store().await;
     let holder = Peer::participating("ployzd-backfill-share", &replicated).await;
     let joiner = Peer::needing_access("ployzd-backfill-share-joiner", &replicated).await;
+    holder.trust(&[&joiner]).await;
+    joiner.trust(&[&holder]).await;
     let unknown = MachineId::random();
 
     let mismatch = holder

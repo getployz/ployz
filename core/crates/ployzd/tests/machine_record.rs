@@ -3,10 +3,10 @@ mod test_dir;
 use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsExt};
 
 use ployz_core::{
-    AdvertisedEndpoint, ClientKey, DeviceKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest,
-    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName,
-    MachineRuntime, MachineUpdate, ManagementClientLabel, ManagementScope, PublicIpUpdate,
-    Registered, SelectedEndpoint, SetManagementClientRequest,
+    AdvertisedEndpoint, ClientKey, EnrollAs, EnrollRequest, Enrolled, InspectRequest, LeaveRequest,
+    Left, LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName, MachineRuntime,
+    MachineUpdate, ManagementClientLabel, PublicIpUpdate, Registered, SelectedEndpoint,
+    SetManagementClientRequest,
 };
 use ployzd::machine::{
     EnrollPlan, LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior,
@@ -136,29 +136,15 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
 
     let second_dir = TestDir::new("ployzd-join");
     let mut second = LocalMachineStore::open(&second_dir.0).unwrap();
-    let public_key = second.record().private_key().public_key();
-    let assigned = Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id: second.record().id(),
-        name: MachineName::parse("second").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        public_key,
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
-        runtime: Default::default(),
-        join_approval: None,
-        build_concurrency: None,
-    };
-    second
-        .enroll(EnrollRequest {
+    let original = second.record().clone();
+    let assigned = sample_machine(original.id(), original.private_key().public_key());
+    assert!(matches!(
+        second.enroll(EnrollRequest {
             role: EnrollAs::Member {
                 pin: None,
                 registration: Registered {
-                    assigned_machine: assigned.clone(),
-                    visible_peers: vec![initialized.clone()],
+                    assigned_machine: assigned,
+                    visible_peers: vec![initialized],
                     target_versions: BTreeMap::from([("actor".into(), 4)]),
                     sealing_key: None,
                     devices: Vec::new(),
@@ -167,13 +153,10 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
             },
             wireguard_mtu: None,
             pinned: Default::default(),
-        })
-        .unwrap();
-    assert_eq!(second.record().id(), assigned.id);
-    assert_eq!(second.record().phase(), LocalMachinePhase::Joining);
-    assert_eq!(second.record().bootstrap(), [initialized].as_slice());
-    assert_eq!(second.record().min_store_version().get("actor"), Some(&4));
-    assert!(!second.record().has_management_clients());
+        }),
+        Err(StoreError::JoinRefused(_))
+    ));
+    assert_eq!(second.record(), &original);
 }
 
 fn cloud() -> ManagementClientLabel {
@@ -1035,122 +1018,6 @@ fn data_directory_errors_preserve_non_utf8_bytes() {
         );
         assert!(!error.contains('\u{fffd}'), "{error}");
     }
-}
-
-#[tokio::test]
-async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_response() {
-    let dir = TestDir::new("ployzd-join-replay");
-    let store = LocalMachineStore::open(&dir.0).unwrap();
-    let id = store.record().id();
-    let assigned = sample_machine(id, store.record().private_key().public_key());
-    let peer = sample_machine(
-        MachineId::random(),
-        WireGuardPrivateKey::generate().public_key(),
-    );
-    let registration = Registered {
-        assigned_machine: assigned,
-        visible_peers: vec![peer],
-        target_versions: BTreeMap::from([("actor".into(), 4)]),
-        sealing_key: None,
-        devices: Vec::new(),
-        recipient: None,
-    };
-    let member = |registration: Registered, wireguard_mtu| EnrollRequest {
-        role: EnrollAs::Member { registration, pin: None },
-        wireguard_mtu,
-        pinned: Default::default(),
-    };
-    let request = member(registration.clone(), Some(1380));
-    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
-    let mut restart_observation = local.owner().restart_requested();
-    for wrong_id in [true, false] {
-        let mut invalid = registration.clone();
-        if wrong_id {
-            invalid.assigned_machine.id = MachineId::random();
-        } else {
-            invalid.assigned_machine.public_key = WireGuardPrivateKey::generate().public_key();
-        }
-        assert!(local.enroll(member(invalid, Some(1380))).await.is_err());
-        assert_eq!(local.record().phase(), LocalMachinePhase::Uninitialized);
-        assert_eq!(local.record().id(), id);
-    }
-    let enrolled = local.enroll(request.clone()).await.unwrap();
-    assert!(matches!(enrolled, Enrolled::Enrolled { .. }));
-    assert!(*restart_observation.borrow_and_update());
-    assert_eq!(local.enroll(request.clone()).await.unwrap(), enrolled);
-    assert!(!restart_observation.has_changed().unwrap());
-    drop(local);
-    let mut reopened = LocalMachineStore::open(&dir.0).unwrap();
-    reopened.complete_catch_up().unwrap();
-    let local = LocalMachine::new(RecordOwner::spawn(reopened).unwrap());
-    assert_eq!(local.enroll(request).await.unwrap(), enrolled);
-    assert!(matches!(
-        local.enroll(member(registration, None)).await.unwrap(),
-        Enrolled::Refused { .. }
-    ));
-    assert_eq!(local.record().id(), id);
-}
-
-#[test]
-fn a_fresh_joiner_admits_the_issuers_devices_and_a_replay_keeps_its_own() {
-    let dir = TestDir::new("ployzd-join-devices");
-    let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    let assigned = sample_machine(
-        store.record().id(),
-        store.record().private_key().public_key(),
-    );
-    let peer = sample_machine(
-        MachineId::random(),
-        WireGuardPrivateKey::generate().public_key(),
-    );
-    let approved = DeviceKey::from_bytes([3; 32]);
-    let issued = serde_json::json!({
-        "assigned_machine": assigned,
-        "visible_peers": [peer],
-        "target_versions": {},
-        "devices": [approved],
-    });
-    let member = |registration| EnrollRequest {
-        role: EnrollAs::Member { registration, pin: None },
-        wireguard_mtu: None,
-        pinned: Default::default(),
-    };
-    let registration: Registered = serde_json::from_value(issued.clone()).unwrap();
-    assert_eq!(
-        store.enroll(member(registration.clone())).unwrap(),
-        EnrollPlan::Fresh
-    );
-    assert_eq!(store.record().devices().collect::<Vec<_>>(), [approved]);
-    assert_eq!(
-        store.record().management_scope(&approved.into()),
-        Some(ManagementScope::Full)
-    );
-
-    let mut other_issuer = registration;
-    other_issuer.devices = vec![DeviceKey::from_bytes([4; 32])];
-    assert!(matches!(
-        store.enroll(member(other_issuer)).unwrap(),
-        EnrollPlan::Replay(_)
-    ));
-    assert_eq!(store.record().devices().collect::<Vec<_>>(), [approved]);
-
-    let old_issuer_dir = TestDir::new("ployzd-join-old-issuer");
-    let mut old_store = LocalMachineStore::open(&old_issuer_dir.0).unwrap();
-    let mut old_issued = issued;
-    old_issued.as_object_mut().unwrap().insert(
-        "assigned_machine".into(),
-        serde_json::to_value(sample_machine(
-            old_store.record().id(),
-            old_store.record().private_key().public_key(),
-        ))
-        .unwrap(),
-    );
-    old_issued.as_object_mut().unwrap().remove("devices");
-    old_store
-        .enroll(member(serde_json::from_value(old_issued).unwrap()))
-        .unwrap();
-    assert_eq!(old_store.record().phase(), LocalMachinePhase::Joining);
-    assert_eq!(old_store.record().devices().count(), 0);
 }
 
 #[test]

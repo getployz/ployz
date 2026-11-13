@@ -32,32 +32,8 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
         ployz_core::MachineId::random()
     ));
     let mut local = LocalMachineStore::open(&data_dir).unwrap();
-    let public_key = local.record().private_key().public_key();
-    let machine: Machine = serde_json::from_value(json!({
-        "id": local.record().id(),
-        "name": "joining",
-        "subnet": "10.210.1.0/24",
-        "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
-        "public_key": public_key.0,
-        "advertised_endpoints": ["192.0.2.1:51820"],
-    }))
-    .unwrap();
     local
-        .enroll(ployz_core::EnrollRequest {
-            role: ployz_core::EnrollAs::Member {
-                pin: None,
-                registration: ployz_core::Registered {
-                    assigned_machine: machine.clone(),
-                    visible_peers: vec![machine],
-                    target_versions: BTreeMap::new(),
-                    sealing_key: None,
-                    devices: Vec::new(),
-                    recipient: None,
-                },
-            },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        })
+        .enroll(crate::machine::test_support::ApprovingCluster::new(1).join(local.record()))
         .unwrap();
     let local = RecordOwner::spawn(local).unwrap();
 
@@ -233,7 +209,7 @@ async fn publication_guard_rechecks_the_local_phase() {
     );
     let (mut machine, local) = participating_record();
     machine.runtime.management_identity = Some(local.management_secret().public_key());
-    machine.runtime.device_enforcement = Some(local.device_enforcement());
+    machine.runtime.device_enforcement = Some(true);
     let publication = store.machine_publication().await;
     assert_eq!(
         publication.publishable_machine(&local, RuntimeOverlay::default()),
