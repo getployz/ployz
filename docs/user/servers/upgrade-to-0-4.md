@@ -15,10 +15,15 @@ Upgrade each server from **Servers** in the dashboard, or with `ployz server upg
 running while each server upgrades. Automatic upgrades never move a server from 0.3 to 0.4, so
 you start this one yourself.
 
-Until you activate, your servers run your services as they did on 0.3, and the **Servers** page
-shows each one as **Awaiting activation**. One thing changes at once: approving a device and other
-actions that need full access go over a direct SSH connection to each server, not through another
-server.
+Until you activate, your servers keep running your services as they did on 0.3, and the
+**Servers** page shows each one as **Awaiting activation**. A server awaiting activation changes
+nothing that Ployz Cloud asks for, apart from upgrading it. It refuses a deploy, a restart, a
+build or a volume change from the dashboard or through Ployz Cloud with `This Server waits for
+its cluster to be activated, so it can't make this change yet. Activate the cluster, then try
+again.` It refuses a new server's join from anywhere, and so does every other server of the
+cluster. Over `--connect ssh://` your servers still take changes from you. Approving a device
+and other actions that need full access go over a direct SSH connection to each server, not
+through another server. Activate soon after you upgrade.
 
 ## 2. Activate
 
@@ -128,4 +133,4 @@ To use it, run `ployz recover` as in [When a server shows Needs recovery](recove
 type your earlier code first to get back the old key, then run `ployz recover` again with the
 new code to get back the new key.
 
-Next: [approve a server's join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
+Next: [approve a server's join](add-a-server.md#approve-a-join).

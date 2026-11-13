@@ -405,7 +405,7 @@ working. See
 Restoring a point into a new volume on these servers waits for a later release.
 
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
-allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
+allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join).
 A joining server inherits enforcement. Approvals name one existing server that may admit the
 join, so another Cluster cannot use the approval even if it shares a Sealing public key.
 Each server keeps an approved server as a member once it has seen it. Removing the device that
@@ -436,9 +436,8 @@ isn't approved are refused with
 `ployz.restart.device-approval.v2 needs a Device-signed restart approval`. A server before 0.4
 refuses `service start` even from an approved device, so upgrade it first. `deploy` is refused
 through Ployz Cloud, since it starts and stops containers without an approval yet. That includes
-the first deploy of a new service. Turn enforcement off to run it. Over `--connect ssh://`
-everything works as before. If your device key cannot be loaded, restart, stop and start go
-unsigned and still work where enforcement is off.
+the first deploy of a new service. Run it over `--connect ssh://`, where everything works as
+before.
 
 #### Upgrades on servers that enforce device approval
 
@@ -470,8 +469,7 @@ approved device or over SSH on a server. Elsewhere they stop before changing any
 server that needs an approved device. The dashboard's **Remove server** and **Forget server** ask
 for your passkey after you type the server's name; see
 [Take things off servers that enforce](#take-things-off-servers-that-enforce). Ployz Cloud drops a server you removed from the CLI once the Cluster no longer lists it,
-within minutes. To remove the last server of a Cluster Ployz Cloud manages, turn enforcement off
-first. Ingress doors still change from the dashboard, and a server runs only Ployz's own
+within minutes. Ingress doors still change from the dashboard, and a server runs only Ployz's own
 images for them. Private Access turns on from the dashboard once your passkey approves the key,
 or with `ployz private-access on` from an approved device. Over `--connect ssh://` to that
 server, both change as before.
