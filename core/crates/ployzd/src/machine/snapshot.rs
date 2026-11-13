@@ -2,13 +2,15 @@
 //!
 //! A daemon that advertises `ployz.machine.enforced.v1` never gives a mesh caller Full
 //! scope, and Cloud's own slot is Operator. So once the snapshot exists, only two callers
-//! can make a Full call here: this Server's local socket, which only a person with SSH or a
-//! console reaches, and a direct connection from a key already in the snapshot. A key
-//! either of them installs has evidence, whether or not the Machine enforced then, because
-//! enforcement never widened who could make that call. Nothing learned before the first
-//! such start does, so the snapshot starts empty. A Member has evidence when this Machine
-//! verified its `JoinApproval` against a key in the snapshot, or a person activated a set
-//! naming it. Each Machine reads only its own snapshot.
+//! can make a Full call here: this Server's local socket, and a direct connection from a key
+//! already in the snapshot. A key either of them installs has evidence, whether or not the
+//! Machine enforced then, because enforcement never widened who could make that call.
+//! The socket's evidence is only as good as who reaches it: a person with SSH or a console,
+//! but also any container placed before activation that mounts `/run/ployz`, which keeps
+//! that reach after activation. Nothing learned before the first such start has evidence,
+//! so the snapshot starts empty. A Member has evidence when this Machine verified its
+//! `JoinApproval` against a key in the snapshot, or a person activated a set naming it.
+//! Each Machine reads only its own snapshot.
 
 use std::collections::BTreeMap;
 

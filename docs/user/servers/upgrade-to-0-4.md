@@ -59,7 +59,10 @@ Activation:
 - cancels any build Ployz Cloud approved and any volume change waiting on an approval. Start them
   again from an approved device or with your passkey.
 - gives the cluster a new key for sealed values. Values you seal from then on use it. A server
-  you add later gets the new key when it joins.
+  you add later gets the new key when it joins. The computer you activate from learns the new
+  key. Any other computer that seals through Ployz Cloud refuses to until you
+  [pin the key again](manage-servers.md#pin-your-clusters-key) there, since Ployz Cloud could
+  hide that your cluster activated.
 
 Each server restarts once to activate. Your services keep running.
 
@@ -88,7 +91,9 @@ enforcement was off:
   your cluster's past, change those secrets where they come from, then seal them again.
 - **What's already running.** A container, a build, an `exec` command or an upgrade that started
   before activation keeps running until it ends. A server stops taking new input from an `exec`
-  shell when it restarts to activate, but a command already running can finish.
+  shell when it restarts to activate, but a command already running can finish. A container that
+  mounts the server's Ployz socket, `/run/ployz`, keeps the control that socket gives, as if
+  you ran commands on the server. Remove any such container you don't recognize.
 - **Web traffic and Private Access set up before activation.** Each server keeps the
   [Cloudflare Tunnel or public ports](../services/cloudflare-tunnel.md) and the
   [Private Access](../services/private-networking.md) router it had, exactly as they were.

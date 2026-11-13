@@ -108,3 +108,83 @@ fn a_sealed_key_is_bound_to_one_cluster_and_activation() {
         sealed_key_binding(&SealingPublicKey::from_bytes([9; 32]), &first)
     );
 }
+
+/// A Machine's WireGuard keypair: an X25519 key, as a recipient key is.
+fn wireguard(member_id: u8) -> (crate::RecipientSecret, Member) {
+    let private = crate::RecipientSecret::generate();
+    let member = Member {
+        public_key: WireGuardPublicKey(*private.public().as_bytes()),
+        ..member(member_id)
+    };
+    (private, member)
+}
+
+fn rotating(
+    recipient: SealingPublicKey,
+    members: Vec<Member>,
+    signer: SignerKey,
+) -> SealingRotation {
+    SealingRotation {
+        cluster: cluster(),
+        operation: OperationId::parse("a".repeat(32)).unwrap(),
+        recipient,
+        members,
+        signer,
+    }
+}
+
+const PASSKEY: SignerKey = SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey);
+
+/// Cloud serves the page a passkey answers, so it can have the passkey name a key of its
+/// own and seal that key to each Server's public WireGuard key. No Server may take it.
+#[test]
+fn under_a_passkey_a_key_only_a_member_sealed_installs() {
+    let (own, me) = wireguard(1);
+    let (generator, holder) = wireguard(2);
+    let (outsider, _) = wireguard(3);
+    let planted = crate::RecipientSecret::generate();
+    let body = rotating(planted.public(), vec![me.clone(), holder], PASSKEY);
+    let binding = sealed_key_binding(&body.cluster, &body.operation);
+
+    let by_anyone = planted.seal_to(&me.public_key, &binding).unwrap();
+    let by_outsider = planted
+        .seal_from(outsider.secret(), &me.public_key, &binding)
+        .unwrap();
+    let by_member = planted
+        .seal_from(generator.secret(), &me.public_key, &binding)
+        .unwrap();
+
+    assert!(
+        crate::RecipientSecret::open(own.secret(), &binding, &by_anyone).is_some(),
+        "an unauthenticated blob opens, so the rotation's signer must vouch for it"
+    );
+    assert!(opened_key(&body, own.secret(), &by_anyone).is_none());
+    assert!(opened_key(&body, own.secret(), &by_outsider).is_none());
+    assert_eq!(
+        opened_key(&body, own.secret(), &by_member).map(|key| key.public()),
+        Some(planted.public())
+    );
+}
+
+#[test]
+fn under_a_device_the_key_it_sealed_installs_and_no_other() {
+    let (own, me) = wireguard(1);
+    let device = Signer::from_seed(&[7; 32]);
+    let chosen = crate::RecipientSecret::generate();
+    let other = crate::RecipientSecret::generate();
+    let body = rotating(
+        chosen.public(),
+        vec![me.clone()],
+        SignerKey::Device(device.public().into()),
+    );
+    let binding = sealed_key_binding(&body.cluster, &body.operation);
+
+    let sealed = chosen.seal_to(&me.public_key, &binding).unwrap();
+    let swapped = other.seal_to(&me.public_key, &binding).unwrap();
+
+    assert_eq!(
+        opened_key(&body, own.secret(), &sealed).map(|key| key.public()),
+        Some(chosen.public())
+    );
+    assert!(opened_key(&body, own.secret(), &swapped).is_none());
+}

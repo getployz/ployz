@@ -37,7 +37,8 @@ impl LocalMachine {
     }
 
     /// Generate, install or share the recipient key of the activation this record
-    /// committed. See [`SetRecipientKeyRequest`].
+    /// committed. See [`SetRecipientKeyRequest`]. A shared key is sealed from this
+    /// Machine's WireGuard key, so the Member it goes to knows a holder sent it.
     ///
     /// # Errors
     /// Returns [`Error::RecipientRefused`] before activation, for a rotation that does not
@@ -84,9 +85,9 @@ impl LocalMachine {
             SetRecipientKeyRequest::Install { rotation, sealed } => {
                 let body = verified(&record, &rotation, identity, activation)?;
                 let key = match sealed {
-                    Some(sealed) => RecipientSecret::open(
+                    Some(sealed) => rotation::opened_key(
+                        &body,
                         record.wireguard_private_key.as_bytes(),
-                        &sealed_key_binding(&identity, &body.operation),
                         &sealed,
                     )
                     .map(|secret| SealingKey::from_secret(*secret.secret()))
@@ -139,7 +140,8 @@ impl LocalMachine {
                     .find(|member| member.id == to)
                     .ok_or_else(|| refused("a Member"))?;
                 let sealed = RecipientSecret::from_secret(*held.secret())
-                    .seal_to(
+                    .seal_from(
+                        record.wireguard_private_key.as_bytes(),
                         &member.public_key,
                         &sealed_key_binding(&identity, &body.operation),
                     )

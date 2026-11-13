@@ -361,7 +361,9 @@ mod sealer {
         }
 
         /// Seal this key to the Machine whose WireGuard public key is `machine`, bound to
-        /// `binding` (see [`crate::authority::rotation::sealed_key_binding`]).
+        /// `binding` (see [`crate::authority::rotation::sealed_key_binding`]). Anyone who
+        /// knows `machine` can build such a blob, so it vouches only for a key the signer
+        /// chose itself. Between Machines use [`Self::seal_from`].
         ///
         /// # Errors
         /// [`SealError`] when `machine` is not a usable public key or HPKE refuses.
@@ -370,11 +372,37 @@ mod sealer {
             machine: &crate::WireGuardPublicKey,
             binding: &[u8],
         ) -> Result<Ciphertext, SealError> {
+            self.sealed(&OpModeS::Base, machine, binding)
+        }
+
+        /// Seal this key to `machine` from the Machine whose WireGuard private key is
+        /// `sender`, so it opens only as sent by that Machine. See [`Self::open_from`].
+        ///
+        /// # Errors
+        /// [`SealError`] when a key is not usable or HPKE refuses.
+        pub fn seal_from(
+            &self,
+            sender: &[u8; 32],
+            machine: &crate::WireGuardPublicKey,
+            binding: &[u8],
+        ) -> Result<Ciphertext, SealError> {
+            let private = <Kem as hpke::Kem>::PrivateKey::from_bytes(sender)
+                .map_err(|_| SealError::Recipient)?;
+            let public = <Kem as hpke::Kem>::sk_to_pk(&private);
+            self.sealed(&OpModeS::Auth((private, public)), machine, binding)
+        }
+
+        fn sealed(
+            &self,
+            mode: &OpModeS<'_, Kem>,
+            machine: &crate::WireGuardPublicKey,
+            binding: &[u8],
+        ) -> Result<Ciphertext, SealError> {
             let public = <Kem as hpke::Kem>::PublicKey::from_bytes(&machine.0)
                 .map_err(|_| SealError::Recipient)?;
             let (encapped, ciphertext) =
                 hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
-                    &OpModeS::Base,
+                    mode,
                     &public,
                     RECIPIENT_KEY_INFO,
                     self.0.as_ref(),
@@ -392,12 +420,35 @@ mod sealer {
         /// another binding, or is not a key.
         #[must_use]
         pub fn open(machine: &[u8; 32], binding: &[u8], sealed: &Ciphertext) -> Option<Self> {
+            Self::opened(&hpke::OpModeR::Base, machine, binding, sealed)
+        }
+
+        /// Open a key [`Self::seal_from`] sealed to `machine` from the Machine whose
+        /// WireGuard public key is `sender`. `None` when another Machine or no Machine sent
+        /// it, as for [`Self::open`].
+        #[must_use]
+        pub fn open_from(
+            machine: &[u8; 32],
+            sender: &crate::WireGuardPublicKey,
+            binding: &[u8],
+            sealed: &Ciphertext,
+        ) -> Option<Self> {
+            let sender = <Kem as hpke::Kem>::PublicKey::from_bytes(&sender.0).ok()?;
+            Self::opened(&hpke::OpModeR::Auth(sender), machine, binding, sealed)
+        }
+
+        fn opened(
+            mode: &hpke::OpModeR<'_, Kem>,
+            machine: &[u8; 32],
+            binding: &[u8],
+            sealed: &Ciphertext,
+        ) -> Option<Self> {
             let (encapped, ciphertext) = sealed.as_bytes().split_at_checked(32)?;
             let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
             let private = <Kem as hpke::Kem>::PrivateKey::from_bytes(machine).ok()?;
             let opened = zeroize::Zeroizing::new(
                 hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
-                    &hpke::OpModeR::Base,
+                    mode,
                     &private,
                     &encapped,
                     RECIPIENT_KEY_INFO,

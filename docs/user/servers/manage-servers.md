@@ -261,6 +261,12 @@ for the organization you're signed in to. It reads only over SSH or the server's
 and refuses a plain TCP connection or one Ployz Cloud chose. It also refuses a server whose key
 isn't the one Ployz Cloud has for that organization.
 
+Through Ployz Cloud, the CLI seals only to the key your cluster's activation gave it, never to
+the key from before. A pin taken before your cluster was activated doesn't name that key, so
+after activation, pin again on each computer other than the one you activated from. Until your
+cluster is activated, seal through Ployz Cloud from the dashboard, or over
+`--connect ssh://` where the command takes it.
+
 Until you pin the key, the CLI refuses to seal through Ployz Cloud and names `ployz device pin`.
 If Ployz Cloud later sends a different key, the CLI refuses too, and the secret never leaves your
 computer. If your cluster's key really changed, for example because you started a new cluster,

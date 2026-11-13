@@ -73,8 +73,10 @@ impl Target {
                     .env("PLOYZ_TOKEN", token);
                 if let Some(key) = PINNED.lock().unwrap().get(url) {
                     let organization = token.trim_start_matches("ployz_");
+                    // An activated Cluster's pin. Its recipient is the same key, so the
+                    // tests open what they seal with one keypair.
                     let pins = json!({ "organizations": {
-                        organization: { "public_key": key, "server": "web-1" },
+                        organization: { "public_key": key, "server": "web-1", "recipient": key },
                     }});
                     std::fs::write(home.join("sealing-keys.json"), pins.to_string()).unwrap();
                 }

@@ -349,7 +349,8 @@ fn a_rerun_shares_the_recipient_key_the_activated_servers_hold_rather_than_makin
         ..found('1', "machine-1")
     };
     let lacking = found('2', "machine-2");
-    match held_recipient(&[&lacking, &holder]).unwrap() {
+    let direct = BTreeSet::from([holder.machine_id]);
+    match held_recipient(&[&lacking, &holder], &direct, None).unwrap() {
         Some(Recipient::Held { recipient, holder }) => {
             assert_eq!(recipient, key);
             assert_eq!(holder.machine_id, found('1', "machine-1").machine_id);
@@ -357,13 +358,48 @@ fn a_rerun_shares_the_recipient_key_the_activated_servers_hold_rather_than_makin
         _ => panic!("the held key is shared"),
     }
     assert!(
-        held_recipient(&[&lacking]).unwrap().is_none(),
+        held_recipient(&[&lacking], &direct, None)
+            .unwrap()
+            .is_none(),
         "with no key held, a new one is made"
     );
     let split = Found {
         recipient: Some(ployz_core::Keypair::generate().public()),
         ..found('2', "machine-2")
     };
-    let refusal = held_recipient(&[&holder, &split]).err().unwrap();
+    let refusal = held_recipient(&[&holder, &split], &direct, None)
+        .err()
+        .unwrap();
     assert!(refusal.contains("different recipient keys"), "{refusal}");
+}
+
+/// Through Cloud's Server Access no Server answers for itself, so Cloud can report the real
+/// Members with a recipient key of its own. A rerun must not sign or pin that key.
+#[test]
+fn a_rerun_takes_a_held_recipient_only_from_a_server_that_answers_for_itself_or_the_pin() {
+    let planted = ployz_core::Keypair::generate().public();
+    let one = Found {
+        recipient: Some(planted),
+        ..found('1', "machine-1")
+    };
+    let two = Found {
+        recipient: Some(planted),
+        ..found('2', "machine-2")
+    };
+    let through_cloud = BTreeSet::new();
+
+    let refusal = held_recipient(&[&one, &two], &through_cloud, None)
+        .err()
+        .unwrap();
+
+    assert!(refusal.contains("Nothing was signed"), "{refusal}");
+    let other = ployz_core::Keypair::generate().public();
+    assert!(
+        held_recipient(&[&one, &two], &through_cloud, Some(other)).is_err(),
+        "a pin naming another key vouches for nothing"
+    );
+    assert!(matches!(
+        held_recipient(&[&one, &two], &through_cloud, Some(planted)),
+        Ok(Some(Recipient::Held { recipient, .. })) if recipient == planted
+    ));
 }

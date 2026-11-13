@@ -245,7 +245,18 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
             }
         }
         if !activated.is_empty() {
-            install_recipient(&config, &client, &reach, &activated, &set, &signer).await?;
+            install_recipient(
+                &config,
+                &client,
+                &Installing {
+                    reach: &reach,
+                    direct: &direct,
+                    activated: &activated,
+                },
+                &set,
+                &signer,
+            )
+            .await?;
         }
         print_retired(&activated, &reach, &kept, own);
         let mut gaps = gaps;
@@ -637,22 +648,44 @@ impl Recipient<'_> {
 }
 
 /// The recipient key the activated Servers already hold, with one Server holding it. `None`
-/// when none holds one. More than one key can't be healed by a run.
-fn held_recipient<'a>(activated: &[&'a Found]) -> Result<Option<Recipient<'a>>, String> {
-    let held: BTreeMap<SealingPublicKey, &Found> = activated
-        .iter()
-        .filter_map(|server| server.recipient.map(|recipient| (recipient, *server)))
-        .collect();
-    match held.len() {
-        0 => Ok(None),
-        1 => Ok(held
-            .into_iter()
-            .next()
-            .map(|(recipient, holder)| Recipient::Held { recipient, holder })),
-        _ => Err(format!(
+/// when none holds one. More than one key can't be healed by a run. A key counts only when
+/// a holder this run reached in `direct` reports it, or it is the recipient this computer
+/// `pinned`: through Cloud's Server Access, Cloud could report the real Members with a key
+/// of its own.
+fn held_recipient<'a>(
+    activated: &[&'a Found],
+    direct: &BTreeSet<MachineId>,
+    pinned: Option<SealingPublicKey>,
+) -> Result<Option<Recipient<'a>>, String> {
+    let mut held: BTreeMap<SealingPublicKey, Vec<&'a Found>> = BTreeMap::new();
+    for server in activated {
+        if let Some(recipient) = server.recipient {
+            held.entry(recipient).or_default().push(server);
+        }
+    }
+    let mut keys = held.into_iter();
+    match (keys.next(), keys.next()) {
+        (None, _) => Ok(None),
+        (Some((recipient, holders)), None) => {
+            let answering = holders
+                .iter()
+                .find(|holder| direct.contains(&holder.machine_id));
+            match (answering, holders.first()) {
+                (Some(holder), _) => Ok(Some(Recipient::Held { recipient, holder })),
+                (None, Some(holder)) if pinned == Some(recipient) => {
+                    Ok(Some(Recipient::Held { recipient, holder }))
+                }
+                (None, _) => Err(format!(
+                    "Your activated Servers report recipient key {recipient}, but none of them answered over its own SSH and this computer never pinned that key. Nothing was signed. Run `ployz device enforce` again in the context `ployz server add` saved SSH connections to."
+                )),
+            }
+        }
+        (Some((first, _)), Some((second, _))) => Err(format!(
             "The activated Servers hold different recipient keys ({}), so no recipient key was installed.",
-            held.keys()
-                .map(ToString::to_string)
+            [first, second]
+                .into_iter()
+                .chain(keys.map(|(key, _)| key))
+                .map(|key| key.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -733,14 +766,25 @@ async fn settled(
     Err("it didn't report the activation committed. Check it with `ployz status`.".to_owned())
 }
 
+/// The Servers a recipient key goes to, and which of them this run reached over their own
+/// SSH or local socket.
+struct Installing<'a> {
+    reach: &'a Reach,
+    direct: &'a BTreeSet<MachineId>,
+    activated: &'a [&'a Found],
+}
+
 /// Sign the rotation naming the recipient key and install it on each activated Server that
 /// lacks it, sealed to that Server's own WireGuard key. The key is the one activated Servers
 /// already hold, shared by a holder, or else one generated here and backed up.
 async fn install_recipient(
     config: &std::path::Path,
     client: &Client,
-    reach: &Reach,
-    activated: &[&Found],
+    &Installing {
+        reach,
+        direct,
+        activated,
+    }: &Installing<'_>,
     set: &StartingSet,
     signer: &Signer,
 ) -> Result<(), Error> {
@@ -754,7 +798,8 @@ async fn install_recipient(
         );
         return Ok(());
     };
-    let source = match held_recipient(activated) {
+    let pins = crate::sealing_pin::Pins::beside(config);
+    let source = match held_recipient(activated, direct, pins.recipient_of(identity)?) {
         Ok(Some(held)) => held,
         Ok(None) => Recipient::Fresh(RecipientSecret::generate()),
         Err(why) => {
@@ -776,8 +821,10 @@ async fn install_recipient(
     ));
     let signed = Signed::sign(&rotation, signer).map_err(Error::command)?;
     let binding = sealed_key_binding(&identity, &set.operation);
+    let mut holding = 0_usize;
     for server in activated {
         if server.recipient == Some(rotation.recipient) {
+            holding += 1;
             continue;
         }
         let name = reach.name(&server.machine_id);
@@ -808,20 +855,27 @@ async fn install_recipient(
                 Call::once().to(&MachineTarget::from(&server.machine_id)),
             )
             .await;
-        if let Err(error) = installed {
-            ui::warn(format!(
+        match installed {
+            Ok(_) => holding += 1,
+            Err(error) => ui::warn(format!(
                 "Server {name} didn't install the recipient key: {}",
                 crate::connect::rpc_error(error).message
-            ));
+            )),
         }
     }
-    crate::sealing_pin::Pins::beside(config).name_recipient(identity, rotation.recipient)?;
+    if holding == 0 {
+        ui::warn(
+            "No Server installed the recipient key, so this computer seals nothing until one does. Run `ployz device enforce` again.",
+        );
+        return Ok(());
+    }
+    pins.name_recipient(identity, rotation.recipient)?;
     ui::note("Values sealed from now on open only on your activated Servers.");
     match source {
         Recipient::Fresh(secret) => recovery_code(config, &secret, &signed).await,
         Recipient::Held { .. } => {
             ui::note(
-                "The recipient key is the one your Servers already hold, so the recovery code you made for it still opens it.",
+                "The recipient key is the one your Servers already hold, so any recovery code you made for it still opens it. If you never saw one, make it with `ployz recovery rotate` on an activated Server.",
             );
             Ok(())
         }

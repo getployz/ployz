@@ -42,12 +42,40 @@ fn a_pin_with_a_recipient_seals_to_it_and_enforce_names_it_on_the_cluster_s_pins
     assert_eq!(pins.get("org-b").unwrap().unwrap().recipient, None);
 }
 
+fn activated_pin(byte: u8, recipient: u8) -> Pin {
+    Pin {
+        recipient: Some(key(recipient)),
+        ..pinned(byte)
+    }
+}
+
+/// A Device that pinned before activation, other than the one that ran it, can't tell the
+/// Cluster activated, and Cloud can hide it. Sealing to the identity then hands the value
+/// to anything planted before activation, so nothing is sealed.
+#[test]
+fn a_pin_that_names_no_recipient_seals_nothing_through_cloud() {
+    let refusal = check(Some(&pinned(1)), key(1)).unwrap_err();
+
+    assert_eq!(refusal.report().code, RpcErrorCode::Conflict);
+    assert!(refusal.report().message.contains("nothing was sealed"));
+    assert_eq!(refusal.hints(), vec![Hint::Next(PIN_COMMAND.to_owned())]);
+}
+
 #[test]
 fn a_relayed_key_is_sealed_to_only_when_it_is_the_pinned_one() {
-    assert_eq!(check(Some(&pinned(1)), key(1)).unwrap(), to_identity(1));
+    assert_eq!(
+        check(Some(&activated_pin(1, 7)), key(1)).unwrap(),
+        SealFor {
+            cluster: key(1),
+            recipient: key(7)
+        }
+    );
 
     for (pin, why) in [
-        (Some(pinned(1)), "a key Cloud relays in place of the pin"),
+        (
+            Some(activated_pin(1, 7)),
+            "a key Cloud relays in place of the pin",
+        ),
         (None, "a key with nothing pinned to check it"),
     ] {
         let refusal = check(pin.as_ref(), key(2)).unwrap_err();
@@ -150,6 +178,33 @@ async fn a_direct_entry_seals_to_its_own_key_not_a_row_another_machine_wrote() {
     );
 }
 
+/// A Server that committed activation before its recipient key arrived, as when Cloud
+/// withholds the install, still holds only the identity everything planted holds.
+#[tokio::test]
+async fn an_activated_entry_without_a_recipient_key_gives_no_pin() {
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(planted_row(), Scenario::default(), sockets.path(), None).unwrap();
+    let mut client = direct_client(&fleet).await;
+    let mut details = client
+        .call::<op::Inspect>(InspectRequest::default(), crate::cluster::Call::read())
+        .await
+        .unwrap();
+    details.sealing = Some(Sealing::Held { public_key: key(1) });
+    details.activation = Some(ployz_core::ActivationReport {
+        state: ActivationState::Activated,
+        operation: None,
+        legacy_members: Vec::new(),
+        legacy_keys: Vec::new(),
+        private_access: None,
+    });
+
+    let refusal = pin_from(details.clone()).unwrap_err();
+
+    assert_eq!(refusal.report().code, RpcErrorCode::Conflict);
+    details.sealing_recipient = Some(key(7));
+    assert_eq!(pin_from(details).unwrap().seal_for().recipient, key(7));
+}
+
 #[tokio::test]
 async fn a_relayed_key_other_than_the_pin_is_refused_before_anything_is_sealed() {
     let sockets = tempfile::tempdir().unwrap();
@@ -162,11 +217,14 @@ async fn a_relayed_key_other_than_the_pin_is_refused_before_anything_is_sealed()
         .unwrap_err();
     assert_eq!(refusal.report().code, RpcErrorCode::Conflict);
     assert_eq!(
-        SealTo::Pinned(Some(pinned(9)))
+        SealTo::Pinned(Some(activated_pin(9, 7)))
             .key(&mut client, Some(key(9)))
             .await
             .unwrap(),
-        to_identity(9)
+        SealFor {
+            cluster: key(9),
+            recipient: key(7)
+        }
     );
     assert_eq!(
         SealTo::Pinned(Some(pinned(1)))

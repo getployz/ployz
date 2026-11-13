@@ -143,6 +143,58 @@ async fn a_starting_set_outside_the_snapshot_is_refused() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A set signed by a snapshot key but sent over the mesh, as Cloud or the dashboard sends
+/// one, can't keep a key nobody verified: Cloud planted it, and keeping it would give it
+/// Full scope after activation.
+#[tokio::test]
+async fn a_set_from_the_mesh_keeps_no_key_outside_the_snapshot() {
+    let (entry, _, founder, directory, server) = participating().await;
+    let planted = Signer::from_seed(&[3; 32]);
+    approve(&entry, &planted).await;
+    let console_key = Signer::from_seed(&[1; 32]);
+    approve(&entry.clone().on_local_socket(), &console_key).await;
+    let planted_code = DeviceKey::from(planted.public()).code();
+    let keeping = |kept_keys| {
+        let issued_at = Timestamp::now();
+        let set = StartingSet {
+            operation: OperationId::random(),
+            members: vec![(&founder).into()],
+            issued_at,
+            expires_at: issued_at.plus(60_000),
+            signer: SignerKey::Device(console_key.public().into()),
+            kept_keys,
+        };
+        Signed::sign(&set, &console_key).unwrap()
+    };
+
+    let over_mesh = entry
+        .set_device_enforcement(enforce(keeping(vec![planted_code])))
+        .await;
+
+    assert!(matches!(refusal(over_mesh), Refusal::LegacyKey(code) if code == planted_code));
+    assert_eq!(
+        entry.activation_report().await.state,
+        ActivationState::Awaiting
+    );
+    entry
+        .clone()
+        .on_local_socket()
+        .set_device_enforcement(enforce(keeping(vec![planted_code])))
+        .await
+        .unwrap();
+    entry.commit_activation_as_if_restarted().await;
+    assert!(
+        entry
+            .record()
+            .devices()
+            .any(|key| key.code() == planted_code),
+        "at the console a person may keep a key they checked"
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// A participating founder holding a Sealing Key, activated at its console by
 /// `console_key` with `retired` approved from the mesh and so retired at the commit.
 async fn activated(

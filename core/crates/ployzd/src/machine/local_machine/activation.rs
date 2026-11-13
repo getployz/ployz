@@ -135,8 +135,9 @@ impl LocalMachine {
 
     /// Admit a starting set and restart to commit it. Over this Server's local socket the
     /// set is a person's own word at the console or over SSH, so any key the record holds
-    /// may sign it and the signer gains evidence. Any other caller needs the signer and every
-    /// Member in the trusted snapshot. `capability` is the route refusals name.
+    /// may sign it, the signer gains evidence, and it may keep keys the person checked. Any
+    /// other caller needs the signer and every Member in the trusted snapshot, and keeps no
+    /// key this Machine holds outside it. `capability` is the route refusals name.
     ///
     /// # Errors
     /// Returns [`Error::ActivationRefused`] naming a legacy Member or key, an authority
@@ -201,6 +202,12 @@ impl LocalMachine {
                             else {
                                 return Err(refused(Refusal::LegacyKey(signer)));
                             };
+                            if let Some(kept) = legacy_keys(record)
+                                .into_iter()
+                                .find(|legacy| body.kept_keys.contains(&legacy.code))
+                            {
+                                return Err(refused(Refusal::LegacyKey(kept.code)));
+                            }
                             if let Some(member) = legacy_member(record, &body, &rows, cluster) {
                                 return Err(refused(Refusal::LegacyMember(member)));
                             }

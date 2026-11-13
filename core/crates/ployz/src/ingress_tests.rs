@@ -1114,7 +1114,7 @@ async fn a_tunnel_token_is_sealed_only_to_a_key_this_computer_can_vouch_for() {
 }
 
 #[tokio::test]
-async fn a_relayed_key_that_is_the_pin_seals_the_token_asked_for_once_it_checks_out() {
+async fn a_pin_that_names_no_recipient_seals_no_tunnel_token_through_cloud() {
     use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
 
     let cluster = ployz_core::Keypair::generate();
@@ -1128,24 +1128,19 @@ async fn a_relayed_key_that_is_the_pin_seals_the_token_asked_for_once_it_checks_
     .unwrap();
     let mut through_cloud = entry_from(&fleet, crate::context::ConnectionSource::Cloud).await;
     let observed = observe_doors(&mut through_cloud).await.unwrap();
-    assert_eq!(observed.cluster.sealed_token, None);
 
-    let doors = checked_doors(
+    let refusal = checked_doors(
         &mut through_cloud,
         &observed,
         IngressDoors::tunnel(),
         None,
         async |_| Ok(SealTo::Pinned(Some(pin_of(cluster.public())))),
-        || Ok(TUNNEL_TOKEN.to_owned()),
+        || panic!("no token is asked for when nothing can be sealed"),
     )
     .await
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(doors.doors, IngressDoors::tunnel());
-    assert_eq!(
-        opened(&cluster, &doors).as_deref(),
-        Some(TUNNEL_TOKEN.as_bytes())
-    );
+    assert_eq!(refusal.report().code, ployz_core::RpcErrorCode::Conflict);
 }
 
 #[tokio::test]
