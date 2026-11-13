@@ -24,11 +24,14 @@ use crate::{
     cloud_login::LoginError,
     context::Transport,
     operator::{
-        ExecMode, OperatorError, PreparedHistory, ProxyPorts, ServiceArg, asked_machines,
-        exec_container_stopped, exec_options,
+        OperatorError, PreparedHistory, asked_machines, exec_container_stopped, exec_options,
         history::{HistoryEvent, HistoryRecord, HistoryWindow, read_history},
-        history_selectors, merge_logs, observe_service_logs, open_exec, open_machine_logs,
-        open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
+        history_selectors,
+        input::{
+            ExecMode, ProxyPorts, ServiceArg, parse_log_time, parse_proxy_ports,
+            parse_service_args, parse_tail,
+        },
+        merge_logs, observe_service_logs, open_exec, open_machine_logs, open_service_logs,
         prepare_service_history, select_proxy_container,
     },
 };
@@ -339,8 +342,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                         names,
                     } = &error
                     {
-                        let gaps = crate::ui::Gaps::of(gaps)
-                            .named(names.iter().map(|(id, name)| (*id, name)));
+                        let gaps = crate::ui::Gaps::of(gaps).named(names.iter());
                         return crate::ui::finish_fanout("container", &None::<()>, &gaps, || {
                             crate::ui::note(format_args!(
                                 "No running container of {service:?} on the Servers that answered."
@@ -620,7 +622,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             }
             let scope = observe_service_logs(client, &machines).await?;
             let names = &scope.unanswered.names;
-            let named = || names.iter().map(|(machine_id, name)| (*machine_id, name));
+            let named = || names.iter();
             let mut gaps = crate::ui::Gaps::default().named(named());
             gaps.extend(&scope.unanswered.failures, &scope.unanswered.omissions);
             // Before reading, so a missing Service or Container still names the Server that did not answer.

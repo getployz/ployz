@@ -33,7 +33,7 @@ pub(crate) struct Window<'arg> {
 
 impl Window<'_> {
     fn is_duration(&self) -> bool {
-        crate::operator::go_duration(self.since).is_some()
+        crate::operator::input::go_duration(self.since).is_some()
     }
 
     fn label(&self) -> String {

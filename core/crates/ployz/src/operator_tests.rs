@@ -16,7 +16,7 @@ use ployz_core::{
     ServiceSelector,
 };
 
-use super::*;
+use super::{input::parse_service_args, *};
 
 const MACHINE_ONE: u8 = 1;
 
@@ -543,7 +543,7 @@ fn exec_mode_resolves_cli_flags_without_detach_plus_tty() {
 
     assert!(matches!(
         ExecMode::resolve(false, false, true, false),
-        Err(OperatorError::TtyRequiresStdin)
+        Err(InputError::TtyRequiresStdin)
     ));
 
     let attached = exec_options(vec!["true".into()], ExecMode::Attached { tty: false });
@@ -573,94 +573,6 @@ fn exec_mode_resolves_cli_flags_without_detach_plus_tty() {
     assert_eq!(
         ExecMode::resolve(false, false, true, true).unwrap(),
         ExecMode::Attached { tty: true }
-    );
-}
-
-#[test]
-fn service_args_tail_and_proxy_ports_cover_the_argument_tables() {
-    assert_eq!(
-        parse_service_args(&strings([
-            "api:one",
-            "api:two",
-            "worker:x",
-            "api",
-            "shop-staging/web:one",
-        ]))
-        .unwrap(),
-        [
-            ServiceArg {
-                service: service_selector("api"),
-                containers: vec![],
-            },
-            ServiceArg {
-                service: service_selector("worker"),
-                containers: vec![container_selector("x")],
-            },
-            ServiceArg {
-                service: service_selector("shop-staging/web"),
-                containers: vec![container_selector("one")],
-            },
-        ]
-    );
-    assert_eq!(parse_tail("all").unwrap(), -1);
-    assert_eq!(parse_tail("0").unwrap(), 0);
-    assert!(parse_tail("-1").is_err());
-    assert_eq!(
-        parse_proxy_ports("0:65535").unwrap(),
-        ProxyPorts {
-            local: 0,
-            remote: 65535
-        }
-    );
-    assert_eq!(parse_proxy_ports("80").unwrap().local, 0);
-    for invalid in ["-1:80", "65536:80", "0", "1:0", "1:65536", "1:2:3"] {
-        assert!(parse_proxy_ports(invalid).is_err(), "{invalid}");
-    }
-}
-
-#[test]
-fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
-    use chrono::TimeZone as _;
-
-    let now = 1_800_000_000;
-    assert_eq!(parse_log_time("since", "", now).unwrap(), None);
-    assert_eq!(
-        parse_log_time("since", "1763953966", now).unwrap(),
-        Some(1_763_953_966)
-    );
-    assert_eq!(
-        parse_log_time("since", "2024-01-31T10:30:00+02:00", now).unwrap(),
-        Some(1_706_689_800)
-    );
-    assert_eq!(
-        parse_log_time("since", "2024-05-14T22:50:00", now).unwrap(),
-        Some(
-            chrono::Local
-                .with_ymd_and_hms(2024, 5, 14, 22, 50, 0)
-                .single()
-                .unwrap()
-                .timestamp()
-        )
-    );
-    assert_eq!(
-        parse_log_time("since", "2m30s", now).unwrap(),
-        Some(1_799_999_850)
-    );
-    assert_eq!(
-        parse_log_time("since", "30d", now).unwrap(),
-        Some(1_797_408_000)
-    );
-    // A duration past the timestamp range is refused, not wrapped into the future.
-    assert!(parse_log_time("since", "10000000000000000000s", now).is_err());
-    assert_eq!(
-        parse_log_time("since", "notatime", now)
-            .unwrap_err()
-            .to_string(),
-        "invalid time \"notatime\" for --since: expected a relative duration, RFC 3339 date, or Unix timestamp"
-    );
-    assert_eq!(
-        parse_tail("abc").unwrap_err().to_string(),
-        "invalid log tail \"abc\": expected a non-negative integer or all"
     );
 }
 
@@ -1031,12 +943,7 @@ fn exact_history_preserves_selectors_and_rejects_live_resolution() {
         service: service_selector(service),
         containers: Vec::new(),
     });
-    let read = |service: &str| HistorySelector {
-        namespace: Some("app".into()),
-        service: Some(service.into()),
-        deployment: Some("dep_old".into()),
-        container_id: None,
-    };
+    let read = |service: &str| HistorySelector::service("app", service, Some("dep_old"));
     assert_eq!(
         qualified_history_selectors(&args, Some("dep_old")),
         Some(vec![read("api"), read("gone"), read("api")])
@@ -1090,10 +997,7 @@ fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
         unanswered: Unanswered {
             failures: vec![failure],
             omissions: Vec::new(),
-            names: vec![
-                (up.machine.id, up.machine.name.clone()),
-                (down.machine.id, down.machine.name),
-            ],
+            names: MachineNames::of(&[up.clone(), down]),
         },
     };
     assert_eq!(scope.answered(), vec![(up.machine.id, up.machine.name)]);
@@ -1109,12 +1013,7 @@ fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
         Some("dep_old"),
     )
     .unwrap();
-    let read = |service: &str| HistorySelector {
-        namespace: Some("app".into()),
-        service: Some(service.into()),
-        deployment: Some("dep_old".into()),
-        container_id: None,
-    };
+    let read = |service: &str| HistorySelector::service("app", service, Some("dep_old"));
     assert_eq!(selectors, vec![read("api"), read("gone")]);
     assert!(history_selectors(&scope, &[arg("gone")], None, None).is_err());
 }

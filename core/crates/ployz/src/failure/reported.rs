@@ -22,7 +22,7 @@ use crate::{
     enrollment::local::Error as EnrollmentHistoryError,
     image::PushError,
     namespace::NamespaceError,
-    operator::OperatorError,
+    operator::{OperatorError, input::InputError},
     provisioning::ProvisionError,
     published::PublishError,
 };
@@ -101,6 +101,7 @@ reported_errors! {
         EnrollmentHistoryError,
         crate::cluster::RoleWaitError,
         UnconfirmedDataLoss,
+        InputError,
     ],
     by_hand: [ConnectError, OperatorError, LoginError, PublishError, Message],
 }
@@ -175,6 +176,12 @@ impl Reported for MachineSelectorError {
     }
 }
 
+impl Reported for InputError {
+    fn code(&self) -> RpcErrorCode {
+        RpcErrorCode::InvalidArgument
+    }
+}
+
 impl Reported for OperatorError {
     fn code(&self) -> RpcErrorCode {
         match self {
@@ -189,15 +196,10 @@ impl Reported for OperatorError {
             OperatorError::Codec(error) => error.code(),
             OperatorError::OpenContainerLogs { source, .. }
             | OperatorError::OpenMachineLogs { source, .. } => source.code(),
-            OperatorError::Value(_)
-            | OperatorError::TtyRequiresStdin
-            | OperatorError::InvalidServiceSelector(_)
-            | OperatorError::InvalidTail(_)
-            | OperatorError::InvalidTime { .. }
-            | OperatorError::InvalidProxyPort
-            | OperatorError::InvalidLocalPort(_)
-            | OperatorError::InvalidRemotePort(_)
-            | OperatorError::UnsupportedLogService { .. } => RpcErrorCode::InvalidArgument,
+            OperatorError::Input(error) => error.code(),
+            OperatorError::Value(_) | OperatorError::UnsupportedLogService { .. } => {
+                RpcErrorCode::InvalidArgument
+            }
             OperatorError::NoRegularContainer
             | OperatorError::NoContainersOnMachines { .. }
             | OperatorError::NoMachines

@@ -1,7 +1,7 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
 use ployz_store::ReviewVersion;
 
-use crate::{env, handlers};
+use crate::{env, handlers, operator::input::TIME_FORMATS};
 
 pub(crate) mod metrics;
 
@@ -139,13 +139,13 @@ pub(crate) fn log_flags(command: Command) -> Command {
     command
         .arg(switch("follow", Some('f')).help("Keep streaming new lines"))
         .arg(many("machine", Some('m')).help("Only these Servers"))
-        .arg(value("since", None).help("Lines after this time: 10m, 2h or an RFC 3339 timestamp"))
+        .arg(value("since", None).help(format!("Lines after this time: {TIME_FORMATS}")))
         .arg(
             value("tail", Some('n'))
                 .default_value("100")
                 .help("Lines from the end of the log; all for everything"),
         )
-        .arg(value("until", None).help("Lines before this time: 10m, 2h or an RFC 3339 timestamp"))
+        .arg(value("until", None).help(format!("Lines before this time: {TIME_FORMATS}")))
         .arg(switch("utc", None).help("Show times in UTC"))
 }
 

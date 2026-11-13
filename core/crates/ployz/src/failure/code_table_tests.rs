@@ -17,7 +17,7 @@ use crate::{
     deploy::PlanError,
     enrollment::local::Error as EnrollmentHistoryError,
     image::PushError,
-    operator::OperatorError,
+    operator::{OperatorError, input::InputError},
     provisioning::ProvisionError,
     published::PublishError,
 };
@@ -483,7 +483,7 @@ fn operator_rows() -> Vec<Row> {
             OperatorError::NotRunningOnAnswered {
                 service: "api".into(),
                 gaps: unanswered(),
-                names: std::collections::BTreeMap::new(),
+                names: crate::operator::MachineNames::default(),
             },
         ),
         row(
@@ -525,36 +525,31 @@ fn operator_rows() -> Vec<Row> {
             OperatorError::Codec(CodecError::UnsupportedCommand("c".into())),
         ),
         row("operator/stream-closed", OperatorError::StreamClosed),
-        row(
-            "operator/tty-requires-stdin",
-            OperatorError::TtyRequiresStdin,
-        ),
+        row("operator/tty-requires-stdin", InputError::TtyRequiresStdin),
         row(
             "operator/invalid-service-selector",
-            OperatorError::InvalidServiceSelector("s".into()),
+            InputError::InvalidServiceSelector("s".into()),
         ),
-        row(
-            "operator/invalid-tail",
-            OperatorError::InvalidTail("t".into()),
-        ),
+        row("operator/invalid-tail", InputError::InvalidTail("t".into())),
         row(
             "operator/invalid-time",
-            OperatorError::InvalidTime {
+            InputError::InvalidTime {
                 flag: "since",
                 value: "v".into(),
             },
         ),
-        row(
-            "operator/invalid-proxy-port",
-            OperatorError::InvalidProxyPort,
-        ),
+        row("operator/invalid-proxy-port", InputError::InvalidProxyPort),
         row(
             "operator/invalid-local-port",
-            OperatorError::InvalidLocalPort("p".into()),
+            InputError::InvalidLocalPort("p".into()),
         ),
         row(
             "operator/invalid-remote-port",
-            OperatorError::InvalidRemotePort("p".into()),
+            InputError::InvalidRemotePort("p".into()),
+        ),
+        row(
+            "operator/input",
+            OperatorError::Input(InputError::InvalidTail("t".into())),
         ),
         row(
             "operator/no-servable-container",

@@ -32,6 +32,36 @@ pub struct HistorySelector {
     pub container_id: Option<ContainerId>,
 }
 
+impl HistorySelector {
+    /// Every stored container of one Service, running or removed.
+    pub fn service(namespace: &str, service: &str, deployment: Option<&str>) -> Self {
+        Self {
+            namespace: Some(namespace.to_owned()),
+            service: Some(service.to_owned()),
+            deployment: deployment.map(str::to_owned),
+            container_id: None,
+        }
+    }
+
+    /// Every stored container of one Namespace.
+    pub fn namespace(namespace: &str, deployment: Option<&str>) -> Self {
+        Self {
+            namespace: Some(namespace.to_owned()),
+            deployment: deployment.map(str::to_owned),
+            ..Self::default()
+        }
+    }
+
+    /// One stored container, by id.
+    pub fn container(container_id: ContainerId, deployment: Option<&str>) -> Self {
+        Self {
+            deployment: deployment.map(str::to_owned),
+            container_id: Some(container_id),
+            ..Self::default()
+        }
+    }
+}
+
 /// Nanosecond bounds: `since` inclusive, `until` exclusive.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HistoryWindow {
