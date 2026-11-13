@@ -42,11 +42,10 @@ fn state_dir(root: &Path) -> PathBuf {
     root.join(PRIVATE_ACCESS_STATE_MACHINE_DIR.trim_start_matches('/'))
 }
 
-/// `dir` as a directory only root enters, its parents made as `create_dir_all` makes them.
+/// `dir` as a directory only root enters: made as `create_dir_all` makes it, so a file in the
+/// way fails as it always did, then set to exactly `0700`.
 fn private_dir(dir: &Path) -> io::Result<()> {
-    if let Some(parent) = dir.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    fs::create_dir_all(dir)?;
     create_private_dir(dir, Existing::Tighten)?;
     Ok(())
 }
@@ -278,6 +277,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(tailnet(root.path()).as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn a_file_where_a_parent_directory_belongs_fails_as_not_a_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let state = state_dir(root.path());
+        fs::create_dir_all(state.parent().unwrap().parent().unwrap()).unwrap();
+        fs::write(state.parent().unwrap(), b"in the way").unwrap();
+        assert_eq!(
+            keep_state(root.path()).unwrap_err().kind(),
+            io::ErrorKind::NotADirectory
+        );
+        let key = key_dir(root.path());
+        fs::create_dir_all(key.parent().unwrap().parent().unwrap()).unwrap();
+        fs::write(key.parent().unwrap(), b"in the way").unwrap();
+        assert_eq!(
+            write(root.path(), b"key").unwrap_err().kind(),
+            io::ErrorKind::NotADirectory
+        );
     }
 
     #[test]
