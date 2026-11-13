@@ -13,9 +13,9 @@ use bollard::{
 };
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
-    MachineStorageObservation, Namespace, QualifiedService, ResolvedServiceSpec, ServiceName,
-    ServiceNetwork, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    ServicePlacementUnknownReason, SlotKey,
+    MachineStorageObservation, Namespace, ResolvedServiceSpec, ServiceName, ServiceNetwork,
+    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
+    SlotKey,
 };
 
 #[cfg(test)]
@@ -29,7 +29,7 @@ use crate::{
 use super::{
     ContainerRuntime, Error, IngressRecovery, create,
     create::CreationNetwork,
-    doors,
+    doors::{self, Door},
     error::{Status, classify, docker_error},
     spec_store::ConfigOperation,
 };
@@ -69,6 +69,18 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     pub(crate) admission: Admission,
     /// Fresh local storage observation deferred to final container admission.
     pub(crate) storage: Storage,
+}
+
+/// A request once admission has consumed its futures: what the rest of creation reads.
+struct Creating<'a> {
+    machine: &'a Machine,
+    creation_key: Option<&'a str>,
+    deployment_id: Option<&'a ployz_core::DeploymentLogId>,
+    r#gen: Gen,
+    image: ImagePull<'a>,
+    kind: ContainerKind,
+    namespace: &'a Namespace,
+    spec: &'a ResolvedServiceSpec,
 }
 
 impl ContainerRuntime {
@@ -152,37 +164,86 @@ impl ContainerRuntime {
         )
         .map_err(E::from)?;
         admission.await?;
-        self.prepare_and_create(
+        // Boxed: every caller's future embeds this one, and the stages hold a create body.
+        Box::pin(self.create_admitted(Creating {
             machine,
-            kind,
-            namespace,
-            spec,
             creation_key,
             deployment_id,
             r#gen,
             image,
-        )
+            kind,
+            namespace,
+            spec,
+        }))
         .await
         .map_err(E::from)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The request's parts, split after admission consumed its futures."
-    )]
-    async fn prepare_and_create(
-        &self,
-        machine: &Machine,
-        kind: ContainerKind,
-        namespace: &Namespace,
-        spec: &ResolvedServiceSpec,
-        creation_key: Option<&str>,
-        deployment_id: Option<&ployz_core::DeploymentLogId>,
-        r#gen: Gen,
-        image: ImagePull<'_>,
-    ) -> Result<ContainerCreated, Error> {
-        let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, namespace, &spec.name, kind, key));
+    /// Everything after admission: the body Docker is sent, the image, and the Container
+    /// with its spec, written under one config lock.
+    async fn create_admitted(&self, creating: Creating<'_>) -> Result<ContainerCreated, Error> {
+        let Creating {
+            machine,
+            creation_key,
+            kind,
+            namespace,
+            spec,
+            ..
+        } = creating;
+        let mut body = self.build_body(&creating).await?;
+        if let ImagePull::Policy(registry_auth) = creating.image
+            && let Err(error) = prepare_image(
+                &self.docker.client,
+                &spec.container.image,
+                spec.container.pull_policy,
+                registry_auth,
+            )
+            .await
+        {
+            return Err(self.pull_failure(Error::ImagePull(error)).await);
+        }
+        let mut config_operation = self.specs.config_operation().await;
+        // Another request may have won while admission and image preparation ran.
+        if let Some(key) = creation_key
+            && let Some(existing) = self
+                .matching_creation(&mut config_operation, machine, namespace, kind, spec, key)
+                .await?
+        {
+            return Ok(existing);
+        }
+        let mounts = body
+            .host_config
+            .get_or_insert_default()
+            .mounts
+            .get_or_insert_default();
+        mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
+        let result = self
+            .create_and_record(&creating, &mut config_operation, body)
+            .await;
+        if result.is_err()
+            && let Err(error) = config_operation.garbage_collect_configs().await
+        {
+            eprintln!(
+                "failed to reclaim materialized configs: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
+        }
+        result
+    }
+
+    /// The create body for Docker: the network it joins, the sysctls only the Ingress
+    /// holder takes, and the labels that say which run made it.
+    async fn build_body(&self, creating: &Creating<'_>) -> Result<ContainerCreateBody, Error> {
+        let Creating {
+            machine,
+            creation_key,
+            deployment_id,
+            r#gen,
+            kind,
+            namespace,
+            spec,
+            ..
+        } = *creating;
         if create::holds_sealed(kind, spec) {
             self.log_store.admit_sealed().await?;
         }
@@ -218,118 +279,101 @@ impl ContainerRuntime {
             creation_key,
             r#gen,
         );
-        if let ImagePull::Policy(registry_auth) = image
-            && let Err(error) = prepare_image(
-                &self.docker.client,
-                &spec.container.image,
-                spec.container.pull_policy,
-                registry_auth,
-            )
+        Ok(body)
+    }
+
+    /// Creates the Container, under its slot's name when it has a key, then writes its
+    /// spec. A Container with no spec is removed again, so none outlives a failed write.
+    async fn create_and_record(
+        &self,
+        creating: &Creating<'_>,
+        config_operation: &mut ConfigOperation<'_>,
+        body: ContainerCreateBody,
+    ) -> Result<ContainerCreated, Error> {
+        let Creating {
+            machine,
+            creation_key,
+            kind,
+            namespace,
+            spec,
+            ..
+        } = *creating;
+        let (created, display_name) = match creation_key {
+            Some(key) => {
+                let display_name = creation_name(&machine.id, namespace, &spec.name, kind, key);
+                let options = CreateContainerOptionsBuilder::default()
+                    .name(&display_name)
+                    .build();
+                match self.docker.create_container(Some(options), body).await {
+                    Ok(created) => (created, display_name),
+                    Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
+                        return self
+                            .matching_creation(
+                                config_operation,
+                                machine,
+                                namespace,
+                                kind,
+                                spec,
+                                key,
+                            )
+                            .await?
+                            .ok_or(Error::SlotNameOccupied(display_name));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            None => self.create_unkeyed(kind, spec, body).await?,
+        };
+        let container_id =
+            ContainerId::parse(created.id).map_err(|source| Error::InvalidValue {
+                field: "container ID",
+                source,
+            })?;
+        // A daemon killed here leaves a Container no spec describes.
+        crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
+        let slot =
+            creation_key.map(|key| super::spec_store::CreationSlot::new(namespace, kind, key));
+        if let Err(error) = config_operation
+            .put(&container_id, slot.as_ref(), spec)
             .await
         {
-            return Err(self.pull_failure(Error::ImagePull(error)).await);
+            self.remove_if_present(&container_id).await?;
+            return Err(error.into());
         }
-        let mut config_operation = self.specs.config_operation().await;
-        // Another request may have won while admission and image preparation ran.
-        if let Some(key) = creation_key
-            && let Some(existing) = self
-                .matching_creation(&mut config_operation, machine, namespace, kind, spec, key)
-                .await?
-        {
-            return Ok(existing);
-        }
-        let mounts = body
-            .host_config
-            .get_or_insert_default()
-            .mounts
-            .get_or_insert_default();
-        mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
-        let result = async {
-            let (created, display_name) = match reserved_name {
-                Some(display_name) => {
-                    let options = CreateContainerOptionsBuilder::default()
-                        .name(&display_name)
-                        .build();
-                    match self.docker.create_container(Some(options), body).await {
-                        Ok(created) => (created, display_name),
-                        Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
-                            if let Some(key) = creation_key {
-                                return self
-                                    .matching_creation(
-                                        &mut config_operation,
-                                        machine,
-                                        namespace,
-                                        kind,
-                                        spec,
-                                        key,
-                                    )
-                                    .await?
-                                    .ok_or(Error::SlotNameOccupied(display_name));
-                            }
-                            return Err(Error::SlotNameOccupied(display_name));
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                None => {
-                    let mut attempt = 0;
-                    loop {
-                        attempt += 1;
-                        let suffix = MachineId::random().as_str()[..4].to_owned();
-                        let display_name = match kind {
-                            ContainerKind::ServiceContainer => {
-                                format!("{}-{suffix}", spec.name)
-                            }
-                            ContainerKind::PreDeployHook => {
-                                format!("{}-pre-deploy-{suffix}", spec.name)
-                            }
-                        };
-                        let options = CreateContainerOptionsBuilder::default()
-                            .name(&display_name)
-                            .build();
-                        match self
-                            .docker
-                            .create_container(Some(options), body.clone())
-                            .await
-                        {
-                            Ok(created) => break (created, display_name),
-                            Err(Error::Docker(error)) if retry_name_conflict(attempt, &error) => {}
-                            Err(error) => return Err(error),
-                        }
-                    }
-                }
+        Ok(ContainerCreated {
+            container_id,
+            display_name,
+        })
+    }
+
+    /// Creates a Container under a random name, retrying a name Docker already holds.
+    async fn create_unkeyed(
+        &self,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+        body: ContainerCreateBody,
+    ) -> Result<(bollard::models::ContainerCreateResponse, String), Error> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let suffix = MachineId::random().as_str()[..4].to_owned();
+            let display_name = match kind {
+                ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
+                ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
             };
-            let container_id =
-                ContainerId::parse(created.id).map_err(|source| Error::InvalidValue {
-                    field: "container ID",
-                    source,
-                })?;
-            // A daemon killed here leaves a Container no spec describes.
-            crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
-            let slot =
-                creation_key.map(|key| super::spec_store::CreationSlot::new(namespace, kind, key));
-            if let Err(error) = config_operation
-                .put(&container_id, slot.as_ref(), spec)
+            let options = CreateContainerOptionsBuilder::default()
+                .name(&display_name)
+                .build();
+            match self
+                .docker
+                .create_container(Some(options), body.clone())
                 .await
             {
-                self.remove_if_present(&container_id).await?;
-                return Err(error.into());
+                Ok(created) => break Ok((created, display_name)),
+                Err(Error::Docker(error)) if retry_name_conflict(attempt, &error) => {}
+                Err(error) => break Err(error),
             }
-            Ok(ContainerCreated {
-                container_id,
-                display_name,
-            })
-        };
-        let result = result.await;
-        if result.is_err()
-            && let Err(error) = config_operation.garbage_collect_configs().await
-        {
-            eprintln!(
-                "failed to reclaim materialized configs: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            );
         }
-        result
     }
 
     /// The Container an earlier create under `key` left behind, so a resend adopts it
@@ -777,7 +821,7 @@ impl ContainerRuntime {
         let mut managed = self.docker.managed_containers().await?;
         managed.sort_by_key(|(_, labels)| {
             ServiceLabels::parse(labels)
-                .is_ok_and(|managed| managed.identity == QualifiedService::system_ingress_holder())
+                .is_ok_and(|managed| Door::of(&managed.identity) == Some(Door::Holder))
         });
         for (container_id, _) in managed {
             self.retire(&mut config_operation, &container_id, How::Departing)
@@ -2232,3 +2276,6 @@ mod tests {
 
 #[cfg(test)]
 mod admission_tests;
+
+#[cfg(test)]
+mod body_tests;
