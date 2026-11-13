@@ -1438,6 +1438,28 @@ fn a_local_store_refuses_every_cloud_tool_before_it_asks_or_writes() {
     }
 }
 
+/// Where a tool can run is settled before it plans, so a local `server_set` that
+/// sets nothing is told it needs Ployz Cloud, not that it must set a value.
+#[test]
+fn a_local_server_set_with_no_value_is_refused_as_cloud_only_before_it_is_read() {
+    let run = drive(
+        &shop(),
+        StoreAt::Local,
+        "server_set",
+        json!({ "server": "web-1" }),
+        "local-empty",
+        &mut no_cloud,
+    );
+    assert_eq!(run.writes, 0);
+    let refusal = run.refused();
+    assert_eq!(refusal.code.as_str(), "not_here");
+    assert_eq!(
+        refusal.message,
+        "This needs Ployz Cloud; a local Config Store cannot answer it"
+    );
+    assert_eq!(refusal.fix(), Some(Fix::UseCloud));
+}
+
 #[test]
 fn a_local_store_refuses_a_generated_domain_and_takes_a_custom_one() {
     let store = shop();
