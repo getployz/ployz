@@ -7,6 +7,8 @@ mod doors;
 mod forgotten;
 mod health_wait;
 mod hostname;
+#[cfg(not(target_arch = "wasm32"))]
+mod hostname_probe;
 mod hostname_verdict;
 mod image_cleanup;
 mod ingress;
@@ -34,6 +36,8 @@ pub use doors::*;
 pub use forgotten::*;
 pub use health_wait::*;
 pub use hostname::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub use hostname_probe::*;
 pub use hostname_verdict::*;
 pub use image_cleanup::*;
 pub use ingress::*;

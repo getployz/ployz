@@ -19,9 +19,9 @@ use instant_acme::{
 };
 use ployz_core::{
     CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute, ContainerKind,
-    ContainerObservation, HOSTNAME_VERIFY_PATH, HttpProtocol, IngressHost, IngressPorts,
-    IngressWiring, IssuanceFailure, Machine, MachineId, PortPublication, TUNNEL_SERVES_CERTIFICATE,
-    VerifyAnswer, hostname_verdict, issuance_failure_clock, issuance_gate, refusal_reason,
+    ContainerObservation, HostnameProbe, HttpProtocol, IngressHost, IngressPorts, IngressWiring,
+    IssuanceFailure, Machine, MachineId, PortPublication, TUNNEL_SERVES_CERTIFICATE, VerifyAnswer,
+    hostname_verdict, issuance_failure_clock, issuance_gate, refusal_reason,
     resolve_certificate_policy, validate_ingress_service_spec,
 };
 use ployz_decide::issuance::{
@@ -429,7 +429,7 @@ struct PassInputs {
     rows: BTreeMap<CertificateHost, CertificateRow>,
     machine_ids: Vec<MachineId>,
     cluster: Vec<IpAddr>,
-    verify_client: Client,
+    verify_client: HostnameProbe,
     rank: usize,
 }
 
@@ -492,7 +492,7 @@ async fn read_pass(
     if standing.closed.contains(machine_id) {
         return Ok(None);
     }
-    let verify_client = probe_client(policy.probe_timeout())?;
+    let verify_client = HostnameProbe::new(Duration::from_secs(2).min(policy.probe_timeout()))?;
     let rank = machine_rank(
         machine_id,
         ordering_machines(&machines.observations, &standing),
@@ -888,54 +888,18 @@ async fn resolve_host(hostname: &IngressHost) -> Vec<IpAddr> {
         .collect()
 }
 
-fn probe_client(probe_timeout: Duration) -> Result<Client, Error> {
-    Ok(Client::builder()
-        .redirect(Policy::none())
-        .no_proxy()
-        .timeout(Duration::from_secs(2).min(probe_timeout))
-        .build()?)
-}
-
 /// Fetch the verify path from each address with `hostname` as `Host`, without following redirects.
 pub(crate) async fn verify_answers(
-    client: &Client,
+    probe: &HostnameProbe,
     hostname: &IngressHost,
     addresses: &[SocketAddr],
 ) -> Vec<(IpAddr, VerifyAnswer)> {
-    join_all(addresses.iter().map(|address| async move {
-        (
-            address.ip(),
-            verify_answer(client, hostname, *address).await,
-        )
-    }))
+    join_all(
+        addresses
+            .iter()
+            .map(|address| async move { (address.ip(), probe.answer(hostname, *address).await) }),
+    )
     .await
-}
-
-async fn verify_answer(
-    client: &Client,
-    hostname: &IngressHost,
-    address: SocketAddr,
-) -> VerifyAnswer {
-    let Ok(response) = client
-        .get(format!("http://{address}{HOSTNAME_VERIFY_PATH}"))
-        .header(reqwest::header::HOST, hostname.as_str())
-        .send()
-        .await
-    else {
-        return VerifyAnswer::NoAnswer;
-    };
-    let status = response.status().as_u16();
-    let location = response
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .and_then(|location| location.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    VerifyAnswer::Answered {
-        status,
-        location,
-        body: response.text().await.unwrap_or_default(),
-    }
 }
 
 async fn wait_for_http01(
@@ -948,11 +912,11 @@ async fn wait_for_http01(
     if addresses.is_empty() {
         return Err(Error::ChallengeNotServed);
     }
-    let client = probe_client(probe_timeout)?;
+    let probe = HostnameProbe::new(Duration::from_secs(2).min(probe_timeout))?;
     let deadline = Instant::now() + probe_timeout;
     loop {
         let answered = join_all(addresses.iter().map(|address| {
-            let client = &client;
+            let client = probe.client();
             async move { challenge_is_served(client, hostname, challenge, *address).await }
         }))
         .await;

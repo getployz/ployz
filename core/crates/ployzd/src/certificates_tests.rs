@@ -20,8 +20,8 @@ use serde_json::json;
 use super::{
     DoorStanding, Host, advance, challenge_probe_addresses, directory_from_env, door_standing,
     held, ingress_challenge_ips, issue_wanted, machine_jitter, material_validity,
-    order_certificate, ordering_machines, probe_client, renewal_window, run, verify_answers,
-    wait_for_http01, wanted_certificate_hosts,
+    order_certificate, ordering_machines, renewal_window, run, verify_answers, wait_for_http01,
+    wanted_certificate_hosts,
 };
 use crate::corrosion::{
     CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
@@ -585,7 +585,7 @@ async fn verify_answers_report_status_location_and_body_or_no_answer() {
         .unwrap()
         .local_addr()
         .unwrap();
-    let client = probe_client(Duration::from_secs(2)).unwrap();
+    let client = ployz_core::HostnameProbe::new(Duration::from_secs(2)).unwrap();
 
     let answers =
         verify_answers(&client, &host("app.example.com"), &[body, redirect, closed]).await;
