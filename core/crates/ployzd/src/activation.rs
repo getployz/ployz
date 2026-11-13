@@ -248,8 +248,8 @@ pub(crate) fn commit_pending(
     tracing::info!(
         operation = %pending.operation,
         members = pending.members.len(),
-        retired_devices = ?retired.devices,
-        retired_passkeys = ?retired.passkeys,
+        retired_devices = %codes(&retired.devices),
+        retired_passkeys = %codes(&retired.passkeys),
         dropped_joins = ?dropped.joins,
         dropped_proposals = ?dropped_proposals,
         dropped_accepted = dropped.accepted,
@@ -288,4 +288,13 @@ fn remove_file(file: &Path) -> Result<(), CommitError> {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(CommitError::Durable(error)),
         _ => Ok(()),
     }
+}
+
+/// Device codes as a person reads them in `ployz device ls`, for the journal.
+fn codes(codes: &[DeviceCode]) -> String {
+    codes
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }

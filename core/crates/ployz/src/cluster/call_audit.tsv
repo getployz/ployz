@@ -87,6 +87,7 @@ src/handlers/device/enforce.rs::deliver_over_mesh	op::ActivateEnforcement	invoke
 src/handlers/device/enforce.rs::found_on	op::Inspect	invoke	single	-	-	once
 src/handlers/device/enforce.rs::install_recipient	op::SetRecipientKey	invoke	single	-	-	once
 src/handlers/device/enforce.rs::settled	op::Inspect	call	setup	wait(WAIT)	redial	read
+src/handlers/device/enforce.rs::shared	op::SetRecipientKey	invoke	single	-	-	once
 src/handlers/recovery.rs::recover_with	op::RecoverSealingKey	call_repeatable	setup	wait(WAIT)	redial	keyed
 src/handlers/recovery.rs::require	op::DescribeContract	call_repeatable	setup	wait(WAIT)	redial	read
 src/handlers/recovery.rs::rotate_for	op::Inspect	call	setup	wait(WAIT)	redial	read

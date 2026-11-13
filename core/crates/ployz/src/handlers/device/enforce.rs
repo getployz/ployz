@@ -7,15 +7,19 @@
 //! decides for itself whether it admits the set, and restarts to commit it. Then this Device
 //! generates the recipient key new values seal to, installs it on each activated Server, and
 //! backs it up in Cloud under a recovery code it prints once.
+//!
+//! A run after one that some Servers committed finishes that activation: it signs the set
+//! under the operation they hold, which they take again as a no-op, and has a Server that
+//! holds the recipient key share it with the rest, so the Cluster keeps one key and one code.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    ActivateEnforcementRequest, ActivationReport, ActivationState, DeviceCode, DeviceKey,
-    ENFORCED_CAPABILITY, Hint, InspectRequest, LegacyKey, MachineDetails, MachineId, MachineTarget,
-    OperationId, RecipientSecret, RecoveryCode, RpcError, Sealing, SealingPublicKey,
-    SetDeviceEnforcementRequest, SetRecipientKeyRequest, TrustedKeyKind,
+    ActivateEnforcementRequest, ActivationReport, ActivationState, Ciphertext, DeviceCode,
+    DeviceKey, ENFORCED_CAPABILITY, Hint, InspectRequest, LegacyKey, MachineDetails, MachineId,
+    MachineTarget, OperationId, RecipientKeySet, RecipientSecret, RecoveryCode, RpcError, Sealing,
+    SealingPublicKey, SetDeviceEnforcementRequest, SetRecipientKeyRequest, TrustedKeyKind,
     authority::{
         Member, SealingRotation, Signed, Signer, SignerKey, StartingSet, Timestamp,
         rotation::sealed_key_binding, validity,
@@ -75,6 +79,8 @@ struct Found {
     member: Member,
     report: Option<ActivationReport>,
     identity: Option<SealingPublicKey>,
+    /// The recipient key this Server holds once a rotation installed one.
+    recipient: Option<SealingPublicKey>,
     enforces: bool,
 }
 
@@ -170,9 +176,15 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         let kept = kept_keys(&legacy_keys(&included, &reach, own), |key| {
             Ok(typed_keeps.contains(&key.code) || (!unattended && ui::can_prompt() && keeps(key)?))
         })?;
+        let resumed = resumed(&included, &reach)?;
+        if let Some(operation) = resumed {
+            ui::note(format!(
+                "Finishing activation {operation}, which some of these Servers already committed."
+            ));
+        }
         let issued_at = Timestamp::now();
         let set = StartingSet {
-            operation: OperationId::random(),
+            operation: resumed.unwrap_or_else(OperationId::random),
             members: included
                 .iter()
                 .map(|server| server.member.clone())
@@ -269,6 +281,7 @@ async fn found_on(client: Client, machine_id: MachineId) -> Result<Option<Found>
             Some(Sealing::Held { public_key }) => Some(public_key),
             _ => None,
         },
+        recipient: details.sealing_recipient,
         enforces,
     }))
 }
@@ -367,7 +380,7 @@ fn refused(server: &Found, name: &str, why: String) -> Outcome {
 
 fn substituted(name: &str, pin: &Member, answered: &Member) -> Error {
     Error::conflict(format!(
-        "Server {name} answered with key {}, not key {} this computer pinned for it, so nothing was signed. Reach it over SSH to check which key it holds.",
+        "Server {name} answered with key {}, not key {} this computer pinned for it, so nothing was signed. Run `sudo ployz status` on it to check which key it holds.",
         answered.public_key.fingerprint(),
         pin.public_key.fingerprint(),
     ))
@@ -543,6 +556,86 @@ fn refuse_unreachable(
 
 /// Hand the signed set to a Server through the mesh, which admits it against its own
 /// trusted snapshot.
+/// The operation a run must sign under: the one Servers already committed, so a rerun after
+/// a Server was refused or stopped finishes that activation rather than starting another.
+///
+/// # Errors
+/// Refuses, before anything is signed, when Servers committed different operations: no one
+/// set activates them together.
+fn resumed(included: &[&Found], reach: &Reach) -> Result<Option<OperationId>, Error> {
+    let mut under: BTreeMap<OperationId, Vec<String>> = BTreeMap::new();
+    for server in included {
+        if let Some(ActivationReport {
+            state: ActivationState::Activated,
+            operation: Some(operation),
+            ..
+        }) = &server.report
+        {
+            under
+                .entry(*operation)
+                .or_default()
+                .push(reach.name(&server.machine_id));
+        }
+    }
+    match under.len() {
+        0 => Ok(None),
+        1 => Ok(under.into_keys().next()),
+        _ => Err(Error::conflict(format!(
+            "These Servers were activated under different starting sets, so no one set activates them together: {}. Nothing was signed.",
+            under
+                .into_iter()
+                .map(|(operation, servers)| format!("{} under {operation}", servers.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ))
+        .hint(Hint::Next(
+            "ployz server rm SERVER for the Servers under one set, then add each again with a join you approve"
+                .to_owned(),
+        ))),
+    }
+}
+
+/// Where the recipient key comes from: a fresh one, or the one activated Servers already hold.
+enum Recipient<'a> {
+    Fresh(RecipientSecret),
+    Held {
+        recipient: SealingPublicKey,
+        holder: &'a Found,
+    },
+}
+
+impl Recipient<'_> {
+    fn public(&self) -> SealingPublicKey {
+        match self {
+            Self::Fresh(secret) => secret.public(),
+            Self::Held { recipient, .. } => *recipient,
+        }
+    }
+}
+
+/// The recipient key the activated Servers already hold, with one Server holding it. `None`
+/// when none holds one. More than one key can't be healed by a run.
+fn held_recipient<'a>(activated: &[&'a Found]) -> Result<Option<Recipient<'a>>, String> {
+    let held: BTreeMap<SealingPublicKey, &Found> = activated
+        .iter()
+        .filter_map(|server| server.recipient.map(|recipient| (recipient, *server)))
+        .collect();
+    match held.len() {
+        0 => Ok(None),
+        1 => Ok(held
+            .into_iter()
+            .next()
+            .map(|(recipient, holder)| Recipient::Held { recipient, holder })),
+        _ => Err(format!(
+            "The activated Servers hold different recipient keys ({}), so no recipient key was installed.",
+            held.keys()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 async fn deliver_over_mesh(
     client: &Client,
     machine_id: MachineId,
@@ -607,8 +700,9 @@ async fn settled(
     Err("it didn't report the activation committed. Check it with `ployz status`.".to_owned())
 }
 
-/// Generate the recipient key here, sign the rotation naming it, and install it on each
-/// activated Server, sealed to that Server's own WireGuard key.
+/// Sign the rotation naming the recipient key and install it on each activated Server that
+/// lacks it, sealed to that Server's own WireGuard key. The key is the one activated Servers
+/// already hold, shared by a holder, or else one generated here and backed up.
 async fn install_recipient(
     config: &std::path::Path,
     client: &Client,
@@ -627,25 +721,51 @@ async fn install_recipient(
         );
         return Ok(());
     };
-    let secret = RecipientSecret::generate();
+    let source = match held_recipient(activated) {
+        Ok(Some(held)) => held,
+        Ok(None) => Recipient::Fresh(RecipientSecret::generate()),
+        Err(why) => {
+            ui::warn(why);
+            return Ok(());
+        }
+    };
     let rotation = SealingRotation {
         cluster: identity,
         operation: set.operation,
-        recipient: secret.public(),
+        recipient: source.public(),
         members: set.members.clone(),
         signer: SignerKey::Device(signer.public().into()),
     };
     ui::note(format!(
-        "Signing the Cluster's new recipient key {} for {} Servers. New sealed values go to it.",
+        "Signing the Cluster's recipient key {} for {} Servers. New sealed values go to it.",
         rotation.recipient,
         rotation.members.len()
     ));
     let signed = Signed::sign(&rotation, signer).map_err(Error::command)?;
     let binding = sealed_key_binding(&identity, &set.operation);
     for server in activated {
-        let sealed = secret
-            .seal_to(&server.member.public_key, &binding)
-            .map_err(Error::command)?;
+        if server.recipient == Some(rotation.recipient) {
+            continue;
+        }
+        let name = reach.name(&server.machine_id);
+        let sealed = match &source {
+            Recipient::Fresh(secret) => secret
+                .seal_to(&server.member.public_key, &binding)
+                .map_err(Error::command)?,
+            Recipient::Held { holder, .. } => {
+                match shared(client, holder.machine_id, &signed, server.machine_id).await {
+                    Ok(sealed) => sealed,
+                    Err(error) => {
+                        ui::warn(format!(
+                            "{} didn't share the recipient key with {name}: {}",
+                            reach.name(&holder.machine_id),
+                            error.message
+                        ));
+                        continue;
+                    }
+                }
+            }
+        };
         let installed = client
             .call_shared::<op::SetRecipientKey>(
                 SetRecipientKeyRequest::Install {
@@ -657,15 +777,50 @@ async fn install_recipient(
             .await;
         if let Err(error) = installed {
             ui::warn(format!(
-                "Server {} didn't install the recipient key: {}",
-                reach.name(&server.machine_id),
+                "Server {name} didn't install the recipient key: {}",
                 crate::connect::rpc_error(error).message
             ));
         }
     }
     crate::sealing_pin::Pins::beside(config).name_recipient(identity, rotation.recipient)?;
     ui::note("Values sealed from now on open only on your activated Servers.");
-    recovery_code(config, &secret, &signed).await
+    match source {
+        Recipient::Fresh(secret) => recovery_code(config, &secret, &signed).await,
+        Recipient::Held { .. } => {
+            ui::note(
+                "The recipient key is the one your Servers already hold, so the recovery code you made for it still opens it.",
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The recipient key `holder` holds, sealed to `to`'s WireGuard key under `rotation`.
+async fn shared(
+    client: &Client,
+    holder: MachineId,
+    rotation: &Signed<SealingRotation>,
+    to: MachineId,
+) -> Result<Ciphertext, RpcError> {
+    let answer = client
+        .call_shared::<op::SetRecipientKey>(
+            SetRecipientKeyRequest::Share {
+                rotation: rotation.clone(),
+                to,
+            },
+            Call::once().to(&MachineTarget::from(&holder)),
+        )
+        .await
+        .map_err(crate::connect::rpc_error)?;
+    match answer {
+        RecipientKeySet::Shared { to: shared, sealed } if shared == to => Ok(sealed),
+        RecipientKeySet::Shared { .. }
+        | RecipientKeySet::Generated { .. }
+        | RecipientKeySet::Installed { .. } => Err(RpcError::new(
+            ployz_core::RpcErrorCode::Internal,
+            "the Server answered with something other than the shared key",
+        )),
+    }
 }
 
 /// Back up the recipient key in Cloud under a fresh recovery code and print the code once,

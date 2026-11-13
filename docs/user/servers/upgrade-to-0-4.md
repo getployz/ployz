@@ -15,8 +15,10 @@ Upgrade each server from **Servers** in the dashboard, or with `ployz server upg
 running while each server upgrades. Automatic upgrades never move a server from 0.3 to 0.4, so
 you start this one yourself.
 
-Until you activate, your servers work as they did on 0.3, and the **Servers** page shows each one
-as **Awaiting activation**.
+Until you activate, your servers run your services as they did on 0.3, and the **Servers** page
+shows each one as **Awaiting activation**. One thing changes at once: approving a device and other
+actions that need full access go over a direct SSH connection to each server, not through another
+server.
 
 ## 2. Activate
 
@@ -25,8 +27,17 @@ Pick one of these.
 **From your computer.** Run `ployz device enforce` from a device you approved, as in
 [Require a device's signature](manage-servers.md#require-a-devices-signature-for-restarts-and-joins).
 Run it without `--connect` in the context where you added your servers over SSH, so it reaches
-each one over its own SSH connection. This works for every cluster. A server that only joined
-through Ployz Cloud has no SSH connection saved; confirm its key with `sudo ployz status` on it.
+each one over its own SSH connection. On a cluster that ran 0.3, every server holds keys from
+before, so each one takes the list only over its own SSH. A server that joined only through
+Ployz Cloud has no SSH connection saved: leave it out by not confirming its key, then after
+activation remove it with `ployz server rm` and add it again with a join you approve. If no
+server was added over SSH, run `ployz device enforce --connect ssh://root@SERVER` for one server,
+leave the others out, and add them again the same way.
+
+If a server is refused or stops partway, fix what it names and run `ployz device enforce` again.
+The new run finishes the same activation: servers that already activated take it again without
+restarting, and the rest get the same key for sealed values, so your recovery code keeps
+working.
 
 **From the dashboard.** When every server runs 0.4 and none holds a device, passkey or server it
 can't vouch for, the dashboard offers **Activate** on the **Servers** page. Otherwise it names
@@ -38,8 +49,9 @@ computer, as in [Your recovery code after activation](#your-recovery-code-after-
 
 Activation:
 
-- removes every device and passkey added while enforcement was off, unless you keep it. Approve
-  a removed one again with `ployz device request` on that computer, then
+- removes every device and passkey added while enforcement was off, unless you keep it. The
+  device you activate from is always kept. Approve a removed one again with
+  `ployz device request` on that computer, signed in with `ployz login`, then
   `ployz device approve <code>` from yours.
 - leaves out a server you didn't confirm or that runs a Ployz older than 0.4. Once the others
   activate, that server is no longer part of the cluster: remove it with `ployz server rm`, then
@@ -78,7 +90,8 @@ both codes.
 
 - **From your computer.** `ployz device enforce` prints the new **Recovery code** once, in a
   terminal, while you're signed in with `ployz login`. It says that the code opens values sealed
-  after activation and that your earlier code still opens values sealed before.
+  after activation and that your earlier code still opens values sealed before. Running
+  `ployz device enforce` again keeps the key your servers hold, so it makes no new code.
 - **From the dashboard, or if you got no code.** From your computer, signed in, run:
 
   ```sh

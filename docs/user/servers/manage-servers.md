@@ -332,10 +332,12 @@ runs Ployz 0.4, and it can't be turned off. Read [Upgrade to Ployz 0.4](upgrade-
 first: it says what activation removes and what it can't undo.
 
 ```sh
-ployz device enforce --connect ssh://root@203.0.113.10
+ployz device enforce
 ```
 
-`enforce` needs this computer's approved device key. It trusts a server's key only when this
+Run it in the context where you added your servers with `ployz server add` over SSH. With
+`--connect`, it reaches only that one server directly, and leaves out each other server that holds
+keys from before. `enforce` needs this computer's approved device key. It trusts a server's key only when this
 computer learned it without going through Ployz Cloud:
 
 - the server's join was approved from this computer, or
@@ -358,7 +360,9 @@ subnet, Machine ID and key fingerprint, and the keys you kept, and signs that li
 checks the list, restarts, and reports itself activated. `enforce` waits for each one, then
 gives the cluster a new key for sealed values, made on this computer. Values you seal from then
 on use it, so no one holding the old key can open them. It lists each server as `activated`,
-`left out` or `refused`, with why, and exits 3 unless every server activated.
+`left out` or `refused`, with why, and exits 3 unless every server activated. Run it again after
+fixing what a refused server names: it finishes the same activation and installs the same key for
+sealed values on the servers that missed it.
 
 After activation a server trusts only the servers in the signed list, plus servers whose join an
 approved device signs later. A server that held a key or server from before enforcement takes the

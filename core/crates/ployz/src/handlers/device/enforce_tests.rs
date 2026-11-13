@@ -15,7 +15,21 @@ fn found(hex: char, name: &str) -> Found {
         member: Member::from(&machine),
         report: None,
         identity: None,
+        recipient: None,
         enforces: true,
+    }
+}
+
+fn activated_under(server: Found, operation: OperationId) -> Found {
+    Found {
+        report: Some(ActivationReport {
+            state: ActivationState::Activated,
+            operation: Some(operation),
+            legacy_members: Vec::new(),
+            legacy_keys: Vec::new(),
+            private_access: None,
+        }),
+        ..server
     }
 }
 
@@ -291,4 +305,59 @@ fn enforce_signs_nothing_while_a_server_only_the_mesh_reaches_holds_older_keys()
 
     let direct = BTreeSet::from([servers[0].machine_id, servers[2].machine_id]);
     assert!(refuse_unreachable(&servers.iter().collect::<Vec<_>>(), &direct, &reach).is_ok());
+}
+
+#[test]
+fn a_rerun_finishes_the_activation_the_servers_committed_rather_than_starting_another() {
+    let first = OperationId::random();
+    let committed = activated_under(found('1', "machine-1"), first);
+    let stopped = found('2', "machine-2");
+    let reach = reach_of(&[&committed, &stopped]);
+    assert_eq!(
+        resumed(&[&committed, &stopped], &reach).unwrap(),
+        Some(first)
+    );
+    assert_eq!(
+        resumed(&[&found('1', "machine-1"), &stopped], &reach).unwrap(),
+        None,
+        "a first run signs a fresh operation"
+    );
+}
+
+#[test]
+fn a_rerun_signs_nothing_when_servers_committed_different_sets() {
+    let one = activated_under(found('1', "machine-1"), OperationId::random());
+    let other = activated_under(found('2', "machine-2"), OperationId::random());
+    let reach = reach_of(&[&one, &other]);
+    let refusal = resumed(&[&one, &other], &reach).unwrap_err().to_string();
+    assert!(refusal.contains("machine-1"), "{refusal}");
+    assert!(refusal.contains("machine-2"), "{refusal}");
+    assert!(refusal.contains("Nothing was signed"), "{refusal}");
+}
+
+#[test]
+fn a_rerun_shares_the_recipient_key_the_activated_servers_hold_rather_than_making_another() {
+    let key = ployz_core::Keypair::generate().public();
+    let holder = Found {
+        recipient: Some(key),
+        ..found('1', "machine-1")
+    };
+    let lacking = found('2', "machine-2");
+    match held_recipient(&[&lacking, &holder]).unwrap() {
+        Some(Recipient::Held { recipient, holder }) => {
+            assert_eq!(recipient, key);
+            assert_eq!(holder.machine_id, found('1', "machine-1").machine_id);
+        }
+        _ => panic!("the held key is shared"),
+    }
+    assert!(
+        held_recipient(&[&lacking]).unwrap().is_none(),
+        "with no key held, a new one is made"
+    );
+    let split = Found {
+        recipient: Some(ployz_core::Keypair::generate().public()),
+        ..found('2', "machine-2")
+    };
+    let refusal = held_recipient(&[&holder, &split]).err().unwrap();
+    assert!(refusal.contains("different recipient keys"), "{refusal}");
 }
