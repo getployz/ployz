@@ -51,10 +51,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let (details, mut token) =
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
         require_another_entry(entry_id, token.id, destination)?;
-        let own_device = crate::handlers::device::key::load(&crate::handlers::device::key::path(
-            config.path(),
-        ))?
-        .map(|secret| crate::handlers::device::key::public(&secret));
+        let own_device =
+            crate::handlers::device::key::load(&crate::handlers::device::key::path(config.path()))?
+                .map(|secret| crate::handlers::device::key::public(&secret));
         let entry_answers = entry.answers_for_itself(&entry_id);
         require_a_pin(own_device.is_some() || entry_answers, destination)?;
         // Before the reset, so a taken name leaves the Server as it was.
@@ -219,7 +218,7 @@ fn require_a_pin(pinnable: bool, destination: &str) -> Result<(), Error> {
         return Ok(());
     }
     Err(Error::conflict(format!(
-        "This computer can't check the approval {destination} would join under: it holds no approved device key and reaches your servers only through Ployz Cloud. Run it from an approved device, or with --connect ssh://USER@SERVER naming a Server of the Cluster. Nothing was enrolled."
+        "{destination} can't join from here: this computer has no approved device key and reaches your Servers only through Ployz Cloud. Run it from an approved device, or add --connect ssh://USER@SERVER for a Server of the Cluster. Nothing was enrolled."
     )))
 }
 

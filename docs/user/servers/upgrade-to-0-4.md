@@ -15,15 +15,14 @@ Upgrade each server from **Servers** in the dashboard, or with `ployz server upg
 running while each server upgrades. Automatic upgrades never move a server from 0.3 to 0.4, so
 you start this one yourself.
 
-Until you activate, your servers keep running your services as they did on 0.3, and the
-**Servers** page shows each one as **Awaiting activation**. A server awaiting activation changes
-nothing that Ployz Cloud asks for, apart from upgrading it. It refuses a deploy, a restart, a
-build or a volume change from the dashboard or through Ployz Cloud with `This Server waits for
-its cluster to be activated, so it can't make this change yet. Activate the cluster, then try
-again.` It refuses a new server's join from anywhere, and so does every other server of the
-cluster. Over `--connect ssh://` your servers still take changes from you. Approving a device
-and other actions that need full access go over a direct SSH connection to each server, not
-through another server. Activate soon after you upgrade.
+Until you activate, your servers keep running your services, and the **Servers** page shows each
+one as **Awaiting activation**. Activate soon after you upgrade. Until then:
+
+- Deploys, restarts, builds and volume changes through Ployz Cloud are refused with
+  `this Server awaits its Cluster's activation`. Upgrades still work.
+- No new server can join.
+- Over `--connect ssh://`, your servers take changes as before. Approving a device and other
+  actions that need full access go over a direct SSH connection to each server.
 
 ## 2. Activate
 

@@ -79,9 +79,9 @@ shows before it signs. Then run the same join command on the server again, with 
 options. A new admission needs an approval less than 15 minutes old. If the reply is lost,
 run the same command again to recover the stored capsule, even after the approval expires.
 
-A new server refuses to join without an approval. If the approval goes missing on its way to
-the new server, the join stops and says the join approval carries no signature. The server
-stays as it was before it enrolled, so you can run the join again.
+A new server refuses to join without an approval. If the approval goes missing on the way, the
+join stops and says the join approval carries no signature. Nothing changes on the server, so
+you can run the join again.
 
 The new server takes its devices and starting peers only from the approval. When you run
 `ployz server add` over SSH, the CLI also tells the new server which devices may sign that
@@ -101,12 +101,12 @@ publishes the new server. Until then, no server peers with it.
 
 ### Join through Ployz Cloud without an approved device
 
-`ployz server add root@HOST` checks the approval itself before the new server joins. To do that,
-it needs this computer's approved device key, or an SSH connection to a server of the cluster.
-From a computer with neither, it stops before anything joins:
+`ployz server add root@HOST` needs this computer's approved device key, or an SSH connection to a
+server of the cluster, to check the approval the new server joins under. From a computer with
+neither, it stops before anything joins:
 
 ```text
-This computer can't check the approval web-2 would join under: it holds no approved device key and reaches your servers only through Ployz Cloud. Run it from an approved device, or with --connect ssh://USER@SERVER naming a Server of the Cluster. Nothing was enrolled.
+web-2 can't join from here: this computer has no approved device key and reaches your Servers only through Ployz Cloud. Run it from an approved device, or add --connect ssh://USER@SERVER for a Server of the Cluster. Nothing was enrolled.
 ```
 
 ## Add a standalone server
@@ -130,8 +130,8 @@ has connections, use the SSH form. It joins the existing Cluster.
 ## Your first server's first key
 
 A new cluster's first server trusts no device or passkey, and Ployz Cloud can't give it one.
-Until you approve one on the server itself, it refuses deploys, restarts and every other change
-that needs an approval. Approve a key over SSH on that server:
+Until you approve one on the server itself, it refuses deploys, restarts and other changes that
+need an approval. Approve one over SSH on that server:
 
 - **From the dashboard only.** Add a passkey under **Account**, then on the server run
   `sudo ployz login` and `sudo ployz device approve --passkey CODE`, as in
