@@ -344,7 +344,9 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
     known::KnownMachines::beside(&config_path(leaf)?)
         .record(ployz_core::authority::Member::from(&body.machine))?;
     ui::finish(&json!({ "approved_join": body.machine.id }), || {
-        ui::stream("Approved the Server join. Rerun its join command.")
+        ui::stream(
+            "Approved the Server join. Enroll it again from the dashboard, or rerun its join command.",
+        )
     })
 }
 
@@ -360,7 +362,7 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
         .map(|endpoint| endpoint.0.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
+    let summary = format!(
         "Approving Server {} on {} with endpoints {} (join code {}).",
         body.machine.name,
         body.machine.subnet,
@@ -370,6 +372,18 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
             &endpoints
         },
         body.code()
+    );
+    if body.passkeys.is_empty() {
+        return summary;
+    }
+    let passkeys = body
+        .passkeys
+        .iter()
+        .map(|passkey| format!("{} for {}", passkey.code(), passkey.account))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{summary} The Server will also trust passkey {passkeys}. A passkey approves workflows, automatic deploy rules, volume changes and Release Channels, and nothing else."
     )
 }
 

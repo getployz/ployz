@@ -98,6 +98,30 @@ async fn enforced_register_refuses_unsigned_and_unknown_signers_without_publicat
 }
 
 #[tokio::test]
+async fn a_pending_join_lists_the_passkeys_the_admitting_server_trusts() {
+    let (entry, _, _, directory, server) = participating().await;
+    enforce(&entry, &Signer::from_seed(&[1; 32])).await;
+    let passkey = crate::machine::test_support::passkey(5);
+    entry
+        .clone()
+        .on_local_socket()
+        .set_passkey(ployz_core::SetPasskeyRequest::Approve {
+            passkey: Box::new(passkey.clone()),
+        })
+        .await
+        .unwrap();
+    let joiner = request("joiner", WireGuardPublicKey([3; 32]));
+    assert!(entry.register(joiner).await.is_err());
+
+    let body = entry.pending_joins().unwrap().joins.pop().unwrap();
+
+    assert_eq!(body.passkeys, [passkey]);
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeemed_twice() {
     let (entry, _, _, directory, server) = participating().await;
     let signer = Signer::from_seed(&[1; 32]);

@@ -96,6 +96,11 @@ pub struct JoinApproval {
     /// Currently the WireGuard key also receives the Sealing Key.
     pub sealing_recipient: WireGuardPublicKey,
     pub devices: Vec<DeviceKey>,
+    /// The passkeys the admitting Machine trusts, so a Server that joins later approves what
+    /// the first one does. A passkey installed from here approves workflows and nothing else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<super::Passkey>>")]
+    pub passkeys: Vec<super::Passkey>,
     /// Machine IDs scope the approval even when two Clusters share a Sealing key.
     pub admitting_machines: Vec<MachineId>,
     pub bootstrap: Vec<JoinAllocation>,
@@ -224,6 +229,13 @@ mod tests {
         );
         assert_ne!(code, super::code(MachineId::random(), key));
         assert_ne!(code, super::code(machine, WireGuardPublicKey([2; 32])));
+    }
+
+    #[test]
+    fn join_code_matches_the_vector_clouds_copy_is_tested_against() {
+        let machine = MachineId::parse("0123456789abcdef0123456789abcdef").unwrap();
+        let key = WireGuardPublicKey(std::array::from_fn(|index| index as u8));
+        assert_eq!(code(machine, key), "jhwpvddkhc7z72egn3lg");
     }
 
     #[test]

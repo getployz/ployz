@@ -6,7 +6,7 @@ use ployz_core::{
     authority::{AuthorityRefusal, Purpose},
 };
 
-use super::test_support::{ApprovingCluster, member, written_before_f7};
+use super::test_support::{ApprovingCluster, member, passkey, written_before_f7};
 use super::{EnrollPlan, LocalMachine, LocalMachineStore, RecordOwner, StoreError};
 use crate::network::WireGuardPrivateKey;
 
@@ -128,6 +128,49 @@ fn a_pinned_join_under_the_clusters_device_enrolls_trusting_only_the_approvals_d
     assert_eq!(record.management_scope(&clouds_device.into()), None);
     assert!(record.filters_peers());
     assert!(!record.awaits_activation());
+}
+
+#[test]
+fn a_joiner_trusts_the_passkeys_in_its_verified_approval_and_none_from_elsewhere() {
+    use ployz_core::authority::{PasskeyApprover, TrustedPasskey};
+    let (_dir, mut store) = fresh();
+    let original = store.record().clone();
+    let cluster = ApprovingCluster::new(1);
+    let forger = ApprovingCluster::new(9);
+    let approved = |cluster: &ApprovingCluster, passkeys| {
+        let mut approval = cluster.approval(&original);
+        approval.passkeys = passkeys;
+        approval
+    };
+
+    let forged = forger.registration_with(&original, Some(&approved(&forger, vec![passkey(8)])));
+    assert!(
+        store
+            .enroll(member(forged, Some(cluster.pin())))
+            .is_err_and(|error| matches!(
+                error,
+                StoreError::JoinRefused(AuthorityRefusal::UnknownKey { .. })
+            ))
+    );
+    assert!(store.record().passkeys().is_empty());
+
+    let genuine = cluster.registration_with(
+        &original,
+        Some(&approved(&cluster, vec![passkey(5), passkey(6)])),
+    );
+    assert_eq!(
+        store.enroll(member(genuine, Some(cluster.pin()))).unwrap(),
+        EnrollPlan::Fresh
+    );
+
+    let device = cluster.device().code();
+    assert_eq!(
+        store.record().passkeys(),
+        [passkey(5), passkey(6)].map(|passkey| TrustedPasskey {
+            passkey,
+            approved_by: PasskeyApprover::Device { code: device },
+        })
+    );
 }
 
 #[test]

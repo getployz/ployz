@@ -202,6 +202,11 @@ impl LocalMachine {
                     network,
                     sealing_recipient: machine.public_key,
                     devices: record.devices().collect(),
+                    passkeys: record
+                        .passkeys()
+                        .iter()
+                        .map(|trusted| trusted.passkey.clone())
+                        .collect(),
                     admitting_machines: vec![record.id()],
                     bootstrap: peers.iter().map(Into::into).collect(),
                     issued_at,

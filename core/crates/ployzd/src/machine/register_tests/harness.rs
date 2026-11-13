@@ -256,6 +256,7 @@ pub(super) async fn approve_recipient(
         network,
         sealing_recipient: recipient.public_key,
         devices: admitting.record().devices().collect(),
+        passkeys: Vec::new(),
         admitting_machines: vec![admitting.record().id()],
         bootstrap: Vec::new(),
         issued_at,

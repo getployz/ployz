@@ -1253,6 +1253,7 @@ pub fn approved_registration() -> Registered {
         network: "10.210.0.0/16".parse().unwrap(),
         sealing_recipient: machine.public_key,
         devices: vec![signer.public().into()],
+        passkeys: Vec::new(),
         admitting_machines: vec![founder_machine().id],
         bootstrap: vec![JoinAllocation::from(&founder_machine())],
         issued_at,

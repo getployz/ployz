@@ -56,7 +56,7 @@ pub(crate) struct Installation {
     body: LocalMachineBody,
     sealing_key: Option<SealingKey>,
     recipient: Option<JoinedRecipient>,
-    devices: Vec<DeviceKey>,
+    keys: ployz_core::authority::TrustedKeys,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
     enrollment: EnrollRequest,
@@ -70,12 +70,12 @@ struct JoinedRecipient {
     operation: ployz_core::OperationId,
 }
 
-/// What an enrollment installs: the body, the Cluster's key, its approved Devices, whether
+/// What an enrollment installs: the body, the Cluster's key, the keys its approval names,
 /// and the recipient key after activation.
 type Enrolled = (
     LocalMachineBody,
     Option<SealingKey>,
-    Vec<DeviceKey>,
+    ployz_core::authority::TrustedKeys,
     Option<JoinedRecipient>,
 );
 
@@ -442,7 +442,7 @@ impl LocalMachineStore {
                     body: self.record.body.clone(),
                     sealing_key: None,
                     recipient: None,
-                    devices: Vec::new(),
+                    keys: ployz_core::authority::TrustedKeys::default(),
                     wireguard_mtu: request.wireguard_mtu,
                     pinned: request.pinned,
                     enrollment: request,
@@ -454,7 +454,7 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, devices, recipient) = match role {
+        let (body, sealing_key, keys, recipient) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -474,7 +474,12 @@ impl LocalMachineStore {
                     public_ip,
                     advertised_endpoints,
                 )?;
-                (body, sealing_key, Vec::new(), None)
+                (
+                    body,
+                    sealing_key,
+                    ployz_core::authority::TrustedKeys::default(),
+                    None,
+                )
             }
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
@@ -494,7 +499,7 @@ impl LocalMachineStore {
                 body,
                 sealing_key,
                 recipient,
-                devices,
+                keys,
                 wireguard_mtu,
                 pinned,
                 enrollment,
@@ -624,6 +629,22 @@ impl LocalMachineStore {
         if visible_peers.is_empty() {
             return Err(StoreError::MissingPeers);
         }
+        let mut approved_passkeys: Vec<ployz_core::authority::TrustedPasskey> = Vec::new();
+        for passkey in &body.passkeys {
+            let code = passkey.code();
+            let held = approved_passkeys
+                .iter()
+                .any(|held| held.passkey.code() == code)
+                || body.devices.iter().any(|device| device.code() == code);
+            if !held {
+                approved_passkeys.push(ployz_core::authority::TrustedPasskey {
+                    passkey: passkey.clone(),
+                    approved_by: ployz_core::authority::PasskeyApprover::Device {
+                        code: body.signer.code(),
+                    },
+                });
+            }
+        }
         machine.join_approval = Some(approval);
         let joined = recipient.and_then(|recipient| {
             joined_recipient(&recipient, &body, &self.record.wireguard_private_key)
@@ -636,7 +657,10 @@ impl LocalMachineStore {
                 min_store_version: target_versions,
             },
             sealing_key,
-            body.devices,
+            ployz_core::authority::TrustedKeys {
+                devices: body.devices,
+                passkeys: approved_passkeys,
+            },
             joined,
         ))
     }
@@ -660,10 +684,11 @@ impl LocalMachineStore {
             installed
                 .management_clients
                 .retain(|label, _| !DeviceCode::reserves(label));
+            installed.passkeys = installation.keys.passkeys.clone();
         }
         installed
             .management_clients
-            .extend(installation.devices.iter().map(|&key| {
+            .extend(installation.keys.devices.iter().map(|&key| {
                 (
                     key.label(),
                     ManagementClientSlot::Live(LiveSlot::Active {
@@ -684,9 +709,16 @@ impl LocalMachineStore {
             {
                 snapshot.add_member(member.clone());
             }
-            for key in &installation.devices {
+            let codes = installation.keys.devices.iter().map(DeviceKey::code).chain(
+                installation
+                    .keys
+                    .passkeys
+                    .iter()
+                    .map(|trusted| trusted.passkey.code()),
+            );
+            for code in codes {
                 snapshot.add_key(
-                    key.code(),
+                    code,
                     super::Evidence::Activation {
                         operation: joined.operation,
                     },

@@ -70,6 +70,7 @@ impl ApprovingCluster {
             network: "10.210.0.0/16".parse().unwrap(),
             sealing_recipient: assigned.public_key,
             devices: vec![self.device()],
+            passkeys: Vec::new(),
             admitting_machines: vec![self.admitting.id],
             bootstrap: vec![(&self.admitting).into()],
             issued_at,
@@ -110,6 +111,21 @@ impl ApprovingCluster {
     /// The enroll request `joiner` sends to join this Cluster, unpinned as Cloud drives it.
     pub(crate) fn join(&self, joiner: &LocalMachineRecord) -> EnrollRequest {
         member(self.registration(joiner), None)
+    }
+}
+
+/// A passkey of `seed`'s account, as an admitting Server would list it in an approval.
+pub(crate) fn passkey(seed: u8) -> ployz_core::authority::Passkey {
+    use ployz_core::authority::{
+        Passkey, PasskeyAccount, PasskeyPublicKey,
+        trusted_key::{Base64Url, PasskeyAlgorithm, RelyingParty},
+    };
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key();
+    Passkey {
+        credential_id: Base64Url::new(vec![seed, 1, 2, 3]).try_into().unwrap(),
+        public_key: PasskeyPublicKey::parse(PasskeyAlgorithm::Eddsa, key.as_bytes()).unwrap(),
+        account: PasskeyAccount::parse("ada@example.com").unwrap(),
+        relying_party: RelyingParty::of(&"https://ployz.cloud".parse().unwrap()).unwrap(),
     }
 }
 

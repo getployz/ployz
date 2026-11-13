@@ -675,6 +675,7 @@ fn stranger_join(machine: &Enforcing) -> Value {
         network: "10.210.0.0/16".parse().unwrap(),
         sealing_recipient: machine.peer.public_key,
         devices: vec![DeviceKey::from(stranger.public())],
+        passkeys: Vec::new(),
         admitting_machines: vec![machine.machine.id],
         bootstrap: Vec::new(),
         issued_at: Timestamp::now(),

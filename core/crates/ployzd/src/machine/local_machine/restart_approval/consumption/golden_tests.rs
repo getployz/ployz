@@ -121,6 +121,7 @@ fn joined(fill: char, reply: JoinReply) -> JoinResult {
         network: "10.210.0.0/16".parse().unwrap(),
         sealing_recipient: WireGuardPublicKey([6; 32]),
         devices: vec![device()],
+        passkeys: Vec::new(),
         admitting_machines: vec![machine('9')],
         bootstrap: vec![],
         issued_at: at(0),

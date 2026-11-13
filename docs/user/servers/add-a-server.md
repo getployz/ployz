@@ -56,7 +56,7 @@ and names UDP 51820, which your servers use to reach each other. The wait gives 
 minutes.
 
 Add more servers the same way, even at different providers. Each server after your cluster's
-first stops and names a code until a device you approved signs its join; see
+first waits for a device you approved to sign its join, and you're told the code to approve; see
 [Approve a join](#approve-a-join). Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
@@ -68,16 +68,24 @@ sealed values. When you add a server from an approved computer with `ployz serve
 signs that approval with your device key.
 
 A server that joins with the line from `ployz server add --command` or the dashboard has no
-approved device key, so its first join stops and names a code. From an approved computer, run
-the command it names:
+approved device key, so its first join stops and names a 20-character code. Where you see it
+depends on how you added the server:
+
+- **The install line from the dashboard.** The code is in the **Servers** page. Open the server
+  under **Waiting**: **Last enroll** names the code and the command to run. The server's own
+  check-in loop doesn't print it.
+- **`ployz server add --command`.** The join command on the server prints the code.
+
+From an approved computer, run the command with that code:
 
 ```sh
 ployz device approve --join CODE
 ```
 
-Compare the 20-character code with the one printed on the server. The code carries 100 bits
-of the server's identity and key fingerprint. Check the name, subnet and endpoints the CLI
-shows before it signs. Then run the same join command on the server again, with its token and
+The code carries 100 bits of the server's identity and key fingerprint. Check the name, subnet
+and endpoints the CLI shows before it signs. It also lists the passkeys the server will trust, if
+your cluster has any, and what a passkey can do. Then enroll the server again: choose **Enroll**
+for it in the dashboard, or run the same join command on the server again, with its token and
 options. A new admission needs an approval less than 15 minutes old. If the reply is lost,
 run the same command again to recover the stored capsule, even after the approval expires.
 
@@ -85,7 +93,9 @@ A new server refuses to join without an approval. If the approval goes missing o
 join stops and says the join approval carries no signature. Nothing changes on the server, so
 you can run the join again.
 
-The new server takes its devices and starting peers only from the approval. When you run
+The new server takes its devices, the passkeys your admitting server trusts and its starting
+peers only from the approval. A passkey you approve on your cluster after that isn't added to a
+server that already joined; approve it there too. When you run
 `ployz server add` over SSH, the CLI also tells the new server which devices may sign that
 approval: your own, and those of the server it joins through. The new server refuses an
 approval signed by any other key. A join from the pasted line has no such list, so it trusts
@@ -137,14 +147,14 @@ need an approval. Approve one over SSH on that server:
 
 - **From the dashboard only.** Add a passkey under **Account**, then on the server run
   `sudo ployz login` and `sudo ployz device approve --passkey CODE`, as in
-  [Add a passkey](manage-servers.md#add-a-passkey). The installer reminds you of this when it
-  finishes.
+  [Add a passkey](manage-servers.md#add-a-passkey).
 - **With the CLI.** Run `ployz device request` on your computer, then on the server run
   `sudo ployz login` and `sudo ployz device approve CODE`, as in
   [Approve a device](manage-servers.md#approve-a-device).
 
 `ployz server add --standalone root@HOST` approves this computer's device on the new server for
-you. Servers you add later get your devices from the join approval.
+you. Servers you add later get your devices and the passkeys your first server trusts from the
+join approval, so you add a passkey on the first server only.
 
 ## Add servers from the dashboard
 
@@ -156,8 +166,10 @@ token when it asks. The card then says **Listening for servers…** until the fi
 
 Adding a second server needs a device you approved: a passkey can't approve a join. Install the
 CLI, approve your device on your first server as in
-[Your first server's first key](#your-first-servers-first-key), then approve each join with
-`ployz device approve --join CODE`.
+[Your first server's first key](#your-first-servers-first-key). When you install the second
+server, its row under **Waiting** shows **Last enroll** with a code. Approve it with
+`ployz device approve --join CODE`, then choose **Enroll** for the server again. It trusts the
+passkeys your first server trusts, so your dashboard approvals work on it without another step.
 
 Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can make a token. For a member, **Get install command** and **Add servers**
 say so instead.

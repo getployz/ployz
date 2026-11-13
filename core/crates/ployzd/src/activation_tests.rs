@@ -216,6 +216,7 @@ fn join_approval(id: MachineId, signer: &Signer) -> (JoinApproval, Signed<JoinAp
         network: "10.210.0.0/16".parse().unwrap(),
         sealing_recipient: WireGuardPublicKey([6; 32]),
         devices: vec![DeviceKey::from(signer.public())],
+        passkeys: Vec::new(),
         admitting_machines: vec![],
         bootstrap: vec![],
         issued_at,
