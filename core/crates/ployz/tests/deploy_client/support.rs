@@ -24,15 +24,13 @@ use ployz_core::{
     MachineList, MachineName, MachineObservation, MachineRpcServer, MembershipObservation,
     Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, RetainedEnvReply, RotationEdge, RoutesRead,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory,
-    WireGuardPublicKey,
+    RpcError, RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use ployz_testkit::{
     fake_machine::{Fake, FakeMachine, FakeStream},
     rotation,
 };
-use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{
@@ -214,12 +212,7 @@ impl DeployService {
             image_pulls: Arc::new(Mutex::new(Vec::new())),
             creation_pulls: Arc::new(AtomicUsize::new(0)),
             pull_failures: BTreeSet::new(),
-            pull_failure: RpcError {
-                code: RpcErrorCode::Internal,
-                message: "registry refused the pull".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            },
+            pull_failure: RpcError::internal("registry refused the pull"),
             ingress_roles: Arc::default(),
             role_off_refusal: None,
             row_lag: Arc::default(),
@@ -233,22 +226,12 @@ impl DeployService {
     }
 
     pub(super) fn fail_create_volume(mut self, message: &str) -> Self {
-        self.create_volume_error = Some(RpcError {
-            code: RpcErrorCode::Internal,
-            message: message.into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        self.create_volume_error = Some(RpcError::internal(message));
         self
     }
 
     pub(super) fn fail_create_volume_verification(mut self, message: &str) -> Self {
-        self.create_volume_verification_error = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: message.into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        self.create_volume_verification_error = Some(RpcError::unavailable(message));
         self
     }
 
@@ -258,12 +241,7 @@ impl DeployService {
     }
 
     pub(super) fn fail_starts(mut self, message: &str) -> Self {
-        self.start_error = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: message.into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        self.start_error = Some(RpcError::unavailable(message));
         self
     }
 
@@ -277,12 +255,7 @@ impl DeployService {
 
     /// Every Container removal is refused, so a failed start's Container stays.
     pub(super) fn refuse_removals(mut self, message: &str) -> Self {
-        self.removal_refusal = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: message.into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        self.removal_refusal = Some(RpcError::unavailable(message));
         self
     }
 
@@ -477,12 +450,9 @@ impl DeployService {
 
     /// Rejected pulls answer as Docker does for a tag the registry doesn't have.
     pub(super) fn missing_image(mut self) -> Self {
-        self.pull_failure = RpcError {
-            code: RpcErrorCode::NotFound,
-            message: "image pull failed".into(),
-            details: Value::Null,
-            cause: vec!["Docker responded with status code 404: nginx:latest: not found".into()],
-        };
+        self.pull_failure = RpcError::not_found("image pull failed").with_causes(vec![
+            "Docker responded with status code 404: nginx:latest: not found".into(),
+        ]);
         self
     }
 
@@ -492,12 +462,7 @@ impl DeployService {
     }
 
     pub(super) fn refuse_role_off(mut self, message: &str) -> Self {
-        self.role_off_refusal = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: message.into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        self.role_off_refusal = Some(RpcError::unavailable(message));
         self
     }
 
@@ -545,12 +510,7 @@ impl DeployService {
     }
 
     pub(super) fn fail_inspects(mut self, message: &str) -> Self {
-        self.inspect_error = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: message.into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        self.inspect_error = Some(RpcError::unavailable(message));
         self
     }
 
@@ -965,12 +925,7 @@ impl FakeMachine for DeployService {
         }
         let machine_id = machine_from_metadata(&request)?;
         if self.listing_failures.contains(&machine_id) {
-            return encoded(RpcResponse::from(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "listing failed".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            }));
+            return encoded(RpcResponse::from(RpcError::unavailable("listing failed")));
         }
         let listed: Vec<_> = self
             .listed_containers

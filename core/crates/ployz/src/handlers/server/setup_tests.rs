@@ -13,8 +13,8 @@ use std::{
 use crate::connect::Client;
 use ployz_core::{
     EnrollAs, EnrollRequest, Enrolled, InspectRequest, Left, LeftPhase, LocalMachinePhase, Machine,
-    MachineId, MachineName, MachineNow, OpaquePayload, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, WireGuardPublicKey, op,
+    MachineId, MachineName, MachineNow, OpaquePayload, RpcError, RpcRequestBody, RpcResponse,
+    WireGuardPublicKey, op,
 };
 use tokio::time::Instant;
 use tonic::{Request, Response, Status};
@@ -154,12 +154,7 @@ async fn a_refused_enroll_is_reported_not_resent() {
             phase: LocalMachinePhase::Participating,
             machine: Some(machine.clone()),
         },
-        error: RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "holds a different enrollment".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        },
+        error: RpcError::conflict("holds a different enrollment"),
     };
     let (mut client, enrolls, server) = enrolling_machine(refused).await;
     tokio::time::advance(Duration::from_secs(71)).await;
@@ -339,12 +334,7 @@ async fn restarting_cluster_store(
                 }),
                 RpcRequestBody::ListMachines(_) => {
                     if calls.fetch_add(1, Ordering::SeqCst) < refusals {
-                        RpcResponse::from(RpcError {
-                            code: RpcErrorCode::Unavailable,
-                            message: "Cluster store is not available".into(),
-                            details: serde_json::Value::Null,
-                            cause: Vec::new(),
-                        })
+                        RpcResponse::from(RpcError::unavailable("Cluster store is not available"))
                     } else {
                         RpcResponse::from(ployz_core::MachineList {
                             enrollment: None,
@@ -427,12 +417,7 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
                     RpcRequestBody::ListMachines(_)
                         if lists.fetch_add(1, Ordering::SeqCst) == 0 =>
                     {
-                        RpcResponse::from(RpcError {
-                            code: RpcErrorCode::Unavailable,
-                            message: "Cluster store is not available".into(),
-                            details: serde_json::Value::Null,
-                            cause: Vec::new(),
-                        })
+                        RpcResponse::from(RpcError::unavailable("Cluster store is not available"))
                     }
                     RpcRequestBody::ListMachines(_) => RpcResponse::from(ployz_core::MachineList {
                         enrollment: None,

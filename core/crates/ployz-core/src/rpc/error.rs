@@ -81,6 +81,7 @@ impl fmt::Display for RpcErrorCode {
 
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[error("{message}")]
+#[non_exhaustive]
 pub struct RpcError {
     pub code: RpcErrorCode,
     pub message: String,

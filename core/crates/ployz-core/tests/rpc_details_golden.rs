@@ -671,10 +671,8 @@ fn unconfirmed_data_loss_is_the_whole_body_under_invalid_argument() {
         })
     );
     assert!(ployz_core::UnconfirmedDataLoss::from_rpc_error(&error).is_some());
-    let other_code = RpcError {
-        code: RpcErrorCode::Conflict,
-        ..error
-    };
+    let mut other_code = error;
+    other_code.code = RpcErrorCode::Conflict;
     assert!(ployz_core::UnconfirmedDataLoss::from_rpc_error(&other_code).is_none());
 }
 

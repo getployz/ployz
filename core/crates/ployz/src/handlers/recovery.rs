@@ -873,13 +873,13 @@ mod tests {
 
     /// Refused the way ployzd's `recovery_error` answers: an error payload, not a gRPC status.
     fn refused(refusal: RecoveryRefusal) -> RpcResponse {
-        RpcResponse::from(ployz_core::RpcError {
-            details: refusal.to_details(),
-            ..ployz_core::RpcError::caused(
+        RpcResponse::from(
+            ployz_core::RpcError::caused(
                 RpcErrorCode::InvalidArgument,
                 &std::io::Error::other("refused"),
             )
-        })
+            .with_details(refusal.to_details()),
+        )
     }
 
     fn config_dir(cloud: Option<&str>, contexts: &str) -> tempfile::TempDir {

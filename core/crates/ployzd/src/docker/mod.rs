@@ -1710,10 +1710,7 @@ impl From<&Error> for RpcError {
         if code == RpcErrorCode::Internal {
             tracing::warn!(error = %ployz_core::error_chain::inline(error), "Docker request failed");
         }
-        Self {
-            details,
-            ..Self::caused(code, error)
-        }
+        Self::caused(code, error).with_details(details)
     }
 }
 

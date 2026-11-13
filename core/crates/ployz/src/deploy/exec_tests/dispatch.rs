@@ -420,12 +420,8 @@ async fn another_servers_not_found_is_kept_on_a_removed_servers_turn() {
 #[tokio::test]
 async fn a_member_servers_own_not_found_is_kept() {
     let member = machine('2');
-    let answer = RpcError {
-        code: RpcErrorCode::NotFound,
-        message: "No such image: example/web:1".into(),
-        details: serde_json::Value::Null,
-        cause: vec!["docker".into()],
-    };
+    let answer =
+        RpcError::not_found("No such image: example/web:1").with_causes(vec!["docker".into()]);
 
     let failure = failed_start_on(member, answer).await;
 

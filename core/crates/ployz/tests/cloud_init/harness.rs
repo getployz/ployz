@@ -16,7 +16,7 @@ use ployz_core::{
     HealthObservation, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineNow, MachineObservation, MachineToken,
     MembershipObservation, NewContainer, OpaquePayload, PROTOCOL_MAJOR, RecoverySeed, Registered,
-    RoutesRead, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunRotation, RunTarget,
+    RoutesRead, RpcError, RpcRequestBody, RpcResponse, RunRotation, RunTarget,
     SET_CLUSTER_NAME_CAPABILITY, SealingKeyBackup, SealingKeyWrapped, SealingPublicKey,
     SetManagementClientResponse, VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
 };
@@ -460,12 +460,7 @@ impl JoinDaemon {
                 return Err(Status::unavailable("transient ensure failure"));
             }
             if self.inner.fail_ensure.load(Ordering::SeqCst) {
-                return rpc_ok(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "ensure failed".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                });
+                return rpc_ok(RpcError::unavailable("ensure failed"));
             }
             self.inner.ensure_requests.lock().unwrap().push(new.clone());
             let machine = self.inner.current_machine.lock().unwrap().clone();
@@ -475,12 +470,9 @@ impl JoinDaemon {
                 None,
             );
             if eligibility != ployz_core::ServicePlacementEligibility::Eligible {
-                return rpc_ok(RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "target Global slot is ineligible or unknown".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                });
+                return rpc_ok(RpcError::conflict(
+                    "target Global slot is ineligible or unknown",
+                ));
             }
         }
         let existing = self
@@ -927,12 +919,7 @@ impl FakeMachine for JoinDaemon {
             .as_ref()
             .is_some_and(|machine_id| target == Some(machine_id.as_str()))
         {
-            return rpc_ok(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "unreachable".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
+            return rpc_ok(RpcError::unavailable("unreachable"));
         }
         rpc_ok(ContainerList {
             containers: self.inner.containers.lock().unwrap().clone(),
@@ -1043,12 +1030,7 @@ impl FakeMachine for JoinDaemon {
             return Err(Status::unavailable("transient ensure failure"));
         }
         if self.inner.fail_ensure.load(Ordering::SeqCst) {
-            return rpc_ok(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "ensure failed".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
+            return rpc_ok(RpcError::unavailable("ensure failed"));
         }
         let proxy = doors.proxy_service;
         let mut changed = false;
@@ -1370,24 +1352,16 @@ impl JoinDaemon {
                     phase: LocalMachinePhase::Participating,
                     machine: Some(current),
                 },
-                error: RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "this Machine already holds a different enrollment".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                },
+                error: RpcError::conflict("this Machine already holds a different enrollment"),
             });
         }
         let machine = match enroll.role.clone() {
             EnrollAs::Member { registration, pin } => {
                 *self.inner.founding.lock().unwrap() = ployz_core::Founding::Joined;
                 if registration.assigned_machine.public_key != self.public_key() {
-                    return rpc_ok(RpcError {
-                        code: RpcErrorCode::InvalidArgument,
-                        message: "assigned public key does not match this Machine".into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    });
+                    return rpc_ok(RpcError::invalid_argument(
+                        "assigned public key does not match this Machine",
+                    ));
                 }
                 let machine = registration.assigned_machine.clone();
                 *self.inner.join_request.lock().unwrap() = Some(MemberEnroll {
