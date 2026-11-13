@@ -44,7 +44,7 @@ fn reusable(
     intent: &DeployIntent,
     machines: &[MachineObservation],
     receipts: &[BuiltService],
-    stores: &PartialResult<crate::cluster::MachineImagesObservation, RpcError>,
+    stores: &ImageStores,
 ) -> Option<BuiltService> {
     let spec = intent
         .target
@@ -59,19 +59,66 @@ fn reusable(
                 .platforms
                 .iter()
                 .all(|platform| receipt.built.platforms.contains(platform));
-            if !covers_platforms
-                || !runs_everywhere(&receipt.built, spec, &intent.namespace, machines)
-            {
+            if !covers_platforms {
                 return None;
             }
             let mut image = receipt.clone();
-            image.machine_id = holder(stores, &receipt.built, receipt.machine_id)?;
+            image.machine_id = place(
+                &receipt.built,
+                receipt.machine_id,
+                spec,
+                &intent.namespace,
+                machines,
+                stores,
+            )?;
             Some(image)
         })
 }
 
+/// The Machine that can serve `built` for `spec`: one that runs it everywhere `spec`
+/// may be placed and still holds the image. `preferred` is the Machine of the
+/// receipt, kept while it qualifies.
+pub(crate) fn place(
+    built: &ployz_build::BuiltImage,
+    preferred: MachineId,
+    spec: &RequestedServiceSpec,
+    namespace: &Namespace,
+    machines: &[MachineObservation],
+    stores: &ImageStores,
+) -> Option<MachineId> {
+    runs_everywhere(built, spec, namespace, machines)
+        .then(|| holder(stores, built, preferred))
+        .flatten()
+}
+
+/// The reads were cancelled before every Machine's image store was listed.
+pub(crate) struct Cancelled;
+
+/// [`place`] for one image, listing the Machines' image stores only once `built` runs
+/// everywhere `spec` may be placed.
+pub(crate) async fn place_listing(
+    client: &Client,
+    built: &ployz_build::BuiltImage,
+    preferred: MachineId,
+    spec: &RequestedServiceSpec,
+    namespace: &Namespace,
+    machines: &[MachineObservation],
+    cancellation: &CancellationToken,
+) -> Result<Option<MachineId>, Cancelled> {
+    if !runs_everywhere(built, spec, namespace, machines) {
+        return Ok(None);
+    }
+    let stores = image_stores(client, machines, cancellation)
+        .await
+        .ok_or(Cancelled)?;
+    Ok(place(built, preferred, spec, namespace, machines, &stores))
+}
+
+/// Every Machine's image store, or the Machines that couldn't be asked.
+pub(crate) type ImageStores = PartialResult<crate::cluster::MachineImagesObservation, RpcError>;
+
 /// Whether `built` has a platform for every Machine `spec` may be placed on.
-pub(crate) fn runs_everywhere(
+fn runs_everywhere(
     built: &ployz_build::BuiltImage,
     spec: &RequestedServiceSpec,
     namespace: &Namespace,
@@ -89,7 +136,7 @@ pub(crate) async fn image_stores(
     client: &Client,
     machines: &[MachineObservation],
     cancellation: &CancellationToken,
-) -> Option<PartialResult<crate::cluster::MachineImagesObservation, RpcError>> {
+) -> Option<ImageStores> {
     let visible = machines
         .iter()
         .filter(|machine| machine.invites_rpc())
@@ -105,8 +152,8 @@ pub(crate) async fn image_stores(
 /// A Machine holding `built` for every one of its platforms. Keep the receipt's
 /// Machine (`preferred`) while it still holds the image, so the next receipt keeps
 /// naming the Machine with the warm build cache.
-pub(crate) fn holder(
-    stores: &PartialResult<crate::cluster::MachineImagesObservation, RpcError>,
+fn holder(
+    stores: &ImageStores,
     built: &ployz_build::BuiltImage,
     preferred: MachineId,
 ) -> Option<MachineId> {
