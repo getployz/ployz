@@ -228,9 +228,7 @@ fn ingress_challenge_ips(
 ) -> BTreeSet<IpAddr> {
     let ingress: BTreeSet<_> = observations
         .iter()
-        .filter(|observation| {
-            crate::ingress::is_system_ingress(observation) && observation.runtime.may_serve()
-        })
+        .filter(|observation| observation.is_system_ingress() && observation.runtime.may_serve())
         .map(|observation| observation.machine_id)
         .collect();
     let standing = door_standing(observations);

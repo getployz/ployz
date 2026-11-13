@@ -2,10 +2,9 @@
 
 use ployz_core::labels;
 use ployz_core::{
-    CertificateHost, ContainerAddress, ContainerId, ContainerObservation,
-    ContainerRuntimeObservation, DeploymentLogId, HttpProtocol, IngressHost, Machine, MachineId,
-    PortPublication, ProxyRoutes, QualifiedService, ServiceContainer, hostname_owners,
-    proxy_routes, reachable_routes, service_containers,
+    CertificateHost, ContainerAddress, ContainerId, ContainerRuntimeObservation, DeploymentLogId,
+    HttpProtocol, IngressHost, Machine, MachineId, PortPublication, ProxyRoutes, QualifiedService,
+    ServiceContainer, hostname_owners, proxy_routes, reachable_routes, service_containers,
 };
 use ployz_decide::caddy_load::{self as load, Applied, CaddyFile, Input, Probe};
 use serde::Serialize;
@@ -43,12 +42,6 @@ pub(crate) fn access_log_path(run_dir: &Path) -> PathBuf {
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 const WATCH_RESNAPSHOT: Duration = Duration::from_secs(5);
-
-/// True when this observation is the reserved Ingress Proxy Service.
-#[must_use]
-pub(crate) fn is_system_ingress(observation: &ContainerObservation) -> bool {
-    observation.identity() == QualifiedService::system_ingress()
-}
 
 pub(crate) mod caddy;
 
@@ -440,7 +433,7 @@ fn serves_nothing(
     let mut local = containers
         .iter()
         .map(ServiceContainer::as_observation)
-        .filter(|observation| observation.machine_id == *machine && is_system_ingress(observation))
+        .filter(|observation| observation.machine_id == *machine && observation.is_system_ingress())
         .peekable();
     if local.peek().is_none() {
         return !takes_ingress;
@@ -470,7 +463,7 @@ fn local_ingress<'container>(
         .iter()
         .filter(|container| {
             let observation = container.as_observation();
-            observation.machine_id == machine.id && is_system_ingress(observation)
+            observation.machine_id == machine.id && observation.is_system_ingress()
         })
         .max_by_key(|container| container.as_observation().recency_key())
 }

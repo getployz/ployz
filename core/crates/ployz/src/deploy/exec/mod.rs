@@ -1001,7 +1001,7 @@ impl<'a> Rows<'a> {
             .values()
             .filter_map(|observed| observed.as_ref().ok()?.as_ref())
             .any(|observed| {
-                !crate::ingress::is_system_ingress(observed)
+                !observed.is_system_ingress()
                     && matches!(
                         observed.rotation(),
                         CopyRotation::In | CopyRotation::Held(_)
@@ -1012,8 +1012,7 @@ impl<'a> Rows<'a> {
                 .filter(|_| withdraws)
                 .filter_map(|(task, observed)| Some((*task, observed.as_ref().ok()?.as_ref()?)))
                 .filter(|(_, observed)| {
-                    *observed.rotation() == CopyRotation::Pending
-                        && !crate::ingress::is_system_ingress(observed)
+                    *observed.rotation() == CopyRotation::Pending && !observed.is_system_ingress()
                 })
                 .map(|(task, observed)| async move {
                     let copy = cleanup::Copy::observed(observed);

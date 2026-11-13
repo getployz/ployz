@@ -409,8 +409,7 @@ impl DeploySnapshot {
                     .containers
                     .iter()
                     .filter(|container| {
-                        container.machine_id == machine.machine.id
-                            && crate::ingress::is_system_ingress(container)
+                        container.machine_id == machine.machine.id && container.is_system_ingress()
                     })
                     .collect();
                 let (restarting, held): (Vec<_>, Vec<_>) =
