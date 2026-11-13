@@ -528,12 +528,10 @@ async fn push(
 
 /// The tag that retains the image `digest` in `repository`.
 fn retained_tag(repository: &str, digest: &str) -> Result<String, BuildCommandError> {
-    let digest = ployz_core::ImageDigest::parse(digest)
-        .map_err(|_| BuildCommandError::NotDigestIdentified)?;
-    Ok(format!(
-        "{repository}:{RETAINED_DIGEST_TAG_PREFIX}{}",
-        digest.hex()
-    ))
+    let hex = digest
+        .strip_prefix("sha256:")
+        .ok_or(BuildCommandError::NotDigestIdentified)?;
+    Ok(format!("{repository}:{RETAINED_DIGEST_TAG_PREFIX}{hex}"))
 }
 
 /// `docker push`, its per-layer lines streamed to the events file as they come.
@@ -647,18 +645,22 @@ mod tests {
     const MARKER: &str = "marker-sealed-0123456789";
 
     #[test]
-    fn only_a_lowercase_sha256_digest_names_a_retained_tag() {
+    fn a_sha256_prefixed_reference_names_a_retained_tag_as_given() {
         let hex = "ab01".repeat(16);
-        assert_eq!(
-            retained_tag("ployz-build/api", &format!("sha256:{hex}")).unwrap(),
-            format!("ployz-build/api:{RETAINED_DIGEST_TAG_PREFIX}{hex}")
-        );
-        for refused in [
-            format!("sha256:{}", hex.to_uppercase()),
-            format!("sha256:{}", "a".repeat(63)),
-            hex,
+        // Only the prefix is checked here: the report that carried the digest checked its hex.
+        for hex in [
+            hex.clone(),
+            hex.to_uppercase(),
+            "a".repeat(63),
+            "zz".to_owned(),
             String::new(),
         ] {
+            assert_eq!(
+                retained_tag("ployz-build/api", &format!("sha256:{hex}")).unwrap(),
+                format!("ployz-build/api:{RETAINED_DIGEST_TAG_PREFIX}{hex}")
+            );
+        }
+        for refused in [hex, "SHA256:ab".into(), String::new()] {
             assert!(
                 matches!(
                     retained_tag("ployz-build/api", &refused),

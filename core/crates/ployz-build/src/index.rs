@@ -203,9 +203,9 @@ pub(crate) fn build(
     )
 }
 
-/// `digest` when it is `sha256:` and 64 lowercase hex, as the assembled image's identity.
+/// `digest` when it is `sha256:` and 64 hex of either case, as the assembled image's identity.
 fn checked_digest(digest: &str) -> Result<&str, BuildError> {
-    ployz_core::ImageDigest::parse(digest)
+    ployz_core::ReportedImageDigest::parse(digest)
         .map(|_| digest)
         .map_err(|_| BuildError::Result("assembly returned an invalid image digest".into()))
 }
@@ -219,11 +219,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_lowercase_sha256_digest_identifies_the_assembled_image() {
+    fn a_sha256_digest_of_either_case_identifies_the_assembled_image() {
         let digest = format!("sha256:{}", "ab01".repeat(16));
         assert_eq!(checked_digest(&digest).unwrap(), digest);
+        let upper = digest.to_uppercase().replace("SHA256", "sha256");
+        assert_eq!(checked_digest(&upper).unwrap(), upper);
         for refused in [
-            digest.to_uppercase().replace("SHA256", "sha256"),
             format!("sha256:{}", "a".repeat(63)),
             format!("sha256:{}g", "a".repeat(63)),
             "a".repeat(64),

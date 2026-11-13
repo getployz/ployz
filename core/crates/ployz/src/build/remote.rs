@@ -402,7 +402,7 @@ fn validate_outcome(
             if *machine_id == expected && images.len() == count =>
         {
             if images.iter().any(|image| {
-                ployz_core::ImageDigest::parse(image.reference.as_str()).is_err()
+                ployz_core::ReportedImageDigest::parse(image.reference.as_str()).is_err()
                     || image.tags.is_empty()
                     || image.platforms.is_empty()
                     || image
@@ -504,7 +504,6 @@ mod tests {
             assert_eq!(retained.0, work.0);
         }
         for reference in [
-            format!("sha256:{}", "A".repeat(64)),
             format!("sha256:{}", "1".repeat(63)),
             format!("sha256:{}g", "1".repeat(63)),
             "1".repeat(64),
@@ -528,18 +527,31 @@ mod tests {
                 "Build returned an invalid image identity or platform"
             );
         }
-        assert!(matches!(
-            validate_outcome(
+        // Either case of hex is an image identity, as the report carried it.
+        for reference in [
+            image.reference.clone(),
+            format!("sha256:{}", "A".repeat(64)),
+            format!("sha256:{}", "aB1".repeat(21) + "f"),
+        ] {
+            let Outcome::Images { images, .. } = validate_outcome(
                 Outcome::Images {
                     machine_id,
-                    images: vec![image]
+                    images: vec![BuiltImage {
+                        reference: reference.clone(),
+                        ..image.clone()
+                    }],
                 },
                 machine_id,
                 1,
-                work
-            ),
-            Outcome::Images { .. }
-        ));
+                work.clone(),
+            ) else {
+                panic!("{reference} was refused")
+            };
+            assert_eq!(
+                images.first().map(|image| image.reference.as_str()),
+                Some(reference.as_str())
+            );
+        }
     }
 
     #[tokio::test]
