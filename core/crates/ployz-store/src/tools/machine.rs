@@ -3,6 +3,8 @@
 //! stops the run with the step that gets them. Replay keeps a plan straight-line
 //! code while [`State`] stays plain data a host can store between steps.
 
+use std::collections::BTreeSet;
+
 use ployz_core::decode::{DecodeError, decode};
 use ployz_core::{RpcError, RpcErrorCode};
 use schemars::JsonSchema;
@@ -20,9 +22,21 @@ use super::step::{
     Act, Action, Ask, AttemptId, BodyDigest, Fix, Gate, RequestKey, Step, Write, WriteSlot,
 };
 use crate::{
-    Batch, BatchCommand, Command, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    OrganizationId, ProjectName, Query, Revision, ServicesQuery, Tell, View, Written,
+    Batch, BatchCommand, Command, DestructiveEffect, DestructiveKind, DiffQuery, EnvironmentName,
+    EnvironmentRef, EnvironmentSummary, OrganizationId, ProjectName, Query, Revision,
+    ServicesQuery, Tell, View, Written,
 };
+
+/// Whether the next deploy destroys, among `effects`, a `kinds` thing named `name`.
+pub(crate) fn effects_ask(
+    effects: &BTreeSet<DestructiveEffect>,
+    kinds: &[DestructiveKind],
+    name: &str,
+) -> bool {
+    effects
+        .iter()
+        .any(|effect| kinds.contains(&effect.kind) && effect.name == name)
+}
 
 /// Read and write steps one call may take; waits are bounded by time instead.
 pub const STEP_BUDGET: u8 = 3;
@@ -244,11 +258,33 @@ impl Cx<'_> {
         &self,
         answer: Option<Result<Value, RpcError>>,
     ) -> Result<Q::View, Stop> {
+        self.view_after::<Q>(answer, Writes::None)
+    }
+
+    /// [`Cx::view`], its refusal naming what the call already wrote.
+    fn view_after<Q: crate::Ask>(
+        &self,
+        answer: Option<Result<Value, RpcError>>,
+        writes: Writes,
+    ) -> Result<Q::View, Stop> {
         let answer = answer.ok_or_else(|| Refusal::internal("A read came back short"))?;
-        let value = answer.map_err(|error| from_store(error, &self.call, Writes::None))?;
+        let value = answer.map_err(|error| from_store(error, &self.call, writes))?;
         let view = serde_json::from_value::<View>(value)
             .map_err(|_| Refusal::internal("The Config Store answered in an unknown shape"))?;
-        Q::view(view).map_err(|error| from_store(error, &self.call, Writes::None).into())
+        Q::view(view).map_err(|error| from_store(error, &self.call, writes).into())
+    }
+
+    /// What the next deploy of `environment` destroys, read after this call's
+    /// write: a refusal here says the write committed.
+    pub(crate) fn effects_after_write(
+        &mut self,
+        environment: EnvironmentRef,
+    ) -> Result<BTreeSet<DestructiveEffect>, Stop> {
+        let mut answers = self
+            .read(vec![store(&DiffQuery { environment })?])?
+            .into_iter();
+        let diff = self.view_after::<DiffQuery>(answers.next(), Writes::Committed)?;
+        Ok(diff.effects)
     }
 
     /// A Cloud answer decoded as `T`.

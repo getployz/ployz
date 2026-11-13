@@ -2285,8 +2285,14 @@ fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
 /// `outcome`.
 fn ended(row: Value, outcome: Value) -> (ConfigStore, DeploymentId) {
     let (store, id) = deploying();
+    finish(&store, &id, row, outcome);
+    (store, id)
+}
+
+/// The claimed Deployment `id` run to its end, its one row left in `row`.
+fn finish(store: &ConfigStore, id: &DeploymentId, row: Value, outcome: Value) {
     let runner = RunnerId::parse("runner").unwrap();
-    let claimed = store.claim(&id, &runner).unwrap();
+    let claimed = store.claim(id, &runner).unwrap();
     let operation = json!({
         "index": 0, "machine_id": machine('a'), "service_name": "web",
         "operation": remove_container(),
@@ -2299,14 +2305,14 @@ fn ended(row: Value, outcome: Value) -> (ConfigStore, DeploymentId) {
     }))
     .unwrap();
     store
-        .record(&id, &runner, RunEvidence::Prepared(preview))
+        .record(id, &runner, RunEvidence::Prepared(preview))
         .unwrap();
     let mut done = operation;
     done["status"] = row;
     let rows: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([done])).unwrap();
     store
         .record(
-            &id,
+            id,
             &runner,
             RunEvidence::Executed {
                 progress: RowTracker::default().changes(&rows),
@@ -2315,7 +2321,128 @@ fn ended(row: Value, outcome: Value) -> (ConfigStore, DeploymentId) {
             },
         )
         .unwrap();
-    (store, id)
+}
+
+/// A removal says it asks a human only when what it removes already ran: a
+/// Service, Volume or domain staged since the last Deploy goes without.
+#[test]
+fn a_removal_asks_approval_only_for_what_a_deploy_already_ran() {
+    let store = shop();
+    let added = |store: &ConfigStore, tool: &str, input: Value, key: &str| {
+        call(store, tool, input, key).ok()
+    };
+    added(
+        &store,
+        "service_add",
+        json!({ "name": "web", "image": "traefik/whoami" }),
+        "add-web",
+    );
+    added(
+        &store,
+        "service_add",
+        json!({ "name": "api", "image": "traefik/whoami" }),
+        "add-api",
+    );
+    added(
+        &store,
+        "volume_add",
+        json!({ "name": "data", "service": "web", "path": "/data" }),
+        "add-data",
+    );
+    added(
+        &store,
+        "domain_add",
+        json!({ "service": "web", "hostname": "app.example.com", "port": 80 }),
+        "add-app",
+    );
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write(
+            &who(),
+            &Admit::Deploy(Deploy {
+                teardown: None,
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            }),
+        )
+        .unwrap();
+    finish(
+        &store,
+        &id,
+        json!({ "type": "completed" }),
+        json!({ "type": "success", "completed": [remove_container()] }),
+    );
+
+    // Staged after the Deploy: nothing ran, so nothing to approve.
+    added(
+        &store,
+        "service_add",
+        json!({ "name": "worker", "image": "traefik/whoami" }),
+        "add-worker",
+    );
+    added(
+        &store,
+        "volume_add",
+        json!({ "name": "cache", "service": "worker", "path": "/cache" }),
+        "add-cache",
+    );
+    added(
+        &store,
+        "domain_add",
+        json!({ "service": "worker", "hostname": "jobs.example.com", "port": 80 }),
+        "add-jobs",
+    );
+    let asks = |tool: &str, input: Value, key: &str| {
+        let run = call(&store, tool, input, key);
+        assert!(run.writes <= 1, "{tool}");
+        run.ok()["asks_approval"].clone()
+    };
+    assert_eq!(
+        asks(
+            "domain_remove",
+            json!({ "domain": "jobs.example.com" }),
+            "rm-jobs"
+        ),
+        false
+    );
+    assert_eq!(
+        asks("volume_remove", json!({ "volume": "cache" }), "rm-cache"),
+        false
+    );
+    assert_eq!(
+        asks(
+            "service_remove",
+            json!({ "service": "worker" }),
+            "rm-worker"
+        ),
+        false
+    );
+
+    // Run by the Deploy: removing it loses something.
+    assert_eq!(
+        asks(
+            "domain_remove",
+            json!({ "domain": "app.example.com" }),
+            "rm-app"
+        ),
+        true
+    );
+    assert_eq!(
+        asks("volume_remove", json!({ "volume": "data" }), "rm-data"),
+        true
+    );
+    assert_eq!(
+        asks("service_remove", json!({ "service": "web" }), "rm-web"),
+        true
+    );
 }
 
 #[test]

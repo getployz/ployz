@@ -5,12 +5,13 @@ use ployz_core::{ProvisionedVolumeMaximumBytes, ServiceName};
 use serde_json::{Value, json};
 
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, written};
+use super::machine::{Cx, Effect, Stop, Tool, effects_ask, written};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
-    BatchCommand, CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeSharedWrites,
-    SetVolumeStorage, VolumeName, VolumeStaged, VolumeSummary, VolumesQuery, Written,
+    BatchCommand, CreateVolume, DestructiveKind, Mount, RemoveVolume, RenameVolume,
+    SetVolumeSharedWrites, SetVolumeStorage, VolumeName, VolumeStaged, VolumeSummary, VolumesQuery,
+    Written,
 };
 
 const SIZE: &str = "^[0-9]+(GB|GiB|TB|TiB)$";
@@ -240,15 +241,19 @@ impl Tool for VolumeRemove {
             environment: scope.clone(),
         })?;
         cx.fresh(&volumes.environment, self.expect_revision)?;
-        let asks_approval = volumes
-            .volumes
-            .iter()
-            .find(|listing| listing.volume.name == self.volume)
-            .is_some_and(|listing| listing.deployed);
         let staged = cx.write(&RemoveVolume {
-            environment: scope,
+            environment: scope.clone(),
             volume: self.volume,
         })?;
+        let effects = cx.effects_after_write(scope)?;
+        let asks_approval = effects_ask(
+            &effects,
+            &[
+                DestructiveKind::DeletesVolume,
+                DestructiveKind::DetachesVolume,
+            ],
+            staged.volume.name.as_str(),
+        );
         Ok(json!({
             "at": staged.environment.to_string(),
             "removed": staged.volume.name,
