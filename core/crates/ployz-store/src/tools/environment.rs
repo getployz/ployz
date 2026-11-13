@@ -5,17 +5,18 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ToolId;
+use super::cloud::GithubAnswer;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Reach, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
+use super::schema::REPOSITORY;
+use super::service::source;
 use super::step::{Ask, CloudQuery, DashboardPage, Gate};
 use crate::{
     ConfigsQuery, DeploymentsQuery, DiffQuery, DomainName, DomainRow, DomainsQuery, PrPlansQuery,
     ProjectsQuery, RepositoryName, ServicesQuery, SetEnvironmentProtected, SetPrPlan, SourceKind,
     VolumesQuery,
 };
-
-pub(crate) const REPOSITORY: &str = "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$";
 
 tool_input! {
     pub(crate) struct EnvironmentShow {
@@ -128,15 +129,6 @@ pub(crate) fn domain_label(name: &DomainName) -> String {
         } => hostname.clone(),
         DomainName::Generated { prefix, .. } => prefix.clone(),
         DomainName::Custom { hostname } => hostname.to_string(),
-    }
-}
-
-pub(crate) const fn source(kind: SourceKind) -> &'static str {
-    match kind {
-        SourceKind::Empty => "empty",
-        SourceKind::Uploaded => "uploaded",
-        SourceKind::Git => "repository",
-        SourceKind::Image => "image",
     }
 }
 
@@ -276,17 +268,6 @@ struct ServersAnswer {
     servers: Vec<Value>,
     #[serde(default)]
     cluster_domain: Option<String>,
-}
-
-/// Cloud's answer about GitHub. Provisional: the Cloud adapter fixes it.
-#[derive(Deserialize)]
-pub(crate) struct GithubAnswer {
-    #[serde(default)]
-    pub(crate) connected: bool,
-    #[serde(default)]
-    pub(crate) repositories: Vec<String>,
-    #[serde(default)]
-    pub(crate) connect_at: Option<String>,
 }
 
 impl Tool for EnvironmentSetup {

@@ -309,6 +309,18 @@ impl AcceptedLoss {
     }
 }
 
+/// Refuse loss accepted without the version a confirmation handed back.
+pub(crate) fn version_for_loss(
+    accept: &[VolumeName],
+    version: Option<&String>,
+) -> Result<(), Stop> {
+    AcceptedLoss::from_input(
+        accept.iter().map(ToString::to_string).collect(),
+        version.cloned(),
+    )
+    .map(drop)
+}
+
 /// Who asks a human, if anyone.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]

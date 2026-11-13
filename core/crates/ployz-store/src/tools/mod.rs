@@ -12,7 +12,6 @@ mod environment;
 mod github;
 mod history;
 mod input;
-pub mod logs;
 mod machine;
 mod metrics;
 mod project;
@@ -28,10 +27,9 @@ mod step;
 mod volume;
 
 pub use crate::error::{Accept, Confirmation};
-pub use logs::{
-    Channel, FrameScrub, LineCap, LogExcerpt, LogText, SealedForms, SealedValues, Withheld,
-};
 pub use machine::{Place, STEP_BUDGET, State, StoreAt, ToolDef, WAIT_CAP_SECONDS, resume, start};
+pub use ployz_core::scrub::excerpt::{LineCap, LogExcerpt, LogText, Withheld};
+pub use ployz_core::scrub::{Channel, FrameScrub, SealedForms, SealedValues};
 pub use refusal::{Call, NOT_SETTINGS, Refusal, ToolResult, Writes};
 pub use schema::{lint, portable};
 pub use status::{ServiceStatus, service_status};

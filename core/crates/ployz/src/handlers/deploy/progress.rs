@@ -717,7 +717,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         if let Some(bytes) = memory_limit {
             let gb = bytes.get() as f64 / 1e9;
             if gb < MEM_LIMIT_MAX {
-                let raised = ployz_store::memory_size((gb * 2.0).min(MEM_LIMIT_MAX));
+                let raised = ployz_core::memory_size::memory_size((gb * 2.0).min(MEM_LIMIT_MAX));
                 let setting = format!("{name}.memLimit={}", raised.replace(' ', ""));
                 hints.push(Hint::Next(command(
                     &[&["set", setting.as_str()][..], &scope].concat(),
@@ -726,7 +726,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
                 diagnostic.failures.push(Detail {
                     message: format!(
                         "{name} already has the most memory memLimit allows, {}: it needs to use less.",
-                        ployz_store::memory_size(MEM_LIMIT_MAX)
+                        ployz_core::memory_size::memory_size(MEM_LIMIT_MAX)
                     ),
                     causes: Vec::new(),
                 });

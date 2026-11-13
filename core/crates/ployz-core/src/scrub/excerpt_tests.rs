@@ -1,5 +1,4 @@
-use ployz_core::scrub::SHORT_VALUE;
-
+use super::super::SHORT_VALUE;
 use super::*;
 
 fn secrets(pairs: &[(&str, &str)]) -> SealedValues {

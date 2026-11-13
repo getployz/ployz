@@ -5,6 +5,7 @@ pub mod cloud_contract;
 pub mod config;
 mod container_metadata;
 pub mod decode;
+pub mod deploy_progress;
 mod dockerfile;
 pub mod domain;
 mod enrollment;
@@ -20,6 +21,7 @@ pub mod labels;
 mod log_level;
 mod machine_layout;
 mod machine_telemetry;
+pub mod memory_size;
 pub mod metrics;
 pub mod namespace;
 #[cfg(not(target_arch = "wasm32"))]

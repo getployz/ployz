@@ -5,6 +5,9 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde_json::{Map, Value};
 
+/// The pattern a GitHub repository `owner/name` input takes.
+pub(crate) const REPOSITORY: &str = "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$";
+
 /// Keywords a portable schema may use.
 const KEYWORDS: &[&str] = &[
     "type",

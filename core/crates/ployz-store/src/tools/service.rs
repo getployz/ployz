@@ -5,18 +5,17 @@ use schemars::{Schema, SchemaGenerator};
 use serde_json::{Map, Value, json};
 
 use super::domain::row;
-use super::environment::{REPOSITORY, source};
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, effects_ask, written};
 use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting_sentence};
-use super::schema;
+use super::schema::{self, REPOSITORY};
 use super::step::{DashboardPage, Fix};
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
 use crate::followup::FollowUp;
 use crate::{
     BatchCommand, BranchName, Change, CreateGitService, CreateService, DestructiveKind,
     DomainsQuery, Edit, EnvironmentRef, RemoveService, RenameService, RepositoryName, ServiceQuery,
-    ServicesQuery, SettingPath, Written,
+    ServicesQuery, SettingPath, SourceKind, Written,
 };
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 
@@ -75,6 +74,16 @@ impl Tool for ServiceInspect {
             "domains": domains.domains.iter().map(row).collect::<Vec<_>>(),
             "staged": staged,
         }))
+    }
+}
+
+/// How a Service's source reads to an agent.
+pub(crate) const fn source(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Empty => "empty",
+        SourceKind::Uploaded => "uploaded",
+        SourceKind::Git => "repository",
+        SourceKind::Image => "image",
     }
 }
 

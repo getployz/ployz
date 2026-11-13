@@ -9,9 +9,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ToolId;
-use super::environment::{GithubAnswer, REPOSITORY};
+use super::cloud::GithubAnswer;
 use super::machine::{Cx, Effect, Reach, Stop, Tool};
 use super::refusal::{Call, Refusal};
+use super::schema::REPOSITORY;
 use super::step::{Ask, CloudQuery};
 use crate::RepositoryName;
 use crate::github::{

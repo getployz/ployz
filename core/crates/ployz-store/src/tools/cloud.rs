@@ -7,9 +7,9 @@ use ployz_core::{MachineId, Namespace, ServiceName};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::logs::LogText;
 use super::step::{AttemptId, Freshness, ServerName, ServerRef, Timestamp};
 use crate::{DeploymentId, VolumeName};
+use ployz_core::scrub::excerpt::LogText;
 
 /// The answer to `CloudQuery::Servers`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -273,4 +273,15 @@ pub enum Receipt {
 pub struct Kept {
     pub service: ServiceName,
     pub why: String,
+}
+
+/// Cloud's answer about GitHub. Provisional: the Cloud adapter fixes it.
+#[derive(Deserialize)]
+pub(crate) struct GithubAnswer {
+    #[serde(default)]
+    pub(crate) connected: bool,
+    #[serde(default)]
+    pub(crate) repositories: Vec<String>,
+    #[serde(default)]
+    pub(crate) connect_at: Option<String>,
 }

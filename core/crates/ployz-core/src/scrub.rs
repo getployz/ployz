@@ -8,6 +8,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use regex::bytes;
 
+pub mod excerpt;
+
 /// A value shorter than this is too likely to occur by chance, so it is scrubbed only
 /// where its name labels it.
 pub const SHORT_VALUE: usize = 6;
