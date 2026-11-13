@@ -295,19 +295,26 @@ pub(crate) fn from_store_with(
 }
 
 impl Confirmation {
-    /// The call again accepting the Volumes this names, at the version it binds.
-    /// Only a confirmation's retry may accept loss: the one the Store named.
+    /// The call again accepting the Volumes this names, at the version it binds,
+    /// each passed on as the refusal wrote it. Only a confirmation's retry may accept
+    /// loss: the one the Store named.
     pub(crate) fn retry(&self, call: &Call) -> Call {
-        self.retry_accepting(call, json!(self.accept.clone().unwrap_or_default()))
+        self.retry_accepting(
+            call,
+            self.written_accept.clone().unwrap_or_else(|| json!([])),
+        )
     }
 
-    /// The call again with `accept` as the Volumes to accept, at the version this
-    /// binds.
+    /// The call again with `accept` as the Volumes to accept, at the version the
+    /// refusal wrote.
     pub(crate) fn retry_accepting(&self, call: &Call, accept: Value) -> Call {
         let mut input = call.input.clone();
         if let Value::Object(fields) = &mut input {
             fields.insert("accept_volume_loss".into(), accept);
-            fields.insert("version".into(), json!(self.version));
+            fields.insert(
+                "version".into(),
+                self.written_version.clone().unwrap_or(Value::Null),
+            );
         }
         Call::new(&call.tool, input)
     }

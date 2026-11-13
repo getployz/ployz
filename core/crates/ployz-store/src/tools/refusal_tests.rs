@@ -553,3 +553,83 @@ fn only_a_confirmation_names_a_retry_with_loss_accepted() {
     let refusal = from_store(error, &Call::new("service_update", json!({})), Writes::None);
     assert_eq!(refusal.retry, Call::same());
 }
+
+/// The retry as it was built from the refusal's own details: `accept` and `version`
+/// copied as they were, whatever they hold.
+fn retry_copied_from(details: &Value, input: &Value) -> Value {
+    let mut input = input.clone();
+    if let Value::Object(fields) = &mut input {
+        fields.insert(
+            "accept_volume_loss".into(),
+            details.get("accept").cloned().unwrap_or_else(|| json!([])),
+        );
+        fields.insert(
+            "version".into(),
+            details.get("version").cloned().unwrap_or(Value::Null),
+        );
+    }
+    input
+}
+
+#[test]
+fn a_confirmation_retry_passes_accept_and_version_on_as_the_refusal_wrote_them() {
+    let table = [
+        (
+            "well formed",
+            json!({ "accept": ["data"], "version": "v1" }),
+        ),
+        (
+            "removal, by Environment",
+            json!({ "accept": { "production": ["data"] }, "version": "v1" }),
+        ),
+        ("accept null", json!({ "accept": null, "version": "v1" })),
+        ("accept a number", json!({ "accept": 3, "version": "v1" })),
+        (
+            "accept with an element that is no name",
+            json!({ "accept": ["data", 7], "version": 12 }),
+        ),
+        (
+            "accept naming no Volume the Store would",
+            json!({ "accept": ["Bad Name"], "version": "v1" }),
+        ),
+        (
+            "accept by Environment of the wrong shape",
+            json!({ "accept": { "production": 7 }, "version": "v1" }),
+        ),
+        (
+            "version a number",
+            json!({ "accept": ["data"], "version": 12 }),
+        ),
+        (
+            "version null",
+            json!({ "accept": ["data"], "version": null }),
+        ),
+        (
+            "version an object",
+            json!({ "accept": [], "version": { "n": 1 } }),
+        ),
+        ("no accept", json!({ "version": "v1" })),
+        ("no version", json!({ "accept": ["data"] })),
+        ("neither", json!({})),
+        ("details that are no object", Value::Null),
+    ];
+    for (name, details) in table {
+        for input in [json!({ "project": "shop" }), Value::Null] {
+            let error = store_error(
+                RpcErrorCode::ConfirmationRequired,
+                "refused",
+                details.clone(),
+            );
+            let refusal = from_store(
+                error,
+                &Call::new("service_update", input.clone()),
+                Writes::None,
+            );
+            assert_eq!(
+                refusal.retry,
+                Call::new("service_update", retry_copied_from(&details, &input)),
+                "{name}"
+            );
+        }
+    }
+}

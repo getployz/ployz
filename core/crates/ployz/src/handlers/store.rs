@@ -10,7 +10,7 @@ use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-use ployz_store::tools::{Accept, Confirmation};
+use ployz_store::tools::Confirmation;
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
     EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId, ProjectName, Publish,
@@ -732,16 +732,23 @@ impl<'m> Store<'m> {
     }
 }
 
-/// The Volume names a refusal's `accept` lists, flat or by Environment.
+/// The Volume names a refusal's `accept` lists, flat or by Environment: every string
+/// of a list, whatever else it holds.
 fn accepted_names(confirmation: &Confirmation) -> Vec<String> {
-    confirmation
-        .accept
-        .as_ref()
-        .map(Accept::names)
-        .unwrap_or_default()
-        .into_iter()
-        .map(ToString::to_string)
-        .collect()
+    let names = |list: &serde_json::Value| {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|name| name.as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    match &confirmation.written_accept {
+        Some(serde_json::Value::Object(by_environment)) => {
+            by_environment.values().flat_map(names).collect()
+        }
+        Some(list) => names(list),
+        None => Vec::new(),
+    }
 }
 
 pub(crate) fn sweep(store: &ConfigStore, who: &Actor) -> Result<(), ployz_core::RpcError> {
@@ -1282,6 +1289,56 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// The names a refusal's `accept` listed, read from the raw value: every string
+    /// of a list, or of each list of an Environment map, and nothing else.
+    fn names_listed_in(accept: Option<&serde_json::Value>) -> Vec<String> {
+        let names = |list: &serde_json::Value| {
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        };
+        match accept {
+            Some(serde_json::Value::Object(by_environment)) => {
+                by_environment.values().flat_map(names).collect()
+            }
+            Some(list) => names(list),
+            None => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_names_a_refusal_accepts_keep_every_string_whatever_else_its_accept_holds() {
+        let table = [
+            ("absent", json!({})),
+            ("null", json!({ "accept": null })),
+            ("a number", json!({ "accept": 3 })),
+            ("a flat list", json!({ "accept": ["data", "logs"] })),
+            ("a mixed list", json!({ "accept": ["data", 7, "logs"] })),
+            (
+                "a name no Volume has",
+                json!({ "accept": ["data", "Bad Name"] }),
+            ),
+            (
+                "by Environment",
+                json!({ "accept": { "production": ["data"], "staging": ["logs"] } }),
+            ),
+            (
+                "by Environment with a mixed list",
+                json!({ "accept": { "production": ["data", 7], "staging": 9 } }),
+            ),
+            ("an empty map", json!({ "accept": {} })),
+        ];
+        for (name, details) in table {
+            assert_eq!(
+                accepted_names(&Confirmation::of(&details)),
+                names_listed_in(details.get("accept")),
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn a_staged_domain_change_reads_as_a_domain() {
