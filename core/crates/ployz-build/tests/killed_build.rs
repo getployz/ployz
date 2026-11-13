@@ -225,6 +225,7 @@ fn a_build_solves_until_it_is_killed() {
         no_cache: false,
         pull: false,
         sealed: false,
+        cache_scope: None,
     };
     let _ = execute_admitted(&request, admission, &|_| {});
     unreachable!("the parent kills this process mid-solve");
