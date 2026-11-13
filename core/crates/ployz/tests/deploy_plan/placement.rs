@@ -1022,29 +1022,99 @@ fn constraints_name_each_excluded_machine_under_the_first_reason_that_applies_to
     );
 }
 
+/// A placement-matched Machine whose membership is Unknown or Unrecognized.
+fn unreached_ord1(unrecognized: bool) -> MachineObservation {
+    let mut ord1 = machine('2', "ord1");
+    if unrecognized {
+        ord1.membership = MembershipObservation::Unrecognized("Left".into());
+        ord1.membership_evidence =
+            Some(ployz_core::MembershipEvidence::Unrecognized { raw: "Left".into() });
+    } else {
+        ord1.membership = MembershipObservation::Unknown;
+    }
+    ord1
+}
+
+/// The message of a refusal through both public entry points, which must agree.
+fn refusal_through_both_entries(
+    requested: &RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+) -> String {
+    let helper = plan_deploy([requested], snapshot, PlanOptions::default())
+        .expect_err("the helper should refuse")
+        .to_string();
+    let public = ployz::deploy::plan_deploy(
+        &DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [requested],
+            PlanOptions::default(),
+        ),
+        snapshot,
+    )
+    .expect_err("plan_deploy should refuse")
+    .to_string();
+    assert_eq!(helper, public);
+    helper
+}
+
 #[test]
-fn constraints_name_a_machine_whose_membership_is_unknown() {
+fn a_placement_matched_machine_with_unknown_membership_is_not_named_in_the_refusal() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     requested.placement.constraints = [label_constraint("ord1")].into();
-    let mut ord1 = machine('2', "ord1");
-    ord1.membership = MembershipObservation::Unknown;
 
-    assert_no_eligible(
-        plan_deploy(
-            [&requested],
-            &DeploySnapshot {
-                machines: vec![machine('1', "ewr1"), ord1],
-                ..Default::default()
-            },
-            PlanOptions::default(),
-        ),
-        &[EliminatingConstraint::MembershipUnknown {
-            names: vec![MachineName::parse("ord1").unwrap()],
-        }],
-        &["Machine 'ord1' is not known to be up"],
-    );
+    for unrecognized in [false, true] {
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "ewr1"), unreached_ord1(unrecognized)],
+            ..Default::default()
+        };
+        assert_no_eligible(
+            plan_deploy([&requested], &snapshot, PlanOptions::default()),
+            &[],
+            &[],
+        );
+        assert_eq!(
+            refusal_through_both_entries(&requested, &snapshot),
+            "no machines available that satisfy all constraints: no Machines in the Deploy Snapshot",
+            "unrecognized: {unrecognized}"
+        );
+    }
+}
+
+#[test]
+fn a_machine_with_unknown_membership_leaves_the_other_constraints_as_they_were() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut down = machine('3', "down");
+    down.membership = MembershipObservation::Down;
+    let mut refusing = machine('4', "refusing");
+    refusing.machine.accepts_services = false;
+
+    for unrecognized in [false, true] {
+        let snapshot = DeploySnapshot {
+            machines: vec![unreached_ord1(unrecognized), down.clone(), refusing.clone()],
+            ..Default::default()
+        };
+        assert_no_eligible(
+            plan_deploy([&requested], &snapshot, PlanOptions::default()),
+            &[
+                EliminatingConstraint::MachineDown {
+                    names: vec![MachineName::parse("down").unwrap()],
+                },
+                EliminatingConstraint::WorkNotAccepted {
+                    names: vec![MachineName::parse("refusing").unwrap()],
+                },
+            ],
+            &[],
+        );
+        assert_eq!(
+            refusal_through_both_entries(&requested, &snapshot),
+            "no machines available that satisfy all constraints: Machine 'down' is down; Machine 'refusing' do not accept this work",
+            "unrecognized: {unrecognized}"
+        );
+    }
 }
 
 #[test]

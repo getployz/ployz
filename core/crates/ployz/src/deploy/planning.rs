@@ -1899,10 +1899,6 @@ fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> 
     if !refused.is_empty() {
         constraints.push(EliminatingConstraint::WorkNotAccepted { names: refused });
     }
-    let unreached = names(Exclusion::Unreached);
-    if !unreached.is_empty() {
-        constraints.push(EliminatingConstraint::MembershipUnknown { names: unreached });
-    }
     PlanError::no_eligible_machines(constraints)
 }
 

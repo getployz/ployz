@@ -20,7 +20,8 @@ pub(super) enum Exclusion {
     Silent,
     /// The Machine does not accept this kind of work.
     WorkNotAccepted,
-    /// Membership is neither up nor down: no RPC goes to the Machine.
+    /// Membership is neither up nor down: no RPC goes to the Machine. A refusal names
+    /// no Machine for this reason.
     Unreached,
 }
 
