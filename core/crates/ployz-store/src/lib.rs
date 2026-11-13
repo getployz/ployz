@@ -101,6 +101,7 @@ pub use permission::Permission;
 pub use ployz_core::authority::rule_draft::RuleSourceView;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
+pub use ployz_core::memory_size::memory_size;
 pub use preview_rule::{ApprovePreviewRule, PlanPreviewRule, PreviewRuleView};
 pub use pull_request::{
     ApprovePullRequest, EnvironmentReview, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion,
