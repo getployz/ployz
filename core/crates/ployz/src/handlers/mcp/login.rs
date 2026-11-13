@@ -46,7 +46,7 @@ fn failed(path: PathBuf, source: io::Error) -> LoginError {
     LoginError::Store { path, source }
 }
 
-pub(super) fn stored(config: &Path) -> Result<Option<Stored>, LoginError> {
+fn stored(config: &Path) -> Result<Option<Stored>, LoginError> {
     let path = path(config);
     match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
@@ -265,6 +265,24 @@ async fn revoke(credential: &Credential, id: &str) -> Result<bool, LoginError> {
     Ok(true)
 }
 
+/// Whose credential `ployz mcp` acts with: `PLOYZ_TOKEN` when the environment names one,
+/// else the agent token `ployz mcp login` stored.
+pub(super) enum ActingAs {
+    Token,
+    Login(Stored),
+    LoggedOut,
+}
+
+impl ActingAs {
+    /// `token` is `PLOYZ_TOKEN` as [`crate::cloud_account::env_token`] reads it, never empty.
+    pub(super) fn resolve(config: &Path, token: Option<&str>) -> Result<Self, LoginError> {
+        if token.is_some() {
+            return Ok(Self::Token);
+        }
+        Ok(stored(config)?.map_or(Self::LoggedOut, Self::Login))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +366,47 @@ mod tests {
     #[test]
     fn a_durable_first_login_warns_nothing() {
         assert!(warnings(Path::new("mcp.json"), &Saved::Durable, None).is_empty());
+    }
+
+    fn config_with(file: Option<&str>) -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        if let Some(file) = file {
+            std::fs::write(home.path().join("mcp.json"), file).unwrap();
+        }
+        let config = home.path().join("config.toml");
+        (home, config)
+    }
+
+    #[test]
+    fn an_environment_token_acts_without_reading_the_stored_login() {
+        let (_home, config) = config_with(Some("{ not json"));
+        assert!(matches!(
+            ActingAs::resolve(&config, Some("ployz_env")),
+            Ok(ActingAs::Token)
+        ));
+    }
+
+    #[test]
+    fn without_a_token_the_stored_login_acts_else_nobody_does() {
+        let stored = r#"{"cloud":"https://cloud.example","id":"tok","organization":"ada","token":"ployz_old"}"#;
+        let (_home, config) = config_with(Some(stored));
+        let Ok(ActingAs::Login(acting)) = ActingAs::resolve(&config, None) else {
+            panic!("the stored login acts");
+        };
+        assert_eq!(acting.credential().cloud(), "https://cloud.example");
+        let (_home, config) = config_with(None);
+        assert!(matches!(
+            ActingAs::resolve(&config, None),
+            Ok(ActingAs::LoggedOut)
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_stored_login_is_an_error_not_a_logout() {
+        let (_home, config) = config_with(Some("{ not json"));
+        assert!(matches!(
+            ActingAs::resolve(&config, None),
+            Err(LoginError::Corrupt { .. })
+        ));
     }
 }

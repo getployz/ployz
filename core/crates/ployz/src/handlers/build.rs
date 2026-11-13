@@ -97,13 +97,7 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
         }
         .into());
     }
-    let events = Arc::new(Events(
-        matches
-            .get_one::<String>("events")
-            .map(std::fs::File::create)
-            .transpose()?
-            .map(std::sync::Mutex::new),
-    ));
+    let events = Arc::new(Events::to(matches.get_one::<String>("events"), false)?);
     // A CI runner's TERM must unwind the staged values and capture, not kill the process.
     let (cancellation, _sigterm) = crate::cancellation::interrupted_or_terminated()?;
     let runtime = runtime()?;
@@ -139,13 +133,7 @@ fn build_under_rule(matches: &ArgMatches, cloud: &str) -> Result<(), Error> {
     let cloud = rule::Cloud::new(cloud)?;
     let oidc = rule::Oidc::from_env()?;
     check_out(&source, &commit.to_string())?;
-    let events = Arc::new(Events(
-        matches
-            .get_one::<String>("events")
-            .map(std::fs::File::create)
-            .transpose()?
-            .map(std::sync::Mutex::new),
-    ));
+    let events = Arc::new(Events::to(matches.get_one::<String>("events"), true)?);
     let (cancellation, _sigterm) = crate::cancellation::interrupted_or_terminated()?;
     let runtime = runtime()?;
     let checked_in: rule::CheckedIn = runtime.block_on(until_cancelled(
@@ -164,16 +152,9 @@ fn build_under_rule(matches: &ArgMatches, cloud: &str) -> Result<(), Error> {
     );
     // The build's one report, its end: Cloud reads the image token from it.
     let report = |platforms: &[String], token: Option<&ployz_core::GithubToken>| {
-        let events: Vec<Value> = matches
-            .get_one::<String>("events")
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
-            .collect();
         let body = FinalReport {
             from: 0,
-            events,
+            events: events.report_lines(),
             platforms,
             image_token: token.map(ployz_core::GithubToken::as_str),
         };
@@ -416,21 +397,58 @@ fn covering(
 
 const SEALED_UNREAD: &str = "the Server did not open this Build's sealed values";
 
-/// The `--events` file: one `{"at": <unix ms>, "event": {"Build": <progress>}}` line per
-/// event, the SDK preparation event shape Cloud's build log reads. Progress is best effort:
-/// a failed write never fails the build.
-struct Events(Option<std::sync::Mutex<std::fs::File>>);
+/// What a build reports as it goes: one `{"at": <unix ms>, "event": {"Build": <progress>}}`
+/// value per event, the SDK preparation event shape Cloud's build log reads. They go to the
+/// `--events` file, one line each, when it is given. A build that reports to Cloud keeps
+/// them for its report only when that file is given, so a build without it holds none in
+/// memory and reports none. Progress is best effort: a failed write never fails the build
+/// or shortens the report.
+struct Events {
+    file: Option<std::sync::Mutex<std::fs::File>>,
+    recorded: Option<std::sync::Mutex<Vec<Value>>>,
+}
 
 impl Events {
+    /// Events written to the `--events` file at `path`, when given, and also kept when the
+    /// build `reports` them to Cloud.
+    fn to(path: Option<&String>, reports: bool) -> std::io::Result<Self> {
+        Ok(Self {
+            file: path
+                .map(std::fs::File::create)
+                .transpose()?
+                .map(std::sync::Mutex::new),
+            recorded: (reports && path.is_some()).then(|| std::sync::Mutex::new(Vec::new())),
+        })
+    }
+
     fn write(&self, event: &ployz_build::Progress) {
         use std::io::Write as _;
-        let Some(file) = &self.0 else { return };
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_millis());
-        if let Ok(mut file) = file.lock() {
-            let _ = writeln!(file, "{}", json!({"at": at, "event": {"Build": event}}));
+        let event = json!({"at": at, "event": {"Build": event}});
+        if let Some(file) = &self.file
+            && let Ok(mut file) = file.lock()
+        {
+            let _ = writeln!(file, "{event}");
         }
+        if let Some(recorded) = &self.recorded {
+            recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        }
+    }
+
+    /// Every event written to the `--events` file of a reporting build, in the order it
+    /// happened; none without the file.
+    fn report_lines(&self) -> Vec<Value> {
+        self.recorded.as_ref().map_or_else(Vec::new, |recorded| {
+            recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
     }
 
     /// One line of the push: output of the open `Push` stage.
@@ -658,8 +676,9 @@ mod tests {
 
     fn events() -> (tempfile::TempDir, Events) {
         let directory = tempfile::tempdir().unwrap();
-        let file = fs::File::create(directory.path().join("events")).unwrap();
-        (directory, Events(Some(std::sync::Mutex::new(file))))
+        let path = directory.path().join("events").display().to_string();
+        let events = Events::to(Some(&path), true).unwrap();
+        (directory, events)
     }
 
     /// The build output the events file carries.
@@ -675,6 +694,114 @@ mod tests {
                 String::from_utf8(bytes).unwrap()
             })
             .collect()
+    }
+
+    #[test]
+    fn each_event_is_one_line_in_the_shape_cloud_s_build_log_reads() {
+        let (directory, events) = events();
+        events.write(&ployz_build::Progress::Stage(ployz_build::Stage::Push));
+        events.push_line("Pushed sha256:abc");
+        let file = fs::read_to_string(directory.path().join("events")).unwrap();
+        let lines: Vec<Value> = file
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let [stage, output] = &lines[..] else {
+            panic!("one line per event: {file}");
+        };
+        for line in [stage, output] {
+            let keys: Vec<&String> = line.as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["at", "event"], "{line}");
+            assert!(line["at"].is_u64(), "{line}");
+        }
+        assert_eq!(
+            stage["event"],
+            json!({"Build": ployz_build::Progress::Stage(ployz_build::Stage::Push)})
+        );
+        assert_eq!(
+            output["event"],
+            json!({"Build": {"Output": b"Pushed sha256:abc\n".to_vec()}})
+        );
+    }
+
+    #[test]
+    fn the_report_is_the_events_the_build_recorded_in_order() {
+        let (directory, events) = events();
+        events.write(&ployz_build::Progress::Stage(ployz_build::Stage::Push));
+        events.push_line("Pushed sha256:abc");
+        let file = fs::read_to_string(directory.path().join("events")).unwrap();
+        let lines: Vec<Value> = file
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.report_lines(), lines);
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn a_build_without_an_events_file_reports_no_events() {
+        let events = Events::to(None, true).unwrap();
+        events.push_line("Pushed sha256:abc");
+        assert!(events.recorded.is_none());
+        assert!(events.report_lines().is_empty());
+    }
+
+    #[test]
+    fn a_verbose_build_without_an_events_file_keeps_its_final_report_small() {
+        let events = Events::to(None, true).unwrap();
+        let line = "x".repeat(8 * 1024);
+        for _ in 0..4096 {
+            events.push_line(&line);
+        }
+        let platforms = ["linux/amd64".to_owned()];
+        let body = serde_json::to_string(&FinalReport {
+            from: 0,
+            events: events.report_lines(),
+            platforms: &platforms,
+            image_token: Some("token"),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            r#"{"from":0,"events":[],"platforms":["linux/amd64"],"imageToken":"token"}"#
+        );
+    }
+
+    #[test]
+    fn a_build_with_an_events_file_that_does_not_report_keeps_no_events() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events").display().to_string();
+        let events = Events::to(Some(&path), false).unwrap();
+        events.push_line("one");
+        assert!(events.recorded.is_none());
+        assert!(events.report_lines().is_empty());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap().lines().count(),
+            1,
+            "the file still gets the event"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_to_the_events_file_does_not_shorten_the_report() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events");
+        fs::write(&path, "").unwrap();
+        let events = Events {
+            file: Some(std::sync::Mutex::new(fs::File::open(&path).unwrap())),
+            recorded: Some(std::sync::Mutex::new(Vec::new())),
+        };
+        events.push_line("one");
+        events.push_line("two");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+        assert_eq!(events.report_lines().len(), 2);
+    }
+
+    #[test]
+    fn a_build_that_does_not_report_keeps_no_events() {
+        let events = Events::to(None, false).unwrap();
+        events.push_line("one");
+        assert!(events.report_lines().is_empty());
     }
 
     #[test]
@@ -841,7 +968,12 @@ mod tests {
                     .unwrap();
             let grant = BuildGrant::new(ManagementIdentity::from_bytes([7; 32]), [3; 32]);
             let runtime = tokio::runtime::Runtime::new().unwrap();
-            let built = runtime.block_on(run(build, &grant, Arc::new(Events(None)), &cancellation));
+            let built = runtime.block_on(run(
+                build,
+                &grant,
+                Arc::new(Events::to(None, false).unwrap()),
+                &cancellation,
+            ));
             assert!(built.is_err());
         }
     }

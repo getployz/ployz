@@ -40,8 +40,14 @@ use crate::cloud_login::{self, CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
 
+mod gated;
 mod login;
 
+use gated::{
+    APPROVAL, GatedInput, Raced, approval_required, approve_at, raced, with_approval,
+    writes_unknown,
+};
+use login::ActingAs;
 pub(super) use login::{login, login_command};
 
 pub(super) fn command(command: Command) -> Command {
@@ -52,10 +58,8 @@ pub(super) fn command(command: Command) -> Command {
 /// `PLOYZ_TOKEN` that is the Cloud `ployz mcp login` stored, not the sign-in's.
 fn publishing_setup(config: &Path, cloud: Option<String>, token: Option<&str>) -> Setup {
     let setup = Setup::beside(config, cloud);
-    match login::stored(config) {
-        Ok(Some(stored)) if token.is_none_or(str::is_empty) => {
-            setup.in_cloud(stored.credential().cloud())
-        }
+    match ActingAs::resolve(config, token) {
+        Ok(ActingAs::Login(stored)) => setup.in_cloud(stored.credential().cloud()),
         _ => setup,
     }
 }
@@ -331,12 +335,7 @@ fn written(answer: Result<Value, StoreCallError>) -> Result<Value, RpcError> {
     let unknown = matches!(&answer, Err(StoreCallError::Cloud(error)) if may_have_landed(error));
     called(answer).map_err(|mut error| {
         if unknown {
-            if !error.details.is_object() {
-                error.details = json!({});
-            }
-            if let Value::Object(details) = &mut error.details {
-                details.insert("writes".to_owned(), json!("unknown"));
-            }
+            error.details = writes_unknown(std::mem::take(&mut error.details));
         }
         error
     })
@@ -348,7 +347,7 @@ fn cut_off(tool: &str, deadline: Duration) -> RpcError {
         "Stopped waiting for `{tool}` after {}; Ployz Cloud may still take what it sent",
         span(deadline)
     ))
-    .with_details(json!({ "writes": "unknown" }))
+    .with_details(writes_unknown(Value::Null))
 }
 
 /// Whether Cloud may have acted on a request that failed this way.
@@ -584,21 +583,7 @@ impl Server {
         let command = self
             .published_named(tool)
             .ok_or_else(|| McpError::invalid_params(format!("no tool named {tool}"), None))?;
-        let mut input = arguments.unwrap_or_default();
-        let approval = match (command.asks(), input.remove(APPROVAL)) {
-            (false, Some(given)) => {
-                input.insert(APPROVAL.to_owned(), given);
-                None
-            }
-            (_, None | Some(Value::Null)) => None,
-            (true, Some(Value::String(id))) => Some(id),
-            (true, Some(_)) => {
-                return Err(McpError::invalid_params(
-                    format!("`{APPROVAL}` takes one string"),
-                    None,
-                ));
-            }
-        };
+        let GatedInput { input, approval } = GatedInput::take(arguments, command.asks())?;
         let credential = match self.agent().await {
             Ok(credential) => credential,
             Err(text) => return Ok(refused(text).into()),
@@ -621,15 +606,18 @@ impl Server {
             tool,
             Value::Object(repeat(&command, &input, approval.as_deref())),
         );
-        let (ran, revision) = tokio::select! {
-            biased;
-            ran = published::run_on(&credential, Via::Agent, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
-            () = context.ct.cancelled() => {
-                return Err(McpError::internal_error("the call was cancelled", None));
-            }
-            () = tokio::time::sleep(self.deadline) => {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(overdue(tool, self.deadline))]).into());
-            }
+        let run = published::run_on(
+            &credential,
+            Via::Agent,
+            tool,
+            Value::Object(input),
+            approval.as_deref(),
+            key.as_str(),
+        );
+        let until = Instant::now() + self.deadline;
+        let (ran, revision) = match raced(context, until, run).await? {
+            Raced::Ran(ran) => ran,
+            Raced::Overdue => return Ok(refused(overdue(tool, self.deadline)).into()),
         };
         let result = match ran {
             Ok(published::Ran { output, .. }) => CallToolResult::structured(output),
@@ -641,9 +629,8 @@ impl Server {
                     Some(id) if error.code.as_str() == ployz_core::APPROVAL_REQUIRED_CODE => {
                         let url = waiting_on_you(&credential).await;
                         let text = format!(
-                            "{message} Nothing ran; the approval stays pending. Ask a human to \
-                             open {url} and approve {id} under Waiting on you. Once they \
-                             approve, call this tool again with `approval` set to `{id}`.",
+                            "{message} Nothing ran; the approval stays pending. Ask a human to {}",
+                            approve_at(&url, id),
                             message = error.message,
                         );
                         approval_required(text, id, &error.message, &url)
@@ -675,17 +662,10 @@ impl Server {
     }
 
     async fn agent(&self) -> Result<Credential, String> {
-        if self
-            .account
-            .token
-            .as_deref()
-            .is_some_and(|token| !token.is_empty())
-        {
-            return self.person().await;
-        }
-        match login::stored(&self.account.config) {
-            Ok(Some(stored)) => Ok(stored.credential()),
-            Ok(None) => Err(login::NOT_LOGGED_IN.to_owned()),
+        match ActingAs::resolve(&self.account.config, self.account.token.as_deref()) {
+            Ok(ActingAs::Token) => self.person().await,
+            Ok(ActingAs::Login(stored)) => Ok(stored.credential()),
+            Ok(ActingAs::LoggedOut) => Err(login::NOT_LOGGED_IN.to_owned()),
             Err(error) => Err(Error::from(error).to_string()),
         }
     }
@@ -801,11 +781,7 @@ fn call_key(session: &str, id: &RequestId, _tool: &str) -> String {
 
 fn tool(def: tools::ToolDef) -> Tool {
     let mut input = object(def.input_schema);
-    if def.gate != Gate::Never
-        && let Some(Value::Object(properties)) = input.get_mut("properties")
-    {
-        properties.insert(APPROVAL.to_owned(), approval_property());
-    }
+    with_approval(&mut input, def.gate != Gate::Never);
     let mut tool = Tool::new(def.name, def.description, Arc::new(input)).annotate(
         ToolAnnotations::new()
             .read_only(def.read_only)
@@ -819,11 +795,7 @@ fn tool(def: tools::ToolDef) -> Tool {
 /// `approval` when Cloud may ask for one.
 fn published_tool(command: &PublishedCommand) -> Tool {
     let mut input = object(command.input.clone());
-    if command.asks()
-        && let Some(Value::Object(properties)) = input.get_mut("properties")
-    {
-        properties.insert(APPROVAL.to_owned(), approval_property());
-    }
+    with_approval(&mut input, command.asks());
     let mut tool = Tool::new(command.name.clone(), command.about.clone(), Arc::new(input))
         .annotate(
             ToolAnnotations::new()
@@ -832,13 +804,6 @@ fn published_tool(command: &PublishedCommand) -> Tool {
         );
     tool.output_schema = Some(Arc::new(object(command.output.clone())));
     tool
-}
-
-fn approval_property() -> Value {
-    json!({
-        "type": "string",
-        "description": "The approval id a refusal named, once a human approved it in Ployz Cloud.",
-    })
 }
 
 fn object(schema: Value) -> JsonObject {
@@ -903,21 +868,8 @@ impl Server {
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let tool: &str = &request.name;
-        let mut input = request.arguments.unwrap_or_default();
-        let approval = match (gate, input.remove(APPROVAL)) {
-            (Gate::Never, Some(given)) => {
-                input.insert(APPROVAL.to_owned(), given);
-                None
-            }
-            (_, None | Some(Value::Null)) => None,
-            (_, Some(Value::String(id))) => Some(id),
-            (_, Some(_)) => {
-                return Err(McpError::invalid_params(
-                    format!("`{APPROVAL}` takes one string"),
-                    None,
-                ));
-            }
-        };
+        let GatedInput { input, approval } =
+            GatedInput::take(request.arguments, gate != Gate::Never)?;
         let input = Value::Object(input);
         let backend = match self.backend().await {
             Ok(backend) => backend,
@@ -936,22 +888,13 @@ impl Server {
             backend: &backend,
             until,
         };
-        tokio::select! {
-            // A write past the deadline settles to its refusal before the arm below fires.
-            biased;
-            result = self.settle(&call, step, state, approval, context) => result,
-            () = context.ct.cancelled() => {
-                Err(McpError::internal_error("the call was cancelled", None))
-            }
-            () = tokio::time::sleep_until(until) => {
-                let content = vec![ContentBlock::text(overdue(tool, self.deadline))];
-                Ok(CallToolResult::error(content).into())
-            }
+        let settled = self.settle(&call, step, state, approval, context);
+        match raced(context, until, settled).await? {
+            Raced::Ran(result) => result,
+            Raced::Overdue => Ok(refused(overdue(tool, self.deadline)).into()),
         }
     }
 }
-
-const APPROVAL: &str = "approval";
 
 /// Whether the host can show a person a form and hand back their answer mid-call. A host
 /// that cannot gets no form: the call returns at once naming the approval and where it
@@ -1213,26 +1156,13 @@ async fn waiting_on_you(credential: &Credential) -> String {
 fn pending(verb: Verb, asked: &Asked, message: &str, url: &str) -> CallToolResult {
     let text = format!(
         "A human must approve {what} in Ployz Cloud. Nothing was {past}; the approval stays \
-         pending. Show them what it destroys, then ask them to open {url} and approve {id} \
-         under Waiting on you. Once they approve, call this tool again with `approval` set \
-         to `{id}`.\n{review}",
+         pending. Show them what it destroys, then ask them to {approve}\n{review}",
         what = asked.what(verb),
         past = verb.past(),
-        id = asked.id,
+        approve = approve_at(url, &asked.id),
         review = asked.review(verb).join("\n"),
     );
     approval_required(text, &asked.id, message, url)
-}
-
-/// A call refused until a person approves it, in the shape Cloud's `/mcp` gives a remote
-/// agent: the approval's id, Cloud's message and where a person approves it.
-fn approval_required(text: String, id: &str, message: &str, url: &str) -> CallToolResult {
-    let mut result = refused(text);
-    result.structured_content = Some(json!({
-        "ok": false,
-        "approval_required": { "approval_id": id, "message": message, "url": url },
-    }));
-    result
 }
 
 /// The call to repeat after `command` refused: the fields it takes, so a key the caller

@@ -11,7 +11,7 @@ The model in `core/crates/ployz-verify/src/sign_in_store.rs` explores every inte
 
 **The processes.** Each one is its own `ployz` process, so one can step between any two of another's file operations. No lock covers them.
 - **Two `ployz login` processes**, slots Login A and Login B. Without `--json`, `ployz login` waits (`core/crates/ployz/src/handlers/login.rs:83`). It runs `start` (`:304-341`), called at `core/crates/ployz/src/handlers/login.rs:85`, then `wait` (`:348-364`), called at `core/crates/ployz/src/handlers/login.rs:99`.
-- **One other Cloud command**, slot Command. With no pasted token, `credential` in `core/crates/ployz/src/cloud_account/credential.rs` calls `signed_in`; `core/crates/ployz/src/handlers/mcp.rs:719` calls it too. `signed_in` (`:276-287`) loads the file, returns a SignedIn, and polls a Pending once with `poll_once` (`:282`), which can finish or forget it.
+- **One other Cloud command**, slot Command. With no pasted token, `credential` in `core/crates/ployz/src/cloud_account/credential.rs` calls `signed_in`; `decider` in `core/crates/ployz/src/handlers/mcp.rs` calls it too. `signed_in` (`:276-287`) loads the file, returns a SignedIn, and polls a Pending once with `poll_once` (`:282`), which can finish or forget it.
 - **One `ployz logout`**, slot Logout (`:387-446`).
 - **The browser**, a signed-in member at `/device`, approves or denies a code. **The clock** lets a code lapse.
 
