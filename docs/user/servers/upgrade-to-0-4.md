@@ -75,6 +75,10 @@ Activation:
 
 Each server restarts once to activate. Your services keep running.
 
+After activation, a deploy from the dashboard runs only images written by digest. A service that
+Ployz 0.3 deployed by tag, such as `postgres:18`, stops the deploy and names itself until you
+[write its image by digest](../deploy/deployments.md#deploy-from-the-dashboard), once.
+
 ### Add back a server left out
 
 A server left out keeps running what it ran, but the activated servers no longer trust it. Add it

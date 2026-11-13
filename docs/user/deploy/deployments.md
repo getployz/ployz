@@ -228,12 +228,17 @@ such as `deploy 0f8fad5b… approved by passkey q3x7mfk2pa via browser key 72asy
 digest=cb8d3c6ef656`. If the settings change after you press **Deploy**, the server refuses the
 deployment, and the deployment page shows why.
 
-The dashboard can't pin a tag, since only Ployz Cloud could ask the registry for it. Write the
-image by digest, or run `ployz deploy`, which pins a public tag for you:
+The dashboard can't pin a tag, since only Ployz Cloud could ask the registry for it. It names
+each service that runs a tag, including one you didn't change, since a deploy approves every
+service. Write that service's image by digest once, and later deploys from the dashboard take it:
 
 ```text
-The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.
+The dashboard can't check what web's tag nginx:1.29-alpine points to. Write web's image by digest, which docker buildx imagetools inspect nginx:1.29-alpine prints.
 ```
+
+`ployz deploy` pins a public tag for you, but only for that deploy: your settings keep the tag,
+so the next deploy from the dashboard asks again. A service that a Ployz from before 0.4
+deployed by tag needs this once after you activate.
 
 A server that enforces and runs a Ployz from before 0.4 can't take an approval from the
 dashboard. **Deploy** names it and deploys nothing: upgrade it, or run `ployz deploy`.

@@ -347,8 +347,8 @@ pub enum BrowserDraftError {
     )]
     Built(ServiceName),
     #[error(
-        "The dashboard can't check what {service}'s tag {image} points to. Write the image \
-         by digest, or run ployz deploy, which pins it for you."
+        "The dashboard can't check what {service}'s tag {image} points to. Write {service}'s \
+         image by digest, which docker buildx imagetools inspect {image} prints."
     )]
     Tag { service: ServiceName, image: String },
     #[error(transparent)]

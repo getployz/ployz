@@ -429,7 +429,7 @@ describe("approveDeploy", () => {
     await expect(approveDeploy(app, deployment, "v1", plan([web("1")], "production"), now)).rejects.toThrow("The Environment changed after this review.");
     const tagged = { ...web("1"), container: { ...web("1").container, image: "nginx:1.29-alpine" } };
     await expect(approveDeploy(app, deployment, "v1", plan([tagged]), now))
-      .rejects.toThrow("The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.");
+      .rejects.toThrow("The dashboard can't check what web's tag nginx:1.29-alpine points to. Write web's image by digest, which docker buildx imagetools inspect nginx:1.29-alpine prints.");
     await expect(approveDeploy(production, deployment, "v1", plan([web("1")], "production"), now)).rejects.toThrow("Confirm it's you again.");
     expect(sign).not.toHaveBeenCalled();
     expect(credential).not.toHaveBeenCalled();
