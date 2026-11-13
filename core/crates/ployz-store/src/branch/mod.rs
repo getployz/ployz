@@ -12,12 +12,12 @@ mod live;
 mod never_sync;
 mod pair;
 mod proposal;
-mod rows;
+pub(crate) mod rows;
 mod setup;
 mod sync;
 pub(crate) use create::*;
 pub use follow::{FollowHint, IncomingChange};
-pub(crate) use follow::{follow, hints, incoming};
+pub(crate) use follow::{follow, hints, incoming, lock_below, stopped};
 pub(crate) use live::*;
 pub use never_sync::{NeverSync, NeverSynced};
 pub(crate) use never_sync::{marked, marks, never_sync};
@@ -46,11 +46,11 @@ use ployz_core::config::{
     Arrives, At, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
     Cells, ConfigError, EnvironmentNodeType, Hostnames, Landed, LiveLineageUse, LiveValuesInput,
     LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableIntent, SavedVariableProducer, SealedCell, SealedSecret,
-    ServiceImageCredentials, ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner,
-    VariableValue, Verdict, Way, Why, canonicalize_environment_intent, compile_environment_intent,
-    dependents, live_values, marks_on, parse_service_setting, plan, plan_branch, put_back,
-    referenced_by_others, unapply, unchanged_since,
+    SavedServiceIntent, SavedVariableProducer, SealedCell, SealedSecret, ServiceImageCredentials,
+    ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner, VariableValue, Verdict,
+    Way, Why, canonicalize_environment_intent, compile_environment_intent, dependents, live_values,
+    marks_on, parse_service_setting, plan, plan_branch, put_back, referenced_by_others, unapply,
+    unchanged_since,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -726,6 +726,6 @@ fn lineages(intent: &SavedEnvironmentIntent) -> Vec<String> {
         .collect()
 }
 
-fn document(intent: &SavedEnvironmentIntent) -> String {
+pub(crate) fn document(intent: &SavedEnvironmentIntent) -> String {
     serde_json::to_string(intent).expect("Working State is JSON")
 }

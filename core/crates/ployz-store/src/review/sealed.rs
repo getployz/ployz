@@ -28,7 +28,7 @@ pub(crate) const fn sealed(value: &VariableValue) -> bool {
 /// it. A variable the owner's Working State holds sealed, by ID or else key, takes
 /// that seal; one it sealed and deleted since is sealed without a value (Not set);
 /// another added plain since under its key stays as it is, as History's
-/// [`super::Scrub`] reads them.
+/// [`crate::seal_scrub::history::Scrub`] reads them.
 pub(crate) fn seal_running(
     tx: &mut dyn Tx,
     owner: &scope::Environment,
@@ -570,7 +570,7 @@ impl Chain {
             })
             .collect();
         rows.insert((lineage.to_owned(), key.to_owned()));
-        let mut held = crate::branch::held_by_sealer(tx, environment, &rows)?;
+        let mut held = crate::seal_scrub::walk::held_by_sealer(tx, environment, &rows)?;
         for (lineage, key) in rows {
             let fingerprints = held
                 .remove(&(lineage.clone(), key.clone()))

@@ -1834,7 +1834,7 @@ impl Stored {
 ///
 /// Once the summary says the Deployment can't run any more, at each save:
 /// - History drops the sealed values only a Deployment in flight kept, rewriting
-///   only a revision that still holds one ([`crate::review::scrub_sealed`]).
+///   only a revision that still holds one ([`crate::seal_scrub::history::scrub_sealed`]).
 /// - When it shows an end, each build its Servers still hold Building is settled as
 ///   interrupted, finished at that end ([`crate::build::settle`]): its runner can't
 ///   report on it any more ([`running`]). One out of flight that shows no end,
@@ -1862,7 +1862,7 @@ fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
         ],
     )?;
     if !stored.summary.in_flight {
-        crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
+        crate::seal_scrub::history::scrub_sealed(tx, &stored.summary.environment_id)?;
         if let Some(ended) = stored.summary.ended_at {
             crate::build::settle(tx, &stored.summary.id, ended)?;
         }

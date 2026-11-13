@@ -102,7 +102,13 @@ pub(crate) fn follow(
         };
         if seal_below && !sealed.is_empty() {
             let below = crate::storage::attempt(tx, |tx| {
-                seal_inherited_below(tx, &who, &parent.summary.id, &branch, &sealed)
+                crate::seal_scrub::inherit::seal_inherited_below(
+                    tx,
+                    &who,
+                    &parent.summary.id,
+                    &branch,
+                    &sealed,
+                )
             });
             if let Err(error) = below {
                 tracing::warn!(
@@ -170,7 +176,7 @@ pub(super) const BRANCH_LOCK_WAIT: std::time::Duration = std::time::Duration::fr
 /// and only the wait: what it writes then keeps the usual timeout. Call it in a
 /// [`crate::storage::attempt`], whose savepoint rolled back drops the shorter wait
 /// too. Another write holding it longer is [`RpcErrorCode::Unavailable`].
-pub(super) fn lock_below(
+pub(crate) fn lock_below(
     tx: &mut dyn Tx,
     who: &Actor,
     branch: &EnvironmentId,
@@ -182,7 +188,7 @@ pub(super) fn lock_below(
 }
 
 /// Whether `branch` was shut down, or is being removed: nothing follows into it.
-pub(super) fn stopped(tx: &mut dyn Tx, branch: &EnvironmentId) -> Result<bool, RpcError> {
+pub(crate) fn stopped(tx: &mut dyn Tx, branch: &EnvironmentId) -> Result<bool, RpcError> {
     let shut_down = crate::deployment::latest_removal(tx, branch)?.is_some_and(|removal| {
         !matches!(
             removal.status,
@@ -322,9 +328,10 @@ fn hinted<'rows>(
         {
             continue;
         }
-        if let (At::Variable(key), Some(fingerprint)) =
-            (row.id.at(), super::pair::plain_fingerprint(&row.from))
-            && sealed.sealed(tx, branch.as_str(), row.id.lineage(), key, fingerprint)?
+        if let (At::Variable(key), Some(fingerprint)) = (
+            row.id.at(),
+            crate::seal_scrub::inherit::plain_fingerprint(&row.from),
+        ) && sealed.sealed(tx, branch.as_str(), row.id.lineage(), key, fingerprint)?
         {
             continue;
         }
