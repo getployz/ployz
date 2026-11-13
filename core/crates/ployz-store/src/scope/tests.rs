@@ -151,7 +151,8 @@ fn attempt(protected: bool, mode: Mode, edit: Edit) -> (Observed, Observed) {
                     *branch = ServiceGitBranch::Connected { name: "dev".into() };
                 }
                 (_, Edit::Reserved) => {
-                    environment.working.services.first_mut().unwrap().slug = "setup".into();
+                    environment.working.services.first_mut().unwrap().slug =
+                        ServiceName::parse("setup").unwrap();
                 }
             }
             let result = write(tx, &mut environment, mode, &nobody);
@@ -180,7 +181,7 @@ fn observe(
         refused: refused.map(|error| (error.code.to_string(), error.details)),
         revision: environment.summary.revision.0,
         branch,
-        slug: service.slug.clone(),
+        slug: service.slug.to_string(),
         removed: environment.removed.contains(&uuid(9)),
     })
 }

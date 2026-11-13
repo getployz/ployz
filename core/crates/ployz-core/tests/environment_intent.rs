@@ -1,6 +1,8 @@
 //! Authored document admission and compilation contracts.
 
-use ployz_core::config::{compile_environment_intent, parse_environment_intent};
+use ployz_core::config::{
+    EnvironmentNodeType, ReviewNodeIdentity, compile_environment_intent, parse_environment_intent,
+};
 use serde_json::json;
 
 fn intent() -> serde_json::Value {
@@ -238,11 +240,81 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
 }
 
 #[test]
-fn a_stored_service_slug_that_is_not_a_service_name_still_decodes() {
-    for slug in ["Web", "web_app", "web-", &"a".repeat(64)] {
+fn a_stored_service_slug_that_is_not_a_service_name_is_refused() {
+    for slug in ["Web", "web_app", "web-", "", &"a".repeat(64)] {
         let mut value = intent();
         *value.pointer_mut("/services/0/slug").unwrap() = json!(slug);
-        let parsed = parse_environment_intent(value).unwrap();
-        assert_eq!(parsed.services.first().unwrap().slug, slug);
+        let error = parse_environment_intent(value).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "environment: Invalid authored environment"
+        );
     }
+}
+
+#[test]
+fn a_saved_document_names_its_nodes_and_joins_an_attachment_to_its_resource() {
+    let mut saved = parse_environment_intent(intent()).unwrap();
+    let nodes: Vec<_> = saved
+        .nodes()
+        .map(|node| (node.kind, node.lineage, node.name))
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            (
+                EnvironmentNodeType::Service,
+                "00000000-0000-4000-8000-000000000003",
+                "web"
+            ),
+            (
+                EnvironmentNodeType::Volume,
+                "00000000-0000-4000-8000-000000000007",
+                "Data"
+            ),
+        ]
+    );
+    let data = saved.node_by_lineage("00000000-0000-4000-8000-000000000007");
+    assert_eq!(data.unwrap().id, "00000000-0000-4000-8000-000000000006");
+    let identity = ReviewNodeIdentity {
+        node_type: EnvironmentNodeType::Volume,
+        id: "00000000-0000-4000-8000-000000000006".to_owned(),
+    };
+    assert_eq!(saved.node_by_identity(&identity).unwrap().name, "Data");
+
+    let service = saved.services.first().unwrap();
+    let mount = service.volume_attachments.first().unwrap();
+    assert_eq!(saved.volume_of(mount).unwrap().name, "Data");
+    let variable = service.variables.first().unwrap();
+    assert_eq!(
+        service.variable_like("elsewhere", "HOST").unwrap().id,
+        variable.id
+    );
+    assert_eq!(
+        service
+            .variable_like_key_first(&variable.id, "OTHER")
+            .unwrap()
+            .key,
+        "HOST"
+    );
+    assert!(service.variable_like("elsewhere", "OTHER").is_none());
+
+    let detached = saved.detach_resource(EnvironmentNodeType::Volume, &identity.id);
+    assert_eq!(
+        detached.into_iter().collect::<Vec<_>>(),
+        ["00000000-0000-4000-8000-000000000003"]
+    );
+    assert!(
+        saved
+            .services
+            .first()
+            .unwrap()
+            .volume_attachments
+            .is_empty()
+    );
+    assert!(
+        saved
+            .detach_resource(EnvironmentNodeType::Volume, &identity.id)
+            .is_empty()
+    );
 }

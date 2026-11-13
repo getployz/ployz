@@ -137,9 +137,7 @@ impl Own {
     pub(crate) fn pending(&self, working: &SavedEnvironmentIntent) -> Vec<SetupCommand> {
         let mut pending = Vec::new();
         for service in &working.services {
-            let Ok(name) = ServiceName::parse(service.slug.as_str()) else {
-                continue;
-            };
+            let name = service.slug.clone();
             if self.deployed.contains(&service.id) {
                 continue;
             }
@@ -207,7 +205,7 @@ pub(crate) fn refuse_service_named_setup(environment: &Environment) -> Result<()
         .working
         .services
         .iter()
-        .any(|service| service.slug == "setup")
+        .any(|service| service.slug.as_str() == "setup")
     {
         return Ok(());
     }

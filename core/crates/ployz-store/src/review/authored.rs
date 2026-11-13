@@ -85,7 +85,7 @@ impl VersionedValue {
 }
 
 enum ServiceField {
-    Name(Delta<String>),
+    Name(Delta<ServiceName>),
     Source(Delta<ServiceSource>),
     GitSource(Delta<GitSelection>),
     Branch(Delta<ServiceGitBranch>),
@@ -1306,14 +1306,14 @@ impl Effect {
         let (before, after) = match self {
             Self::ServiceLifecycle(change) => lifecycle(change, |service| {
                 vec![
-                    Slot::Service(&service.slug),
+                    Slot::Service(service.slug.as_str()),
                     Slot::Service(service.config.private_dns.as_str()),
                 ]
             }),
             Self::Service {
                 field: ServiceField::Name(name),
                 ..
-            } => delta(name, |name| Some(Slot::Service(name))),
+            } => delta(name, |name| Some(Slot::Service(name.as_str()))),
             Self::Service {
                 field: ServiceField::PrivateDns(dns),
                 ..
@@ -2013,7 +2013,7 @@ impl Plan {
         }
         for change in &mut changes {
             change.data = super::data_effect(&change.node, change.lifecycle, before, after);
-            change.restarts = super::restarts(&change.node, change.lifecycle, after, before)?;
+            change.restarts = super::restarts(&change.node, change.lifecycle, after, before);
         }
         let total_count = changes
             .iter()
@@ -2141,28 +2141,8 @@ fn node_info(
 ) -> Result<(String, String), RpcError> {
     [after, before]
         .into_iter()
-        .find_map(|intent| match node.node_type {
-            EnvironmentNodeType::Service => intent
-                .services
-                .iter()
-                .find(|owner| owner.id == node.id)
-                .map(|owner| (owner.slug.clone(), owner.lineage_id.clone())),
-            EnvironmentNodeType::Volume => intent
-                .volumes
-                .iter()
-                .find(|owner| owner.resource_id == node.id)
-                .map(|owner| (owner.name.clone(), owner.resource_lineage_id.clone())),
-            EnvironmentNodeType::Config => intent
-                .configs
-                .iter()
-                .find(|owner| owner.resource_id == node.id)
-                .map(|owner| {
-                    (
-                        owner.name.as_str().to_owned(),
-                        owner.resource_lineage_id.clone(),
-                    )
-                }),
-        })
+        .find_map(|intent| intent.node_by_identity(node))
+        .map(|found| (found.name.to_owned(), found.lineage.to_owned()))
         .ok_or_else(|| error::corrupt("Authored owner"))
 }
 /// `recorded` lists variables, as service id and key, shown changed in value even
@@ -2339,13 +2319,8 @@ fn keep_sealed(
             .iter()
             .find(|current| current.id == service.id);
         for variable in &mut service.variables {
-            let now = current.and_then(|current| {
-                current
-                    .variables
-                    .iter()
-                    .find(|now| now.key == variable.key)
-                    .or_else(|| current.variables.iter().find(|now| now.id == variable.id))
-            });
+            let now = current
+                .and_then(|current| current.variable_like_key_first(&variable.id, &variable.key));
             match now {
                 Some(now) if sealed(&now.value) || sealed(&variable.value) => {
                     variable.id.clone_from(&now.id);
@@ -2362,8 +2337,7 @@ fn keep_sealed(
                 None if sealed(&variable.value) || ledger.holds(&service.id, variable) => {
                     variable.value = VariableValue::NotSet;
                     not_set.push(NotSetVariable {
-                        service: ServiceName::parse(&service.slug)
-                            .map_err(|_| error::corrupt("Service name"))?,
+                        service: service.slug.clone(),
                         key: variable.key.clone(),
                     });
                 }
@@ -2450,11 +2424,11 @@ pub(super) fn prepare_discard(
         let node = resolve_node(path, environment, &baseline)?;
         if target == DiscardTarget::Head
             && (path.target().is_some() || path.node_field().is_some())
-            && !has_node(&baseline, &node)
+            && baseline.node_by_identity(&node).is_none()
         {
             let mut introduced = super::introductions(tx, environment)?;
             since.unset(tx, &mut introduced)?;
-            copy_node(&mut baseline, &introduced, &node);
+            baseline.push_node(&introduced, &node);
         }
         let plan = if let Some(plan) =
             Plan::variable_selection(path.target(), &node, &baseline, &environment.working)
@@ -2578,50 +2552,6 @@ fn row_baseline(path: &SettingPath, environment: &Environment, reviewed: &Review
     }
 }
 
-fn has_node(intent: &SavedEnvironmentIntent, node: &ReviewNodeIdentity) -> bool {
-    match node.node_type {
-        EnvironmentNodeType::Service => intent.services.iter().any(|owner| owner.id == node.id),
-        EnvironmentNodeType::Volume => intent
-            .volumes
-            .iter()
-            .any(|owner| owner.resource_id == node.id),
-        EnvironmentNodeType::Config => intent
-            .configs
-            .iter()
-            .any(|owner| owner.resource_id == node.id),
-    }
-}
-fn copy_node(
-    target: &mut SavedEnvironmentIntent,
-    source: &SavedEnvironmentIntent,
-    node: &ReviewNodeIdentity,
-) {
-    match node.node_type {
-        EnvironmentNodeType::Service => {
-            if let Some(owner) = source.services.iter().find(|owner| owner.id == node.id) {
-                target.services.push(owner.clone());
-            }
-        }
-        EnvironmentNodeType::Volume => {
-            if let Some(owner) = source
-                .volumes
-                .iter()
-                .find(|owner| owner.resource_id == node.id)
-            {
-                target.volumes.push(owner.clone());
-            }
-        }
-        EnvironmentNodeType::Config => {
-            if let Some(owner) = source
-                .configs
-                .iter()
-                .find(|owner| owner.resource_id == node.id)
-            {
-                target.configs.push(owner.clone());
-            }
-        }
-    }
-}
 fn resolve_node(
     path: &SettingPath,
     environment: &Environment,
@@ -2634,7 +2564,7 @@ fn resolve_node(
             [working, baseline]
                 .into_iter()
                 .flat_map(|intent| &intent.services)
-                .find(|owner| owner.slug == name.as_str())
+                .find(|owner| owner.slug == name)
                 .map(|owner| owner.id.clone())
                 .ok_or_else(|| scope::no_service(&name, &environment.summary.name, working))?,
         ),
@@ -2850,11 +2780,14 @@ mod tests {
             },
         }
     }
+    fn service_name(name: &str) -> ServiceName {
+        ServiceName::parse(name).unwrap()
+    }
     fn service(source: ServiceSource) -> SavedServiceIntent {
         SavedServiceIntent {
             id: "svc".to_owned(),
             lineage_id: "lineage".to_owned(),
-            slug: "web".to_owned(),
+            slug: service_name("web"),
             config: AuthoredServiceConfig {
                 version: 2,
                 source,
@@ -2945,7 +2878,7 @@ mod tests {
         };
         vec![
             case(
-                ServiceField::Name(delta("api".to_owned(), "web".to_owned())),
+                ServiceField::Name(delta(service_name("api"), service_name("web"))),
                 "name",
                 None,
                 (json!("api"), json!("web")),

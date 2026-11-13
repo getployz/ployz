@@ -1184,19 +1184,17 @@ fn affected(saved: &SavedEnvironmentIntent, picks: &BTreeSet<RowId>) -> BTreeSet
                     .iter()
                     .any(|variable| changed.contains(&(own.to_owned(), variable.key.clone())))
                 || service.volume_attachments.iter().any(|mount| {
-                    saved.volumes.iter().any(|volume| {
-                        volume.resource_id == mount.volume_resource_id
-                            && lineages.contains(volume.resource_lineage_id.as_str())
+                    saved.volume_of(mount).is_some_and(|volume| {
+                        lineages.contains(volume.resource_lineage_id.as_str())
                     })
                 })
                 || service.config_attachments.iter().any(|mount| {
-                    saved.configs.iter().any(|config| {
-                        config.resource_id == mount.config_resource_id
-                            && (lineages.contains(config.resource_lineage_id.as_str())
-                                || config
-                                    .files
-                                    .values()
-                                    .any(|file| reads(&changed, own, &file.content)))
+                    saved.config_of(mount).is_some_and(|config| {
+                        lineages.contains(config.resource_lineage_id.as_str())
+                            || config
+                                .files
+                                .values()
+                                .any(|file| reads(&changed, own, &file.content))
                     })
                 })
         })

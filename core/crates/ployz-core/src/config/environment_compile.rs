@@ -227,7 +227,7 @@ pub fn compile_environment_intent(
     let slugs = intent
         .services
         .iter()
-        .map(|s| (s.lineage_id.clone(), s.slug.clone()))
+        .map(|s| (s.lineage_id.clone(), s.slug.to_string()))
         .collect();
     let mut node_snapshots = Vec::new();
     let mut variable_producers = Vec::new();

@@ -264,7 +264,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
                     .services
                     .iter()
                     .filter(|service| references(&branch.working, service, lineage))
-                    .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
+                    .map(|service| service.slug.clone())
                     .collect(),
             }
         })
@@ -280,7 +280,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
                 .iter()
                 .find(|service| service.lineage_id == setup.lineage)?;
             Some(SetupCommand {
-                service: ServiceName::parse(service.slug.as_str()).ok()?,
+                service: service.slug.clone(),
                 command: setup.command.clone(),
             })
         })
@@ -365,9 +365,8 @@ fn parts_read<'a>(
         .iter()
         .flat_map(move |attachment| {
             intent
-                .configs
-                .iter()
-                .filter(move |config| config.resource_id == attachment.config_resource_id)
+                .config_of(attachment)
+                .into_iter()
                 .flat_map(|config| config.files.values())
                 .flat_map(|file| &file.content)
         });

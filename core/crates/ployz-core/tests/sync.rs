@@ -1782,7 +1782,7 @@ fn name_of_names_a_mount_by_its_volume() {
     let parent = intent(&parent());
     let at = |row: String| row.parse::<RowId>().unwrap();
     let (node, place) = name_of(&parent, &at(format!("{API}:mounts.{DATA}"))).unwrap();
-    assert!(matches!(node, NodeRef::Service(service) if service.slug == "api"));
+    assert!(matches!(node, NodeRef::Service(service) if service.slug.as_str() == "api"));
     assert_eq!(place, "mounts.data");
     let (node, place) = name_of(&parent, &at(format!("{DATA}:storage"))).unwrap();
     assert!(matches!(node, NodeRef::Volume(volume) if volume.name == "data"));

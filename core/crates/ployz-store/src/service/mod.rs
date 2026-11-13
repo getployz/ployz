@@ -158,7 +158,7 @@ pub(crate) fn insert_service(
         id: id.to_string(),
         // A new Service starts its own lineage; Branch copies keep it.
         lineage_id: id.to_string(),
-        slug: name.to_string(),
+        slug: name.clone(),
         config,
         variables: Vec::new(),
         volume_attachments: Vec::new(),
@@ -196,7 +196,7 @@ pub(crate) fn rename_service(
             crate::names::Name::Service(rename.name.as_str()),
             Some(&id),
         )?;
-        environment.service_mut(&rename.service)?.slug = rename.name.to_string();
+        environment.service_mut(&rename.service)?.slug = rename.name.clone();
         scope::save_working(tx, &mut environment, trusted)?;
     }
     let service = summary(environment.service(&rename.name)?)?;
@@ -217,7 +217,7 @@ pub(crate) fn remove_service(
     let mut environment = scope::lock(tx, who, &remove.environment)?;
     let node = environment.service(&remove.service)?;
     let service = summary(node)?;
-    let names = BTreeMap::from([(node.lineage_id.clone(), node.slug.clone())]);
+    let names = BTreeMap::from([(node.lineage_id.clone(), node.slug.to_string())]);
     environment
         .working
         .services
@@ -249,7 +249,7 @@ fn staged(changed: bool, name: &ServiceName) -> Vec<SettingPath> {
 pub(crate) fn summary(node: &SavedServiceIntent) -> Result<ServiceSummary, RpcError> {
     Ok(ServiceSummary {
         id: ServiceLineageId::parse(node.id.as_str()).map_err(|_| error::corrupt("Service ID"))?,
-        name: ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service name"))?,
+        name: node.slug.clone(),
         private_dns: node.config.private_dns.clone(),
     })
 }

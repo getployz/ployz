@@ -512,8 +512,7 @@ pub(crate) fn not_set(
         for variable in &service.variables {
             if variable.value == VariableValue::NotSet {
                 not_set.push(review::history::NotSetVariable {
-                    service: ServiceName::parse(&service.slug)
-                        .map_err(|_| error::corrupt("Service name"))?,
+                    service: service.slug.clone(),
                     key: variable.key.clone(),
                 });
             }
@@ -605,7 +604,7 @@ pub(crate) fn lineage_named(
         NodeName::Service(name) => intent
             .services
             .iter()
-            .find(|service| service.slug == name.as_str())
+            .find(|service| service.slug == *name)
             .map(|service| service.lineage_id.clone()),
         NodeName::Volume(name) => intent
             .volumes
@@ -630,45 +629,20 @@ pub(crate) fn lineage_named(
 
 fn names(intent: &SavedEnvironmentIntent) -> Vec<String> {
     intent
-        .services
-        .iter()
-        .map(|service| service.slug.clone())
-        .chain(
-            intent
-                .volumes
-                .iter()
-                .map(|volume| format!("volumes.{}", volume.name)),
-        )
-        .chain(
-            intent
-                .configs
-                .iter()
-                .map(|config| format!("configs.{}", config.name)),
-        )
+        .nodes()
+        .map(|node| match node.kind {
+            EnvironmentNodeType::Service => node.name.to_owned(),
+            EnvironmentNodeType::Volume => format!("volumes.{}", node.name),
+            EnvironmentNodeType::Config => format!("configs.{}", node.name),
+        })
         .collect()
 }
 
 /// The name of the node of lineage `lineage` in `intent`.
 pub(crate) fn name_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<String> {
     intent
-        .services
-        .iter()
-        .find(|service| service.lineage_id == lineage)
-        .map(|service| service.slug.clone())
-        .or_else(|| {
-            intent
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_lineage_id == lineage)
-                .map(|volume| volume.name.clone())
-        })
-        .or_else(|| {
-            intent
-                .configs
-                .iter()
-                .find(|config| config.resource_lineage_id == lineage)
-                .map(|config| config.name.to_string())
-        })
+        .node_by_lineage(lineage)
+        .map(|node| node.name.to_owned())
 }
 
 /// The node of lineage `lineage` in `intent`, by name.
@@ -677,8 +651,7 @@ pub(crate) fn node_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
         .services
         .iter()
         .find(|service| service.lineage_id == lineage)
-        .and_then(|service| ServiceName::parse(service.slug.as_str()).ok())
-        .map(NodeName::Service);
+        .map(|service| NodeName::Service(service.slug.clone()));
     service.or_else(|| {
         intent
             .volumes
@@ -709,20 +682,15 @@ fn holds_data(intent: &SavedEnvironmentIntent, lineage: &str) -> bool {
 }
 
 fn holds(intent: &SavedEnvironmentIntent, lineage: &str) -> bool {
-    name_of(intent, lineage).is_some()
+    intent.node_by_lineage(lineage).is_some()
 }
 
+/// The lineages of the Services and Volumes of `intent`: what a Branch copies.
 fn lineages(intent: &SavedEnvironmentIntent) -> Vec<String> {
     intent
-        .services
-        .iter()
-        .map(|service| service.lineage_id.clone())
-        .chain(
-            intent
-                .volumes
-                .iter()
-                .map(|volume| volume.resource_lineage_id.clone()),
-        )
+        .nodes()
+        .filter(|node| node.kind != EnvironmentNodeType::Config)
+        .map(|node| node.lineage.to_owned())
         .collect()
 }
 

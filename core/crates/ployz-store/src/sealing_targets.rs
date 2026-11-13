@@ -135,8 +135,7 @@ pub(crate) fn targets(
                 .iter()
                 .map(|service| {
                     Ok(SealingService {
-                        name: ServiceName::parse(service.slug.as_str())
-                            .map_err(|_| error::corrupt("Service name"))?,
+                        name: service.slug.clone(),
                         service: Uuid::parse_str(&service.id).ok(),
                     })
                 })

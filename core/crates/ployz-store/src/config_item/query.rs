@@ -217,8 +217,7 @@ fn mount_changes(
         let (before, after) = (dir(head), dir(working));
         if before != after {
             changes.push(ConfigMountChange {
-                service: ServiceName::parse(service.slug.as_str())
-                    .map_err(|_| error::corrupt("Service name"))?,
+                service: service.slug.clone(),
                 before,
                 after,
             });
@@ -239,8 +238,7 @@ fn mounts(working: &SavedEnvironmentIntent, config: &str) -> Result<Vec<ConfigMo
                 .filter(|mount| mount.config_resource_id == config)
                 .map(move |mount| {
                     Ok(ConfigMountAt {
-                        service: ServiceName::parse(service.slug.as_str())
-                            .map_err(|_| error::corrupt("Service name"))?,
+                        service: service.slug.clone(),
                         dir: mount.mount_dir.to_string(),
                     })
                 })

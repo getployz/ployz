@@ -28,7 +28,10 @@ fn name(name: &str) -> ServiceName {
 
 /// A store with Project `shop`, an image Service `web` and an empty Service `worker`.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_on(backend::open())
+}
+
+fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -55,6 +58,25 @@ fn shop() -> (ConfigStore, Actor) {
             .unwrap();
     }
     (store, who)
+}
+
+#[test]
+fn a_stored_service_whose_slug_is_not_a_service_name_is_an_unreadable_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    store.read(&who, &ServicesQuery::default()).unwrap();
+
+    backend::execute(
+        &url,
+        r#"UPDATE config_environment SET working = replace(working, '"slug":"web"', '"slug":"Web_App"')"#,
+    );
+    let refused = store.read(&who, &ServicesQuery::default()).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Internal);
+    assert_eq!(
+        refused.message,
+        "The Config Store holds an unreadable Working State"
+    );
 }
 
 fn rename(store: &ConfigStore, who: &Actor, from: &str, to: &str) -> Result<Written, RpcErrorCode> {

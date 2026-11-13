@@ -3276,7 +3276,7 @@ impl LegacyWorking {
         let variable = intent
             .services
             .iter_mut()
-            .find(|service| service.slug == "web")
+            .find(|service| service.slug.as_str() == "web")
             .unwrap()
             .variables
             .iter_mut()
@@ -3291,7 +3291,7 @@ impl LegacyWorking {
         self.intent()
             .services
             .into_iter()
-            .find(|service| service.slug == "web")
+            .find(|service| service.slug.as_str() == "web")
             .unwrap()
             .variables
             .into_iter()

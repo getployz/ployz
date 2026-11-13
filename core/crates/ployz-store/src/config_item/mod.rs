@@ -9,8 +9,9 @@ pub(crate) mod query;
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    ConfigAttachment, FileMode, SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent,
-    SavedServiceIntent, ValuePart, ValuePartOwner, parse_variable_template, render_variable_parts,
+    ConfigAttachment, EnvironmentNodeType, FileMode, SavedConfigFile, SavedConfigIntent,
+    SavedEnvironmentIntent, SavedServiceIntent, ValuePart, ValuePartOwner, parse_variable_template,
+    render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, ContainerPath, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -264,8 +265,7 @@ pub(crate) fn put_file(
                 .any(|mount| mount.config_resource_id == id)
         });
         for node in mounting {
-            let service =
-                ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            let service = node.slug.clone();
             if let Some(error) = collision(&service, node, configs)
                 .or_else(|| oversized(&service, node, configs, &names))
             {
@@ -328,16 +328,13 @@ pub(crate) fn delete_config(
     let names = environment.names();
     let config = summary(environment.config(&delete.config)?, &names)?;
     let mut staged = vec![SettingPath::config(&config.name)];
-    for service in &mut environment.working.services {
-        let before = service.config_attachments.len();
-        service
-            .config_attachments
-            .retain(|mount| mount.config_resource_id != config.id.as_str());
-        if service.config_attachments.len() != before {
-            let name =
-                ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+    let detached = environment
+        .working
+        .detach_resource(EnvironmentNodeType::Config, config.id.as_str());
+    for service in &environment.working.services {
+        if detached.contains(&service.lineage_id) {
             staged.push(SettingPath::at(
-                &name,
+                &service.slug,
                 Target::ConfigMount(config.name.clone().into()),
             ));
         }
@@ -684,7 +681,7 @@ pub(crate) fn names_in(intents: &[&SavedEnvironmentIntent]) -> BTreeMap<String, 
         .iter()
         .rev()
         .flat_map(|intent| &intent.services)
-        .map(|service| (service.lineage_id.clone(), service.slug.clone()))
+        .map(|service| (service.lineage_id.clone(), service.slug.to_string()))
         .collect()
 }
 

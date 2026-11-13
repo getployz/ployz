@@ -430,7 +430,7 @@ pub(crate) fn check_sources(
                 && found.has_branch(name)
         });
         if !vouched {
-            return Err(no_branch(repository, &service.slug));
+            return Err(no_branch(repository, service.slug.as_str()));
         }
     }
     Ok(())

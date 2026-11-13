@@ -227,13 +227,7 @@ fn recorded_changes(
             .services
             .iter()
             .find(|service| &service.id == service_id)
-            .and_then(|service| {
-                service
-                    .variables
-                    .iter()
-                    .find(|was| was.id == now.id)
-                    .or_else(|| service.variables.iter().find(|was| was.key == now.key))
-            })
+            .and_then(|service| service.variable_like(&now.id, &now.key))
         else {
             continue;
         };
@@ -442,7 +436,7 @@ fn deleted_since(
                 .services
                 .iter()
                 .find(|service| service.id == id)
-                .and_then(|service| named(service.slug.clone())),
+                .and_then(|service| named(service.slug.to_string())),
             "variable" => {
                 let variables = variables(intent, id)?;
                 variables

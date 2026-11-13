@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::{ConfigFileName, ConfigName, ContainerPath};
+use crate::{ConfigFileName, ConfigName, ContainerPath, ServiceName};
 
 use super::{
-    AWAITING_FINGERPRINT, AuthoredServiceConfig, ConfigError, Generator, SecretCiphertext,
-    ServiceGitBranch, ServiceSource, ValuePart, ValuePartOwner, parse_service_config,
+    AWAITING_FINGERPRINT, AuthoredServiceConfig, ConfigError, EnvironmentNodeType, Generator,
+    ReviewNodeIdentity, SecretCiphertext, ServiceGitBranch, ServiceSource, ValuePart,
+    ValuePartOwner, parse_service_config,
 };
 
 /// Complete authored Environment state; compiled artifacts are not accepted here.
@@ -48,13 +49,130 @@ impl SavedEnvironmentIntent {
     }
 }
 
+/// A Service, Volume or Config of a saved document, seen the same way: what it is, its
+/// id, its lineage and the name it answers to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SavedNode<'a> {
+    pub kind: EnvironmentNodeType,
+    pub id: &'a str,
+    pub lineage: &'a str,
+    pub name: &'a str,
+}
+
+impl SavedEnvironmentIntent {
+    /// Every Service, then every Volume, then every Config.
+    pub fn nodes(&self) -> impl Iterator<Item = SavedNode<'_>> {
+        let services = self.services.iter().map(|service| SavedNode {
+            kind: EnvironmentNodeType::Service,
+            id: service.id.as_str(),
+            lineage: service.lineage_id.as_str(),
+            name: service.slug.as_str(),
+        });
+        let volumes = self.volumes.iter().map(|volume| SavedNode {
+            kind: EnvironmentNodeType::Volume,
+            id: volume.resource_id.as_str(),
+            lineage: volume.resource_lineage_id.as_str(),
+            name: volume.name.as_str(),
+        });
+        let configs = self.configs.iter().map(|config| SavedNode {
+            kind: EnvironmentNodeType::Config,
+            id: config.resource_id.as_str(),
+            lineage: config.resource_lineage_id.as_str(),
+            name: config.name.as_str(),
+        });
+        services.chain(volumes).chain(configs)
+    }
+
+    /// The node of lineage `lineage`: a Service before a Volume before a Config.
+    #[must_use]
+    pub fn node_by_lineage(&self, lineage: &str) -> Option<SavedNode<'_>> {
+        self.nodes().find(|node| node.lineage == lineage)
+    }
+
+    /// The node `identity` names, by id.
+    #[must_use]
+    pub fn node_by_identity(&self, identity: &ReviewNodeIdentity) -> Option<SavedNode<'_>> {
+        self.nodes()
+            .find(|node| node.kind == identity.node_type && node.id == identity.id)
+    }
+
+    /// Add a copy of the node `identity` names in `source`, if it holds one.
+    pub fn push_node(&mut self, source: &Self, identity: &ReviewNodeIdentity) {
+        match identity.node_type {
+            EnvironmentNodeType::Service => self.services.extend(
+                source
+                    .services
+                    .iter()
+                    .find(|service| service.id == identity.id)
+                    .cloned(),
+            ),
+            EnvironmentNodeType::Volume => self.volumes.extend(
+                source
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == identity.id)
+                    .cloned(),
+            ),
+            EnvironmentNodeType::Config => self.configs.extend(
+                source
+                    .configs
+                    .iter()
+                    .find(|config| config.resource_id == identity.id)
+                    .cloned(),
+            ),
+        }
+    }
+
+    /// The Volume `attachment` mounts.
+    #[must_use]
+    pub fn volume_of(&self, attachment: &VolumeAttachment) -> Option<&SavedVolumeIntent> {
+        self.volumes
+            .iter()
+            .find(|volume| volume.resource_id == attachment.volume_resource_id)
+    }
+
+    /// The Config `attachment` mounts.
+    #[must_use]
+    pub fn config_of(&self, attachment: &ConfigAttachment) -> Option<&SavedConfigIntent> {
+        self.configs
+            .iter()
+            .find(|config| config.resource_id == attachment.config_resource_id)
+    }
+
+    /// Drop every attachment of the Volume or Config `resource_id` (a `Service` kind
+    /// holds none), returning the lineages of the Services that mounted it.
+    pub fn detach_resource(
+        &mut self,
+        kind: EnvironmentNodeType,
+        resource_id: &str,
+    ) -> BTreeSet<String> {
+        let mut detached = BTreeSet::new();
+        for service in &mut self.services {
+            let held = service.volume_attachments.len() + service.config_attachments.len();
+            match kind {
+                EnvironmentNodeType::Volume => service
+                    .volume_attachments
+                    .retain(|mount| mount.volume_resource_id != resource_id),
+                EnvironmentNodeType::Config => service
+                    .config_attachments
+                    .retain(|mount| mount.config_resource_id != resource_id),
+                EnvironmentNodeType::Service => {}
+            }
+            if service.volume_attachments.len() + service.config_attachments.len() != held {
+                detached.insert(service.lineage_id.clone());
+            }
+        }
+        detached
+    }
+}
+
 /// A Service owner with authored settings, variables, and resource relationships.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedServiceIntent {
     pub id: String,
     pub lineage_id: String,
-    pub slug: String,
+    pub slug: ServiceName,
     pub config: AuthoredServiceConfig,
     pub variables: Vec<SavedVariableIntent>,
     pub volume_attachments: Vec<VolumeAttachment>,
@@ -62,6 +180,27 @@ pub struct SavedServiceIntent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<ConfigAttachment>>")]
     pub config_attachments: Vec<ConfigAttachment>,
+}
+
+impl SavedServiceIntent {
+    /// The variable of this Service that `id` names, or else the one `key` names.
+    #[must_use]
+    pub fn variable_like(&self, id: &str, key: &str) -> Option<&SavedVariableIntent> {
+        self.variables
+            .iter()
+            .find(|variable| variable.id == id)
+            .or_else(|| self.variables.iter().find(|variable| variable.key == key))
+    }
+
+    /// The variable of this Service that `key` names, or else the one `id` names: for
+    /// a document whose ids may predate a rewrite that kept its keys.
+    #[must_use]
+    pub fn variable_like_key_first(&self, id: &str, key: &str) -> Option<&SavedVariableIntent> {
+        self.variables
+            .iter()
+            .find(|variable| variable.key == key)
+            .or_else(|| self.variables.iter().find(|variable| variable.id == id))
+    }
 }
 
 /// A Config owner reference and the Service directory where its files appear.

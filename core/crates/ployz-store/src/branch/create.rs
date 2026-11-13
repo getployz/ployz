@@ -93,7 +93,7 @@ pub(crate) fn create_branch(
             .into_iter()
             .filter(|setup| {
                 working.services.iter().any(|service| {
-                    service.slug == setup.service.as_str() && own.contains(&service.lineage_id)
+                    service.slug == setup.service && own.contains(&service.lineage_id)
                 })
             })
             .collect(),
@@ -107,7 +107,7 @@ pub(crate) fn create_branch(
             let service = working
                 .services
                 .iter()
-                .find(|service| service.slug == setup.service.as_str())
+                .find(|service| service.slug == setup.service)
                 .filter(|service| own.contains(&service.lineage_id))
                 .ok_or_else(|| {
                     error::invalid(
@@ -279,11 +279,7 @@ pub(crate) fn copy_node(
         .find(|service| copied.contains(&service.lineage_id))
     {
         for mount in &service.volume_attachments {
-            let volume = owner
-                .applied
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == mount.volume_resource_id);
+            let volume = owner.applied.volume_of(mount);
             if let Some(volume) = volume
                 && !holds(&branch.working, &volume.resource_lineage_id)
             {
@@ -291,11 +287,7 @@ pub(crate) fn copy_node(
             }
         }
         for mount in &service.config_attachments {
-            let config = owner
-                .applied
-                .configs
-                .iter()
-                .find(|config| config.resource_id == mount.config_resource_id);
+            let config = owner.applied.config_of(mount);
             if let Some(config) = config
                 && !holds(&branch.working, &config.resource_lineage_id)
             {

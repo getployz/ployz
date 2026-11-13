@@ -15,7 +15,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::error;
 use crate::variables::VariableKey;
 
 /// What to set instead of a value with Typed Addresses.
@@ -137,8 +136,7 @@ fn services(
 ) -> Result<Option<Vec<ServiceName>>, RpcError> {
     let mut services = Vec::new();
     for (_, other) in hosts {
-        let name =
-            ServiceName::parse(other.slug.as_str()).map_err(|_| error::corrupt("Service name"))?;
+        let name = other.slug.clone();
         if !services.contains(&name) {
             services.push(name);
         }

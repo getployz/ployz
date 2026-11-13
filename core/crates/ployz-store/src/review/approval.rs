@@ -214,12 +214,7 @@ pub(crate) fn detached<'a>(
         .filter(move |mount| {
             mounts(target).all(|kept| kept.volume_resource_id != mount.volume_resource_id)
         })
-        .filter_map(move |mount| {
-            target
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == mount.volume_resource_id)
-        })
+        .filter_map(move |mount| target.volume_of(mount))
 }
 
 /// What publishing `target` destroys of what is `running` in `environment`, whose
@@ -274,7 +269,11 @@ fn destructive_effects(
             .find(|service| service.id == deployed.id)
         else {
             let slug = &deployed.slug;
-            effects.insert(effect(DestructiveKind::RemovesService, slug, slug.clone()));
+            effects.insert(effect(
+                DestructiveKind::RemovesService,
+                slug.as_str(),
+                slug.to_string(),
+            ));
             continue;
         };
         let slug = &service.slug;
@@ -893,9 +892,9 @@ pub(crate) fn approve_retry(
         })
         .map(|service| DestructiveEffect {
             kind: DestructiveKind::RemovesService,
-            name: service.slug.clone(),
+            name: service.slug.to_string(),
             node: service.id.clone(),
-            path: service.slug.clone(),
+            path: service.slug.to_string(),
             lost_after: None,
         });
     let effects: BTreeSet<DestructiveEffect> = rollback

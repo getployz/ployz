@@ -5,7 +5,7 @@
 //! `{"secret": true}`: no read shows a secret.
 
 use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
-use ployz_core::{ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigName, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
@@ -101,8 +101,7 @@ pub(crate) fn environment(
     };
     let mut settings = Vec::new();
     for service in services {
-        let name = ServiceName::parse(service.slug.as_str())
-            .map_err(|_| crate::error::corrupt("Service name"))?;
+        let name = service.slug.clone();
         let mut row = |target: Target, value: Value, default: Value, apply: Apply| {
             if only.is_none_or(|only| *only == target) && !(whole && value == default) {
                 let (row, note) = match &target {
@@ -270,10 +269,7 @@ pub(crate) fn mounts(
         .volume_attachments
         .iter()
         .filter_map(|mount| {
-            let volume = intent
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == mount.volume_resource_id)?;
+            let volume = intent.volume_of(mount)?;
             Some((volume.name.clone(), mount.mount_path.clone()))
         })
         .collect();
@@ -289,10 +285,7 @@ fn config_mounts(
         .config_attachments
         .iter()
         .filter_map(|mount| {
-            let config = intent
-                .configs
-                .iter()
-                .find(|config| config.resource_id == mount.config_resource_id)?;
+            let config = intent.config_of(mount)?;
             Some((config.name.clone(), mount.mount_dir.to_string()))
         })
         .collect();

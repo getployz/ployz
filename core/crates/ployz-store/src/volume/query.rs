@@ -6,7 +6,7 @@
 use ployz_core::config::{
     ReviewLifecycleKind, SavedEnvironmentIntent, SavedVolumeIntent, VolumeKind,
 };
-use ployz_core::{Namespace, ProvisionedVolumeMaximumBytes, RpcError, ServiceName};
+use ployz_core::{Namespace, ProvisionedVolumeMaximumBytes, RpcError};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -261,8 +261,7 @@ fn mounts(working: &SavedEnvironmentIntent, volume: &str) -> Result<Vec<Mount>, 
                 .filter(|mount| mount.volume_resource_id == volume)
                 .map(move |mount| {
                     Ok(Mount {
-                        service: ServiceName::parse(service.slug.as_str())
-                            .map_err(|_| error::corrupt("Service name"))?,
+                        service: service.slug.clone(),
                         path: mount.mount_path.clone(),
                     })
                 })
