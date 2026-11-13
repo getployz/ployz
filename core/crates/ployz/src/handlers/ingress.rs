@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
 use crate::cli::{base, positional, switch};
-use crate::ingress::{DoorMachine, Doors, MachineDoors, checked_doors, use_doors};
+use crate::ingress::{Doors, MachineDoors, checked_doors, use_doors};
 use crate::ui::{self, Cell, Gaps, Table};
 
 /// The most a Cloudflare tunnel token holds on stdin. Cloudflare's run a few hundred bytes.
@@ -122,9 +122,8 @@ pub(crate) fn use_doors_on(root: &ArgMatches) -> Result<(), Error> {
                 ask_token,
             )
             .await?;
-            let addressed = observed.machines.clone();
             let changed = use_doors(client, observed, doors, &CancellationToken::new()).await?;
-            let gaps = gaps_of(&addressed, changed.failures);
+            let gaps = gaps_of(&changed.machines, changed.failures);
             let table = table(&changed.machines);
             ui::finish_fanout("machines", &changed.machines, &gaps, || {
                 if changed.machines.is_empty() && gaps.is_complete() {
@@ -190,14 +189,22 @@ fn gaps(observed: &Doors) -> Gaps {
     )
 }
 
-/// The gaps in a change, naming every ingress Server the command addressed: one whose
-/// answer was a failure has no row, and its warning still carries its name.
+/// The gaps in a change, naming each Server that answered with a row by its Server name.
+/// One that failed has no row, and its warning names it by its machine id: Servers may
+/// share a name, and the id is then the only handle on which one failed.
 fn gaps_of(
-    addressed: &[DoorMachine],
+    rows: &[MachineDoors],
     failures: Vec<ployz_core::MachineFailure<ployz_core::RpcError>>,
 ) -> Gaps {
-    Gaps::from_parts(failures, Vec::new())
-        .named(addressed.iter().map(|machine| (machine.id, &machine.name)))
+    let names = rows
+        .iter()
+        .filter_map(|row| {
+            ployz_core::MachineName::parse(&row.server)
+                .ok()
+                .map(|name| (row.machine, name))
+        })
+        .collect::<Vec<_>>();
+    Gaps::from_parts(failures, Vec::new()).named(names.iter().map(|(id, name)| (*id, name)))
 }
 
 fn read_token(stdin: impl Read) -> Result<String, Error> {
@@ -426,31 +433,40 @@ mod tests {
         );
     }
 
-    /// A change names every ingress Server it addressed by its Server name in a failure's
-    /// warning, one that answered with no row included; a Machine it never addressed is
-    /// named by its id.
+    fn row(seed: char, server: &str) -> MachineDoors {
+        MachineDoors {
+            machine: machine_id(seed),
+            server: server.to_owned(),
+            doors: vec!["public".to_owned()],
+        }
+    }
+
+    /// A change names a Server that failed and so has no row by its machine id, in the order
+    /// of its failures.
     #[test]
-    fn a_door_change_names_the_servers_it_addressed() {
-        let addressed = [door_machine('a'), door_machine('b')];
-        let gaps = gaps_of(&addressed, vec![silent('a'), silent('b'), silent('d')]);
+    fn a_door_change_names_a_server_without_a_row_by_its_id() {
+        let gaps = gaps_of(&[row('a', "machine-a")], vec![silent('b'), silent('d')]);
         assert_eq!(
-            gap_ids(&gaps),
-            (
-                vec![machine_id('a'), machine_id('b'), machine_id('d')],
-                Vec::new()
-            )
+            gaps.failure_warnings(),
+            vec![
+                format!("{} did not answer; its rows are missing.", "b".repeat(32)),
+                format!("{} did not answer; its rows are missing.", "d".repeat(32)),
+            ]
         );
-        assert!(
-            gaps.stopped_answering(&machine_id('a'))
-                .starts_with("machine-a ")
-        );
-        assert!(
-            gaps.stopped_answering(&machine_id('b'))
-                .starts_with("machine-b ")
-        );
-        assert!(
-            gaps.stopped_answering(&machine_id('d'))
-                .starts_with(&"d".repeat(32))
+        assert_eq!(gap_ids(&gaps).1, Vec::new());
+    }
+
+    /// Two Servers sharing a name stay told apart in a change's warnings: each that failed
+    /// is named by its id, never by the name they share.
+    #[test]
+    fn a_door_change_tells_servers_with_one_name_apart_by_id() {
+        let gaps = gaps_of(&[row('c', "duplicate")], vec![silent('b'), silent('a')]);
+        assert_eq!(
+            gaps.failure_warnings(),
+            vec![
+                format!("{} did not answer; its rows are missing.", "b".repeat(32)),
+                format!("{} did not answer; its rows are missing.", "a".repeat(32)),
+            ]
         );
     }
 }

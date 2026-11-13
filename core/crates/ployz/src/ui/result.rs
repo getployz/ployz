@@ -375,6 +375,15 @@ impl Gaps {
         }
     }
 
+    /// The first line of each failure's warning, in order, as [`Gaps::warn`] prints them.
+    #[cfg(test)]
+    pub(crate) fn failure_warnings(&self) -> Vec<String> {
+        self.failures
+            .iter()
+            .map(|failure| self.warning(failure).0)
+            .collect()
+    }
+
     /// The warning for `failure`, naming its Machine, and the line under it: the cause when
     /// the warning doesn't say what happened by itself, or a refusal's next step.
     fn warning(&self, failure: &MachineFailure<RpcError>) -> (String, Option<Under>) {
