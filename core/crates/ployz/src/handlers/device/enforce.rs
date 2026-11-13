@@ -178,9 +178,18 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         })?;
         let resumed = resumed(&included, &reach)?;
         if let Some(operation) = resumed {
-            ui::note(format!(
-                "Finishing activation {operation}, which some of these Servers already committed."
-            ));
+            ui::note(
+                if included
+                    .iter()
+                    .all(|server| committed_under(server, operation))
+                {
+                    format!("Every Server is already activated under {operation}.")
+                } else {
+                    format!(
+                        "Finishing activation {operation}, which some of these Servers already committed."
+                    )
+                },
+            );
         }
         let issued_at = Timestamp::now();
         let set = StartingSet {
@@ -197,7 +206,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         ui::note(set_summary(&reach, &set));
         for outcome in &outcomes {
             ui::warn(format!(
-                "{} is left out. Once the others activate it's no longer part of the Cluster: add it back with `ployz server add root@HOST --reset`, then approve its join.",
+                "{0} is left out. Once the others activate it's no longer part of the Cluster: add it back with `ployz server add root@HOST --reset --name {0}`.",
                 outcome.server
             ));
         }
@@ -214,6 +223,9 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
             } else {
                 deliver_over_mesh(&client, server.machine_id, &signed).await
             };
+            if delivered.is_ok() && !committed_under(server, set.operation) {
+                ui::note(format!("{name} restarts to activate."));
+            }
             match delivered {
                 Ok(()) => match settled(&client, server.machine_id, &name, set.operation).await {
                     Ok(report) => {
@@ -594,6 +606,18 @@ fn resumed(included: &[&Found], reach: &Reach) -> Result<Option<OperationId>, Er
     }
 }
 
+/// Whether `server` reported itself activated under `operation` before this run.
+fn committed_under(server: &Found, operation: OperationId) -> bool {
+    matches!(
+        &server.report,
+        Some(ActivationReport {
+            state: ActivationState::Activated,
+            operation: Some(committed),
+            ..
+        }) if *committed == operation
+    )
+}
+
 /// Where the recipient key comes from: a fresh one, or the one activated Servers already hold.
 enum Recipient<'a> {
     Fresh(RecipientSecret),
@@ -667,12 +691,12 @@ async fn deliver(
         .map(drop)
 }
 
-/// Wait for the Server to come back from its restart and report this activation committed.
 /// What a wait prints while a Server restarts to commit its activation, which it does on
-/// purpose, in place of the connectivity warning.
+/// purpose, in place of the connectivity warning. The note before it names the Server.
 const ACTIVATING: crate::setup_retry::Expected =
-    crate::setup_retry::Expected("Waiting for the Server to restart and activate…");
+    crate::setup_retry::Expected("Waiting for it to come back…");
 
+/// Wait for the Server to come back from its restart and report this activation committed.
 async fn settled(
     client: &Client,
     machine_id: MachineId,

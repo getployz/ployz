@@ -57,7 +57,7 @@ function blockerText(blocker: ActivationBlocker) {
     case "older":
       return `${list(blocker.servers)} ${plural(blocker.servers, "runs", "run")} a Ployz older than 0.4. \`${CLI}\` leaves ${plural(blocker.servers, "it", "them")} out.`;
     case "legacy-members":
-      return `${list(blocker.servers)} ${plural(blocker.servers, "lists", "list")} servers added while enforcement was off: ${list(blocker.members)}.`;
+      return `Servers added while enforcement was off: ${list(blocker.members)}.`;
     case "legacy-keys":
       return `Keys added while enforcement was off: ${list(blocker.keys.map((key) => key.code))}.`;
     case "partial":

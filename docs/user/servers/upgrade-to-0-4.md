@@ -66,16 +66,17 @@ Each server restarts once to activate. Your services keep running.
 ### Add back a server left out
 
 A server left out keeps running what it ran, but the activated servers no longer trust it. Add it
-again from your computer, over SSH:
+again from your approved device, over SSH, under its old name:
 
 ```sh
-ployz server add root@203.0.113.12 --reset
+ployz server add root@203.0.113.12 --reset --name web-2
 ```
 
 `--reset` wipes what the server ran, including its volumes, so move anything you need off it
-first. The server asks to join, and the command stops with the next step. Approve the join from
-an approved device with `ployz device approve --join <code>`, then run the same `ployz server add`
-again.
+first. `server add` installs this computer's Ployz on it, so a server left out for running 0.3
+comes back on 0.4. Your device approves the join itself. From a computer without an approved
+device, the command stops and names a code instead: approve it from an approved device with
+`ployz device approve --join <code>`, then run the same `ployz server add` again.
 
 ## What activation can't undo
 

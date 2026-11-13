@@ -317,6 +317,12 @@ fn a_rerun_finishes_the_activation_the_servers_committed_rather_than_starting_an
         resumed(&[&committed, &stopped], &reach).unwrap(),
         Some(first)
     );
+    assert!(committed_under(&committed, first));
+    assert!(
+        !committed_under(&stopped, first),
+        "only a Server that committed skips the restart"
+    );
+    assert!(!committed_under(&committed, OperationId::random()));
     assert_eq!(
         resumed(&[&found('1', "machine-1"), &stopped], &reach).unwrap(),
         None,
