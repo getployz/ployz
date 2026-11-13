@@ -1,10 +1,12 @@
 //! Replicated publication, subscriptions, and observer-relative reads.
 
 mod decode;
+pub(super) mod tombstone;
 use decode::{
     INCOMPLETE_JSON_DOCUMENT, actor_id, decode_container, decode_machine, decode_observations,
     decode_volume, id_and_json, is_incomplete_document, text,
 };
+use tombstone::Tombstone;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,7 +19,7 @@ use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
     IngressDoors, IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity,
-    QualifiedService, RecoverySeed, SealingPublicKey, forgotten_key,
+    QualifiedService, RecoverySeed, SealingPublicKey,
 };
 use serde_json::json;
 
@@ -143,13 +145,7 @@ impl MachinePublicationGuard<'_> {
         let row = RegisterRow::new(machine);
         self.store
             .api
-            .execute([
-                Statement::new(
-                    "DELETE FROM cluster WHERE key = 'forgotten-id:' || ?",
-                    [json!(row.0.id)],
-                ),
-                registration_upsert(&row)?,
-            ])
+            .execute([Tombstone::Id(row.0.id).clear(), registration_upsert(&row)?])
             .await?;
         Ok(row.0)
     }
@@ -290,13 +286,14 @@ impl MachinePublicationGuard<'_> {
 /// would let a Register write it.
 fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
     Ok(Statement::new(
-        "INSERT INTO machines (id, info) \
-         SELECT ?1, json_set(?2, '$.self_published', json('true')) \
-         WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-         OR (NOT EXISTS (SELECT 1 FROM cluster \
-                         WHERE key LIKE 'forgotten:%' AND value = ?1) \
-             AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
-         ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+        format!(
+            "INSERT INTO machines (id, info) \
+             SELECT ?1, json_set(?2, '$.self_published', json('true')) \
+             WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+             OR ({}) \
+             ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+            Tombstone::not_forgotten_sql("?1"),
+        ),
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
 }
@@ -326,15 +323,16 @@ impl RegisterRow {
 fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
     let RegisterRow(machine) = row;
     Ok(Statement::new(
-        "INSERT INTO machines (id, info) SELECT ?1, ?2 \
-         WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-         OR (NOT EXISTS (SELECT 1 FROM cluster \
-                         WHERE key LIKE 'forgotten:%' AND value = ?1) \
-             AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
-         ON CONFLICT (id) DO UPDATE SET info = excluded.info \
-         WHERE json_extract(machines.info, '$.self_published') IS NULL \
-            OR json_extract(machines.info, '$.public_key') \
-               IS NOT json_extract(excluded.info, '$.public_key')",
+        format!(
+            "INSERT INTO machines (id, info) SELECT ?1, ?2 \
+             WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+             OR ({}) \
+             ON CONFLICT (id) DO UPDATE SET info = excluded.info \
+             WHERE json_extract(machines.info, '$.self_published') IS NULL \
+                OR json_extract(machines.info, '$.public_key') \
+                   IS NOT json_extract(excluded.info, '$.public_key')",
+            Tombstone::not_forgotten_sql("?1"),
+        ),
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
 }
@@ -491,7 +489,7 @@ impl ReplicatedStore {
     /// it or the id its tombstone names is listed again, Forgotten when only the
     /// tombstone remains, NoAnswer when nothing mentions it.
     pub async fn forgotten(&self, identity: ManagementIdentity) -> Result<ForgottenAnswer, Error> {
-        let key = forgotten_key(&identity);
+        let key = Tombstone::Identity(identity).key();
         let query = self
             .api
             .query(Statement::new(
@@ -1869,23 +1867,7 @@ fn acme_written(counts: Vec<usize>) -> Result<AcmeWrite, Error> {
 /// The statements of a forget, in the order they run in one transaction: both tombstones,
 /// then the removal.
 fn forget_statements(machine_id: &MachineId) -> Vec<Statement> {
-    let identity_tombstone = Statement::new(
-        "INSERT INTO cluster (key, value) \
-         SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
-         FROM machines \
-         WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        [json!(machine_id)],
-    );
-    let id_tombstone = Statement::new(
-        "INSERT INTO cluster (key, value) \
-         SELECT 'forgotten-id:' || id, id \
-         FROM machines \
-         WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NULL \
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        [json!(machine_id)],
-    );
-    [identity_tombstone, id_tombstone]
+    Tombstone::forget(machine_id)
         .into_iter()
         .chain(removal(machine_id))
         .collect()
@@ -2061,8 +2043,11 @@ mod statement_tests {
     fn a_forget_sends_both_tombstone_inserts_before_the_removal() {
         let id = MachineId::parse("b".repeat(32)).unwrap();
         let sent = forget_statements(&id).iter().map(sent).collect::<Vec<_>>();
+        let [identity_tombstone, id_tombstone, removed @ ..] = sent.as_slice() else {
+            panic!("a forget sends two tombstones and a removal: {sent:?}");
+        };
         assert_eq!(
-            sent[..2],
+            [identity_tombstone.clone(), id_tombstone.clone()],
             [
                 json!({
                     "query": "INSERT INTO cluster (key, value) \
@@ -2083,7 +2068,7 @@ mod statement_tests {
             ]
         );
         assert_eq!(
-            sent[2..],
+            removed.to_vec(),
             removal(&id).iter().map(self::sent).collect::<Vec<_>>()
         );
     }

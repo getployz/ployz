@@ -3318,8 +3318,16 @@ async fn certificate_reads_name_an_incomplete_body_and_skip_what_will_not_decode
         state.keys().cloned().collect::<Vec<_>>(),
         vec![empty.clone(), refused.clone()]
     );
-    assert_eq!(state[&empty], super::CertificateRow::decode("{}").unwrap());
-    assert_eq!(state[&refused].last_error(), Some("policy refused"));
+    assert_eq!(
+        state.get(&empty),
+        Some(&super::CertificateRow::decode("{}").unwrap())
+    );
+    assert_eq!(
+        state
+            .get(&refused)
+            .and_then(super::CertificateRow::last_error),
+        Some("policy refused")
+    );
     task.abort();
 }
 
