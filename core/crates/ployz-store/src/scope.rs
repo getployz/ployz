@@ -780,18 +780,41 @@ pub(crate) fn save_working(
     environment: &mut Environment,
     trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
-    save_working_from(tx, environment, None, trusted)
+    save_working_from(tx, environment, Write::default(), trusted)
 }
 
-/// [`save_working`] for Working State copied or restored from `from`: what `from`
-/// already breaks is not new.
+/// What a write of Working State is, beyond the document: where it was copied or
+/// restored from, and the rule its Volumes' storage meets. The one entry runs the
+/// rest of the "refuse only what this adds" rules on every write.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Write<'a> {
+    /// What `from` already breaks is not new.
+    pub(crate) from: Option<&'a SavedEnvironmentIntent>,
+    /// `None` for an edit that leaves the Volumes' storage as it was; only a
+    /// document arriving wholesale and `volume set --size` change it.
+    pub(crate) storage: Option<crate::volume::StorageRule<'a>>,
+}
+
+impl<'a> Write<'a> {
+    /// A document made earlier coming back, whole: a restore, a History revert, a
+    /// Branch landing. `from` is where it came from, when what it already breaks is
+    /// not new.
+    pub(crate) const fn arriving(from: Option<&'a SavedEnvironmentIntent>) -> Self {
+        Self {
+            from,
+            storage: Some(crate::volume::StorageRule::Replay),
+        }
+    }
+}
+
+/// [`save_working`] for Working State copied or restored as `write` says.
 pub(crate) fn save_working_from(
     tx: &mut dyn Tx,
     environment: &mut Environment,
-    from: Option<&SavedEnvironmentIntent>,
+    write: Write<'_>,
     trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
-    validate_and_refresh_working_from(tx, environment, from, trusted)?;
+    validate_and_refresh_working_from(tx, environment, write, trusted)?;
     write_working(
         tx,
         Evidence::Caller(trusted),
@@ -954,10 +977,10 @@ impl ValidatedWorking {
 pub(crate) fn validated_working_from(
     tx: &mut dyn Tx,
     mut environment: Environment,
-    from: Option<&SavedEnvironmentIntent>,
+    write: Write<'_>,
     trusted: &crate::Trusted,
 ) -> Result<ValidatedWorking, RpcError> {
-    validate_and_refresh_working_from(tx, &mut environment, from, trusted)?;
+    validate_and_refresh_working_from(tx, &mut environment, write, trusted)?;
     environment.working = ployz_core::config::canonicalize_environment_intent(environment.working);
     Ok(ValidatedWorking { environment })
 }
@@ -965,9 +988,10 @@ pub(crate) fn validated_working_from(
 pub(crate) fn validate_and_refresh_working_from(
     tx: &mut dyn Tx,
     environment: &mut Environment,
-    from: Option<&SavedEnvironmentIntent>,
+    write: Write<'_>,
     trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
+    let from = write.from;
     // What is stored now is what this write replaces: the rules compare the two.
     let rows = tx.query(
         "SELECT working FROM config_environment WHERE id = ?1",
@@ -979,6 +1003,7 @@ pub(crate) fn validate_and_refresh_working_from(
         .intent(0, "Working State")?;
     // Every write of Working State, whole or not, comes through here.
     crate::variables::make_generated(&mut environment.working)?;
+    crate::names::refuse_new_taken(tx, environment, &before)?;
     crate::names::refuse_new_reserved(&before, &environment.working)?;
     crate::domain::refuse_new_shared_hostnames(
         tx,
@@ -996,6 +1021,14 @@ pub(crate) fn validate_and_refresh_working_from(
     )?;
     environment.working = working;
     environment.live = live;
+    if let Some(rule) = write.storage {
+        crate::volume::check_storage(
+            tx,
+            &environment.summary.id,
+            &environment.working.volumes,
+            rule,
+        )?;
+    }
     let read = crate::rules::removed_lineages(&environment.working, &environment.live);
     for service in from.into_iter().flat_map(|from| &from.services) {
         if read.contains(&service.lineage_id) {

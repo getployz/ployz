@@ -164,14 +164,15 @@ pub(crate) fn refuse_new_reserved(
     Ok(())
 }
 
-/// Refuse each name `target` gives a node that the node doesn't hold in
-/// `environment` now, when another node holds it.
+/// Refuse each name `environment`'s Working State gives a node that the node doesn't
+/// hold in `before`, the Working State it replaces, when another node holds it.
 pub(crate) fn refuse_new_taken(
     tx: &mut dyn Tx,
     environment: &Environment,
-    target: &SavedEnvironmentIntent,
+    before: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
-    let now = &environment.working;
+    let now = before;
+    let target = &environment.working;
     let mut claims: Vec<(&str, Name<'_>)> = Vec::new();
     for service in &target.services {
         let held = now.services.iter().find(|held| held.id == service.id);
@@ -223,21 +224,13 @@ pub(crate) fn refuse_new_taken(
     if claims.is_empty() {
         return Ok(());
     }
-    let target = Environment {
-        summary: environment.summary.clone(),
-        working: target.clone(),
-        live: environment.live.clone(),
-        removed: environment.removed.clone(),
-        inherited: environment.inherited.clone(),
-    };
     let mut others = None;
     for (owner, name) in claims {
-        refuse_taken_among(tx, &target, name, Some(owner), &mut others).map_err(
-            |error| match name {
+        refuse_taken_among(tx, environment, name, Some(owner), &mut others).map_err(|error| {
+            match name {
                 Name::Service(name)
                     if error.code == ployz_core::RpcErrorCode::Conflict
                         && !target
-                            .working
                             .services
                             .iter()
                             .any(|service| service.id != owner && service.slug == name) =>
@@ -257,8 +250,8 @@ pub(crate) fn refuse_new_taken(
                 | Name::Config(_)
                 | Name::Hostname(_)
                 | Name::Prefix(_) => error,
-            },
-        )?;
+            }
+        })?;
     }
     Ok(())
 }

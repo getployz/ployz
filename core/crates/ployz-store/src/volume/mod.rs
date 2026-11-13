@@ -252,13 +252,15 @@ pub(crate) fn set_storage(
     if changed {
         volume.storage = set.storage;
         let edited = volume.resource_id.clone();
-        check_storage(
+        scope::save_working_from(
             tx,
-            &environment.summary.id,
-            &environment.working.volumes,
-            StorageRule::Edit { volume: &edited },
+            &mut environment,
+            scope::Write {
+                from: None,
+                storage: Some(StorageRule::Edit { volume: &edited }),
+            },
+            trusted,
         )?;
-        scope::save_working(tx, &mut environment, trusted)?;
     }
     staged(environment, &set.volume, changed)
 }

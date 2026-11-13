@@ -2462,6 +2462,50 @@ fn history_refuses_a_hostname_another_environment_took_since() {
 }
 
 #[test]
+fn discard_refuses_a_hostname_another_environment_took_since() {
+    let (store, who) = shop();
+    route(
+        &store,
+        &who,
+        EnvironmentRef::default(),
+        "web",
+        "a.example.com",
+    );
+    publish(&store, &who, None).unwrap();
+    unroute(&store, &who, "a.example.com");
+    store
+        .write(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000030").unwrap(),
+                project: None,
+                name: ployz_store::EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let staging = || EnvironmentRef {
+        project: None,
+        environment: Some(ployz_store::EnvironmentName::parse("staging").unwrap()),
+    };
+    create_service(&store, &who, staging(), 31, "web");
+    route(&store, &who, staging(), "web", "a.example.com");
+    let error = store
+        .write(
+            &who,
+            &Discard {
+                target: Some(ployz_store::DiscardTarget::Saved),
+                ..Discard::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert_eq!(
+        error.message,
+        "Another Service already has a.example.com: web in shop/staging"
+    );
+}
+
+#[test]
 fn history_never_brings_back_plain_text_of_a_key_sealed_only_between_saves() {
     let (store, who) = shop();
     set(&store, &who, "web.env.TOKEN", json!("plain-value"));
