@@ -548,6 +548,13 @@ impl Lock {
                     .join(", ")
             )));
         }
+        // Recovery's own Docker CLIs are recorded like a Build's, so a recovery
+        // killed mid-removal leaves them for the next one to wait on. A mark
+        // that named no processes is rewritten first, naming this process.
+        if mark == crate::owner::Mark::Unnamed {
+            self.restamp()?;
+        }
+        let recorder = self.recorder();
         for endpoint in mark.endpoints() {
             // Builds refuse any other Docker, so a mark naming one was not written by them.
             if !endpoint.starts_with("unix://") {
@@ -564,7 +571,7 @@ impl Lock {
                 deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
                 cancellation: None,
                 progress: None,
-                recorder: None,
+                recorder: Some(&recorder),
             };
             // Ask Docker itself, not a Buildx configuration the attempt may not have shared.
             std::iter::once(format!("buildx_buildkit_{name}0"))
@@ -640,6 +647,23 @@ impl Lock {
     pub(crate) fn clear(&mut self) -> Result<(), BuildError> {
         let _writes = self.file.writes.lock().expect("mark writes never panic");
         self.file.file.set_len(0).map_err(lock_error)?;
+        self.file.file.sync_all().map_err(lock_error)
+    }
+
+    /// Replace the mark with one naming this process as its owner.
+    /// The mark is never empty meanwhile: the header overwrites it in place.
+    fn restamp(&mut self) -> Result<(), BuildError> {
+        use std::os::unix::fs::FileExt as _;
+        let _writes = self.file.writes.lock().expect("mark writes never panic");
+        let header = crate::owner::Mark::header().map_err(lock_error)?;
+        self.file
+            .file
+            .write_all_at(header.as_bytes(), 0)
+            .map_err(lock_error)?;
+        self.file
+            .file
+            .set_len(header.len() as u64)
+            .map_err(lock_error)?;
         self.file.file.sync_all().map_err(lock_error)
     }
 
@@ -1069,6 +1093,28 @@ esac
             "{calls}"
         );
         assert!(!calls.contains("unix:///var/run/docker.sock"), "{calls}");
+    }
+
+    #[test]
+    fn recovery_names_its_own_docker_clis_before_they_run() {
+        let slot = 11;
+        let (directory, docker) = quarantined_slot(slot, "termination unconfirmed\n");
+        let marker = directory.path().join(lock_file(slot));
+        crate::tests::executable(
+            &docker,
+            &format!(
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\ngrep -q \"^docker $$ \" '{}' && echo named >> '{}/seen' || echo unnamed >> '{}/seen'\n",
+                marker.display(),
+                directory.path().display(),
+                directory.path().display()
+            ),
+        );
+        drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
+        let seen = fs::read_to_string(directory.path().join("seen")).unwrap();
+        assert!(
+            !seen.is_empty() && seen.lines().all(|line| line == "named"),
+            "a recovery Docker CLI ran before the mark named it: {seen}"
+        );
     }
 
     #[test]

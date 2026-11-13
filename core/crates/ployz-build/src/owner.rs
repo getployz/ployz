@@ -27,7 +27,13 @@ impl Process {
     pub(crate) fn observe(pid: u32) -> std::io::Result<Option<Self>> {
         let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(stat) => stat,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            // A process exiting mid-read answers ESRCH.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) =>
+            {
+                return Ok(None);
+            }
             Err(error) => return Err(error),
         };
         // The command name may hold spaces and parentheses; fields follow its last `)`.
