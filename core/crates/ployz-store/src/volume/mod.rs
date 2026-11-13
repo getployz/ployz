@@ -9,8 +9,8 @@ pub(crate) mod size;
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    RestoredFrom, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, VolumeAttachment,
-    VolumeKind,
+    EnvironmentNodeType, RestoredFrom, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVolumeIntent, VolumeAttachment, VolumeKind,
 };
 use ployz_core::{ContainerPath, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -349,12 +349,11 @@ pub(crate) fn remove_volume(
     let mut environment = scope::lock(tx, who, &remove.environment)?;
     let volume = summary(environment.volume(&remove.volume)?)?;
     let mut staged = vec![SettingPath::volume(&volume.name)];
-    for service in &mut environment.working.services {
-        let before = service.volume_attachments.len();
-        service
-            .volume_attachments
-            .retain(|mount| mount.volume_resource_id != volume.id.as_str());
-        if service.volume_attachments.len() != before {
+    let detached = environment
+        .working
+        .detach_resource(EnvironmentNodeType::Volume, volume.id.as_str());
+    for service in &environment.working.services {
+        if detached.contains(&service.lineage_id) {
             let name =
                 ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
             staged.push(SettingPath::at(&name, Target::Mount(volume.name.clone())));
@@ -480,10 +479,7 @@ fn mounts(
 > {
     intent.services.iter().flat_map(move |node| {
         node.volume_attachments.iter().filter_map(move |mount| {
-            let volume = intent
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == mount.volume_resource_id)?;
+            let volume = intent.volume_of(mount)?;
             let key = (
                 node.lineage_id.clone(),
                 volume.resource_lineage_id.clone(),
@@ -550,9 +546,7 @@ fn shared_path(
         })
         .find_map(|held| {
             working
-                .volumes
-                .iter()
-                .find(|other| other.resource_id == held.volume_resource_id)
+                .volume_of(held)
                 .map(|other| format!("Volume {}", other.name))
         });
     let same_config = node
@@ -561,9 +555,7 @@ fn shared_path(
         .filter(|held| held.mount_dir.as_str() == at)
         .find_map(|held| {
             working
-                .configs
-                .iter()
-                .find(|config| config.resource_id == held.config_resource_id)
+                .config_of(held)
                 .map(|config| format!("Config {}", config.name))
         });
     let what = same_volume.or(same_config)?;

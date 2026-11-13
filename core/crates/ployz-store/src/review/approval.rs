@@ -214,12 +214,7 @@ pub(crate) fn detached<'a>(
         .filter(move |mount| {
             mounts(target).all(|kept| kept.volume_resource_id != mount.volume_resource_id)
         })
-        .filter_map(move |mount| {
-            target
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == mount.volume_resource_id)
-        })
+        .filter_map(move |mount| target.volume_of(mount))
 }
 
 /// What publishing `target` destroys of what is `running` in `environment`, whose

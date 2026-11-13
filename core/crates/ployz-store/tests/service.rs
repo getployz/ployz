@@ -10,11 +10,13 @@ use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Change, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService,
-    DiffQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, RemoveService, RenameProject, RenameService, ServiceLineageId, ServiceQuery,
-    ServicesQuery, SetDefaultEnvironment, SettingPath, SourceKind, Written,
+    DiffQuery, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef,
+    HistoryQuery, OrganizationId, ProjectId, ProjectName, Publish, Remove, RemoveService,
+    RenameProject, RenameService, ServiceLineageId, ServiceQuery, ServicesQuery,
+    SetDefaultEnvironment, SettingPath, SourceKind, Written,
 };
 use serde_json::json;
+use std::collections::BTreeMap;
 
 mod backend;
 
@@ -28,7 +30,10 @@ fn name(name: &str) -> ServiceName {
 
 /// A store with Project `shop`, an image Service `web` and an empty Service `worker`.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_on(backend::open())
+}
+
+fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -55,6 +60,65 @@ fn shop() -> (ConfigStore, Actor) {
             .unwrap();
     }
     (store, who)
+}
+
+/// A published `shop` whose Service `web` is stored under `slug` in `document`, the
+/// Working State or the Saved State: a slug an older Store may have written.
+fn shop_storing(slug: &str, document: &str) -> (tempfile::TempDir, ConfigStore, Actor) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    store.write(&who, &Publish::default()).unwrap();
+    let (table, column) = match document {
+        "working" => ("config_environment", "working"),
+        _ => ("config_saved", "intent"),
+    };
+    backend::execute(
+        &url,
+        &format!(
+            r#"UPDATE {table} SET {column} = replace({column}, '"slug":"web"', '"slug":"{slug}"')"#
+        ),
+    );
+    (dir, store, who)
+}
+
+#[test]
+fn a_stored_service_whose_slug_is_not_a_service_name_blocks_neither_removal_nor_repair() {
+    let worker = EnvironmentQuery {
+        path: Some(SettingPath::parse("worker").unwrap()),
+        ..EnvironmentQuery::default()
+    };
+    let remove = Remove {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: None,
+        version: None,
+        accept_volume_loss: BTreeMap::default(),
+        every_copy: BTreeMap::default(),
+        teardown: None,
+    };
+    for document in ["working", "saved"] {
+        for slug in ["Web_App", "web-", "Web"] {
+            let (_dir, store, who) = shop_storing(slug, document);
+            store.read(&who, &worker).unwrap();
+            store.read(&who, &DiffQuery::default()).unwrap();
+            store.read(&who, &HistoryQuery::default()).unwrap();
+            store.write(&who, &Discard::default()).unwrap();
+
+            let (_dir, store, who) = shop_storing(slug, document);
+            store.write(&who, &remove).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_stored_service_whose_slug_is_not_a_service_name_is_refused_where_its_name_is_needed() {
+    let (_dir, store, who) = shop_storing("Web_App", "working");
+    let refused = store.read(&who, &ServicesQuery::default()).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Internal);
+    assert_eq!(
+        refused.message,
+        "The Config Store holds an unreadable Service name"
+    );
 }
 
 fn rename(store: &ConfigStore, who: &Actor, from: &str, to: &str) -> Result<Written, RpcErrorCode> {

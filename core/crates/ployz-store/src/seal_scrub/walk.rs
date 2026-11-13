@@ -10,9 +10,9 @@ use ployz_core::config::{Cell, SavedEnvironmentIntent, SealedCell};
 
 use ployz_core::config::At;
 
+use super::{empty, ledger};
 use crate::branch::{document, json_of, row_id, rows};
 use crate::error;
-use crate::review;
 use crate::storage::Tx;
 
 /// What a Sync's Undo puts back for the receiver's own value sealed since.
@@ -26,7 +26,7 @@ const NOT_SET: SealedCell = SealedCell::Cell(Cell::SecretWithoutValue);
 /// a base another writer moved since stays as that writer left it, for the next Save
 /// to empty.
 pub(crate) fn scrub_bases(tx: &mut dyn Tx, environment: &str) -> Result<(), RpcError> {
-    let rows = review::sealed::sealed_rows(tx, environment)?;
+    let rows = ledger::sealed_rows(tx, environment)?;
     empty_in_bases(tx, environment, &rows)
 }
 
@@ -41,7 +41,7 @@ pub(crate) fn empty_in_bases(
     }
     for read in rows::made_with_around(tx, environment)? {
         let mut made_with = read.intent.clone();
-        if review::sealed::empty_plain_in(&mut made_with, rows) {
+        if empty::empty_plain_in(&mut made_with, rows) {
             read.replace(tx, &made_with)?;
         }
     }
@@ -58,7 +58,7 @@ pub(crate) fn empty_in_bases(
             continue;
         }
         let mut prior: Cell = row.json(4, "Sync")?;
-        if review::sealed::empty_plain_cell(&mut prior) {
+        if empty::empty_plain_cell(&mut prior) {
             tx.execute(
                 "UPDATE config_sync_arrival SET prior = ?5 \
                  WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
@@ -93,10 +93,8 @@ pub(crate) fn empty_in_bases(
             .optional_text(5)?
             .map(|source| serde_json::from_str(source).map_err(|_| error::corrupt("Sync")))
             .transpose()?;
-        let emptied_value = review::sealed::empty_plain_cell(&mut value);
-        let emptied_source = source
-            .as_mut()
-            .is_some_and(review::sealed::empty_plain_cell);
+        let emptied_value = empty::empty_plain_cell(&mut value);
+        let emptied_source = source.as_mut().is_some_and(empty::empty_plain_cell);
         if emptied_value || emptied_source {
             tx.execute(
                 "UPDATE config_sync_arrival SET value = ?5, source = ?6 \
@@ -141,7 +139,7 @@ pub(crate) fn empty_in_bases(
             .iter()
             .find(|service| service.lineage_id == lineage)
             .and_then(|service| service.variables.iter().find(|v| v.key == key))
-            .is_some_and(|variable| !review::sealed::sealed(&variable.value));
+            .is_some_and(|variable| !ledger::sealed(&variable.value));
         if plain_now || !rows.contains(&(lineage.to_owned(), key)) {
             continue;
         }
@@ -169,7 +167,7 @@ pub(crate) fn empty_in_bases(
         &[environment.into()],
     )? {
         let mut base = row.intent(2, "Sync base")?;
-        if review::sealed::empty_plain_in(&mut base, rows) {
+        if empty::empty_plain_in(&mut base, rows) {
             tx.execute(
                 "UPDATE config_sync_base SET base = ?3 \
                  WHERE environment_id = ?1 AND other_id = ?2 AND base = ?4",
@@ -240,7 +238,7 @@ pub(crate) fn held_by_sealer(
     tx: &mut dyn Tx,
     environment: &str,
     rows: &BTreeSet<(String, String)>,
-) -> Result<review::sealed::Held, RpcError> {
+) -> Result<empty::Held, RpcError> {
     held(tx, environment, rows, None, Took::Sealer)
 }
 
@@ -254,7 +252,7 @@ pub(super) fn held(
     rows: &BTreeSet<(String, String)>,
     before: Option<&SavedEnvironmentIntent>,
     took: Took,
-) -> Result<review::sealed::Held, RpcError> {
+) -> Result<empty::Held, RpcError> {
     // A row it holds plain now was added again since: the seal was another
     // variable's, whose copies History alone reads as sealed.
     let working = tx
@@ -275,23 +273,23 @@ pub(super) fn held(
                 .flat_map(|service| &service.variables)
                 .filter(|variable| variable.key == *key);
             match took {
-                Took::Sealer => !now.any(|variable| !review::sealed::sealed(&variable.value)),
-                Took::Seal => now.any(|variable| review::sealed::sealed(&variable.value)),
+                Took::Sealer => !now.any(|variable| !ledger::sealed(&variable.value)),
+                Took::Seal => now.any(|variable| ledger::sealed(&variable.value)),
             }
         })
         .cloned()
         .collect();
     let rows = &rows;
-    let mut held = review::sealed::Held::new();
+    let mut held = empty::Held::new();
     if let Some(before) = before {
-        review::sealed::hold(&mut held, before, rows);
+        empty::hold(&mut held, before, rows);
     }
     // Only what it held itself: what it and its Branches were made with, and
     // what it shares with its Parent or a Branch, which starts as what the Branch
     // was made with and moves only by what lands. A Sync base with any other
     // Environment can start as that one's value.
     for read in rows::made_with_around(tx, environment)? {
-        review::sealed::hold(&mut held, &read.intent, rows);
+        empty::hold(&mut held, &read.intent, rows);
     }
     for row in tx.query(
         "SELECT b.base FROM config_sync_base b JOIN config_environment_branch e \
@@ -300,17 +298,13 @@ pub(super) fn held(
          WHERE b.environment_id = ?1 OR b.other_id = ?1",
         &[environment.into()],
     )? {
-        review::sealed::hold(&mut held, &row.intent(0, "Sync base")?, rows);
+        empty::hold(&mut held, &row.intent(0, "Sync base")?, rows);
     }
     Ok(held)
 }
 
 /// [`empty_sealed_below`] by the fingerprints in `held`.
-fn empty_below(
-    tx: &mut dyn Tx,
-    below: &[String],
-    held: &review::sealed::Held,
-) -> Result<(), RpcError> {
+fn empty_below(tx: &mut dyn Tx, below: &[String], held: &empty::Held) -> Result<(), RpcError> {
     if held.is_empty() {
         return Ok(());
     }
@@ -318,7 +312,7 @@ fn empty_below(
         let branch = branch.as_str();
         if let Some(read) = rows::made_with_of(tx, branch)? {
             let mut made_with = read.intent.clone();
-            if review::sealed::empty_held_in(&mut made_with, held) {
+            if empty::empty_held_in(&mut made_with, held) {
                 read.replace(tx, &made_with)?;
             }
         }
@@ -346,7 +340,7 @@ fn empty_below(
             let (mut value, mut source, mut prior) = (cell(4)?, cell(5)?, cell(6)?);
             let mut emptied = false;
             for cell in [&mut value, &mut source, &mut prior].into_iter().flatten() {
-                emptied |= review::sealed::empty_held_cell(cell, fingerprints);
+                emptied |= empty::empty_held_cell(cell, fingerprints);
             }
             if emptied {
                 tx.execute(
@@ -378,7 +372,7 @@ fn empty_below(
             &[branch.into()],
         )? {
             let mut base = row.intent(2, "Sync base")?;
-            if review::sealed::empty_held_in(&mut base, held) {
+            if empty::empty_held_in(&mut base, held) {
                 tx.execute(
                     "UPDATE config_sync_base SET base = ?3 \
                      WHERE environment_id = ?1 AND other_id = ?2 AND base = ?4",

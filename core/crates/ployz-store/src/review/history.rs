@@ -227,13 +227,7 @@ fn recorded_changes(
             .services
             .iter()
             .find(|service| &service.id == service_id)
-            .and_then(|service| {
-                service
-                    .variables
-                    .iter()
-                    .find(|was| was.id == now.id)
-                    .or_else(|| service.variables.iter().find(|was| was.key == now.key))
-            })
+            .and_then(|service| service.variable_like(&now.id, &now.key))
         else {
             continue;
         };

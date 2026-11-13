@@ -472,6 +472,28 @@ pub(crate) fn remove(
 /// Put back in `into`, whose lock the caller holds, what `proposal` still owns there,
 /// rewind the pair base, and forget the proposal. Refused when another node uses a
 /// node it brought, or a row of one was edited since.
+/// The name of the proposal that holds `row` in `environment`, if one does.
+fn holder_of(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    row: &RowId,
+) -> Result<Option<String>, RpcError> {
+    let holder = tx.query(
+        "SELECT p.source_name FROM config_sync_arrival a \
+         JOIN config_proposal p ON p.id = a.proposal_id \
+         WHERE a.environment_id = ?1 AND a.lineage = ?2 AND a.at = ?3",
+        &[
+            environment.as_str().into(),
+            row.lineage().into(),
+            row.at().to_string().as_str().into(),
+        ],
+    )?;
+    holder
+        .first()
+        .map(|holder| holder.text(0).map(str::to_owned))
+        .transpose()
+}
+
 fn take_out(
     tx: &mut dyn Tx,
     into: &mut Environment,
@@ -493,18 +515,8 @@ fn take_out(
         };
         let node_name = label(node).map_or_else(|| node.to_string(), |n| n.node.to_string());
         let row = label(&dependent).map_or_else(|| dependent.to_string(), |n| n.to_string());
-        let holder = tx.query(
-            "SELECT p.source_name FROM config_sync_arrival a \
-             JOIN config_proposal p ON p.id = a.proposal_id \
-             WHERE a.environment_id = ?1 AND a.lineage = ?2 AND a.at = ?3",
-            &[
-                id.as_str().into(),
-                dependent.lineage().into(),
-                dependent.at().to_string().as_str().into(),
-            ],
-        )?;
-        let then = match holder.first() {
-            Some(holder) => format!("Remove {} first", holder.text(0)?),
+        let then = match holder_of(tx, &id, &dependent)? {
+            Some(holder) => format!("Remove {holder} first"),
             None => format!("change {row} first"),
         };
         return Err(error::conflict(
@@ -583,17 +595,7 @@ fn take_out(
                 |n| (n.node.to_string(), n.name),
             );
             let edited = at.map_or_else(|| node.clone(), |at| format!("{node}'s {at}"));
-            let holder = tx.query(
-                "SELECT p.source_name FROM config_sync_arrival a \
-                 JOIN config_proposal p ON p.id = a.proposal_id \
-                 WHERE a.environment_id = ?1 AND a.lineage = ?2 AND a.at = ?3",
-                &[
-                    id.as_str().into(),
-                    row.lineage().into(),
-                    row.at().to_string().as_str().into(),
-                ],
-            )?;
-            let message = match holder.first().map(|row| row.text(0)).transpose()? {
+            let message = match holder_of(tx, &id, &row)? {
                 Some(holder) => {
                     format!(
                         "{edited} is included with {holder}: Remove {holder} first, or keep {source}"

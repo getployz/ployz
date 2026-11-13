@@ -962,11 +962,7 @@ fn value_changes(
             continue;
         };
         for variable in &service.variables {
-            let before = was
-                .variables
-                .iter()
-                .find(|was| was.id == variable.id)
-                .or_else(|| was.variables.iter().find(|was| was.key == variable.key));
+            let before = was.variable_like(&variable.id, &variable.key);
             if before.is_some_and(|before| {
                 !before.value.holds_same(&variable.value)
                     || before.value.stored_fingerprint() != variable.value.stored_fingerprint()

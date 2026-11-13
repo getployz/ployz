@@ -1,8 +1,8 @@
 use super::history::NotSetVariable;
 use super::publish::DiscardTarget;
-use super::sealed::{SealLedger, sealed};
 use super::{NodeChange, Review};
 use crate::scope::{Environment, EnvironmentSummary};
+use crate::seal_scrub::ledger::{SealLedger, sealed};
 use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, shown};
 use crate::storage::Tx;
 use crate::trusted::Evidence;
@@ -2141,28 +2141,8 @@ fn node_info(
 ) -> Result<(String, String), RpcError> {
     [after, before]
         .into_iter()
-        .find_map(|intent| match node.node_type {
-            EnvironmentNodeType::Service => intent
-                .services
-                .iter()
-                .find(|owner| owner.id == node.id)
-                .map(|owner| (owner.slug.clone(), owner.lineage_id.clone())),
-            EnvironmentNodeType::Volume => intent
-                .volumes
-                .iter()
-                .find(|owner| owner.resource_id == node.id)
-                .map(|owner| (owner.name.clone(), owner.resource_lineage_id.clone())),
-            EnvironmentNodeType::Config => intent
-                .configs
-                .iter()
-                .find(|owner| owner.resource_id == node.id)
-                .map(|owner| {
-                    (
-                        owner.name.as_str().to_owned(),
-                        owner.resource_lineage_id.clone(),
-                    )
-                }),
-        })
+        .find_map(|intent| intent.node_by_identity(node))
+        .map(|found| (found.name.to_owned(), found.lineage.to_owned()))
         .ok_or_else(|| error::corrupt("Authored owner"))
 }
 /// `recorded` lists variables, as service id and key, shown changed in value even
@@ -2339,13 +2319,8 @@ fn keep_sealed(
             .iter()
             .find(|current| current.id == service.id);
         for variable in &mut service.variables {
-            let now = current.and_then(|current| {
-                current
-                    .variables
-                    .iter()
-                    .find(|now| now.key == variable.key)
-                    .or_else(|| current.variables.iter().find(|now| now.id == variable.id))
-            });
+            let now = current
+                .and_then(|current| current.variable_like_key_first(&variable.id, &variable.key));
             match now {
                 Some(now) if sealed(&now.value) || sealed(&variable.value) => {
                     variable.id.clone_from(&now.id);
@@ -2450,11 +2425,11 @@ pub(super) fn prepare_discard(
         let node = resolve_node(path, environment, &baseline)?;
         if target == DiscardTarget::Head
             && (path.target().is_some() || path.node_field().is_some())
-            && !has_node(&baseline, &node)
+            && baseline.node_by_identity(&node).is_none()
         {
             let mut introduced = super::introductions(tx, environment)?;
             since.unset(tx, &mut introduced)?;
-            copy_node(&mut baseline, &introduced, &node);
+            baseline.push_node(&introduced, &node);
         }
         let plan = if let Some(plan) =
             Plan::variable_selection(path.target(), &node, &baseline, &environment.working)
@@ -2578,50 +2553,6 @@ fn row_baseline(path: &SettingPath, environment: &Environment, reviewed: &Review
     }
 }
 
-fn has_node(intent: &SavedEnvironmentIntent, node: &ReviewNodeIdentity) -> bool {
-    match node.node_type {
-        EnvironmentNodeType::Service => intent.services.iter().any(|owner| owner.id == node.id),
-        EnvironmentNodeType::Volume => intent
-            .volumes
-            .iter()
-            .any(|owner| owner.resource_id == node.id),
-        EnvironmentNodeType::Config => intent
-            .configs
-            .iter()
-            .any(|owner| owner.resource_id == node.id),
-    }
-}
-fn copy_node(
-    target: &mut SavedEnvironmentIntent,
-    source: &SavedEnvironmentIntent,
-    node: &ReviewNodeIdentity,
-) {
-    match node.node_type {
-        EnvironmentNodeType::Service => {
-            if let Some(owner) = source.services.iter().find(|owner| owner.id == node.id) {
-                target.services.push(owner.clone());
-            }
-        }
-        EnvironmentNodeType::Volume => {
-            if let Some(owner) = source
-                .volumes
-                .iter()
-                .find(|owner| owner.resource_id == node.id)
-            {
-                target.volumes.push(owner.clone());
-            }
-        }
-        EnvironmentNodeType::Config => {
-            if let Some(owner) = source
-                .configs
-                .iter()
-                .find(|owner| owner.resource_id == node.id)
-            {
-                target.configs.push(owner.clone());
-            }
-        }
-    }
-}
 fn resolve_node(
     path: &SettingPath,
     environment: &Environment,

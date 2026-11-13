@@ -270,10 +270,7 @@ pub(crate) fn mounts(
         .volume_attachments
         .iter()
         .filter_map(|mount| {
-            let volume = intent
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == mount.volume_resource_id)?;
+            let volume = intent.volume_of(mount)?;
             Some((volume.name.clone(), mount.mount_path.clone()))
         })
         .collect();
@@ -289,10 +286,7 @@ fn config_mounts(
         .config_attachments
         .iter()
         .filter_map(|mount| {
-            let config = intent
-                .configs
-                .iter()
-                .find(|config| config.resource_id == mount.config_resource_id)?;
+            let config = intent.config_of(mount)?;
             Some((config.name.clone(), mount.mount_dir.to_string()))
         })
         .collect();

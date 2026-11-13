@@ -365,9 +365,8 @@ fn parts_read<'a>(
         .iter()
         .flat_map(move |attachment| {
             intent
-                .configs
-                .iter()
-                .filter(move |config| config.resource_id == attachment.config_resource_id)
+                .config_of(attachment)
+                .into_iter()
                 .flat_map(|config| config.files.values())
                 .flat_map(|file| &file.content)
         });

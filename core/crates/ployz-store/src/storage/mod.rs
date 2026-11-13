@@ -16,6 +16,7 @@ use ployz_core::RpcError;
 
 use crate::error;
 use crate::followup::FollowUp;
+use crate::seal_scrub::ledger::SealLedger;
 
 /// Migrations, applied once, in order: each a batch of SQL or a step in Rust.
 const MIGRATIONS: &[(&str, Step)] = &[
@@ -79,7 +80,7 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0015_sealed_variable",
         Step::Rust(|tx, _| {
             tx.batch(include_str!("migrations/0015_sealed_variable.sql"))?;
-            crate::review::sealed::SealLedger::record_working(tx).map(|()| None)
+            SealLedger::record_working(tx).map(|()| None)
         }),
     ),
     (
@@ -177,7 +178,7 @@ const MIGRATIONS: &[(&str, Step)] = &[
     ),
     (
         "0033_record_saved_seals",
-        Step::Rust(|tx, _| crate::review::sealed::SealLedger::record_saved(tx).map(|()| None)),
+        Step::Rust(|tx, _| SealLedger::record_saved(tx).map(|()| None)),
     ),
     (
         // Each Deployment an older Store took out of flight without stamping its end.
@@ -267,7 +268,7 @@ const MIGRATIONS: &[(&str, Step)] = &[
         // Seals a Store from before 0033 saved after 0033 ran, during that rolling
         // deploy: a review reads the ledger alone from here on.
         "0038_record_late_saved_seals",
-        Step::Rust(|tx, _| crate::review::sealed::SealLedger::record_saved(tx).map(|()| None)),
+        Step::Rust(|tx, _| SealLedger::record_saved(tx).map(|()| None)),
     ),
     (
         // Each pull request's phase, from the facts, merge, landing and standing a

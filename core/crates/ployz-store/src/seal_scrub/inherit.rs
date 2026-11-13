@@ -7,6 +7,7 @@ use ployz_core::RpcError;
 use ployz_core::config::{Cell, SavedEnvironmentIntent, SavedVariableIntent, VariableValue};
 use serde_json::Value;
 
+use super::ledger;
 use super::walk::{Took, below, held};
 use ployz_core::config::{At, RowId};
 
@@ -14,7 +15,6 @@ use crate::Actor;
 use crate::branch::{self, arrivals, base_of, marked, row, rows, share};
 use crate::error;
 use crate::id::EnvironmentId;
-use crate::review;
 use crate::scope::{self, Environment};
 use crate::storage::{self, Tx};
 use crate::trusted::Evidence;
@@ -132,7 +132,7 @@ fn inherited(
     }
     let Some(fingerprint) = variable(&mut branch.working, lineage, key)
         .filter(|variable| {
-            !review::sealed::sealed(&variable.value)
+            !ledger::sealed(&variable.value)
                 && fingerprints.contains(variable.value.stored_fingerprint())
         })
         .map(|variable| variable.value.stored_fingerprint().to_owned())
