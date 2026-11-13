@@ -75,6 +75,8 @@ use ployz_decide::github_build::{
 };
 use stateright::{Model, Property};
 
+use crate::harness::{self, everywhere};
+
 /// The most looks the walk takes (`for (let check = 0; ; check += 1)`,
 /// dashboard/src/modules/config-store/store-deployment.inngest.ts:155). Check 0 is the start
 /// limit, and check 1 the later look that ends a run the start limit waited for: with one
@@ -727,20 +729,8 @@ struct Broken {
     start_leaves_held_run: bool,
 }
 
-/// Which model a `COVERAGE` row is reached on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reach {
-    Both,
-    /// Only with `start_limit_reads_the_grant`, the start limit before it passed its look.
-    TimedOut,
-}
-
 /// One `sometimes`: a branch the code handles, read from the state that took it.
-struct Coverage {
-    name: &'static str,
-    reach: Reach,
-    reached: fn(&BuildHandoff, &State) -> bool,
-}
+type Coverage = harness::Coverage<BuildHandoff>;
 
 fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
@@ -806,28 +796,33 @@ const COVERAGE: &[Coverage] = &[
     // The walk's steps (dashboard/src/modules/config-store/store-deployment.inngest.ts:151-167).
     Coverage {
         name: "github-open finds the build on GitHub and the walk waits",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Open { open: true }),
     },
     Coverage {
         name: "github-open finds the build no longer on GitHub and the walk ends",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Open { open: false }),
     },
     Coverage {
         name: "github-wait ends with the run's event",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::WaitEnded { woken: true }),
     },
     Coverage {
         name: "github-wait times out",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::WaitEnded { woken: false }),
     },
     // checkStoreGithubBuild (:190-225).
     Coverage {
         name: "checkStoreGithubBuild's read finds the build no longer building and returns done",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -841,7 +836,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "checkStoreGithubBuild's read finds a run with no grant",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -855,7 +851,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "checkStoreGithubBuild's read finds a run that checked in",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -869,27 +866,32 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the walk finds the Deployment cancelled and stops its GitHub builds",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::DeploymentCancelled),
     },
     Coverage {
         name: "the walk finds a run past its budget",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::PastBudget),
     },
     Coverage {
         name: "the wait saw the run end, so a run with no grant gets finish(\"ended\")",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::SeenEnded { grant: false }),
     },
     Coverage {
         name: "the wait saw the run end, or its final report came, so a run that checked in gets finish(\"ended\")",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::SeenEnded { grant: true }),
     },
     Coverage {
         name: "runEnded says a run with no grant completed, and it gets finish(\"ended\")",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -903,7 +905,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the start limit calls finish(\"start_limit\") for a run its read found with no grant",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -918,7 +921,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "runEnded says a run that checked in completed, and it gets finish(\"ended\")",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -932,7 +936,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the walk waits for a run that checked in and is still running",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -946,33 +951,39 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "runEnded reads GitHub unreachable as a run still running",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Asked { down: true, .. })),
     },
     Coverage {
         name: "the budget cancels the run",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Cancelled(Canceller::Budget)),
     },
     Coverage {
         name: "the start limit cancels the run its finish ended",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Cancelled(Canceller::StartLimit)),
     },
     Coverage {
         name: "the walk's cancelStoreGithubBuilds cancels the run",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Cancelled(Canceller::Stop(Stopper::Walk))),
     },
     Coverage {
         name: "the user's cancelStoreGithubBuilds cancels the run",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Cancelled(Canceller::Stop(Stopper::User))),
     },
     // github_finish (core/crates/ployz/src/sdk/github_build.rs:466-556).
     Coverage {
         name: "github_finish's re-read finds the build passed on",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -985,7 +996,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "github_finish's re-read finds the build built or failed",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -998,7 +1010,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "github_finish's re-read finds the grant the start limit's read did not",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             finished(
                 state,
@@ -1010,7 +1023,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the start limit passes on a run that never checked in, Unstarted \"no runner started the build in time\"",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             walk_settled(
                 state,
@@ -1021,7 +1035,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "an Ended look passes on a run that never checked in, Unstarted \"the run ended before it started the build\"",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             walk_settled(
                 state,
@@ -1032,7 +1047,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the start limit's Unstarted is refused because the run checked in, and github_finish answers Waiting",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             finished(
                 state,
@@ -1044,7 +1060,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the start limit settles a run that checked in Skipped \"the run ran out of time\"",
-        reach: Reach::TimedOut,
+        on: |model| model.broken.start_limit_reads_the_grant,
+        omit: None,
         reached: |_, state| {
             walk_settled(
                 state,
@@ -1055,14 +1072,16 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the start limit fails a run that checked in, its grant's Machine unreachable",
-        reach: Reach::TimedOut,
+        on: |model| model.broken.start_limit_reads_the_grant,
+        omit: None,
         reached: |_, state| {
             walk_settled(state, GithubLook::StartLimit, End::Failed(Why::Unreachable))
         },
     },
     Coverage {
         name: "github_finish settles Built from a pushed grant and a Built report",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -1075,7 +1094,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "github_finish settles Failed \"a build step failed\"",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -1088,7 +1108,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "an Ended look settles Skipped \"the run ended without pushing an image\"",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -1102,19 +1123,22 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the budget settles Skipped \"the run ran out of time\"",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             walk_settled(state, GithubLook::Budget, End::Skipped(Why::RanOutOfTime))
         },
     },
     Coverage {
         name: "the budget fails the build, its grant's Machine unreachable",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| walk_settled(state, GithubLook::Budget, End::Failed(Why::Unreachable)),
     },
     Coverage {
         name: "an Ended look waits for an unreachable grant Machine",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -1128,7 +1152,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "github_finish fails the build on the Machine's refusal",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -1141,21 +1166,24 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "after the start limit waited for a run that checked in, an Ended look settles it",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             state.limit_waited && settled_by(state, Finisher::Walk, GithubLook::Ended)
         },
     },
     Coverage {
         name: "after the start limit waited for a run that checked in, the budget settles it",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             state.limit_waited && settled_by(state, Finisher::Walk, GithubLook::Budget)
         },
     },
     Coverage {
         name: "after the start limit waited for a run that checked in, the report's own github_finish settles it",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             state.limit_waited && settled_by(state, Finisher::Report, GithubLook::Ended)
         },
@@ -1163,7 +1191,8 @@ const COVERAGE: &[Coverage] = &[
     // Inngest's at-least-once steps (dashboard/src/modules/config-store/store-deployment.inngest.ts:41).
     Coverage {
         name: "a github-check step dies after an effect landed, and Inngest runs it again",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1176,7 +1205,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a github-check step's refused settle fails it, and Inngest runs it again",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1189,7 +1219,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a re-run of a github-check step finds the build no longer building",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -1204,7 +1235,8 @@ const COVERAGE: &[Coverage] = &[
     // cancelStoreGithubBuilds (dashboard/src/modules/config-store/config-store.server.ts:67-72).
     Coverage {
         name: "the walk's github_cancel finds the build still on GitHub",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1217,7 +1249,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the user's github_cancel finds the build still on GitHub",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1230,7 +1263,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the user's github_cancel finds nothing on GitHub",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1243,23 +1277,27 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "github_cancel fails the build \"cancelled\"",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::CancelEnded { ok: true, .. })),
     },
     Coverage {
         name: "github_cancel's end is refused, another step having ended the build",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::CancelEnded { ok: false, .. })),
     },
     Coverage {
         name: "a user cancels the queued Deployment",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::UserCancelled),
     },
     // The runner (core/crates/ployz/src/sdk/github_build.rs:187-274, :384-432).
     Coverage {
         name: "the check-in's pre-check passes",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1272,7 +1310,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the check-in's pre-check refuses a build no longer on GitHub",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1285,7 +1324,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the Machine mints a grant",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1298,7 +1338,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the mint fails, and the check-in fails",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1311,7 +1352,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the old-mint skip passes the build on Unstarted",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1324,7 +1366,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the old-mint skip's Unstarted is refused",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1337,7 +1380,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the Store's github_check_in commits the grant",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1350,7 +1394,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the Store's github_check_in refuses, leaving the minted grant unrecorded",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1363,12 +1408,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the runner pushes into the grant's Machine",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Pushed),
     },
     Coverage {
         name: "the final report says Built",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1381,7 +1428,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the final report says Failed",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1394,39 +1442,46 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the final report is refused",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Reported { ok: false, .. })),
     },
     Coverage {
         name: "the job stops before its final report",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Quit),
     },
     Coverage {
         name: "the report's event wakes the waiting walk",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Woke { waiting: true }),
     },
     Coverage {
         name: "the report's event finds no wait",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Woke { waiting: false }),
     },
     // The grant's Machine.
     Coverage {
         name: "after the grant's Machine lost a grant that received the push, an Ended look reads nothing pushed for a Built report, and its Skipped \"the run ended without pushing an image\" settle is next",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| lost_after_built(state, GithubLook::Ended, Why::EndedWithoutPushing),
     },
     Coverage {
         name: "after the grant's Machine lost a grant that received the push, the budget reads nothing pushed for a Built report, and its Skipped \"the run ran out of time\" settle is next",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| lost_after_built(state, GithubLook::Budget, Why::RanOutOfTime),
     },
     // The Deployment runner.
     Coverage {
         name: "the Servers take a build GitHub passed on",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::ServersReported { ok: true }) && !state.server_on_github
         },
@@ -1434,7 +1489,8 @@ const COVERAGE: &[Coverage] = &[
     // The retried start.
     Coverage {
         name: "the first try's hand-off commits before the retry reads the build, and the retry follows its run",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1447,7 +1503,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the first try's hand-off commits after the retry read the build: the retry's hand-off is refused, and its second read follows the first try's run",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1460,7 +1517,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the retry's second read finds the first try's run no longer holding the build, and the walk returns",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1473,17 +1531,20 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the retry's hand-off commits, and the walk follows the retry's run",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::HandOff { won: true }),
     },
     Coverage {
         name: "the first try's late hand-off is refused, since the build is no longer waiting",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::DelayedHandOff { ok: false }),
     },
     Coverage {
         name: "after a retried start, a look passes on the run Cloud cancelled, and the Servers take the build",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             state.retried
                 && !state.retry_won
@@ -1493,7 +1554,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "after a retried start, the run Cloud cancelled checked in first: the start limit waits for it, and a later look settles it",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             state.retried
                 && !state.retry_won
@@ -1506,12 +1568,14 @@ const COVERAGE: &[Coverage] = &[
     // GitHub.
     Coverage {
         name: "GitHub ends a cancelled run and its job",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::RunCompleted { killed: true }),
     },
     Coverage {
         name: "GitHub completes a run whose job exited",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::RunCompleted { killed: false }),
     },
 ];
@@ -2400,15 +2464,7 @@ impl Model for BuildHandoff {
                 !state.servers_refused
             }),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| match row.reach {
-                    Reach::Both => true,
-                    Reach::TimedOut => self.broken.start_limit_reads_the_grant,
-                })
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -2981,7 +3037,8 @@ mod tests {
     /// Settling by the grant breaks only `STARTED_RUN_KEPT`, and reaches every row.
     #[test]
     fn timed_out_breaks_only_the_finding() {
-        let checker = check(timed_out());
+        let model = timed_out();
+        let checker = check(model);
         println!("timed out: {} states", checker.unique_state_count());
         assert!(checker.discovery(STARTED_RUN_KEPT).is_some());
         for property in [
@@ -2992,13 +3049,7 @@ mod tests {
         ] {
             assert!(checker.discovery(property).is_none(), "{property} breaks");
         }
-        for row in COVERAGE {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
 
     /// The code holds every `always` property, and reaches every row it can.

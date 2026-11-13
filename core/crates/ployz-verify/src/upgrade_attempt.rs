@@ -57,6 +57,8 @@ use std::fmt::Write as _;
 use ployz_core::{MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion};
 use stateright::{Model, Property};
 
+use crate::harness::{self, Variant, everywhere};
+
 /// The outcome `upgrade-attempt.json` holds (installer/upgrade.rs `StoredAttempt`). The model
 /// has one attempt, so the receipt and the marker always name it.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -484,8 +486,7 @@ impl State {
     }
 }
 
-/// A guard taken out, to show the check catches what it prevents. The first eight are
-/// guards the code has; the last three are parts of the fix.
+/// A guard of the code as it is taken out, to show the check catches what it prevents.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -512,30 +513,22 @@ struct Broken {
     /// The daemon serves again after a kill without daemon start's `reconcile`
     /// (daemon.rs:184-186).
     serves_before_reconcile: bool,
+}
+
+/// A part of the fix taken out, to show the check catches what it prevents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Fix {
     /// The fix's admission reads the marker alone, as the code as it is does.
-    fix_ignores_receipt: bool,
+    ignores_receipt: bool,
     /// The fix's admission reads the receipt whether or not the marker exists.
-    fix_skips_marker_gate: bool,
+    skips_marker_gate: bool,
     /// The fix writes no marker.
-    fix_writes_no_marker: bool,
+    writes_no_marker: bool,
 }
 
-/// Which model a `COVERAGE` row is reached on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reach {
-    Both,
-    /// Only on the code as it is: the row is a refusal the fix removes.
-    AsIs,
-    /// Only with the fix.
-    Fix,
-}
-
-/// One `sometimes`: a branch the code handles, read from the state that took it.
-struct Coverage {
-    name: &'static str,
-    reach: Reach,
-    reached: fn(&UpgradeAttempt, &State) -> bool,
-}
+/// One `sometimes`: a branch the code handles, read from the state that took it. A row is
+/// reached only on the code as it is when it is a refusal the fix removes.
+type Coverage = harness::Coverage<UpgradeAttempt>;
 
 fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
@@ -547,14 +540,16 @@ fn took(state: &State, branch: Branch) -> bool {
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "try_mutation refuses while the worker holds the installation lock",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             state.current_answered(Answer::Busy) && state.holder == Some(Holder::Worker)
         },
     },
     Coverage {
         name: "try_mutation refuses between the request dropping the lock and the worker taking it",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             state.current_answered(Answer::Busy)
                 && state.lock_free()
@@ -564,12 +559,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the worker clears the marker after its terminal write",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::WorkerClears) && !state.marker,
     },
     Coverage {
         name: "request_locked clears the marker after Failed{Launching}",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::ClearsAfterLaunchFailure)
                 && !state.marker
@@ -578,17 +575,20 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the worker refuses an attempt whose receipt is already terminal",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::WorkerNotActive) && state.receipt_terminal(),
     },
     Coverage {
         name: "settle returns a running worker's receipt as it stands",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::SettleSeesActive) && state.worker.active(),
     },
     Coverage {
         name: "settle leaves the marker of a terminal receipt while the worker holds the lock",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::SettleBusy)
                 && state.receipt_terminal()
@@ -598,7 +598,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "reconcile_locked writes Interrupted for a stopped worker",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::Interrupts)
                 && state.receipt == Some(Outcome::Interrupted)
@@ -607,7 +608,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "reconcile_locked leaves a running worker's receipt as it stands",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::ReconcileSeesActive)
                 && state.worker.active()
@@ -616,54 +618,64 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "clear_active fails before removing the marker of a finished attempt",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::ClearFails) && state.stale_marker(),
     },
     Coverage {
         name: "clear_active removes the marker and then fails its directory sync",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::ClearFailsAfterRemoval) && !state.marker && state.lock_free()
         },
     },
     Coverage {
         name: "a clear_active that finds no marker removes nothing",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::ClearsNothing) && !state.marker,
     },
     Coverage {
         name: "Inspect's settle removes the marker a stopped writer left",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| state.cleared == Some(Caller::Inspect),
     },
     Coverage {
         name: "a resend's settle removes the marker a stopped writer left",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| state.cleared == Some(Caller::Replay),
     },
     Coverage {
         name: "Leave's settle removes the marker a stopped writer left",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| state.cleared == Some(Caller::Leave),
     },
     Coverage {
         name: "daemon start's settle removes the marker a stopped writer left",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| state.cleared == Some(Caller::DaemonStart),
     },
     Coverage {
         name: "a new request's reconcile_locked removes the marker a stopped writer left",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| state.cleared == Some(Caller::NewRequest),
     },
     Coverage {
         name: "ployzd install's reconcile_locked removes the marker a stopped writer left",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| state.cleared == Some(Caller::Install),
     },
     Coverage {
         name: "Leave is admitted after its own settle removed the marker a stopped writer left",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::DepartsAfterItsClear)
                 && state.answered(Asker::Daemon, Answer::Admitted)
@@ -671,44 +683,52 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Leave refuses while the attempt is live",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::LeaveRefuses) && state.receipt_live(),
     },
     Coverage {
         name: "a new request refuses while the attempt is live",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::NewRequestBusy) && state.receipt_live(),
     },
     Coverage {
         name: "a new request goes on after a finished attempt",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::NewRequestGoesOn) && state.receipt_terminal(),
     },
     Coverage {
         name: "ployzd install refuses while the attempt is live",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::InstallBusy) && state.receipt_live(),
     },
     Coverage {
         name: "ployzd install goes on after a finished attempt",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::InstallGoesOn) && state.receipt_terminal(),
     },
     Coverage {
         name: "a caller's try_installation refuses while another process holds the lock",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::CallerBusy) && !state.lock_free(),
     },
     Coverage {
         name: "request_locked refuses .upgrade-active with no receipt",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(state, Branch::RequestFindsMarker) && state.marker && state.receipt.is_none()
         },
     },
     Coverage {
         name: "try_mutation refuses on .upgrade-active with no receipt",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             state.current_answered(Answer::Busy)
                 && state.lock_free()
@@ -718,7 +738,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the volume plugin refuses on the marker a killed daemon left while the daemon is down",
-        reach: Reach::AsIs,
+        on: |model| model.fix.is_shipped(),
+        omit: None,
         reached: |_, state| {
             state.answered(Asker::Plugin, Answer::Busy)
                 && state.stale_marker()
@@ -728,7 +749,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a daemon RPC refuses on the marker a killed daemon left after daemon start lost try_installation",
-        reach: Reach::AsIs,
+        on: |model| model.fix.is_shipped(),
+        omit: None,
         reached: |_, state| {
             state.answered(Asker::Daemon, Answer::Busy)
                 && state.stale_marker()
@@ -738,7 +760,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a daemon RPC refuses on the marker a killed worker left",
-        reach: Reach::AsIs,
+        on: |model| model.fix.is_shipped(),
+        omit: None,
         reached: |_, state| {
             state.answered(Asker::Daemon, Answer::Busy)
                 && state.stale_marker()
@@ -747,12 +770,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the fix admits beside the marker of a finished attempt",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| state.current_answered(Answer::Admitted) && state.stale_marker(),
     },
     Coverage {
         name: "the fix refuses on the marker of an attempt whose worker stopped before a terminal write",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             state.current_answered(Answer::Busy)
                 && state.lock_free()
@@ -763,7 +788,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "an older reader refuses on the marker of a finished attempt under the fix",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| state.answered(Asker::Older, Answer::Busy) && state.stale_marker(),
     },
 ];
@@ -771,11 +797,16 @@ const COVERAGE: &[Coverage] = &[
 #[derive(Clone, Copy, Debug)]
 struct UpgradeAttempt {
     /// The fix: the receipt read beside the marker; the marker kept as it is written today.
-    fix: bool,
+    fix: Variant<Fix>,
     broken: Broken,
 }
 
 impl UpgradeAttempt {
+    /// The proposal's parts taken out, none on the shipped code.
+    fn proposal(&self) -> Fix {
+        self.fix.proposal().unwrap_or_default()
+    }
+
     /// `try_mutation` (mutation.rs:55-69) as `asker` runs it. The shared lock first (:57).
     /// The code as it is, and a release before the fix, then read the marker (:58-62); the
     /// fix reads the receipt when the marker exists, and refuses unless it is terminal, so a
@@ -785,10 +816,10 @@ impl UpgradeAttempt {
         let broken = self.broken;
         let locked = !state.lock_free() && !broken.mutation_ignores_lock;
         let marker = state.marker && !broken.mutation_ignores_marker;
-        let busy = if self.fix && asker != Asker::Older {
-            if broken.fix_skips_marker_gate {
+        let busy = if self.fix.is_proposed() && asker != Asker::Older {
+            if self.proposal().skips_marker_gate {
                 state.receipt_live()
-            } else if broken.fix_ignores_receipt {
+            } else if self.proposal().ignores_receipt {
                 marker
             } else {
                 marker && !state.receipt_terminal()
@@ -840,7 +871,7 @@ impl UpgradeAttempt {
                 }
             }
             Action::Mark => {
-                if !(self.fix && broken.fix_writes_no_marker) {
+                if !self.proposal().writes_no_marker {
                     state.marker = true;
                 }
                 if state.request == Request::Launched {
@@ -1261,7 +1292,7 @@ impl Model for UpgradeAttempt {
             actions.push(Action::Mutate(Asker::Daemon));
         }
         actions.push(Action::Mutate(Asker::Plugin));
-        if self.fix {
+        if self.fix.is_proposed() {
             actions.push(Action::Mutate(Asker::Older));
         }
     }
@@ -1328,16 +1359,7 @@ impl Model for UpgradeAttempt {
                 !state.current_answered(Answer::Busy) || !state.lock_free() || state.marker
             }),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| match row.reach {
-                    Reach::Both => true,
-                    Reach::AsIs => !self.fix,
-                    Reach::Fix => self.fix,
-                })
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -1633,7 +1655,8 @@ fn clears(after: &State) -> &'static str {
 }
 
 fn answer_reads_as(model: &UpgradeAttempt, before: &State, after: &State) -> &'static str {
-    let fix = model.fix && after.answer.is_some_and(|(asker, _)| asker != Asker::Older);
+    let fix =
+        model.fix.is_proposed() && after.answer.is_some_and(|(asker, _)| asker != Asker::Older);
     match after.answer {
         Some((_, Answer::Busy)) if !before.lock_free() => {
             "finds the installation lock held and answers Busy, \"a Ployz installation or upgrade is active\""
@@ -1835,25 +1858,25 @@ mod tests {
     /// The code as it is.
     fn as_is() -> UpgradeAttempt {
         UpgradeAttempt {
-            fix: false,
+            fix: Variant::Shipped,
             broken: Broken::default(),
         }
     }
 
     /// The fix: the receipt read beside the marker, the marker kept as it is written today.
-    fn fixed() -> UpgradeAttempt {
-        UpgradeAttempt {
-            fix: true,
-            ..as_is()
-        }
+    fn proposed() -> UpgradeAttempt {
+        proposed_without(Fix::default())
     }
 
     fn as_is_without(broken: Broken) -> UpgradeAttempt {
         UpgradeAttempt { broken, ..as_is() }
     }
 
-    fn fixed_without(broken: Broken) -> UpgradeAttempt {
-        UpgradeAttempt { broken, ..fixed() }
+    fn proposed_without(fix: Fix) -> UpgradeAttempt {
+        UpgradeAttempt {
+            fix: Variant::Proposed(fix),
+            ..as_is()
+        }
     }
 
     fn steps(path: &Path) -> Vec<Action> {
@@ -1996,7 +2019,8 @@ mod tests {
     /// the fix does not add.
     #[test]
     fn current_code_breaks_only_the_finding() {
-        let checker = check(as_is());
+        let model = as_is();
+        let checker = check(model);
         println!("as is: {} states", checker.unique_state_count());
         assert!(checker.discovery(BUSY_ONLY_WHILE_LIVE).is_some());
         for property in [
@@ -2009,13 +2033,7 @@ mod tests {
         ] {
             assert!(checker.discovery(property).is_none(), "{property} breaks");
         }
-        for row in COVERAGE.iter().filter(|row| row.reach != Reach::Fix) {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
 
     /// Without the marker read, a mutation is admitted after the request dropped the lock
@@ -2132,16 +2150,17 @@ mod tests {
     /// stopped.
     #[test]
     fn settle_relies_on_the_worker_check_under_the_lock() {
-        let checker = check(as_is_without(Broken {
+        let model = as_is_without(Broken {
             settle_skips_worker_state: true,
             ..Broken::default()
-        }));
+        });
+        let checker = check(model);
         for property in [INTERRUPTED_ONLY_STOPPED, RECEIPT_FINAL] {
             assert!(checker.discovery(property).is_none(), "{property} breaks");
         }
         let unreached: Vec<_> = COVERAGE
             .iter()
-            .filter(|row| row.reach != Reach::Fix && checker.discovery(row.name).is_none())
+            .filter(|row| (row.on)(&model) && checker.discovery(row.name).is_none())
             .map(|row| row.name)
             .collect();
         assert_eq!(
@@ -2286,7 +2305,7 @@ mod tests {
     /// The fix holds, and every `sometimes` it reaches is reached.
     #[test]
     fn the_fix_answers_from_the_receipt() {
-        let checker = check(fixed());
+        let checker = check(proposed());
         println!("fixed: {} states", checker.unique_state_count());
         checker.assert_properties();
     }
@@ -2296,9 +2315,9 @@ mod tests {
     #[test]
     fn the_fix_needs_the_receipt() {
         let path = breaks(
-            fixed_without(Broken {
-                fix_ignores_receipt: true,
-                ..Broken::default()
+            proposed_without(Fix {
+                ignores_receipt: true,
+                ..Fix::default()
             }),
             BUSY_ONLY_WHILE_LIVE,
         );
@@ -2312,9 +2331,9 @@ mod tests {
     #[test]
     fn the_fix_reads_the_receipt_only_beside_the_marker() {
         let path = breaks(
-            fixed_without(Broken {
-                fix_skips_marker_gate: true,
-                ..Broken::default()
+            proposed_without(Fix {
+                skips_marker_gate: true,
+                ..Fix::default()
             }),
             NO_NEW_REFUSAL,
         );
@@ -2328,9 +2347,9 @@ mod tests {
     #[test]
     fn the_fix_still_writes_the_marker() {
         let path = breaks(
-            fixed_without(Broken {
-                fix_writes_no_marker: true,
-                ..Broken::default()
+            proposed_without(Fix {
+                writes_no_marker: true,
+                ..Fix::default()
             }),
             NO_MUTATION_BESIDE_A_LIVE_WORKER,
         );
@@ -2345,7 +2364,7 @@ mod tests {
     #[test]
     fn the_fix_refuses_a_marker_with_no_receipt() {
         let path = breaks(
-            fixed(),
+            proposed(),
             "try_mutation refuses on .upgrade-active with no receipt",
         );
         let refused = last(&path);
@@ -2358,7 +2377,7 @@ mod tests {
     #[test]
     fn the_fix_leaves_older_readers_their_window() {
         let path = breaks(
-            fixed(),
+            proposed(),
             "an older reader refuses on the marker of a finished attempt under the fix",
         );
         let refused = last(&path);
@@ -2371,7 +2390,7 @@ mod tests {
     #[test]
     fn the_fix_keeps_the_dead_attempt_window() {
         let path = breaks(
-            fixed(),
+            proposed(),
             "the fix refuses on the marker of an attempt whose worker stopped before a terminal write",
         );
         let refused = last(&path);

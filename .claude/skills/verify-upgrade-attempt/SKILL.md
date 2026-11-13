@@ -176,21 +176,21 @@ The run is green when all 24 tests pass. Read them as five groups.
 - **The window and its rows.**
   - `a_settling_reader_ends_the_window` is the first path where Leave's own `settle` removes the marker a stopped writer left (`State::cleared`), and Leave is then admitted.
   - `each_clearing_row_is_its_callers` checks that each clearing row's witness names the caller in the row's name.
-  - `current_code_breaks_only_the_finding` expects `BUSY_ONLY_WHILE_LIVE` to break and every other `always` property to hold. It also expects every `COVERAGE` row that is not `Reach::Fix` to be reached.
+  - `current_code_breaks_only_the_finding` expects `BUSY_ONLY_WHILE_LIVE` to break and every other `always` property to hold. It also expects every `COVERAGE` row that `on` keeps for the code as it is to be reached.
 - **The code's guards.** These eight tests set one `Broken` flag each on `as_is_without(..)`. Every test but `settle_relies_on_the_worker_check_under_the_lock` expects the property in the table above to break.
-  - `settle_relies_on_the_worker_check_under_the_lock` runs `settle_skips_worker_state`. It expects `INTERRUPTED_ONLY_STOPPED` and `RECEIPT_FINAL` to hold, and only "settle returns a running worker's receipt as it stands" to go unreached among the rows that are not `Reach::Fix`. Then it runs `reconcile_skips_worker_state` and expects a `settle` caller to break `INTERRUPTED_ONLY_STOPPED` through its own check: `worker_state` read the unit stopped, and the unit started before `try_installation` (`:265-268`).
+  - `settle_relies_on_the_worker_check_under_the_lock` runs `settle_skips_worker_state`. It expects `INTERRUPTED_ONLY_STOPPED` and `RECEIPT_FINAL` to hold, and only "settle returns a running worker's receipt as it stands" to go unreached among the rows that `on` keeps for the code as it is. Then it runs `reconcile_skips_worker_state` and expects a `settle` caller to break `INTERRUPTED_ONLY_STOPPED` through its own check: `worker_state` read the unit stopped, and the unit started before `try_installation` (`:265-268`).
   - The guard table names the other seven beside their flags.
 - **The fix.**
-  - `the_fix_answers_from_the_receipt` runs `fixed()`: every property holds, and every row not `Reach::AsIs` is reached.
+  - `the_fix_answers_from_the_receipt` runs `proposed()`: every property holds, and every row that `on` keeps for the fix is reached.
   - `the_fix_refuses_a_marker_with_no_receipt` prints the bare marker refusing under the fix.
   - `the_fix_leaves_older_readers_their_window` and `the_fix_keeps_the_dead_attempt_window` print the fix's two limits.
-- **The fix's parts.** `the_fix_needs_the_receipt`, `the_fix_reads_the_receipt_only_beside_the_marker` and `the_fix_still_writes_the_marker` each drop one part on `fixed_without(..)`, under The fix.
+- **The fix's parts.** `the_fix_needs_the_receipt`, `the_fix_reads_the_receipt_only_beside_the_marker` and `the_fix_still_writes_the_marker` each drop one part on `proposed_without(..)`, under The fix.
 
 Every clearing `COVERAGE` row requires `State::cleared` to name its caller. `cleared` is set only on the step where that caller's `clear_active` removed a marker that a stopped writer left (`stranded`). A `clear_active` on an absent marker sets `Branch::ClearsNothing` and no `cleared`.
 
 ### Breaking a guard yourself
 
-Set its `Broken` flag through `as_is_without` or `fixed_without`. That changes one model, so only the tests that set the flag see it. Add `--no-fail-fast` to the nextest command, so every red test is listed.
+Set its `Broken` flag through `as_is_without`, or its `Fix` field through `proposed_without`. That changes one model, so only the tests that set the flag see it. Add `--no-fail-fast` to the nextest command, so every red test is listed.
 
 An edit to the model's code changes every model at once. For PR #3845, each edit below was made alone in `core/crates/ployz-verify/src/upgrade_attempt.rs`, run with `--no-fail-fast`, and reverted.
 - **A flag made a no-op** means every read of it outside `mod tests` was replaced with `false`. `launches_before_marking` has two reads, in `actions` and in the `Launch` arm of `step`. `settle_reuses_snapshot` has two, in `reader_step` and in `reader_step_reads_as`.
@@ -209,7 +209,7 @@ An edit to the model's code changes every model at once. For PR #3845, each edit
 | R7. In `reader_step`'s `At::TryNonTerminal` arm, `if state.lock_free()` made `if state.lock_free() && !state.worker.active()`, so `settle` checks the worker again once it would hold the lock | `settle_relies_..` |
 | R8. In `reconcile_locked`, the `Some(_) if state.worker.active() && ..` arm's guard made `if false` | `settle_relies_..`, `current_code_breaks_only_the_finding`, `the_fix_answers_..`, and, because their pinned paths moved, `current_code_leaves_..`, `daemon_start_loses_the_lock_to_a_late_worker` and `the_worker_refuses_a_finished_attempt` |
 | R9. In `admission`, the fix's `marker && !state.receipt_terminal()` replaced with `marker`, dropping the receipt read alone | `the_fix_answers_from_the_receipt` (`BUSY_ONLY_WHILE_LIVE`) |
-| R10. In `step`'s `Mark` arm, `if !(self.fix && broken.fix_writes_no_marker)` made `if !self.fix`, so the fix writes no marker | `the_fix_answers_..`, `the_fix_keeps_the_dead_attempt_window`, `the_fix_leaves_older_..`, `the_fix_needs_the_receipt` |
+| R10. In `step`'s `Mark` arm, `if !self.proposal().writes_no_marker` made `if self.fix.is_shipped()`, so the fix writes no marker | `the_fix_answers_..`, `the_fix_keeps_the_dead_attempt_window`, `the_fix_leaves_older_..`, `the_fix_needs_the_receipt` |
 | R11. Both reads of `launches_before_marking` made `true`, so every model launches first | `current_code_breaks_only_the_finding`, `current_code_leaves_..`, `daemon_start_loses_the_lock_to_a_late_worker`, `settle_relies_..`, `the_fix_answers_..`, `the_poller_..` (its `Mark` is no longer offered) |
 | R12. The fix's `marker && !state.receipt_terminal()` replaced with round 1's `marker && state.receipt_live()` | `the_fix_answers_from_the_receipt`, `the_fix_refuses_a_marker_with_no_receipt` |
 | R13. In `settle_busy`, `state.start_lost = true;` deleted | `current_code_breaks_only_the_finding` (`DAEMON_START_SETTLES_FIRST`), both `daemon_start_loses_..`, `settle_relies_..` |
@@ -219,7 +219,7 @@ An edit to the model's code changes every model at once. For PR #3845, each edit
 | R17. The start state with a bare `.upgrade-active` removed from `init_states` | `current_code_breaks_only_the_finding`, `settle_relies_..`, `the_fix_answers_..`, `the_fix_refuses_a_marker_with_no_receipt` |
 | R18. In `step`'s `Accept` arm, `} else if state.marker {` made `} else if false {` | `current_code_breaks_only_the_finding`, `current_code_leaves_..`, `settle_relies_..`, `the_fix_answers_..` |
 | R19. The Inspect clearing row's predicate reads `Some(Caller::Replay)` | `each_clearing_row_is_its_callers` |
-| R20. The fix's marker gate dropped: in `admission`, `marker && !state.receipt_terminal()` replaced with `state.receipt_live()`, as `fix_skips_marker_gate` does | `the_fix_answers_from_the_receipt` (`NO_NEW_REFUSAL`), `the_fix_refuses_a_marker_with_no_receipt`, and `the_fix_still_writes_the_marker`, whose pinned path no longer ends in an admission |
+| R20. The fix's marker gate dropped: in `admission`, `marker && !state.receipt_terminal()` replaced with `state.receipt_live()`, as `skips_marker_gate` does | `the_fix_answers_from_the_receipt` (`NO_NEW_REFUSAL`), `the_fix_refuses_a_marker_with_no_receipt`, and `the_fix_still_writes_the_marker`, whose pinned path no longer ends in an admission |
 | R21. The fix's marker gate dropped: `marker && !state.receipt_terminal()` replaced with `!state.receipt_terminal()` | `the_fix_answers_from_the_receipt` (`NO_NEW_REFUSAL`), `the_fix_still_writes_the_marker` |
 | Each flag made a no-op | that flag's own test. `reconcile_skips_worker_state` also reddens `settle_relies_..`. `settle_skips_worker_state`'s test is `settle_relies_..`, which goes red because the flag's `COVERAGE` row is reached again |
 
@@ -263,11 +263,11 @@ In the model that is `marker && !receipt_terminal()`. A marker with no receipt s
 
 The writes stay as they are: `request_locked` and the worker still write and clear `.upgrade-active`.
 
-| Part | What it keeps | Flag | Test, and the property that breaks without it |
+| Part | What it keeps | `Fix` field | Test, and the property that breaks without it |
 |---|---|---|---|
-| The receipt read beside the marker | A finished attempt's stale marker no longer refuses | `fix_ignores_receipt` | `the_fix_needs_the_receipt`, `BUSY_ONLY_WHILE_LIVE` |
-| The marker gate on that read | Admission reads nothing new while no marker exists. The code as it is admits on Accepted with no marker, which a daemon killed between `:227` and `:228` leaves, and so does the fix | `fix_skips_marker_gate` | `the_fix_reads_the_receipt_only_beside_the_marker`, `NO_NEW_REFUSAL` ("try_mutation answers Busy only while a process holds the installation lock or .upgrade-active exists") |
-| `.upgrade-active` still written | The handoff between the request dropping the lock and the worker taking it, for the fix's own admission and for a release before the fix | `fix_writes_no_marker` | `the_fix_still_writes_the_marker`, `NO_MUTATION_BESIDE_A_LIVE_WORKER` |
+| The receipt read beside the marker | A finished attempt's stale marker no longer refuses | `ignores_receipt` | `the_fix_needs_the_receipt`, `BUSY_ONLY_WHILE_LIVE` |
+| The marker gate on that read | Admission reads nothing new while no marker exists. The code as it is admits on Accepted with no marker, which a daemon killed between `:227` and `:228` leaves, and so does the fix | `skips_marker_gate` | `the_fix_reads_the_receipt_only_beside_the_marker`, `NO_NEW_REFUSAL` ("try_mutation answers Busy only while a process holds the installation lock or .upgrade-active exists") |
+| `.upgrade-active` still written | The handoff between the request dropping the lock and the worker taking it, for the fix's own admission and for a release before the fix | `writes_no_marker` | `the_fix_still_writes_the_marker`, `NO_MUTATION_BESIDE_A_LIVE_WORKER` |
 
 A receipt-only shape, which reads the receipt on every `try_mutation`, was rejected:
 - It reads and decodes JSON on every admission, including the hot callers above: Build admission, image ingest, a Deploy's container step, copy cuts and the plugin.

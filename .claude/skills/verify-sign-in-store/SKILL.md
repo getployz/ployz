@@ -95,16 +95,16 @@ Read the tests in four groups.
   - `current_code_lets_a_losing_waiter_forget_an_approved_sign_in` replays the finding's nine actions with `follow`, asserts each move and the end state, and then asks the checker for its first path to that same state (`breaks_where`). The checker keeps one path to each state, the first in BFS order, and a shorter path reaches this one: B requests c0, and A's `start` resumes it after the approval and gets the token with its one poll. So the replay shows the finding's own schedule, and the second check shows the checker discovers its end state.
   - `a_slow_code_request_overwrites_an_approved_sign_in`, `a_late_resume_replaces_an_approved_sign_in`, `a_cloud_command_forgets_an_approved_sign_in` and `a_waiter_forgets_a_sign_in_a_cloud_command_finished` each keep to paths whose last step is the route's breaking step, taken from a state where `approved_kept` held and the file held a SignedIn.
   - `a_stale_refresh_does_not_hide_a_live_sign_in` replays the 17-action, three-login schedule above with `follow`, and checks that `approved_kept` is false at its end.
-  - `current_code_breaks_only_the_finding` expects `APPROVED_SIGN_IN_KEPT` to break, `NO_TORN_READ` to hold, and every `COVERAGE` row that is not `Reach::Fix` to be reached.
+  - `current_code_breaks_only_the_finding` expects `APPROVED_SIGN_IN_KEPT` to break, `NO_TORN_READ` to hold, and every `COVERAGE` row that `on` keeps for the code as it is to be reached.
 - **The code's guard, and what `clear` reads.** `save_writes_a_temp_file_and_renames_it` sets `save_tears`, and expects `NO_TORN_READ` to break: a `start` reads the half-written file as none. `forget_reads_nothing` replays a `forget` that removes the file while B's save of Pending(c1) is half-written, and expects no torn read.
 - **The fix.**
-  - `the_fix_keeps_an_approved_sign_in` runs `fixed()` with `assert_properties`: both `always` properties hold, and every row that is not `Reach::AsIs` is reached.
+  - `the_fix_keeps_an_approved_sign_in` runs `proposed()` with `assert_properties`: both `always` properties hold, and every row that `on` keeps for the fix is reached.
   - `the_fix_keeps_the_finding_s_sign_in` replays the finding's schedule under the fix: B's `forget` leaves A's SignedIn.
   - `the_fix_rereads_after_the_resume_branch` replays the resume branch's schedule under the fix: B's `request_code` finds A's SignedIn where it expected Pending(c0), throws its code away, and `start` reads the file again, refreshes the SignedIn and returns it.
   - `the_fix_requests_after_forgetting_its_own_pending` replays a resume branch whose code the browser denied: B's `forget` removes its own Pending, so its `request_code` expects no file and saves Pending(c1) with no re-read.
   - `the_fix_forgets_only_the_polled_pending` checks the predicate on each edge state: no file, an unreadable file, another code's Pending, and a SignedIn. No step leaves the file unreadable once a process saved, so for the unreadable file it also steps one `forget` from a state built for it, under the fix and as the code is.
   - `the_fix_still_reports_expired` shows the fix's limit: the finding's loser keeps the SignedIn but still fails Expired.
-- **The fix's parts.** `the_fix_needs_the_comparison`, `the_fix_needs_the_forget_lock`, `the_fix_compares_at_the_save` and `the_fix_needs_the_request_guard` each set one flag on `fixed_without(..)` (The fix).
+- **The fix's parts.** `the_fix_needs_the_comparison`, `the_fix_needs_the_forget_lock`, `the_fix_compares_at_the_save` and `the_fix_needs_the_request_guard` each drop one `Fix` field through `proposed_without(..)` (The fix).
 
 ## The fix
 
@@ -121,14 +121,14 @@ request_code(expected)      POST /api/auth/device/code without the lock; then, u
 
 `expected` is the file as the process last knew it: what `start` read, or no file after the resume branch's `forget` removed its own Pending (`after_forget`).
 
-The POST runs without the lock because holding it across a network call would block every other `ployz` process's locked writes for the POST's length. A mismatch costs one code no process knows, which Cloud keeps as a pending row until it expires 30 minutes later (`better-auth@1.7.16/dist/plugins/device-authorization/index.mjs:20`). The POST changes only that new row, which no other process reads, so the model takes the POST, the compare and the save as one step, and leaves a thrown-away code unminted. The compare must sit at the save, after the POST: one made before it and released for the POST leaves the slow code request's window open, which `fix_compares_before_post` shows.
+The POST runs without the lock because holding it across a network call would block every other `ployz` process's locked writes for the POST's length. A mismatch costs one code no process knows, which Cloud keeps as a pending row until it expires 30 minutes later (`better-auth@1.7.16/dist/plugins/device-authorization/index.mjs:20`). The POST changes only that new row, which no other process reads, so the model takes the POST, the compare and the save as one step, and leaves a thrown-away code unminted. The compare must sit at the save, after the POST: one made before it and released for the POST leaves the slow code request's window open, which `compares_before_post` shows.
 
-| Part | What it keeps | Flag | Test, and the `always` property that breaks without it |
+| Part | What it keeps | `Fix` field | Test, and the `always` property that breaks without it |
 |---|---|---|---|
-| The device-code comparison in `forget` | A waiter, a resume or a Command whose code another poll spent leaves the SignedIn that poll saved | `fix_forgets_any_file` | `the_fix_needs_the_comparison`, `APPROVED_SIGN_IN_KEPT` |
-| The lock around `forget`'s compare and its removal | A save that lands between them. Without it, a `forget` reads its own Pending, a `finish` save lands, and `remove_file` removes the SignedIn | `fix_forget_unlocked` | `the_fix_needs_the_forget_lock`, `APPROVED_SIGN_IN_KEPT` |
-| The guard on `request_code`'s save | A `start` that read the file before a login saved its SignedIn. That covers the slow code request and the resume branch: the resume branch's `forget` leaves A's SignedIn, and its `request_code` would replace it | `fix_request_overwrites` | `the_fix_needs_the_request_guard`, `APPROVED_SIGN_IN_KEPT`, by the slow request and by a replay of the resume branch |
-| That guard's compare at the save, under the lock, after the POST | A save that lands while the POST runs. Without it, the compare finds the file `start` read, A's `finish` saves during the POST, and the Pending is written over the SignedIn | `fix_compares_before_post` | `the_fix_compares_at_the_save`, `APPROVED_SIGN_IN_KEPT` |
+| The device-code comparison in `forget` | A waiter, a resume or a Command whose code another poll spent leaves the SignedIn that poll saved | `forgets_any_file` | `the_fix_needs_the_comparison`, `APPROVED_SIGN_IN_KEPT` |
+| The lock around `forget`'s compare and its removal | A save that lands between them. Without it, a `forget` reads its own Pending, a `finish` save lands, and `remove_file` removes the SignedIn | `forget_unlocked` | `the_fix_needs_the_forget_lock`, `APPROVED_SIGN_IN_KEPT` |
+| The guard on `request_code`'s save | A `start` that read the file before a login saved its SignedIn. That covers the slow code request and the resume branch: the resume branch's `forget` leaves A's SignedIn, and its `request_code` would replace it | `request_overwrites` | `the_fix_needs_the_request_guard`, `APPROVED_SIGN_IN_KEPT`, by the slow request and by a replay of the resume branch |
+| That guard's compare at the save, under the lock, after the POST | A save that lands while the POST runs. Without it, the compare finds the file `start` read, A's `finish` saves during the POST, and the Pending is written over the SignedIn | `compares_before_post` | `the_fix_compares_at_the_save`, `APPROVED_SIGN_IN_KEPT` |
 
 The resume branch needs no guard of its own: the request guard covers it, as `the_fix_rereads_after_the_resume_branch` shows.
 
@@ -138,7 +138,7 @@ What the fix keeps, and what the later PR must decide:
 - **The loser still fails Expired.** B's poll still gets `invalid_grant`, which `poll` reads as Expired (`:562`). With the fix, B's terminal still prints "the sign-in code expired before it was approved" while the file holds A's SignedIn (`the_fix_still_reports_expired`). The fix PR may want `forget` to report the SignedIn it left, or `wait` to read the file again on `invalid_grant`.
 - **A refresh can save a token a logout ended.** `start` reads a SignedIn, get-session honours it, a logout signs it out and clears the file, and the refresh saves it back (`:314-323`). The row "start's refresh saves a SignedIn whose session a logout ended meanwhile" reaches it on both models. The next `start` finds the session ended and requests a code (`:315`, `:599-600`), and a Command returns the token without asking Cloud (`:279`).
 - **A waiter can sign in after a logout cleared its Pending.** The row "a waiter signs in after a logout read its Pending and cleared cloud.json" reaches it on both models. The logout printed "Signed out of <cloud>." and the file then holds a SignedIn.
-- **A stale refresh can overwrite a newer live sign-in.** With three logins, on both models: A signs in with c0; B's `start` reads SignedIn(c0) and get-session honours it (`:307`, `:315`); a logout signs c0 out at Cloud (`:397`, `:408-414`); C's `start` finds c0 ended and requests c1 (`:315`, `:599-600`, `:340`), and C signs in with c1 (`:574-583`); then B's refresh saves SignedIn(c0) over SignedIn(c1) (`:321`). Cloud still honours c1 and no file holds its token, the finding's orphan. `APPROVED_SIGN_IN_KEPT` holds, because the file holds a SignedIn, though one whose session ended (`approved_kept`). A 13-action replay with `follow` on `SignInStore { logins: 3, ..fixed() }` reaches it: `Step(0)`, `Step(0)`, `Approve(c0)`, `Step(0)`, `Step(0)`, `Step(1)`, `Step(4)`, `Step(2)`, `Step(2)`, `Approve(c1)`, `Step(2)`, `Step(2)`, `Step(1)`; on `as_is()` it ends the same. The fix leaves `start`'s refresh save unguarded. The later PR must decide whether to guard it as `request_code`'s save is, saving only while the file still holds the SignedIn `start` read.
+- **A stale refresh can overwrite a newer live sign-in.** With three logins, on both models: A signs in with c0; B's `start` reads SignedIn(c0) and get-session honours it (`:307`, `:315`); a logout signs c0 out at Cloud (`:397`, `:408-414`); C's `start` finds c0 ended and requests c1 (`:315`, `:599-600`, `:340`), and C signs in with c1 (`:574-583`); then B's refresh saves SignedIn(c0) over SignedIn(c1) (`:321`). Cloud still honours c1 and no file holds its token, the finding's orphan. `APPROVED_SIGN_IN_KEPT` holds, because the file holds a SignedIn, though one whose session ended (`approved_kept`). A 13-action replay with `follow` on `SignInStore { logins: 3, ..proposed() }` reaches it: `Step(0)`, `Step(0)`, `Approve(c0)`, `Step(0)`, `Step(0)`, `Step(1)`, `Step(4)`, `Step(2)`, `Step(2)`, `Approve(c1)`, `Step(2)`, `Step(2)`, `Step(1)`; on `as_is()` it ends the same. The fix leaves `start`'s refresh save unguarded. The later PR must decide whether to guard it as `request_code`'s save is, saving only while the file still holds the SignedIn `start` read.
 - **A logout can clear a sign-in saved after its read.** Logout reads Pending(c0), which it does not send to Cloud (`:402-407`). A's `finish` saves SignedIn(c0), and logout's `clear` removes it (`:444`). A printed "Signed in to …" and the logout "Signed out of <cloud>.", and Cloud keeps a session no file holds, the same orphan as the finding. The row "a logout's clear removes a SignedIn saved after its read" reaches it on both models. `APPROVED_SIGN_IN_KEPT` does not catch it, since a logout step resets `kept`. The later PR could make logout's `clear` compare, under the same lock, against what logout read.
 
 ## Read a counterexample
@@ -178,17 +178,17 @@ A counterexample is a **lead**, not a verdict. Before calling it a bug, confirm 
 
 ## Breaking a guard yourself
 
-Set its `Broken` flag through `as_is_without` or `fixed_without`. That changes one model, so only the tests that set the flag see it. Add `--no-fail-fast` to the nextest command, so every red test is listed.
+Set its `Broken` flag through `as_is_without`, or its `Fix` field through `proposed_without`. That changes one model, so only the tests that set the flag see it. Add `--no-fail-fast` to the nextest command, so every red test is listed.
 
 Which kind of property each flag breaks, from a scratch run that checked each flagged model in full and listed the rows its unflagged model reaches but it does not:
 
 | Flag | `always` properties that break | `sometimes` rows left unreached |
 |---|---|---|
 | `save_tears`, on the code as it is | `NO_TORN_READ`, beside the finding's `APPROVED_SIGN_IN_KEPT` | the six rows that read the file a save wrote at the save's own step, which now holds unreadable: "request_code saves a new Pending", both refresh rows, "a waiter signs in", "signed_in's poll_once gets the token and finish saves SignedIn" and "a waiter signs in after a logout read its Pending and cleared cloud.json" |
-| `fix_forgets_any_file` | `APPROVED_SIGN_IN_KEPT` | the five fix rows where a `forget` leaves the file: "the fix's forget leaves a SignedIn", "… leaves another code's Pending", "… finds no cloud.json", "signed_in's forget leaves a SignedIn under the fix" and "under the fix, a waiter whose poll got invalid_grant still fails Expired beside the SignedIn" |
-| `fix_forget_unlocked` | `APPROVED_SIGN_IN_KEPT` | none |
-| `fix_compares_before_post` | `APPROVED_SIGN_IN_KEPT` | none |
-| `fix_request_overwrites` | `APPROVED_SIGN_IN_KEPT` | "the fix's request_code finds cloud.json changed and start reads it again" |
+| `forgets_any_file` | `APPROVED_SIGN_IN_KEPT` | the five fix rows where a `forget` leaves the file: "the fix's forget leaves a SignedIn", "… leaves another code's Pending", "… finds no cloud.json", "signed_in's forget leaves a SignedIn under the fix" and "under the fix, a waiter whose poll got invalid_grant still fails Expired beside the SignedIn" |
+| `forget_unlocked` | `APPROVED_SIGN_IN_KEPT` | none |
+| `compares_before_post` | `APPROVED_SIGN_IN_KEPT` | none |
+| `request_overwrites` | `APPROVED_SIGN_IN_KEPT` | "the fix's request_code finds cloud.json changed and start reads it again" |
 
 The scratch test that printed it follows. Put it at the end of `mod tests`, before its closing brace (`mod tests` is the file's last item), and run it like the lift snippet below, with `-E 'test(=sign_in_store::tests::scratch_flag_kinds)'` and without `--release`; it takes about 2 s of nextest time.
 
@@ -196,15 +196,14 @@ The scratch test that printed it follows. Put it at the end of `mod tests`, befo
     #[test]
     fn scratch_flag_kinds() {
         let runs = [
-            ("save_tears on as_is", as_is(), Broken { save_tears: true, ..Broken::default() }),
-            ("fix_forgets_any_file on fixed", fixed(), Broken { fix_forgets_any_file: true, ..Broken::default() }),
-            ("fix_forget_unlocked on fixed", fixed(), Broken { fix_forget_unlocked: true, ..Broken::default() }),
-            ("fix_compares_before_post on fixed", fixed(), Broken { fix_compares_before_post: true, ..Broken::default() }),
-            ("fix_request_overwrites on fixed", fixed(), Broken { fix_request_overwrites: true, ..Broken::default() }),
+            ("save_tears on as_is", as_is(), as_is_without(Broken { save_tears: true })),
+            ("forgets_any_file on proposed", proposed(), proposed_without(Fix { forgets_any_file: true, ..Fix::default() })),
+            ("forget_unlocked on proposed", proposed(), proposed_without(Fix { forget_unlocked: true, ..Fix::default() })),
+            ("compares_before_post on proposed", proposed(), proposed_without(Fix { compares_before_post: true, ..Fix::default() })),
+            ("request_overwrites on proposed", proposed(), proposed_without(Fix { request_overwrites: true, ..Fix::default() })),
         ];
-        for (name, base, broken) in runs {
+        for (name, base, model) in runs {
             let baseline = check(base);
-            let model = SignInStore { broken, ..base };
             let checker = check(model);
             println!("{name}: {} states", checker.unique_state_count());
             for property in model.properties() {
@@ -225,18 +224,18 @@ An edit to the model's code changes every model at once. For this PR, each edit 
 
 | Edit, by function | Tests that went red |
 |---|---|
-| B1. `compares`: `self.fix && ..` read as `(self.fix \|\| true) && ..`, so the code's `forget` compares too | 8: `current_code_lets_..`, `a_cloud_command_..`, `a_waiter_forgets_..`, `a_late_resume_..`, `a_stale_refresh_..`, `current_code_breaks_only_the_finding`, `forget_reads_nothing`, `the_fix_forgets_only_the_polled_pending` (its as-is step) |
-| B2. `expect`: `(self.fix && ..).then_some(read)` read with `self.fix` true, so the code's `request_code` guards its save too | `a_slow_code_request_..` |
+| B1. `compares`: `self.fix.is_proposed() && ..` read as `(self.fix.is_proposed() \|\| true) && ..`, so the code's `forget` compares too | 8: `current_code_lets_..`, `a_cloud_command_..`, `a_waiter_forgets_..`, `a_late_resume_..`, `a_stale_refresh_..`, `current_code_breaks_only_the_finding`, `forget_reads_nothing`, `the_fix_forgets_only_the_polled_pending` (its as-is step) |
+| B2. `expect`: `(self.fix.is_proposed() && ..).then_some(read)` read with `self.fix.is_proposed()` true, so the code's `request_code` guards its save too | `a_slow_code_request_..` |
 | B3. `save`: `if self.broken.save_tears` read as `if false` | `save_writes_a_temp_file_and_renames_it`, `forget_reads_nothing` (its replay needs the torn step) |
 | B4. `save`: `if self.broken.save_tears` read as `if true` | 13: `current_code_breaks_only_the_finding` (`NO_TORN_READ`), `current_code_lets_..`, `a_slow_code_request_..`, `a_late_resume_..`, `a_waiter_forgets_..`, `a_stale_refresh_..`, `the_fix_keeps_an_approved_sign_in`, `the_fix_keeps_the_finding_s_sign_in`, `the_fix_needs_the_comparison`, `the_fix_needs_the_request_guard`, `the_fix_compares_at_the_save`, `the_fix_rereads_after_the_resume_branch`, `the_fix_requests_after_forgetting_its_own_pending` |
-| B5. `compares`: its body `self.fix && !self.broken.fix_forgets_any_file` replaced by `false`, so the fix's `forget` removes whatever the file holds | 7: `the_fix_keeps_an_approved_sign_in`, `the_fix_keeps_the_finding_s_sign_in`, `the_fix_forgets_only_the_polled_pending`, `the_fix_needs_the_forget_lock`, `the_fix_needs_the_request_guard`, `the_fix_rereads_after_the_resume_branch`, `the_fix_still_reports_expired` |
-| B6. `compares`: `!self.broken.fix_forgets_any_file` read as `true` | `the_fix_needs_the_comparison` |
-| B7. `forget`: `self.broken.fix_forget_unlocked` (`core/crates/ployz-verify/src/sign_in_store.rs:822`) read as `false` | `the_fix_needs_the_forget_lock` |
-| B8. `expect`: `!self.broken.fix_request_overwrites` read as `true` | `the_fix_needs_the_request_guard` |
-| B9. `expect`: its body `(self.fix && !self.broken.fix_request_overwrites).then_some(read)` replaced by `None`, dropping the fix's request guard | `the_fix_keeps_an_approved_sign_in`, `the_fix_needs_the_comparison`, `the_fix_compares_at_the_save`, `the_fix_rereads_after_the_resume_branch` |
+| B5. `compares`: its body `self.fix.is_proposed() && !self.proposal().forgets_any_file` replaced by `false`, so the fix's `forget` removes whatever the file holds | 7: `the_fix_keeps_an_approved_sign_in`, `the_fix_keeps_the_finding_s_sign_in`, `the_fix_forgets_only_the_polled_pending`, `the_fix_needs_the_forget_lock`, `the_fix_needs_the_request_guard`, `the_fix_rereads_after_the_resume_branch`, `the_fix_still_reports_expired` |
+| B6. `compares`: `!self.proposal().forgets_any_file` read as `true` | `the_fix_needs_the_comparison` |
+| B7. `forget`: `self.proposal().forget_unlocked` (`core/crates/ployz-verify/src/sign_in_store.rs:822`) read as `false` | `the_fix_needs_the_forget_lock` |
+| B8. `expect`: `!self.proposal().request_overwrites` read as `true` | `the_fix_needs_the_request_guard` |
+| B9. `expect`: its body `(self.fix.is_proposed() && !self.proposal().request_overwrites).then_some(read)` replaced by `None`, dropping the fix's request guard | `the_fix_keeps_an_approved_sign_in`, `the_fix_needs_the_comparison`, `the_fix_compares_at_the_save`, `the_fix_rereads_after_the_resume_branch` |
 | B10. `forgets`: `file == File::Pending(polled)` read as `matches!(file, File::Pending(_))` | `the_fix_forgets_only_the_polled_pending`, `the_fix_keeps_an_approved_sign_in` |
-| B11. `forget`, right after `let removes = ..;`: `if self.fix && who != COMMAND && then == Then::Return && !removes && matches!(state.file, File::SignedIn(_)) { return Pc::Done(Outcome::SignedIn); }`. `then == Then::Return` picks the wait loop's `forget`, since the resume branch's has `Then::Request`; it records no branch and sets no `kept` | `the_fix_still_reports_expired`, `the_fix_keeps_an_approved_sign_in`, `the_fix_keeps_the_finding_s_sign_in` |
-| B12. `request`: `self.broken.fix_compares_before_post` (`core/crates/ployz-verify/src/sign_in_store.rs:867`) read as `false` | `the_fix_compares_at_the_save` |
+| B11. `forget`, right after `let removes = ..;`: `if self.fix.is_proposed() && who != COMMAND && then == Then::Return && !removes && matches!(state.file, File::SignedIn(_)) { return Pc::Done(Outcome::SignedIn); }`. `then == Then::Return` picks the wait loop's `forget`, since the resume branch's has `Then::Request`; it records no branch and sets no `kept` | `the_fix_still_reports_expired`, `the_fix_keeps_an_approved_sign_in`, `the_fix_keeps_the_finding_s_sign_in` |
+| B12. `request`: `self.proposal().compares_before_post` (`core/crates/ployz-verify/src/sign_in_store.rs:867`) read as `false` | `the_fix_compares_at_the_save` |
 | B13. `saved`: `state.kept = [false; MAX_CODES];` before the SignedIn's bit is set, so the property watches only the last returned token | `a_stale_refresh_does_not_hide_a_live_sign_in` |
 | B14. `forget`, right after `let removes = ..;`: `let removes = removes && !(!self.compares() && who != COMMAND && matches!(state.file, File::SignedIn(_)));`, so on the code as it is a Login's `forget` leaves a SignedIn | `current_code_lets_..`, `a_late_resume_..`, `a_waiter_forgets_..` |
 | B15. `after_forget`: `if removed` read as `if false`, so a resume branch that removed its own Pending still expects it | `the_fix_requests_after_forgetting_its_own_pending` |
@@ -255,7 +254,7 @@ cd core && cargo nextest run -p ployz-verify -E 'test(=sign_in_store::tests::scr
 ```rust
     #[test]
     fn scratch() {
-        let fixed3 = SignInStore { logins: 3, ..fixed() };
+        let fixed3 = SignInStore { logins: 3, ..proposed() };
         let checker = check(fixed3);
         println!("fixed, 3 logins: {} states", checker.unique_state_count());
         checker.assert_properties();
@@ -264,9 +263,7 @@ cd core && cargo nextest run -p ployz-verify -E 'test(=sign_in_store::tests::scr
         println!("as is, 3 logins: {} states", checker.unique_state_count());
         assert!(checker.discovery(APPROVED_SIGN_IN_KEPT).is_some());
         assert!(checker.discovery(NO_TORN_READ).is_none());
-        for row in COVERAGE.iter().filter(|row| row.reach != Reach::Fix) {
-            assert!(checker.discovery(row.name).is_some(), "{} is never reached", row.name);
-        }
+        harness::assert_reached(COVERAGE, &as_is3, &checker);
     }
 ```
 
@@ -284,10 +281,10 @@ The other processes can step between any two of a process's file operations. Eac
 - **`start`'s read and get-session** (`:307`, `:315`) are one step. A logout can end the session between them. In the model the logout's step comes first: it ends the session and leaves the file for its own clear, so `start` reads the SignedIn and finds it ended, as it would.
 - **`start`'s refresh save** (`:321`) is its own step, `Pc::Refreshing`. A logout can sign out and clear between the read and it, which the refresh row above reaches.
 - **`start`'s read and `request_code`** (`:307`, `:340`) are separate steps, `Pc::Requesting`, so any process can write between them. That is the slow code request's window.
-- **`request_code`'s POST and save** (`:494-513`) are one step. The POST changes only Cloud's new row, which no other process knows until the save names it, so nothing another process does between them depends on it. Under the fix the compare joins them at the save; under `fix_compares_before_post` the compare is its own step, and the POST and save are another (`Pc::Posting`).
+- **`request_code`'s POST and save** (`:494-513`) are one step. The POST changes only Cloud's new row, which no other process knows until the save names it, so nothing another process does between them depends on it. Under the fix the compare joins them at the save; under `compares_before_post` the compare is its own step, and the POST and save are another (`Pc::Posting`).
 - **`poll_once`'s poll** (`:326`, `:282`) and the **wait loop's sleep and poll** (`:355-356`) are one step each. A sleep touches nothing.
 - **`finish`'s get-session and save** (`:574-583`) are one step, after the poll's step. Only the process that polled holds the token, and the file holds a Pending until this save, so no logout can sign the session out before it (`:402-407`).
-- **`forget`'s `clear`** (`:617-618`) is one step and reads nothing. Under the fix, its compare and removal are one step under the lock, or two under `fix_forget_unlocked` (`Pc::Removing`).
+- **`forget`'s `clear`** (`:617-618`) is one step and reads nothing. Under the fix, its compare and removal are one step under the lock, or two under `forget_unlocked` (`Pc::Removing`).
 - **`signed_in`'s `load`** (`:277`) is its own step.
 - **`logout`'s read and its POST to `/api/cli/logout`** (`:397`, `:409-414`) are one step, and its `clear` (`:444`) is another. The POST ends only the session of the token logout read, and every other process reads that session only through a get-session; a read between the two orders the same way before the logout's step.
 

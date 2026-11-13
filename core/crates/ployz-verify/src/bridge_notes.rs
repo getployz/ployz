@@ -41,6 +41,8 @@ use ployz_core::RestartPolicy;
 use ployz_decide::bridge::{self, Settle};
 use stateright::{Model, Property};
 
+use crate::harness::{self, Variant, everywhere};
+
 /// The ployz bridge's name in Docker's messages (`DOCKER_NETWORK_NAME`,
 /// core/crates/ployzd/src/network.rs).
 const NETWORK: &str = "ployz";
@@ -736,8 +738,8 @@ fn debt(state: &State, member: Member) -> Option<MemberDebt> {
 struct BridgeNotes {
     /// How many members the bridge has, 1 or 2.
     members: u8,
-    /// The fix, with its policy; `None` is the code as it is.
-    fix: Option<OnRefusal>,
+    /// The fix, with its policy; `Shipped` is the code as it is.
+    fix: Variant<OnRefusal>,
     broken: Broken,
 }
 
@@ -929,7 +931,7 @@ impl BridgeNotes {
     /// member attached. It does not check that the member sits at the address an
     /// `AddressThenStart` debt owes: no property here needs that check.
     fn defers(&self, state: &State, member: Member) -> bool {
-        self.fix.is_some()
+        self.fix.is_proposed()
             && !self.broken.fix_starts_detached
             && matches!(
                 debt(state, member),
@@ -1459,21 +1461,21 @@ impl BridgeNotes {
                 let kept = unpaid.is_some()
                     && match self.fix {
                         _ if self.broken.fix_keeps_unpaid => true,
-                        None => true,
-                        Some(OnRefusal::Drop) => false,
-                        Some(OnRefusal::Retry) => tries < RETRIES,
+                        Variant::Shipped => true,
+                        Variant::Proposed(OnRefusal::Drop) => false,
+                        Variant::Proposed(OnRefusal::Retry) => tries < RETRIES,
                     };
                 if let Some(why) = unpaid
                     && kept
                 {
                     state.pass.kept = state.pass.kept.with(member);
                     *state.pass.kept_why.get_mut(member) = why;
-                    *state.pass.kept_retries.get_mut(member) = if self.fix == Some(OnRefusal::Retry)
-                    {
-                        tries + 1
-                    } else {
-                        0
-                    };
+                    *state.pass.kept_retries.get_mut(member) =
+                        if self.fix == Variant::Proposed(OnRefusal::Retry) {
+                            tries + 1
+                        } else {
+                            0
+                        };
                 }
                 state.took = Some(Branch::Start {
                     member,
@@ -1884,15 +1886,7 @@ impl Model for BridgeNotes {
                 },
             ),
         ];
-        let rows = if self.fix.is_some() {
-            COVERAGE.iter().chain(FIX_COVERAGE).collect::<Vec<_>>()
-        } else {
-            COVERAGE.iter().collect()
-        };
-        properties.extend(
-            rows.into_iter()
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -1915,11 +1909,7 @@ const NOTED_BEFORE_STOP: &str =
 const ADDRESS_NOTED_BEFORE_DETACH: &str =
     "the start detaches a member only while the address note names an address for it";
 
-/// One `sometimes`: a branch the code handles, read from the state that took it.
-struct Coverage {
-    name: &'static str,
-    reached: fn(&BridgeNotes, &State) -> bool,
-}
+type Coverage = harness::Coverage<BridgeNotes>;
 
 fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
@@ -1949,19 +1939,27 @@ const COVERAGE: &[Coverage] = &[
     // ensure_docker_network_shape (:718-785).
     Coverage {
         name: "the start finds the bridge's IPv6 shape wrong and readdresses it",
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Shape(Bridge::Old)),
     },
     Coverage {
         name: "the start finds the bridge fitting",
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Shape(Bridge::New)),
     },
     Coverage {
         name: "the start finds no bridge and creates one",
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Created { readdress: false }),
     },
     // readdress_docker_network (:802-851).
     Coverage {
         name: "the readdress's listing fails, and it returns Ok",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1974,6 +1972,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the readdress writes the address note before any detach",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1986,6 +1986,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the readdress's address note write fails, and it detaches nothing",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -1998,6 +2000,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the readdress's address note lands but returns Err, and it detaches nothing",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -2010,6 +2014,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the readdress detaches an attached member at once",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2026,6 +2032,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Docker refuses a disconnect as between restarts",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2039,6 +2047,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "settle answers StopAndNote",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2051,6 +2061,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "settle answers Stop, and the member under no restart policy is stopped without a note",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2064,6 +2076,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "settle answers Leave for a member that exited before stop's inspect",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2076,6 +2090,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::note writes the member down, and stop_container stops it",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2089,6 +2105,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::note's write fails, and the member is left alone",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2101,6 +2119,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::note's write lands but returns Err, and the member is left alone",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2113,6 +2133,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the disconnect after a stop detaches the member",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2128,6 +2150,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a readdress detach fails, and the bridge is not replaced",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2140,10 +2164,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the readdress replaces the bridge",
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Created { readdress: true }),
     },
     Coverage {
         name: "a readdress rejoin pins the member at its address",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2157,6 +2185,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a readdress rejoin fails, and the member stays detached",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2169,6 +2199,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Docker refuses a connect as between restarts, and stop runs",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2183,6 +2215,8 @@ const COVERAGE: &[Coverage] = &[
     // pin_members (:914-986).
     Coverage {
         name: "the pin pass's listing fails, and it returns before finish",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -2195,6 +2229,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the pin pass records an attached member's address before its detach",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -2207,10 +2243,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the pin pass's record fails, and it skips an attached member",
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Unrecorded { .. })),
     },
     Coverage {
         name: "the pin pass detaches a member on a dynamic address",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2226,6 +2266,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the pin pass rejoins a detached member at its noted address",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2240,6 +2282,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a pin pass rejoin fails, and the member goes into unjoined",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2252,6 +2296,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Pins::finish removes the address note",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -2264,6 +2310,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Pins::finish keeps an unjoined member's address",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -2276,6 +2324,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Pins::finish fails, and the old address note stays",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2289,6 +2339,8 @@ const COVERAGE: &[Coverage] = &[
     // Stopped::start (stopped.rs:58-94).
     Coverage {
         name: "Stopped::start starts a member this start stopped",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2305,6 +2357,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::start finds a noted member already running",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2317,6 +2371,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::start drops a member the operator removed",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2329,6 +2385,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Docker refuses a start, and the member stays written down",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2342,6 +2400,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Docker answers the netless 404, and the member stays written down",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2355,6 +2415,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::start removes the stopped note",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -2367,6 +2429,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::start rewrites the stopped note with the members Docker did not start",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -2379,6 +2443,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::start's update fails, and the old stopped note stays",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2392,11 +2458,15 @@ const COVERAGE: &[Coverage] = &[
     // What the note keeps, and what a later daemon start does with it.
     Coverage {
         name: "a member Ployz stopped is started at a later daemon start after a start that died",
+        on: everywhere,
+        omit: None,
         reached: |_, state| state.used.crashes > 0 && ran_loaded(state, Why::Noted),
     },
     // Route 3: the start ran, and the update that should drop the id failed.
     Coverage {
         name: "Stopped::start starts a member the operator stopped, kept because the note's update failed",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2411,15 +2481,21 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a member Docker refused is started at a later daemon start",
+        on: everywhere,
+        omit: None,
         reached: |_, state| ran_loaded(state, Why::Refused),
     },
     Coverage {
         name: "a member Docker refused for a missing network is started at a later daemon start",
+        on: everywhere,
+        omit: None,
         reached: |_, state| ran_loaded(state, Why::Netless),
     },
     // Risk 3: an owed address that a member no longer holds.
     Coverage {
         name: "a refused pinned connect falls back to a dynamic address while the address note owes another",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2434,6 +2510,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Docker attaches a detached member it starts on a dynamic address while the address note owes another",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2450,6 +2528,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Stopped::start starts a member attached on a dynamic address while the address note owes another",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2467,10 +2547,14 @@ const COVERAGE: &[Coverage] = &[
     // The actors.
     Coverage {
         name: "a daemon start dies",
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Crashed),
     },
     Coverage {
         name: "Docker's restart policy runs a held member again",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2483,10 +2567,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Docker's restart policy holds a running member between restarts",
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Flipped { to: Run::Held, .. })),
     },
     Coverage {
         name: "a held member under no restart policy exits",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2499,6 +2587,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the operator starts a member at rest",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2511,6 +2601,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the operator stops a running member",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2523,6 +2615,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the operator holds a member at rest",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2535,6 +2629,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the operator removes a member",
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2545,12 +2641,11 @@ const COVERAGE: &[Coverage] = &[
             )
         },
     },
-];
-
-/// The fix's own branches, rows only for a model with `fix`.
-const FIX_COVERAGE: &[Coverage] = &[
+    // The fix's own branches, rows only for a model that proposes it.
     Coverage {
         name: "the fix defers the start of a member Docker shows detached",
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2563,6 +2658,8 @@ const FIX_COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the fix drops a member whose start it cannot pay",
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2576,6 +2673,8 @@ const FIX_COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the fix drops a member whose retries are spent",
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
@@ -2590,6 +2689,8 @@ const FIX_COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a member deferred for its address is started at a later daemon start",
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| ran_loaded(state, Why::Deferred),
     },
 ];
@@ -2930,9 +3031,9 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                 } => format!("Docker runs it, though it had no ployz endpoint, and attaches it on {address:?}"),
                 Started::AlreadyRunning => "it already runs: bollard reads Docker's 304 as Ok".to_owned(),
                 Started::Gone => "404 No such container, so it is dropped (stopped.rs:66, `ployz_decide::bridge::gone`)".to_owned(),
-                Started::Refused if model.fix.is_none() => "Docker refuses it (500), so it is kept and reported (stopped.rs:67-73)".to_owned(),
+                Started::Refused if model.fix.is_shipped() => "Docker refuses it (500), so it is kept and reported (stopped.rs:67-73)".to_owned(),
                 Started::Netless if model.broken.netless_gone => "Docker answers 404 for its missing network, and gone reads every 404 as gone, so it is dropped".to_owned(),
-                Started::Netless if model.fix.is_none() => "Docker answers 404 for its missing network, so it is kept (stopped.rs:67-73, `ployz_decide::bridge::gone`)".to_owned(),
+                Started::Netless if model.fix.is_shipped() => "Docker answers 404 for its missing network, so it is kept (stopped.rs:67-73, `ployz_decide::bridge::gone`)".to_owned(),
                 Started::Refused | Started::Netless | Started::Deferred => format!(
                     "{}, and the fix {}",
                     match answer {
@@ -3010,7 +3111,7 @@ mod tests {
     fn as_is() -> BridgeNotes {
         BridgeNotes {
             members: 1,
-            fix: None,
+            fix: Variant::Shipped,
             broken: Broken::default(),
         }
     }
@@ -3280,25 +3381,19 @@ mod tests {
         for property in [NOTED_BEFORE_STOP, ADDRESS_NOTED_BEFORE_DETACH] {
             assert!(checker.discovery(property).is_none(), "{property} fails");
         }
-        for row in COVERAGE {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &as_is(), &checker);
         breaks(as_is(), STARTS_ONLY_OWED);
         breaks(as_is(), STARTS_ONLY_ON_BRIDGE);
     }
 
     fn fixed(on_refusal: OnRefusal) -> BridgeNotes {
         BridgeNotes {
-            fix: Some(on_refusal),
+            fix: Variant::Proposed(on_refusal),
             ..as_is()
         }
     }
 
-    fn broken(fix: Option<OnRefusal>, broken: Broken) -> BridgeNotes {
+    fn broken(fix: Variant<OnRefusal>, broken: Broken) -> BridgeNotes {
         BridgeNotes {
             members: 1,
             fix,
@@ -3316,23 +3411,14 @@ mod tests {
     }
 
     fn row(name: &str) -> &'static Coverage {
-        COVERAGE
-            .iter()
-            .chain(FIX_COVERAGE)
-            .find(|row| row.name == name)
-            .expect("a row")
+        COVERAGE.iter().find(|row| row.name == name).expect("a row")
     }
 
-    /// The rows of `model` its checker never reaches, in `COVERAGE` then `FIX_COVERAGE` order.
+    /// The rows of `model` its checker never reaches, in `COVERAGE` order.
     fn unreached(model: BridgeNotes, checker: &impl Checker<BridgeNotes>) -> Vec<&'static str> {
-        let fix: &[Coverage] = if model.fix.is_some() {
-            FIX_COVERAGE
-        } else {
-            &[]
-        };
         COVERAGE
             .iter()
-            .chain(fix)
+            .filter(|row| (row.on)(&model))
             .filter(|row| checker.discovery(row.name).is_none())
             .map(|row| row.name)
             .collect()
@@ -3672,7 +3758,7 @@ mod tests {
     #[test]
     fn stop_before_note_breaks_the_note_before_the_stop() {
         let model = broken(
-            None,
+            Variant::Shipped,
             Broken {
                 stop_before_note: true,
                 ..Broken::default()
@@ -3692,7 +3778,7 @@ mod tests {
     #[test]
     fn detach_unrecorded_breaks_the_address_note_before_the_detach() {
         let model = broken(
-            None,
+            Variant::Shipped,
             Broken {
                 detach_unrecorded: true,
                 ..Broken::default()
@@ -3713,7 +3799,7 @@ mod tests {
     #[test]
     fn replace_after_failed_detach_removes_a_bridge_a_member_is_on() {
         let model = broken(
-            None,
+            Variant::Shipped,
             Broken {
                 replace_after_failed_detach: true,
                 ..Broken::default()
@@ -3788,7 +3874,7 @@ mod tests {
     #[test]
     fn netless_gone_never_starts_a_member_refused_for_its_network() {
         let model = broken(
-            None,
+            Variant::Shipped,
             Broken {
                 netless_gone: true,
                 ..Broken::default()
@@ -3807,7 +3893,7 @@ mod tests {
     #[test]
     fn fix_starts_detached_breaks_the_second_property() {
         let model = broken(
-            Some(OnRefusal::Drop),
+            Variant::Proposed(OnRefusal::Drop),
             Broken {
                 fix_starts_detached: true,
                 ..Broken::default()
@@ -3819,7 +3905,7 @@ mod tests {
     #[test]
     fn fix_keeps_unpaid_breaks_the_first_property_by_a_refusal() {
         let model = broken(
-            Some(OnRefusal::Drop),
+            Variant::Proposed(OnRefusal::Drop),
             Broken {
                 fix_keeps_unpaid: true,
                 ..Broken::default()

@@ -17,9 +17,124 @@ use std::{
     },
 };
 
-use stateright::{Checker, Expectation, HasDiscoveries, Model};
+use stateright::{Checker, Expectation, HasDiscoveries, Model, Property};
 
 pub(crate) type Path<M> = Vec<(<M as Model>::State, Option<<M as Model>::Action>)>;
+
+/// The code as it ships, or one change proposed to it that `F` names. A model checks both
+/// to show what the proposal fixes, and a `Broken` flag replays only a bug the shipped code
+/// had.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub(crate) enum Variant<F> {
+    #[default]
+    Shipped,
+    Proposed(F),
+}
+
+impl<F: Copy> Variant<F> {
+    pub(crate) const fn is_shipped(self) -> bool {
+        matches!(self, Self::Shipped)
+    }
+
+    pub(crate) const fn is_proposed(self) -> bool {
+        matches!(self, Self::Proposed(_))
+    }
+
+    /// The proposal, or `None` on the shipped code.
+    pub(crate) const fn proposal(self) -> Option<F> {
+        match self {
+            Self::Shipped => None,
+            Self::Proposed(proposal) => Some(proposal),
+        }
+    }
+}
+
+/// The `omit` of a model whose rows take nothing out to show they are reached no other way.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Never {}
+
+/// One `sometimes`: a branch the code handles, read from the state that took it.
+///
+/// A row is a property of the models whose `on` holds. `omit` is what to take out of such a
+/// model, as the model's `O` says, to show no other path reaches the row's `reached`.
+pub(crate) struct Coverage<M: Model, O: 'static = Never> {
+    pub(crate) name: &'static str,
+    pub(crate) on: fn(&M) -> bool,
+    pub(crate) omit: Option<O>,
+    pub(crate) reached: fn(&M, &M::State) -> bool,
+}
+
+/// A row that is reached on every model.
+pub(crate) fn everywhere<M>(_: &M) -> bool {
+    true
+}
+
+/// The rows of `rows` that `model` reaches, as properties.
+pub(crate) fn sometimes<'a, M: Model, O>(
+    rows: &'a [Coverage<M, O>],
+    model: &'a M,
+) -> impl Iterator<Item = Property<M>> + 'a {
+    rows.iter()
+        .filter(|row| (row.on)(model))
+        .map(|row| Property::sometimes(row.name, row.reached))
+}
+
+/// Every row that `model` reaches has a discovery in `checker`.
+pub(crate) fn assert_reached<M: Model, O>(
+    rows: &[Coverage<M, O>],
+    model: &M,
+    checker: &impl Checker<M>,
+) where
+    M::State: Hash + Clone + PartialEq,
+    M::Action: Clone + PartialEq,
+{
+    for row in rows.iter().filter(|row| (row.on)(model)) {
+        assert!(
+            checker.discovery(row.name).is_some(),
+            "{} is never reached",
+            row.name
+        );
+    }
+}
+
+/// Each row that `model` reaches stays unreached once its `omit` is taken out of `model`
+/// by `omitting`, so no other path satisfies its predicate. A row that stays reached is
+/// vacuous: its predicate is looser than its name. It returns one line per cut, with the
+/// number of states the cut model explored.
+pub(crate) fn assert_omissions<M, O>(
+    rows: &[Coverage<M, O>],
+    model: &M,
+    omitting: impl Fn(&M, O) -> M,
+) -> Vec<String>
+where
+    M: Model + Clone + Send + Sync + 'static,
+    M::State: Hash + Send + Sync + Clone + PartialEq + 'static,
+    M::Action: Clone + PartialEq,
+    O: Copy + Debug,
+{
+    let whole = check(model.clone());
+    let mut cuts = Vec::new();
+    for row in rows.iter().filter(|row| (row.on)(model)) {
+        assert!(
+            whole.discovery(row.name).is_some(),
+            "{} is never reached",
+            row.name
+        );
+        let Some(omit) = row.omit else { continue };
+        let cut = check(omitting(model, omit));
+        assert!(
+            cut.discovery(row.name).is_none(),
+            "{} is reached without {omit:?}",
+            row.name
+        );
+        cuts.push(format!(
+            "without {omit:?}: {} states, unreached: {}",
+            cut.unique_state_count(),
+            row.name
+        ));
+    }
+    cuts
+}
 
 /// A model that can print a path as a story under the test that found it.
 pub(crate) trait Narrated:

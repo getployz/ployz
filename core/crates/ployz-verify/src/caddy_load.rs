@@ -55,6 +55,8 @@ use std::fmt::Write as _;
 use ployz_decide::caddy_load::{self as decided, Applied, CaddyFile, Input, Probe};
 use stateright::{Model, Property};
 
+use crate::harness::{self, everywhere};
+
 /// The watcher's `CaddyLoad`, over this model's input and claimed addresses.
 type Last = decided::CaddyLoad<CaddyInput, Served>;
 
@@ -479,28 +481,9 @@ enum Omit {
     Keep,
 }
 
-/// The bound a coverage row needs on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Bound {
-    Always,
-    Restarts,
-    RestartsMidApply,
-    ReadsFail,
-    LoadsLost,
-    /// The keep rule reads the Caddyfile.
-    KeepNeedsCurrentFile,
-    /// `Probe::Refused` writes the record.
-    RefusedProbeRecords,
-}
-
 /// One `sometimes`: the call, outcome or event it names, read from the state that
 /// recorded it, and what to take out of the model to show nothing else reaches it.
-struct Coverage {
-    name: &'static str,
-    needs: Bound,
-    omit: Omit,
-    reached: fn(&CaddyLoad, &State) -> bool,
-}
+type Coverage = harness::Coverage<CaddyLoad, Omit>;
 
 /// `Probe::Unchanged` after a load the admin refused: `after` reads the keep rule.
 fn refused_unchanged(pass: Pass) -> bool {
@@ -518,8 +501,8 @@ fn refused_unchanged(pass: Pass) -> bool {
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "a load through the admin succeeds and the pass claims the projection",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::Load(Load::Ok)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Load(Load::Ok)])),
         reached: |_, state| {
             state.at_rest()
                 && matches!(state.addresses, Some(Served::Config(_)))
@@ -528,50 +511,52 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "connect finds the admin",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::Connect(Admin::Some)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Connect(Admin::Some)])),
         reached: |_, state| state.last == Some(Action::Connect(Admin::Some)),
     },
     Coverage {
         name: "connect finds the admin socket down",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::Connect(Admin::None)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Connect(Admin::None)])),
         reached: |_, state| state.last == Some(Action::Connect(Admin::None)),
     },
     Coverage {
         name: "connect fails and counts as a failure without the admin",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::Connect(Admin::Err)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Connect(Admin::Err)])),
         reached: |_, state| state.last == Some(Action::Connect(Admin::Err)),
     },
     Coverage {
         name: "write_certificate_files fails before serving",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::WriteCertificates(Call::Err)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::WriteCertificates(Call::Err)])),
         reached: |_, state| state.last == Some(Action::WriteCertificates(Call::Err)),
     },
     Coverage {
         name: "the admin refuses the load, so find_refused runs",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::Load(Load::Refused)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Load(Load::Refused)])),
         reached: |_, state| state.last == Some(Action::Load(Load::Refused)),
     },
     Coverage {
         name: "caddy::load fails short of Caddy",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::Load(Load::Failed)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Load(Load::Failed)])),
         reached: |_, state| state.last == Some(Action::Load(Load::Failed)),
     },
     Coverage {
         name: "a load takes and its response is lost",
-        needs: Bound::LoadsLost,
-        omit: Omit::Actions(&[Action::Load(Load::Lost)]),
+        on: |model| model.loads_lost,
+        omit: Some(Omit::Actions(&[Action::Load(Load::Lost)])),
         reached: |_, state| state.last == Some(Action::Load(Load::Lost)),
     },
     Coverage {
         name: "the Caddyfile write fails before its rename after Caddy loaded the projection",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::WriteCaddyfile(Write::FailedBeforeReplacing)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::WriteCaddyfile(
+            Write::FailedBeforeReplacing,
+        )])),
         reached: |_, state| {
             state.last == Some(Action::WriteCaddyfile(Write::FailedBeforeReplacing))
                 && matches!(
@@ -585,74 +570,76 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a failed write replaced the Caddyfile",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::WriteCaddyfile(Write::FailedAfterReplacing)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::WriteCaddyfile(
+            Write::FailedAfterReplacing,
+        )])),
         reached: |_, state| state.last == Some(Action::WriteCaddyfile(Write::FailedAfterReplacing)),
     },
     Coverage {
         name: "remove_stale_certificate_files fails after the Caddyfile is written",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::RemoveStale(Call::Err)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::RemoveStale(Call::Err)])),
         reached: |_, state| state.last == Some(Action::RemoveStale(Call::Err)),
     },
     Coverage {
         name: "apply_caddy returns Ok through the admin",
-        needs: Bound::Always,
-        omit: Omit::End(End::Loaded(Applied::Ok)),
+        on: everywhere,
+        omit: Some(Omit::End(End::Loaded(Applied::Ok))),
         reached: |_, state| state.ends() == Some(End::Loaded(Applied::Ok)),
     },
     Coverage {
         name: "a pass without the admin writes the Caddyfile and claims nothing",
-        needs: Bound::Always,
-        omit: Omit::End(End::Written),
+        on: everywhere,
+        omit: Some(Omit::End(End::Written)),
         reached: |_, state| state.ends() == Some(End::Written) && !state.no_caddy(),
     },
     Coverage {
         name: "a pass without the admin fails before serving",
-        needs: Bound::Always,
-        omit: Omit::End(End::Unknown),
+        on: everywhere,
+        omit: Some(Omit::End(End::Unknown)),
         reached: |_, state| state.ends() == Some(End::Unknown),
     },
     Coverage {
         name: "loaded_certificates answers and replaces `accepted`",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::ProbeLoaded(Call::Ok)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::ProbeLoaded(Call::Ok)])),
         reached: |_, state| state.last == Some(Action::ProbeLoaded(Call::Ok)),
     },
     Coverage {
         name: "loaded_certificates fails and `accepted` stands",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::ProbeLoaded(Call::Err)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::ProbeLoaded(Call::Err)])),
         reached: |_, state| state.last == Some(Action::ProbeLoaded(Call::Err)),
     },
     Coverage {
         name: "the load without the suspects takes",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::ProbeWithout(Load::Ok)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::ProbeWithout(Load::Ok)])),
         reached: |_, state| state.last == Some(Action::ProbeWithout(Load::Ok)),
     },
     Coverage {
         name: "the load without the suspects fails: Probe::Unchanged",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::ProbeWithout(Load::Failed)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::ProbeWithout(Load::Failed)])),
         reached: |_, state| state.last == Some(Action::ProbeWithout(Load::Failed)),
     },
     Coverage {
         name: "the load without the suspects takes and its response is lost",
-        needs: Bound::LoadsLost,
-        omit: Omit::Actions(&[Action::ProbeWithout(Load::Lost)]),
+        on: |model| model.loads_lost,
+        omit: Some(Omit::Actions(&[Action::ProbeWithout(Load::Lost)])),
         reached: |_, state| state.last == Some(Action::ProbeWithout(Load::Lost)),
     },
     Coverage {
         name: "the candidate with c loads: Probe::Reloaded",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::ProbeCandidate(Load::Ok)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::ProbeCandidate(Load::Ok)])),
         reached: |_, state| state.last == Some(Action::ProbeCandidate(Load::Ok)),
     },
     Coverage {
         name: "the candidate with c is refused twice: c quarantined, Probe::Refused",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::ProbeCandidate(Load::Refused)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::ProbeCandidate(Load::Refused)])),
         reached: |_, state| {
             state.last == Some(Action::ProbeCandidate(Load::Refused))
                 && state.certificates.refused_c
@@ -660,41 +647,41 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the candidate with c fails short of Caddy: Probe::Reloaded",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::ProbeCandidate(Load::Failed)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::ProbeCandidate(Load::Failed)])),
         reached: |_, state| state.last == Some(Action::ProbeCandidate(Load::Failed)),
     },
     Coverage {
         name: "the candidate with c takes and its response is lost",
-        needs: Bound::LoadsLost,
-        omit: Omit::Actions(&[Action::ProbeCandidate(Load::Lost)]),
+        on: |model| model.loads_lost,
+        omit: Some(Omit::Actions(&[Action::ProbeCandidate(Load::Lost)])),
         reached: |_, state| state.last == Some(Action::ProbeCandidate(Load::Lost)),
     },
     Coverage {
         name: "the loaded cache skips the admin",
-        needs: Bound::Always,
-        omit: Omit::End(End::Cached),
+        on: everywhere,
+        omit: Some(Omit::End(End::Cached)),
         reached: |_, state| state.ends() == Some(End::Cached),
     },
     Coverage {
         name: "an equal input skips the apply without the admin",
-        needs: Bound::Always,
-        omit: Omit::End(End::Skipped),
+        on: everywhere,
+        omit: Some(Omit::End(End::Skipped)),
         reached: |_, state| state.ends() == Some(End::Skipped),
     },
     Coverage {
         name: "a refusal keeps the claim of the Caddy that confirmed it",
-        needs: Bound::Always,
-        omit: Omit::Keep,
+        on: everywhere,
+        omit: Some(Omit::Keep),
         reached: |model, state| matches!(state.pc, Pc::Record(pass) if model.keeps(&state.load, pass)),
     },
     Coverage {
         name: "a refusal while the Caddyfile is stale claims nothing",
-        needs: Bound::KeepNeedsCurrentFile,
-        omit: Omit::Actions(&[
+        on: |model| !model.broken.keep_ignores_the_caddyfile,
+        omit: Some(Omit::Actions(&[
             Action::WriteCaddyfile(Write::FailedBeforeReplacing),
             Action::WriteCaddyfile(Write::FailedAfterReplacing),
-        ]),
+        ])),
         reached: |_, state| {
             matches!(state.pc, Pc::Record(pass) if refused_unchanged(pass))
                 && matches!(state.load, decided::CaddyLoad::Served { file: CaddyFile::Stale, input, .. } if input.caddy == state.caddy.container)
@@ -702,22 +689,24 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a refused probe records before it re-derives",
-        needs: Bound::RefusedProbeRecords,
-        omit: Omit::End(End::Loaded(Applied::BeforeServing(Probe::Refused))),
+        on: |model| !model.broken.refused_probe_skips_the_record,
+        omit: Some(Omit::End(End::Loaded(Applied::BeforeServing(
+            Probe::Refused,
+        )))),
         reached: |_, state| {
             state.ends() == Some(End::Loaded(Applied::BeforeServing(Probe::Refused)))
         },
     },
     Coverage {
         name: "a read fails and the pass ends without a record write",
-        needs: Bound::ReadsFail,
-        omit: Omit::Actions(&[Action::Read(Call::Err)]),
+        on: |model| model.reads_fail,
+        omit: Some(Omit::Actions(&[Action::Read(Call::Err)])),
         reached: |_, state| state.pc == Pc::Wait && state.last == Some(Action::Read(Call::Err)),
     },
     Coverage {
         name: "a restarted Caddy serves a Caddyfile older than the claim",
-        needs: Bound::Restarts,
-        omit: Omit::Event(Event::Restarted),
+        on: |model| model.restarts,
+        omit: Some(Omit::Event(Event::Restarted)),
         reached: |_, state| {
             state.caddy.unseen == Some(Event::Restarted)
                 && state
@@ -727,38 +716,38 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "Caddy restarts between the load and the Caddyfile write",
-        needs: Bound::RestartsMidApply,
-        omit: Omit::Event(Event::RestartedMidApply),
+        on: |model| model.restarts_mid_apply,
+        omit: Some(Omit::Event(Event::RestartedMidApply)),
         reached: |_, state| state.caddy.unseen == Some(Event::RestartedMidApply),
     },
     Coverage {
         name: "a new container confirms the claim",
-        needs: Bound::Always,
-        omit: Omit::Event(Event::Replaced),
+        on: everywhere,
+        omit: Some(Omit::Event(Event::Replaced)),
         reached: |_, state| state.at_rest() && state.recorded_by() == Some(Container::Y),
     },
     Coverage {
         name: "a stopped Caddy claims to serve nothing",
-        needs: Bound::Always,
-        omit: Omit::Event(Event::Stopped),
+        on: everywhere,
+        omit: Some(Omit::Event(Event::Stopped)),
         reached: |_, state| state.at_rest() && state.addresses == Some(Served::Nothing),
     },
     Coverage {
         name: "a started Caddy serves the Caddyfile",
-        needs: Bound::Always,
-        omit: Omit::Event(Event::Started),
+        on: everywhere,
+        omit: Some(Omit::Event(Event::Started)),
         reached: |_, state| state.last == Some(Action::Start),
     },
     Coverage {
         name: "the store changes, and the next pass derives P0",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::Change(Config::P0)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Change(Config::P0)])),
         reached: |_, state| state.last == Some(Action::Change(Config::P0)),
     },
     Coverage {
         name: "the store changes, and the next pass derives P1",
-        needs: Bound::Always,
-        omit: Omit::Actions(&[Action::Change(Config::P1)]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Change(Config::P1)])),
         reached: |_, state| state.last == Some(Action::Change(Config::P1)),
     },
 ];
@@ -800,18 +789,6 @@ impl CaddyLoad {
         },
         omit: None,
     };
-
-    fn on(&self, bound: Bound) -> bool {
-        match bound {
-            Bound::Always => true,
-            Bound::Restarts => self.restarts,
-            Bound::RestartsMidApply => self.restarts_mid_apply,
-            Bound::ReadsFail => self.reads_fail,
-            Bound::LoadsLost => self.loads_lost,
-            Bound::KeepNeedsCurrentFile => !self.broken.keep_ignores_the_caddyfile,
-            Bound::RefusedProbeRecords => !self.broken.refused_probe_skips_the_record,
-        }
-    }
 
     /// `!no_caddy && load.skip(&input, true)`.
     fn cache_hits(&self, state: &State) -> bool {
@@ -1250,12 +1227,7 @@ impl Model for CaddyLoad {
                     || state.recorded_by().is_some()
             }),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| self.on(row.needs))
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -1682,31 +1654,16 @@ mod tests {
             loads_lost: true,
             ..CaddyLoad::QUIET
         };
-        let whole = check(all);
-        println!("all bounds on: {} states", whole.unique_state_count());
+        println!("all bounds on: {} states", check(all).unique_state_count());
         for row in COVERAGE {
-            assert!(all.on(row.needs), "{} is off with every bound on", row.name);
-            assert!(
-                whole.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-            let cut = check(CaddyLoad {
-                omit: Some(row.omit),
-                ..all
-            });
-            assert!(
-                cut.discovery(row.name).is_none(),
-                "{} is reached without {:?}",
-                row.name,
-                row.omit
-            );
-            println!(
-                "without {:?}: {} states, unreached: {}",
-                row.omit,
-                cut.unique_state_count(),
-                row.name
-            );
+            assert!((row.on)(&all), "{} is off with every bound on", row.name);
+        }
+        let cuts = harness::assert_omissions(COVERAGE, &all, |model, omit| CaddyLoad {
+            omit: Some(omit),
+            ..*model
+        });
+        for cut in cuts {
+            println!("{cut}");
         }
     }
 

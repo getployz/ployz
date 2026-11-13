@@ -45,6 +45,8 @@ use std::fmt::Write as _;
 
 use stateright::{Model, Property};
 
+use crate::harness::{self, everywhere};
+
 /// A snapshot point.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Point {
@@ -349,14 +351,7 @@ enum Omit {
     Path(SeedPath),
 }
 
-/// One `sometimes`: a branch the code handles, read from the state that took it, the
-/// scenarios that reach it, and what to take out of the model to show nothing else does.
-struct Coverage {
-    name: &'static str,
-    scenarios: &'static [Scenario],
-    omit: Omit,
-    reached: fn(&VolumeMarks, &State) -> bool,
-}
+type Coverage = harness::Coverage<VolumeMarks, Omit>;
 
 /// The last step was a Seed request that took `path`.
 fn took(state: &State, path: SeedPath) -> bool {
@@ -367,36 +362,48 @@ fn took(state: &State, path: SeedPath) -> bool {
 }
 
 const ALL: &[Scenario] = &[Scenario::Fresh, Scenario::OldCopy, Scenario::Taken];
-const SEEDS: &[Scenario] = &[Scenario::Fresh, Scenario::OldCopy];
-const FRESH: &[Scenario] = &[Scenario::Fresh];
-const OLD_COPY: &[Scenario] = &[Scenario::OldCopy];
-const TAKEN: &[Scenario] = &[Scenario::Taken];
+
+fn seeds(model: &VolumeMarks) -> bool {
+    model.scenario != Scenario::Taken
+}
+
+fn fresh(model: &VolumeMarks) -> bool {
+    model.scenario == Scenario::Fresh
+}
+
+fn old_copy(model: &VolumeMarks) -> bool {
+    model.scenario == Scenario::OldCopy
+}
+
+fn taken(model: &VolumeMarks) -> bool {
+    model.scenario == Scenario::Taken
+}
 
 /// Each branch the bounds reach, once. `every_sometimes_needs_what_it_names` takes each
 /// row's `omit` out and expects its `name` unreached.
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "a Seed starts its copy in a new slot",
-        scenarios: FRESH,
-        omit: Omit::Path(SeedPath::Starts),
+        on: fresh,
+        omit: Some(Omit::Path(SeedPath::Starts)),
         reached: |_, state| took(state, SeedPath::Starts),
     },
     Coverage {
         name: "a resent Seed answers the copy still receiving",
-        scenarios: SEEDS,
-        omit: Omit::Path(SeedPath::Receiving),
+        on: seeds,
+        omit: Some(Omit::Path(SeedPath::Receiving)),
         reached: |_, state| took(state, SeedPath::Receiving),
     },
     Coverage {
         name: "a Seed lands its complete copy as a root",
-        scenarios: SEEDS,
-        omit: Omit::Path(SeedPath::Lands),
+        on: seeds,
+        omit: Some(Omit::Path(SeedPath::Lands)),
         reached: |_, state| took(state, SeedPath::Lands),
     },
     Coverage {
         name: "Inspect reads a landing stopped before readonly=off as promote",
-        scenarios: SEEDS,
-        omit: Omit::Path(SeedPath::Stops),
+        on: seeds,
+        omit: Some(Omit::Path(SeedPath::Stops)),
         reached: |model, state| {
             took(state, SeedPath::Stops)
                 && matches!(state.into, Into::Root(root) if model.parse(root) == Parsed::Promote)
@@ -404,40 +411,40 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a resent Seed finishes a landing that stopped",
-        scenarios: SEEDS,
-        omit: Omit::Path(SeedPath::Finishes),
+        on: seeds,
+        omit: Some(Omit::Path(SeedPath::Finishes)),
         reached: |_, state| took(state, SeedPath::Finishes),
     },
     Coverage {
         name: "a Seed answers the root it landed",
-        scenarios: FRESH,
-        omit: Omit::Path(SeedPath::AnswersRoot),
+        on: fresh,
+        omit: Some(Omit::Path(SeedPath::AnswersRoot)),
         reached: |_, state| took(state, SeedPath::AnswersRoot),
     },
     Coverage {
         name: "a Seed refuses a Volume into that already exists",
-        scenarios: TAKEN,
-        omit: Omit::Path(SeedPath::Exists),
+        on: taken,
+        omit: Some(Omit::Path(SeedPath::Exists)),
         reached: |_, state| took(state, SeedPath::Exists),
     },
     Coverage {
         name: "a Seed refuses a slot written here",
-        scenarios: OLD_COPY,
-        omit: Omit::Path(SeedPath::Held),
+        on: old_copy,
+        omit: Some(Omit::Path(SeedPath::Held)),
         reached: |_, state| took(state, SeedPath::Held),
     },
     Coverage {
         name: LIVE_REPLACES_PULLED,
-        scenarios: OLD_COPY,
-        omit: Omit::Path(SeedPath::Replaces),
+        on: old_copy,
+        omit: Some(Omit::Path(SeedPath::Replaces)),
         reached: |_, state| {
             took(state, SeedPath::Replaces) && state.destroyed.is_some_and(|d| !d.stale && d.pulled)
         },
     },
     Coverage {
         name: "the floor refuses a Seed from an ended seed run",
-        scenarios: FRESH,
-        omit: Omit::Path(SeedPath::Stale),
+        on: fresh,
+        omit: Some(Omit::Path(SeedPath::Stale)),
         reached: |_, state| {
             took(state, SeedPath::Stale)
                 && state.last == Some(Action::Seed { answered: false })
@@ -446,46 +453,46 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the seed run ends done",
-        scenarios: SEEDS,
-        omit: Omit::Actions(&[Action::Seed { answered: true }]),
+        on: seeds,
+        omit: Some(Omit::Actions(&[Action::Seed { answered: true }])),
         reached: |_, state| {
             state.last == Some(Action::Seed { answered: true }) && matches!(state.row, Row::Done(_))
         },
     },
     Coverage {
         name: "a Seed request outlives its run's row",
-        scenarios: ALL,
-        omit: Omit::Actions(&[Action::TimeOut]),
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::TimeOut])),
         reached: |_, state| !state.row.open() && state.on_wire > 0,
     },
     Coverage {
         name: "the run gives up after its last poll",
-        scenarios: FRESH,
-        omit: Omit::Actions(&[Action::GiveUp]),
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::GiveUp])),
         reached: |_, state| state.last == Some(Action::GiveUp),
     },
     Coverage {
         name: "Create adopts the landed root",
-        scenarios: FRESH,
-        omit: Omit::Actions(&[Action::Adopt]),
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Adopt])),
         reached: |_, state| state.last == Some(Action::Adopt),
     },
     Coverage {
         name: "the later Move cuts the adopted root into an old copy",
-        scenarios: FRESH,
-        omit: Omit::Actions(&[Action::Cut]),
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Cut])),
         reached: |_, state| state.last == Some(Action::Cut),
     },
     Coverage {
         name: "mark_pulled marks the slot a pull received",
-        scenarios: SEEDS,
-        omit: Omit::Actions(&[Action::MarkPulled]),
+        on: seeds,
+        omit: Some(Omit::Actions(&[Action::MarkPulled])),
         reached: |_, state| state.last == Some(Action::MarkPulled),
     },
     Coverage {
         name: EARLIER_PULL_AFTER_SEED,
-        scenarios: OLD_COPY,
-        omit: Omit::Path(SeedPath::Held),
+        on: old_copy,
+        omit: Some(Omit::Path(SeedPath::Held)),
         reached: |_, state| {
             state.last == Some(Action::EarlierPull)
                 && state.task != Task::Idle
@@ -971,12 +978,7 @@ impl Model for VolumeMarks {
                 }
             }),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| row.scenarios.contains(&self.scenario))
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -1332,13 +1334,14 @@ mod tests {
     #[test]
     fn a_seed_leaves_the_floor_of_into_where_it_found_it() {
         for scenario in ALL {
-            let checker = check(VolumeMarks {
+            let model = VolumeMarks {
                 broken: Broken {
                     seed_raises_floor: true,
                     ..Broken::default()
                 },
                 ..fixed(*scenario)
-            });
+            };
+            let checker = check(model);
             for property in [
                 STALE_KEEPS_LATER,
                 KEEPS_ALONE,
@@ -1353,7 +1356,7 @@ mod tests {
             }
             let unreached: Vec<&str> = COVERAGE
                 .iter()
-                .filter(|row| row.scenarios.contains(scenario))
+                .filter(|row| (row.on)(&model))
                 .map(|row| row.name)
                 .filter(|name| checker.discovery(name).is_none())
                 .collect();
@@ -1370,25 +1373,12 @@ mod tests {
     /// fixed model, no other path reaches its predicate.
     #[test]
     fn every_sometimes_needs_what_it_names() {
-        for row in COVERAGE {
-            for scenario in row.scenarios {
-                let whole = check(fixed(*scenario));
-                assert!(
-                    whole.discovery(row.name).is_some(),
-                    "{} is never reached in {scenario:?}",
-                    row.name
-                );
-                let cut = check(VolumeMarks {
-                    omit: Some(row.omit),
-                    ..fixed(*scenario)
-                });
-                assert!(
-                    cut.discovery(row.name).is_none(),
-                    "{} is reached in {scenario:?} without {:?}",
-                    row.name,
-                    row.omit
-                );
-            }
+        for scenario in ALL {
+            let model = fixed(*scenario);
+            let _ = harness::assert_omissions(COVERAGE, &model, |model, omit| VolumeMarks {
+                omit: Some(omit),
+                ..*model
+            });
         }
     }
 

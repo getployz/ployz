@@ -31,6 +31,8 @@ use std::fmt::Write as _;
 use ployz_decide::fate::{self as decide, Durability, Previous};
 use stateright::{Model, Property};
 
+use crate::harness::{self, Variant, everywhere};
+
 /// The most `ployz mcp login` processes a model runs. The default model runs two.
 const MAX_LOGINS: usize = 2;
 /// The token `mcp.json` holds at the start, and one per login: each login mints at most one.
@@ -300,8 +302,7 @@ impl Login {
     }
 }
 
-/// A guard taken out, to show the check catches what it prevents. The first seven are guards
-/// the code has; the last two are parts of the fix.
+/// A guard of the code as it is taken out, to show the check catches what it prevents.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -323,10 +324,15 @@ struct Broken {
     /// A failed save, or a refused kind, returns its error without revoking the token just
     /// made or warning (:125-136).
     failed_save_keeps_new_token: bool,
+}
+
+/// A part of the fix taken out, to show the check catches what it prevents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Fix {
     /// The fix takes no lock.
-    fix_unlocked: bool,
+    unlocked: bool,
     /// The fix releases its lock right after the rename, not after the note.
-    fix_releases_before_report: bool,
+    releases_before_report: bool,
 }
 
 /// How many of each failure the model has spent.
@@ -443,23 +449,10 @@ fn listed_as_agent(token: Token) -> bool {
     token.place == Place::Here && token.live && token.kind == Kind::Agent
 }
 
-/// Which model a `COVERAGE` row is reached on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reach {
-    Both,
-    /// Only on the code as it is: two logins decide one token's fate, or one renames while
-    /// another is between its read and its note. The fix's lock takes these away.
-    AsIs,
-    /// Only with the fix.
-    Fix,
-}
-
-/// One `sometimes`: a branch the code handles, read from the state that took it.
-struct Coverage {
-    name: &'static str,
-    reach: Reach,
-    reached: fn(&McpLogin, &State) -> bool,
-}
+/// One `sometimes`: a branch the code handles, read from the state that took it. A row is
+/// reached only on the code as it is when two logins decide one token's fate, or one renames
+/// while another is between its read and its note; the fix's lock takes these away.
+type Coverage = harness::Coverage<McpLogin>;
 
 fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
@@ -476,27 +469,32 @@ fn noted_left(state: &State, why: Why) -> bool {
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "a login reads no mcp.json",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Read(File::Absent)),
     },
     Coverage {
         name: "a login reads the agent token mcp.json holds",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Read(File::Holds(tok))) if state.token(tok).kind == Kind::Agent),
     },
     Coverage {
         name: "a login reads an unreadable mcp.json, warns \"Replacing it.\" and goes on with none",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Read(File::Unreadable)),
     },
     Coverage {
         name: "Cloud mints an agent token",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| took(state, Branch::Minted(Kind::Agent)),
     },
     Coverage {
         name: "Cloud answers a cli token, and the login refuses it and revokes it",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -509,7 +507,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a save fails before the rename, and the login revokes the token it just made",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| {
             took(
                 state,
@@ -522,52 +521,62 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the revoke of the token just made fails, and the login warns \"Could not revoke the token … just made\"",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Unmade { revoked: false, .. })),
     },
     Coverage {
         name: "a save is Durable",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Saved { durable: true, .. })),
     },
     Coverage {
         name: "a save is Unflushed, and the login warns that it may not survive a crash and that the token before is still live",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| noted_left(state, Why::Unflushed),
     },
     Coverage {
         name: "the token before is in another Cloud, and the login warns that it is still live",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| noted_left(state, Why::Cloud),
     },
     Coverage {
         name: "the token before is in another Organization, and the login warns that it is still live",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| noted_left(state, Why::Organization),
     },
     Coverage {
         name: "the token before is listed as an agent token and revoked, and the login prints \"Revoked the agent token … it replaced.\"",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Noted { who, .. }) if state.login(who).revoked),
     },
     Coverage {
         name: "the token before is of kind cli, and the login leaves it and says nothing",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Listed { who, found: false }) if state.token(state.previous(who)).kind == Kind::Cli),
     },
     Coverage {
         name: "revoke's list fails, and the login warns that the token before is still live",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| noted_left(state, Why::ListFailed),
     },
     Coverage {
         name: "revoke's DELETE fails once, and the login warns that the token before is still live",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |_, state| noted_left(state, Why::DeleteFailed),
     },
     Coverage {
         name: "another login revoked the token before after this one read it, and this one finds it unlisted and says nothing",
-        reach: Reach::AsIs,
+        on: |model| model.fix.is_shipped(),
+        omit: None,
         reached: |_, state| {
             matches!(state.took, Some(Branch::Listed { who, found: false }) if {
                 let token = state.token(state.previous(who));
@@ -577,12 +586,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "another login's DELETE landed between this one's list and its DELETE, which gets a 404, and the login warns that the token before \"is still live\"",
-        reach: Reach::AsIs,
+        on: |model| model.fix.is_shipped(),
+        omit: None,
         reached: |_, state| noted_left(state, Why::NotFound),
     },
     Coverage {
         name: "a login's rename replaces a token another login saved after this one read mcp.json",
-        reach: Reach::AsIs,
+        on: |model| model.fix.is_shipped(),
+        omit: None,
         reached: |_, state| {
             matches!(state.took, Some(Branch::Saved { who, over: File::Holds(over), .. })
                 if over.maker().is_some_and(|maker| maker != who)
@@ -591,7 +602,8 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a login that read another login's token renames before that login's note, which is then printed stale",
-        reach: Reach::AsIs,
+        on: |model| model.fix.is_shipped(),
+        omit: None,
         reached: |_, state| {
             matches!(state.took, Some(Branch::Noted { who, .. }) if matches!(state.file,
                 File::Holds(held) if held.maker().is_some_and(|other| other != who
@@ -600,12 +612,14 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "under the fix, a login takes the lock once the other released it, and reads that login's token as its token before",
-        reach: Reach::Fix,
+        on: |model| model.fix.is_proposed(),
+        omit: None,
         reached: |_, state| matches!(state.took, Some(Branch::Read(File::Holds(tok))) if tok.maker().is_some()),
     },
     Coverage {
         name: "every login returns Ok",
-        reach: Reach::Both,
+        on: everywhere,
+        omit: None,
         reached: |model, state| {
             model
                 .running()
@@ -622,7 +636,7 @@ struct McpLogin {
     /// The files the model starts from.
     starts: &'static [Start],
     /// The fix: E-142's lock beside `mcp.json`, from the read through the note.
-    fix: bool,
+    fix: Variant<Fix>,
     broken: Broken,
 }
 
@@ -669,7 +683,12 @@ impl McpLogin {
 
     /// The fix takes its lock before the read and holds it.
     fn locks(&self) -> bool {
-        self.fix && !self.broken.fix_unlocked
+        self.fix.proposal().is_some_and(|fix| !fix.unlocked)
+    }
+
+    /// The proposal's parts taken out, none on the shipped code.
+    fn proposal(&self) -> Fix {
+        self.fix.proposal().unwrap_or_default()
     }
 
     /// `ployz_decide::fate::fate` for the token before, with the save `durable` or not. A
@@ -762,7 +781,7 @@ impl McpLogin {
             bytes: !self.broken.persist_unflushed_bytes,
             dir: flushes_dir,
         });
-        if self.locks() && self.broken.fix_releases_before_report {
+        if self.locks() && self.proposal().releases_before_report {
             state.lock = None;
         }
         let fate = state
@@ -981,16 +1000,7 @@ impl Model for McpLogin {
                 })
             }),
         ];
-        properties.extend(
-            COVERAGE
-                .iter()
-                .filter(|row| match row.reach {
-                    Reach::Both => true,
-                    Reach::AsIs => !self.fix,
-                    Reach::Fix => self.fix,
-                })
-                .map(|row| Property::sometimes(row.name, row.reached)),
-        );
+        properties.extend(harness::sometimes(COVERAGE, self));
         properties
     }
 }
@@ -1068,7 +1078,7 @@ fn story(model: &McpLogin, path: &[(State, Option<Action>)]) -> String {
         );
         // A row that skips a guard is reached by a flag or by a direct edit to the model;
         // it names Broken only when a flag is set.
-        let what = if model.broken == Broken::default() {
+        let what = if model.broken == Broken::default() && model.proposal() == Fix::default() {
             what.replace(" (under Broken)", "")
         } else {
             what
@@ -1098,7 +1108,7 @@ fn story(model: &McpLogin, path: &[(State, Option<Action>)]) -> String {
                 }
             })
             .collect();
-        let lock = if model.fix {
+        let lock = if model.fix.is_proposed() {
             format!(
                 " | lock: {}",
                 state.lock.map_or_else(|| "free".to_owned(), name)
@@ -1425,25 +1435,25 @@ mod tests {
         McpLogin {
             logins: MAX_LOGINS,
             starts: &STARTS,
-            fix: false,
+            fix: Variant::Shipped,
             broken: Broken::default(),
         }
     }
 
     /// The fix: E-142's lock, from the read through the note.
-    fn fixed() -> McpLogin {
-        McpLogin {
-            fix: true,
-            ..as_is()
-        }
+    fn proposed() -> McpLogin {
+        proposed_without(Fix::default())
     }
 
     fn as_is_without(broken: Broken) -> McpLogin {
         McpLogin { broken, ..as_is() }
     }
 
-    fn fixed_without(broken: Broken) -> McpLogin {
-        McpLogin { broken, ..fixed() }
+    fn proposed_without(fix: Fix) -> McpLogin {
+        McpLogin {
+            fix: Variant::Proposed(fix),
+            ..as_is()
+        }
     }
 
     /// The branch each step of `who` took, in order.
@@ -1710,7 +1720,8 @@ mod tests {
     /// reaches every row the fix does not add.
     #[test]
     fn current_code_breaks_only_the_finding() {
-        let checker = check(as_is());
+        let model = as_is();
+        let checker = check(model);
         println!("as is: {} states", checker.unique_state_count());
         assert!(checker.discovery(EVERY_TOKEN_ACCOUNTED).is_some());
         assert!(checker.discovery(NOTE_HOLDS_WHEN_PRINTED).is_some());
@@ -1721,13 +1732,7 @@ mod tests {
         ] {
             assert!(checker.discovery(property).is_none(), "{property} breaks");
         }
-        for row in COVERAGE.iter().filter(|row| row.reach != Reach::Fix) {
-            assert!(
-                checker.discovery(row.name).is_some(),
-                "{} is never reached",
-                row.name
-            );
-        }
+        harness::assert_reached(COVERAGE, &model, &checker);
     }
     /// `persist_unflushed_bytes`: without the `sync_all` before the rename (:75-78), a
     /// login revokes P after a save whose bytes were never flushed.
@@ -1861,33 +1866,33 @@ mod tests {
     /// The fix holds, and every `sometimes` it reaches is reached.
     #[test]
     fn the_fix_holds() {
-        let checker = check(fixed());
+        let checker = check(proposed());
         println!("fixed: {} states", checker.unique_state_count());
         checker.assert_properties();
     }
 
-    /// `fix_unlocked`: without the lock, the fix is the code as it is, and the race comes
+    /// `Fix::unlocked`: without the lock, the fix is the code as it is, and the race comes
     /// back.
     #[test]
     fn the_fix_needs_the_lock_from_the_read() {
         let path = breaks(
-            fixed_without(Broken {
-                fix_unlocked: true,
-                ..Broken::default()
+            proposed_without(Fix {
+                unlocked: true,
+                ..Fix::default()
             }),
             EVERY_TOKEN_ACCOUNTED,
         );
         assert!(last(&path).raced);
     }
 
-    /// `fix_releases_before_report`: a lock released right after the rename keeps every
+    /// `Fix::releases_before_report`: a lock released right after the rename keeps every
     /// token accounted, but lets the other login read this one's token and rename before
     /// this one's note: the second route to a stale note.
     #[test]
     fn the_fix_needs_the_lock_through_the_report() {
-        let early = fixed_without(Broken {
-            fix_releases_before_report: true,
-            ..Broken::default()
+        let early = proposed_without(Fix {
+            releases_before_report: true,
+            ..Fix::default()
         });
         let path = breaks(early, NOTE_HOLDS_WHEN_PRINTED);
         let end = last(&path);
@@ -1905,7 +1910,7 @@ mod tests {
     /// the other login is offered no step until the holder returns.
     #[test]
     fn the_fix_holds_off_a_second_login() {
-        let model = fixed();
+        let model = proposed();
         let start = McpLogin::start(Start::Here);
         assert_eq!(start.lock, None);
         assert!(model.offers(&start, A, How::Goes) && model.offers(&start, B, How::Goes));
@@ -1937,7 +1942,7 @@ mod tests {
         ] {
             let mut schedule = a.to_vec();
             schedule.push(goes(B));
-            let path = follow(fixed(), Start::Here, &schedule);
+            let path = follow(proposed(), Start::Here, &schedule);
             let end = last(&path);
             assert_eq!(end.pc(A), Pc::Done(Outcome::Err));
             assert!(!end.token(Tok::of(A)).live);
@@ -1951,7 +1956,7 @@ mod tests {
     #[test]
     fn the_fix_revokes_a_first_login_s_token() {
         let path = follow(
-            fixed(),
+            proposed(),
             Start::Absent,
             &[
                 goes(A),
@@ -1973,7 +1978,7 @@ mod tests {
         let end = last(&path);
         assert_eq!(end.file, File::Holds(Tok::of(B)));
         assert!(!end.token(Tok::of(A)).live);
-        assert!(every_token_accounted(&fixed(), &end));
+        assert!(every_token_accounted(&proposed(), &end));
     }
 
     /// Under the fix, a holder that leaves P live and named (Unflushed, or P in another
@@ -1996,13 +2001,13 @@ mod tests {
         ] {
             let mut schedule = a.to_vec();
             schedule.extend(b);
-            let path = follow(fixed(), start, &schedule);
+            let path = follow(proposed(), start, &schedule);
             let end = last(&path);
             let p = end.token(Tok::P);
             assert!(p.live && p.named_left, "{start:?}: P stays live and named");
             assert!(!end.token(Tok::of(A)).live, "{start:?}: B revoked TA");
             assert_eq!(end.file, File::Holds(Tok::of(B)));
-            assert!(every_token_accounted(&fixed(), &end));
+            assert!(every_token_accounted(&proposed(), &end));
         }
     }
 
@@ -2010,7 +2015,7 @@ mod tests {
     /// B reads only after A returns. B reads TA, revokes it, and every `always` holds.
     #[test]
     fn the_fix_serializes_the_finding_s_logins() {
-        let model = fixed();
+        let model = proposed();
         let after_a_read = model
             .next_state(&McpLogin::start(Start::Here), goes(A))
             .expect("A reads");
