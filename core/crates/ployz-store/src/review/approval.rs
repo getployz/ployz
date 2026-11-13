@@ -81,6 +81,27 @@ pub enum DestructiveKind {
     RestoresVolume,
 }
 
+impl DestructiveKind {
+    /// What this kind does, in the third person, before the name it acts on.
+    pub(crate) const fn verb(self) -> &'static str {
+        match self {
+            Self::RemovesService => "removes service",
+            Self::DeletesVolume => "deletes volume data",
+            Self::DetachesVolume => "detaches volume",
+            Self::RemovesDomain => "removes domain",
+            Self::RemovesServer => "removes server",
+            Self::RemovesMember => "removes member",
+            Self::ChangesRole => "changes role",
+            Self::RevokesInvite => "revokes invite",
+            Self::StopsService => "stops service",
+            Self::RestartsService => "restarts service",
+            Self::UnprotectsEnvironment => "unprotects environment",
+            Self::RemovesOrganization => "removes organization",
+            Self::RestoresVolume => "restores volume",
+        }
+    }
+}
+
 impl DestructiveEffect {
     pub(crate) fn describe(&self) -> String {
         let name = &self.name;

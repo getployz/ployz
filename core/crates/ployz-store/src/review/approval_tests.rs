@@ -5,7 +5,7 @@ use serde_json::json;
 
 use super::{Gate, Pruning};
 use crate::id::ApprovalDigest;
-use crate::review::{DestructiveEffect, DiffView};
+use crate::review::{DestructiveEffect, DestructiveKind, DiffView};
 use crate::{Approval, Trusted};
 
 fn diff() -> DiffView {
@@ -140,3 +140,43 @@ fn the_digest_a_human_approves_keeps_its_text() {
 
 const EFFECT_TEXT: &str = r#"{"kind":"removes_service","name":"web","node":"00000000-0000-4000-8000-000000000003","path":"web"}"#;
 const DIFF_TEXT: &str = r#"{"broken":[],"changes":[],"draft_changes":[],"draft_count":0,"effects":[],"environment":{"id":"00000000-0000-4000-8000-000000000002","name":"production","project":"shop","revision":3},"follow_hints":[],"holds_staged":false,"included":[],"incoming":[],"saved":2,"setup":[],"total_count":1,"version":"3:2:0.1"}"#;
+
+#[test]
+fn a_destructive_kind_names_what_it_does_in_the_words_the_release_tool_lists() {
+    use DestructiveKind::*;
+    let labels: Vec<_> = [
+        RemovesService,
+        DeletesVolume,
+        DetachesVolume,
+        RemovesDomain,
+        RemovesServer,
+        RemovesMember,
+        ChangesRole,
+        RevokesInvite,
+        StopsService,
+        RestartsService,
+        UnprotectsEnvironment,
+        RemovesOrganization,
+        RestoresVolume,
+    ]
+    .map(DestructiveKind::verb)
+    .into();
+    assert_eq!(
+        labels,
+        [
+            "removes service",
+            "deletes volume data",
+            "detaches volume",
+            "removes domain",
+            "removes server",
+            "removes member",
+            "changes role",
+            "revokes invite",
+            "stops service",
+            "restarts service",
+            "unprotects environment",
+            "removes organization",
+            "restores volume",
+        ]
+    );
+}

@@ -34,6 +34,10 @@ use crate::{client_sealed, error};
 pub(crate) struct VariableKey(String);
 
 impl VariableKey {
+    /// The regular expression a stored key matches, for JSON Schema `pattern`. `parse`
+    /// also accepts lowercase and stores it uppercase.
+    pub(crate) const PATTERN: &'static str = "^[A-Z_][A-Z0-9_]{0,127}$";
+
     pub(crate) fn parse(key: &str) -> Result<Self, RpcError> {
         let valid = key.len() <= 128
             && key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
@@ -1530,6 +1534,41 @@ fn cycle(compiled: &CompiledEnvironmentIntent, path: &[String]) -> RpcError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pattern_a_stored_key_matches_agrees_with_what_parse_accepts() {
+        let pattern = regex::Regex::new(super::VariableKey::PATTERN).unwrap();
+        let long = |length: usize, fill: &str| fill.repeat(length);
+        for text in [
+            "",
+            "A",
+            "a",
+            "_",
+            "1",
+            "A1",
+            "a_1",
+            "A-B",
+            "A B",
+            "A.B",
+            "A\n",
+            "DATABASE_URL",
+            "database_url",
+            &long(128, "A"),
+            &long(129, "A"),
+            &format!("_{}", long(127, "9")),
+            &format!("9{}", long(10, "A")),
+        ] {
+            let parsed = super::VariableKey::parse(text);
+            assert_eq!(
+                parsed.is_ok(),
+                pattern.is_match(&text.to_ascii_uppercase()),
+                "{text:?}"
+            );
+            if let Ok(key) = parsed {
+                assert!(pattern.is_match(key.as_str()), "{text:?}");
+            }
+        }
+    }
+
     #[test]
     fn a_generated_value_has_the_length_and_charset_asked() {
         let generator = Generator::new(64, "a-f0-9").unwrap();

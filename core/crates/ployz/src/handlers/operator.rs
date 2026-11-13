@@ -1017,23 +1017,7 @@ fn print_history(record: &HistoryRecord, utc: bool) -> Result<(), Error> {
         crate::ui::emit_line(&history_line(record))?;
         return Ok(());
     }
-    let container = &record.container;
-    let id = container.container_id.as_str();
-    let service = container
-        .service
-        .as_deref()
-        .unwrap_or(container.replica.as_str());
-    let hook = if container.kind == HistoryContainerKind::PreDeployHook {
-        " (pre-deploy)"
-    } else {
-        ""
-    };
-    let prefix = format!(
-        "{} {} {service}/{}{hook} | ",
-        format_time(record.ts(), utc),
-        record.machine,
-        id.get(..12).unwrap_or(id),
-    );
+    let prefix = LogLine::from_history(record).prefix(utc);
     match &record.event {
         HistoryEvent::Line { stream, text, .. } => {
             let output: &mut dyn Write = if *stream == HistoryStream::Stderr {
@@ -1077,19 +1061,10 @@ fn print_history(record: &HistoryRecord, utc: bool) -> Result<(), Error> {
 /// One `--json` history record. A line carries the live fields too.
 fn history_line(record: &HistoryRecord) -> serde_json::Value {
     let container = &record.container;
-    let ts = record.ts();
-    let mut line = serde_json::json!({
-        "timestamp": format_time(ts, true),
-        "ts": json_time(ts),
-        "machine": record.machine,
+    let mut line = LogLine::from_history(record).json(serde_json::json!({
         "namespace": container.namespace,
-        "service": container.service,
-        "deployment": container.deployment,
         "replica": container.replica,
-        "container": container.container_id,
-        "container_id": container.container_id,
-        "hook": (container.kind == HistoryContainerKind::PreDeployHook).then_some("pre-deploy"),
-    });
+    }));
     let fields = match &record.event {
         HistoryEvent::Line { stream, text, .. } => serde_json::json!({
             "stream": stream,
@@ -1182,32 +1157,7 @@ async fn print_logs(
             }
             continue;
         }
-        let timestamp = format_time(entry.timestamp_unix_nanos, utc);
-        // The Service and a `ps`-length container ID; --json carries the full IDs.
-        let (service_name, container, hook) = match &entry.metadata.origin {
-            LogOrigin::Service {
-                service_name,
-                container_id,
-                hook,
-                ..
-            } => (
-                service_name.as_str(),
-                format!(
-                    "/{}",
-                    container_id
-                        .as_str()
-                        .get(..12)
-                        .unwrap_or(container_id.as_str())
-                ),
-                hook.as_deref()
-                    .map_or(String::new(), |hook| format!(" ({hook})")),
-            ),
-            LogOrigin::Machine { service } => (service.as_str(), String::new(), String::new()),
-        };
-        let prefix = format!(
-            "{timestamp} {} {}{}{} | ",
-            entry.metadata.machine_name, service_name, container, hook,
-        );
+        let prefix = LogLine::from_live(&entry, deployments).prefix(utc);
         let Some((message, stderr)) = printable_log_bytes(&entry.body) else {
             continue;
         };
@@ -1230,36 +1180,110 @@ fn log_line(
     deployments: &HashMap<ContainerId, String>,
 ) -> Option<serde_json::Value> {
     let (message, stderr) = printable_log_bytes(&entry.body)?;
-    let (service, service_id, container_id, hook) = match &entry.metadata.origin {
-        LogOrigin::Service {
-            service_id,
-            service_name,
-            container_id,
-            hook,
-        } => (
-            service_name.as_str(),
-            Some(service_id),
-            Some(container_id),
-            hook.as_deref(),
-        ),
-        LogOrigin::Machine { service } => (service.as_str(), None, None, None),
-    };
     let line = message.strip_suffix(b"\n").unwrap_or(message);
-    Some(serde_json::json!({
-        "timestamp": format_time(entry.timestamp_unix_nanos, true),
-        "ts": json_time(entry.timestamp_unix_nanos),
-        "machine": entry.metadata.machine_name,
-        "service": service,
-        "service_id": service_id,
-        "container": container_id,
-        "container_id": container_id,
-        "deployment": container_id.and_then(|id| deployments.get(id)),
-        "hook": hook,
-        "stream": if stderr { "stderr" } else { "stdout" },
-        "level": log_level(line),
-        "line": String::from_utf8_lossy(line),
-        "message": String::from_utf8_lossy(message),
-    }))
+    let service_id = match &entry.metadata.origin {
+        LogOrigin::Service { service_id, .. } => Some(service_id),
+        LogOrigin::Machine { .. } => None,
+    };
+    Some(
+        LogLine::from_live(entry, deployments).json(serde_json::json!({
+            "service_id": service_id,
+            "stream": if stderr { "stderr" } else { "stdout" },
+            "level": log_level(line),
+            "line": String::from_utf8_lossy(line),
+            "message": String::from_utf8_lossy(message),
+        })),
+    )
+}
+
+/// What a live log entry and a history record both say about a line: when, from
+/// where, and under which hook. The prefix and the `--json` fields they share are
+/// built here once.
+struct LogLine<'a> {
+    time_ns: i64,
+    machine: &'a ployz_core::MachineName,
+    /// What the prefix calls the source.
+    label: &'a str,
+    service: Option<&'a str>,
+    container: Option<&'a ContainerId>,
+    deployment: Option<&'a str>,
+    hook: Option<&'a str>,
+}
+
+impl<'a> LogLine<'a> {
+    fn from_history(record: &'a HistoryRecord) -> Self {
+        let container = &record.container;
+        Self {
+            time_ns: record.ts(),
+            machine: &record.machine,
+            label: container
+                .service
+                .as_deref()
+                .unwrap_or(container.replica.as_str()),
+            service: container.service.as_deref(),
+            container: Some(&container.container_id),
+            deployment: container.deployment.as_deref(),
+            hook: (container.kind == HistoryContainerKind::PreDeployHook).then_some("pre-deploy"),
+        }
+    }
+
+    fn from_live(entry: &'a LogEntry, deployments: &'a HashMap<ContainerId, String>) -> Self {
+        let (service, container, hook) = match &entry.metadata.origin {
+            LogOrigin::Service {
+                service_name,
+                container_id,
+                hook,
+                ..
+            } => (service_name.as_str(), Some(container_id), hook.as_deref()),
+            LogOrigin::Machine { service } => (service.as_str(), None, None),
+        };
+        Self {
+            time_ns: entry.timestamp_unix_nanos,
+            machine: &entry.metadata.machine_name,
+            label: service,
+            service: Some(service),
+            container,
+            deployment: container
+                .and_then(|id| deployments.get(id))
+                .map(String::as_str),
+            hook,
+        }
+    }
+
+    /// The header of a printed line: the Service and a `ps`-length container ID;
+    /// --json carries the full IDs.
+    fn prefix(&self, utc: bool) -> String {
+        let container = self.container.map_or_else(String::new, |id| {
+            format!("/{}", id.as_str().get(..12).unwrap_or(id.as_str()))
+        });
+        let hook = self
+            .hook
+            .map_or_else(String::new, |hook| format!(" ({hook})"));
+        format!(
+            "{} {} {}{container}{hook} | ",
+            format_time(self.time_ns, utc),
+            self.machine,
+            self.label,
+        )
+    }
+
+    /// The `--json` fields every line has, with the fields `own` adds.
+    fn json(&self, own: serde_json::Value) -> serde_json::Value {
+        let mut line = serde_json::json!({
+            "timestamp": format_time(self.time_ns, true),
+            "ts": json_time(self.time_ns),
+            "machine": self.machine,
+            "service": self.service,
+            "container": self.container,
+            "container_id": self.container,
+            "deployment": self.deployment,
+            "hook": self.hook,
+        });
+        if let (Some(line), serde_json::Value::Object(own)) = (line.as_object_mut(), own) {
+            line.extend(own);
+        }
+        line
+    }
 }
 
 fn printable_log_bytes(body: &LogBody) -> Option<(&[u8], bool)> {
@@ -1885,5 +1909,187 @@ mod scope_tests {
         let scoped = scoped(None);
         assert_eq!(resolve(&scoped, "web").unwrap(), "shop-production/web");
         assert_eq!(resolve(&scoped, "api2").unwrap(), "shop-production/api");
+    }
+
+    fn history_of(
+        service: Option<&str>,
+        kind: HistoryContainerKind,
+        event: HistoryEvent,
+    ) -> HistoryRecord {
+        HistoryRecord {
+            machine: ployz_core::MachineName::parse("machine-1").unwrap(),
+            container: std::sync::Arc::new(ployz_core::HistoryContainer {
+                container_id: ContainerId::parse("c".repeat(64)).unwrap(),
+                namespace: Some("shop-production".into()),
+                service: service.map(str::to_owned),
+                deployment: Some("12".into()),
+                replica: "web-replica".into(),
+                kind,
+            }),
+            event,
+        }
+    }
+
+    fn live_of(hook: Option<&str>, body: LogBody) -> LogEntry {
+        LogEntry {
+            metadata: ployz_core::LogMetadata {
+                origin: LogOrigin::Service {
+                    service_id: ployz_core::ServiceId::parse("1".repeat(32)).unwrap(),
+                    service_name: ployz_core::ServiceName::parse("web").unwrap(),
+                    container_id: ContainerId::parse("c".repeat(64)).unwrap(),
+                    hook: hook.map(str::to_owned),
+                },
+                machine_id: ployz_core::MachineId::parse("2".repeat(32)).unwrap(),
+                machine_name: ployz_core::MachineName::parse("machine-1").unwrap(),
+            },
+            timestamp_unix_nanos: 1_700_000_000_123_456_789,
+            body,
+        }
+    }
+
+    const TIME: i64 = 1_700_000_000_123_456_789;
+
+    fn shared(deployment: serde_json::Value, hook: serde_json::Value) -> serde_json::Value {
+        let id = "c".repeat(64);
+        serde_json::json!({
+            "timestamp": "2023-11-14T22:13:20.123456789+00:00",
+            "ts": "2023-11-14T22:13:20.123456789Z",
+            "machine": "machine-1",
+            "service": "web",
+            "container": id,
+            "container_id": id,
+            "deployment": deployment,
+            "hook": hook,
+        })
+    }
+
+    fn with(mut line: serde_json::Value, own: serde_json::Value) -> serde_json::Value {
+        if let (Some(line), serde_json::Value::Object(own)) = (line.as_object_mut(), own) {
+            line.extend(own);
+        }
+        line
+    }
+
+    #[test]
+    fn a_history_line_and_a_live_line_carry_the_same_json_fields_where_they_share_them() {
+        let output = serde_json::json!({
+            "stream": "stderr",
+            "level": log_level(b"boom"),
+            "line": "boom",
+            "message": "boom\n",
+        });
+        let history = history_line(&history_of(
+            Some("web"),
+            HistoryContainerKind::Service,
+            HistoryEvent::Line {
+                ts: TIME,
+                stream: HistoryStream::Stderr,
+                text: b"boom".to_vec(),
+            },
+        ));
+        let deployments =
+            HashMap::from([(ContainerId::parse("c".repeat(64)).unwrap(), "12".to_owned())]);
+        let live = log_line(
+            &live_of(None, LogBody::Stderr(b"boom\n".to_vec())),
+            &deployments,
+        )
+        .unwrap();
+        let common = shared("12".into(), serde_json::Value::Null);
+        assert_eq!(
+            history,
+            with(
+                with(
+                    common.clone(),
+                    serde_json::json!({ "namespace": "shop-production", "replica": "web-replica" })
+                ),
+                output.clone()
+            )
+        );
+        assert_eq!(
+            live,
+            with(
+                with(common, serde_json::json!({ "service_id": "1".repeat(32) })),
+                output
+            )
+        );
+    }
+
+    #[test]
+    fn a_pre_deploy_hook_is_named_the_same_in_both_json_lines() {
+        let history = history_line(&history_of(
+            None,
+            HistoryContainerKind::PreDeployHook,
+            HistoryEvent::Exit {
+                ts: TIME,
+                exit_code: Some(1),
+                oom_killed: false,
+            },
+        ));
+        let live = log_line(
+            &live_of(Some("pre-deploy"), LogBody::Stdout(b"hi\n".to_vec())),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let hook = serde_json::json!("pre-deploy");
+        assert_eq!(
+            history,
+            with(
+                shared("12".into(), hook.clone()),
+                serde_json::json!({
+                    "service": null,
+                    "namespace": "shop-production",
+                    "replica": "web-replica",
+                    "exit": { "code": 1, "oom_killed": false },
+                })
+            )
+        );
+        assert_eq!(
+            live,
+            with(
+                shared(serde_json::Value::Null, hook),
+                serde_json::json!({
+                    "service_id": "1".repeat(32),
+                    "stream": "stdout",
+                    "level": log_level(b"hi"),
+                    "line": "hi",
+                    "message": "hi\n",
+                })
+            )
+        );
+    }
+
+    #[test]
+    fn a_log_line_prefix_names_time_machine_service_container_and_hook() {
+        let history = history_of(
+            None,
+            HistoryContainerKind::PreDeployHook,
+            HistoryEvent::Exit {
+                ts: TIME,
+                exit_code: None,
+                oom_killed: false,
+            },
+        );
+        assert_eq!(
+            LogLine::from_history(&history).prefix(true),
+            "2023-11-14T22:13:20.123456789+00:00 machine-1 web-replica/cccccccccccc (pre-deploy) | "
+        );
+        let live = live_of(Some("pre-deploy"), LogBody::Stdout(Vec::new()));
+        assert_eq!(
+            LogLine::from_live(&live, &HashMap::new()).prefix(true),
+            "2023-11-14T22:13:20.123456789+00:00 machine-1 web/cccccccccccc (pre-deploy) | "
+        );
+        let machine = LogEntry {
+            metadata: ployz_core::LogMetadata {
+                origin: LogOrigin::Machine {
+                    service: ployz_core::MachineLogService::Docker,
+                },
+                ..live.metadata.clone()
+            },
+            ..live
+        };
+        assert_eq!(
+            LogLine::from_live(&machine, &HashMap::new()).prefix(true),
+            "2023-11-14T22:13:20.123456789+00:00 machine-1 docker | "
+        );
     }
 }

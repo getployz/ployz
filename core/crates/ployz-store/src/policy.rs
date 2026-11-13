@@ -3,8 +3,8 @@
 //! which changed paths count (`watchPaths`). Each Service identity owns its policy,
 //! kept outside Working State, so a change takes effect at once and no Deploy ships it.
 
-use ployz_core::RpcError;
 use ployz_core::config::{AuthoredServiceConfig, ServiceGitAccess, ServiceSource};
+use ployz_core::{MachineId, RpcError};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -16,6 +16,48 @@ use crate::storage::Tx;
 
 /// The most watch paths a Service keeps.
 const WATCH_PATHS: usize = 50;
+
+/// A Service's Preferred Builder: GitHub, or one Server. None is Auto. It is stored
+/// as `github` or the Server's Machine ID, and parsed where it is used, so a stored
+/// value that names neither fails only there.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Preferred {
+    Github,
+    Server(MachineId),
+}
+
+impl Preferred {
+    pub(crate) fn parse(value: &Value) -> Result<Self, RpcError> {
+        let invalid = || {
+            ServiceSetting::Policy(PolicySetting::PreferredBuilder)
+                .invalid("expected \"github\" or a Server's Machine ID")
+        };
+        match value.as_str() {
+            Some("github") => Ok(Self::Github),
+            Some(text) => MachineId::parse(text.trim())
+                .map(Self::Server)
+                .map_err(|_| invalid()),
+            None => Err(invalid()),
+        }
+    }
+
+    /// What a Preferred Builder is, as the catalog publishes it.
+    fn schema() -> Value {
+        json!({
+            "type": "string",
+            "anyOf": [{ "const": "github" }, { "pattern": MachineId::PATTERN }],
+        })
+    }
+}
+
+impl From<Preferred> for String {
+    fn from(preferred: Preferred) -> Self {
+        match preferred {
+            Preferred::Github => "github".to_owned(),
+            Preferred::Server(machine) => machine.to_string(),
+        }
+    }
+}
 
 /// One Service's Deployment Policy, as stored.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -135,10 +177,7 @@ impl PolicySetting {
                 "items": { "type": "string", "minLength": 1, "maxLength": 255 },
                 "maxItems": WATCH_PATHS,
             }),
-            Self::PreferredBuilder => json!({
-                "type": "string",
-                "anyOf": [{ "const": "github" }, { "pattern": "^[0-9a-f]{32}$" }],
-            }),
+            Self::PreferredBuilder => Preferred::schema(),
         }
     }
 
@@ -188,7 +227,7 @@ impl PolicySetting {
         let setting = ServiceSetting::Policy(self);
         if self == Self::PreferredBuilder {
             policy.preferred_builder = value
-                .map(|value| crate::builders::Preferred::parse(&value).map(|p| p.text()))
+                .map(|value| Preferred::parse(&value).map(String::from))
                 .transpose()?;
             return Ok(());
         }
@@ -473,7 +512,67 @@ fn glob_segment(glob: &str) -> Option<String> {
 mod tests {
     use serde_json::json;
 
-    use super::Policy;
+    use super::{Policy, Preferred};
+
+    const MACHINE: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn a_preferred_builder_is_stored_as_its_text() {
+        for (preferred, text) in [
+            (Preferred::Github, "github"),
+            (
+                Preferred::Server(ployz_core::MachineId::parse(MACHINE).unwrap()),
+                MACHINE,
+            ),
+        ] {
+            let policy = Policy {
+                preferred_builder: Some(String::from(preferred)),
+                ..Policy::default()
+            };
+            let stored = json!({
+                "autoDeploy": true,
+                "waitForCi": false,
+                "watchPaths": [],
+                "preferredBuilder": text,
+            });
+            assert_eq!(serde_json::to_value(&policy).unwrap(), stored);
+            assert_eq!(serde_json::from_value::<Policy>(stored).unwrap(), policy);
+        }
+        let none = serde_json::to_value(Policy::default()).unwrap();
+        assert_eq!(none.get("preferredBuilder"), None);
+    }
+
+    #[test]
+    fn a_stored_preferred_builder_that_names_neither_decodes_and_fails_when_parsed() {
+        for text in [
+            "",
+            "GitHub",
+            "github ",
+            "0123",
+            "ABCDEF0123456789ABCDEF0123456789",
+        ] {
+            let stored = json!({
+                "autoDeploy": true,
+                "waitForCi": false,
+                "watchPaths": [],
+                "preferredBuilder": text,
+            });
+            let policy = serde_json::from_value::<Policy>(stored).unwrap();
+            assert_eq!(policy.preferred_builder.as_deref(), Some(text));
+            assert!(Preferred::parse(&json!(text)).is_err(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_preferred_builder_is_written_trimmed_when_it_names_a_server() {
+        let padded = json!(format!(" {MACHINE}\n"));
+        assert_eq!(
+            String::from(Preferred::parse(&padded).unwrap()),
+            MACHINE.to_owned()
+        );
+        assert!(Preferred::parse(&json!(7)).is_err());
+        assert!(Preferred::parse(&json!(" github")).is_err());
+    }
 
     fn watches(paths: &[&str], changed: &[&str]) -> bool {
         Policy {

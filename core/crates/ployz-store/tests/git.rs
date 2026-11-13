@@ -790,6 +790,64 @@ fn the_build_order_and_preferred_builder_apply_at_once_and_shape_each_walk() {
     );
 }
 
+/// A stored Preferred Builder that names neither GitHub nor a Server fails only the
+/// build's walk: other Settings still read and the Setting can be repaired.
+#[test]
+fn a_corrupt_preferred_builder_fails_only_the_walk_and_can_be_repaired() {
+    let (store, who, url, _dir) = own_git_shop();
+    let deployment = admit(&store, &who, 1, &[]);
+    store
+        .write(
+            &who,
+            &edit(vec![set("web.preferredBuilder", json!("github"))]),
+        )
+        .unwrap();
+    backend::execute(
+        &url,
+        "UPDATE config_service_policy SET policy = \
+         '{\"autoDeploy\":true,\"waitForCi\":false,\"watchPaths\":[],\"preferredBuilder\":\"invalid\"}'",
+    );
+
+    let error = store.sources(&deployment).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (
+            RpcErrorCode::Internal,
+            "The Config Store holds an unreadable Preferred Builder"
+        )
+    );
+
+    let query = EnvironmentQuery {
+        environment: EnvironmentRef::default(),
+        path: Some(SettingPath::parse("web.autoDeploy").unwrap()),
+        all: false,
+    };
+    let read = store.read(&who, &query).unwrap();
+    let [setting] = read.settings.as_slice() else {
+        panic!("{:?}", read.settings)
+    };
+    assert_eq!(
+        (json!(setting.path.to_string()), setting.value.clone()),
+        (json!("web.autoDeploy"), json!(true))
+    );
+
+    let Written::Edited(edited) = store
+        .write(
+            &who,
+            &edit(vec![set("web.preferredBuilder", json!("github"))]),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    let immediate: Vec<_> = edited.immediate.iter().map(ToString::to_string).collect();
+    assert_eq!(immediate, ["web.preferredBuilder"]);
+    assert_eq!(
+        store.sources(&deployment).unwrap()[0].builders,
+        [Builder::Github, Builder::Servers]
+    );
+}
+
 const RUN: u64 = 555;
 const WORKFLOW: &str = "acme/web/.github/workflows/ployz-build.yml@refs/heads/main";
 

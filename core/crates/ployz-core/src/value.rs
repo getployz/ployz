@@ -536,6 +536,11 @@ hex_id_newtype!(
     "32 lowercase hexadecimal characters",
     random
 );
+
+impl MachineId {
+    /// The regular expression `parse` accepts, for JSON Schema `pattern`.
+    pub const PATTERN: &'static str = "^[0-9a-f]{32}$";
+}
 hex_id_newtype!(
     /// One approved operation its signer minted. A Machine consumes each step once,
     /// so a retry after consumption needs a fresh approval.
@@ -881,6 +886,11 @@ validated_string_newtype!(
     "a 1-63 character lowercase DNS label",
     |value| is_dns_label(value)
 );
+
+impl ServiceName {
+    /// The regular expression `parse` accepts, for JSON Schema `pattern`.
+    pub const PATTERN: &'static str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
+}
 validated_string_newtype!(
     /// A Config's name, unique in its Environment: a lowercase DNS label.
     ConfigName,
@@ -1586,6 +1596,53 @@ mod tests {
             "bad\u{0}name",
         ] {
             assert!(super::ConfigFileName::parse(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_accepts_exactly_what_its_parser_accepts() {
+        let service = regex::Regex::new(super::ServiceName::PATTERN).unwrap();
+        let machine = regex::Regex::new(super::MachineId::PATTERN).unwrap();
+        let long = |length: usize, fill: &str| fill.repeat(length);
+        for text in [
+            "",
+            "a",
+            "-",
+            "a-",
+            "-a",
+            "a-b",
+            "a--b",
+            "A",
+            "aB",
+            "a_b",
+            "a.b",
+            "a b",
+            "a\n",
+            "0",
+            "web-1",
+            &long(63, "a"),
+            &long(64, "a"),
+            &format!("a{}b", long(61, "-")),
+            &format!("a{}b", long(62, "-")),
+            &format!("{}-", long(62, "a")),
+            &long(32, "a"),
+            &long(31, "a"),
+            &long(33, "a"),
+            &long(32, "A"),
+            &format!("{}g", long(31, "a")),
+            &format!("{}\n", long(32, "a")),
+            &long(32, "0"),
+        ] {
+            assert_eq!(
+                service.is_match(text),
+                super::ServiceName::parse(text).is_ok(),
+                "{text:?}"
+            );
+            assert_eq!(
+                machine.is_match(text),
+                super::MachineId::parse(text).is_ok(),
+                "{text:?}"
+            );
         }
     }
 

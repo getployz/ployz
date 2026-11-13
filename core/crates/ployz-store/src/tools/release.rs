@@ -7,15 +7,15 @@ use ployz_core::config::{ChangeKind, EnvironmentNodeType, ReviewLifecycleKind};
 use ployz_core::{ConfigName, ServiceName};
 use serde_json::{Value, json};
 
-use super::ToolId;
+use super::deployment::follow_call;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, written};
-use super::refusal::{Call, Refusal};
+use super::refusal::Refusal;
 use super::step::{AcceptedLoss, Gate};
 use crate::catalog::NODE_NAME;
 use crate::{
-    Admit, BatchCommand, Deploy, DestructiveKind, DiffQuery, Discard, DomainChange, NodeChange,
-    Publish, ServicesQuery, SettingPath, VolumeName, Written,
+    Admit, BatchCommand, Deploy, DiffQuery, Discard, DomainChange, NodeChange, Publish,
+    ServicesQuery, SettingPath, VolumeName, Written,
 };
 
 /// The longest value a review line shows before it cuts.
@@ -54,24 +54,7 @@ impl Tool for Review {
         let destroys = diff
             .effects
             .iter()
-            .map(|effect| {
-                let kind = match effect.kind {
-                    DestructiveKind::RemovesService => "removes service",
-                    DestructiveKind::DeletesVolume => "deletes volume data",
-                    DestructiveKind::DetachesVolume => "detaches volume",
-                    DestructiveKind::RemovesDomain => "removes domain",
-                    DestructiveKind::RemovesServer => "removes server",
-                    DestructiveKind::RemovesMember => "removes member",
-                    DestructiveKind::ChangesRole => "changes role",
-                    DestructiveKind::RevokesInvite => "revokes invite",
-                    DestructiveKind::StopsService => "stops service",
-                    DestructiveKind::RestartsService => "restarts service",
-                    DestructiveKind::UnprotectsEnvironment => "unprotects environment",
-                    DestructiveKind::RemovesOrganization => "removes organization",
-                    DestructiveKind::RestoresVolume => "restores volume",
-                };
-                format!("{kind} {}", effect.name)
-            })
+            .map(|effect| format!("{} {}", effect.kind.verb(), effect.name))
             .collect::<Vec<_>>();
         let labels = NodeChange::labels(&diff.changes);
         Ok(json!({
@@ -318,9 +301,6 @@ impl Tool for DeployInput {
             no_prune: self.no_prune,
             approval: None,
         }))?;
-        let mut next = cx.place_args();
-        next.insert("deployment".into(), deployment.number.into());
-        next.insert("wait_seconds".into(), 120.into());
         Ok(json!({
             "at": here.environment.to_string(),
             "deployment": deployment.number,
@@ -328,7 +308,7 @@ impl Tool for DeployInput {
             "saved_revision": deployment.saved.0,
             "services": deployment.services,
             "prunes": deployment.prune,
-            "next": Call::to(ToolId::DeploymentShow, next.into()),
+            "next": follow_call(cx.place_args(), deployment.number),
         }))
     }
 }

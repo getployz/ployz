@@ -15,7 +15,7 @@ use super::ToolId;
 use super::cloud::Operation;
 use super::input::HasPlace;
 use super::refusal::{Call, Refusal, ToolResult, Writes, from_store};
-use super::schema;
+use super::schema::{self, FieldPath};
 use super::step::{
     Act, Action, Ask, AttemptId, BodyDigest, Fix, Gate, RequestKey, Step, Write, WriteSlot,
 };
@@ -346,6 +346,28 @@ impl Cx<'_> {
         }
     }
 
+    /// Follow `state` to its end: while `ask` names the read that moves it on, wait
+    /// as [`Cx::poll`] does within `wait_seconds`, read it, and fold the answer into
+    /// the next state with `absorb`. It stops when `ask` has no read left, or when
+    /// the time is spent.
+    pub(crate) fn follow<S>(
+        &mut self,
+        wait_seconds: u32,
+        mut state: S,
+        ask: impl Fn(&S) -> Result<Option<Ask>, Stop>,
+        absorb: impl Fn(&mut Self, S, Option<Result<Value, RpcError>>) -> Result<S, Stop>,
+    ) -> Result<S, Stop> {
+        let mut attempt = 0;
+        while let Some(read) = ask(&state)? {
+            let Some(answers) = self.poll(wait_seconds, attempt, vec![read])? else {
+                break;
+            };
+            state = absorb(self, state, answers.into_iter().next())?;
+            attempt += 1;
+        }
+        Ok(state)
+    }
+
     /// The call's one write, refused as stale when the Store finds the
     /// Environment moved past `expect`, and any other refusal read by `refuse`.
     pub(crate) fn write_expecting<C: Tell>(
@@ -554,7 +576,11 @@ fn def<T: Tool>() -> ToolDef {
 
 fn run<T: Tool>(cx: &mut Cx<'_>, input: &Value) -> Result<Value, Stop> {
     if let Some((field, reason)) = schema::out_of_range(&schema::input::<T>(), input) {
-        return Err(Refusal::invalid(format!("This input does not fit: {reason}"), &field).into());
+        return Err(Refusal::invalid(
+            format!("This input does not fit: {reason}"),
+            &field.to_string(),
+        )
+        .into());
     }
     let decoded =
         decode::<T>(input).map_err(|error| match unknown_tool_key::<T>(&error, input) {
@@ -565,7 +591,7 @@ fn run<T: Tool>(cx: &mut Cx<'_>, input: &Value) -> Result<Value, Stop> {
             }
             None => Refusal::invalid(
                 format!("This input does not fit: {}", error.reason()),
-                &declared(&schema::input::<T>(), error.path().unwrap_or_default()),
+                &declared(&schema::input::<T>(), error.path().unwrap_or_default()).to_string(),
             ),
         })?;
     decoded.plan(cx)
@@ -573,8 +599,8 @@ fn run<T: Tool>(cx: &mut Cx<'_>, input: &Value) -> Result<Value, Stop> {
 
 /// The longest start of `path` that `schema` names, so a map key, which is the
 /// caller's text, leaves only its map: `files.<name>` is `files`.
-fn declared(schema: &Value, path: &str) -> String {
-    let mut named = String::new();
+fn declared(schema: &Value, path: &str) -> FieldPath {
+    let mut named = FieldPath::default();
     let mut node = schema;
     let mut rest = path;
     while !rest.is_empty() {
@@ -588,7 +614,10 @@ fn declared(schema: &Value, path: &str) -> String {
             if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
                 break;
             }
-            named.push_str(&format!("[{digits}]"));
+            let Ok(position) = digits.parse() else {
+                break;
+            };
+            named.push_index(position);
             (node, rest) = (items, after);
             continue;
         }
@@ -609,10 +638,7 @@ fn declared(schema: &Value, path: &str) -> String {
         let Some((name, inner)) = found else {
             break;
         };
-        if !named.is_empty() {
-            named.push('.');
-        }
-        named.push_str(name);
+        named.push_key(name);
         (node, rest) = (inner, &key[name.len()..]);
     }
     named
@@ -777,7 +803,7 @@ fn finish(mut refusal: Refusal, entry: &Entry, call: &Call, call_key: &str) -> R
     if refusal.code == RpcErrorCode::InvalidArgument {
         let field = refusal.field.get_or_insert_with(String::new).clone();
         if refusal.expected.is_none() {
-            refusal.expected = Some(schema::at(&input_schema, &field));
+            refusal.expected = Some(schema::at(&input_schema, &FieldPath::parse(&field)));
         }
         if refusal.example.is_none() {
             refusal.example = Some((entry.example)());

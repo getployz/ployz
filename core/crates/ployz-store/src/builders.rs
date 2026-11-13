@@ -5,14 +5,13 @@
 
 use ployz_core::{MachineId, RpcError};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
 use crate::id::EnvironmentId;
-use crate::policy::PolicySetting;
-use crate::settings::ServiceSetting;
+use crate::policy::Preferred;
 use crate::storage::{Tx, name_of};
 
 /// Which Builders a Git build tries, in turn.
@@ -30,6 +29,32 @@ impl BuildOrder {
     /// once for a repository without the build workflow, so until GitHub is set up
     /// this builds on the servers only.
     pub const AUTO: Self = Self::GithubThenServers;
+
+    /// Every Build Order that is set by name; an Organization that never chose one
+    /// has [`BuildOrder::AUTO`].
+    pub const ALL: [Self; 4] = [
+        Self::ServersOnly,
+        Self::GithubThenServers,
+        Self::ServersThenGithub,
+        Self::GithubOnly,
+    ];
+
+    /// The name it is typed and stored by.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ServersOnly => "servers-only",
+            Self::GithubThenServers => "github-then-servers",
+            Self::ServersThenGithub => "servers-then-github",
+            Self::GithubOnly => "github-only",
+        }
+    }
+
+    /// The Build Order `name` names.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|order| order.as_str() == name)
+    }
 
     const fn builders(self) -> &'static [Builder] {
         match self {
@@ -118,37 +143,6 @@ fn chosen(tx: &mut dyn Tx, organization: &str) -> Result<Option<BuildOrder>, Rpc
     .transpose()
 }
 
-/// A Service's Preferred Builder: GitHub, or one Server. None is Auto. It is kept
-/// in the Service's Deployment Policy ([`crate::policy`]).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Preferred {
-    Github,
-    Server(MachineId),
-}
-
-impl Preferred {
-    pub(crate) fn parse(value: &Value) -> Result<Self, RpcError> {
-        let invalid = || {
-            ServiceSetting::Policy(PolicySetting::PreferredBuilder)
-                .invalid("expected \"github\" or a Server's Machine ID")
-        };
-        match value.as_str() {
-            Some("github") => Ok(Self::Github),
-            Some(text) => MachineId::parse(text.trim())
-                .map(Self::Server)
-                .map_err(|_| invalid()),
-            None => Err(invalid()),
-        }
-    }
-
-    pub(crate) fn text(&self) -> String {
-        match self {
-            Self::Github => "github".to_owned(),
-            Self::Server(machine) => machine.to_string(),
-        }
-    }
-}
-
 /// The Builders a Git build of `service_id` tries, in turn, and the Server the
 /// servers try first, if one is preferred.
 pub(crate) fn walk(
@@ -173,4 +167,22 @@ pub(crate) fn walk(
         .copied()
         .filter(|builder| Some(*builder) != first);
     Ok((first.into_iter().chain(rest).collect(), machine))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuildOrder;
+
+    #[test]
+    fn a_build_order_is_named_as_it_is_stored() {
+        for order in BuildOrder::ALL {
+            assert_eq!(
+                serde_json::to_value(order).unwrap(),
+                serde_json::json!(order.as_str())
+            );
+            assert_eq!(BuildOrder::named(order.as_str()), Some(order));
+        }
+        assert_eq!(BuildOrder::named("auto"), None);
+        assert_eq!(BuildOrder::named("Github-Only"), None);
+    }
 }

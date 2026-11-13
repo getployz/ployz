@@ -113,7 +113,7 @@ pub(crate) fn admit(
     let upload_text = upload.as_ref().map(json_text);
     let service_uploads_text = service_uploads.as_ref().map(json_text);
     let keeps_holds = held || matches!(admission, Admission::Beside(_));
-    let number = queue(tx, environment, keeps_holds, |tx, number| {
+    queue(tx, environment, keeps_holds, |tx, number| {
         let frozen_columns: [crate::storage::Param<'_>; 12] = [
             revision_param(saved)?.into(),
             targets_text.as_str().into(),
@@ -210,37 +210,7 @@ pub(crate) fn admit(
         )
         .map(|_| ())
     })?;
-    let summary = DeploymentSummary {
-        id: id.clone(),
-        environment_id: environment.clone(),
-        number: Some(number),
-        status: DeploymentStatus::Queued,
-        saved,
-        services: targets,
-        ships: shipped(&nodes),
-        runner: None,
-        upload,
-        chooses_upload_at_start: super::chooses_upload_at_start(
-            DeploymentStatus::Queued,
-            service_uploads.as_ref(),
-        ),
-        preparing: false,
-        remove: saved == NOTHING,
-        prune: frozen.prune,
-        admitted_by: who.principal.clone(),
-        admitted_at,
-        started_at: None,
-        ended_at: None,
-        message,
-        push,
-        ci: None,
-        held: false,
-        in_flight: DeploymentStatus::Queued.in_flight(),
-        outcome: None,
-        warnings: Vec::new(),
-        ingress: Vec::new(),
-    };
-    Ok(summary)
+    Ok(load(tx, id)?.summary)
 }
 
 /// Record that the user Cloud authenticated admitted Deployment `id`, by the
@@ -1020,7 +990,7 @@ pub(crate) fn retry(
         })
     });
     let admitted_at = now();
-    let number = queue(tx, &stored.summary.environment_id, false, |tx, number| {
+    queue(tx, &stored.summary.environment_id, false, |tx, number| {
         let listed = next_listed(tx, &stored.summary.environment_id)?;
         // Every other frozen column comes from the source, so a retry never re-reads
         // authored state.
@@ -1070,29 +1040,7 @@ pub(crate) fn retry(
         }
         Ok(())
     })?;
-    let summary = DeploymentSummary {
-        id: id.clone(),
-        number: Some(number),
-        status: DeploymentStatus::Queued,
-        services,
-        ships: shipped(&nodes),
-        runner: None,
-        admitted_by: who.principal.clone(),
-        admitted_at,
-        started_at: None,
-        ended_at: None,
-        in_flight: DeploymentStatus::Queued.in_flight(),
-        outcome: None,
-        warnings: Vec::new(),
-        ingress: Vec::new(),
-        push: None,
-        ci: None,
-        held: false,
-        chooses_upload_at_start: false,
-        preparing: false,
-        ..stored.summary
-    };
-    Ok((summary, rollback))
+    Ok((load(tx, id)?.summary, rollback))
 }
 
 /// What a redeploy rolls back: the Deployment it ships again, by number, the
