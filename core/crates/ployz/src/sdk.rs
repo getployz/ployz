@@ -1820,6 +1820,40 @@ async fn capture(input: PreparationInput) -> Result<preparation::CapturedPrepara
         .map_err(|_| RpcError::invalid_argument("source capture task failed"))?
 }
 
+/// The code a plan refusal carries through preparation: `InvalidArgument` where planning
+/// directly says so, and `Internal` for every other refusal, as it always was here. Each
+/// variant is named so a new one has to choose.
+fn plan_refusal_code(error: &crate::deploy::PlanError) -> RpcErrorCode {
+    use crate::deploy::PlanError;
+    match error {
+        PlanError::Service { source, .. } => plan_refusal_code(source),
+        PlanError::ConflictingHostPublications { .. }
+        | PlanError::HostPortConflict { .. }
+        | PlanError::CapacityUnknown
+        | PlanError::InsufficientCapacity
+        | PlanError::NoEligibleMachines { .. }
+        | PlanError::ServiceModeCannotChange
+        | PlanError::ConflictingDockerVolumeDefinitions { .. }
+        | PlanError::DuplicateTargetService { .. }
+        | PlanError::ProvisionedVolumeStorageRequired { .. }
+        | PlanError::ProvisionedVolumeStorageUnavailable
+        | PlanError::ProvisionedVolumeStorageUnknown { .. }
+        | PlanError::ExistingPlainVolume { .. }
+        | PlanError::ExistingProvisionedVolumeMismatch { .. }
+        | PlanError::MixedVolumeModes { .. }
+        | PlanError::DependencyCycle { .. }
+        | PlanError::HostnameConflict { .. }
+        | PlanError::RemovalInTarget { .. }
+        | PlanError::RemovalNotSelected { .. }
+        | PlanError::RemovalInReservedNamespace { .. } => RpcErrorCode::InvalidArgument,
+        PlanError::Storage { .. }
+        | PlanError::NoWriter { .. }
+        | PlanError::VolumeServerTakesNoServices { .. }
+        | PlanError::CopiesUnknown { .. }
+        | PlanError::VolumeHolderUnknown { .. } => RpcErrorCode::Internal,
+    }
+}
+
 pub(crate) fn preparation_error(
     error: crate::sdk::prepare::PreparationError,
     cancellation_requested: bool,
@@ -1883,10 +1917,10 @@ pub(crate) fn preparation_error(
             }),
         ),
         PreparationError::Plan(error) => {
-            let code = match error {
+            let code = match &error {
                 crate::deploy::DeployError::Connect(_) => RpcErrorCode::Internal,
-                refusal @ (crate::deploy::DeployError::Plan(_)
-                | crate::deploy::DeployError::Namespace(_)) => RpcError::from(refusal).code,
+                crate::deploy::DeployError::Plan(plan) => plan_refusal_code(plan),
+                crate::deploy::DeployError::Namespace(_) => RpcErrorCode::InvalidArgument,
             };
             RpcError::new(code, message.clone()).with_evidence(
                 &PreparationFailure::of(Preparation::failed(message)).again(same_again),

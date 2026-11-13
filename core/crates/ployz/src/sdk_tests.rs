@@ -212,6 +212,134 @@ fn a_plan_refusal_has_the_same_code_planning_directly_and_through_preparation() 
     assert_eq!(prepared.message, direct.message);
 }
 
+/// Every plan refusal's code and retry class through preparation. Only the refusals
+/// planning directly answers with `invalid_argument` moved to it; the rest are `internal`
+/// through preparation, as they always were, though planning directly says `conflict` or
+/// `unavailable` for them.
+#[test]
+fn every_plan_refusals_code_and_retry_through_preparation() {
+    use crate::deploy::{DeployError, HostnameRefusal, PlanError};
+    use ployz_core::{
+        CopyRole, DockerVolumeName, IngressHost, KnownCopy, MachineId, MachineName, Namespace,
+        Operator, ProvisionedVolumeMaximumBytes, QualifiedService, ServiceName,
+        StorageCapacityError,
+    };
+    use std::num::NonZeroU64;
+    let machine = || MachineName::parse("edge").unwrap();
+    let volume = || DockerVolumeName::parse("app_data").unwrap();
+    let service = || ServiceName::parse("web").unwrap();
+    let invalid_argument = [
+        PlanError::ConflictingHostPublications { service: service() },
+        PlanError::HostPortConflict { service: service() },
+        PlanError::CapacityUnknown,
+        PlanError::InsufficientCapacity,
+        PlanError::NoEligibleMachines {
+            constraints: crate::deploy::EliminatingConstraints::new(Vec::new()),
+        },
+        PlanError::ServiceModeCannotChange,
+        PlanError::ConflictingDockerVolumeDefinitions { name: volume() },
+        PlanError::DuplicateTargetService { service: service() },
+        PlanError::ProvisionedVolumeStorageRequired { machine: machine() },
+        PlanError::ProvisionedVolumeStorageUnavailable,
+        PlanError::ProvisionedVolumeStorageUnknown {
+            names: vec![machine()],
+        },
+        PlanError::ExistingPlainVolume {
+            name: volume(),
+            machine: machine(),
+        },
+        PlanError::ExistingProvisionedVolumeMismatch {
+            name: volume(),
+            machine: machine(),
+            maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1).unwrap()),
+        },
+        PlanError::MixedVolumeModes {
+            name: volume(),
+            global: "agent".into(),
+            replicated: "web".into(),
+        },
+        PlanError::DependencyCycle {
+            service: "web".into(),
+        },
+        PlanError::HostnameConflict {
+            hostname: IngressHost::parse("shop.example.com").unwrap(),
+            owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
+        },
+        PlanError::RemovalInTarget { service: service() },
+        PlanError::RemovalNotSelected { service: service() },
+        PlanError::RemovalInReservedNamespace {
+            namespace: Namespace::parse("ployz-system").unwrap(),
+        },
+    ];
+    let internal = [
+        PlanError::Storage {
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            machine: machine(),
+            source: StorageCapacityError::PoolCannotGrow {
+                required_bytes: 2,
+                capacity_bytes: 1,
+            },
+        },
+        PlanError::NoWriter {
+            name: "app_data".into(),
+            copies: vec![KnownCopy {
+                machine: machine(),
+                role: CopyRole::Slot,
+            }],
+            operator: Operator::Cloud,
+        },
+        PlanError::VolumeServerTakesNoServices {
+            volume: "app_data".into(),
+            machine: machine(),
+        },
+        PlanError::CopiesUnknown {
+            name: "app_data".into(),
+            machine: machine(),
+        },
+        PlanError::VolumeHolderUnknown {
+            name: "app_data".into(),
+            machine: machine(),
+        },
+    ];
+    let through_preparation =
+        |error: DeployError| crate::sdk::prepare::PreparationError::Plan(error);
+    for (refusals, code) in [
+        (Vec::from(invalid_argument), RpcErrorCode::InvalidArgument),
+        (Vec::from(internal), RpcErrorCode::Internal),
+    ] {
+        for refusal in refusals {
+            let named = format!("{refusal:?}");
+            // The Service a plan error names takes its source's code.
+            let in_service = PlanError::Service {
+                service: "shop".into(),
+                source: Box::new(refusal.clone()),
+            };
+            for error in [refusal, in_service] {
+                let error = preparation_error(through_preparation(DeployError::Plan(error)), false);
+                assert_eq!(error.code, code, "{named}");
+                assert_eq!(error.code.retry(), ployz_core::rpc::Retry::Never, "{named}");
+            }
+        }
+    }
+    let namespace = preparation_error(
+        through_preparation(DeployError::Namespace(
+            crate::namespace::NamespaceError::Reserved {
+                name: Namespace::parse("ployz-system").unwrap(),
+            },
+        )),
+        false,
+    );
+    assert_eq!(namespace.code, RpcErrorCode::InvalidArgument);
+    let connect = preparation_error(
+        through_preparation(DeployError::Connect(crate::connect::ConnectError::Remote(
+            RpcError::unavailable("Machine is draining"),
+        ))),
+        false,
+    );
+    assert_eq!(connect.code, RpcErrorCode::Internal);
+}
+
 #[test]
 fn a_remote_errors_own_same_again_key_suppresses_nothing() {
     let remote = || {
