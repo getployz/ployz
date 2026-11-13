@@ -776,9 +776,21 @@ pub fn resume(mut state: State, answers: Vec<Result<Value, RpcError>>) -> (Step,
         );
     };
     if answers.len() != kind.answers() {
+        let wrote = state
+            .rounds
+            .iter()
+            .any(|round| round.kind == Kind::Write && matches!(round.answers.first(), Some(Ok(_))));
+        let refusal = Refusal::internal("The answers do not match the step that asked for them");
         return done(
             state,
-            Refusal::internal("The answers do not match the step that asked for them"),
+            Refusal {
+                writes: if wrote {
+                    Writes::Committed
+                } else {
+                    refusal.writes
+                },
+                ..refusal
+            },
         );
     }
     state.rounds.push(Round { kind, answers });

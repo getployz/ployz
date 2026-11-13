@@ -2598,6 +2598,89 @@ fn a_removal_whose_read_after_the_write_fails_says_the_write_committed() {
     }
 }
 
+/// A removal's read after its write, resumed with too few or too many answers,
+/// is refused by the step machine before the plan sees it. The write committed
+/// by then, so the refusal says so; the same mismatch before any write says
+/// nothing was written.
+#[test]
+fn a_removal_resumed_with_the_wrong_number_of_answers_after_its_write_says_it_committed() {
+    let wrong: [Vec<Result<Value, RpcError>>; 2] = [
+        Vec::new(),
+        vec![
+            Ok(json!({ "type": "services", "environment": null })),
+            Ok(json!({ "type": "services", "environment": null })),
+        ],
+    ];
+    for bad in wrong {
+        let store = shop();
+        call(
+            &store,
+            "service_add",
+            json!({ "name": "web", "image": "nginx" }),
+            "add",
+        )
+        .ok();
+        let (mut step, mut state) = start(
+            "service_remove",
+            json!({ "service": "web" }),
+            &place(in_org()),
+            "remove",
+        );
+        let mut wrote = false;
+        let result = loop {
+            let answers = match step {
+                Step::Read { asks } if wrote => {
+                    assert_eq!(asks.len(), 1);
+                    bad.clone()
+                }
+                Step::Read { asks } => asks
+                    .into_iter()
+                    .map(|ask| answer(&store, &who(), &mut no_cloud, ask))
+                    .collect(),
+                Step::Write { write } => {
+                    wrote = true;
+                    let Write::Store(command) = *write else {
+                        panic!("a Store write");
+                    };
+                    vec![
+                        store
+                            .write(&who(), &command)
+                            .map(|written| serde_json::to_value(written).unwrap()),
+                    ]
+                }
+                Step::Done { result } => break result,
+                Step::Wait { .. } => panic!("a removal tool does not wait"),
+            };
+            (step, state) = resume(state, answers);
+        };
+        let ToolResult::Refused(refusal) = result else {
+            panic!("{} answers refused nothing: {result:?}", bad.len());
+        };
+        assert_eq!(refusal.code, RpcErrorCode::Internal, "{refusal:?}");
+        assert_eq!(
+            refusal.message, "The answers do not match the step that asked for them",
+            "{refusal:?}"
+        );
+        assert_eq!(refusal.writes, Writes::Committed, "{refusal:?}");
+    }
+
+    let (step, state) = start(
+        "service_remove",
+        json!({ "service": "web" }),
+        &place(in_org()),
+        "remove",
+    );
+    assert!(matches!(step, Step::Read { .. }));
+    let (step, _) = resume(state, Vec::new());
+    let Step::Done {
+        result: ToolResult::Refused(refusal),
+    } = step
+    else {
+        panic!("{step:?}");
+    };
+    assert_eq!(refusal.writes, Writes::None, "{refusal:?}");
+}
+
 #[test]
 fn a_failed_deployments_next_calls_read_its_own_window_as_given() {
     let error = json!({
