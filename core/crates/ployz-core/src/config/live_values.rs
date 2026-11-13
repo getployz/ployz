@@ -93,12 +93,7 @@ pub fn live_values(input: LiveValuesInput) -> LiveValues {
                 SavedVariableValue::Literal { value } if producer.key == PRIVATE_DOMAIN_KEY => {
                     SavedVariableValue::Literal {
                         // An address the owner itself uses live already names its Namespace.
-                        value: match value.strip_suffix(".internal") {
-                            Some(host) if !host.contains('.') => {
-                                format!("{host}.{namespace}.internal")
-                            }
-                            _ => value,
-                        },
+                        value: crate::domain::private_dns::qualify(&value, &namespace),
                     }
                 }
                 SavedVariableValue::Template { parts } => SavedVariableValue::Template {

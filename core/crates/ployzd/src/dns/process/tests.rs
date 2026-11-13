@@ -21,8 +21,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{Backoff, DnsExit, Fixture, InstalledExe, serve_with};
+use super::{DnsExit, Fixture, InstalledExe, serve_with};
 use crate::{
+    backoff::Doubling,
     corrosion::fake_cluster::{ContainerFeed, FakeCluster, unclaimed_loopback},
     dns::{
         listeners::{Keeper, Listeners, MemoryKeeper},
@@ -96,7 +97,7 @@ impl Harness {
                     exe,
                     tick: TICK,
                     refresh,
-                    backoff: Backoff::between(
+                    backoff: Doubling::between(
                         Duration::from_millis(20),
                         Duration::from_millis(100),
                     ),

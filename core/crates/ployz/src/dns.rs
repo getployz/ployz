@@ -9,10 +9,9 @@ use std::{
 
 use futures_util::future::join_all;
 use ployz_core::{
-    HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication,
-    Refusal, VerifyAnswer, generated_refusal_reason, hostname_verdict, refusal_reason,
+    HostnameProbe, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication, Refusal,
+    VerifyAnswer, generated_refusal_reason, hostname_verdict, refusal_reason,
 };
-use reqwest::{Client, redirect::Policy};
 
 /// An Ingress Hostname that does not reach this Cluster.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,36 +121,8 @@ pub async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
     }
 }
 
-// ponytail: mirrors ployzd's `verify_answer`; the two crates share only ployz-core, which has no HTTP client.
-async fn verify_answer(
-    client: &Client,
-    hostname: &IngressHost,
-    address: SocketAddr,
-) -> VerifyAnswer {
-    let Ok(response) = client
-        .get(format!("http://{address}{HOSTNAME_VERIFY_PATH}"))
-        .header(reqwest::header::HOST, hostname.as_str())
-        .send()
-        .await
-    else {
-        return VerifyAnswer::NoAnswer;
-    };
-    let status = response.status().as_u16();
-    let location = response
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .and_then(|location| location.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    VerifyAnswer::Answered {
-        status,
-        location,
-        body: response.text().await.unwrap_or_default(),
-    }
-}
-
 async fn probe_ingress_hostname(
-    client: &Client,
+    probe: &HostnameProbe,
     hostname: &IngressHost,
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
@@ -159,7 +130,7 @@ async fn probe_ingress_hostname(
 ) -> Option<HostnameVerdict> {
     let addresses = resolve_ingress_addresses(hostname).await;
     let answers = join_all(addresses.into_iter().map(|address| async move {
-        let answer = verify_answer(client, hostname, SocketAddr::new(address, 80)).await;
+        let answer = probe.answer(hostname, SocketAddr::new(address, 80)).await;
         (address, answer)
     }))
     .await;
@@ -197,18 +168,13 @@ pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
     cluster_domain: Option<&IngressHost>,
 ) -> Vec<IngressDnsWarning> {
     let targets = ingress_targets_from_ports(ports);
-    let Ok(client) = Client::builder()
-        .redirect(Policy::none())
-        .no_proxy()
-        .timeout(Duration::from_secs(2))
-        .build()
-    else {
+    let Ok(probe) = HostnameProbe::new(Duration::from_secs(2)) else {
         return Vec::new();
     };
     let mut verdicts = Vec::with_capacity(targets.len());
     for (hostname, mentions_certificates) in targets {
         let verdict = probe_ingress_hostname(
-            &client,
+            &probe,
             hostname,
             machine_ids,
             cluster_addresses,

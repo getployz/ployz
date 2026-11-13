@@ -30,7 +30,7 @@ The model in `core/crates/ployz-verify/src/acme_issuance.rs` explores when each 
 - `Refused`: the record, at rank 0 only, with `record_certificate_failure` (`:497-516`);
 - `Order`: the push (`:600-602`).
 
-**An Err before the gate**, `Action::Errs`. A store read (`:400`, `:405-406`, `:424-425`, `:430`) or `probe_client` (`:431`) can return Err. `read_pass` returns it through `?`, `issue_wanted` returns it through `?` with `hosts` as it was (`:470`), and `run` prints "failed to obtain certificates: …" and waits `RETRY_INTERVAL` (`:349-355`).
+**An Err before the gate**, `Action::Errs`. A store read (`:400`, `:405-406`, `:424-425`, `:430`) or `HostnameProbe::new` in `read_pass` can return Err. `read_pass` returns it through `?`, `issue_wanted` returns it through `?` with `hosts` as it was (`:470`), and `run` prints "failed to obtain certificates: …" and waits `RETRY_INTERVAL` (`:349-355`).
 
 **The obtain**, `Action::Obtain` and `AcmeIssuance::obtain`, is one step: `obtain` (`:618-674`) and the failure record after `join_all` (`:540-598`). Its outcomes:
 - the re-read (`:627`) holds material, and the recheck returns (`:628-639`);

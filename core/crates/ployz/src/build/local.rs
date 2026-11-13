@@ -1,9 +1,9 @@
 //! Run one captured Build against this host's Docker, as `ployz build` does on a CI runner.
 
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 use ployz_build::{
-    BuildError, BuiltImage, Output, OutputScrub, Staged, capture, remote::Definition,
+    BuildError, BuiltImage, Output, OutputScrub, PrepareError, Prepared, remote::Definition,
 };
 
 use super::{CapturedBuild, CapturedTarget, Error, invalid};
@@ -94,67 +94,27 @@ impl CapturedBuild {
             service: captured.name.clone(),
             source,
         };
-        let staged = self
-            .opened
-            .as_ref()
-            .map(|opened| Staged::stage(root, opened, &definition.targets))
-            .transpose()
-            .map_err(build)?;
-        let sealed_override = staged.as_ref().and_then(Staged::compose_override);
-        let railpack = ployz_build::remote::validate_capture(
-            root,
-            &definition,
-            ployz_build::remote::SealedFiles::Opened,
-        )
-        .map_err(|error| invalid(error.to_string()))?;
-        let mut environment = BTreeMap::from([
-            (
-                "PATH".to_owned(),
-                std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
-            ),
-            ("HOME".to_owned(), path(&capture::private(root))),
-            ("DOCKER_CONFIG".to_owned(), path(&capture::docker(root))),
-        ]);
         let (cache, cache_scope) = match &self.local_cache {
             super::LocalCache::Runner => (true, None),
             super::LocalCache::Pinned(scope) => (scope.is_some(), scope.as_deref()),
         };
         // Only the cache service's own variables: the run's token credentials stay here.
-        for name in ployz_build::GITHUB_CACHE_ENV {
-            if let Ok(value) = std::env::var(name)
-                && cache
-            {
-                environment.insert(name.to_owned(), value);
-            }
-        }
-        if ployz_build::reads_plaintext(sealed_override, &railpack) {
-            // Buildx provenance metadata records build argument values.
-            environment.insert("BUILDX_METADATA_PROVENANCE".into(), "disabled".into());
-        }
+        let cache_environment = ployz_build::GITHUB_CACHE_ENV
+            .into_iter()
+            .filter(|_| cache)
+            .filter_map(|name| Some((name.to_owned(), std::env::var(name).ok()?)));
+        let prepared =
+            Prepared::capture(root, &definition, self.opened.as_ref(), cache_environment).map_err(
+                |error| match error {
+                    PrepareError::Staging(source) => build(source),
+                    PrepareError::Invalid(message) => invalid(message),
+                },
+            )?;
         let scrub = self.opened.as_ref().map(OutputScrub::new);
-        let request = ployz_build::Request {
-            image_contexts: &definition.image_contexts,
-            compose_file: Path::new(capture::COMPOSE),
-            sealed_override,
-            working_dir: root,
-            environment: &environment,
-            docker: None,
-            targets: &definition.targets,
-            railpack: &railpack,
-            build_args: &[],
-            output: definition.output,
-            no_cache: false,
-            pull: false,
-            sealed: self.opened.is_some(),
-            cache_scope,
-        };
-        let images = execute(&request, scrub.as_ref()).map_err(build)?;
+        let images =
+            execute(&prepared.request(None, cache_scope), scrub.as_ref()).map_err(build)?;
         Ok((captured, images))
     }
-}
-
-fn path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -162,7 +122,7 @@ mod tests {
     use super::*;
     use crate::build::{BuildSpec, Recipe, capture, tests::intent};
     use ployz_core::{DeployIntent, OpenedSealed};
-    use std::fs;
+    use std::{fs, path::Path};
 
     const MARKER: &str = "marker-sealed-0123456789";
 

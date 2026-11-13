@@ -22,6 +22,8 @@ pub use policy::clear_cache;
 mod received_recipe;
 mod retention;
 pub use retention::{ImageRetention, RetainedImages};
+mod prepared;
+pub use prepared::{PrepareError, Prepared};
 pub mod remote;
 mod upload;
 
