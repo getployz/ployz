@@ -1346,18 +1346,178 @@ fn a_state_file_ployzd_cannot_read_back_loads_as_nothing_prepared() {
         String::new(),
     ] {
         fs::write(state_path(&paths), &text).unwrap();
-        assert_eq!(load(&paths), PrepState::default(), "{text}");
+        assert_eq!(load(&paths), Fact::Known(PrepState::default()), "{text}");
     }
     fs::remove_file(state_path(&paths)).unwrap();
-    assert_eq!(load(&paths), PrepState::default());
+    assert_eq!(load(&paths), Fact::Known(PrepState::default()));
 
     fs::write(
         state_path(&paths),
         format!("{{{STEPS}, \"added_packages\": [\"dkms\"], \"added_contrib_source\": true}}"),
     )
     .unwrap();
-    let loaded = load(&paths);
+    let Fact::Known(loaded) = load(&paths) else {
+        panic!("the record reads");
+    };
     assert_eq!(loaded.added_packages, ["dkms"]);
     assert!(loaded.added_contrib_source);
     assert_eq!(loaded.docker.outcome(), Some(&DockerOutcome::Ready));
+}
+
+/// A state file that can't be read at all is no record, not an empty one: starting from nothing
+/// would forget the packages and the build it holds. Each caller says what it does without it.
+#[tokio::test]
+async fn a_state_file_that_cannot_be_read_stops_the_runs_that_would_overwrite_it() {
+    let fixture = fixture("state-unreadable");
+    let paths = InstallPaths::at(fixture.path());
+    fs::create_dir_all(state_path(&paths)).unwrap();
+    assert!(matches!(load(&paths), Fact::Unknown(_)));
+
+    let ran = Cell::new(false);
+    let refused = prepare_at(&paths, true, async || {
+        ran.set(true);
+        Ok(())
+    })
+    .await
+    .unwrap_err();
+    assert!(!ran.get());
+    assert!(
+        matches!(&refused, Error::Refused { stage, .. } if stage == "read the host preparation state"),
+        "{refused:?}"
+    );
+
+    let refused = discard_at(&paths).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Refused { stage, message }
+            if stage == "discard the ZFS build"
+                && message.starts_with("couldn't read the host preparation state, so nothing was removed: ")),
+        "{refused:?}"
+    );
+
+    take_over_preparation(&paths, "apt-get");
+    assert!(state_path(&paths).is_dir());
+}
+
+/// The host questions the build steps ask, answered by fake commands: a command that can't run,
+/// or answers in a way the question doesn't allow, is `Unknown`, not a no.
+#[test]
+fn a_host_query_that_cannot_answer_is_unknown_rather_than_no() {
+    const CASE: &str = "PLOYZ_PREPARE_QUERY_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let known = |answer| Fact::Known(answer);
+        assert_eq!(deb_installed("kept"), known(true));
+        assert_eq!(deb_installed("removed"), known(false));
+        assert_eq!(deb_installed("unheard-of"), known(false));
+        assert!(
+            matches!(deb_installed("broken"), Fact::Unknown(cause) if cause.contains("exit status: 2"))
+        );
+        assert!(
+            matches!(deb_installed("odd"), Fact::Unknown(cause) if cause.contains("\"weird\""))
+        );
+        assert_eq!(rpm_provided("present"), known(true));
+        assert_eq!(rpm_provided("absent"), known(false));
+        assert_eq!(
+            dkms_status(&["-m", "zfs"]),
+            "zfs/2.1.11, 6.1.0, x86_64: built\n"
+        );
+        fs::write(contract_root().join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "query-facts",
+        DEBIAN_12,
+        &[
+            (
+                "dpkg-query",
+                "case \"$3\" in kept) printf 'install ok installed' ;; removed) printf 'deinstall ok config-files' ;; broken) exit 2 ;; odd) printf weird ;; *) exit 1 ;; esac",
+            ),
+            ("rpm", "case \"$3\" in present) exit 0 ;; *) exit 1 ;; esac"),
+            ("dkms", "echo 'zfs/2.1.11, 6.1.0, x86_64: built'"),
+        ],
+    );
+    run_contract_child_with_environment(
+        "installer::prepare::tests::a_host_query_that_cannot_answer_is_unknown_rather_than_no",
+        fixture.path(),
+        OsString::from(CASE),
+        OsString::from("query-facts"),
+        "query-facts",
+        [],
+    );
+}
+
+#[test]
+fn a_host_query_whose_command_cannot_start_is_unknown() {
+    const CASE: &str = "PLOYZ_PREPARE_MISSING_QUERY_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        assert!(
+            matches!(deb_installed("any"), Fact::Unknown(cause) if cause.contains("couldn't run"))
+        );
+        assert!(
+            matches!(rpm_provided("any"), Fact::Unknown(cause) if cause.contains("couldn't run"))
+        );
+        assert!(
+            matches!(zfs_dkms_installed("dnf"), Fact::Unknown(cause) if cause.contains("couldn't run"))
+        );
+        assert_eq!(dkms_status(&["-m", "zfs"]), "");
+        fs::write(contract_root().join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host("query-missing", DEBIAN_12, &[]);
+    run_contract_child_with_environment(
+        "installer::prepare::tests::a_host_query_whose_command_cannot_start_is_unknown",
+        fixture.path(),
+        OsString::from(CASE),
+        OsString::from("query-missing"),
+        "query-missing",
+        [],
+    );
+}
+
+/// Whether `zfsutils-linux` is installed decides whether an Ubuntu download is a package's; a
+/// dpkg that can't say leaves the download where it is.
+#[test]
+fn discard_keeps_an_ubuntu_download_when_dpkg_cannot_say_who_owns_it() {
+    const CASE: &str = "PLOYZ_PREPARE_UBUNTU_OWNER_UNKNOWN_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        fs::create_dir_all(prepare_dir(&paths)).unwrap();
+        Job {
+            path: state_path(&paths),
+            state: PrepState {
+                zfs_build: Some(ZfsBuild::Ubuntu {
+                    downloaded: vec!["zfsutils-linux".into()],
+                }),
+                ..PrepState::default()
+            },
+        }
+        .save()
+        .unwrap();
+        let refused = discard_at(&paths).unwrap_err();
+        assert!(
+            matches!(&refused, Error::Refused { stage, message }
+                if stage == "discard the ZFS build"
+                    && message.starts_with("couldn't tell whether a package owns it, so it stays: ")),
+            "{refused:?}"
+        );
+        assert!(read_state(&root).zfs_build.is_some());
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "ubuntu-owner-unknown",
+        UBUNTU_24,
+        &[("dpkg-query", "exit 2")],
+    );
+    run_contract_child_with_environment(
+        "installer::prepare::tests::discard_keeps_an_ubuntu_download_when_dpkg_cannot_say_who_owns_it",
+        fixture.path(),
+        OsString::from(CASE),
+        OsString::from("ubuntu-owner-unknown"),
+        "ubuntu-owner-unknown",
+        [],
+    );
 }
