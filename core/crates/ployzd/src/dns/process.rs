@@ -8,15 +8,15 @@ use std::{
 
 use futures_util::StreamExt;
 use hickory_server::Server;
-use ployz_core::MachineId;
+use ployz_core::{MachineId, MachineSubnet};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Answers, Handler, ProjectionInputs, Snapshot, Upstreams,
+    forward::{Handler, Upstreams, run_server},
     listeners::{Keeper, Listeners, SystemdKeeper, adopt, names},
-    run_server,
+    projection::{Answers, ProjectionInputs, Snapshot},
     service::{Probe, Successor},
     spec::{CorrosionEndpoint, DnsSpec, SpecFile},
 };
@@ -137,14 +137,14 @@ pub(crate) async fn serve_with(
     };
     let mut session = Session::new(spec.machine, spec.corrosion.clone(), fixture.backoff);
     let (answers, connection) = tokio::select! {
-        loaded = session.first_load(spec.local_subnet, upstreams, fixture.keeper, &shutdown) => match loaded? {
+        loaded = session.first_load(spec.local_subnet, fixture.keeper, &shutdown) => match loaded? {
             Some(loaded) => loaded,
             None => return Ok(DnsExit::Stopped),
         },
         exit = tick.until_exit(fixture.keeper, &listeners) => return Ok(exit),
     };
 
-    let handler = Handler::new(answers.clone());
+    let handler = Handler::new(answers.clone(), upstreams);
     let in_flight = handler.in_flight();
     let mut server = Server::new(handler);
     listeners.register(&mut server)?;
@@ -214,8 +214,7 @@ impl Session {
 
     async fn first_load(
         &mut self,
-        local_subnet: ipnet::Ipv4Net,
-        upstreams: Upstreams,
+        local_subnet: MachineSubnet,
         keeper: &dyn Keeper,
         shutdown: &CancellationToken,
     ) -> io::Result<Option<(Answers, Connection)>> {
@@ -223,7 +222,7 @@ impl Session {
             match self.connect().await {
                 Ok((connection, snapshot)) => {
                     self.inputs.load(snapshot);
-                    let answers = Answers::loaded(self.inputs.build(), local_subnet, upstreams);
+                    let answers = Answers::loaded(self.inputs.build(), local_subnet);
                     return Ok(Some((answers, connection)));
                 }
                 Err(Attempt::NoToken) => keeper.status("waiting for the Corrosion token")?,
