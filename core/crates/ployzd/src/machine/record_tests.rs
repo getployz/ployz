@@ -93,6 +93,27 @@ fn a_record_written_today_reads_and_writes_back_unchanged() {
     );
 }
 
+/// A record the boot commit activated keeps when it did: a Volume approval issued before
+/// `activated_at` is judged under the old derivation, so reading it as absent would judge
+/// every approval under the new one.
+#[test]
+fn a_record_keeps_the_time_it_was_activated_across_a_read() {
+    let mut row = golden();
+    row.as_object_mut()
+        .unwrap()
+        .insert("activated_at".into(), json!(1_700_000_000_000_u64));
+
+    let record: LocalMachineRecord = serde_json::from_value(row.clone()).unwrap();
+
+    assert_eq!(
+        record
+            .activated_at()
+            .map(ployz_core::authority::Timestamp::as_millis),
+        Some(1_700_000_000_000)
+    );
+    assert_eq!(serde_json::to_value(&record).unwrap(), row);
+}
+
 /// The bytes a client key takes in `machine.json`: a JSON array of its 32 byte values.
 fn key_text(byte: u8) -> String {
     format!("[{}]", vec![byte.to_string(); 32].join(","))
