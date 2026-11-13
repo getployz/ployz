@@ -52,6 +52,16 @@ export function serverSupports(machine: { readonly capabilities: readonly string
   return machine.capabilities.includes(requirement.capability);
 }
 
+/** Whether a Server runs Ployz 0.3, whose daemon enforces no Device approval: Cloud sends it only an upgrade and reads. */
+export function runsOlderPloyz(machine: { readonly capabilities: readonly string[] }) {
+  return !machine.capabilities.includes(requirements.enforced.capability);
+}
+
+/** What the dashboard says wherever it would change a Server that runs Ployz 0.3. */
+export function olderPloyzSentence(server?: string) {
+  return server === undefined ? "This server runs Ployz 0.3. Upgrade it to deploy." : `${server} runs Ployz 0.3. Upgrade it to deploy.`;
+}
+
 /** The Servers whose records say they lack the capability. A Server whose record lists none is not named: the call is attempted. */
 export function serversLacking<T extends { readonly name: string; readonly capabilities: readonly string[] }>(machines: readonly T[], requirement: Requirement) {
   return machines.filter((machine) => serverSupports(machine, requirement) === false).map((machine) => machine.name);
