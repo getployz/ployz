@@ -678,7 +678,8 @@ fn unobserved(
     who: &Actor,
     unanswered: &[ployz_core::MachineId],
 ) -> Result<RpcError, RpcError> {
-    let names = deployment::server_names(tx, who, unanswered.iter().copied())?;
+    let asked = unanswered.iter().copied().collect();
+    let names = deployment::server_names(tx, &who.organization, Some(&asked))?;
     let waiting_on: Vec<Waiting> = unanswered
         .iter()
         .map(|server| {

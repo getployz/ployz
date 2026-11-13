@@ -99,7 +99,8 @@ pub(crate) fn review(
     }
     let (losses, unanswered) = held(removed, observed)?;
     if !unanswered.is_empty() {
-        let servers = crate::deployment::server_names(tx, who, unanswered.iter().copied())?;
+        let asked = unanswered.iter().copied().collect();
+        let servers = crate::deployment::server_names(tx, &who.organization, Some(&asked))?;
         return Err(silent(&names, &unanswered, &servers));
     }
     let lost: Vec<&VolumeLoss> = losses

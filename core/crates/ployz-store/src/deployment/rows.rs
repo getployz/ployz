@@ -1081,25 +1081,29 @@ fn history(row: &Row, index: usize) -> Result<Option<Vec<RowTransition>>, RpcErr
         .transpose()
 }
 
-/// The name each Server `organization`'s Deployments ran on went by, as the newest
-/// of them knew it.
-pub(crate) fn servers(
+/// The name each of `machines` (every Server, when `None`) last ran a Deployment row
+/// under in `organization`, as the newest row that named it knew it. A row carrying
+/// only the Machine's id names nothing, and a Machine no row named is left out.
+pub(crate) fn server_names(
     tx: &mut dyn Tx,
     organization: &OrganizationId,
+    machines: Option<&BTreeSet<MachineId>>,
 ) -> Result<BTreeMap<MachineId, String>, RpcError> {
     let found = tx.query(
         "SELECT r.machine, r.server FROM config_deployment_row r \
          JOIN config_deployment d ON d.id = r.deployment_id \
-         WHERE r.organization_id = ?1 ORDER BY d.admitted",
+         WHERE r.organization_id = ?1 AND r.server <> r.machine \
+         ORDER BY COALESCE(r.finished, r.started, 0), d.admitted",
         &[organization.as_str().into()],
     )?;
-    found
-        .iter()
-        .map(|row| {
-            let machine: MachineId = row.parse(0, "Deployment row Machine")?;
-            Ok((machine, row.text(1)?.to_owned()))
-        })
-        .collect()
+    let mut names = BTreeMap::new();
+    for row in &found {
+        let machine: MachineId = row.parse(0, "Deployment row Machine")?;
+        if machines.is_none_or(|machines| machines.contains(&machine)) {
+            names.insert(machine, row.text(1)?.to_owned());
+        }
+    }
+    Ok(names)
 }
 
 /// Each runtime Service's rows, by the Machine they ran on.
