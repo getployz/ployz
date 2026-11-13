@@ -1,7 +1,6 @@
 //! Authored Services in the Config Store: add, list, inspect, rename and remove.
 //! Every change is staged in Working State until a Deploy ships it.
 
-use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_store::{
@@ -11,6 +10,7 @@ use ployz_store::{
 };
 use serde::Serialize;
 
+use super::super::shared::staged::{StagedReport, Then};
 use super::super::store;
 use super::super::{Error, leaf_matches};
 use crate::cli::{positional, value};
@@ -238,26 +238,20 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
 /// A staged Service change and, when it changed anything, `ployz deploy` to ship it.
 fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<(), Error> {
-    let hint = (!result.staged.is_empty()).then(|| store::next(matches, &["deploy"]));
-    let followed = Next::new(result, hint);
-    crate::ui::finish(&followed, || {
-        // A mutation always says what it did, nothing included.
-        if result.staged.is_empty() {
-            crate::ui::stream(format_args!(
-                "Nothing changed in {}/{}; {} already has that name.",
-                result.environment.project, result.environment.name, result.service.name
-            ));
-            return;
-        }
-        crate::ui::stream(format_args!(
-            "{what} {} in {}/{}.",
-            result.service.name, result.environment.project, result.environment.name
-        ));
+    let followed = StagedReport::of(
+        matches,
+        result,
+        format!("{what} {}", result.service.name),
+        format!("{} already has that name", result.service.name),
+        Then::Deploy,
+    )
+    .print_changes(|| {
         for reference in &result.broken {
             crate::ui::stream(format_args!("  {}", store::broken_line(matches, reference)));
         }
-        followed.say();
-    })
+    })?;
+    followed.say();
+    Ok(())
 }
 
 use crate::handlers::store::service_name;

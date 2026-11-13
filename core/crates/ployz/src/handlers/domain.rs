@@ -11,6 +11,7 @@ use ployz_store::{
     DomainsQuery, Hostname, RemoveDomain, SetGeneratedDomain,
 };
 
+use super::shared::staged::{StagedReport, Then};
 use super::store;
 use super::{Error, leaf_matches, required};
 use crate::cli::{positional, value};
@@ -121,7 +122,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
         ))));
     }
     let added = store.write(&add)?;
-    let next = staged(
+    let followed = staged(
         matches,
         &added,
         &added.written,
@@ -143,10 +144,10 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
             say_dns(row);
         }
     }
-    say_next(next);
+    followed.say();
     if let Some(free) = &added.free_prefix {
         let service = add.service.as_str();
-        say_next(Some(store::next(
+        ui::hint(&Hint::Next(store::next(
             matches,
             &["domain", "add", service, "--prefix", free.as_str()],
         )));
@@ -170,14 +171,14 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         port: matches.get_one::<u16>("port").copied().map(Some),
     };
     let changed = store::store(root)?.write(&set)?;
-    let next = staged(
+    staged(
         matches,
         &changed,
         &changed,
         "Staged generated domain",
         "already reaches",
-    )?;
-    say_next(next);
+    )?
+    .say();
     Ok(())
 }
 
@@ -188,14 +189,14 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         domain: required(matches, "domain")?,
     };
     let removed = store::store(root)?.write(&remove)?;
-    let next = staged(
+    staged(
         matches,
         &removed,
         &removed,
         "Staged removal of domain",
         "is already off",
-    )?;
-    say_next(next);
+    )?
+    .say();
     Ok(())
 }
 
@@ -266,41 +267,23 @@ pub(super) fn check(root: &ArgMatches) -> Result<(), Error> {
 /// anything. A change that was already so says nothing changed: `already` joins the
 /// domain to its Service, as in `example.com is already on web`. `written` is what
 /// `--json` prints.
-fn staged<T: serde::Serialize>(
-    matches: &ArgMatches,
-    written: &T,
-    result: &DomainStaged,
+fn staged<'a, T: serde::Serialize>(
+    matches: &'a ArgMatches,
+    written: &'a T,
+    result: &'a DomainStaged,
     what: &str,
     already: &str,
-) -> Result<Option<String>, Error> {
-    let where_ = result.environment.to_string();
-    if result.staged.is_empty() {
-        ui::done(
-            &Next::new(written, None),
-            format_args!(
-                "Nothing changed in {where_}; {} {already} {}.",
-                result.domain.shown(),
-                result.domain.service
-            ),
-        )?;
-        return Ok(None);
-    }
-    let hint = store::next(matches, &["deploy"]);
-    ui::done(
-        &Next::new(written, Some(hint.clone())),
-        format_args!(
-            "{what} {} on {} in {where_}.",
-            result.domain.shown(),
-            result.domain.service
-        ),
-    )?;
-    Ok(Some(hint))
-}
-
-fn say_next(next: Option<String>) {
-    if let Some(next) = next {
-        ui::hint(&Hint::Next(next));
-    }
+) -> Result<Next<'a, T>, Error> {
+    let (shown, service) = (result.domain.shown(), &result.domain.service);
+    StagedReport::of(
+        matches,
+        result,
+        format!("{what} {shown} on {service}"),
+        format!("{shown} {already} {service}"),
+        Then::Deploy,
+    )
+    .shown(written)
+    .print(|| {})
 }
 
 /// The command a domain's action names, when it names one.

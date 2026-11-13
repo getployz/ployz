@@ -289,9 +289,16 @@ pub(crate) struct Gaps {
 
 impl Gaps {
     pub(crate) fn of<T>(result: &PartialResult<T, RpcError>) -> Self {
+        Self::from_parts(result.failures.clone(), result.omissions.clone())
+    }
+
+    pub(crate) fn from_parts(
+        failures: Vec<MachineFailure<RpcError>>,
+        omitted: Vec<MachineId>,
+    ) -> Self {
         Self {
-            failures: result.failures.clone(),
-            omitted: result.omissions.clone(),
+            failures,
+            omitted,
             names: BTreeMap::new(),
         }
     }
@@ -366,6 +373,15 @@ impl Gaps {
         for machine_id in &self.omitted {
             flag(&missing_rows(&self.name(machine_id)));
         }
+    }
+
+    /// The first line of each failure's warning, in order, as [`Gaps::warn`] prints them.
+    #[cfg(test)]
+    pub(crate) fn failure_warnings(&self) -> Vec<String> {
+        self.failures
+            .iter()
+            .map(|failure| self.warning(failure).0)
+            .collect()
     }
 
     /// The warning for `failure`, naming its Machine, and the line under it: the cause when
@@ -520,6 +536,48 @@ mod tests {
             Some(serde_json::json!(["Docker volume (not recommended)"]))
         );
         assert!(second.unwrap().get("warnings").is_none());
+    }
+
+    /// A fan-out's gaps keep its failures and omissions in order, and name a Machine by its
+    /// id until it is given a name.
+    #[test]
+    fn gaps_keep_a_fan_outs_failures_and_omissions_in_order() {
+        let (a, b, c) = (
+            MachineId::parse("a".repeat(32)).unwrap(),
+            MachineId::parse("b".repeat(32)).unwrap(),
+            MachineId::parse("c".repeat(32)).unwrap(),
+        );
+        let failure = |machine_id| MachineFailure {
+            machine_id,
+            error: RpcError::unavailable("no answer".to_owned()),
+        };
+        let listing: PartialResult<(), RpcError> = PartialResult {
+            successes: Vec::new(),
+            failures: vec![failure(b), failure(a)],
+            omissions: vec![c, a],
+        };
+        let gaps = Gaps::of(&listing);
+        assert_eq!(gaps.failures, vec![failure(b), failure(a)]);
+        assert_eq!(gaps.omitted, vec![c, a]);
+        assert_eq!(
+            serde_json::to_value(&gaps).unwrap(),
+            serde_json::json!({
+                "failures": [failure(b), failure(a)],
+                "omitted": [c, a],
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(Gaps::from_parts(vec![failure(b), failure(a)], vec![c, a]))
+                .unwrap(),
+            serde_json::to_value(&gaps).unwrap()
+        );
+        assert!(gaps.stopped_answering(&a).starts_with(&"a".repeat(32)));
+        let name = MachineName::parse("machine-a").unwrap();
+        assert!(
+            gaps.named([(a, &name)])
+                .stopped_answering(&a)
+                .starts_with("machine-a ")
+        );
     }
 
     /// A Server the entry Machine stopped listing between our membership read and the
