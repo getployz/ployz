@@ -418,24 +418,14 @@ const DIRECT: &[&str] = &[
     "Build",
 ];
 
-macro_rules! direct_routes {
-    (
-        package $package:literal
-        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
-        capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
-    ) => {
-        [$($unary_route,)+ $($stream_route,)+ $($bidi_route,)+]
-            .into_iter()
-            .filter(|route| dials_direct(&format!("/{}.MachineRpc/{route}", $package)))
-            .collect::<Vec<_>>()
-    };
-}
-
 #[test]
 fn the_routes_a_call_dials_itself_are_the_ones_pinned_here() {
-    assert_eq!(ployz_core::rpc_catalog!(direct_routes), DIRECT);
+    let direct: Vec<&str> = ployz_core::rpc::ROUTES
+        .iter()
+        .filter(|route| dials_direct(route.path))
+        .map(|route| route.path.rsplit('/').next().unwrap())
+        .collect();
+    assert_eq!(direct, DIRECT);
 }
 
 /// A daemon that answers `ListMachines` with no Machines after `delay`, and anything else with

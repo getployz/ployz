@@ -680,29 +680,17 @@ fn every_capability_above_the_field_floor_says_how_older_machines_are_handled() 
     assert!(stale.is_empty(), "{stale:?} are no longer catalogued");
 }
 
-macro_rules! catalog_routes {
-    (
-        package $package:literal
-        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
-        capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
-    ) => {
-        [
-            $(($unary_capability_name, stringify!($unary_scope)),)+
-            $(($stream_capability_name, stringify!($stream_scope)),)+
-            $(($bidi_capability_name, stringify!($bidi_scope)),)+
-        ]
-    };
-}
-
 mod coverage {
     use std::collections::BTreeSet;
 
+    use ployz_core::ManagementScope;
     use ployz_core::authority::coverage::{AUTHORIZATION, Authorization, CASES, Expected};
 
-    fn routes() -> Vec<(&'static str, &'static str)> {
-        ployz_core::rpc_catalog!(catalog_routes).to_vec()
+    fn routes() -> Vec<(&'static str, ManagementScope)> {
+        ployz_core::rpc::ROUTES
+            .iter()
+            .map(|route| (route.capability, route.scope))
+            .collect()
     }
 
     fn catalogued(name: &str) -> bool {
@@ -737,8 +725,8 @@ mod coverage {
                 .unwrap_or_else(|| panic!("{capability} has no class"));
             assert_eq!(
                 class == Authorization::Full,
-                scope == "Full",
-                "{capability} is classed {class:?} but its catalog scope is {scope}"
+                scope == ManagementScope::Full,
+                "{capability} is classed {class:?} but its catalog scope is {scope:?}"
             );
         }
     }

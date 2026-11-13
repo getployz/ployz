@@ -20,13 +20,13 @@ macro_rules! fake_machine {
     (
         package $package:literal
         unary {
-            $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+
+            $($unary_variant:ident: ($unary_method:ident, $unary_request:ty, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident $(, $($unary_more:tt)*)?),)+
         }
         server_streaming {
-            $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+
+            $($stream_variant:ident: ($stream_method:ident, $stream_request:ty, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident $(, $($stream_more:tt)*)?),)+
         }
         bidi_streaming {
-            $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+
+            $($bidi_variant:ident: ($bidi_method:ident, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident $(, $($bidi_more:tt)*)?),)+
         }
         capabilities {
             $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+
@@ -40,7 +40,7 @@ macro_rules! fake_machine {
                     &self,
                     _request: Request<OpaquePayload>,
                 ) -> Result<Response<OpaquePayload>, Status> {
-                    Err(Status::unimplemented(concat!($unary_route, " is not used by this fixture")))
+                    Err(Status::unimplemented(concat!(stringify!($unary_variant), " is not used by this fixture")))
                 }
             )+
             $(
@@ -48,7 +48,7 @@ macro_rules! fake_machine {
                     &self,
                     _request: Request<OpaquePayload>,
                 ) -> Result<Response<FakeStream>, Status> {
-                    Err(Status::unimplemented(concat!($stream_route, " is not used by this fixture")))
+                    Err(Status::unimplemented(concat!(stringify!($stream_variant), " is not used by this fixture")))
                 }
             )+
             $(
@@ -56,7 +56,7 @@ macro_rules! fake_machine {
                     &self,
                     _request: Request<Streaming<OpaquePayload>>,
                 ) -> Result<Response<FakeStream>, Status> {
-                    Err(Status::unimplemented(concat!($bidi_route, " is not used by this fixture")))
+                    Err(Status::unimplemented(concat!(stringify!($bidi_variant), " is not used by this fixture")))
                 }
             )+
         }

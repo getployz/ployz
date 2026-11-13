@@ -532,36 +532,49 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.rule.commit-approval.v1", "Always"),
 ];
 
-macro_rules! catalog_rows {
-    (
-        package $package:literal
-        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
-        capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
-    ) => {
-        (
-            vec![
-                $((stringify!($unary_variant), stringify!($unary_method), $unary_route, $unary_command, $unary_capability_name, stringify!($unary_advertisement), stringify!($unary_scope), "Unary"),)+
-                $((stringify!($stream_variant), stringify!($stream_method), $stream_route, $stream_command, $stream_capability_name, stringify!($stream_advertisement), stringify!($stream_scope), "ServerStreaming"),)+
-                $((stringify!($bidi_variant), stringify!($bidi_method), $bidi_route, $bidi_command, $bidi_capability_name, stringify!($bidi_advertisement), stringify!($bidi_scope), "BidiStreaming"),)+
-            ],
-            vec![$(($extra_capability_name, stringify!($extra_advertisement)),)+],
-        )
-    };
-}
-
 #[test]
-fn every_row_names_its_route_command_and_capability_as_pinned() {
-    let (rows, extras) = crate::rpc_catalog!(catalog_rows);
-    let mut seen = Vec::new();
-    for (variant, method, route, command, capability, advertisement, scope, shape) in rows {
-        assert_eq!(route, variant, "{variant}: the route is the variant");
-        assert_eq!(command, method, "{variant}: the command is the method");
-        seen.push((route, command, capability, advertisement, scope, shape));
+fn the_table_holds_every_pinned_route_once_in_catalog_order() {
+    let table: Vec<_> = ROUTES
+        .iter()
+        .map(|route| {
+            (
+                route.path.rsplit('/').next().unwrap(),
+                route.command,
+                route.capability,
+                format!("{:?}", route.advertisement),
+                format!("{:?}", route.scope),
+                format!("{:?}", route.shape),
+            )
+        })
+        .collect();
+    let pinned: Vec<_> = ROWS
+        .iter()
+        .map(
+            |(route, command, capability, advertisement, scope, shape)| {
+                (
+                    *route,
+                    *command,
+                    *capability,
+                    (*advertisement).to_owned(),
+                    (*scope).to_owned(),
+                    (*shape).to_owned(),
+                )
+            },
+        )
+        .collect();
+    assert_eq!(table, pinned);
+    for route in ROUTES {
+        assert!(route.path.starts_with("/ployz.rpc.v1.MachineRpc/"));
+        assert_eq!(
+            ROUTES
+                .iter()
+                .filter(|other| other.path == route.path)
+                .count(),
+            1,
+            "{} is catalogued twice",
+            route.path
+        );
     }
-    assert_eq!(seen, ROWS);
-    assert_eq!(extras, EXTRAS);
 }
 
 #[test]

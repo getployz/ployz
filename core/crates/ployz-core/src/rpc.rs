@@ -3,10 +3,10 @@ use crate::{
     SetVolumeSizeReply, SetVolumeSizeRequest, StorageCapacity, VolumeCopyView,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
-use std::collections::BTreeSet;
 
 mod activation;
 mod build_grant;
+mod catalog;
 #[cfg(test)]
 mod catalog_tests;
 mod container;
@@ -24,6 +24,7 @@ mod upgrade;
 mod volume;
 pub use activation::*;
 pub use build_grant::*;
+pub use catalog::*;
 pub use container::*;
 pub use error::*;
 pub use evidence::*;
@@ -42,7 +43,7 @@ use prost::Message;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::{CapabilityName, DeviceKey};
+use crate::DeviceKey;
 
 pub use crate::UNREGISTRY_PORT;
 
@@ -78,77 +79,6 @@ impl ManagementScope {
             Self::Operator
         }
     }
-}
-
-impl CapabilityAdvertisement {
-    /// Capability names this class advertises, in catalog order.
-    pub fn capabilities(self) -> impl Iterator<Item = CapabilityName> {
-        CATALOGUED_CAPABILITIES
-            .iter()
-            .filter(move |(_, class)| *class == self)
-            .map(|(name, _)| CapabilityName::parse(*name).expect("static capability name is valid"))
-    }
-}
-
-macro_rules! define_capabilities {
-    (
-        package $package:literal
-        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
-        capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
-    ) => {
-        $(pub const $unary_capability: &str = $unary_capability_name;)+
-        $(pub const $stream_capability: &str = $stream_capability_name;)+
-        $(pub const $bidi_capability: &str = $bidi_capability_name;)+
-        $($(#[$extra_meta])* pub const $extra_capability: &str = $extra_capability_name;)+
-
-        /// Whether this exact RPC path accepts one buffered request for fan-out.
-        /// Client-streaming methods (Exec and Build) require one selected Machine.
-        pub fn supports_fanout(path: &str) -> bool {
-            matches!(path, $(concat!("/", $package, ".MachineRpc/", $unary_route))|+ | $(concat!("/", $package, ".MachineRpc/", $stream_route))|+)
-        }
-
-        /// The capability that names the route at `path`, or `None` for an uncatalogued path.
-        #[must_use]
-        pub fn capability_of(path: &str) -> Option<&'static str> {
-            match path {
-                $(concat!("/", $package, ".MachineRpc/", $unary_route) => Some($unary_capability),)+
-                $(concat!("/", $package, ".MachineRpc/", $stream_route) => Some($stream_capability),)+
-                $(concat!("/", $package, ".MachineRpc/", $bidi_route) => Some($bidi_capability),)+
-                _ => None,
-            }
-        }
-
-        /// The least scope that may call the route at `path`, or `None` for an uncatalogued path.
-        #[must_use]
-        pub fn scope_of(path: &str) -> Option<ManagementScope> {
-            match path {
-                $(concat!("/", $package, ".MachineRpc/", $unary_route) => Some(ManagementScope::$unary_scope),)+
-                $(concat!("/", $package, ".MachineRpc/", $stream_route) => Some(ManagementScope::$stream_scope),)+
-                $(concat!("/", $package, ".MachineRpc/", $bidi_route) => Some(ManagementScope::$bidi_scope),)+
-                _ => None,
-            }
-        }
-
-        const CATALOGUED_CAPABILITIES: &[(&str, CapabilityAdvertisement)] = &[
-            $(($unary_capability, CapabilityAdvertisement::$unary_advertisement),)+
-            $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
-            $(($bidi_capability, CapabilityAdvertisement::$bidi_advertisement),)+
-            $(($extra_capability, CapabilityAdvertisement::$extra_advertisement),)+
-        ];
-    };
-}
-
-crate::rpc_catalog!(define_capabilities);
-
-/// Every capability name this binary can serve, whether or not a unit is on now.
-#[must_use]
-pub fn served_capabilities() -> BTreeSet<String> {
-    CATALOGUED_CAPABILITIES
-        .iter()
-        .map(|(name, _)| (*name).to_owned())
-        .collect()
 }
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
@@ -212,7 +142,7 @@ impl OpaquePayload {
     pub fn decode_request(&self) -> Result<RpcRequest, CodecError> {
         let header: RequestHeader = self.decode_json()?;
         validate_protocol_major(header.protocol_major)?;
-        if !RPC_COMMANDS.contains(&header.command.as_str()) {
+        if !is_request_command(&header.command) {
             return Err(CodecError::UnsupportedCommand(header.command));
         }
         self.decode_json()
@@ -239,9 +169,9 @@ fn validate_protocol_major(requested: u32) -> Result<(), CodecError> {
 macro_rules! define_request_body {
     (
         package $package:literal
-        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
+        unary { $($unary_variant:ident: ($unary_method:ident, $unary_request:ty, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident $(, $($unary_more:tt)*)?),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_request:ty, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident $(, $($stream_more:tt)*)?),)+ }
+        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident $(, $($bidi_more:tt)*)?),)+ }
         capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
     ) => {
         /// Commands are closed and own their typed payloads.
@@ -255,29 +185,27 @@ macro_rules! define_request_body {
             $($stream_variant($stream_request),)+
         }
 
-        const RPC_COMMANDS: &[&str] = &[$($unary_command,)+ $($stream_command,)+];
-
         /// One marker type per catalog row. Callers construct with
         /// `op::ListMachines::into_request(request)` and select unary RPCs at a
         /// type level with `client.call::<op::ListMachines>(request, target)`.
         pub mod op {
             $(
-                #[doc = concat!("The `", $unary_command, "` RPC.")]
+                #[doc = concat!("The `", stringify!($unary_method), "` RPC.")]
                 pub struct $unary_variant;
             )+
             $(
-                #[doc = concat!("The `", $stream_command, "` RPC.")]
+                #[doc = concat!("The `", stringify!($stream_method), "` RPC.")]
                 pub struct $stream_variant;
             )+
             $(
-                #[doc = concat!("The `", $bidi_command, "` stream.")]
+                #[doc = concat!("The `", stringify!($bidi_method), "` stream.")]
                 pub struct $bidi_variant;
             )+
         }
 
         $(
             impl op::$bidi_variant {
-                pub const PATH: &'static str = concat!("/", $package, ".MachineRpc/", $bidi_route);
+                pub const PATH: &'static str = concat!("/", $package, ".MachineRpc/", stringify!($bidi_variant));
             }
         )+
 
@@ -292,7 +220,7 @@ macro_rules! define_request_body {
                 type Request = $unary_request;
                 type Response = $unary_response;
 
-                const PATH: &'static str = concat!("/", $package, ".MachineRpc/", $unary_route);
+                const PATH: &'static str = concat!("/", $package, ".MachineRpc/", stringify!($unary_variant));
 
                 fn into_request(request: Self::Request) -> RpcRequest {
                     op::$unary_variant::into_request(request)
@@ -302,7 +230,7 @@ macro_rules! define_request_body {
                     match body {
                         RpcRequestBody::$unary_variant(request) => Ok(request),
                         other => Err(CodecError::UnexpectedRequest {
-                            expected: $unary_command,
+                            expected: stringify!($unary_method),
                             actual: other.command().to_owned(),
                         }),
                     }
@@ -315,7 +243,7 @@ macro_rules! define_request_body {
         )+
         $(
             impl op::$stream_variant {
-                pub const PATH: &'static str = concat!("/", $package, ".MachineRpc/", $stream_route);
+                pub const PATH: &'static str = concat!("/", $package, ".MachineRpc/", stringify!($stream_variant));
 
                 pub fn into_request(request: $stream_request) -> RpcRequest {
                     RpcRequestBody::$stream_variant(request).into()
@@ -327,7 +255,7 @@ macro_rules! define_request_body {
                     match body {
                         RpcRequestBody::$stream_variant(request) => Ok(request),
                         other => Err(CodecError::UnexpectedRequest {
-                            expected: $stream_command,
+                            expected: stringify!($stream_method),
                             actual: other.command().to_owned(),
                         }),
                     }
@@ -339,8 +267,8 @@ macro_rules! define_request_body {
             #[must_use]
             pub fn command(&self) -> &'static str {
                 match self {
-                    $(Self::$unary_variant(_) => $unary_command,)+
-                    $(Self::$stream_variant(_) => $stream_command,)+
+                    $(Self::$unary_variant(_) => stringify!($unary_method),)+
+                    $(Self::$stream_variant(_) => stringify!($stream_method),)+
                 }
             }
 
@@ -763,26 +691,25 @@ mod set_management_client_wire {
 mod served_capabilities_tests {
     use super::*;
 
-    macro_rules! catalog_capabilities {
-        (
-            package $package:literal
-            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
-            capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
-        ) => {
-            [$($unary_capability_name,)+ $($stream_capability_name,)+ $($bidi_capability_name,)+ $($extra_capability_name,)+]
-        };
-    }
-
     #[test]
     fn served_capabilities_cover_every_catalog_row() {
         let served = served_capabilities();
-        let rows = crate::rpc_catalog!(catalog_capabilities);
-        for name in rows {
-            assert!(served.contains(name), "{name} is not served");
+        for route in ROUTES {
+            assert!(
+                served.contains(route.capability),
+                "{} is not served",
+                route.capability
+            );
         }
-        assert_eq!(served.len(), rows.len());
+        let advertised = [
+            CapabilityAdvertisement::Always,
+            CapabilityAdvertisement::Container,
+            CapabilityAdvertisement::Cluster,
+        ]
+        .into_iter()
+        .flat_map(CapabilityAdvertisement::capabilities)
+        .count();
+        assert_eq!(served.len(), advertised);
     }
 }
 
@@ -800,52 +727,14 @@ mod streaming_routing_tests {
         }
     }
 
-    macro_rules! assert_capability_of {
-        (
-            package $package:literal
-            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
-            capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
-        ) => {
-            $(assert_eq!(
-                super::capability_of(&format!("/ployz.rpc.v1.MachineRpc/{}", $unary_route)),
-                Some($unary_capability_name),
-            );)+
-            $(assert_eq!(
-                super::capability_of(&format!("/ployz.rpc.v1.MachineRpc/{}", $stream_route)),
-                Some($stream_capability_name),
-            );)+
-            $(assert_eq!(
-                super::capability_of(&format!("/ployz.rpc.v1.MachineRpc/{}", $bidi_route)),
-                Some($bidi_capability_name),
-            );)+
-        };
-    }
-
-    macro_rules! full_scope_routes {
-        (
-            package $package:literal
-            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
-            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
-            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
-            capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
-        ) => {
-            [$($unary_route,)+ $($stream_route,)+ $($bidi_route,)+]
-                .into_iter()
-                .filter(|route| {
-                    super::scope_of(&format!("/ployz.rpc.v1.MachineRpc/{route}"))
-                        .expect("every catalogued route has a scope")
-                        == super::ManagementScope::Full
-                })
-                .collect::<Vec<_>>()
-        };
-    }
-
     #[test]
     fn only_exec_trusted_key_changes_and_the_recovery_code_routes_need_full_scope() {
         assert_eq!(
-            crate::rpc_catalog!(full_scope_routes),
+            super::ROUTES
+                .iter()
+                .filter(|route| route.scope == super::ManagementScope::Full)
+                .map(|route| route.path.rsplit('/').next().unwrap())
+                .collect::<Vec<_>>(),
             [
                 "WrapSealingKey",
                 "RecoverSealingKey",
@@ -878,7 +767,6 @@ mod streaming_routing_tests {
 
     #[test]
     fn capability_of_names_every_catalogued_route() {
-        crate::rpc_catalog!(assert_capability_of);
         assert_eq!(
             super::capability_of("/ployz.rpc.v1.MachineRpc/SetVolumeCopy"),
             Some("ployz.volume.copy.set.v1")

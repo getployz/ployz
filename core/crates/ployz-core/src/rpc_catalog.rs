@@ -2,16 +2,18 @@
 /// in step with it — the tonic service (build.rs), the request enum, typed `call`,
 /// request extractors on `op` and `Rpc`, and capability advertisement.
 ///
-/// Columns, in order:
+/// A row names its RPC once, by its variant. The gRPC route is the variant, and the
+/// JSON `command` is the method, which the request enum's snake-case tag is. Columns,
+/// in order:
 ///
 /// ```text
-/// Variant: (method, route, request, command, response, CAPABILITY, "capability.v1", Advertisement, Scope)
+/// Variant: (method, request, response, CAPABILITY, "capability.v1", Advertisement, Scope)
 /// ```
 ///
 /// Streaming rows have no single response and name none:
 ///
 /// ```text
-/// Variant: (method, route, request, command, CAPABILITY, "capability.v1", Advertisement, Scope)
+/// Variant: (method, request, CAPABILITY, "capability.v1", Advertisement, Scope)
 /// ```
 ///
 /// `request` is the caller-facing payload (`Rpc::Request`). `response` is the
@@ -31,7 +33,7 @@
 /// request either:
 ///
 /// ```text
-/// Variant: (method, route, command, CAPABILITY, "capability.v1", Advertisement, Scope)
+/// Variant: (method, CAPABILITY, "capability.v1", Advertisement, Scope)
 /// ```
 ///
 /// `capabilities` rows name a capability with no route of its own: a behaviour of a
@@ -41,6 +43,13 @@
 /// CAPABILITY: ("capability.v1", Advertisement)
 /// ```
 ///
+/// A new column is appended to the end of a row. A consumer that needs types or
+/// idents (the request enum, the tonic build, the fixtures) ends its row pattern with
+/// `$(, $($more:tt)*)?` and so ignores the columns it does not read; the one consumer
+/// that reads the new column names it. `crate::rpc::ROUTES` is the table of every
+/// name a consumer reads as data (path, command, capability, advertisement, scope),
+/// so a reader that needs no type reads that and never matches a row.
+///
 /// Removing a row removes the RPC with no shim: the daemon stops advertising its
 /// capability and refuses the route, and a caller names the capability it lacks.
 #[macro_export]
@@ -49,71 +58,71 @@ macro_rules! rpc_catalog {
         $consumer! {
             package "ployz.rpc.v1"
             unary {
-                DescribeContract: (describe_contract, "DescribeContract", DescribeContractRequest, "describe_contract", ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, "ployz.rpc.describe-contract.v1", Always, Operator),
-                Inspect: (inspect, "Inspect", InspectRequest, "inspect", MachineDetails, INSPECT_MACHINE_CAPABILITY, "ployz.machine.inspect.v1", Always, Operator),
-                Enroll: (enroll, "Enroll", EnrollRequest, "enroll", Enrolled, ENROLL_MACHINE_CAPABILITY, "ployz.machine.enroll.v1", Always, Operator),
-                EnrollForRecovery: (enroll_for_recovery, "EnrollForRecovery", EnrollForRecoveryRequest, "enroll_for_recovery", Enrolled, ENROLL_FOR_RECOVERY_CAPABILITY, "ployz.machine.enroll-for-recovery.v1", Always, Operator),
-                WrapSealingKey: (wrap_sealing_key, "WrapSealingKey", WrapSealingKeyRequest, "wrap_sealing_key", SealingKeyWrapped, WRAP_SEALING_KEY_CAPABILITY, "ployz.sealing.wrap.v1", Always, Full),
-                RecoverSealingKey: (recover_sealing_key, "RecoverSealingKey", RecoverSealingKeyRequest, "recover_sealing_key", SealingKeyRecovered, RECOVER_SEALING_KEY_CAPABILITY, "ployz.sealing.recover.v1", Always, Full),
-                Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always, Operator),
-                SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always, Operator),
-                PendingJoins: (pending_joins, "PendingJoins", PendingJoinsRequest, "pending_joins", PendingJoins, PENDING_JOINS_CAPABILITY, "ployz.machine.join.pending.v1", Always, Operator),
-                ApproveJoin: (approve_join, "ApproveJoin", ApproveJoinRequest, "approve_join", JoinApproved, APPROVE_JOIN_CAPABILITY, "ployz.machine.join.approve.v1", Always, Operator),
-                SetDevice: (set_device, "SetDevice", SetDeviceRequest, "set_device", DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
-                SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
-                SetDeviceEnforcement: (set_device_enforcement, "SetDeviceEnforcement", SetDeviceEnforcementRequest, "set_device_enforcement", DeviceEnforcementSet, SET_DEVICE_ENFORCEMENT_CAPABILITY, "ployz.machine.set-device-enforcement.v2", Always, Full),
-                ActivateEnforcement: (activate_enforcement, "ActivateEnforcement", ActivateEnforcementRequest, "activate_enforcement", DeviceEnforcementSet, ACTIVATE_ENFORCEMENT_CAPABILITY, "ployz.machine.activate.v1", Always, Operator),
-                SetPasskey: (set_passkey, "SetPasskey", SetPasskeyRequest, "set_passkey", DeviceSet, SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1", Always, Full),
-                RemoveTrustedKey: (remove_trusted_key, "RemoveTrustedKey", RemoveTrustedKeyRequest, "remove_trusted_key", TrustedKeyRemoved, REMOVE_TRUSTED_KEY_CAPABILITY, "ployz.machine.remove-trusted-key.v1", Always, Full),
-                SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
-                ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always, Operator),
-                UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always, Operator),
-                RequestMachineUpgrade: (request_machine_upgrade, "RequestMachineUpgrade", RequestMachineUpgradeRequest, "request_machine_upgrade", MachineUpgradeAttempt, REQUEST_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.request.v1", Always, Operator),
-                GenerateSealingKey: (generate_sealing_key, "GenerateSealingKey", GenerateSealingKeyRequest, "generate_sealing_key", SealingKeyHeld, GENERATE_SEALING_KEY_CAPABILITY, "ployz.sealing.generate.v1", Always, Operator),
-                ShareSealingKey: (share_sealing_key, "ShareSealingKey", ShareSealingKeyRequest, "share_sealing_key", SealingKeyShared, SHARE_SEALING_KEY_CAPABILITY, "ployz.sealing.share.v1", Always, Operator),
-                InstallSealingKey: (install_sealing_key, "InstallSealingKey", InstallSealingKeyRequest, "install_sealing_key", SealingKeyHeld, INSTALL_SEALING_KEY_CAPABILITY, "ployz.sealing.install.v1", Always, Operator),
-                SetRecipientKey: (set_recipient_key, "SetRecipientKey", SetRecipientKeyRequest, "set_recipient_key", RecipientKeySet, SET_RECIPIENT_KEY_CAPABILITY, "ployz.sealing.recipient.v1", Always, Operator),
-                ResealValues: (reseal_values, "ResealValues", ResealValuesRequest, "reseal_values", ValuesResealed, RESEAL_VALUES_CAPABILITY, "ployz.sealing.reseal.v1", Always, Operator),
-                Leave: (leave, "Leave", LeaveRequest, "leave", Left, LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1", Always, Operator),
-                Forget: (forget, "Forget", ForgetRequest, "forget", Forgotten, FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1", Always, Operator),
-                ListContainers: (list_containers, "ListContainers", ListContainersRequest, "list_containers", ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container, Operator),
-                InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container, Operator),
-                EnsureContainer: (ensure_container, "EnsureContainer", EnsureContainerRequest, "ensure_container", EnsuredContainer, ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1", Container, Operator),
-                UpdateContainerLimits: (update_container_limits, "UpdateContainerLimits", UpdateContainerLimitsRequest, "update_container_limits", ContainerLimitsUpdated, UPDATE_CONTAINER_LIMITS_CAPABILITY, "ployz.container.limits.update.v1", Container, Operator),
-                InspectStorage: (inspect_storage, "InspectStorage", InspectStorageRequest, "inspect_storage", StorageCapacity, INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1", Container, Operator),
-                PrepareVolumes: (prepare_volumes, "PrepareVolumes", PrepareVolumesRequest, "prepare_volumes", PreparedVolumes, PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1", Container, Operator),
-                ListVolumes: (list_volumes, "ListVolumes", ListVolumesRequest, "list_volumes", VolumeInventory, LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1", Container, Operator),
-                RemoveVolume: (remove_volume, "RemoveVolume", RemoveVolumeRequest, "remove_volume", VolumeRemoved, REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1", Container, Operator),
-                InspectVolumeCopy: (inspect_volume_copy, "InspectVolumeCopy", InspectVolumeCopyRequest, "inspect_volume_copy", VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container, Operator),
-                SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", VolumeCopyView, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container, Operator),
-                SetVolumeCopy: (set_volume_copy, "SetVolumeCopy", SetVolumeCopyRequest, "set_volume_copy", SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container, Operator),
-                SetVolumeSize: (set_volume_size, "SetVolumeSize", SetVolumeSizeRequest, "set_volume_size", SetVolumeSizeReply, SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1", Container, Operator),
-                ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container, Operator),
-                PruneImages: (prune_images, "PruneImages", PruneImagesRequest, "prune_images", ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container, Operator),
-                EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container, Operator),
-                PullImage: (pull_image, "PullImage", PullImageRequest, "pull_image", ImagePulled, PULL_IMAGE_CAPABILITY, "ployz.image.pull.v1", Container, Operator),
-                PullImageFromMachine: (pull_image_from_machine, "PullImageFromMachine", PullImageFromMachineRequest, "pull_image_from_machine", ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container, Operator),
-                MintBuildGrant: (mint_build_grant, "MintBuildGrant", MintBuildGrantRequest, "mint_build_grant", BuildGrantMinted, MINT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.mint.v1", Container, Operator),
-                InspectBuildGrant: (inspect_build_grant, "InspectBuildGrant", InspectBuildGrantRequest, "inspect_build_grant", BuildGrantInspected, INSPECT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.inspect.v1", Container, Operator),
-                PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster, Operator),
-                ReadRoutes: (read_routes, "ReadRoutes", ReadRoutesRequest, "read_routes", RoutesRead, READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1", Cluster, Operator),
-                ReadRoutedAddresses: (read_routed_addresses, "ReadRoutedAddresses", ReadRoutedAddressesRequest, "read_routed_addresses", RoutedAddresses, READ_ROUTED_ADDRESSES_CAPABILITY, "ployz.serving.routed-addresses.v1", Cluster, Operator),
-                SetIngressDoors: (set_ingress_doors, "SetIngressDoors", SetIngressDoorsRequest, "set_ingress_doors", IngressDoorsSet, SET_INGRESS_DOORS_CAPABILITY, "ployz.ingress.doors.v1", Cluster, Operator),
-                SetPrivateAccess: (set_private_access, "SetPrivateAccess", SetPrivateAccessRequest, "set_private_access", PrivateAccessSet, SET_PRIVATE_ACCESS_CAPABILITY, "ployz.private-access.v1", Cluster, Operator),
-                ReadClusterName: (read_cluster_name, "ReadClusterName", ReadClusterNameRequest, "read_cluster_name", ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1", Cluster, Operator),
-                SetClusterName: (set_cluster_name, "SetClusterName", SetClusterNameRequest, "set_cluster_name", ClusterNamed, SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1", Cluster, Operator),
-                SetClusterDoors: (set_cluster_doors, "SetClusterDoors", SetClusterDoorsRequest, "set_cluster_doors", ClusterDoorsDeclared, SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1", Cluster, Operator),
-                MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container, Operator),
-                RetainedEnv: (retained_env, "RetainedEnv", RetainedEnvRequest, "retained_env", RetainedEnvReply, RETAINED_ENV_CAPABILITY, "ployz.logs.retained-env.v1", Container, Operator),
+                DescribeContract: (describe_contract, DescribeContractRequest, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, "ployz.rpc.describe-contract.v1", Always, Operator),
+                Inspect: (inspect, InspectRequest, MachineDetails, INSPECT_MACHINE_CAPABILITY, "ployz.machine.inspect.v1", Always, Operator),
+                Enroll: (enroll, EnrollRequest, Enrolled, ENROLL_MACHINE_CAPABILITY, "ployz.machine.enroll.v1", Always, Operator),
+                EnrollForRecovery: (enroll_for_recovery, EnrollForRecoveryRequest, Enrolled, ENROLL_FOR_RECOVERY_CAPABILITY, "ployz.machine.enroll-for-recovery.v1", Always, Operator),
+                WrapSealingKey: (wrap_sealing_key, WrapSealingKeyRequest, SealingKeyWrapped, WRAP_SEALING_KEY_CAPABILITY, "ployz.sealing.wrap.v1", Always, Full),
+                RecoverSealingKey: (recover_sealing_key, RecoverSealingKeyRequest, SealingKeyRecovered, RECOVER_SEALING_KEY_CAPABILITY, "ployz.sealing.recover.v1", Always, Full),
+                Register: (register, RegisterRequest, Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always, Operator),
+                SetManagementClient: (set_management_client, SetManagementClientRequest, SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always, Operator),
+                PendingJoins: (pending_joins, PendingJoinsRequest, PendingJoins, PENDING_JOINS_CAPABILITY, "ployz.machine.join.pending.v1", Always, Operator),
+                ApproveJoin: (approve_join, ApproveJoinRequest, JoinApproved, APPROVE_JOIN_CAPABILITY, "ployz.machine.join.approve.v1", Always, Operator),
+                SetDevice: (set_device, SetDeviceRequest, DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
+                SetPushTarget: (set_push_target, SetPushTargetRequest, PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
+                SetDeviceEnforcement: (set_device_enforcement, SetDeviceEnforcementRequest, DeviceEnforcementSet, SET_DEVICE_ENFORCEMENT_CAPABILITY, "ployz.machine.set-device-enforcement.v2", Always, Full),
+                ActivateEnforcement: (activate_enforcement, ActivateEnforcementRequest, DeviceEnforcementSet, ACTIVATE_ENFORCEMENT_CAPABILITY, "ployz.machine.activate.v1", Always, Operator),
+                SetPasskey: (set_passkey, SetPasskeyRequest, DeviceSet, SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1", Always, Full),
+                RemoveTrustedKey: (remove_trusted_key, RemoveTrustedKeyRequest, TrustedKeyRemoved, REMOVE_TRUSTED_KEY_CAPABILITY, "ployz.machine.remove-trusted-key.v1", Always, Full),
+                SelectEndpoint: (select_endpoint, SelectEndpointRequest, EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
+                ListMachines: (list_machines, ListMachinesRequest, MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always, Operator),
+                UpdateMachine: (update_machine, UpdateMachineRequest, MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always, Operator),
+                RequestMachineUpgrade: (request_machine_upgrade, RequestMachineUpgradeRequest, MachineUpgradeAttempt, REQUEST_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.request.v1", Always, Operator),
+                GenerateSealingKey: (generate_sealing_key, GenerateSealingKeyRequest, SealingKeyHeld, GENERATE_SEALING_KEY_CAPABILITY, "ployz.sealing.generate.v1", Always, Operator),
+                ShareSealingKey: (share_sealing_key, ShareSealingKeyRequest, SealingKeyShared, SHARE_SEALING_KEY_CAPABILITY, "ployz.sealing.share.v1", Always, Operator),
+                InstallSealingKey: (install_sealing_key, InstallSealingKeyRequest, SealingKeyHeld, INSTALL_SEALING_KEY_CAPABILITY, "ployz.sealing.install.v1", Always, Operator),
+                SetRecipientKey: (set_recipient_key, SetRecipientKeyRequest, RecipientKeySet, SET_RECIPIENT_KEY_CAPABILITY, "ployz.sealing.recipient.v1", Always, Operator),
+                ResealValues: (reseal_values, ResealValuesRequest, ValuesResealed, RESEAL_VALUES_CAPABILITY, "ployz.sealing.reseal.v1", Always, Operator),
+                Leave: (leave, LeaveRequest, Left, LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1", Always, Operator),
+                Forget: (forget, ForgetRequest, Forgotten, FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1", Always, Operator),
+                ListContainers: (list_containers, ListContainersRequest, ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container, Operator),
+                InspectContainer: (inspect_container, InspectContainerRequest, ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container, Operator),
+                EnsureContainer: (ensure_container, EnsureContainerRequest, EnsuredContainer, ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1", Container, Operator),
+                UpdateContainerLimits: (update_container_limits, UpdateContainerLimitsRequest, ContainerLimitsUpdated, UPDATE_CONTAINER_LIMITS_CAPABILITY, "ployz.container.limits.update.v1", Container, Operator),
+                InspectStorage: (inspect_storage, InspectStorageRequest, StorageCapacity, INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1", Container, Operator),
+                PrepareVolumes: (prepare_volumes, PrepareVolumesRequest, PreparedVolumes, PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1", Container, Operator),
+                ListVolumes: (list_volumes, ListVolumesRequest, VolumeInventory, LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1", Container, Operator),
+                RemoveVolume: (remove_volume, RemoveVolumeRequest, VolumeRemoved, REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1", Container, Operator),
+                InspectVolumeCopy: (inspect_volume_copy, InspectVolumeCopyRequest, VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container, Operator),
+                SeedVolume: (seed_volume, SeedVolumeRequest, VolumeCopyView, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container, Operator),
+                SetVolumeCopy: (set_volume_copy, SetVolumeCopyRequest, SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container, Operator),
+                SetVolumeSize: (set_volume_size, SetVolumeSizeRequest, SetVolumeSizeReply, SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1", Container, Operator),
+                ListImages: (list_images, ListImagesRequest, MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container, Operator),
+                PruneImages: (prune_images, PruneImagesRequest, ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container, Operator),
+                EnsureImageIngest: (ensure_image_ingest, EnsureImageIngestRequest, ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container, Operator),
+                PullImage: (pull_image, PullImageRequest, ImagePulled, PULL_IMAGE_CAPABILITY, "ployz.image.pull.v1", Container, Operator),
+                PullImageFromMachine: (pull_image_from_machine, PullImageFromMachineRequest, ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container, Operator),
+                MintBuildGrant: (mint_build_grant, MintBuildGrantRequest, BuildGrantMinted, MINT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.mint.v1", Container, Operator),
+                InspectBuildGrant: (inspect_build_grant, InspectBuildGrantRequest, BuildGrantInspected, INSPECT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.inspect.v1", Container, Operator),
+                PublishCertificateMaterial: (publish_certificate_material, PublishCertificateMaterialRequest, CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster, Operator),
+                ReadRoutes: (read_routes, ReadRoutesRequest, RoutesRead, READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1", Cluster, Operator),
+                ReadRoutedAddresses: (read_routed_addresses, ReadRoutedAddressesRequest, RoutedAddresses, READ_ROUTED_ADDRESSES_CAPABILITY, "ployz.serving.routed-addresses.v1", Cluster, Operator),
+                SetIngressDoors: (set_ingress_doors, SetIngressDoorsRequest, IngressDoorsSet, SET_INGRESS_DOORS_CAPABILITY, "ployz.ingress.doors.v1", Cluster, Operator),
+                SetPrivateAccess: (set_private_access, SetPrivateAccessRequest, PrivateAccessSet, SET_PRIVATE_ACCESS_CAPABILITY, "ployz.private-access.v1", Cluster, Operator),
+                ReadClusterName: (read_cluster_name, ReadClusterNameRequest, ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1", Cluster, Operator),
+                SetClusterName: (set_cluster_name, SetClusterNameRequest, ClusterNamed, SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1", Cluster, Operator),
+                SetClusterDoors: (set_cluster_doors, SetClusterDoorsRequest, ClusterDoorsDeclared, SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1", Cluster, Operator),
+                MetricHistory: (metric_history, MetricHistoryRequest, MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container, Operator),
+                RetainedEnv: (retained_env, RetainedEnvRequest, RetainedEnvReply, RETAINED_ENV_CAPABILITY, "ployz.logs.retained-env.v1", Container, Operator),
             }
             server_streaming {
-                LogHistory: (log_history, "LogHistory", LogHistoryRequest, "log_history", LOG_HISTORY_CAPABILITY, "ployz.logs.history.v2", Container, Operator),
-                TailLogs: (tail_logs, "TailLogs", TailLogsRequest, "tail_logs", TAIL_LOGS_CAPABILITY, "ployz.logs.tail.v1", Container, Operator),
-                RuntimeWatch: (runtime_watch, "RuntimeWatch", RuntimeWatchRequest, "runtime_watch", RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Cluster, Operator),
+                LogHistory: (log_history, LogHistoryRequest, LOG_HISTORY_CAPABILITY, "ployz.logs.history.v2", Container, Operator),
+                TailLogs: (tail_logs, TailLogsRequest, TAIL_LOGS_CAPABILITY, "ployz.logs.tail.v1", Container, Operator),
+                RuntimeWatch: (runtime_watch, RuntimeWatchRequest, RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Cluster, Operator),
             }
             bidi_streaming {
-                Exec: (exec, "Exec", "exec", EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1", Container, Full),
-                Build: (build, "Build", "build", BUILD_CAPABILITY, "ployz.build.v1", Container, Operator),
+                Exec: (exec, EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1", Container, Full),
+                Build: (build, BUILD_CAPABILITY, "ployz.build.v1", Container, Operator),
             }
             capabilities {
                 JOIN_APPROVAL_CAPABILITY: ("ployz.machine.join.device-approval.v1", Always),
