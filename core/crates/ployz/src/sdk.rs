@@ -1882,11 +1882,20 @@ pub(crate) fn preparation_error(
                 work: None,
             }),
         ),
-        PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
-            RpcError::internal(message.clone()).with_evidence(
+        PreparationError::Plan(error) => {
+            let code = match error {
+                crate::deploy::DeployError::Connect(_) => RpcErrorCode::Internal,
+                refusal @ (crate::deploy::DeployError::Plan(_)
+                | crate::deploy::DeployError::Namespace(_)) => RpcError::from(refusal).code,
+            };
+            RpcError::new(code, message.clone()).with_evidence(
                 &PreparationFailure::of(Preparation::failed(message)).again(same_again),
             )
         }
+        PreparationError::Build(_) | PreparationError::Delivery(_) => RpcError::internal(
+            message.clone(),
+        )
+        .with_evidence(&PreparationFailure::of(Preparation::failed(message)).again(same_again)),
     }
 }
 

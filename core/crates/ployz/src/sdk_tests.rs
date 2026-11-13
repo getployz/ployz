@@ -173,7 +173,7 @@ fn a_hostname_two_requested_services_claim_fails_the_same_way_again() {
         error, same_again, ..
     } = prepared(conflict());
     assert!(same_again);
-    assert_eq!(error.code, RpcErrorCode::Internal);
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(
         error
             .message
@@ -200,6 +200,16 @@ fn a_hostname_two_requested_services_claim_fails_the_same_way_again() {
         }),
     };
     assert!(prepared(in_service).same_again);
+}
+
+#[test]
+fn a_plan_refusal_has_the_same_code_planning_directly_and_through_preparation() {
+    use crate::deploy::PlanError;
+    let direct = planned(PlanError::CapacityUnknown).error;
+    let prepared = prepared(PlanError::CapacityUnknown).error;
+    assert_eq!(direct.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(prepared.code, direct.code);
+    assert_eq!(prepared.message, direct.message);
 }
 
 #[test]
