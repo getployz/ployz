@@ -998,7 +998,7 @@ async fn publisher_publishes_a_held_key_over_a_malformed_marker() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
-fn participating_record() -> (Machine, LocalMachineRecord) {
+pub(crate) fn participating_record() -> (Machine, LocalMachineRecord) {
     let machine: Machine = serde_json::from_value(json!({
         "id": "b".repeat(32),
         "name": "machine",

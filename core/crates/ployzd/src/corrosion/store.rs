@@ -185,30 +185,7 @@ impl MachinePublicationGuard<'_> {
     /// Machine lists the id again as before. One transaction, so no reader sees the
     /// row gone and the tombstone absent.
     pub(crate) async fn forget(&self, machine_id: &MachineId) -> Result<(), Error> {
-        let identity_tombstone = Statement::new(
-            "INSERT INTO cluster (key, value) \
-             SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
-             FROM machines \
-             WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [json!(machine_id)],
-        );
-        let id_tombstone = Statement::new(
-            "INSERT INTO cluster (key, value) \
-             SELECT 'forgotten-id:' || id, id \
-             FROM machines \
-             WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NULL \
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [json!(machine_id)],
-        );
-        self.store
-            .api
-            .execute(
-                [identity_tombstone, id_tombstone]
-                    .into_iter()
-                    .chain(removal(machine_id)),
-            )
-            .await
+        self.store.api.execute(forget_statements(machine_id)).await
     }
 
     pub(crate) async fn local_containers(
@@ -1889,6 +1866,31 @@ fn acme_written(counts: Vec<usize>) -> Result<AcmeWrite, Error> {
     }
 }
 
+/// The statements of a forget, in the order they run in one transaction: both tombstones,
+/// then the removal.
+fn forget_statements(machine_id: &MachineId) -> Vec<Statement> {
+    let identity_tombstone = Statement::new(
+        "INSERT INTO cluster (key, value) \
+         SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
+         FROM machines \
+         WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        [json!(machine_id)],
+    );
+    let id_tombstone = Statement::new(
+        "INSERT INTO cluster (key, value) \
+         SELECT 'forgotten-id:' || id, id \
+         FROM machines \
+         WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NULL \
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        [json!(machine_id)],
+    );
+    [identity_tombstone, id_tombstone]
+        .into_iter()
+        .chain(removal(machine_id))
+        .collect()
+}
+
 /// The deletes that take a Machine and everything it published out of the Cluster.
 fn removal(machine_id: &MachineId) -> [Statement; 4] {
     [
@@ -2003,5 +2005,86 @@ mod runtime_watch_changes_tests {
             "{error}"
         );
         writer.abort();
+    }
+}
+
+#[cfg(test)]
+mod statement_tests {
+    use ployz_core::MachineId;
+    use serde_json::json;
+
+    use super::*;
+
+    fn machine() -> Machine {
+        crate::corrosion::store_tests::participating_record().0
+    }
+
+    fn sent(statement: &Statement) -> serde_json::Value {
+        serde_json::to_value(statement).unwrap()
+    }
+
+    #[test]
+    fn the_guarded_upserts_send_the_text_every_daemon_has_sent_since_the_guard() {
+        let machine = machine();
+        let body = serde_json::to_string(&machine).unwrap();
+        assert_eq!(
+            sent(&machine_upsert(&machine).unwrap()),
+            json!({
+                "query": "INSERT INTO machines (id, info) \
+                          SELECT ?1, json_set(?2, '$.self_published', json('true')) \
+                          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+                          OR (NOT EXISTS (SELECT 1 FROM cluster WHERE key LIKE 'forgotten:%' AND value = ?1) \
+                          AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
+                          ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+                "params": [machine.id, body],
+            })
+        );
+        let row = RegisterRow::new(machine.clone());
+        let body = serde_json::to_string(&row.0).unwrap();
+        assert_eq!(
+            sent(&registration_upsert(&row).unwrap()),
+            json!({
+                "query": "INSERT INTO machines (id, info) SELECT ?1, ?2 \
+                          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+                          OR (NOT EXISTS (SELECT 1 FROM cluster WHERE key LIKE 'forgotten:%' AND value = ?1) \
+                          AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
+                          ON CONFLICT (id) DO UPDATE SET info = excluded.info \
+                          WHERE json_extract(machines.info, '$.self_published') IS NULL \
+                          OR json_extract(machines.info, '$.public_key') \
+                          IS NOT json_extract(excluded.info, '$.public_key')",
+                "params": [machine.id, body],
+            })
+        );
+    }
+
+    #[test]
+    fn a_forget_sends_both_tombstone_inserts_before_the_removal() {
+        let id = MachineId::parse("b".repeat(32)).unwrap();
+        let sent = forget_statements(&id).iter().map(sent).collect::<Vec<_>>();
+        assert_eq!(
+            sent[..2],
+            [
+                json!({
+                    "query": "INSERT INTO cluster (key, value) \
+                              SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
+                              FROM machines \
+                              WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
+                              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    "params": [id],
+                }),
+                json!({
+                    "query": "INSERT INTO cluster (key, value) \
+                              SELECT 'forgotten-id:' || id, id \
+                              FROM machines \
+                              WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NULL \
+                              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    "params": [id],
+                }),
+            ]
+        );
+        assert_eq!(
+            sent[2..],
+            removal(&id).iter().map(self::sent).collect::<Vec<_>>()
+        );
     }
 }
