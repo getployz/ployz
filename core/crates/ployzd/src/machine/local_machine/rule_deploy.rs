@@ -19,8 +19,8 @@ use std::time::Instant;
 use ployz_core::{
     ContainerKind, ContainerNow, ContainerWant, RunTarget, Sealing, ServiceName,
     authority::{
-        ApprovalFacts, AuthorityRefusal, AutoDeployRule, BuildClaim, CommitAuthority, CommitNow,
-        RestartStep, RuleFacts, RuleProof, Timestamp,
+        ApprovalFacts, AuthorityRefusal, AutoDeployRule, CommitAuthority, CommitNow, RestartStep,
+        RuleFacts, RuleProof, Timestamp,
         deploy::Creation,
         rule::{verify_commit_approval, verify_signature},
     },
@@ -200,7 +200,7 @@ impl LocalMachine {
                     new.slot.service,
                     rule.rule,
                     rule.generation,
-                    short(claim),
+                    claim.commit.short(),
                     approved.by(),
                 ),
                 None => tracing::info!(
@@ -210,7 +210,7 @@ impl LocalMachine {
                     new.slot.service,
                     rule.rule,
                     rule.generation,
-                    short(claim),
+                    claim.commit.short(),
                 ),
             }
             return Ok(want);
@@ -259,7 +259,7 @@ impl LocalMachine {
             "step on {identity} admitted under rule {} gen {} commit {}",
             rule.rule,
             rule.generation,
-            short(claim),
+            claim.commit.short(),
         );
         Ok(pinned(want, observed.container_id))
     }
@@ -292,13 +292,6 @@ fn logged(rule: &AutoDeployRule, service: &ServiceName, refusal: AuthorityRefusa
         "deploy of {service} refused under the rule: {refusal}"
     );
     Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal))
-}
-
-/// The first 12 hex digits of the claim's commit.
-fn short(claim: &BuildClaim) -> String {
-    let mut commit = claim.commit.to_string();
-    commit.truncate(12);
-    commit
 }
 
 /// What a refused rule deploy says to the person who reads the Deployment.
