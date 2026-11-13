@@ -398,24 +398,26 @@ fn covering(
 const SEALED_UNREAD: &str = "the Server did not open this Build's sealed values";
 
 /// What a build reports as it goes: one `{"at": <unix ms>, "event": {"Build": <progress>}}`
-/// value per event, the SDK preparation event shape Cloud's build log reads. A build that
-/// reports to Cloud keeps them for its report; the `--events` file is an output only, one
-/// line each. Progress is best effort: a failed write never fails the build or shortens
-/// the report.
+/// value per event, the SDK preparation event shape Cloud's build log reads. They go to the
+/// `--events` file, one line each, when it is given. A build that reports to Cloud keeps
+/// them for its report only when that file is given, so a build without it holds none in
+/// memory and reports none. Progress is best effort: a failed write never fails the build
+/// or shortens the report.
 struct Events {
     file: Option<std::sync::Mutex<std::fs::File>>,
     recorded: Option<std::sync::Mutex<Vec<Value>>>,
 }
 
 impl Events {
-    /// Events written to the `--events` file at `path`, when given, and kept when `record`.
-    fn to(path: Option<&String>, record: bool) -> std::io::Result<Self> {
+    /// Events written to the `--events` file at `path`, when given, and also kept when the
+    /// build `reports` them to Cloud.
+    fn to(path: Option<&String>, reports: bool) -> std::io::Result<Self> {
         Ok(Self {
             file: path
                 .map(std::fs::File::create)
                 .transpose()?
                 .map(std::sync::Mutex::new),
-            recorded: record.then(|| std::sync::Mutex::new(Vec::new())),
+            recorded: (reports && path.is_some()).then(|| std::sync::Mutex::new(Vec::new())),
         })
     }
 
@@ -438,7 +440,8 @@ impl Events {
         }
     }
 
-    /// Every event of a recording build, in the order it happened.
+    /// Every event written to the `--events` file of a reporting build, in the order it
+    /// happened; none without the file.
     fn report_lines(&self) -> Vec<Value> {
         self.recorded.as_ref().map_or_else(Vec::new, |recorded| {
             recorded
@@ -736,10 +739,47 @@ mod tests {
     }
 
     #[test]
-    fn a_build_without_an_events_file_still_reports_its_events() {
+    fn a_build_without_an_events_file_reports_no_events() {
         let events = Events::to(None, true).unwrap();
         events.push_line("Pushed sha256:abc");
-        assert_eq!(events.report_lines().len(), 1);
+        assert!(events.recorded.is_none());
+        assert!(events.report_lines().is_empty());
+    }
+
+    #[test]
+    fn a_verbose_build_without_an_events_file_keeps_its_final_report_small() {
+        let events = Events::to(None, true).unwrap();
+        let line = "x".repeat(8 * 1024);
+        for _ in 0..4096 {
+            events.push_line(&line);
+        }
+        let platforms = ["linux/amd64".to_owned()];
+        let body = serde_json::to_string(&FinalReport {
+            from: 0,
+            events: events.report_lines(),
+            platforms: &platforms,
+            image_token: Some("token"),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            r#"{"from":0,"events":[],"platforms":["linux/amd64"],"imageToken":"token"}"#
+        );
+    }
+
+    #[test]
+    fn a_build_with_an_events_file_that_does_not_report_keeps_no_events() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events").display().to_string();
+        let events = Events::to(Some(&path), false).unwrap();
+        events.push_line("one");
+        assert!(events.recorded.is_none());
+        assert!(events.report_lines().is_empty());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap().lines().count(),
+            1,
+            "the file still gets the event"
+        );
     }
 
     #[test]

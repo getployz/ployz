@@ -36,7 +36,7 @@ The model in `core/crates/ployz-verify/src/mcp_login.rs` explores every interlea
 **Every writer and reader of `mcp.json`.** This grep lists them:
 
 ```
-git grep -E 'ActingAs::resolve|stored\(&?config\)|^\s+save\($' -- core/crates/ployz/src
+git grep -E 'ActingAs::resolve\((config|&self)|stored\(&?config\)|^\s+save\($' -- core/crates/ployz/src
 ```
 
 At the sync commit it prints five lines:
@@ -44,9 +44,9 @@ At the sync commit it prints five lines:
 ```
 core/crates/ployz/src/handlers/mcp.rs:    match ActingAs::resolve(config, token) {
 core/crates/ployz/src/handlers/mcp.rs:        match ActingAs::resolve(&self.account.config, self.account.token.as_deref()) {
-core/crates/ployz/src/handlers/mcp/login.rs:        Ok(stored(config)?.map_or(Self::LoggedOut, Self::Login))
 core/crates/ployz/src/handlers/mcp/login.rs:    let previous = match stored(&config) {
 core/crates/ployz/src/handlers/mcp/login.rs:            save(
+core/crates/ployz/src/handlers/mcp/login.rs:        Ok(stored(config)?.map_or(Self::LoggedOut, Self::Login))
 ```
 
 `save` is the one writer, and `login`'s call at `:110` is its one call. `publishing_setup` and `agent` (both in `core/crates/ployz/src/handlers/mcp.rs`) read it through `ActingAs::resolve`, the one place that decides between `PLOYZ_TOKEN` and the stored login, and write nothing; `agent` reads it on each call. So readers are left out: they change no state a login reads. A hand edit of `mcp.json` is left out too, except as a start file.
