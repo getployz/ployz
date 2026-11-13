@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::ToolId;
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, store};
+use super::machine::{Cx, Effect, Reach, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
 use super::step::{Ask, CloudQuery, DashboardPage, Gate};
 use crate::{
@@ -293,7 +293,9 @@ impl Tool for EnvironmentSetup {
     const NAME: &'static str = "environment_setup";
     const DESCRIPTION: &'static str = "What this Environment still needs before it can deploy: servers, a GitHub connection, a cluster domain.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
     fn example() -> Value {
         json!({ "environment": "staging" })

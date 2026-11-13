@@ -106,14 +106,35 @@ pub(crate) enum Effect {
     Remove,
 }
 
+/// Where a tool can run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    Anywhere,
+    /// It needs Ployz Cloud: a call against a local Store is refused before the
+    /// tool plans anything, pointing to `local_next`, the Store read to make
+    /// instead. `None` is a choice: nothing local says what the Cloud tool would.
+    CloudOnly {
+        local_next: Option<ToolId>,
+    },
+}
+
+impl Reach {
+    const fn local_next(self) -> Option<ToolId> {
+        match self {
+            Self::Anywhere => None,
+            Self::CloudOnly { local_next } => local_next,
+        }
+    }
+}
+
 /// One tool: its input type, how it describes itself, and its plan.
 pub(crate) trait Tool: DeserializeOwned + JsonSchema {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const GATE: Gate = Gate::Never;
     const EFFECT: Effect;
-    /// The Store read a local call is pointed to when this tool needs Cloud.
-    const LOCAL_NEXT: Option<ToolId> = None;
+    /// Where it can run, declared once; a tool that only Cloud can run says so here.
+    const REACH: Reach = Reach::Anywhere;
 
     /// A complete input that decodes.
     fn example() -> Value;
@@ -275,14 +296,6 @@ impl Cx<'_> {
         C::written(written).map_err(|error| from_store(error, &self.call, Writes::Committed).into())
     }
 
-    /// Refuse a call only Cloud can run before it reads anything.
-    pub(crate) fn cloud_only(&self) -> Result<(), Stop> {
-        match self.is_local() {
-            true => Err(Refusal::not_here(self.local_next()).into()),
-            false => Ok(()),
-        }
-    }
-
     /// The call's one write: an operation Cloud runs on Servers, keyed so a
     /// retry with the same key returns the same run. A refusal names `subject`,
     /// the read that shows what happened.
@@ -292,7 +305,9 @@ impl Cx<'_> {
         given: Option<RequestKey>,
         subject: Call,
     ) -> Result<Operation, Stop> {
-        self.cloud_only()?;
+        if self.is_local() {
+            return Err(Refusal::not_here(self.local_next()).into());
+        }
         let Some(slot) = self.slot.take() else {
             return Err(Refusal::internal("A call writes at most once").into());
         };
@@ -549,7 +564,7 @@ pub(crate) struct Entry {
     pub(crate) def: fn() -> ToolDef,
     pub(crate) example: fn() -> Value,
     run: fn(&mut Cx<'_>, &Value) -> Result<Value, Stop>,
-    local_next: Option<ToolId>,
+    pub(crate) reach: Reach,
 }
 
 pub(crate) const fn entry<T: Tool>() -> Entry {
@@ -558,7 +573,7 @@ pub(crate) const fn entry<T: Tool>() -> Entry {
         def: def::<T>,
         example: T::example,
         run: run::<T>,
-        local_next: T::LOCAL_NEXT,
+        reach: T::REACH,
     }
 }
 
@@ -594,6 +609,9 @@ fn run<T: Tool>(cx: &mut Cx<'_>, input: &Value) -> Result<Value, Stop> {
                 &declared(&schema::input::<T>(), error.path().unwrap_or_default()).to_string(),
             ),
         })?;
+    if T::REACH != Reach::Anywhere && cx.is_local() {
+        return Err(Refusal::not_here(cx.local_next()).into());
+    }
     decoded.plan(cx)
 }
 
@@ -737,7 +755,7 @@ fn advance(mut state: State) -> (Step, State) {
         place: &state.place,
         call: Call::new(&state.tool, state.input.clone()),
         call_key: &state.call_key,
-        local_next: entry.local_next,
+        local_next: entry.reach.local_next(),
     };
     let outcome = (entry.run)(&mut cx, &state.input);
     let call = cx.call;

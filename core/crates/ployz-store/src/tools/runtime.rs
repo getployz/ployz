@@ -14,7 +14,7 @@ use super::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Health, LogsAnswer, OperationsAnswer,
 };
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, place_of, store};
+use super::machine::{Cx, Effect, Reach, Stop, Tool, place_of, store};
 use super::refusal::{Call, Refusal};
 use super::status::{Container, ServiceFacts, Watch, service_status};
 use super::step::{
@@ -75,14 +75,15 @@ impl Tool for ServiceState {
     const NAME: &'static str = "service_status";
     const DESCRIPTION: &'static str = "A Service's state as the canvas shows it, and its containers per server: health, restarts, image, Deployment, latest restart, start or stop.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
     fn example() -> Value {
         json!({ "service": "web" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let scope = cx.scope(&self);
         let mut answers = cx
             .read(vec![
@@ -241,14 +242,15 @@ impl Tool for ServiceLogs {
     const NAME: &'static str = "service_logs";
     const DESCRIPTION: &'static str = "A Service's recent logs: at most 200 lines, 16 KB and 500 B a line, secrets shown by name. With deployment, that Deployment's containers, or its build log if the build failed.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::DeploymentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::DeploymentShow),
+    };
 
     fn example() -> Value {
         json!({ "service": "web", "deployment": 12, "lines": 50 })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let scope = cx.scope(&self);
         let mut asks = vec![store(&NamespaceQuery {
             environment: scope.clone(),
@@ -322,7 +324,6 @@ fn service_act(
     project: Option<&ProjectName>,
     environment: Option<&EnvironmentName>,
 ) -> Result<Value, Stop> {
-    cx.cloud_only()?;
     let scope = cx.scope_in(project, environment);
     let mut asks = vec![store(&NamespaceQuery { environment: scope })?];
     if server.is_some() {
@@ -379,7 +380,9 @@ macro_rules! service_act_tool {
             const DESCRIPTION: &'static str = $description;
             const EFFECT: Effect = Effect::Change;
             const GATE: Gate = $gate;
-            const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+            const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
             fn example() -> Value {
                 json!({ "service": "web", "wait_seconds": 60 })

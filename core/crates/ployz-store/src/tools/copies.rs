@@ -7,7 +7,7 @@ use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{CopiesAnswer, OperationsAnswer, VolumeCopies};
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, store};
+use super::machine::{Cx, Effect, Reach, Stop, Tool, WAIT_CAP_SECONDS, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
     AcceptedLoss, Action, Ask, CloudQuery, Gate, RequestKey, ServerName, Subject, VolumeRun,
@@ -71,14 +71,15 @@ impl Tool for VolumeShow {
     const NAME: &'static str = "volume_show";
     const DESCRIPTION: &'static str = "Where a Volume's data is: its writable copy, its mirror and last sync, and recent runs with how each ended.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
     fn example() -> Value {
         json!({ "volume": "pgdata" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let environment = cx.scope(&self);
         let first = match &self.volume {
             Some(volume) => store(&VolumeQuery {
@@ -185,14 +186,15 @@ impl Tool for VolumeMirror {
     const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "server": "db-2", "wait_seconds": 120 })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let scope = cx.scope(&self);
         let mut asks = vec![
             store(&VolumeQuery {
@@ -276,14 +278,15 @@ impl Tool for VolumeMirrorRemove {
         "Delete a Volume's mirror; if it is the last copy, its data goes too.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
     fn example() -> Value {
         json!({ "volume": "pgdata" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let scope = cx.scope(&self);
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
         let (view, _) = volume(cx, scope, self.volume, None)?;
@@ -314,14 +317,15 @@ impl Tool for VolumeMove {
     const DESCRIPTION: &'static str = "Put a Volume and the Service using it on server to. The Service is down only for the final copy; the old server keeps a mirror. If a move stopped, the same call continues it.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "to": "db-2", "wait_seconds": WAIT_CAP_SECONDS })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let scope = cx.scope(&self);
         let (view, answer) = volume(cx, scope, self.volume, Some(servers()))?;
         let answer = roster(cx, answer)?;
@@ -352,14 +356,15 @@ impl Tool for VolumeRelease {
     const DESCRIPTION: &'static str = "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "wait_seconds": 120 })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let scope = cx.scope(&self);
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
         let (view, _) = volume(cx, scope, self.volume, None)?;
@@ -393,14 +398,15 @@ impl Tool for VolumeRestore {
     const DESCRIPTION: &'static str = "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down until the next deploy.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::EnvironmentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::EnvironmentShow),
+    };
 
     fn example() -> Value {
         json!({ "volume": "pgdata", "from": "db-2", "wait_seconds": 120 })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let scope = cx.scope(&self);
         let (view, answer) = volume(cx, scope, self.volume, Some(servers()))?;
         let answer = roster(cx, answer)?;

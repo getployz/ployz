@@ -13,7 +13,7 @@ use super::ToolId;
 use super::act::{resolve, roster, servers};
 use super::cloud::{MetricEvent, MetricsAnswer};
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, store};
+use super::machine::{Cx, Effect, Reach, Stop, Tool, store};
 use super::refusal::Refusal;
 use super::runtime::deployed;
 use super::step::{
@@ -94,14 +94,15 @@ impl Tool for ServiceMetrics {
     const NAME: &'static str = "service_metrics";
     const DESCRIPTION: &'static str = "A Service's CPU, memory, network and disk (now, avg, peak) and its OOM kills, exits and restarts. Default: the last hour.";
     const EFFECT: Effect = Effect::Read;
-    const LOCAL_NEXT: Option<ToolId> = Some(ToolId::DeploymentShow);
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::DeploymentShow),
+    };
 
     fn example() -> Value {
         json!({ "service": "web", "deployment": 12 })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let scope = cx.scope(&self);
         let mut asks = vec![
             store(&NamespaceQuery {
@@ -205,13 +206,13 @@ impl Tool for ServerMetrics {
     const NAME: &'static str = "server_metrics";
     const DESCRIPTION: &'static str = "A server's CPU, memory, network and disk (now, avg, peak) and its containers' OOM kills, exits and restarts. Default: the last hour.";
     const EFFECT: Effect = Effect::Read;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "server": "web-1", "since_minutes": 180 })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let mut answers = cx
             .read(vec![store(&NamespacesQuery {})?, servers()])?
             .into_iter();

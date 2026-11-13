@@ -16,7 +16,7 @@ use super::ToolId;
 use super::act::{Run, latest, operate, operations, resolve, roster, server_show, servers};
 use super::cloud::{LogsAnswer, Operation, OperationsAnswer, RunState, ServersAnswer, UnknownEnd};
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, store};
+use super::machine::{Cx, Effect, Reach, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
     AcceptedLoss, Action, Ask, CloudQuery, Gate, RequestKey, ServerLogsQuery, ServerName, Subject,
@@ -111,13 +111,13 @@ impl Tool for ServerShow {
     const NAME: &'static str = "server_show";
     const DESCRIPTION: &'static str = "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation, and a failed, lost or interrupted drain a later one hides.";
     const EFFECT: Effect = Effect::Read;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "server": "web-1" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let mut answers = cx
             .read(vec![store(&NamespacesQuery {})?, servers()])?
             .into_iter();
@@ -196,7 +196,6 @@ fn on_server(
     key: Option<RequestKey>,
     wait_seconds: u32,
 ) -> Result<Value, Stop> {
-    cx.cloud_only()?;
     let mut answers = cx.read(vec![servers()])?.into_iter();
     let answer = roster(cx, answers.next())?;
     let server = resolve(&answer, name, "server", true)?;
@@ -252,13 +251,13 @@ impl Tool for ServerLogs {
     const NAME: &'static str = "server_logs";
     const DESCRIPTION: &'static str = "A server's own recent logs from the daemon (process ployz, the default), docker or corrosion: at most 200 lines, 16 KB and 500 B a line, secret-shaped values redacted.";
     const EFFECT: Effect = Effect::Read;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "server": "web-1", "process": "docker", "lines": 50 })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let server = match &self.server {
             Some(name) => {
                 let mut answers = cx.read(vec![servers()])?.into_iter();
@@ -301,6 +300,7 @@ impl Tool for ServerDrain {
     const DESCRIPTION: &'static str = "Move Services off a server and place none there; the result says what stayed because its data is there.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "server": "web-2", "wait_seconds": 120 })
@@ -335,6 +335,7 @@ impl Tool for ServerSet {
     const DESCRIPTION: &'static str = "Set what a server takes: builds, services, web traffic. Turning web traffic off on the last server that serves your domains waits for a human to approve.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Change;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "server": "db-1", "accepts_ingress": false })
@@ -396,6 +397,7 @@ impl Tool for ServerUpgrade {
     const DESCRIPTION: &'static str =
         "Upgrade Ployz on a server to its channel's latest release. Apps keep running.";
     const EFFECT: Effect = Effect::Change;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "server": "web-1" })
@@ -428,13 +430,13 @@ impl Tool for ServerClean {
     const DESCRIPTION: &'static str = "Delete a leftover no Environment owns: its containers on every server, and its volumes with their data.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "leftover": "shop-old" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
         let mut answers = cx
             .read(vec![store(&NamespacesQuery {})?, servers()])?
@@ -503,13 +505,13 @@ impl Tool for ServerRemove {
     const DESCRIPTION: &'static str = "Remove a server and delete its containers and volumes with their data. Services still there stop; the next deploy places them on other servers, except those whose Volume was there.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "server": "web-3" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
         let mut answers = cx.read(vec![servers()])?.into_iter();
         let answer = roster(cx, answers.next())?;
@@ -543,13 +545,13 @@ impl Tool for ServerForget {
     const DESCRIPTION: &'static str = "Forget a server that is gone, without a reset; its volumes are lost. Refused while it answers and holds a volume copy.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "server": "web-3" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        cx.cloud_only()?;
         let mut answers = cx.read(vec![servers()])?.into_iter();
         let answer = roster(cx, answers.next())?;
         let server = resolve(&answer, &self.server, "server", false)?;

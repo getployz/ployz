@@ -123,6 +123,28 @@ fn a_local_call_that_needs_cloud_points_at_the_store_read_in_its_place() {
 }
 
 #[test]
+fn a_local_store_refuses_exactly_the_tools_declared_cloud_only_before_they_plan() {
+    let local = Place {
+        project: None,
+        environment: None,
+        store: StoreAt::Local,
+    };
+    for tool in crate::tools::TOOLS {
+        let (step, _) = start(tool.name, (tool.example)(), &local, "call-1");
+        let refused_here = matches!(
+            &step,
+            Step::Done { result: ToolResult::Refused(refusal) } if refusal.code.as_str() == "not_here"
+        );
+        assert_eq!(
+            refused_here,
+            tool.reach != Reach::Anywhere,
+            "{} must be declared CloudOnly exactly when a local call is refused at once: {step:?}",
+            tool.name
+        );
+    }
+}
+
+#[test]
 fn a_call_takes_at_most_three_reads_and_writes() {
     let rounds = vec![read_round(), read_round(), read_round(), read_round()];
     let mut cx = cx(&rounds, "environment_show");
