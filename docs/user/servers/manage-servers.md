@@ -347,8 +347,9 @@ computer learned it without going through Ployz Cloud:
 
 A server whose key doesn't match what this computer saw before stops the command, and nothing is
 signed. A server you don't confirm is left out, and so is a server running a Ployz older than
-0.4. Once the others activate, a server left out is no longer part of the cluster: remove it with
-`ployz server rm`, then add it again with a join you approve.
+0.4. Once the others activate, a server left out is no longer part of the cluster:
+[add it back](upgrade-to-0-4.md#add-back-a-server-left-out) with `ployz server add --reset` and a
+join you approve.
 
 Next, `enforce` lists the devices and passkeys added while enforcement was off. Activation
 removes each one unless you keep it. Keep a key only after checking its code with

@@ -161,7 +161,6 @@ async fn recover_from_cloud(
         require(client, RECIPIENT_RECOVERY_CAPABILITY, "ployz recover").await?;
         match recover_with(client, code, Some(row.backup), Some(row.rotation)).await {
             Ok(recovered) => return Ok((recovered, SealingKeyRole::Recipient)),
-            Err(error) if refusal(&error) == Some(RecoveryRefusal::WrongCode) => {}
             Err(error) => last = error,
         }
     }
@@ -1579,5 +1578,37 @@ mod tests {
             [None, Some(cloud_backup_bytes()), Some(wrapped_backup())]
         );
         cloud.never_saw(RECIPIENT_CODE);
+    }
+
+    #[test]
+    fn a_code_that_opens_no_backup_is_called_wrong_when_only_the_recipient_backup_exists() {
+        let cloud = recipient_cloud(|route, _| match route {
+            "POST /api/cli/sealing/recovery" => (404, json!({})),
+            "POST /api/cli/sealing/recipient" => (
+                200,
+                json!({
+                    "publicKey": key(5),
+                    "backup": wrapped_backup(),
+                    "digest": "recipient-digest",
+                    "rotation": rotation(key(5)),
+                }),
+            ),
+            other => panic!("unexpected {other}"),
+        });
+        let dir = config_dir(Some(&cloud.url), "");
+        let daemon = activated(dir.path(), key(1), key(5));
+        let root = root(
+            dir.path(),
+            Some(&daemon.socket),
+            &["recover", "--code-stdin"],
+        );
+
+        let (result, _) = recover_json(&root, CODE);
+
+        let refusal = result.unwrap_err().to_string();
+        assert!(
+            refusal.contains("That recovery code is wrong."),
+            "{refusal}"
+        );
     }
 }

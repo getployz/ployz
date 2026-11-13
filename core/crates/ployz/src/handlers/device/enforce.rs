@@ -197,7 +197,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         ui::note(set_summary(&reach, &set));
         for outcome in &outcomes {
             ui::warn(format!(
-                "{} is left out. Once the others activate it's no longer part of the Cluster: remove it with `ployz server rm`, then add it again with a join you approve.",
+                "{} is left out. Once the others activate it's no longer part of the Cluster: add it back with `ployz server add root@HOST --reset`, then approve its join.",
                 outcome.server
             ));
         }
@@ -215,7 +215,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
                 deliver_over_mesh(&client, server.machine_id, &signed).await
             };
             match delivered {
-                Ok(()) => match settled(&client, server.machine_id, set.operation).await {
+                Ok(()) => match settled(&client, server.machine_id, &name, set.operation).await {
                     Ok(report) => {
                         if let Some(router) = &report.private_access {
                             ui::note(kept_router(&name, router));
@@ -322,8 +322,7 @@ fn pin_each<'a>(
             pinning.outcomes.push(left_out(
                 server,
                 &name,
-                "runs a Ployz too old to activate. Upgrade it before you activate the others."
-                    .to_owned(),
+                "runs a Ployz too old to activate.".to_owned(),
             ));
             continue;
         }
@@ -589,7 +588,7 @@ fn resumed(included: &[&Found], reach: &Reach) -> Result<Option<OperationId>, Er
                 .join("; ")
         ))
         .hint(Hint::Next(
-            "ployz server rm SERVER for the Servers under one set, then add each again with a join you approve"
+            "ployz server add root@HOST --reset for each Server under one set, then approve its join"
                 .to_owned(),
         ))),
     }
@@ -669,9 +668,15 @@ async fn deliver(
 }
 
 /// Wait for the Server to come back from its restart and report this activation committed.
+/// What a wait prints while a Server restarts to commit its activation, which it does on
+/// purpose, in place of the connectivity warning.
+const ACTIVATING: crate::setup_retry::Expected =
+    crate::setup_retry::Expected("Waiting for the Server to restart and activate…");
+
 async fn settled(
     client: &Client,
     machine_id: MachineId,
+    name: &str,
     operation: OperationId,
 ) -> Result<ActivationReport, String> {
     let target = MachineTarget::from(&machine_id);
@@ -680,7 +685,11 @@ async fn settled(
         let details = client
             .call::<op::Inspect>(
                 InspectRequest::default(),
-                Call::read().to(&target).waiting(Wait::standard()),
+                Call::read().to(&target).waiting(Wait {
+                    server: Some(name),
+                    expected: Some(ACTIVATING),
+                    ..Wait::standard()
+                }),
             )
             .await
             .map_err(|_| {

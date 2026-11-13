@@ -30,9 +30,9 @@ Run it without `--connect` in the context where you added your servers over SSH,
 each one over its own SSH connection. On a cluster that ran 0.3, every server holds keys from
 before, so each one takes the list only over its own SSH. A server that joined only through
 Ployz Cloud has no SSH connection saved: leave it out by not confirming its key, then after
-activation remove it with `ployz server rm` and add it again with a join you approve. If no
-server was added over SSH, run `ployz device enforce --connect ssh://root@SERVER` for one server,
-leave the others out, and add them again the same way.
+activation [add it back](#add-back-a-server-left-out). If no server was added over SSH, run
+`ployz device enforce --connect ssh://root@SERVER` for one server, leave the others out, and add
+them back the same way.
 
 If a server is refused or stops partway, fix what it names and run `ployz device enforce` again.
 The new run finishes the same activation: servers that already activated take it again without
@@ -54,14 +54,28 @@ Activation:
   `ployz device request` on that computer, signed in with `ployz login`, then
   `ployz device approve <code>` from yours.
 - leaves out a server you didn't confirm or that runs a Ployz older than 0.4. Once the others
-  activate, that server is no longer part of the cluster: remove it with `ployz server rm`, then
-  add it again with a join you approve. Upgrade every server first.
+  activate, that server is no longer part of the cluster, and `ployz server rm` no longer finds
+  it. [Add it back](#add-back-a-server-left-out). Upgrade every server first.
 - cancels any build Ployz Cloud approved and any volume change waiting on an approval. Start them
   again from an approved device or with your passkey.
 - gives the cluster a new key for sealed values. Values you seal from then on use it. A server
   you add later gets the new key when it joins.
 
 Each server restarts once to activate. Your services keep running.
+
+### Add back a server left out
+
+A server left out keeps running what it ran, but the activated servers no longer trust it. Add it
+again from your computer, over SSH:
+
+```sh
+ployz server add root@203.0.113.12 --reset
+```
+
+`--reset` wipes what the server ran, including its volumes, so move anything you need off it
+first. The server asks to join, and the command stops with the next step. Approve the join from
+an approved device with `ployz device approve --join <code>`, then run the same `ployz server add`
+again.
 
 ## What activation can't undo
 
