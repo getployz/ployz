@@ -191,11 +191,7 @@ pub(crate) struct BuildInput<'a> {
 pub(crate) fn prepare(mut input: PreparationInput) -> Result<Prepared, RpcError> {
     for receipt in input.build_receipts.values().flatten() {
         if !ployz_core::is_lower_hex(&receipt.fingerprint, 64)
-            || !receipt
-                .image
-                .reference
-                .strip_prefix("sha256:")
-                .is_some_and(|digest| ployz_core::is_lower_hex(digest, 64))
+            || ployz_core::ImageDigest::parse(receipt.image.reference.as_str()).is_err()
         {
             return Err(invalid(
                 "build receipt must identify immutable image content",
@@ -841,6 +837,22 @@ mod tests {
         let mut invalid_commit = base.clone();
         *invalid_commit.pointer_mut("/source_commits/web").unwrap() = json!("main");
         assert!(capture(serde_json::from_value(invalid_commit).unwrap()).is_err());
+        for reference in [
+            format!("sha256:{}", "A".repeat(64)),
+            format!("sha256:{}", "a".repeat(63)),
+            format!("sha256:{}g", "a".repeat(63)),
+            "a".repeat(64),
+        ] {
+            let mut uppercase = base.clone();
+            uppercase.as_object_mut().unwrap().insert("build_receipts".into(), json!({"web": [{
+                "fingerprint": "a".repeat(64), "variables": "all", "machine_id": "a".repeat(32),
+                "image": {"reference": reference, "tags":[], "platforms":["linux/amd64"], "location":"unused"}
+            }]}));
+            assert!(
+                capture(serde_json::from_value(uppercase).unwrap()).is_err(),
+                "{reference}"
+            );
+        }
         let mut invalid_receipt = base;
         invalid_receipt.as_object_mut().unwrap().insert("build_receipts".into(), json!({"web": [{
             "fingerprint": "a".repeat(64), "variables": "all", "machine_id": "a".repeat(32),

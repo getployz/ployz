@@ -103,8 +103,7 @@ pub(crate) async fn push_from_machine_using_machines(
 /// It serves a destination only a variant that store demonstrably holds.
 #[derive(Debug)]
 pub(super) struct Source {
-    machine_id: MachineId,
-    destination: ImageIngestDestination,
+    peer: PeerSource,
     store: MachineImages,
 }
 
@@ -132,18 +131,11 @@ impl Source {
         if !store.containerd_store {
             return Err(PushError::UnsupportedImageStore);
         }
-        let opened = cancellation
-            .race(client.call::<op::EnsureImageIngest>(
-                EnsureImageIngestRequest {},
-                Call::keyed().to(&target),
-            ))
+        let peer = cancellation
+            .race(PeerSource::open(client, machine_id))
             .await?
             .map_err(|error| ingest_error(rpc_error(error)))?;
-        Ok(Self {
-            machine_id,
-            destination: opened.destination,
-            store,
-        })
+        Ok(Self { peer, store })
     }
 
     /// The Build host must hold every platform the attempt verified; anything
@@ -163,7 +155,7 @@ impl Source {
         } else {
             Err(PushError::BuildIncomplete {
                 image: image.reference.clone(),
-                machine_id: self.machine_id,
+                machine_id: self.peer.machine,
                 missing,
             })
         }
@@ -177,7 +169,7 @@ impl Source {
         available_variant(&self.store, image, &machine.runtime.architecture).ok_or_else(|| {
             PushError::VariantUnavailable {
                 image: image.to_owned(),
-                machine_id: self.machine_id,
+                machine_id: self.peer.machine,
                 platform: machine.runtime.architecture.clone(),
             }
         })
@@ -198,18 +190,15 @@ impl Source {
     ) -> Result<(), PushError> {
         let variant = self.variant(exact, machine)?;
         cancellation
-            .race(client.call::<op::PullImageFromMachine>(
-                PullImageFromMachineRequest {
-                    pull: PeerImagePull::Reference {
-                        image: published.to_owned(),
-                    },
-                    source: self.destination,
-                    platform: variant.to_owned(),
+            .race(self.peer.pull_into(
+                client,
+                &machine.id,
+                PeerImagePull::Reference {
+                    image: published.to_owned(),
                 },
-                Call::keyed().to(&MachineTarget::from(&machine.id)),
+                variant,
             ))
             .await?
-            .map(|_| ())
             .map_err(|error| PushError::PeerPull(rpc_error(error)))
     }
 }
@@ -405,10 +394,12 @@ mod tests {
             location: "unix:///var/run/docker.sock".into(),
         };
         let source = |store| Source {
-            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-            destination: ImageIngestDestination {
-                management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
-                port: ployz_core::UNREGISTRY_PORT,
+            peer: PeerSource {
+                machine: MachineId::parse("a".repeat(32)).unwrap(),
+                destination: ployz_core::ImageIngestDestination {
+                    management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
+                    port: ployz_core::UNREGISTRY_PORT,
+                },
             },
             store,
         };

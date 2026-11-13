@@ -145,14 +145,23 @@ async fn reuse(
     )?;
     if fingerprints.get(&spec.name) != Some(&receipt.fingerprint)
         || receipt.image.platforms.is_empty()
-        || !crate::build::runs_everywhere(&receipt.image, spec, &intent.namespace, machines)
     {
         return Ok(None);
     }
-    let Some(stores) = crate::build::image_stores(client, machines, token).await else {
-        return Err(super::preparation_error(PreparationError::Cancelled, true));
-    };
-    let Some(machine_id) = crate::build::holder(&stores, &receipt.image, receipt.machine_id) else {
+    let placed = crate::build::place_listing(
+        client,
+        &receipt.image,
+        receipt.machine_id,
+        spec,
+        &intent.namespace,
+        machines,
+        token,
+    )
+    .await
+    .map_err(|crate::build::Cancelled| {
+        super::preparation_error(PreparationError::Cancelled, true)
+    })?;
+    let Some(machine_id) = placed else {
         return Ok(None);
     };
     let machine_name = machines

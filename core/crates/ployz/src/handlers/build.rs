@@ -518,10 +518,7 @@ async fn push(
     cancellation: &CancellationToken,
 ) -> Result<Pushed, Error> {
     let digest = &built.image.reference;
-    let hex = digest
-        .strip_prefix("sha256:")
-        .ok_or(BuildCommandError::NotDigestIdentified)?;
-    let tag = format!("{}:{RETAINED_DIGEST_TAG_PREFIX}{hex}", built.repository);
+    let tag = retained_tag(&built.repository, digest)?;
     events.write(&ployz_build::Progress::Stage(ployz_build::Stage::Push));
     let registry = until_cancelled(cancellation, async {
         Ok(open_grant_registry(grant, &ManagementRelay::default()).await?)
@@ -545,6 +542,14 @@ async fn push(
         tag,
         platforms: built.image.platforms.clone(),
     })
+}
+
+/// The tag that retains the image `digest` in `repository`.
+fn retained_tag(repository: &str, digest: &str) -> Result<String, BuildCommandError> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .ok_or(BuildCommandError::NotDigestIdentified)?;
+    Ok(format!("{repository}:{RETAINED_DIGEST_TAG_PREFIX}{hex}"))
 }
 
 /// `docker push`, its per-layer lines streamed to the events file as they come.
@@ -656,6 +661,33 @@ mod tests {
     use super::*;
 
     const MARKER: &str = "marker-sealed-0123456789";
+
+    #[test]
+    fn a_sha256_prefixed_reference_names_a_retained_tag_as_given() {
+        let hex = "ab01".repeat(16);
+        // Only the prefix is checked here: the report that carried the digest checked its hex.
+        for hex in [
+            hex.clone(),
+            hex.to_uppercase(),
+            "a".repeat(63),
+            "zz".to_owned(),
+            String::new(),
+        ] {
+            assert_eq!(
+                retained_tag("ployz-build/api", &format!("sha256:{hex}")).unwrap(),
+                format!("ployz-build/api:{RETAINED_DIGEST_TAG_PREFIX}{hex}")
+            );
+        }
+        for refused in [hex, "SHA256:ab".into(), String::new()] {
+            assert!(
+                matches!(
+                    retained_tag("ployz-build/api", &refused),
+                    Err(BuildCommandError::NotDigestIdentified)
+                ),
+                "{refused}"
+            );
+        }
+    }
 
     fn sealed_record() -> SealedRecord {
         let value = EnvValue::Sealed(SealedValue {
