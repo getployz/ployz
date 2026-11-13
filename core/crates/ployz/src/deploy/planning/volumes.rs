@@ -460,16 +460,17 @@ impl VolumePlan<'_> {
                     Err(_) if !applied => return Ok(()),
                     Err(error) => return Err(error),
                 };
-                Self::record_provisioned(&mut definitions, spec, &candidates)?;
+                let found = candidates
+                    .iter()
+                    .map(|(machine, _)| *machine)
+                    .collect::<Vec<_>>();
+                Self::record_provisioned(&mut definitions, spec, &found)?;
                 let mut machines = candidates
                     .into_iter()
-                    .filter(|machine| {
-                        spec.placement_eligibility_in_namespace(
-                            &self.namespace,
-                            &machine.machine,
-                            machine.storage.as_ref(),
-                        ) == ServicePlacementEligibility::Eligible
+                    .filter(|(_, eligibility)| {
+                        *eligibility == ServicePlacementEligibility::Eligible
                     })
+                    .map(|(machine, _)| machine)
                     .collect::<Vec<_>>();
                 if !applied || machines.is_empty() {
                     return Ok(());

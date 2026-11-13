@@ -969,6 +969,60 @@ fn constraints_name_the_machine_that_did_not_answer_its_listing() {
 }
 
 #[test]
+fn constraints_name_each_excluded_machine_under_the_first_reason_that_applies_to_it() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut down = machine('1', "down");
+    down.membership = MembershipObservation::Down;
+    let mut refusing = machine('2', "refusing");
+    refusing.membership = MembershipObservation::Unknown;
+    refusing.machine.accepts_services = false;
+    let mut slow = machine('3', "slow");
+    slow.membership = MembershipObservation::Suspect;
+    let mut up_and_refusing = machine('4', "both");
+    up_and_refusing.membership = MembershipObservation::Up;
+    up_and_refusing.machine.accepts_services = false;
+
+    assert_no_eligible(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![down, refusing, slow, up_and_refusing],
+                container_failures: ["3", "4"]
+                    .map(|hex| ployz_core::MachineFailure {
+                        machine_id: machine_id(hex.chars().next().unwrap()),
+                        error: ployz_core::RpcError::unanswered_target(
+                            ployz_core::RpcErrorCode::Unavailable,
+                            "target Machine RPC timed out".into(),
+                        ),
+                    })
+                    .to_vec(),
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        &[
+            EliminatingConstraint::MachineDown {
+                names: vec![MachineName::parse("down").unwrap()],
+            },
+            EliminatingConstraint::Unanswered {
+                names: vec![MachineName::parse("slow").unwrap()],
+            },
+            EliminatingConstraint::WorkNotAccepted {
+                names: vec![
+                    MachineName::parse("refusing").unwrap(),
+                    MachineName::parse("both").unwrap(),
+                ],
+            },
+        ],
+        &[
+            "Machine 'down' is down; Machine 'slow' did not answer when this Deploy listed its containers; Machines 'refusing', 'both' do not accept this work",
+        ],
+    );
+}
+
+#[test]
 fn volume_on_another_machine_names_the_volume_and_the_conflict() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

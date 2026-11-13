@@ -5,9 +5,8 @@ use ployz_core::{
     HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
     ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal, QualifiedService,
     RequestedServiceSpec, RpcError, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason, UpdateOrder,
-    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
-    same_service_mode_kind,
+    ServiceObservation, ServicePlacementEligibility, UpdateOrder, VolumeToCreate,
+    explicit_ingress_hosts, hostname_owners, same_service_mode_kind,
 };
 
 use super::{
@@ -17,6 +16,7 @@ use super::{
     schedule::{ServiceGroup, Stage, TaskKind, creates_container},
 };
 
+mod candidates;
 pub(super) mod capacity;
 #[cfg(test)]
 pub(super) mod ingress_repairs;
@@ -25,6 +25,7 @@ mod placement;
 mod storage;
 mod volumes;
 
+use candidates::{Candidates, Exclusion};
 use placement::{
     CapacityAdmission, GlobalPlacement, LimitsChange, PlacementReservations, PlacementState,
     ReplicatedPlacement, ReplicatedReservation, plan_global, plan_replicated,
@@ -1750,12 +1751,8 @@ fn eligible_machines<'snapshot>(
     let candidates = placement_candidates(requested, namespace, snapshot)?;
     let mut unknown = Vec::new();
     let mut machines = Vec::new();
-    for machine in &candidates {
-        match requested.placement_eligibility_in_namespace(
-            namespace,
-            &machine.machine,
-            machine.storage.as_ref(),
-        ) {
+    for (machine, eligibility) in &candidates {
+        match eligibility {
             ServicePlacementEligibility::Eligible => machines.push(*machine),
             ServicePlacementEligibility::Unknown(_) => {
                 unknown.push(machine.machine.name.clone());
@@ -1772,6 +1769,7 @@ fn eligible_machines<'snapshot>(
                 machine: candidates
                     .first()
                     .expect("explicit placement resolved exactly one Machine")
+                    .0
                     .machine
                     .name
                     .clone(),
@@ -1824,35 +1822,18 @@ pub(crate) fn place_one(
     }
 }
 
+/// The Machines that may take `requested`'s Containers, each with its storage eligibility.
 fn placement_candidates<'snapshot>(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
-) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
-    let candidates = snapshot
-        .machines
-        .iter()
-        .filter(|machine| machine.invites_rpc())
-        // A Machine whose silence is a listing gap would stall a start.
-        .filter(|machine| !snapshot.silent(machine))
-        .filter(|machine| {
-            !matches!(
-                requested.placement_eligibility_in_namespace(
-                    namespace,
-                    &machine.machine,
-                    machine.storage.as_ref()
-                ),
-                ServicePlacementEligibility::Ineligible(
-                    ServicePlacementIneligibleReason::PlacementMismatch
-                        | ServicePlacementIneligibleReason::WorkNotAccepted
-                )
-            )
-        })
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return Err(placement_error(requested, namespace, snapshot));
+) -> Result<Vec<(&'snapshot MachineObservation, ServicePlacementEligibility)>, PlanError> {
+    let candidates = snapshot.candidates(requested, namespace);
+    let placeable = candidates.placeable();
+    if placeable.is_empty() {
+        return Err(placement_error(requested, &candidates));
     }
-    Ok(candidates)
+    Ok(placeable)
 }
 
 fn storage_eligibility_warnings(
@@ -1887,52 +1868,32 @@ fn storage_eligibility_warnings(
         .collect()
 }
 
-fn placement_error(
-    spec: &RequestedServiceSpec,
-    namespace: &Namespace,
-    snapshot: &DeploySnapshot,
-) -> PlanError {
-    if snapshot.machines.is_empty() {
+fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> PlanError {
+    if candidates.is_empty() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
     }
-    let matched = snapshot
-        .machines
-        .iter()
-        .filter(|machine| machine_matches_placement(&machine.machine, &spec.placement))
-        .collect::<Vec<_>>();
-    if matched.is_empty() {
+    if candidates.matches_none() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::UnknownPlacement {
             targets: spec.placement.constraints.iter().cloned().collect(),
         }]);
     }
-    let mut down = Vec::new();
-    let mut silent = Vec::new();
-    let mut refused = Vec::new();
-    for machine in matched {
-        if machine.membership == MembershipObservation::Down {
-            down.push(machine.machine.name.clone());
-        } else if snapshot.silent(machine) {
-            silent.push(machine.machine.name.clone());
-        } else if matches!(
-            spec.placement_eligibility_in_namespace(
-                namespace,
-                &machine.machine,
-                machine.storage.as_ref()
-            ),
-            ServicePlacementEligibility::Ineligible(
-                ServicePlacementIneligibleReason::WorkNotAccepted
-            )
-        ) {
-            refused.push(machine.machine.name.clone());
-        }
-    }
+    let names = |why| {
+        candidates
+            .excluded(why)
+            .into_iter()
+            .map(|machine| machine.machine.name.clone())
+            .collect::<Vec<_>>()
+    };
     let mut constraints = Vec::new();
+    let down = names(Exclusion::Down);
     if !down.is_empty() {
         constraints.push(EliminatingConstraint::MachineDown { names: down });
     }
+    let silent = names(Exclusion::Silent);
     if !silent.is_empty() {
         constraints.push(EliminatingConstraint::Unanswered { names: silent });
     }
+    let refused = names(Exclusion::WorkNotAccepted);
     if !refused.is_empty() {
         constraints.push(EliminatingConstraint::WorkNotAccepted { names: refused });
     }
