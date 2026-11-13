@@ -31,6 +31,7 @@ import { Effect, Exit } from "effect";
 import { Inngest, NonRetriableError } from "inngest";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { JsonValue } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -202,6 +203,15 @@ const label = (fake: FakeMachine, want: WantedCopy) => {
 /** A handoff receipt as a source signs it. The fakes check nothing in it; Cloud reads only where it routes. */
 const receiptFor = (to: MachineId, at: string, epoch: number): MachineSigned =>
   ({ body: JSON.stringify({ from: idOf("fsn-1"), to, at, epoch }), key: { kind: "cluster", key: "c".repeat(64) }, signature: "d".repeat(128) });
+/** What a fake Server on Ployz 0.4 lists unless a test names its own: it enforces device approval and takes every Volume verb but a handoff. */
+const ON_PLOYZ_04 = [
+  requirements.enforced.capability,
+  requirements.volumeMove.capability,
+  requirements.volumeFloor.capability,
+  requirements.volumeSize.capability,
+  requirements.volumeShrink.capability,
+  requirements.volumePasskey.capability,
+];
 /** Every capability a Move asks of a Server that signs and checks handoffs. */
 const HANDOFF_CAPABILITIES = [
   requirements.volumeMove.capability,
@@ -424,7 +434,7 @@ describe("volume runs", () => {
       const fault = frameFault?.(++frames) ?? false;
       return fault !== false ? firstFrame(() => answering(fault), fault === true ? 1 : timeoutMs) : Effect.succeed({
       machines: machines.map((fake) => ({
-        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities, device_enforcement: fake.enforces ?? null } },
+        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities === undefined ? ON_PLOYZ_04 : [requirements.enforced.capability, ...fake.capabilities] } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
       containers: containers.map((container) => ({
@@ -628,8 +638,51 @@ describe("volume runs", () => {
       }),
     ))) as typeof runInngestEffect;
 
+  /**
+   * `input` as the person's passkey approves it in the dashboard, naming the Servers the fakes hold now. Every Server
+   * enforces device approval, so a run that changes data carries one; a test that sends its own, or none, keeps it.
+   */
+  const approvedRun = (input: VolumeRunInput): VolumeRunInput => {
+    if ("approval" in input.args) return input;
+    const signed = (workflow: { readonly [field: string]: JsonValue }): Signed => ({ body: JSON.stringify({ volume: dockerVolume, workflow }), signatures: APPROVAL.signatures });
+    const writer = machines.find((fake) => fake.copy?.kind === "root" && !fake.copy.readonly) ?? machines.find((fake) => fake.copy?.kind === "root");
+    const writerId = writer === undefined ? idOf("none") : writer.id ?? idOf(writer.name);
+    const target = (args: { readonly to: string; readonly machine?: MachineId }) => args.machine ?? machines.find((fake) => fake.name === args.to)?.id ?? idOf(args.to);
+    switch (input.kind) {
+      case "mirror":
+        return { ...input, args: { ...input.args, approval: signed({ kind: "mirror", writer: writerId, mirror: target(input.args) }) } };
+      case "sync": {
+        if (!input.args.full) return input;
+        const mirror = machines.find((fake) => fake.copy?.kind === "slot" && fake.copy.role !== "old_copy");
+        return { ...input, args: { ...input.args, approval: signed({ kind: "mirror", writer: writerId, mirror: mirror?.id ?? idOf(mirror?.name ?? "none") }) } };
+      }
+      case "move": {
+        const service = input.args.service ?? asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+        return { ...input, args: { ...input.args, service, approval: signed({ kind: "move", from: writerId, to: target(input.args), service: { name: service.name } }) } };
+      }
+      case "restore": {
+        const from = input.args.machine ?? machines.find((fake) => fake.name === input.args.from)?.id ?? idOf(input.args.from);
+        return { ...input, args: { ...input.args, approval: signed({ kind: "restore", machine: from }) } };
+      }
+      case "delete_mirror": {
+        if (input.args.slot === null) return input;
+        const slot = input.args.slot;
+        const mirror = machines.find((fake) => fake.name === slot)?.id ?? idOf(slot);
+        return { ...input, args: { ...input.args, approval: signed({ kind: "mirror_removal", mirror }) } };
+      }
+      case "seed":
+        return { ...input, args: { ...input.args, approval: signed({ kind: "seed" }) } };
+      case "resize": {
+        const recorded = storeVolumes.find((volume) => volume.id === volumeId)?.recorded_storage ?? 0;
+        const holders = machines.map((fake) => fake.id ?? idOf(fake.name));
+        return { ...input, args: { ...input.args, approval: signed({ kind: "resize", machines: holders, maximum_bytes: input.args.maximum_bytes, shrink: input.args.maximum_bytes <= recorded }) } };
+      }
+      default:
+        return input;
+    }
+  };
   const request = (input: VolumeRunInput) =>
-    runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, ...input }));
+    runEffect(requestVolumeRun({ userId, organizationId }, { volumeId, environment, ...approvedRun(input) }));
   const requested = async (input: VolumeRunInput) => {
     const result = await request(input);
     if (!result.ok) throw new Error(result.refusal.message);
@@ -1722,7 +1775,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.error).toBeUndefined();
-      expect(seeds).toEqual([{ name: dockerVolume, into: into.dockerVolume, guid: base.guid, gen: await genOf(run.id) }]);
+      expect(seeds).toEqual([{ name: dockerVolume, into: into.dockerVolume, guid: base.guid, gen: await genOf(run.id), approval: expect.objectContaining({ signatures: APPROVAL.signatures }) }]);
       expect(await rows()).toEqual([expect.objectContaining({ id: run.id, kind: "seed", state: "done" })]);
     });
 
@@ -2691,7 +2744,10 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[1]).toEqual({ name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "dep-10", drain: 3_000 }, gen: expect.any(Number) });
+      expect(sent[1]).toEqual({
+        name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "dep-10", drain: 3_000 }, gen: expect.any(Number),
+        approval: expect.objectContaining({ signatures: APPROVAL.signatures }),
+      });
       expect(machines[1]?.copy).toMatchObject({ kind: "slot", newest: base, pull: null });
     });
 
@@ -2812,15 +2868,6 @@ describe("volume runs", () => {
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL] }]);
     });
 
-    it("mirror: a caught-up mirror with no approval sends no pull, as before", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
-
-      await execute(run.id);
-
-      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)"]);
-    });
-
     it("sync --full: offers its approval ahead of the kept one, and sends it with the Mirror's forget, snapshots and pulls but not the Writer's forget", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       await harness.pool.query(
@@ -2835,30 +2882,6 @@ describe("volume runs", () => {
         "forget:approval", "forget:none", "snapshot:approval", "mirror:approval", "mirror:approval", "snapshot:approval",
       ]);
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, { body: "old", signatures: [] }] }]);
-    });
-
-    it("a move sends no approval", async () => {
-      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
-
-      await execute(run.id);
-
-      expect(sent.length).toBeGreaterThan(0);
-      expect(sent.filter((request) => request.approval !== undefined)).toEqual([]);
-    });
-
-    it.each([
-      ["mirror", { kind: "mirror", args: { to: "fsn-2" } }, "ployz volume mirror data --to fsn-2"],
-      ["full sync", { kind: "sync", args: { full: true } }, "ployz volume sync data --full"],
-    ] as const)("%s with no approval on an enforcing Server is refused before any step", async (_, input, command) => {
-      if (input.kind === "sync") machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), enforces: true };
-      else machines[1] = { name: "fsn-2", pool: true, copy: null, enforces: true };
-      const run = await requested(input);
-
-      await execute(run.id);
-
-      expect(verbs.filter((verb) => !verb.startsWith("floor"))).toEqual([]);
-      expect(machines[1]?.copy).toEqual(input.kind === "sync" ? slotCopy(base) : null);
-      expect(await rows()).toMatchObject([{ state: "failed", message: `fsn-2 enforces device approval, so Ployz Cloud can't ${input.kind === "sync" ? "sync data in full" : "mirror data"} on its own. Run ${command} from an approved device.` }]);
     });
 
     it("a step the Server refuses for its approval ends the run with the refusal, not a retry", async () => {

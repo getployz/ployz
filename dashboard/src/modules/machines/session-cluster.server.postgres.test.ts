@@ -8,6 +8,7 @@ import { deployDialOf } from "#/modules/config-store/config-store.server";
 import { backfillClusterSealingKey, SealingBackfillUnreachable } from "#/modules/machines/sealing-backfill.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
+import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { Database } from "#/server/database.server";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 import { sendsNowhere } from "#/test/store-cloud";
@@ -54,6 +55,8 @@ describe("a session's Cluster", () => {
         return asTestDouble<Client>()({
           close: async () => {},
           cluster: () => ({ verified: true, foreign: [] }),
+          // Cloud reads the Servers' releases before a change; these list none, so none runs Ployz 0.3.
+          runtime: { watch: async function* () { yield runtimeWatchFrameFixture({ machines: [] }); } },
           backfillSealingKey: async (request: BackfillSealingKeyRequest) => {
             asked.push(entry.management);
             return { result: "waiting", request };

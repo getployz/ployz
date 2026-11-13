@@ -1,12 +1,7 @@
 import type { ContainerObservation, ServiceId } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import {
-  runtimeWatchContainerFixture,
-  runtimeWatchFrameFixture,
-  runtimeWatchMachineFixture,
-  runtimeWatchMachineObservationFixture,
-} from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { privateAccessObservation, routersOn, TAILSCALE } from "./private-access";
+import { runtimeWatchContainerFixture, runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { routersOn, TAILSCALE } from "./private-access";
 
 const frame = (...routers: (readonly [string, ContainerObservation["runtime"]])[]) =>
   runtimeWatchFrameFixture({
@@ -44,11 +39,3 @@ it("calls a Server running if any of its routers runs, whatever order they are l
   expect(routersOn(frame(["m1", { state: "exited", code: 1 }], ["m1", { state: "running", health: "healthy" }])).get("m1")).toBe("running");
 });
 
-it("reads Private Access as enforced once any Server enforces Device approval, so Connect asks the passkey", () => {
-  const server = (id: string, enforcing: boolean | null) => {
-    const machine = runtimeWatchMachineFixture(id, id);
-    return runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, device_enforcement: enforcing } } });
-  };
-  expect(privateAccessObservation(runtimeWatchFrameFixture({ machines: [server("m1", false), server("m2", null)] })).enforced).toBe(false);
-  expect(privateAccessObservation(runtimeWatchFrameFixture({ machines: [server("m1", false), server("m2", true)] })).enforced).toBe(true);
-});

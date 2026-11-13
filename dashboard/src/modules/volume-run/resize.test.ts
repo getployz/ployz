@@ -22,16 +22,22 @@ describe("planResize", () => {
     if (!each.answered) throw new Error(`${server} did not answer`);
     return each;
   };
+  const signed = (machines: readonly string[], maximumBytes: number, shrink: boolean): Signed => ({
+    body: JSON.stringify({ volume: "shop_data", workflow: { kind: "resize", machines: machines.map((name) => name.padEnd(32, "0")), maximum_bytes: maximumBytes, shrink } }),
+    signatures: [],
+  });
+  /** What every Server takes for a resize: the person's approval of it on each of fsn-1 to fsn-3. */
+  const approved = (maximumBytes: number, shrink: boolean) => ({ maximum_bytes: maximumBytes, approval: signed(["fsn-1", "fsn-2", "fsn-3"], maximumBytes, shrink) });
 
   it("orders a grow as mirrors, primary, record", () => {
-    const planned = planResize("data", { maximum_bytes: 20 * GB }, { recorded: 10 * GB, working: 10 * GB }, copy("fsn-1", "writer"), [copy("fsn-2", "mirror"), copy("fsn-3", "mirror")]);
+    const planned = planResize("data", approved(20 * GB, false), { recorded: 10 * GB, working: 10 * GB }, copy("fsn-1", "writer"), [copy("fsn-2", "mirror"), copy("fsn-3", "mirror")]);
     expect(planned).toMatchObject({ ok: true, phase: { kind: "resize", direction: "grow", from: 10 * GB, to: 20 * GB } });
     if (!planned.ok) throw new Error(planned.refusal.message);
     expect(planned.phase.steps.map((step) => (step.kind === "record" ? "record" : `${step.role} ${step.member.machine.name}`)))
       .toEqual(["mirror fsn-2", "mirror fsn-3", "primary fsn-1", "record"]);
   });
 
-  const settle = (bounds: readonly (number | undefined)[]) => planResize("data", { maximum_bytes: 20 * GB }, { recorded: 20 * GB, working: 20 * GB },
+  const settle = (bounds: readonly (number | undefined)[]) => planResize("data", approved(20 * GB, true), { recorded: 20 * GB, working: 20 * GB },
     copy("fsn-1", "writer", bounds[0]), [copy("fsn-2", "mirror", bounds[1]), copy("fsn-3", "mirror", bounds[2])]);
 
   it("orders a settle as primary, mirrors, no record, when every holder is at or above the size", () => {
@@ -55,7 +61,7 @@ describe("planResize", () => {
   });
 
   it("orders a shrink as record, primary, mirrors", () => {
-    const planned = planResize("data", { maximum_bytes: 10 * GB }, { recorded: 20 * GB, working: 20 * GB }, copy("fsn-1", "writer"), [copy("fsn-2", "mirror"), copy("fsn-3", "mirror")]);
+    const planned = planResize("data", approved(10 * GB, true), { recorded: 20 * GB, working: 20 * GB }, copy("fsn-1", "writer"), [copy("fsn-2", "mirror"), copy("fsn-3", "mirror")]);
     expect(planned).toMatchObject({ ok: true, phase: { kind: "resize", direction: "shrink", from: 20 * GB, to: 10 * GB } });
     if (!planned.ok) throw new Error(planned.refusal.message);
     expect(planned.phase.steps.map((step) => (step.kind === "record" ? "record" : `${step.role} ${step.member.machine.name}`)))
@@ -63,21 +69,16 @@ describe("planResize", () => {
   });
 
   describe("under device approval", () => {
-    const enforcing = (server: string, kind: Copy) => ({ ...copy(server, kind), enforces: true });
-    const holders = () => [enforcing("fsn-1", "writer"), copy("fsn-2", "mirror")] as const;
-    const signed = (machines: readonly string[], maximumBytes: number, shrink: boolean): Signed => ({
-      body: JSON.stringify({ volume: "shop_data", workflow: { kind: "resize", machines: machines.map((name) => name.padEnd(32, "0")), maximum_bytes: maximumBytes, shrink } }),
-      signatures: [],
-    });
+    const holders = () => [copy("fsn-1", "writer"), copy("fsn-2", "mirror")] as const;
     const plan = (maximumBytes: number, approval?: Signed) => {
       const [writer, mirror] = holders();
       return planResize("data", { maximum_bytes: maximumBytes, ...(approval && { approval }) }, { recorded: 10 * GB, working: 10 * GB }, writer, [mirror]);
     };
 
-    it("refuses a resize with no approval when a holder enforces, naming the command to approve it", () => {
+    it("refuses a resize with no approval, naming the command to approve it", () => {
       expect(plan(20 * GB)).toEqual({ ok: false, refusal: {
         code: "enforced",
-        message: "fsn-1 enforces device approval, so Ployz Cloud can't resize data on its own. Run ployz volume set data --size 20 from an approved device.",
+        message: "fsn-2 enforces device approval, so Ployz Cloud can't resize data on its own. Run ployz volume set data --size 20 from an approved device.",
       } });
     });
 

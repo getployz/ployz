@@ -78,10 +78,13 @@ const moveAway = { ...move, args: { to: "box-2" } } as const;
 const unanswered = { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } as const;
 
 // One Server holding only a mirror: a release reads the members, then which slot keeps the Service.
-const machine = runtimeWatchMachineFixture("a".repeat(32), "box-1");
+// A Server on Ployz 0.4, which enforces device approval; one without that is on 0.3 and never inspected.
+const ENFORCED = requirements.enforced.capability;
+const onPloyz03 = runtimeWatchMachineFixture("a".repeat(32), "box-1");
+const machine = { ...onPloyz03, runtime: { ...onPloyz03.runtime, capabilities: [...(onPloyz03.runtime.capabilities ?? []), ENFORCED] } };
 const slotOnly = runtimeWatchFrameFixture({
   machines: [runtimeWatchMachineObservationFixture({
-    machine: { ...machine, public_key: Array.from({ length: 32 }, () => 1), runtime: { ...machine.runtime, capabilities: [requirements.volumeFloor.capability] } },
+    machine: { ...machine, public_key: Array.from({ length: 32 }, () => 1), runtime: { ...machine.runtime, capabilities: [ENFORCED, requirements.volumeFloor.capability] } },
   })],
 });
 
@@ -159,7 +162,7 @@ const lacking = (capabilities: readonly string[] = ["volume_move"], copy: Volume
     Effect.as([]),
   );
   const floorless = runtimeWatchFrameFixture({
-    machines: [runtimeWatchMachineObservationFixture({ machine: { ...machine, public_key: Array.from({ length: 32 }, () => 1), runtime: { ...machine.runtime, capabilities: [...capabilities] } } })],
+    machines: [runtimeWatchMachineObservationFixture({ machine: { ...machine, public_key: Array.from({ length: 32 }, () => 1), runtime: { ...machine.runtime, capabilities: [ENFORCED, ...capabilities] } } })],
   });
   const layer = (inspected: Promise<void>) => makeOrganizationRuntimeLayer(
     () => Effect.succeed({ kind: "ready", generation: "current", connections }),
@@ -239,7 +242,7 @@ it.effect("a Move onto a Server whose Ployz can't route the moved copy names its
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
 );
 
-it.effect("a Move reads the copy of its destination when that Server routes the moved copy or lists no capabilities, and of a source that can't", () =>
+it.effect("a Move reads the copy of its destination when that Server routes the moved copy, and of a source that can't", () =>
   Effect.gen(function* () {
     const read = (capabilities: readonly string[], run: typeof move | typeof moveAway) => Effect.gen(function* () {
       const cluster = yield* lacking(capabilities, null);
@@ -248,7 +251,6 @@ it.effect("a Move reads the copy of its destination when that Server routes the 
     });
     const beta6 = [requirements.volumeMove.capability, requirements.volumeFloor.capability];
     assert.strictEqual(yield* read([...beta6, requirements.volumeSize.capability], move), true);
-    assert.strictEqual(yield* read([], move), true);
     assert.strictEqual(yield* read(beta6, moveAway), true);
   }),
 );
@@ -316,6 +318,30 @@ const lastReported = (slotRole: "mirror" | "old_copy") => makeOrganizationRuntim
     }),
   })),
   Layer.merge(Layer.succeed(Database, undefined as never)),
+);
+
+it.effect("a Server on Ployz 0.3 is a member that names the upgrade, and is never asked for its copy", () =>
+  Effect.gen(function* () {
+    let inspected = 0;
+    const layer = makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections }), noPairingChanges).pipe(
+      Layer.provide(makePloyzLayer({
+        connect: async () => asTestDouble<Client>()({
+          close: async () => {},
+          volumeSwitch: async () => { inspected += 1; return { copy: null }; },
+          runtime: {
+            watch: async function* (): AsyncGenerator<RuntimeWatchView> {
+              yield runtimeWatchFrameFixture({ machines: [runtimeWatchMachineObservationFixture({ machine: onPloyz03 })] });
+            },
+          },
+        }),
+      })),
+      Layer.merge(Layer.succeed(Database, undefined as never)),
+    );
+    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data", move).pipe(Effect.provide(layer)), [{
+      machine: { id: machine.id, name: machine.name }, answered: false, lack: "box-1 runs Ployz 0.3. Upgrade it to deploy.", outdated: true,
+    }]);
+    assert.strictEqual(inspected, 0);
+  }),
 );
 
 it.effect("a silent Server whose last report held a mirror is a member that didn't answer and last held a mirror", () =>

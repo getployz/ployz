@@ -23,6 +23,8 @@ import {
 } from "./approval-session";
 import { actApprovals, deployApprovalScope, ensureApproval, proposalApprovals } from "./approval-prompt";
 
+const ENFORCED = "ployz.machine.enforced.v1";
+
 const production: ApprovalScope = {
   environmentId: "0f8fad5b-d9cb-469f-a165-70867728950e",
   environmentName: "production",
@@ -106,21 +108,22 @@ describe("actScope", () => {
   const held = { kind: "held", public_key: production.cluster };
   const environment = { environmentId: "env-production", environmentName: "production", namespace: "production" };
 
-  it("names the copies' Cluster and every Server in it, once a host enforces, so the session covers a deploy too", () => {
+  const capabilities = [ENFORCED];
+
+  it("names the copies' Cluster and every Server in it, so the session covers a deploy too", () => {
     const result = actScope(environment, [{ machineId: "22222222222222222222222222222222" }], [
-      { id: "22222222222222222222222222222222", sealing: held, deviceEnforcement: true },
-      { id: "11111111111111111111111111111111", sealing: held },
-      { id: "33333333333333333333333333333333", sealing: { kind: "held", public_key: "other" } },
-      { id: "44444444444444444444444444444444", sealing: held },
+      { id: "22222222222222222222222222222222", sealing: held, capabilities },
+      { id: "11111111111111111111111111111111", sealing: held, capabilities },
+      { id: "33333333333333333333333333333333", sealing: { kind: "held", public_key: "other" }, capabilities },
+      { id: "44444444444444444444444444444444", sealing: held, capabilities },
     ]);
-    expect(result).toEqual({
-      enforced: true,
-      scope: { ...environment, cluster: production.cluster, machines: ["11111111111111111111111111111111", "22222222222222222222222222222222", "44444444444444444444444444444444"] },
-    });
+    expect(result).toEqual(
+      { ...environment, cluster: production.cluster, machines: ["11111111111111111111111111111111", "22222222222222222222222222222222", "44444444444444444444444444444444"] },
+    );
   });
 
-  it("asks nothing of Servers that don't enforce", () => {
-    expect(actScope(environment, [{ machineId: "m" }], [{ id: "m", sealing: held, deviceEnforcement: false }]).enforced).toBe(false);
+  it("names no scope when the copies' Servers hold no Cluster key", () => {
+    expect(actScope(environment, [{ machineId: "m" }], [{ id: "m", sealing: null, capabilities }])).toBeNull();
   });
 });
 
@@ -176,9 +179,9 @@ describe("approveAct", () => {
       environment,
       runtime: "web",
       copies: [{ id: copy.container, machineId: copy.machine, hook: false }],
-      machines: [{ id: copy.machine, name: "machine-2", sealing: held, deviceEnforcement: true, capabilities: ["ployz.restart.session-grant.v2"] }],
+      machines: [{ id: copy.machine, name: "machine-2", sealing: held, capabilities: [ENFORCED, "ployz.restart.session-grant.v2"] }],
     };
-    const { scope } = actScope(environment, target.copies, target.machines);
+    const scope = actScope(environment, target.copies, target.machines);
     expect(promptReason(readSession(), scope ?? expect.fail("no scope"), "stop")).not.toBeNull();
     await expect(actApprovals("stop", target)).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
     expect(get).not.toHaveBeenCalled();
@@ -257,7 +260,7 @@ describe("approveProposal", () => {
     vi.stubGlobal("navigator", { credentials: { get } });
     const environment = { environmentId: "env-production", environmentName: "production", namespace: "production" };
     const held = { kind: "held", public_key: production.cluster } as const;
-    const server = (capabilities: string[]) => ({ id: web.machine, name: "machine-2", sealing: held, deviceEnforcement: true, capabilities });
+    const server = (capabilities: string[]) => ({ id: web.machine, name: "machine-2", sealing: held, capabilities: [ENFORCED, ...capabilities] });
     const target = (capabilities: string[]) => ({
       environment,
       steps: [{ verb: "stop" as const, runtime: "web", copies: [{ id: web.container, machineId: web.machine, hook: false }] }],
@@ -283,33 +286,41 @@ describe("deployScope", () => {
   const held = { kind: "held", public_key: production.cluster } as const;
   const other = { kind: "held", public_key: "other" } as const;
   const environment = { environmentId: production.environmentId, environmentName: "production", namespace: "production" };
-  const takes = ["ployz.container.deploy-approval.v1", "ployz.restart.session-grant.v2"];
-  const server = (id: string, sealing: typeof held | typeof other, deviceEnforcement: boolean, capabilities = takes) =>
-    ({ id: id.repeat(32), name: `machine-${id}`, sealing, deviceEnforcement, capabilities });
+  const takes = [ENFORCED, "ployz.container.deploy-approval.v1", "ployz.restart.session-grant.v2"];
+  const server = (id: string, sealing: typeof held | typeof other, capabilities = takes) =>
+    ({ id: id.repeat(32), name: `machine-${id}`, sealing, capabilities });
 
   it("names every Server of the Cluster that runs the Environment, since a Deploy may place on any of them", () => {
-    const machines = [server("2", held, true), server("1", held, false), server("3", other, true), server("4", held, false)];
+    const machines = [server("2", held), server("1", held), server("3", other), server("4", held)];
     expect(deployScope(environment, ["2".repeat(32)], machines)).toEqual({
-      enforced: true,
       scope: { ...environment, cluster: production.cluster, machines: ["1".repeat(32), "2".repeat(32), "4".repeat(32)] },
       older: null,
     });
   });
 
-  it("takes the only Cluster for an Environment that runs nowhere yet, and asks nothing where no Server enforces", () => {
-    expect(deployScope(environment, [], [server("1", held, true)]).scope?.machines).toEqual(["1".repeat(32)]);
-    expect(deployScope(environment, [], [server("1", held, false)]).enforced).toBe(false);
-    expect(deployScope(environment, [], [server("1", held, true), server("3", other, false)]).scope).toBeNull();
+  it("takes the only Cluster for an Environment that runs nowhere yet, and none when there are two", () => {
+    expect(deployScope(environment, [], [server("1", held)]).scope?.machines).toEqual(["1".repeat(32)]);
+    expect(deployScope(environment, [], [server("1", held), server("3", other)]).scope).toBeNull();
   });
 
-  it("names a Server that enforces but can't take a deploy from a browser, and refuses before any prompt", async () => {
+  it("names a Server that can't take a deploy from a browser, and refuses before any prompt", async () => {
     const get = vi.fn();
     vi.stubGlobal("navigator", { credentials: { get } });
-    const older = [server("1", held, true, ["ployz.container.deploy-approval.v1"]), server("2", held, false, [])];
-    expect(deployScope(environment, [], older).older).toBe("machine-1");
-    expect(deployScope(environment, [], [server("2", held, true), server("1", held, false, [])]).older).toBeNull();
+    const older = [server("1", held, [ENFORCED, "ployz.container.deploy-approval.v1"]), server("2", held)];
+    expect(deployScope(environment, [], older).older).toEqual({ name: "machine-1", ployz03: false });
     await expect(deployApprovalScope({ environment, environmentMachines: [], machines: older }))
       .rejects.toThrow("machine-1 needs a newer Ployz to deploy from the dashboard. Upgrade it, or run ployz deploy.");
+    expect(get).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("names a Server on Ployz 0.3 first, which takes only an upgrade, and refuses before any prompt", async () => {
+    const get = vi.fn();
+    vi.stubGlobal("navigator", { credentials: { get } });
+    const machines = [server("1", held, [ENFORCED, "ployz.container.deploy-approval.v1"]), server("2", held, ["ployz.container.deploy-approval.v1"])];
+    expect(deployScope(environment, [], machines).older).toEqual({ name: "machine-2", ployz03: true });
+    await expect(deployApprovalScope({ environment, environmentMachines: [], machines }))
+      .rejects.toThrow("machine-2 runs Ployz 0.3. Upgrade it to deploy.");
     expect(get).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });

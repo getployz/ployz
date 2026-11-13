@@ -20,14 +20,17 @@ const frame = runtimeWatchFrameFixture({
 /** A session that records each call it is sent. */
 function recording() {
   const sent: string[] = [];
-  const session = Object.fromEntries(Object.keys(REACHES).map((name) => [name, (..._args: unknown[]) => {
+  const calls = Object.fromEntries(Object.keys(REACHES).map((name) => [name, () => {
     sent.push(name);
-    return name === "watchFirstFrame" ? Effect.succeed(frame) : Effect.succeed(undefined);
+    return name === "watchFirstFrame" ? Effect.succeed(frame) : Effect.void;
   }]));
-  return { sent, session: session as unknown as PloyzSession };
+  // SAFETY: `calls` answers every name of `REACHES`, which are exactly the session's, each with an Effect.
+  return { sent, session: Object.assign({} as PloyzSession, calls) };
 }
 
-type Call = (...args: unknown[]) => unknown;
+type Call = (...args: unknown[]) => Effect.Effect<unknown, unknown>;
+// SAFETY: every call of a session answers an Effect; the arguments below are what each one reads.
+const callOf = (session: PloyzSession, name: string) => session[name as keyof PloyzSession] as Call;
 
 /** Each call with every Server it names being `target`; a Volume verb is a seed unless `inspect`. */
 function argsAimedAt(name: string, target: string, inspect = false): unknown[] {
@@ -46,10 +49,9 @@ it.effect("sends a Server on Ployz 0.3 nothing but upgrades, reads and Cloud's o
     const { sent, session } = recording();
     const gated = upgradeOnlyOnOlder(session);
     yield* Effect.forEach(Object.keys(REACHES).filter((name) => name !== "watch" && name !== "watchFirstFrame"), (name) => {
-      const called = (gated[name as keyof PloyzSession] as Call)(...argsAimedAt(name, OLD));
-      return Effect.isEffect(called) ? Effect.exit(called as Effect.Effect<unknown, unknown>) : Effect.void;
+      return Effect.exit(callOf(gated, name)(...argsAimedAt(name, OLD)));
     });
-    yield* (gated.volumeSwitch as Call)(...argsAimedAt("volumeSwitch", OLD, true)) as Effect.Effect<unknown>;
+    yield* callOf(gated, "volumeSwitch")(...argsAimedAt("volumeSwitch", OLD, true));
     assert.deepStrictEqual(sent.filter((name) => name !== "watchFirstFrame").sort(), [...ALLOWED_ON_OLDER, "volumeSwitch"].sort());
   }));
 

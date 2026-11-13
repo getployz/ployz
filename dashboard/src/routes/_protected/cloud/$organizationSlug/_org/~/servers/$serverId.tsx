@@ -114,7 +114,7 @@ function RouteComponent() {
         <Alert>
           <TriangleAlertIcon />
           <AlertTitle>{olderPloyzSentence()}</AlertTitle>
-          <AlertDescription>Upgrades run from the Ployz section below. Until then, its services keep running as they are.</AlertDescription>
+          <AlertDescription>Upgrade it under Ployz below. Its services keep running.</AlertDescription>
         </Alert>
       ) : null}
       <FirstKeyAlert organizationSlug={organizationSlug} servers={[{ id: machine.id, name: server.name, capabilities: machine.capabilities }]} />

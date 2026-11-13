@@ -14,7 +14,10 @@ import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/mod
  */
 type Reach<A extends readonly unknown[]> = "read" | "upgrade" | "upkeep" | "every server" | ((...args: A) => readonly MachineTarget[]);
 
-type Reaches = { readonly [K in keyof PloyzSession]: PloyzSession[K] extends (...args: infer A) => unknown ? Reach<A> : never };
+type Reaches = { readonly [K in keyof PloyzSession]: Reach<Parameters<PloyzSession[K]>> };
+
+/** Any call of a session, as the gate passes it on without reading its arguments or its answer. */
+type Call = (...args: never[]) => Effect.Effect<unknown, PloyzSdkError>;
 
 export const REACHES = {
   logs: "read",
@@ -89,18 +92,19 @@ export function upgradeOnlyOnOlder(session: PloyzSession): PloyzSession {
       const older = olderTarget(read.machines.map(({ machine }) => machine), targets);
       return older === undefined ? Effect.void : Effect.fail(new ServerLacks({ machineId: older.id, capability: requirements.enforced.capability }));
     }));
-  const gated = (name: keyof PloyzSession) => {
-    const reach: Reach<never[]> = REACHES[name] as Reach<never[]>;
-    const call = session[name] as (...args: never[]) => Effect.Effect<unknown, PloyzSdkError, never>;
+  const gated = (name: keyof PloyzSession): Call => {
+    const reach: Reach<never[]> = REACHES[name];
+    // SAFETY: every call of a session takes its own arguments, which the gate passes on untouched, and answers an
+    // Effect that fails only with a `PloyzSdkError`.
+    const call = session[name] as Call;
     if (reach === "read" || reach === "upgrade" || reach === "upkeep") return call;
-    return (...args: never[]) => admit(reach === "every server" ? reach : reach(...args)).pipe(Effect.andThen(Effect.suspend(() => call(...args))));
+    return (...args) => admit(reach === "every server" ? reach : reach(...args)).pipe(Effect.andThen(Effect.suspend(() => call(...args))));
   };
-  const wrapped = Object.fromEntries(Object.keys(REACHES).map((name) => [name, gated(name as keyof PloyzSession)]));
-  return {
-    // SAFETY: `wrapped` has every key of `REACHES`, which `satisfies Reaches` makes exactly the session's, each the
-    // session's own call or that call after `admit`, which fails only with a `PloyzSdkError`.
-    ...(wrapped as unknown as PloyzSession),
-    watch: (options) => session.watch(options).pipe(Effect.map(recordEach)),
-    watchFirstFrame: (timeoutMs) => session.watchFirstFrame(timeoutMs).pipe(Effect.tap((read) => Effect.sync(() => seen(read)))),
-  };
+  // SAFETY: `satisfies Reaches` makes `REACHES` name exactly the session's calls.
+  const names = Object.keys(REACHES) as (keyof PloyzSession)[];
+  // Each call is the session's own, or that call after `admit`, which fails only with a `PloyzSdkError`.
+  return Object.assign({ ...session }, Object.fromEntries(names.map((name) => [name, gated(name)])), {
+    watch: (options: Parameters<PloyzSession["watch"]>[0]) => session.watch(options).pipe(Effect.map(recordEach)),
+    watchFirstFrame: (timeoutMs: number) => session.watchFirstFrame(timeoutMs).pipe(Effect.tap((read) => Effect.sync(() => seen(read)))),
+  });
 }

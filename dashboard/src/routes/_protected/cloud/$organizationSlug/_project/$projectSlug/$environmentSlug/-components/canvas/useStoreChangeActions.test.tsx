@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import * as deployApprovals from "#/modules/config-store/use-deploy-approvals";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import * as lens from "#/modules/runtime/use-runtime-lens";
@@ -53,10 +54,16 @@ function Deploy({ placementLoss, version = "2:1:0" }: { placementLoss: Placement
 
 type Gate = ReturnType<typeof deployApproval.useDeployApproval>;
 const NO_ENFORCEMENT: Gate = { scope: async () => undefined, approve: async () => expect.fail("approved where nothing enforces") };
+/** The person's passkey teardown of the Volumes they typed for, which a Deploy that deletes data carries. */
+const TEARDOWN = { passkey: { body: "{}", assertion: { credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" } } };
 
 function setup(placementLoss = NO_LOSS, gate = NO_ENFORCEMENT) {
   const queryClient = new QueryClient();
   vi.spyOn(deployApproval, "useDeployApproval").mockReturnValue(gate);
+  // SAFETY: the hook reads only the teardown of the Volumes a Deploy deletes.
+  vi.spyOn(deployApprovals, "useDeployApprovals").mockReturnValue({
+    volumeLoss: async (_, accept) => accept.length === 0 ? undefined : TEARDOWN,
+  } as ReturnType<typeof deployApprovals.useDeployApprovals>);
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
   // SAFETY: the hook reads only the Servers' ids and names.
@@ -225,8 +232,9 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
   expect(test.admits()).toMatchObject([
     { accept_volume_loss: [], version: "2:1:0", message: "Ship the api" },
-    { accept_volume_loss: ["pg-data"], version: "9:1:0.1", message: "Ship the api" },
+    { accept_volume_loss: ["pg-data"], version: "9:1:0.1", message: "Ship the api", teardown: TEARDOWN },
   ]);
+  expect(test.admits()[0]).not.toHaveProperty("teardown");
   await waitFor(() => expect(screen.queryByText("pg-data")).toBeNull());
   expect(toast.error).not.toHaveBeenCalled();
   expect(admittedIds).toHaveLength(1);
