@@ -266,6 +266,27 @@ mod tests {
     }
 
     #[test]
+    fn the_published_file_keeps_its_field_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpecFile::in_run_dir(dir.path());
+        file.publish(Some(&spec())).unwrap();
+        assert_eq!(
+            fs::read_to_string(file.path()).unwrap(),
+            r#"{
+  "machine": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "listen": "10.210.3.1:53",
+  "subnet": "10.210.3.0/24",
+  "upstreams": [
+    "192.0.2.53:53"
+  ],
+  "corrosion_api": "127.0.0.1:7571",
+  "corrosion_admin_socket": "/run/ployz/corrosion/admin.sock",
+  "corrosion_token_file": "/var/lib/ployz/corrosion/.api-token"
+}"#
+        );
+    }
+
+    #[test]
     fn read_ignores_unknown_fields_and_defaults_upstreams() {
         let dir = tempfile::tempdir().unwrap();
         let file = SpecFile::in_run_dir(dir.path());
