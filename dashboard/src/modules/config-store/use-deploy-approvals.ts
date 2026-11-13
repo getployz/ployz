@@ -13,8 +13,7 @@ import { deploymentQuery, deployPlanQuery, fetchStoreView, namespaceQuery, redep
 import { useStoreWriter } from "./store-write";
 
 /**
- * The approvals of the deploys the dashboard starts outside its Deploy button, on Servers that enforce Device approval
- * (`deploy-approvals.ts`). Each reads the Servers at the press: the Cluster those running its Environment hold the key
+ * The approvals of the deploys the dashboard starts outside its Deploy button (`deploy-approvals.ts`). Each reads the Servers at the press: the Cluster those running its Environment hold the key
  * of is the one the approval names.
  */
 export function useDeployApprovals(organizationSlug: string) {

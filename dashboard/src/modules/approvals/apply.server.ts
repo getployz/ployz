@@ -12,7 +12,7 @@ import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import { actService, runVolume } from "#/modules/operations/operations.server";
 import { type Access, requireAccessById } from "#/modules/organization/access.server";
-import { serviceEnforces, strandingStop } from "#/modules/service-act/service-act.server";
+import { serviceRuns, strandingStop } from "#/modules/service-act/service-act.server";
 
 /** One approval per container, made in the approver's browser when they approve a restart or stop on Servers that enforce. */
 type Approvals = Readonly<Record<string, Signed>>;
@@ -57,9 +57,9 @@ const applyService = Effect.fn("Approvals.applyService")(function* (
   if (found === null) return { message: "The service is gone.", moved: true } satisfies NotRun;
   const stranding = verb === "stop" ? yield* strandingStop(organizationId, found, Object.keys(approvals ?? {}).length > 0) : null;
   if (stranding !== null) return { message: stranding, moved: false } satisfies NotRun;
-  // Servers that enforce take a restart or stop only with the approver's passkey approvals, which only a browser can make.
+  // Servers take a restart or stop only with the approver's passkey approvals, which only a browser can make.
   const unapproved = Object.keys(approvals ?? {}).length === 0;
-  if (unapproved && (yield* serviceEnforces(organizationId, found))) {
+  if (unapproved && (yield* serviceRuns(organizationId, found))) {
     return { message: "Approve it in Ployz Cloud with your passkey.", moved: false } satisfies NotRun;
   }
   const body = { environmentId, service, only: null };

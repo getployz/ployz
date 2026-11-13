@@ -8,7 +8,7 @@ import {
   type MachineRef, observePlacement, type PlacementChange, placementChanges, type PlacementRow, type PlacementVolume,
 } from "./volume-placement";
 
-/** The runs a staged change makes that a Server enforcing device approval takes only under an approval. */
+/** The runs a staged change makes that a Server takes only under an approval. */
 export type ApprovedRunKind = "move" | "restore" | "mirror" | "delete_mirror" | "seed";
 
 /**
@@ -189,7 +189,7 @@ export function seedAsk(change: Extract<PlacementChange, { kind: "seed" }>, sour
       action: "Approve restore",
       workflow: { kind: "seed", machine: source, source: sourceDocker, at: change.point.guid },
       parties: [source],
-      command: "ployz device enforce --off",
+      command: null,
     },
   };
 }
@@ -212,7 +212,7 @@ function runServer(run: VolumeRunInput, members: readonly Member[]): MachineId |
 
 /**
  * `run` carrying the approval kept for it, if one is: the one for its kind and the Server it names, or for a seed the
- * one seed approval. Anything else runs as staged, and a Server that enforces refuses it.
+ * one seed approval. Anything else runs as staged, and a Server refuses it.
  */
 export function withApproval(run: VolumeRunInput, approvals: readonly PlacementApproval[] | undefined, members: readonly Member[]): VolumeRunInput {
   if (approvals === undefined || approvals.length === 0) return run;

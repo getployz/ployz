@@ -144,15 +144,15 @@ export function approvesResize(approval: Signed, holders: readonly MachineId[], 
 }
 
 /**
- * Why the run can't ask `holders` for the size: one enforces device approval and the run carries no approval, or the
- * approval names another size, direction or set of Servers. Null when the Servers may be asked.
+ * Why the run can't ask `holders` for the size: the run carries no approval, which every Server needs, or the approval
+ * names another size, direction or set of Servers. Null when the Servers may be asked.
  */
 function approvalRefusal(volumeName: string, args: VolumeRunArgs["resize"], direction: SizeDirection, holders: readonly AnsweredMember[]): Refusal | null {
   const again = `ployz volume set ${volumeName} --size ${gigabytes(args.maximum_bytes)}`;
   if (args.approval === undefined) {
-    const enforcing = holders.find((member) => member.enforces === true);
-    return enforcing === undefined ? null
-      : refuse("enforced", `${enforcing.machine.name} enforces device approval, so Ployz Cloud can't resize ${volumeName} on its own. Run ${again} from an approved device.`);
+    const [holder] = holders;
+    return holder === undefined ? null
+      : refuse("enforced", `${holder.machine.name} enforces device approval, so Ployz Cloud can't resize ${volumeName} on its own. Run ${again} from an approved device.`);
   }
   const shrink = direction !== "grow";
   if (approvesResize(args.approval, holders.map((member) => member.machine.id), args.maximum_bytes, shrink)) return null;

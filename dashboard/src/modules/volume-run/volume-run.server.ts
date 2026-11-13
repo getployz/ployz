@@ -43,7 +43,7 @@ import {
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
-import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { movedRouting, olderPloyzSentence, type Requirement, requirementFor, requirements, runsOlderPloyz, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, approvalExpiredMessage, approvalExpiredReason, approvalRefusedMessage, approvalRefusedReason, approvesMirror, approvesMove, approvesRemoval, approvesRestore, enforcedMessage, otherMoveApprovalMessage, otherRemovalApprovalMessage, otherRestoreApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
@@ -1853,6 +1853,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, movedRouting) === false) {
       return lacks(movedRouting.capability, run.kind);
     }
+    if (runsOlderPloyz(capabilities)) return Effect.succeed<Member>({ machine: ref, answered: false, lack: olderPloyzSentence(machine.name), outdated: true });
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
@@ -1867,7 +1868,6 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           view,
           floorless,
           ...sized,
-          enforces: machine.runtime.device_enforcement === true,
           handoff: serverSupports(capabilities, requirements.volumeHandoff) === true,
           passkey: serverSupports(capabilities, requirements.volumePasskey) === true,
         })),

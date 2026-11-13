@@ -1,5 +1,6 @@
 import type { ContainerState, Leg, Receipt, RunState, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
 import { Option, Schema } from "effect";
+import { type OlderServer, olderServer, olderSays } from "#/modules/runtime/daemon-compat";
 
 export const SERVICE_ACT_STATES = ["accepted", "running", "done", "failed", "unknown"] as const satisfies readonly RunState[];
 export type ServiceActState = (typeof SERVICE_ACT_STATES)[number];
@@ -131,14 +132,13 @@ export const legOf = (leg: ServiceActLeg): Leg => ({
 
 type FrameContainer = { readonly container_id: string; readonly machine_id: string };
 
-/** The parts of a Runtime Watch frame that say which Servers run a Service and whether they enforce. */
-export type EnforcementFrame = {
+/** The part of a Runtime Watch frame that says which Servers run a Service. */
+export type ServicesFrame = {
   readonly services: readonly { readonly identity: string; readonly containers: readonly FrameContainer[]; readonly hook_containers: readonly FrameContainer[] }[];
-  readonly machines: readonly { readonly machine: { readonly id: string; readonly runtime: { readonly device_enforcement?: boolean | null } } }[];
 };
 
 /** The copies the Servers report of the Service `identity` (`namespace/runtime`), its hooks included and marked. */
-export function copiesIn(frame: Pick<EnforcementFrame, "services">, identity: string) {
+export function copiesIn(frame: ServicesFrame, identity: string) {
   const service = frame.services.find((candidate) => candidate.identity === identity);
   return service === undefined ? [] : [
     ...service.containers.map((copy) => ({ ...copy, hook: false })),
@@ -156,24 +156,17 @@ export const needsNewerPloyz = (server: string, side: ServiceVerb) => `${server}
 export const needsUpgrade = (reason: string | null) => reason?.includes(` ${NEEDS_NEWER} `) === true;
 
 /**
- * The Server a stop would strand: it runs a copy of the Service and enforces, but can't take a start approval, so
- * nothing in Ployz Cloud could start the copy again. Null when every such Server can. A hook never starts again, so
- * a Server that holds only hooks strands nothing.
+ * The Server a stop would strand: it runs a copy of the Service but can't take a start approval, so nothing in Ployz
+ * Cloud could start the copy again. Null when every such Server can. A hook never starts again, so a Server that holds
+ * only hooks strands nothing.
  */
 export function strandedByStop(
   copies: readonly { readonly machineId: string; readonly hook: boolean }[],
-  machines: readonly { readonly id: string; readonly name: string; readonly capabilities: readonly string[]; readonly deviceEnforcement?: boolean | null }[],
-) {
+  machines: readonly { readonly id: string; readonly name: string; readonly capabilities: readonly string[] }[],
+): OlderServer | null {
   const hosts = new Set(copies.filter((copy) => !copy.hook).map((copy) => copy.machineId));
-  return machines.find((machine) => hosts.has(machine.id) && machine.deviceEnforcement === true
-    && !machine.capabilities.includes(START_APPROVAL_CAPABILITY))?.name ?? null;
+  return olderServer(machines.filter((machine) => hosts.has(machine.id)), [START_APPROVAL_CAPABILITY]);
 }
 
-/**
- * Whether a Server running a copy of the Service `identity` reports that it enforces, as the browser decides before it
- * prompts. Servers that run only other Services, and absent reports, claim nothing.
- */
-export function enforcesIn(frame: EnforcementFrame, identity: string) {
-  const hosts = new Set(copiesIn(frame, identity).map((copy) => copy.machine_id));
-  return frame.machines.some(({ machine }) => hosts.has(machine.id) && machine.runtime.device_enforcement === true);
-}
+/** Why `older` can't take a run's `verb` step, said before anything is sent. */
+export const olderStepSays = (older: OlderServer, verb: ServiceVerb) => olderSays(older, (server) => needsNewerPloyz(server, verb));

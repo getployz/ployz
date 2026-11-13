@@ -68,7 +68,7 @@ export function StrayNamespaces({ organizationSlug, server, servers }: { organiz
           },
           confirm: async (lost) => {
             const namespace = removing ?? "";
-            // Where a Server enforces Device approval, the person's passkey approves exactly the loss they typed for.
+            // The person's passkey approves exactly the loss they typed for.
             const docker = [...new Set(lost.map((identity) => identity.id.name))];
             const teardown = await approveTeardown({
               machines,

@@ -110,8 +110,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   }
 
   /**
-   * The person's approval of what `consent` takes off, when a Server enforces Device approval: every Namespace on every
-   * Server of the Cluster, and each Volume they accepted losing, read fresh. Throws, before anything is sent, when they
+   * The person's approval of what `consent` takes off: every Namespace on every Server of the Cluster, and each Volume they accepted losing, read fresh. Throws, before anything is sent, when they
    * don't approve it.
    */
   async function teardown(consent: RemovalConsent) {

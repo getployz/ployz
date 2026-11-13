@@ -24,7 +24,7 @@ import {
   strandedByProposal,
 } from "#/modules/proposals/proposal";
 import { operationProposals } from "#/modules/proposals/tables";
-import { APPROVAL_RAN_OUT, needsNewerPloyz, type ServiceActLeg, type ServiceActState, strandedByStop } from "#/modules/service-act/service-act";
+import { APPROVAL_RAN_OUT, olderStepSays, type ServiceActLeg, type ServiceActState, strandedByStop } from "#/modules/service-act/service-act";
 import { actTarget, strandingStop } from "#/modules/service-act/service-act.server";
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
@@ -273,9 +273,9 @@ const stranding = Effect.fn("Proposals.stranding")(function* (row: ProposalRow) 
   if (target === null) return "Cloud couldn't check the servers. Try again.";
   for (const step of target.steps) {
     const older = strandedByProposal(step.copies, target.machines);
-    if (older !== null) return needsNewerPloyz(older, step.verb);
+    if (older !== null) return olderStepSays(older, step.verb);
     const stranded = step.verb === "stop" ? strandedByStop(step.copies, target.machines) : null;
-    if (stranded !== null) return needsNewerPloyz(stranded, "stop");
+    if (stranded !== null) return olderStepSays(stranded, "stop");
   }
   return null;
 });

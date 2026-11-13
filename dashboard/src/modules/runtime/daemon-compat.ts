@@ -62,6 +62,20 @@ export function olderPloyzSentence(server?: string) {
   return server === undefined ? "This server runs Ployz 0.3. Upgrade it to deploy." : `${server} runs Ployz 0.3. Upgrade it to deploy.`;
 }
 
+/** A Server that would refuse what a browser approves: one on Ployz 0.3, which takes only an upgrade, or one without a step's capability. */
+export type OlderServer = { readonly name: string; readonly ployz03: boolean };
+
+/** The first of `machines` that runs Ployz 0.3, else the first that lacks one of `capabilities`. */
+export function olderServer(machines: readonly { readonly name: string; readonly capabilities: readonly string[] }[], capabilities: readonly string[] = []): OlderServer | null {
+  const older = machines.find((machine) => runsOlderPloyz(machine));
+  if (older !== undefined) return { name: older.name, ployz03: true };
+  const lacking = machines.find((machine) => !capabilities.every((capability) => machine.capabilities.includes(capability)));
+  return lacking === undefined ? null : { name: lacking.name, ployz03: false };
+}
+
+/** Why `older` would refuse: that it runs Ployz 0.3, or `lacks`, the sentence for a Server without the step. */
+export const olderSays = (older: OlderServer, lacks: (name: string) => string) => older.ployz03 ? olderPloyzSentence(older.name) : lacks(older.name);
+
 /** The Servers whose records say they lack the capability. A Server whose record lists none is not named: the call is attempted. */
 export function serversLacking<T extends { readonly name: string; readonly capabilities: readonly string[] }>(machines: readonly T[], requirement: Requirement) {
   return machines.filter((machine) => serverSupports(machine, requirement) === false).map((machine) => machine.name);

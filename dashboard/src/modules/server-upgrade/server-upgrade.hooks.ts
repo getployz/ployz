@@ -123,8 +123,8 @@ export function useServerUpgradeSettings(organizationSlug: string) {
   };
   return {
     ...settings,
-    /** The Servers enforce device approval, so a channel change asks for a passkey. */
-    asksPasskey: scope.enforced,
+    /** A Server checks the channel's approval, so a channel change asks for a passkey. */
+    asksPasskey: scope.checked,
     ensureApproved,
     setAutomatic: (automatic: boolean) => {
       if (!automatic) return save({ automatic }, "Could not change automatic upgrades");
@@ -133,7 +133,7 @@ export function useServerUpgradeSettings(organizationSlug: string) {
         .catch(() => toast.error("Could not change automatic upgrades"));
     },
     setChannel: (channel: ReleaseChannel) => {
-      if (!scope.enforced) return save({ channel }, "Could not change releases");
+      if (!scope.checked) return save({ channel }, "Could not change releases");
       // Also saved when this channel's approval was already kept but an unsigned change moved the setting off it.
       ensureApproved(channel)
         .then((approved) => { if (approved) save({ channel }, "Could not change releases"); })

@@ -15,6 +15,7 @@ import { ruleQuery, useStoreView } from "#/modules/config-store/store-view.queri
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "#/modules/github/auto-deploy-rule";
 import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
+import { olderSays } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useEnvironmentMachines } from "#/providers/runtime-provider";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -24,7 +25,7 @@ type Place = { organizationSlug: string; projectSlug: string; environmentSlug: s
 const listed = (names: readonly string[]) =>
   names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
-/** Where a rule goes: the Cluster and every Server in it, and the first Server that enforces but can't take one. */
+/** Where a rule goes: the Cluster and every Server in it, and the first Server that can't take one. */
 function useRuleScope(organizationSlug: string, environment: { environmentName: string; namespace: string }) {
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { machines } = useRuntimeLens(organizationSlug);
@@ -33,8 +34,7 @@ function useRuleScope(organizationSlug: string, environment: { environmentName: 
 }
 
 /**
- * Deploy every push of the Environment's branch, on Servers that enforce device approval, under a rule the person's
- * passkey approves with a prompt of its own. A Saved change to what the rule covers holds pushes until it is approved
+ * Deploy every push of the Environment's branch under a rule the person's passkey approves with a prompt of its own. A Saved change to what the rule covers holds pushes until it is approved
  * again, which shows here as a card.
  */
 export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environmentSlug }: Place) {
@@ -52,7 +52,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
   const covered = kept?.services.map((service) => service.name) ?? [];
   return (
     <SettingsSection id="automatic-deploys" title="Automatic deploys"
-      description="For servers that enforce device approval.">
+      description="Deploy each push to your branch without a prompt.">
       {held.length > 0 ? (
         <SettingsRow
           label={<span className="flex items-center gap-2"><TriangleAlertIcon className="size-4 shrink-0 text-warning" />Pushes to {branch} are on hold</span>}
@@ -67,13 +67,12 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
         <SettingsRow
           label="Deploy every push"
           hint={on ? `Pushes to ${branch} deploy ${listed(covered)}.`
-            : rule.enforced ? `Approve once with your passkey. Pushes to ${branch} then deploy with no prompt.`
-            : "Your servers don't enforce device approval, so pushes already deploy."}
+            : `Approve once with your passkey. Pushes to ${branch} then deploy with no prompt.`}
           commit="none"
-          control={on || rule.enforced ? (
+          control={
             <Switch id="automatic-deploys" aria-label="Deploy every push" checked={on}
               onCheckedChange={(next) => setOpen(next ? "approve" : "end")} />
-          ) : null}
+          }
         />
       )}
       {open === null ? null : (
@@ -102,7 +101,7 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const blocked = ending ? null
-    : scope.older !== null ? `${scope.older} needs a newer Ployz for automatic deploys from the dashboard. Upgrade it, or run ployz github rule approve.`
+    : scope.older !== null ? olderSays(scope.older, (server) => `${server} needs a newer Ployz for automatic deploys from the dashboard. Upgrade it, or run ployz github rule approve.`)
     : scope.scope === null ? "Cloud couldn't check the servers. Try again."
     : null;
   // What the dialog shows: the rule as it would be signed now. The press drafts it again, at its own moment.

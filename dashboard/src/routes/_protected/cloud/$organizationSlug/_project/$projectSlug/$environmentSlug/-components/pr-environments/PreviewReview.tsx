@@ -7,6 +7,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { deployScope, type DeployScope } from "#/modules/approval-session/approval-session";
 import { previewReviewQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { answerReview, draftReview, REVIEW_CAPABILITIES, ReviewRefused, shownText } from "#/modules/github/preview-review";
+import { olderSays } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useEnvironmentMachines } from "#/providers/runtime-provider";
 
@@ -14,19 +15,18 @@ import { useEnvironmentMachines } from "#/providers/runtime-provider";
 export type Approve = (head: string, reviews?: { environment: string; review: Review }[]) => Promise<void>;
 
 /**
- * `standing`: a head that needs approval can be approved without a review where no Server asks for one. A head
- * approved or trusted already has only a review left to do, as after its last review expired, or when the preview rule
- * doesn't trust its author.
+ * `standing`: a head approved or trusted already has only a review left to do, as after its last review expired, or
+ * when the preview rule doesn't trust its author.
  */
 type Props = { organizationSlug: string; project: string; environment: string; number: number; head: string; approve: Approve; standing: Standing };
 
 /**
- * Approve deploy for a pull request whose PR Environment is open. Under a preview rule, on Servers that enforce device
- * approval, the person reviews the commit first and their passkey answers the review.
+ * Approve deploy for a pull request whose PR Environment is open: the person reviews the commit first and their passkey
+ * answers the review.
  */
 export function ApproveDeploy(props: Props) {
   return (
-    <Suspense fallback={props.standing === "needs_approval" ? <Button size="sm" variant="outline" disabled>Approve deploy</Button> : null}>
+    <Suspense fallback={props.standing === "needs_approval" ? <Button size="sm" variant="outline" disabled>Review and approve</Button> : null}>
       <Reviewing {...props} />
     </Suspense>
   );
@@ -42,9 +42,7 @@ function Reviewing({ organizationSlug, project, environment, number, head, appro
     { environmentId: view.environment.id, environmentName: view.environment.name, namespace: view.namespace },
     environmentMachines, machines, REVIEW_CAPABILITIES,
   );
-  if (view === null || scope === null || !scope.enforced) {
-    return standing === "needs_approval" ? <Button size="sm" variant="outline" onClick={() => void approve(head)}>Approve deploy</Button> : null;
-  }
+  if (view === null || scope === null) return null;
   return (
     <>
       <Button size="sm" variant="outline" onClick={() => setOpen(true)}>{standing === "needs_approval" || standing === "trusted" ? "Review and approve" : "Review again"}</Button>
@@ -62,7 +60,7 @@ function ReviewDialog({ view, scope, number, head, approve, onClose }: {
   const cluster = scope.scope?.cluster ?? null;
   // What the dialog shows: the review as it would be signed now. The press drafts it again, at its own moment.
   let lines: readonly string[] = [];
-  let problem = scope.older !== null ? `${scope.older} needs a newer Ployz to review previews. Upgrade it first.`
+  let problem = scope.older !== null ? olderSays(scope.older, (server) => `${server} needs a newer Ployz to review previews. Upgrade it first.`)
     : cluster === null ? "Cloud couldn't check the servers. Try again."
     : view.commit !== head ? "This pull request has a newer commit. Review that one."
     : null;

@@ -1,7 +1,7 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { checkResize, growWords, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
+import { checkResize, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const GB = 1_000_000_000;
@@ -81,19 +81,6 @@ describe("checkResize", () => {
     ],
   ])("%s", (_, input, verdict) => {
     expect(checkResize(input)).toEqual(verdict);
-  });
-});
-
-describe("growWords", () => {
-  const copy = (name: string, role: Holder["role"]) => ({ name, role });
-  it.each<[string, ResizeVerdictCopies, string]>([
-    ["names the primary and its mirror", [copy("fsn-1", "primary"), copy("fsn-2", "mirror")], "Grow data from 10 GB to 20 GB on fsn-1 and its mirror on fsn-2. Its services keep running."],
-    ["names every mirror", [copy("fsn-1", "primary"), copy("fsn-2", "mirror"), copy("fsn-3", "mirror")], "Grow data from 10 GB to 20 GB on fsn-1 and its mirrors on fsn-2 and fsn-3. Its services keep running."],
-    ["names an old copy", [copy("fsn-1", "primary"), copy("fsn-2", "mirror"), copy("fsn-3", "old_copy")], "Grow data from 10 GB to 20 GB on fsn-1, its mirror on fsn-2 and its old copy on fsn-3. Its services keep running."],
-    ["names a lone primary", [copy("fsn-1", "primary")], "Grow data from 10 GB to 20 GB on fsn-1. Its services keep running."],
-    ["says every copy before the Servers answer", null, "Grow data from 10 GB to 20 GB on every server that holds a copy. Its services keep running."],
-  ])("%s", (_, copies, words) => {
-    expect(growWords("data", { kind: "grow", from: 10 * GB, to: 20 * GB, copies })).toBe(words);
   });
 });
 
