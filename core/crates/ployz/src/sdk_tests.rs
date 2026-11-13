@@ -461,3 +461,30 @@ fn golden_generic_failure_and_same_again_details() {
         r#"{"preparation":{"kind":"failed","message":"The Build failed, so no Service, hook, or volume change was attempted: invalid Build: no Dockerfile"}}"#
     );
 }
+
+#[test]
+fn a_role_wait_that_gave_up_is_unavailable_and_a_connection_failure_keeps_its_own_code() {
+    use crate::cluster::{RoleSetting, RoleWaitError};
+    for error in [
+        RoleWaitError::NotObserved(RoleSetting::IngressOn),
+        RoleWaitError::ChangeNotObserved,
+        RoleWaitError::Cancelled,
+    ] {
+        let text = error.to_string();
+        let refused = RpcError::from(error);
+        assert_eq!(refused.code, RpcErrorCode::Unavailable);
+        assert_eq!(refused.message, text);
+    }
+    assert_eq!(
+        RpcError::from(RoleWaitError::ChangeNotObserved).message,
+        "this entry Server has not yet listed the change"
+    );
+    assert_eq!(
+        RpcError::from(RoleWaitError::Cancelled).message,
+        "cancelled while waiting for the new role"
+    );
+    assert_eq!(
+        RpcError::from(RoleWaitError::Connect(ConnectError::EntryNotReady)).code,
+        RpcError::from(ConnectError::EntryNotReady).code
+    );
+}

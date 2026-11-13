@@ -375,21 +375,11 @@ pub async fn connect_connections(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,
 ) -> Result<Session, RpcError> {
-    Ok(connect_answered(connections, connector).await?)
+    Ok(connect_expecting(connections, connector, None).await?)
 }
 
-/// [`connect_connections`], keeping whether a Machine refused or none answered.
-///
-/// # Errors
-/// As [`connect_connections`].
-pub async fn connect_answered(
-    connections: Vec<Connection>,
-    connector: Arc<dyn Connector>,
-) -> Result<Session, CallError> {
-    connect_expecting(connections, connector, None).await
-}
-
-/// [`connect_answered`], keeping only an entry in `expect`'s Cluster when it names one.
+/// [`connect_connections`], keeping whether a Machine refused or none answered, and only
+/// an entry in `expect`'s Cluster when it names one.
 ///
 /// # Errors
 /// As [`connect_connections`]; when every entry belongs to another Cluster, the last one's
@@ -666,8 +656,7 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<ployz_core::MachineDetails, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let client = self.client()?;
         self.until_closed(async {
             client
@@ -1032,8 +1021,7 @@ impl Session {
     /// `unanswered`: the Machine may have taken the request. One whose entry Machine
     /// could not dial `machine` is not, since `machine` never got it.
     pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, CallError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let body: RpcRequestBody = serde_json::from_value(request)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let path = volume_switch_path(&body)?;
@@ -1073,8 +1061,7 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         self.until_closed(client.data_loss_if_machine_removed(&target))
             .await
@@ -1101,8 +1088,7 @@ impl Session {
         confirm_data_loss: &DataLossConfirmation,
         teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<LocalMachineRemoved, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.remove_machine(
             &target,
@@ -1132,8 +1118,7 @@ impl Session {
         machine: &str,
         scope: &crate::drain::DrainScope,
     ) -> Result<crate::drain::DrainReport, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         client
             .drain(&target, scope, &self.inner.cancel, &mut |_| {})
@@ -1175,8 +1160,7 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<crate::ingress::IngressCheck, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         let cancel = &self.inner.cancel;
         self.until_closed(async {
@@ -1188,14 +1172,7 @@ impl Session {
                 cancel,
             )
             .await
-            .map_err(|error| match error {
-                crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
-                error @ (crate::cluster::RoleWaitError::NotObserved(_)
-                | crate::cluster::RoleWaitError::ChangeNotObserved
-                | crate::cluster::RoleWaitError::Cancelled) => {
-                    RpcError::unavailable(error.to_string())
-                }
-            })?;
+            .map_err(RpcError::from)?;
             crate::ingress::fill_slots(&mut client, cancel)
                 .await
                 .map_err(|failure| failure.report())
@@ -1318,8 +1295,7 @@ impl Session {
     /// Machine Target or not visible, this entry hasn't observed the role within 30 s, or
     /// the Machine does not acknowledge a listing, stop or removal.
     pub async fn stop_ingress(&self, machine: &str) -> Result<(), RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         let cancel = &self.inner.cancel;
         self.until_closed(async {
@@ -1331,14 +1307,7 @@ impl Session {
                 cancel,
             )
             .await
-            .map_err(|error| match error {
-                crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
-                error @ (crate::cluster::RoleWaitError::NotObserved(_)
-                | crate::cluster::RoleWaitError::ChangeNotObserved
-                | crate::cluster::RoleWaitError::Cancelled) => {
-                    RpcError::unavailable(error.to_string())
-                }
-            })?;
+            .map_err(RpcError::from)?;
             crate::global_slot::retire_ingress_proxy(&client, &id, cancel).await
         })
         .await
@@ -1357,8 +1326,7 @@ impl Session {
         machine: &str,
         teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<(), RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?.with_teardown(teardown);
         self.until_closed(client.remove_machine_membership(&target))
             .await
@@ -1376,8 +1344,7 @@ impl Session {
         machine: &str,
         container: &str,
     ) -> Result<Value, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let container_id = ployz_core::ContainerId::parse(container)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let client = self.client()?;
@@ -1413,11 +1380,7 @@ impl Session {
         container: &str,
         dest: &str,
     ) -> Result<(), RpcError> {
-        let parse = |machine: &str| {
-            MachineTarget::parse(machine)
-                .map_err(|error| RpcError::invalid_argument(error.to_string()))
-        };
-        let (source, dest) = (parse(source)?, parse(dest)?);
+        let (source, dest) = (resolve_target(source)?, resolve_target(dest)?);
         let container_id = ployz_core::ContainerId::parse(container)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
@@ -1466,8 +1429,7 @@ impl Session {
         machine: &str,
         update: ployz_core::MachineUpdate,
     ) -> Result<ployz_core::MachineUpdated, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let client = self.client()?;
         self.until_closed(async {
             client
@@ -1498,8 +1460,7 @@ impl Session {
         machine: &str,
         request: ployz_core::RequestMachineUpgradeRequest,
     ) -> Result<ployz_core::MachineUpgradeAttempt, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         self.until_closed(async {
             client
@@ -1528,8 +1489,7 @@ impl Session {
         machine: &str,
         request: ployz_core::ActivateEnforcementRequest,
     ) -> Result<ployz_core::DeviceEnforcementSet, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let client = self.client()?;
         self.until_closed(async {
             client
@@ -1557,8 +1517,7 @@ impl Session {
         machine: &str,
         request: ployz_core::SetRecipientKeyRequest,
     ) -> Result<ployz_core::RecipientKeySet, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         self.until_closed(async {
             client
@@ -1586,8 +1545,7 @@ impl Session {
         machine: &str,
         request: ployz_core::ResealValuesRequest,
     ) -> Result<ployz_core::ValuesResealed, RpcError> {
-        let target = MachineTarget::parse(machine)
-            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let target = resolve_target(machine)?;
         let mut client = self.client()?;
         self.until_closed(async {
             client
@@ -1836,6 +1794,23 @@ async fn visible_machine_id(
     Ok(crate::cluster::visible_machine(target, &machines)?
         .machine
         .id)
+}
+
+/// `machine` as the Machine Target it names, or the `invalid_argument` that says why not.
+fn resolve_target(machine: &str) -> Result<MachineTarget, RpcError> {
+    MachineTarget::parse(machine).map_err(|error| RpcError::invalid_argument(error.to_string()))
+}
+
+impl From<crate::cluster::RoleWaitError> for RpcError {
+    fn from(error: crate::cluster::RoleWaitError) -> Self {
+        use crate::cluster::RoleWaitError;
+        match error {
+            RoleWaitError::Connect(error) => Self::from(error),
+            error @ (RoleWaitError::NotObserved(_)
+            | RoleWaitError::ChangeNotObserved
+            | RoleWaitError::Cancelled) => Self::unavailable(error.to_string()),
+        }
+    }
 }
 
 /// Capture checkouts off the async runtime.
