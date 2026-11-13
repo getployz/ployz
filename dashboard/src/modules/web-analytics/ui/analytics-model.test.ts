@@ -130,14 +130,19 @@ describe("goalRate", () => {
 describe("analyticsGate", () => {
   const on = { enabled: true };
   it("closes on the plan before looking at the Environment", () => {
-    expect(analyticsGate("self-host-off", on)).toEqual({ gate: "self-host-off" });
+    expect(analyticsGate("self-host-off", true, on)).toEqual({ gate: "self-host-off" });
   });
 
   it("opens on Cloud or a self-host plan only where the Environment turned it on", () => {
-    expect(analyticsGate("cloud", on)).toEqual({ gate: "on", site: on });
-    expect(analyticsGate("self-host-on", on)).toEqual({ gate: "on", site: on });
-    expect(analyticsGate("cloud", { enabled: false })).toEqual({ gate: "site-off" });
-    expect(analyticsGate("cloud", undefined)).toEqual({ gate: "site-off" });
+    expect(analyticsGate("cloud", true, on)).toEqual({ gate: "on", site: on });
+    expect(analyticsGate("self-host-on", true, on)).toEqual({ gate: "on", site: on });
+    expect(analyticsGate("cloud", true, { enabled: false })).toEqual({ gate: "site-off" });
+    expect(analyticsGate("cloud", true, undefined)).toEqual({ gate: "site-off" });
+  });
+
+  it("asks an Organization without Production for it, whatever the Environment says", () => {
+    expect(analyticsGate("cloud", false, on)).toEqual({ gate: "production" });
+    expect(analyticsGate("cloud", false, undefined)).toEqual({ gate: "production" });
   });
 });
 

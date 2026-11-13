@@ -68,6 +68,7 @@ impl Admission {
         let mut upload = Upload::owned(self.lock.upload_directory())
             .map_err(|error| BuildError::Prerequisite(error.to_string()))?;
         let environment = environment(&upload.root);
+        let recorder = self.lock.recorder();
         let docker = crate::Docker {
             program,
             environment: &environment,
@@ -75,6 +76,7 @@ impl Admission {
             deadline: self.deadline,
             cancellation: Some(&self.cancellation),
             progress: None,
+            recorder: Some(&recorder),
         };
         let result = (|| {
             self.lock.quarantine()?;

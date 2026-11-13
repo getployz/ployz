@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import { and, asc, eq, gte, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
-import { analyticsPlan } from "#/modules/billing/billing.server";
+import { analyticsPlan, includesMonitoring } from "#/modules/billing/billing.server";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
@@ -39,11 +39,18 @@ const siteRow = Effect.fn("WebAnalyticsView.site")(function* (organizationId: st
   return site;
 });
 
+/** Whether the Organization may see this Environment's analytics: its plan, then whether the Environment counts. */
+const gateFor = Effect.fn("WebAnalyticsView.gate")(function* (organizationId: string, environmentId: string) {
+  const plan = yield* analyticsPlan();
+  const entitled = yield* includesMonitoring(organizationId);
+  const site = plan === "self-host-off" || !entitled ? undefined : yield* siteRow(organizationId, environmentId);
+  return analyticsGate(plan, entitled, site);
+});
+
 /** An Environment's analytics for one range: nothing past the plan gate is read unless the gate is open. */
 export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (actor: Actor, input: ReadAnalyticsViewInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
-  const plan = yield* analyticsPlan();
-  const open = analyticsGate(plan, plan === "self-host-off" ? undefined : yield* siteRow(organization.id, input.environmentId));
+  const open = yield* gateFor(organization.id, input.environmentId);
   if (open.gate !== "on") return { gate: open.gate } as const;
   const { site } = open;
 
@@ -104,8 +111,7 @@ export type AnalyticsView = Effect.Success<ReturnType<typeof readAnalyticsView>>
 /** The API and Errors views' common ground: the same gate as the Web view, the window as instants, and its services. */
 const openRequests = Effect.fn("WebAnalyticsView.openRequests")(function* (actor: Actor, input: ReadRequestViewInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
-  const plan = yield* analyticsPlan();
-  const open = analyticsGate(plan, plan === "self-host-off" ? undefined : yield* siteRow(organization.id, input.environmentId));
+  const open = yield* gateFor(organization.id, input.environmentId);
   if (open.gate !== "on") return { gate: open.gate } as const;
   const { timezone } = open.site;
   const now = yield* Clock.currentTimeMillis;
