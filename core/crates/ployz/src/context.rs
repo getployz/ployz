@@ -2,15 +2,17 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read},
     net::{Ipv6Addr, SocketAddr},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::atomic::{AtomicU64, Ordering},
 };
 
-use ployz_core::{MachineId, ManagementCapability};
+use ployz_core::{
+    MachineId, ManagementCapability,
+    private_fs::{Durability, Existing, Replace, TempName, create_private_dir, replace_file},
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
@@ -221,27 +223,18 @@ impl Config {
         if self.has_capability() {
             require_private_parent(&self.path)?;
         }
-        let temporary = temporary_path(&self.path);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|source| ConfigError::Write {
-                path: self.path.clone(),
-                source,
-            })?;
-        let result = file
-            .write_all(yaml.as_bytes())
-            .and_then(|()| file.sync_all())
-            .and_then(|()| fs::rename(&temporary, &self.path))
-            .and_then(|()| File::open(parent)?.sync_all());
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result.map_err(|source| ConfigError::Write {
+        replace_file(
+            &self.path,
+            yaml.as_bytes(),
+            Replace {
+                mode: 0o600,
+                durability: Durability::FileAndDirectory,
+                temp: TempName::Unique,
+            },
+        )
+        .map_err(|error| ConfigError::Write {
             path: self.path.clone(),
-            source,
+            source: error.into(),
         })
     }
 
@@ -350,37 +343,11 @@ fn require_private_parent(path: &Path) -> Result<(), ConfigError> {
     require_private(parent, &metadata)
 }
 
-static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn temporary_path(path: &Path) -> PathBuf {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!(
-        ".{name}.{}.{}.tmp",
-        std::process::id(),
-        TEMPORARY_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
 fn create_private_directories(path: &Path) -> Result<(), ConfigError> {
-    let mut missing = Vec::new();
-    let mut next = path;
-    while !next.exists() {
-        missing.push(next.to_path_buf());
-        next = next.parent().unwrap_or_else(|| Path::new("."));
-    }
-    fs::create_dir_all(path).map_err(|source| ConfigError::CreateDirectory {
-        path: path.to_owned(),
-        source,
-    })?;
-    for directory in missing {
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|source| {
-            ConfigError::CreateDirectory {
-                path: directory,
-                source,
-            }
-        })?;
-    }
-    Ok(())
+    create_private_dir(path, Existing::Keep).map_err(|error| ConfigError::CreateDirectory {
+        path: error.path,
+        source: error.source,
+    })
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

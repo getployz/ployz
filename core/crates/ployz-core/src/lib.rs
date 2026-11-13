@@ -25,6 +25,8 @@ pub mod namespace;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod port_holder;
 mod ports;
+#[cfg(unix)]
+pub mod private_fs;
 pub mod probe_document;
 mod release;
 #[cfg(not(target_arch = "wasm32"))]

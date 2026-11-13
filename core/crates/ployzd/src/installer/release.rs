@@ -2,9 +2,9 @@
 
 use std::{
     ffi::OsStr,
-    fs::{self, File, OpenOptions},
-    io::{self, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    fs::{self, File},
+    io,
+    os::unix::fs::PermissionsExt,
     path::Path,
     time::Duration,
 };
@@ -19,7 +19,9 @@ use tokio::{process::Command, time::timeout};
 use super::{Error, InstallPaths, daemon_archive, run_command};
 use ployz_core::{
     MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_SIGNATURE_ASSET,
-    from_release_mirrors, release_channel_url, release_mirrors, verify_release_checksums,
+    from_release_mirrors,
+    private_fs::{Durability, create_private_file},
+    release_channel_url, release_mirrors, verify_release_checksums,
 };
 
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
@@ -421,15 +423,7 @@ pub(super) fn staging_directory(parent: &Path) -> Result<TempDir, Error> {
 }
 
 pub(super) fn write_private(path: &Path, bytes: &[u8], stage: &'static str) -> Result<(), Error> {
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|source| Error::Io { stage, source })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| Error::Io { stage, source })
+    create_private_file(path, bytes, Durability::File).map_err(|source| Error::Io { stage, source })
 }
 
 fn activate(daemon: &Path, uninstall: &Path, paths: &InstallPaths) -> Result<(), Error> {

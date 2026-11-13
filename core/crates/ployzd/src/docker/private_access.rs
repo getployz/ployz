@@ -14,6 +14,7 @@
 //! wanted only while its ID is the one on disk.
 
 use ployz_core::labels;
+use ployz_core::private_fs::{Existing, create_private_dir};
 use std::{
     fs, io,
     os::unix::fs::PermissionsExt,
@@ -41,6 +42,15 @@ fn state_dir(root: &Path) -> PathBuf {
     root.join(PRIVATE_ACCESS_STATE_MACHINE_DIR.trim_start_matches('/'))
 }
 
+/// `dir` as a directory only root enters, its parents made as `create_dir_all` makes them.
+fn private_dir(dir: &Path) -> io::Result<()> {
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    create_private_dir(dir, Existing::Tighten)?;
+    Ok(())
+}
+
 /// The file in the node state directory that holds the state's ID.
 const STATE_ID_FILE: &str = "ployz-state-id";
 
@@ -50,8 +60,7 @@ const STATE_ID_FILE: &str = "ployz-state-id";
 /// comes back. A directory with no ID gets a new one, which no router carries yet.
 pub(crate) fn keep_state(root: &Path) -> io::Result<PrivateAccessStateId> {
     let dir = state_dir(root);
-    fs::create_dir_all(&dir)?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    private_dir(&dir)?;
     let path = dir.join(STATE_ID_FILE);
     match fs::read_to_string(&path) {
         Ok(text) => {
@@ -125,8 +134,7 @@ pub(crate) fn tailnet(root: &Path) -> Option<String> {
 /// Write `key` where the router's bind mount finds it.
 pub(crate) fn write(root: &Path, key: &[u8]) -> io::Result<()> {
     let dir = key_dir(root);
-    fs::create_dir_all(&dir)?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    private_dir(&dir)?;
     atomic_write(&dir.join(PRIVATE_ACCESS_KEY_FILE), key, 0o400)?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o500))
 }

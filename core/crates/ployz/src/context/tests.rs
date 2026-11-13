@@ -303,3 +303,54 @@ fn config_path_follows_xdg_config_home() {
         "~/.config/ployz/config.yaml"
     );
 }
+
+#[test]
+fn a_saved_config_is_private_whole_and_leaves_no_temporary() {
+    use super::*;
+    use std::os::unix::fs::MetadataExt as _;
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().mode() & 0o777;
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("made").join("config");
+    let path = directory.join("config.yaml");
+    let config = Config::new(path.clone(), None, BTreeMap::new());
+    config.save().unwrap();
+    config.save().unwrap();
+    assert_eq!(mode(&path), 0o600);
+    assert_eq!(mode(&directory), 0o700);
+    assert_eq!(mode(directory.parent().unwrap()), 0o700);
+    assert_eq!(
+        std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>(),
+        ["config.yaml"]
+    );
+    assert_eq!(Config::load(&path).unwrap(), config);
+}
+
+#[test]
+fn a_config_that_cannot_be_written_names_the_path_it_could_not_make_or_replace() {
+    use super::*;
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("file");
+    std::fs::write(&file, b"").unwrap();
+    let below = file.join("below");
+    let error = Config::new(below.join("config.yaml"), None, BTreeMap::new())
+        .save()
+        .unwrap_err();
+    assert!(
+        matches!(&error, ConfigError::CreateDirectory { path, .. } if *path == below),
+        "{error:?}"
+    );
+
+    let taken = root.path().join("taken");
+    std::fs::create_dir(&taken).unwrap();
+    let error = Config::new(taken.clone(), None, BTreeMap::new())
+        .save()
+        .unwrap_err();
+    assert!(
+        matches!(&error, ConfigError::Write { path, .. } if *path == taken),
+        "{error:?}"
+    );
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+}
