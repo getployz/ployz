@@ -8,12 +8,13 @@ use std::{
 };
 
 use chrono::Utc;
-use clap::{ArgMatches, Command};
+use clap::Command;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{
-    Answered, Install, LoopPloyzd, Token, answer_install, command, install_outcome, install_start,
-    keep_answered_token, loop_ployzd, loop_start, replaces_token, stdin_token, waiting_lines,
+use super::{command, install_start, stdin_token};
+use crate::checkin::install::{
+    Answered, Install, LoopPloyzd, Token, answer_install, install_outcome, keep_answered_token,
+    loop_ployzd, loop_start, waiting_lines,
 };
 use crate::checkin::{
     self, CheckinClient, CheckinKey, FleetToken, Hold, Host, LocalCheckin, Next, Paths, Seen,
@@ -69,11 +70,8 @@ fn temp_paths(dir: &tempfile::TempDir) -> Paths {
     }
 }
 
-fn pinned(path: &Path) -> ArgMatches {
-    command(Command::new("checkin"))
-        .no_binary_name(true)
-        .try_get_matches_from(["--ployzd", path.to_str().unwrap()])
-        .unwrap()
+fn pinned(path: &Path) -> Option<PathBuf> {
+    Some(path.to_owned())
 }
 
 #[tokio::test]
@@ -98,7 +96,9 @@ async fn the_unit_starts_the_loop_with_the_ployzd_install_chose() {
         .unwrap();
     let paths = Paths::system(PathBuf::from("/etc/ployz/fleet-token"));
     assert_eq!(
-        loop_ployzd(&matches, &paths, None).await.unwrap(),
+        loop_ployzd(matches.get_one::<PathBuf>("ployzd").cloned(), &paths, None)
+            .await
+            .unwrap(),
         current(chosen)
     );
 }
@@ -125,7 +125,7 @@ async fn a_pinned_ployzd_that_is_gone_or_stale_gives_way_to_a_current_one_withou
     daemon(&copy, env!("CARGO_PKG_VERSION"));
     for pin in [&stale, &missing] {
         assert_eq!(
-            loop_ployzd(&pinned(pin), &paths, Some(&search))
+            loop_ployzd(pinned(pin), &paths, Some(&search))
                 .await
                 .unwrap(),
             current(&copy)
@@ -133,7 +133,7 @@ async fn a_pinned_ployzd_that_is_gone_or_stale_gives_way_to_a_current_one_withou
     }
     daemon(&on_path, env!("CARGO_PKG_VERSION"));
     assert_eq!(
-        loop_ployzd(&pinned(&stale), &paths, Some(&search))
+        loop_ployzd(pinned(&stale), &paths, Some(&search))
             .await
             .unwrap(),
         current(&on_path)
@@ -152,7 +152,7 @@ async fn with_no_current_ployzd_the_loop_runs_an_older_one_and_says_to_reinstall
     daemon(&bin.join("ployzd"), "0.0.2");
     daemon(&copy, "0.0.3");
 
-    let found = loop_ployzd(&pinned(&pin), &paths, Some(&search))
+    let found = loop_ployzd(pinned(&pin), &paths, Some(&search))
         .await
         .unwrap();
     assert_eq!(found.path, pin, "the pin still comes first");
@@ -165,7 +165,7 @@ async fn with_no_current_ployzd_the_loop_runs_an_older_one_and_says_to_reinstall
 
     let gone = dir.path().join("gone/ployzd");
     fs::remove_file(bin.join("ployzd")).unwrap();
-    let found = loop_ployzd(&pinned(&gone), &paths, Some(&search))
+    let found = loop_ployzd(pinned(&gone), &paths, Some(&search))
         .await
         .unwrap();
     assert_eq!(found.path, copy);
@@ -268,7 +268,7 @@ async fn a_stale_pin_that_fails_its_probe_gives_way_to_an_older_ployzd_that_answ
     daemon(&pin, "0.0.1");
     probing_daemon(&on_path, "0.0.2");
 
-    let found = loop_ployzd(&pinned(&pin), &paths, Some(&search))
+    let found = loop_ployzd(pinned(&pin), &paths, Some(&search))
         .await
         .unwrap();
     assert_eq!(found.path, on_path);
@@ -349,7 +349,7 @@ async fn a_loop_without_a_token_ends_before_it_looks_for_ployzd() {
     let stopper = Stopper::default();
     let started = loop_start(
         &stopper,
-        &pinned(&dir.path().join("gone/ployzd")),
+        pinned(&dir.path().join("gone/ployzd")),
         &paths,
         Some(&search),
     )
@@ -371,7 +371,7 @@ async fn a_loop_with_no_ployzd_at_all_says_so_in_status_before_it_exits() {
     let stopper = Stopper::default();
     let started = loop_start(
         &stopper,
-        &pinned(&dir.path().join("gone/ployzd")),
+        pinned(&dir.path().join("gone/ployzd")),
         &paths,
         Some(&search),
     )
@@ -699,7 +699,7 @@ fn a_first_install_or_the_same_token_keeps_trying_while_cloud_is_unreachable() {
 fn only_a_missing_token_file_makes_a_first_install() {
     let dir = tempfile::tempdir().unwrap();
     let new = sending(NEW_TOKEN);
-    let replaces = |path: &Path| replaces_token(path, |held| new.sends(held));
+    let replaces = |path: &Path| crate::checkin::replaces_token(path, |held| new.sends(held));
     assert!(!replaces(&dir.path().join("new/fleet-token")).unwrap());
     assert!(!replaces(&token_file_holding(&dir, NEW_TOKEN)).unwrap());
     assert!(replaces(&token_file_holding(&dir, "not a token")).unwrap());
@@ -787,7 +787,9 @@ async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answerin
         .await;
         let key = CheckinKey::load_or_create(&paths.key()).unwrap();
         let mut client = CheckinClient::new(&url, FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
-        assert!(!replaces_token(&paths.token_file, |held| client.sends(held)).unwrap());
+        assert!(
+            !crate::checkin::replaces_token(&paths.token_file, |held| client.sends(held)).unwrap()
+        );
         let pass = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
         server.await.unwrap();
         let kept = answer_install(pass, &client, &paths, PIPED)

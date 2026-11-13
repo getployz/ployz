@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::super::wire::{self, EnrollPolicy};
-use super::super::{FleetToken, Headline, pass, run};
+use super::super::{FleetToken, Headline, pass, probe::Sockets, run};
 use super::*;
 use ployz_core::probe_document::ProbeDocument;
 
@@ -1279,7 +1279,7 @@ async fn replace_token(installing: bool) {
             &fixture.paths,
             Utc::now(),
             installing,
-            &mut super::super::Probes::load(fixture.paths.probe()),
+            &mut super::super::Probes::load(fixture.paths.probe(), Arc::new(Sockets)),
         )
         .await;
         assert_eq!(
@@ -1410,7 +1410,7 @@ async fn a_check_in_reports_the_saved_probe_and_token_bound_attempt_together() {
 
 #[tokio::test]
 async fn an_enroll_instruction_closes_the_probe_ports_on_install_and_loop_passes() {
-    use super::super::{Probes, pass_from};
+    use super::super::{Probes, pass_from, probe::Sockets};
 
     for installing in [true, false] {
         let fixture = Fixture::new("ready");
@@ -1429,7 +1429,7 @@ async fn an_enroll_instruction_closes_the_probe_ports_on_install_and_loop_passes
             "send": []
         }))
         .unwrap();
-        let mut probes = Probes::load(fixture.paths.probe());
+        let mut probes = Probes::load(fixture.paths.probe(), Arc::new(Sockets));
         probes
             .open(handout, &fixture.key, tokio::time::Instant::now())
             .await;

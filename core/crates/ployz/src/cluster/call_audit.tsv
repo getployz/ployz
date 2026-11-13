@@ -8,7 +8,7 @@
 ../ployz-testkit/tests/fake_fleet.rs::an_unmodeled_command_is_recorded_and_answers_unimplemented	op::EnsureContainer	call	unary	-	redial	keyed
 ../ployz-testkit/tests/fake_fleet.rs::set_ingress_doors_runs_the_holder_and_caddy_once	op::SetIngressDoors	call	unary	-	redial	keyed
 ../ployz-testkit/tests/fake_fleet.rs::set_ingress_doors_runs_the_holder_and_caddy_once	op::SetIngressDoors	call	unary	-	redial	keyed
-src/checkin/mod.rs::local_machine	op::Inspect	call_repeatable	setup	wait(WAIT)	redial	read
+src/checkin/host.rs::local_machine	op::Inspect	call_repeatable	setup	wait(WAIT)	redial	read
 src/cloud_enroll/recovery_compat.rs::supported	op::DescribeContract	call_repeatable	setup	wait(WAIT)	redial	read
 src/cluster.rs::depart	op::Leave	call	unary	-	redial	keyed
 src/cluster.rs::ensure_retried	op::EnsureContainer	call	unary	-	redial	keyed
