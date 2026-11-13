@@ -81,7 +81,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const waits = approval.protected && approval.yours;
   const now = useMinute() ?? new Date();
 
-  // A restart or stop on Servers that enforce runs with this approver's passkey approvals, made before the answer goes.
+  // A restart or stop runs with this approver's passkey approvals, made before the answer goes.
   const decide = async (decision: ApprovalDecision) => {
     if (sending) return;
     setSending(true);
@@ -92,7 +92,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
       return null;
     }) : undefined;
     if (approvals === null) return setSending(false);
-    // A Volume run on Servers that enforce runs with this approver's passkey answer to its workflow, drafted here first.
+    // A Volume run runs with this approver's passkey answer to its workflow, drafted here first.
     const draft = "approve" in decision
       ? await draftAskedVolume(queryClient, organizationSlug, approval).catch((error: Error) => {
         setRefused(error.message || "Your servers didn't answer. Try again.");

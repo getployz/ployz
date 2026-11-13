@@ -11,22 +11,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("seals the key and sends it with no approval when no Server enforces, so no passkey is needed", async () => {
-  const sign = vi.spyOn(passkey, "passkeyAnswer");
-
-  const on = await approvedKey(KEYS, KEY, false);
-
-  expect(sign).not.toHaveBeenCalled();
-  expect(on.approval).toBeUndefined();
-  expect(on.sealed_auth_key).toMatch(/^[A-Za-z0-9+/]+=*$/);
-  expect(on.sealed_auth_key).not.toContain(KEY);
-});
-
-it("asks the passkey to approve exactly the sealed key when a Server enforces", async () => {
+it("asks the passkey to approve exactly the sealed key, which never holds the key in the clear", async () => {
   const challenge = vi.spyOn(passkey, "statementChallenge");
   vi.spyOn(passkey, "passkeyAnswer").mockResolvedValue(ASSERTION);
 
-  const on = await approvedKey(KEYS, KEY, true, 1_000);
+  const on = await approvedKey(KEYS, KEY, 1_000);
+
+  expect(on.sealed_auth_key).toMatch(/^[A-Za-z0-9+/]+=*$/);
+  expect(on.sealed_auth_key).not.toContain(KEY);
 
   const digest = Buffer.from(await crypto.subtle.digest("SHA-256", Buffer.from(on.sealed_auth_key, "base64"))).toString("hex");
   const body = JSON.stringify({ auth_key: digest, cluster: CLUSTER, expires_at: 901_000, issued_at: 1_000, signer: "passkey" });
@@ -37,5 +29,5 @@ it("asks the passkey to approve exactly the sealed key when a Server enforces", 
 it("sends nothing when the passkey doesn't answer", async () => {
   vi.spyOn(passkey, "passkeyAnswer").mockRejectedValue(Object.assign(new Error("denied"), { name: "NotAllowedError" }));
 
-  await expect(approvedKey(KEYS, KEY, true)).rejects.toEqual(new KeyNotApproved("Your passkey didn't answer. Try again."));
+  await expect(approvedKey(KEYS, KEY)).rejects.toEqual(new KeyNotApproved("Your passkey didn't answer. Try again."));
 });

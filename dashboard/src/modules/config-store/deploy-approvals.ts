@@ -1,6 +1,5 @@
 /**
- * The deploys the dashboard starts outside its Deploy button, approved in this browser on Servers that enforce Device
- * approval: a redeploy, which is also how a rollback and a retry of a failed Deployment run, and a Deploy of another
+ * The deploys the dashboard starts outside its Deploy button, approved in this browser: a redeploy, which is also how a rollback and a retry of a failed Deployment run, and a Deploy of another
  * Environment, a new Branch's first or a shut-down preview's. Each reads what it ships, shows the person every term this
  * browser will sign, read back from the bodies it drafted, and signs exactly those bodies once they approve.
  *
@@ -42,7 +41,8 @@ const SIGNS_FOR = "Your servers run only what you approve here.";
 /** The image a plan names for a Service its Deployment builds, as `DeployApproval::browser_draft` refuses it. */
 const BUILT = "ployz-build/";
 
-const enforcing = (servers: Servers) => servers.machines.some((machine) => machine.deviceEnforcement === true);
+/** With no Server, nothing would run what is approved, so nothing is signed. */
+const serverless = (servers: Servers) => servers.machines.length === 0;
 
 /** Shows `drafted` and signs exactly its bodies once the person approves. Null when they cancel: nothing is signed. */
 async function reviewed(approving: Approving, drafted: Drafted, title: string, note = SIGNS_FOR, action = "Approve") {
@@ -56,12 +56,12 @@ const scopeOf = (environment: { readonly id: string; readonly name: string }, na
 /**
  * A Deploy of `environment`, as Deployment `id`, approved in this browser: its plan read now, every term shown, then
  * signed. The version it read goes with it, so the Store refuses it once the Environment changes. One that runs nowhere
- * yet, a new Branch or a shut-down preview, names the Cluster `near` runs on, its Parent. Undefined when no Server
- * enforces or the plan builds from source, so the Deploy goes as before; null when the person cancels.
+ * yet, a new Branch or a shut-down preview, names the Cluster `near` runs on, its Parent. Undefined when there is no
+ * Server, or the plan builds from source and goes under its rule; null when the person cancels.
  */
 export async function approveEnvironmentDeploy(approving: Approving, environment: EnvironmentRef, id: string, near: EnvironmentRef) {
   const { reads, servers } = approving;
-  if (!enforcing(servers)) return undefined;
+  if (serverless(servers)) return undefined;
   const plan = await reads.plan(environment);
   if (plan.environment.name !== environment.environment) throw new SessionRefused(OTHER_ENVIRONMENT);
   // A Service that builds from source runs under the automatic deploy or preview rule, which no browser signs.
@@ -69,7 +69,7 @@ export async function approveEnvironmentDeploy(approving: Approving, environment
   const own = servers.running(plan.namespace);
   const environmentMachines = own.length > 0 ? own : servers.running(await reads.namespace(near));
   const scope = await deployApprovalScope({ environment: scopeOf(plan.environment, plan.namespace), environmentMachines, machines: servers.machines });
-  if (scope === undefined || scope === null) return scope;
+  if (scope === null) return null;
   const signed = await reviewed(approving, await draftDeploy(scope, id, plan), `Deploy ${plan.environment.name}?`);
   const [approval] = signed ?? [];
   return approval === undefined ? null : { approval, version: plan.version };
@@ -78,11 +78,11 @@ export async function approveEnvironmentDeploy(approving: Approving, environment
 /**
  * The person's teardown of the Volumes a Deploy of `environment`, or a redeploy of Deployment `deployment`, deletes
  * under `accept`, read fresh and approved by their passkey, as `ployz deploy --accept-volume-loss` signs its own.
- * Undefined when it deletes none, or no Server enforces; throws, before anything is sent, when they don't approve it.
+ * Undefined when it deletes none, or there is no Server; throws, before anything is sent, when they don't approve it.
  */
 export async function approveVolumeLoss(approving: Approving, environment: EnvironmentRef, accept: readonly string[], deployment?: string) {
   const { reads, servers } = approving;
-  if (accept.length === 0 || !enforcing(servers)) return undefined;
+  if (accept.length === 0 || serverless(servers)) return undefined;
   const lost = (await reads.removals(environment, deployment)).volumes.filter((volume) => accept.includes(volume.name));
   if (lost.length === 0) return undefined;
   const near = servers.running(await reads.namespace(environment));
@@ -131,25 +131,25 @@ function commitsOf(source: DeploymentView) {
 /**
  * A redeploy of `source` as Deployment `id`, approved in this browser. One that built from GitHub approves each Service's
  * commit under the Environment's automatic deploy rule, as `ployz deployment redeploy` does, and waits for its builds to
- * approve them again. Any other approves the specs its runner will lower, read as a plan of `source`. Undefined when no
- * Server enforces, so the redeploy goes as before; null when the person cancels.
+ * approve them again. Any other approves the specs its runner will lower, read as a plan of `source`. Undefined when
+ * there is no Server; null when the person cancels.
  */
 export async function approveRedeploy(approving: Approving, source: DeploymentView, id: string): Promise<RedeployApproved | null | undefined> {
   const { reads, servers } = approving;
-  if (!enforcing(servers)) return undefined;
+  if (serverless(servers)) return undefined;
   const environment = { project: source.environment.project, environment: source.environment.name };
   const target = { environment: scopeOf(source.environment, source.namespace), environmentMachines: servers.running(source.namespace), machines: servers.machines };
   if (source.builds.length > 0) {
     const commits = commitsOf(source);
     const scope = await deployApprovalScope(target, COMMIT_CAPABILITIES);
-    if (scope === undefined || scope === null) return scope;
+    if (scope === null) return null;
     const terms = { ...ruleTerms(await reads.rule(environment)), commits };
     const approvals = await reviewed(approving, await draftCommits(scope, terms), "Approve these commits?",
       "Keep this tab open until it deploys. Once the images are built, this browser approves these commits again without asking.");
     return approvals === null ? null : { fields: { approvals, awaits_approval: true }, again: { scope, terms } };
   }
   const scope = await deployApprovalScope(target);
-  if (scope === undefined || scope === null) return scope;
+  if (scope === null) return null;
   const plan = await reads.plan(environment, source.id);
   if (plan.environment.id !== source.environment.id) throw new SessionRefused(OTHER_ENVIRONMENT);
   const signed = await reviewed(approving, await draftDeploy(scope, id, plan), `Redeploy ${source.environment.name}?`);

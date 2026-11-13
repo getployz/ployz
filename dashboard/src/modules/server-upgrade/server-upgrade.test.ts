@@ -275,7 +275,7 @@ describe("a Release Channel approval", () => {
   const cluster = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
   const kept = (channel: "stable" | "beta", generation: number, keptCluster = cluster) =>
     ({ body: JSON.stringify({ channel, cluster: keptCluster, generation, signer: "passkey" }) });
-  const enforcing = channelScope([{ sealing: { kind: "held", public_key: cluster }, deviceEnforcement: true }]);
+  const enforcing = channelScope([{ sealing: { kind: "held", public_key: cluster }, capabilities: ["ployz.machine.enforced.v1"] }]);
 
   // Catches a body the daemon's canonical form doesn't match, which every Server refuses: ployz-core pins the same bytes.
   it("drafts the body the daemon reads, one generation past the kept approval", () => {
@@ -284,12 +284,12 @@ describe("a Release Channel approval", () => {
     expect(channelApprovalBody(cluster, "beta", null)).toContain(`"generation":1`);
   });
 
-  it("asks only when the Servers enforce and nobody approved this channel for this Cluster", () => {
+  it("asks only when a Server past Ployz 0.3 checks it and nobody approved this channel for this Cluster", () => {
     expect(needsApproval(enforcing, "stable", null)).toBe(true);
     expect(needsApproval(enforcing, "stable", kept("stable", 3))).toBe(false);
     expect(needsApproval(enforcing, "beta", kept("stable", 3))).toBe(true);
     expect(needsApproval(enforcing, "stable", kept("stable", 3, "another"))).toBe(true);
-    expect(needsApproval(channelScope([{ sealing: { kind: "held", public_key: cluster }, deviceEnforcement: false }]), "beta", null))
+    expect(needsApproval(channelScope([{ sealing: { kind: "held", public_key: cluster }, capabilities: [] }]), "beta", null))
       .toBe(false);
   });
 });

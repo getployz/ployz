@@ -83,7 +83,7 @@ function open(first: RuleView, commit: (rule: Signed, refresh: (next: RuleView) 
     const [shown, setShown] = useState(first);
     return (
       <RuleDialog organizationSlug="acme" view={shown} ending={false} onClose={onClose}
-        scope={{ enforced: true, older: null, scope: SCOPE }}
+        scope={{ older: null, scope: SCOPE }}
         commit={(rule) => commit(rule, setShown)}
         ownerQuery={(organization, repository) => ({ ...githubRepositoryOwnerQueryOptions(organization, repository), queryFn: async () => OWNER })} />
     );

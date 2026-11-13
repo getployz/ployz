@@ -27,7 +27,7 @@ type Destination = { readonly to: MachineName; readonly machine?: MachineId };
  * for the syncs after. A Move sends it with every step, and its release with the resume or the start that ends it. A
  * resize sends it with each Server's new size. A Restore sends it with the promotion, a Mirror removal with the slot's
  * Forget, and a seed with the copy. A Device signs it, or in the dashboard a passkey answers its own prompt for it. An
- * enforcing Server refuses those steps without one; others ignore it.
+ * Server refuses those steps without one.
  */
 type Approved = { readonly approval?: Signed };
 
@@ -165,11 +165,9 @@ export type Member =
       readonly floorless?: boolean;
       /** For a resize, the copy's bound in the Runtime Watch frame; null when the frame shows no sized copy here. */
       readonly boundBytes?: number | null;
-      /** The Server reports device enforcement on, so it refuses a Container start or a seed Ployz Cloud sends. */
-      readonly enforces?: boolean;
       /** The Server signs a handoff receipt as a Move's source, and as its target needs one to become the writer. */
       readonly handoff?: boolean;
-      /** The Server takes a passkey's own answer to a Volume workflow, so the dashboard can approve one it enforces. */
+      /** The Server takes a passkey's own answer to a Volume workflow, so the dashboard can approve one. */
       readonly passkey?: boolean;
     }
   | {

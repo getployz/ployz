@@ -12,8 +12,8 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 const UNCHECKED = "Cloud couldn't check the servers. Try again.";
 
 /**
- * A Deploy's approval on Servers that enforce. `scope` runs at the press: undefined when no Server enforces, so the
- * Deploy goes as before; null when the person cancels the prompt. `approve` runs in the write queue, after the edits
+ * A Deploy's approval. `scope` runs at the press: undefined when there is no Server, so nothing would run it; null when
+ * the person cancels the prompt. `approve` runs in the write queue, after the edits
  * before it: it reads the plan, and this browser builds and signs the approval of it at the version the person
  * reviewed. A refusal reads as the Store's.
  */
@@ -26,11 +26,9 @@ export function useDeployApproval(organizationSlug: string, environment: Environ
   const environmentMachines = useEnvironmentMachines(namespace);
 
   async function scope(): Promise<ApprovalScope | null | undefined> {
-    if (namespace !== null) {
-      return deployApprovalScope({ environment: { environmentId, environmentName: environment.environment ?? "", namespace }, environmentMachines, machines });
-    }
-    if (machines.some((machine) => machine.deviceEnforcement === true)) throw new Error(UNCHECKED);
-    return undefined;
+    if (machines.length === 0) return undefined;
+    if (namespace === null) throw new Error(UNCHECKED);
+    return deployApprovalScope({ environment: { environmentId, environmentName: environment.environment ?? "", namespace }, environmentMachines, machines });
   }
 
   async function approve(scope: ApprovalScope, deployment: string, version: string): Promise<DeployApproved> {

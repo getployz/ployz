@@ -45,7 +45,7 @@ import { Context, Data, Effect, Fiber, Layer, Option, Redacted, Schema, type Sco
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
-import { requirementFor, ServerLacks } from "#/modules/runtime/daemon-compat";
+import { olderPloyzSentence, requirementFor, requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
@@ -358,6 +358,7 @@ export function sdkFailureMessage(error: PloyzSdkError, servers: readonly { read
   if (error instanceof ServerLacks) {
     const requirement = requirementFor(error.capability);
     const server = servers.find((candidate) => candidate.id === error.machineId)?.name ?? "one of your Servers";
+    if (error.capability === requirements.enforced.capability) return olderPloyzSentence(server);
     return requirement === null ? `This step needs a newer Ployz on ${server}.` : `${requirement.feature} ${requirement.plural ? "need" : "needs"} a newer Ployz on ${server}.`;
   }
   const cause = "cause" in error ? error.cause : error;

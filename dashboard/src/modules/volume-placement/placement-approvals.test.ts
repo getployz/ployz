@@ -78,22 +78,22 @@ describe("placementAsks", () => {
 });
 
 describe("stagedAsks", () => {
-  const enforcing = (server: string, copy: Parameters<typeof member>[1]): Member => {
+  const trusting = (server: string, copy: Parameters<typeof member>[1]): Member => {
     const each = member(server, copy);
-    return each.answered ? { ...each, enforces: true, passkey: true } : each;
+    return each.answered ? { ...each, passkey: true } : each;
   };
 
   // A writer with no snapshot yet still leaves one: the Move hands off at a final snapshot, so its old copy holds data.
   const unsnapshotted = (): Member => {
-    const writer = enforcing("web-1", "writer");
+    const writer = trusting("web-1", "writer");
     return writer.answered && writer.view.copy?.kind === "root" ? { ...writer, view: { copy: { ...writer.view.copy, newest: null } } } : writer;
   };
 
   it.each([
-    ["a writer with a snapshot", () => enforcing("web-1", "writer")],
+    ["a writer with a snapshot", () => trusting("web-1", "writer")],
     ["a writer with none yet", unsnapshotted],
   ])("drafts what a Move's Deploy runs after it from the copies it leaves, off %s: the old copy cleared, then the mirror fed by the new writer", (_, writer) => {
-    const before = [writer(), enforcing("web-2", "empty"), enforcing("web-3", "empty")];
+    const before = [writer(), trusting("web-2", "empty"), trusting("web-3", "empty")];
     const staged = row({ primary: id("web-2"), mirrors: [id("web-3")], deletes: [] });
     const asks = stagedAsks(volume, before, staged, terms);
     expect(asks.map(({ run, change }) => ({ run, workflow: change.workflow }))).toEqual([
@@ -105,7 +105,7 @@ describe("stagedAsks", () => {
     // Once the Move lands, each next run the Deploy plans carries its approval and plans to run.
     const kept: PlacementApproval[] = asks.map((ask) =>
       ({ run: ask.run, machine: ask.machine, approval: signed({ volume: "app_vol-v1", workflow: ask.change.workflow }) }));
-    const after = [enforcing("web-1", "old"), enforcing("web-2", "writer"), enforcing("web-3", "empty")];
+    const after = [trusting("web-1", "old"), trusting("web-2", "writer"), trusting("web-3", "empty")];
     const next = nextPlacementStep(placementChanges(volume, after, staged), []);
     const run = next === null ? null : withApproval(next.run, kept, after);
     if (run?.kind !== "delete_mirror") throw new Error(`expected the old copy's removal next, got ${run?.kind}`);

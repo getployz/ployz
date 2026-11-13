@@ -39,6 +39,8 @@ const DEPLOYMENT = "00000000-0000-4000-8000-00000000b306";
 const CONTAINER = "c".repeat(64);
 const MACHINE = "b".repeat(32);
 const production = { project: "shop", environment: "production" };
+/** What a Server on Ployz 0.4 lists: it enforces device approval. */
+const ENFORCED = "ployz.machine.enforced.v1";
 const page = { at: "here", ...production } as const;
 
 const Created = Schema.Struct({ ok: Schema.Literal(true), value: Schema.Struct({ proposal_id: Schema.String }) });
@@ -65,7 +67,7 @@ const shop = Effect.fn(function* () {
   const protect = Effect.promise(() => store.write(ORGANIZATION, { command: "set_environment_protected", environment: { project: null, environment: null }, protected: true }));
   const agent: AgentCaller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "owner-browser" }, role: "owner", support: null, via: "agent" };
   const owner: Caller = { ...agent, via: "dashboard" };
-  let capabilities = ["ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY, PROPOSAL_CAPABILITY];
+  let capabilities = [ENFORCED, "ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY, PROPOSAL_CAPABILITY];
   let readable = true;
   const frame = () => asTestDouble<RuntimeWatchView>()({
     services: [{ identity: `${found.namespace}/${found.runtime}`, containers: [{ container_id: CONTAINER, machine_id: MACHINE }], hook_containers: [] }],
@@ -218,14 +220,14 @@ it.live("an approval is refused, running nothing, when it doesn't cover every st
     setReadable(false);
     expect(yield* refusal(approve)).toBe("Cloud couldn't check the servers. Try again.");
     setReadable(true);
-    setCapabilities(["ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY]);
+    setCapabilities([ENFORCED, "ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY]);
     expect(yield* refusal(approve)).toBe("machine-2 needs a newer Ployz to stop it.");
-    setCapabilities(["ployz.restart.session-grant.v2", PROPOSAL_CAPABILITY]);
+    setCapabilities([ENFORCED, "ployz.restart.session-grant.v2", PROPOSAL_CAPABILITY]);
     expect(yield* refusal(approve)).toBe("machine-2 needs a newer Ployz to stop it.");
     expect(yield* acts).toEqual([]);
     expect(yield* provided(pendingProposals(ORGANIZATION))).toMatchObject([{ id, status: "presented" }]);
     // A step swapped in the database after the person saw the card is what they didn't sign: the Server refuses it by its digest. Cloud only ever runs what the row holds.
-    setCapabilities(["ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY, PROPOSAL_CAPABILITY]);
+    setCapabilities([ENFORCED, "ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY, PROPOSAL_CAPABILITY]);
     const denied = yield* cluster(decideProposal(owner, id, { reject: { reason: "not during the sale" } }));
     expect(denied).toMatchObject({ ok: true, proposal: { status: "denied", reason: "not during the sale" } });
     expect(yield* call("proposal_status", { proposal: id })).toMatchObject({ ok: true, value: { status: "denied", reason: "not during the sale" } });

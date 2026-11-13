@@ -564,10 +564,10 @@ describe("seedOffer", () => {
     seedOffer(volume, members, (options.restorable ?? members.map((each) => each.machine.name)).map(id), (options.floorless ?? []).map(id));
   const fresh = () => [member("web-1", "writer"), mirrorAsOf("web-2", at)];
 
-  it("offers a point on a Server that enforces device approval only where it takes a passkey's answer", () => {
-    const enforced = (passkey: boolean) => fresh().map((each): Member => (each.answered ? { ...each, enforces: true, passkey } : each));
-    expect(offer(enforced(true))).toEqual({ offered: true, refused: null });
-    expect(offer(enforced(false)).offered).toBe(false);
+  it("offers a point only where every Server takes a passkey's answer", () => {
+    const trusting = (passkey: boolean) => fresh().map((each): Member => (each.answered ? { ...each, passkey } : each));
+    expect(offer(trusting(true))).toEqual({ offered: true, refused: null });
+    expect(offer(trusting(false)).offered).toBe(false);
   });
 
   it("offers a point the Deploy's seed run would restore", () => {
@@ -597,13 +597,13 @@ describe("seedOffer", () => {
 
 describe("placementTargets", () => {
   const servers = ["web-1", "web-2", "web-3"].map(id);
-  const enforcing = (each: Member, passkey: boolean): Member => (each.answered ? { ...each, enforces: true, passkey } : each);
+  const trusting = (each: Member, passkey: boolean): Member => (each.answered ? { ...each, passkey } : each);
 
-  it("on Servers that enforce device approval, offers a move and a mirror only where each takes a passkey's answer", () => {
-    const moving = (passkey: boolean) => [member("web-1", "writer"), member("web-2", "mirror")].map((each) => enforcing(each, passkey));
+  it("offers a move and a mirror only where each Server takes a passkey's answer", () => {
+    const moving = (passkey: boolean) => [member("web-1", "writer"), member("web-2", "mirror")].map((each) => trusting(each, passkey));
     expect(placementTargets(volume, moving(true), row(["web-2"]), servers, false).move.map((server) => server.name)).toEqual(["web-2"]);
     expect(placementTargets(volume, moving(false), row(["web-2"]), servers, false).move).toEqual([]);
-    const mirroring = (passkey: boolean) => [member("web-1", "writer"), pooled("web-3")].map((each) => enforcing(each, passkey));
+    const mirroring = (passkey: boolean) => [member("web-1", "writer"), pooled("web-3")].map((each) => trusting(each, passkey));
     expect(placementTargets(volume, mirroring(true), row([]), servers, false).mirror.map((server) => server.name)).toEqual(["web-3"]);
     expect(placementTargets(volume, mirroring(false), row([]), servers, false).mirror).toEqual([]);
   });

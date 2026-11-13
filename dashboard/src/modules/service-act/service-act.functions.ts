@@ -9,7 +9,7 @@ import { bodyDigest } from "#/modules/operations/keyed.server";
 import { actService, asksProtector } from "#/modules/operations/operations.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { SERVICE_ACT_VERBS } from "#/modules/service-act/service-act";
-import { latestServiceAct, serviceEnforces, strandingStop } from "#/modules/service-act/service-act.server";
+import { latestServiceAct, serviceRuns, strandingStop } from "#/modules/service-act/service-act.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
@@ -45,7 +45,7 @@ export const actServiceServerFn = createServerFn({ method: "POST" })
     if (stranding !== null) return yield* new Conflict({ message: stranding, userFacing: true });
     // A press an owner must approve carries no approvals: the owner's browser makes them when it approves.
     const unapproved = Object.keys(data.approvals ?? {}).length === 0;
-    if (unapproved && !(yield* asksProtector(caller, { ...found, environmentId: data.environmentId, verb: data.verb })) && (yield* serviceEnforces(caller.organization.id, found))) {
+    if (unapproved && !(yield* asksProtector(caller, { ...found, environmentId: data.environmentId, verb: data.verb })) && (yield* serviceRuns(caller.organization.id, found))) {
       return yield* new Conflict({ message: "Reload the page and try again.", userFacing: true });
     }
     const tool = `service_${data.verb}` as const;

@@ -7,7 +7,7 @@ import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { SESSION_GRANT_CAPABILITY } from "#/modules/approval-session/approval-session";
 import { PROPOSAL_CAPABILITY } from "#/modules/proposals/proposal";
-import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
+import { olderPloyzSentence, requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type PloyzSdkError, refusedApproval, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
@@ -15,12 +15,12 @@ import {
   alreadyThere,
   copiesIn,
   endOf,
-  enforcesIn,
   APPROVAL_RAN_OUT,
   legOf,
   legsOf,
   type LegStep,
   needsNewerPloyz,
+  olderStepSays,
   progressOf,
   ranOut,
   SERVICE_ACT_PENDING_LIMIT_MS,
@@ -198,12 +198,12 @@ const writeLegs = (request: ActRequest, runId: string, legs: ServiceActLeg[]) =>
     .pipe(Effect.map((rows) => rows.length > 0));
 
 /**
- * Whether a Server running a copy of the Service reports that it enforces, so a restart sent without approvals would
- * only be refused there. Cloud can't tell when it can't read the Servers, and sends it anyway.
+ * Whether a Server runs a copy of the Service, so a restart sent without approvals would only be refused there. Cloud
+ * can't tell when it can't read the Servers, and sends it anyway.
  */
-export const serviceEnforces = Effect.fn("ServiceAct.enforces")(function* (organizationId: string, service: { readonly namespace: string; readonly runtime: string }) {
+export const serviceRuns = Effect.fn("ServiceAct.runs")(function* (organizationId: string, service: { readonly namespace: string; readonly runtime: string }) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  return frame !== null && enforcesIn(frame, `${service.namespace}/${service.runtime}`);
+  return frame !== null && copiesIn(frame, `${service.namespace}/${service.runtime}`).length > 0;
 });
 
 /** What a browser needs to approve a restart or stop of the Service: its copies and the Servers. Null when Cloud can't read the Servers. */
@@ -221,16 +221,15 @@ export const actTarget = Effect.fn("ServiceAct.actTarget")(function* (
       name: machine.name,
       capabilities: machine.runtime.capabilities ?? [],
       sealing: machine.runtime.sealing ?? null,
-      deviceEnforcement: machine.runtime.device_enforcement ?? null,
     })),
   };
 });
 
 /**
- * Why a stop of the Service is refused before anything stops: a Server running it enforces but can't take a start
- * approval, so the Service could never be started again from Ployz Cloud. Null when the stop may go. A stop that
- * carries approvals is for Servers that enforce, so when Cloud can't read the Servers it refuses rather than guess;
- * one without approvals goes, and each Server refuses what it can't take.
+ * Why a stop of the Service is refused before anything stops: a Server running it can't take a start approval, so the
+ * Service could never be started again from Ployz Cloud. Null when the stop may go. When Cloud can't read the Servers,
+ * a stop that carries approvals is refused rather than guessed at; one without approvals goes, and each Server refuses
+ * what it can't take.
  */
 export const strandingStop = Effect.fn("ServiceAct.strandingStop")(function* (
   organizationId: string,
@@ -239,8 +238,8 @@ export const strandingStop = Effect.fn("ServiceAct.strandingStop")(function* (
 ) {
   const target = yield* actTarget(organizationId, service);
   if (target === null) return approved ? "Cloud couldn't check the servers. Try again." : null;
-  const server = strandedByStop(target.copies, target.machines);
-  return server === null ? null : needsNewerPloyz(server, "stop");
+  const stranded = strandedByStop(target.copies, target.machines);
+  return stranded === null ? null : olderStepSays(stranded, "stop");
 });
 
 export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
@@ -299,7 +298,7 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
     const [step, reason] = yield* sent.pipe(
       Effect.catch((error) => Effect.succeed(
         error instanceof ServerLacks
-          ? ["failed", needsNewerPloyz(leg.server, side)] as const
+          ? ["failed", error.capability === requirements.enforced.capability ? olderPloyzSentence(leg.server) : needsNewerPloyz(leg.server, side)] as const
           : refusedApproval(error)
           ? ["failed", unread ? `Cloud couldn't check ${leg.server}. Try again.`
             : withheld ? needsNewerPloyz(leg.server, side)

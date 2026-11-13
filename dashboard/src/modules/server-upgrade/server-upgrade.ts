@@ -3,6 +3,7 @@ import { Option, Schema } from "effect";
 import { canonicalJson } from "#/modules/approval-session/approval-session";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { ServerStatus } from "#/modules/machines/server-status";
+import { runsOlderPloyz } from "#/modules/runtime/daemon-compat";
 
 /** How long Cloud waits for an Upgrade's outcome: longer than the upgrade worker's 15-minute cap. */
 export const UPGRADE_OBSERVATION_LIMIT_MS = 20 * 60_000;
@@ -59,7 +60,7 @@ export function metricsOnBeta({ version, channel, release, beta }: {
   return channel === "stable" && !isBehind(version, release) && isBehind(version, beta);
 }
 
-/** The first release whose Servers can turn device enforcement on, which a person does once per Cluster. */
+/** The first release whose Servers enforce device approval. A Cluster from 0.3 awaits a person's activation once there. */
 const ENFORCEMENT_RELEASE = [0, 4] as const;
 
 /**
@@ -188,22 +189,22 @@ export function approvedChannel(approval: Pick<Signed, "body"> | null): typeof A
 }
 
 /**
- * Whether the Servers enforce device approval, and the Cluster key they hold. An upgrade through Cloud needs a
- * Release Channel approval only there: a Server that never reported enforcement checks none.
+ * Whether a Server checks a Release Channel approval, and the Cluster key the Servers hold. Every Server past Ployz 0.3
+ * takes an upgrade through Cloud only along a channel a person approved; one on 0.3 checks none.
  */
 export function channelScope(machines: ReadonlyArray<{
   readonly sealing: { readonly kind: string; readonly public_key?: string } | null;
-  readonly deviceEnforcement?: boolean | null;
+  readonly capabilities: readonly string[];
 }>) {
-  const enforced = machines.some((machine) => machine.deviceEnforcement === true);
+  const checked = machines.some((machine) => !runsOlderPloyz(machine));
   const cluster = machines.map((machine) => machine.sealing?.kind === "held" ? machine.sealing.public_key : undefined)
     .find((key) => key !== undefined) ?? null;
-  return { enforced, cluster };
+  return { checked, cluster };
 }
 
-/** Whether an upgrade along `channel` needs a person's approval first: the Servers enforce, and none approved it. */
+/** Whether an upgrade along `channel` needs a person's approval first: a Server checks one, and none approved it. */
 export function needsApproval(scope: ReturnType<typeof channelScope>, channel: ReleaseChannel, approval: Pick<Signed, "body"> | null) {
-  if (!scope.enforced) return false;
+  if (!scope.checked) return false;
   const kept = approvedChannel(approval);
   return kept === null || kept.channel !== channel || kept.cluster !== scope.cluster;
 }

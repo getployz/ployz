@@ -22,8 +22,7 @@ export type Holder = {
   readonly capabilities: readonly string[] | null;
   readonly committableBytes: number | null;
   readonly boundBytes: number | null;
-  /** Whether the Server enforces device approval, and whether it takes a passkey's answer to a resize; null when it didn't answer. */
-  readonly enforces: boolean | null;
+  /** Whether the Server takes a passkey's answer to a resize; null when it didn't answer. */
   readonly passkey: boolean | null;
 };
 
@@ -75,16 +74,6 @@ export function checkResize({ volume, recorded, working, requested, holders }: R
   return { kind: "grow", from: recorded, to: requested, copies: growing.map(({ name, role }) => ({ name, role })) };
 }
 
-export function growWords(volume: string, { from, to, copies }: Extract<ResizeVerdict, { kind: "grow" }>): string {
-  const named = (role: Holder["role"]) => (copies ?? []).filter((copy) => copy.role === role).map((copy) => copy.name);
-  const [primary] = named("primary");
-  const others = [["mirror", named("mirror")], ["old copy", named("old_copy")]] as const;
-  const rest = others.flatMap(([noun, names]) => names.length === 0 ? [] : [`its ${noun}${names.length === 1 ? "" : "s"} on ${listNames(names)}`]);
-  const where = copies === null || primary === undefined ? "on every server that holds a copy"
-    : `on ${listNames([primary, ...rest])}`;
-  return `Grow ${volume} from ${gb(from)} to ${gb(to)} ${where}. Its services keep running.`;
-}
-
 /** The copies of `volumeId` the Servers report, each with its machine record and its bound. Null until both are known. */
 export function holdersOf(volumeId: string, members: readonly Member[] | undefined, machines: readonly RuntimeMachineRecord[] | null,
   copies: readonly RuntimeVolumeCopy[]): readonly Holder[] | null {
@@ -98,7 +87,6 @@ export function holdersOf(volumeId: string, members: readonly Member[] | undefin
     return {
       id: server.id, name: server.name, role, capabilities: machine?.capabilities ?? null, committableBytes: machine?.poolCommittableBytes ?? null,
       boundBytes: copy?.boundBytes ?? null,
-      enforces: answered === null ? null : answered.enforces === true,
       passkey: answered === null ? null : answered.passkey === true,
     };
   };
@@ -110,7 +98,7 @@ export function holdersOf(volumeId: string, members: readonly Member[] | undefin
 
 /**
  * The drawer's confirmed grow; `requestId` is fresh per confirm, so a retried request admits one run. `approval` is the
- * person's passkey answer for Servers that enforce device approval.
+ * person's passkey answer.
  */
 export const ResizeVolumeInput = Schema.Struct({
   ...VolumeInput.fields,

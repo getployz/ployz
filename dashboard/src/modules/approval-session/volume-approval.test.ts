@@ -91,8 +91,8 @@ describe("the browser's draft", () => {
 });
 
 describe("approveVolume", () => {
-  const holding = (id: MachineId, name: string, enforces: boolean, passkey: boolean): Member =>
-    ({ machine: { id, name }, address: "fdcc::1", answered: true, view: { copy: COPIES.writer }, enforces, passkey });
+  const holding = (id: MachineId, name: string, passkey: boolean): Member =>
+    ({ machine: { id, name }, address: "fdcc::1", answered: true, view: { copy: COPIES.writer }, passkey });
   const scope = (members: Member[]): VolumeScope =>
     ({ cluster: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=", namespace: "app", dockerVolume: "app_data", name: "data", members });
   const resize: VolumeChange = {
@@ -103,15 +103,17 @@ describe("approveVolume", () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it("asks nothing when no Server it names enforces", async () => {
+  it("refuses before any prompt when a Server it names runs Ployz 0.3, saying to upgrade it", async () => {
     const review = vi.spyOn(prompt, "reviewApproval");
-    expect(await approveVolume(scope([holding(a, "web-1", false, true), holding(b, "web-2", false, false)]), resize)).toBeUndefined();
+    const older: Member = { machine: { id: b, name: "web-2" }, answered: false, lack: "web-2 runs Ployz 0.3. Upgrade it to deploy.", outdated: true };
+    await expect(approveVolume(scope([holding(a, "web-1", true), older]), resize))
+      .rejects.toEqual(new VolumeNotApproved("web-2 runs Ployz 0.3. Upgrade it to deploy."));
     expect(review).not.toHaveBeenCalled();
   });
 
-  it("refuses before any prompt when an enforcing Server can't take a passkey's answer", async () => {
+  it("refuses before any prompt when a Server can't take a passkey's answer", async () => {
     const review = vi.spyOn(prompt, "reviewApproval");
-    await expect(approveVolume(scope([holding(a, "web-1", true, true), holding(b, "web-2", true, false)]), resize))
+    await expect(approveVolume(scope([holding(a, "web-1", true), holding(b, "web-2", false)]), resize))
       .rejects.toEqual(new VolumeNotApproved("web-2 needs a newer Ployz to approve this from the dashboard. Upgrade it, or run ployz volume set data --size 20 from an approved device."));
     expect(review).not.toHaveBeenCalled();
   });
@@ -119,7 +121,7 @@ describe("approveVolume", () => {
   it("shows every line it signs, then asks the passkey once for exactly those bytes", async () => {
     const review = vi.spyOn(prompt, "reviewApproval").mockResolvedValue(true);
     const sign = vi.spyOn(passkey, "signWithPasskey").mockImplementation((body) => Promise.resolve({ body, signatures: [], assertions: [ASSERTION] }));
-    const approved = await approveVolume(scope([holding(a, "web-1", true, true), holding(b, "web-2", false, false)]), resize, 100_000);
+    const approved = await approveVolume(scope([holding(a, "web-1", true), holding(b, "web-2", true)]), resize, 100_000);
     expect(sign).toHaveBeenCalledOnce();
     const [body, purpose] = sign.mock.calls[0] ?? [];
     expect(purpose).toBe("volume");
@@ -132,14 +134,14 @@ describe("approveVolume", () => {
   it("signs nothing when the person cancels", async () => {
     vi.spyOn(prompt, "reviewApproval").mockResolvedValue(false);
     const sign = vi.spyOn(passkey, "signWithPasskey");
-    expect(await approveVolume(scope([holding(a, "web-1", true, true), holding(b, "web-2", true, true)]), resize)).toBeNull();
+    expect(await approveVolume(scope([holding(a, "web-1", true), holding(b, "web-2", true)]), resize)).toBeNull();
     expect(sign).not.toHaveBeenCalled();
   });
 
   it("says how to add a passkey when none answers", async () => {
     vi.spyOn(prompt, "reviewApproval").mockResolvedValue(true);
     vi.spyOn(passkey, "signWithPasskey").mockRejectedValue(Object.assign(new Error("denied"), { name: "NotAllowedError" }));
-    await expect(approveVolume(scope([holding(a, "web-1", true, true), holding(b, "web-2", true, true)]), resize))
+    await expect(approveVolume(scope([holding(a, "web-1", true), holding(b, "web-2", true)]), resize))
       .rejects.toThrow("add a passkey under Account");
   });
 });

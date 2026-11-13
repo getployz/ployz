@@ -1,14 +1,13 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { checkResize, growWords, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
+import { checkResize, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const GB = 1_000_000_000;
-type ResizeVerdictCopies = Extract<ResizeVerdict, { kind: "grow" }>["copies"];
 const SIZE = ["ployz.volume.size.set.v1"];
 const holder = (name: string, role: Holder["role"], options: Partial<Holder> = {}): Holder =>
-  ({ id: name.padEnd(32, "0") as MachineId, name, role, capabilities: SIZE, committableBytes: null, boundBytes: null, enforces: false, passkey: false, ...options });
+  ({ id: name.padEnd(32, "0") as MachineId, name, role, capabilities: SIZE, committableBytes: null, boundBytes: null, passkey: false, ...options });
 const ask = (requested: number, options: Partial<ResizeAsk> = {}): ResizeAsk =>
   ({ volume: "data", recorded: 10 * GB, working: 10 * GB, requested, holders: [holder("fsn-1", "primary"), holder("fsn-2", "mirror")], ...options });
 
@@ -84,19 +83,6 @@ describe("checkResize", () => {
   });
 });
 
-describe("growWords", () => {
-  const copy = (name: string, role: Holder["role"]) => ({ name, role });
-  it.each<[string, ResizeVerdictCopies, string]>([
-    ["names the primary and its mirror", [copy("fsn-1", "primary"), copy("fsn-2", "mirror")], "Grow data from 10 GB to 20 GB on fsn-1 and its mirror on fsn-2. Its services keep running."],
-    ["names every mirror", [copy("fsn-1", "primary"), copy("fsn-2", "mirror"), copy("fsn-3", "mirror")], "Grow data from 10 GB to 20 GB on fsn-1 and its mirrors on fsn-2 and fsn-3. Its services keep running."],
-    ["names an old copy", [copy("fsn-1", "primary"), copy("fsn-2", "mirror"), copy("fsn-3", "old_copy")], "Grow data from 10 GB to 20 GB on fsn-1, its mirror on fsn-2 and its old copy on fsn-3. Its services keep running."],
-    ["names a lone primary", [copy("fsn-1", "primary")], "Grow data from 10 GB to 20 GB on fsn-1. Its services keep running."],
-    ["says every copy before the Servers answer", null, "Grow data from 10 GB to 20 GB on every server that holds a copy. Its services keep running."],
-  ])("%s", (_, copies, words) => {
-    expect(growWords("data", { kind: "grow", from: 10 * GB, to: 20 * GB, copies })).toBe(words);
-  });
-});
-
 describe("holdersOf", () => {
   const record = (id: string, capabilities: readonly string[], poolCommittableBytes: number | null) =>
     ({ id: id.padEnd(32, "0"), capabilities, poolCommittableBytes }) as RuntimeMachineRecord;
@@ -107,9 +93,9 @@ describe("holdersOf", () => {
     const members = [member("fsn-2", "mirror"), member("fsn-1", "writer"), member("fsn-3", "old"), member("fsn-4", "empty")];
     const copies = [copy("fsn-1", "data", 10 * GB), copy("fsn-2", "data", 20 * GB), copy("fsn-2", "other", 50 * GB), copy("fsn-3", "data", null)];
     expect(holdersOf("data", members, [record("fsn-1", SIZE, 30 * GB), record("fsn-2", [], null)], copies)).toEqual([
-      { id: "fsn-1".padEnd(32, "0"), name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 30 * GB, boundBytes: 10 * GB, enforces: false, passkey: false },
-      { id: "fsn-2".padEnd(32, "0"), name: "fsn-2", role: "mirror", capabilities: [], committableBytes: null, boundBytes: 20 * GB, enforces: false, passkey: false },
-      { id: "fsn-3".padEnd(32, "0"), name: "fsn-3", role: "old_copy", capabilities: null, committableBytes: null, boundBytes: null, enforces: false, passkey: false },
+      { id: "fsn-1".padEnd(32, "0"), name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 30 * GB, boundBytes: 10 * GB, passkey: true },
+      { id: "fsn-2".padEnd(32, "0"), name: "fsn-2", role: "mirror", capabilities: [], committableBytes: null, boundBytes: 20 * GB, passkey: true },
+      { id: "fsn-3".padEnd(32, "0"), name: "fsn-3", role: "old_copy", capabilities: null, committableBytes: null, boundBytes: null, passkey: true },
     ]);
   });
 

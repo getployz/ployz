@@ -10,6 +10,7 @@ import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { clusterRead, makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, RpcError } from "#/modules/runtime/ployz.server";
+import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { mirrorStatuses, refreshMirror, SYNC_CLUSTER_BUDGET_MS } from "#/modules/volume-copies/volume-copies.refresh.server";
 import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
 import { stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
@@ -80,6 +81,8 @@ describe("Refresh now", () => {
         connecting();
         return asTestDouble<Client>()({
         close: async () => {},
+        // Cloud reads the Servers' releases before a change; these list none, so none runs Ployz 0.3.
+        runtime: { watch: async function* () { yield runtimeWatchFrameFixture({ machines: [] }); } },
         volumeSwitch: async (_machine: MachineId, request: VolumeSwitchRequest) => {
           if (request.command !== "set_volume_copy") throw new Error(`unexpected ${request.command}`);
           return answer(request.payload.want);

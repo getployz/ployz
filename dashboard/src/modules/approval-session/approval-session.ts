@@ -13,6 +13,7 @@ import { Schema } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { asBoolean, asFiniteNumber, asRecord, asString } from "#/lib/json";
 import { shownText } from "#/modules/github/preview-review";
+import { type OlderServer, olderServer } from "#/modules/runtime/daemon-compat";
 import { storeVersion } from "#/modules/volume-placement/volume-placement";
 import { base64url, passkeyAnswer, PasskeyRefused, signingInput, statementChallenge } from "./passkey-statement";
 
@@ -432,7 +433,7 @@ export async function approveDeploy(scope: ApprovalScope, deployment: string, ve
 export type ScopeMachine = {
   readonly id: string;
   readonly sealing: { readonly kind: string; readonly public_key?: string } | null;
-  readonly deviceEnforcement?: boolean | null;
+  readonly capabilities: readonly string[];
 };
 
 const heldKey = (machine: ScopeMachine) => machine.sealing?.kind === "held" && machine.sealing.public_key ? machine.sealing.public_key : undefined;
@@ -453,32 +454,27 @@ export function clusterOf<M extends ScopeMachine>(near: readonly string[], machi
 }
 
 /**
- * Whether a press on these copies needs an approval, and the scope its grant names: the Cluster the copies' Servers hold
- * the Sealing Key of, and every Server in it, so the session also covers a deploy, which may place on any of them. A
- * Server that never reported enforcement asks nothing, since its own check is the one that counts.
+ * The scope a press on these copies asks a passkey for: the Cluster the copies' Servers hold the Sealing Key of, and every
+ * Server in it, so the session also covers a deploy, which may place on any of them. Null when Cloud can't tell which
+ * Cluster it is.
  */
-export type ActScope = { readonly enforced: boolean; readonly scope: ApprovalScope | null };
-
 type ScopeEnvironment = { readonly environmentId: string; readonly environmentName: string; readonly namespace: string };
 
-export function actScope(environment: ScopeEnvironment, copies: readonly { readonly machineId: string }[], machines: readonly ScopeMachine[]): ActScope {
+export function actScope(environment: ScopeEnvironment, copies: readonly { readonly machineId: string }[], machines: readonly ScopeMachine[]): ApprovalScope | null {
   const hosting = new Set(copies.map((copy) => copy.machineId));
-  const hosts = machines.filter((machine) => hosting.has(machine.id));
-  const enforced = hosts.some((machine) => machine.deviceEnforcement === true);
-  const cluster = hosts.map(heldKey).find((key) => key !== undefined);
-  if (cluster === undefined) return { enforced, scope: null };
+  const cluster = machines.filter((machine) => hosting.has(machine.id)).map(heldKey).find((key) => key !== undefined);
+  if (cluster === undefined) return null;
   const members = clusterMachines(cluster, machines).map((machine) => machine.id);
-  return { enforced, scope: { ...environment, cluster, machines: [...new Set([...members, ...hosting])].sort() } };
+  return { ...environment, cluster, machines: [...new Set([...members, ...hosting])].sort() };
 }
 
 /**
- * Whether a Deploy of the Environment needs an approval, the scope its grant names, and the first Server that enforces
- * but can't take one from a browser. The Cluster is the one the Servers running the Environment hold the Sealing Key of,
- * or the only one; the scope names every Server in it, since a Deploy may place on any of them. An approval goes only
- * when every Server that enforces takes it: one that can't would refuse the Deploy. An automatic deploy rule's scope is
- * the same, with the rule's `capabilities`.
+ * The scope a Deploy of the Environment's approval names, and the first Server that can't take one from a browser. The
+ * Cluster is the one the Servers running the Environment hold the Sealing Key of, or the only one; the scope names every
+ * Server in it, since a Deploy may place on any of them. An approval goes only when every Server takes it: one that
+ * can't would refuse the Deploy. An automatic deploy rule's scope is the same, with the rule's `capabilities`.
  */
-export type DeployScope = { readonly enforced: boolean; readonly scope: ApprovalScope | null; readonly older: string | null };
+export type DeployScope = { readonly scope: ApprovalScope | null; readonly older: OlderServer | null };
 
 export function deployScope(
   environment: ScopeEnvironment,
@@ -487,11 +483,8 @@ export function deployScope(
   capabilities: readonly string[] = DEPLOY_CAPABILITIES,
 ): DeployScope {
   const { cluster, members } = clusterOf(environmentMachines, machines);
-  const enforcing = members.filter((machine) => machine.deviceEnforcement === true);
-  const older = enforcing.find((machine) => !capabilities.every((capability) => machine.capabilities.includes(capability)))?.name ?? null;
   return {
-    enforced: enforcing.length > 0,
     scope: cluster === undefined ? null : { ...environment, cluster, machines: members.map((machine) => machine.id).sort() },
-    older,
+    older: olderServer(members, capabilities),
   };
 }

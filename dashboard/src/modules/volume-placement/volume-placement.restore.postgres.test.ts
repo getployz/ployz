@@ -117,7 +117,7 @@ const floorlessMirror = (() => {
   const key = Array.from({ length: 32 }, () => 1);
   const server = (id: string, name: string, capabilities: string[]) => {
     const machine = runtimeWatchMachineFixture(id, name);
-    return runtimeWatchMachineObservationFixture({ machine: { ...machine, public_key: key, runtime: { ...machine.runtime, daemon_version: "", capabilities } } });
+    return runtimeWatchMachineObservationFixture({ machine: { ...machine, public_key: key, runtime: { ...machine.runtime, daemon_version: "", capabilities: ["ployz.machine.enforced.v1", ...capabilities] } } });
   };
   const frame = runtimeWatchFrameFixture({ machines: [server("1".repeat(32), "box-1", [requirements.volumeFloor.capability]), server("2".repeat(32), "box-2", [requirements.volumeMove.capability])] });
   return makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections: [{ management: "ployz1:preferred" }] }), noPairingChanges)

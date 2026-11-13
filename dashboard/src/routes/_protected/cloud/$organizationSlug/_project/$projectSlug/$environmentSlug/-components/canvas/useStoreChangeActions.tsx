@@ -39,17 +39,17 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
  * a press while any other write that moves the review still saves. The bar then shows the draft, pink and counted,
  * and the next press ships exactly that.
  *
- * On Servers that enforce Device approval, a Deploy asks for a passkey session first, unless one covers it, and carries
- * this browser's approval of the plan it ships, which it then lists; Saved State changes reach a Server only through it.
- * One that deletes Volume data also carries the person's passkey teardown of exactly the Volumes they typed for.
- * Each staged Volume workflow such a Server takes part in then asks the passkey once, after the loss dialog, so the loss
+ * A Deploy asks for a passkey session first, unless one covers it, and carries this browser's approval of the plan it
+ * ships, which it then lists; Saved State changes reach a Server only through it. One that deletes Volume data also
+ * carries the person's passkey teardown of exactly the Volumes they typed for. Each staged Volume workflow then asks
+ * the passkey once, after the loss dialog, so the loss
  * the person confirmed is the loss each approval names.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
   version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS,
   /**
-   * Reads each staged Volume workflow on a Server that enforces, then answers with its prompts, which ask the passkey for
+   * Reads each staged Volume workflow, then answers with its prompts, which ask the passkey for
    * each; false when the person cancels one.
    */
   preparePlacements: () => Promise<() => Promise<boolean>> = () => Promise.resolve(() => Promise.resolve(true))) {

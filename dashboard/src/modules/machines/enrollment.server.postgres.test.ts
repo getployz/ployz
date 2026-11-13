@@ -159,9 +159,13 @@ function fakeSession(database: PostgresTestHarness["database"]) {
         return { assigned_machine: assignment.machine, visible_peers: [], target_versions: {} };
       },
       runtime: {
+        // Every Machine listed runs Ployz 0.4; with no frames set, the one frame Cloud reads before a change lists none.
         watch: async function* () {
-          for (const machines of cluster.frames) {
-            yield asTestDouble<RuntimeWatchView>()({ machines: machines.map(([id, name]) => ({ machine: { id, name, runtime: {} } })), incomplete_ids: { machines: [] } });
+          for (const machines of cluster.frames.length === 0 ? [[]] : cluster.frames) {
+            yield asTestDouble<RuntimeWatchView>()({
+              machines: machines.map(([id, name]) => ({ machine: { id, name, runtime: { capabilities: ["ployz.machine.enforced.v1"] } } })),
+              incomplete_ids: { machines: [] },
+            });
           }
         },
       },

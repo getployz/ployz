@@ -128,10 +128,10 @@ export function useStagedPlacements(
       } })]);
     },
     prepare: async () => {
-      // A Volume no Server enforces on asks nothing, so it reads nothing more. A Server that started enforcing since
-      // refuses its run, and says to deploy again. A restore into a new Volume runs on its source's Servers.
+      // A Volume no Server answered for asks nothing, so it reads nothing more. A restore into a new Volume runs on its
+      // source's Servers.
       const asking = staged.filter(({ members: shown, changes }) =>
-        shown.some((member) => member.answered && member.enforces === true) || changes.some((change) => change.kind === "seed"));
+        shown.some((member) => member.answered) || changes.some((change) => change.kind === "seed"));
       const asked = await Promise.all(asking.map(async ({ volume, row, changes }) =>
         (await placementApprovalAsks(queryClient, organizationSlug, environment, volume, row, changes)).map((each) => ({ ...each, volumeId: volume.id }))));
       return async () => {
@@ -139,7 +139,6 @@ export function useStagedPlacements(
         for (const { scope, ask, volumeId } of asked.flat()) {
           const approved = await approveVolume(scope, ask.change);
           if (approved === null) return false;
-          if (approved === undefined) continue;
           kept.push({ volumeId, run: ask.run, machine: ask.machine, approval: approved.approval, ...(approved.service !== undefined && { service: approved.service }) });
         }
         if (kept.length === 0) return true;

@@ -2,8 +2,6 @@ import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import {
   endOf,
-  type EnforcementFrame,
-  enforcesIn,
   progressOf,
   type ServiceActBefore,
   type ServiceActLeg,
@@ -86,51 +84,22 @@ describe("progressOf", () => {
 });
 
 describe("strandedByStop", () => {
-  const server = (id: string, deviceEnforcement: boolean, capabilities: string[]) => ({ id, name: `machine-${id}`, deviceEnforcement, capabilities });
+  const ENFORCED = "ployz.machine.enforced.v1";
+  const server = (id: string, capabilities: string[]) => ({ id, name: `machine-${id}`, capabilities });
   const copy = (machineId: string, hook = false) => ({ machineId, hook });
 
-  it("names an enforcing Server running a copy that can't take a start approval", () => {
-    const machines = [server("1", true, [START_APPROVAL_CAPABILITY]), server("2", true, [])];
-    expect(strandedByStop([copy("1"), copy("2")], machines)).toBe("machine-2");
+  it("names a Server running a copy that can't take a start approval", () => {
+    const machines = [server("1", [ENFORCED, START_APPROVAL_CAPABILITY]), server("2", [ENFORCED])];
+    expect(strandedByStop([copy("1"), copy("2")], machines)).toEqual({ name: "machine-2", ployz03: false });
   });
 
-  it("strands nothing when every such Server can start it again, doesn't enforce, runs no copy, or holds only a hook", () => {
-    expect(strandedByStop([copy("1")], [server("1", true, [START_APPROVAL_CAPABILITY])])).toBeNull();
-    expect(strandedByStop([copy("1")], [server("1", false, [])])).toBeNull();
-    expect(strandedByStop([copy("1")], [server("1", true, [START_APPROVAL_CAPABILITY]), server("2", true, [])])).toBeNull();
-    expect(strandedByStop([copy("1"), copy("2", true)], [server("1", true, [START_APPROVAL_CAPABILITY]), server("2", true, [])])).toBeNull();
-  });
-});
-
-describe("enforcesIn", () => {
-  const copy = (machine: string) => ({ container_id: `c-${machine}`, machine_id: machine });
-  const frame = (enforcement: boolean | null | undefined): EnforcementFrame => ({
-    services: [
-      { identity: "shop/web", containers: [copy("m-a")], hook_containers: [] },
-      { identity: "shop/api", containers: [copy("m-b")], hook_containers: [copy("m-c")] },
-    ],
-    machines: [
-      { machine: { id: "m-a", runtime: enforcement === undefined ? {} : { device_enforcement: enforcement } } },
-      { machine: { id: "m-b", runtime: { device_enforcement: false } } },
-      { machine: { id: "m-c", runtime: { device_enforcement: true } } },
-    ],
+  it("names a Server on Ployz 0.3 running a copy, which takes only an upgrade", () => {
+    expect(strandedByStop([copy("1")], [server("1", [START_APPROVAL_CAPABILITY])])).toEqual({ name: "machine-1", ployz03: true });
   });
 
-  it("asks for an approval when a Server running the Service's copies enforces", () => {
-    expect(enforcesIn(frame(true), "shop/web")).toBe(true);
-  });
-
-  it("asks nothing when its Servers don't enforce or never said, though another Service's Server in the Environment does", () => {
-    expect(enforcesIn(frame(false), "shop/web")).toBe(false);
-    expect(enforcesIn(frame(null), "shop/web")).toBe(false);
-    expect(enforcesIn(frame(undefined), "shop/web")).toBe(false);
-  });
-
-  it("counts a Server that runs only the Service's hook", () => {
-    expect(enforcesIn(frame(false), "shop/api")).toBe(true);
-  });
-
-  it("asks nothing for a Service no Server reports", () => {
-    expect(enforcesIn(frame(true), "shop/worker")).toBe(false);
+  it("strands nothing when every such Server can start it again, runs no copy, or holds only a hook", () => {
+    expect(strandedByStop([copy("1")], [server("1", [ENFORCED, START_APPROVAL_CAPABILITY])])).toBeNull();
+    expect(strandedByStop([copy("1")], [server("1", [ENFORCED, START_APPROVAL_CAPABILITY]), server("2", [ENFORCED])])).toBeNull();
+    expect(strandedByStop([copy("1"), copy("2", true)], [server("1", [ENFORCED, START_APPROVAL_CAPABILITY]), server("2", [ENFORCED])])).toBeNull();
   });
 });
