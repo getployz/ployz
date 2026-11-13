@@ -6,9 +6,10 @@
 //! new agent token (`new_token`, :101-108), refuses a token of another kind (:109, :119-124),
 //! and `save`s the new one: a temp file, flushed, renamed over `mcp.json`, then a flush of the
 //! directory (:66-88). A failed save, or a refused kind, revokes the token just made (:125-138).
-//! `fate` then decides what happens to the token it read (:140-141, :209-240), and `revoke`
+//! `fate` then decides what happens to the token it read (:140-141; `ployz_decide::fate::fate`
+//! is the decision, and `fate` here only maps its sign-in and its save onto the facts), and `revoke`
 //! lists the Organization's tokens and deletes that one while it is listed as an agent token
-//! (:242-255). Last, `login` prints its warnings and its note (:160-178).
+//! (:252-265). Last, `login` prints its warnings and its note (:160-178).
 //!
 //! Each login is its own `ployz mcp login` process, and its Cloud calls block its one thread
 //! (`in_cloud`, core/crates/ployz/src/handlers/account.rs:133-142, on the current-thread
@@ -27,6 +28,7 @@
 
 use std::fmt::Write as _;
 
+use ployz_decide::fate::{self as decide, Durability, Previous};
 use stateright::{Model, Property};
 
 /// The most `ployz mcp login` processes a model runs. The default model runs two.
@@ -41,7 +43,7 @@ const SAVE_FAILURES: u8 = 1;
 const FLUSH_FAILURES: u8 = 1;
 /// How many of `revoke`'s lists fail.
 const LIST_FAILURES: u8 = 1;
-/// How many `DELETE`s fail, `revoke`'s (:253) or the one of a token just made (:128).
+/// How many `DELETE`s fail, `revoke`'s (:263) or the one of a token just made (:128).
 const DELETE_FAILURES: u8 = 1;
 
 /// A token: `P`, the one `mcp.json` holds at the start, or the one a login minted.
@@ -193,15 +195,15 @@ const STARTS: [Start; 6] = [
 /// Why a login leaves the token before live, and names it in a `Left` warning.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Why {
-    /// `fate`'s Cloud check (:213-220).
+    /// `ployz_decide::fate::fate`'s Cloud check.
     Cloud,
-    /// `fate`'s Organization check (:221-228).
+    /// `ployz_decide::fate::fate`'s Organization check.
     Organization,
-    /// `fate`'s Unflushed arm (:229-235).
+    /// `ployz_decide::fate::fate`'s Unflushed arm.
     Unflushed,
-    /// `revoke`'s list failed (:245, :148-154).
+    /// `revoke`'s list failed (:255, :148-154).
     ListFailed,
-    /// `revoke`'s `DELETE` failed (:253, :148-154).
+    /// `revoke`'s `DELETE` failed (:263, :148-154).
     DeleteFailed,
     /// `revoke`'s `DELETE` got a 404, which the CLI reads as `UnknownCredential`
     /// (core/crates/ployz/src/cloud_account.rs:535-537, :148-154).
@@ -213,9 +215,9 @@ enum Why {
 enum Fate {
     /// No token before (:143).
     NoPrevious,
-    /// `fate` returned `Ok(id)`, so `revoke` runs (:145, :237).
+    /// `fate` returned `Ok(id)`, so `revoke` runs (:145).
     Revoke,
-    /// `fate` returned `Err(Left)` (:144, :239).
+    /// `fate` returned `Err(Left)` (:144).
     Left(Why),
 }
 
@@ -247,9 +249,9 @@ enum Pc {
     Saving,
     /// The kind check or `save` failed; `remove_token` of the token just made is next (:128).
     Unmaking(Unmake),
-    /// `fate` returned `Ok(id)`; `revoke`'s list is next (:245).
+    /// `fate` returned `Ok(id)`; `revoke`'s list is next (:255).
     Listing,
-    /// `revoke` found the token before listed as an agent token; its `DELETE` is next (:253).
+    /// `revoke` found the token before listed as an agent token; its `DELETE` is next (:263).
     Deleting,
     /// `in_cloud` returned; the warnings and the note are next (:160-178). `left` is why
     /// the token before stays live, if it does.
@@ -308,13 +310,13 @@ impl Login {
 struct Broken {
     /// `save` renames the temp file without its `sync_all` (:75-78).
     persist_unflushed_bytes: bool,
-    /// `fate` has no Unflushed arm, so it revokes after a failed directory flush (:229-235).
+    /// `fate` has no Unflushed arm, so it revokes after a failed directory flush.
     revoke_after_unflushed: bool,
-    /// `fate` has no Cloud check (:213-220).
+    /// `fate` has no Cloud check.
     fate_ignores_cloud: bool,
-    /// `fate` has no Organization check (:221-228).
+    /// `fate` has no Organization check.
     fate_ignores_organization: bool,
-    /// `revoke` deletes the token before without its listed-as-agent check (:246-252).
+    /// `revoke` deletes the token before without its listed-as-agent check (:256-262).
     revoke_unlisted: bool,
     /// `login` saves a token of any kind: no kind check (:109, :119-124).
     keep_non_agent: bool,
@@ -358,15 +360,15 @@ enum Branch {
         fate: Fate,
     },
     /// `revoke`'s list answered, and the token before was listed as an agent token or not
-    /// (:245-252).
+    /// (:255-262).
     Listed { who: usize, found: bool },
-    /// `revoke`'s list failed (:245).
+    /// `revoke`'s list failed (:255).
     ListFailed,
-    /// `revoke`'s `DELETE` removed the row (:253).
+    /// `revoke`'s `DELETE` removed the row (:263).
     Deleted,
-    /// `revoke`'s `DELETE` failed, Cloud unreachable (:253).
+    /// `revoke`'s `DELETE` failed, Cloud unreachable (:263).
     DeleteFailed,
-    /// `revoke`'s `DELETE` found no row, and Cloud answered 404 (:253).
+    /// `revoke`'s `DELETE` found no row, and Cloud answered 404 (:263).
     DeleteNotFound,
     /// The login printed its warnings and its note, and returned `Ok` (:160-178).
     Noted { who: usize, left: Option<Why> },
@@ -434,7 +436,7 @@ fn accounted(state: &State, tok: Tok) -> bool {
     state.file == File::Holds(tok) || !token.live || token.named_left || token.named_unrevoked
 }
 
-/// `revoke`'s list holds the token as an agent token (:245-252). Cloud lists the rows of the
+/// `revoke`'s list holds the token as an agent token (:255-262). Cloud lists the rows of the
 /// caller's Organization in this Cloud (`listCredentials`,
 /// dashboard/src/modules/identity/organization-token.server.ts:119-168).
 fn listed_as_agent(token: Token) -> bool {
@@ -670,18 +672,28 @@ impl McpLogin {
         self.fix && !self.broken.fix_unlocked
     }
 
-    /// `fate` (:209-240) for the token before, with the save `durable` or not. A token in
-    /// another Cloud carries the same Organization slug, so only the Cloud check leaves it.
+    /// `ployz_decide::fate::fate` for the token before, with the save `durable` or not. A
+    /// token in another Cloud carries the same Organization slug, so only the Cloud check
+    /// leaves it. Each `Broken` flag that removes a check reads the token as the one that
+    /// check lets through.
     fn fate(&self, token: Token, durable: bool) -> Fate {
-        if token.place == Place::OtherCloud && !self.broken.fate_ignores_cloud {
-            Fate::Left(Why::Cloud)
-        } else if token.place == Place::OtherOrganization && !self.broken.fate_ignores_organization
-        {
-            Fate::Left(Why::Organization)
-        } else if !durable && !self.broken.revoke_after_unflushed {
-            Fate::Left(Why::Unflushed)
+        let previous = match token.place {
+            Place::OtherCloud if !self.broken.fate_ignores_cloud => Previous::OtherCloud,
+            Place::OtherOrganization if !self.broken.fate_ignores_organization => {
+                Previous::OtherOrganization
+            }
+            Place::Here | Place::OtherCloud | Place::OtherOrganization => Previous::Same,
+        };
+        let saved = if durable || self.broken.revoke_after_unflushed {
+            Durability::Durable
         } else {
-            Fate::Revoke
+            Durability::Unflushed
+        };
+        match decide::fate(previous, saved) {
+            decide::Fate::Revoke => Fate::Revoke,
+            decide::Fate::Left(decide::Why::Cloud) => Fate::Left(Why::Cloud),
+            decide::Fate::Left(decide::Why::Organization) => Fate::Left(Why::Organization),
+            decide::Fate::Left(decide::Why::Unflushed) => Fate::Left(Why::Unflushed),
         }
     }
 
@@ -788,7 +800,7 @@ impl McpLogin {
         Pc::Done(Outcome::Err)
     }
 
-    /// `revoke`'s list and its listed-as-agent check (:245-252).
+    /// `revoke`'s list and its listed-as-agent check (:255-262).
     fn list(&self, state: &mut State, who: usize, fails: bool) -> Pc {
         if fails {
             state.failed.list += 1;
@@ -807,7 +819,7 @@ impl McpLogin {
         }
     }
 
-    /// `revoke`'s `DELETE` (:253), one `DELETE … RETURNING` in Cloud
+    /// `revoke`'s `DELETE` (:263), one `DELETE … RETURNING` in Cloud
     /// (dashboard/src/modules/identity/organization-token.server.ts:174-177).
     fn delete(state: &mut State, who: usize, fails: bool) -> Pc {
         if fails {
@@ -1164,16 +1176,16 @@ fn fated(fate: Fate, before: &State, who: usize, durable: bool) -> String {
                     format!("finds {id} in this Cloud and Organization and the save Durable, and ")
                 }
             };
-            format!("fate {skipped}returns Ok({id}), so revoke is next (:140-141, :145, :237)")
+            format!("fate {skipped}returns Ok({id}), so revoke is next (:140-141, :145)")
         }
         Fate::Left(Why::Cloud) => {
-            format!("fate leaves {id} live: it is in another Cloud (:213-220)")
+            format!("fate leaves {id} live: it is in another Cloud")
         }
         Fate::Left(Why::Organization) => {
-            format!("fate leaves {id} live: it is in another Organization (:221-228)")
+            format!("fate leaves {id} live: it is in another Organization")
         }
         Fate::Left(Why::Unflushed) => {
-            format!("fate leaves {id} live: a crash may bring it back into mcp.json (:229-235)")
+            format!("fate leaves {id} live: a crash may bring it back into mcp.json")
         }
         Fate::Left(why @ (Why::ListFailed | Why::DeleteFailed | Why::NotFound)) => {
             unreachable!("fate never leaves a token for {why:?}")
@@ -1184,10 +1196,10 @@ fn fated(fate: Fate, before: &State, who: usize, durable: bool) -> String {
 /// The `Left` warning's why, in the code's words.
 fn left_why(why: Why) -> &'static str {
     match why {
-        Why::Cloud => "it is in Ployz Cloud at <its Cloud> (:215)",
-        Why::Organization => "it is in Organization <its Organization> (:223)",
+        Why::Cloud => "it is in Ployz Cloud at <its Cloud> (:229)",
+        Why::Organization => "it is in Organization <its Organization> (:236)",
         Why::Unflushed => {
-            "a crash may bring it back into mcp.json, which could not be flushed (<error>) (:231-233)"
+            "a crash may bring it back into mcp.json, which could not be flushed (<error>) (:243-245)"
         }
         Why::ListFailed | Why::DeleteFailed => {
             "revoking it failed (Could not reach Cloud at <cloud>.) (:150; core/crates/ployz/src/cloud_login.rs:30)"
@@ -1304,18 +1316,18 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             )
         }
         Branch::ListFailed => format!(
-            "revoke: GET /api/cli/tokens fails, Cloud unreachable, so login leaves {} live (:245, :148-154)",
+            "revoke: GET /api/cli/tokens fails, Cloud unreachable, so login leaves {} live (:255, :148-154)",
             before.previous(who)
         ),
         Branch::Listed { found: true, .. } => {
             let previous = before.previous(who);
             if listed_as_agent(before.token(previous)) {
                 format!(
-                    "revoke: GET /api/cli/tokens lists {previous} as an agent token (:245-252); its DELETE is next (:253)"
+                    "revoke: GET /api/cli/tokens lists {previous} as an agent token (:255-262); its DELETE is next (:263)"
                 )
             } else {
                 format!(
-                    "revoke: GET /api/cli/tokens answers, and with no listed-as-agent check its DELETE of {previous} is next (under Broken) (:245-253)"
+                    "revoke: GET /api/cli/tokens answers, and with no listed-as-agent check its DELETE of {previous} is next (under Broken) (:255-263)"
                 )
             }
         }
@@ -1330,15 +1342,15 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                 format!("does not list {previous}")
             };
             format!(
-                "revoke: GET /api/cli/tokens {why}, so revoke returns Ok(false) and login says nothing of {previous} (:245-251, :147)"
+                "revoke: GET /api/cli/tokens {why}, so revoke returns Ok(false) and login says nothing of {previous} (:255-261, :147)"
             )
         }
         Branch::Deleted => format!(
-            "revoke: DELETE /api/cli/tokens/{} removes its row (:253; dashboard/src/modules/identity/organization-token.server.ts:174-177), and revoke returns Ok(true) (:254, :146)",
+            "revoke: DELETE /api/cli/tokens/{} removes its row (:263; dashboard/src/modules/identity/organization-token.server.ts:174-177), and revoke returns Ok(true) (:264, :146)",
             before.previous(who)
         ),
         Branch::DeleteFailed => format!(
-            "revoke: DELETE /api/cli/tokens/{} fails, Cloud unreachable, so login leaves it live (:253, :148-154)",
+            "revoke: DELETE /api/cli/tokens/{} fails, Cloud unreachable, so login leaves it live (:263, :148-154)",
             before.previous(who)
         ),
         Branch::DeleteNotFound => format!(
@@ -1492,7 +1504,7 @@ mod tests {
 
     /// The race. Both logins read P (:92) and mint (:101-108). A's save renames TA over P,
     /// and B's renames TB over TA, each without reading mcp.json again (:79). A lists P as
-    /// an agent token and deletes it (:245-253). B lists after that DELETE, finds no P, and
+    /// an agent token and deletes it (:255-263). B lists after that DELETE, finds no P, and
     /// says nothing (:147). Both return Ok and print their note (:171-174). mcp.json holds
     /// TB. TA is live in Cloud, and no login revoked it or named it in a warning; A's note
     /// said `ployz mcp` now acts with TA while mcp.json held TB.
@@ -1738,7 +1750,7 @@ mod tests {
                 })));
     }
 
-    /// `revoke_after_unflushed`: without `fate`'s Unflushed arm (:229-235), a login whose
+    /// `revoke_after_unflushed`: without `fate`'s Unflushed arm, a login whose
     /// directory flush failed revokes P.
     #[test]
     fn an_unflushed_save_keeps_the_token_before() {
@@ -1769,7 +1781,7 @@ mod tests {
         ))
     }
 
-    /// `fate_ignores_cloud`: without `fate`'s Cloud check (:213-220), a P in another Cloud
+    /// `fate_ignores_cloud`: without `fate`'s Cloud check, a P in another Cloud
     /// under the same Organization slug reaches `revoke`, which lists this Cloud, finds no
     /// P and says nothing. P stays live and unnamed.
     #[test]
@@ -1783,7 +1795,7 @@ mod tests {
         assert!(p.live && !accounted(&broken, Tok::P));
     }
 
-    /// `fate_ignores_organization`: without `fate`'s Organization check (:221-228), a P
+    /// `fate_ignores_organization`: without `fate`'s Organization check, a P
     /// in another Organization reaches `revoke`, which lists this one and says nothing.
     #[test]
     fn fate_leaves_a_token_in_another_organization() {
@@ -1796,7 +1808,7 @@ mod tests {
         assert!(p.live && !accounted(&broken, Tok::P));
     }
 
-    /// `revoke_unlisted`: without the listed-as-agent check (:246-252), a login revokes the
+    /// `revoke_unlisted`: without the listed-as-agent check (:256-262), a login revokes the
     /// cli token an edited mcp.json names.
     #[test]
     fn revoke_deletes_only_a_listed_agent_token() {

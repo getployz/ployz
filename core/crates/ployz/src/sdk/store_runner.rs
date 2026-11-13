@@ -6,7 +6,7 @@
 use ployz_core::error_chain;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
@@ -14,6 +14,7 @@ use ployz_core::{
     HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
     RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceName,
 };
+use ployz_decide::standing::{Latch, Over, Read, Standing, standing};
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
     Actor, BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeployedNode,
@@ -178,7 +179,7 @@ pub async fn run_deployment_expecting(
         store,
         deployment,
         runner,
-        over: OnceLock::new(),
+        over: Latch::new(),
         reader: checkouts
             .as_ref()
             .ok()
@@ -562,54 +563,28 @@ struct Run {
     store: Arc<ConfigStore>,
     deployment: DeploymentId,
     runner: RunnerId,
-    /// What the first read that found the store no longer holding the run said. The
-    /// store never takes a run back from Unknown or an end, so no later read changes it.
-    over: OnceLock<Over>,
+    over: Latch,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
 }
 
-/// What one read of the Deployment says this run may do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Standing {
-    /// The store holds the run: Running.
-    Keep,
-    /// A user cancelled the Deployment: Cancelling.
-    Cancel,
-    Over(Over),
-    /// The read failed, so nothing is known: the run goes on and reads again.
-    Unread,
-}
-
-/// The store no longer holds the run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Over {
-    /// The Deployment is Unknown: its lease lapsed, a newer claim took the Environment
-    /// over, its runner claimed it again after a preview, or Cloud abandoned it after
-    /// one. The store takes only an Interrupted outcome from the run.
-    Lost,
-    /// The Deployment ended, or another runner owns it: the store takes nothing more
-    /// from the run.
-    Ended,
-}
-
-/// What `read`, the store's answer to one of this run's records, says the run may do.
-fn standing(read: &Result<DeploymentSummary, RpcError>) -> Standing {
+/// What `read`, the store's answer to one of this run's records, says about the Deployment.
+fn read_of(read: &Result<DeploymentSummary, RpcError>) -> Read {
     match read {
         Ok(summary) => match summary.status {
-            DeploymentStatus::Running => Standing::Keep,
-            DeploymentStatus::Cancelling => Standing::Cancel,
-            DeploymentStatus::Unknown => Standing::Over(Over::Lost),
+            DeploymentStatus::Running => Read::Running,
+            DeploymentStatus::Cancelling => Read::Cancelling,
+            DeploymentStatus::Unknown => Read::Unknown,
             DeploymentStatus::Applied
             | DeploymentStatus::Failed
             | DeploymentStatus::Cancelled
             | DeploymentStatus::WaitingForCi
             | DeploymentStatus::Queued
-            | DeploymentStatus::Superseded => Standing::Over(Over::Ended),
+            | DeploymentStatus::Superseded => Read::Ended,
         },
         // `record` refuses an ended Deployment, or another runner's, as a conflict.
-        Err(refused) if refused.code == RpcErrorCode::Conflict => Standing::Over(Over::Ended),
-        Err(_) => Standing::Unread,
+        Err(refused) if refused.code == RpcErrorCode::Conflict => Read::Ended,
+        Err(_) => Read::Unavailable,
     }
 }
 
@@ -682,7 +657,7 @@ impl Run {
         let recorded = self
             .record(RunEvidence::Prepared(prepared.preview().clone()))
             .await;
-        match standing(&recorded) {
+        match standing(read_of(&recorded)) {
             Standing::Keep => {}
             Standing::Cancel => {
                 return self
@@ -1345,14 +1320,11 @@ impl Run {
     /// read found the store no longer holding the run, it reads nothing more and says
     /// the same: a read that fails after a takeover still leaves the run lost.
     async fn standing(&self) -> Standing {
-        if let Some(over) = self.over.get() {
-            return Standing::Over(*over);
+        if let Some(over) = self.over.latched() {
+            return Standing::Over(over);
         }
-        let read = standing(&self.record(RunEvidence::Alive).await);
-        if let Standing::Over(over) = read {
-            self.over.get_or_init(|| over);
-        }
-        read
+        self.over
+            .settle(read_of(&self.record(RunEvidence::Alive).await))
     }
 }
 

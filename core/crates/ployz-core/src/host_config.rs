@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ValueError;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "name", rename_all = "kebab-case")]
 pub enum RestartPolicy {
     No,

@@ -210,32 +210,42 @@ struct Left {
 /// The agent token `mcp.json` held before is revoked with this login's sign-in only in the
 /// Cloud and Organization that sign-in acts in, and only once the new token is durable.
 fn fate(previous: Stored, cloud: &str, organization: &str, saved: &Saved) -> Result<String, Left> {
+    use ployz_decide::fate::{self as decide, Durability, Fate, Previous, Why};
+
     let id = previous.id;
-    let (why, fix) = if previous.cloud != cloud {
-        (
+    let where_it_is = if previous.cloud != cloud {
+        Previous::OtherCloud
+    } else if previous.organization != organization {
+        Previous::OtherOrganization
+    } else {
+        Previous::Same
+    };
+    let (durability, flush_error) = match saved {
+        Saved::Durable => (Durability::Durable, String::new()),
+        Saved::Unflushed(error) => (Durability::Unflushed, error.to_string()),
+    };
+    let (why, fix) = match decide::fate(where_it_is, durability) {
+        Fate::Revoke => return Ok(id),
+        Fate::Left(Why::Cloud) => (
             format!("it is in Ployz Cloud at {}", previous.cloud),
             format!(
                 "sign in there, run `ployz org use {}`, then `ployz token rm {id}`",
                 previous.organization
             ),
-        )
-    } else if previous.organization != organization {
-        (
+        ),
+        Fate::Left(Why::Organization) => (
             format!("it is in Organization {}", previous.organization),
             format!(
                 "run `ployz org use {}`, then `ployz token rm {id}`",
                 previous.organization
             ),
-        )
-    } else if let Saved::Unflushed(error) = saved {
-        (
+        ),
+        Fate::Left(Why::Unflushed) => (
             format!(
-                "a crash may bring it back into mcp.json, which could not be flushed ({error})"
+                "a crash may bring it back into mcp.json, which could not be flushed ({flush_error})"
             ),
             format!("run `ployz token rm {id}`"),
-        )
-    } else {
-        return Ok(id);
+        ),
     };
     Err(Left { id, why, fix })
 }

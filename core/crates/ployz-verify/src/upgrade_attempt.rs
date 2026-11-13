@@ -54,10 +54,7 @@
 
 use std::fmt::Write as _;
 
-use ployz_core::{
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
-    MachineVersion,
-};
+use ployz_core::{MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion};
 use stateright::{Model, Property};
 
 /// The outcome `upgrade-attempt.json` holds (installer/upgrade.rs `StoredAttempt`). The model
@@ -77,27 +74,20 @@ enum Outcome {
 }
 
 impl Outcome {
-    /// `MachineUpgradeAttempt::is_terminal` (ployz-core rpc/upgrade.rs:71-78) on a receipt
-    /// with this outcome.
+    /// `MachineUpgradeOutcome::is_terminal` on this outcome.
     fn is_terminal(self) -> bool {
         let stage = MachineUpgradeStage::Launching;
-        let version = MachineVersion::parse("1.2.3").expect("a literal version");
-        let outcome = match self {
+        match self {
             Self::Accepted => MachineUpgradeOutcome::Accepted,
             Self::Running => MachineUpgradeOutcome::Running { stage },
             Self::Succeeded => MachineUpgradeOutcome::Succeeded {
-                version: version.clone(),
+                version: MachineVersion::parse("1.2.3").expect("a literal version"),
             },
             Self::Failed => MachineUpgradeOutcome::Failed {
                 stage,
                 error: String::new(),
             },
             Self::Interrupted => MachineUpgradeOutcome::Interrupted { stage },
-        };
-        MachineUpgradeAttempt {
-            attempt_id: MachineUpgradeAttemptId::parse("a".repeat(32)).expect("a literal id"),
-            target: version,
-            outcome,
         }
         .is_terminal()
     }

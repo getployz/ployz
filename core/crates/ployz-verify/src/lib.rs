@@ -3,7 +3,7 @@
 //!
 //! A module calls the `ployz-core` code its protocol runs where that code is pure:
 //! `issuance_gate`, `issuance_backoff` and `issuance_failure_clock` in `acme_issuance`,
-//! `RestartPolicy` in `bridge_notes`, `MachineUpgradeAttempt` in `upgrade_attempt` and
+//! `RestartPolicy` in `bridge_notes`, `MachineUpgradeOutcome::is_terminal` in `upgrade_attempt` and
 //! `plan` in `volume_runs`. The other modules re-state their protocol's decisions by hand,
 //! and a decision that moves into `ployz-decide` is called, never re-stated.
 
