@@ -14,7 +14,8 @@
 //! core/crates/ployzd/src/machine/local_machine/container.rs:1106-1136) run only between daemon
 //! starts. Docker's restart policy acts at any step. A crash ends the process: the in-memory
 //! `Stopped`, `Pins` and member list go, and the files and Docker's state stay. Each Docker call
-//! is one atomic step, and so is each `atomic_write` (core/crates/ployzd/src/filesystem.rs:13-26).
+//! is one atomic step, and so is each `atomic_write` (core/crates/ployzd/src/filesystem.rs, which
+//! calls `replace_file` in core/crates/ployz-core/src/private_fs.rs).
 //!
 //! The first finding: a member Docker refused to start stays in `bridge-stopped-members.json`
 //! (stopped.rs:64-73). The operator stops it between daemon starts, and nothing touches the note
@@ -450,8 +451,8 @@ enum Write {
     /// The write failed and the old file stayed.
     Failed,
     /// `atomic_write` renamed the file into place and then failed to sync the directory
-    /// (core/crates/ployzd/src/filesystem.rs:24-25), so the new file stands and the call
-    /// returned Err.
+    /// (`ReplaceError::Unsynced` from `replace_file` in core/crates/ployz-core/src/private_fs.rs),
+    /// so the new file stands and the call returned Err.
     FailedAfterRename,
 }
 
@@ -2820,7 +2821,7 @@ fn write_words(write: Write, what: &str) -> String {
         Write::Failed => format!("{what} fails, and the old file stays"),
         Write::FailedAfterRename => {
             format!(
-                "{what}'s rename lands, then the directory sync fails, so it returns Err (core/crates/ployzd/src/filesystem.rs:24-25)"
+                "{what}'s rename lands, then the directory sync fails, so it returns Err (ReplaceError::Unsynced from replace_file in core/crates/ployz-core/src/private_fs.rs)"
             )
         }
     }

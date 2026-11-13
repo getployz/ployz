@@ -23,7 +23,7 @@
 //!
 //! The fix variant models E-142's lock: a CLI-local exclusive lock beside `mcp.json`, taken
 //! before the read and held through the warnings and the note, in the shape of
-//! `Config::update` (core/crates/ployz/src/context.rs:299-326). A second login then reads the
+//! `Config::update` in `core/crates/ployz/src/context.rs`. A second login then reads the
 //! first one's token as its token before, and revokes it as `fate` and `revoke` do today.
 
 use std::fmt::Write as _;

@@ -12,6 +12,7 @@ pub mod error_chain;
 pub mod framing;
 pub use enrollment::*;
 mod founding;
+pub mod hex;
 mod hint;
 mod host_config;
 pub mod host_preparation;
@@ -24,6 +25,8 @@ pub mod namespace;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod port_holder;
 mod ports;
+#[cfg(unix)]
+pub mod private_fs;
 pub mod probe_document;
 mod release;
 #[cfg(not(target_arch = "wasm32"))]
@@ -39,6 +42,7 @@ mod sealing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sealing_backup;
 pub mod service;
+pub mod shell;
 mod storage_capacity;
 pub mod stream;
 pub mod value;
