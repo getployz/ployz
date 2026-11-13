@@ -175,7 +175,7 @@ The fix variant models E-142's lock. No product code has it yet.
 
 ```text
 login     take an exclusive lock on a file beside mcp.json, in the shape of
-          Config::update (core/crates/ployz/src/context.rs:299-326);
+          `Config::update` in core/crates/ployz/src/context.rs;
           read mcp.json, mint, save, fate, revoke, warn and note as today;
           release the lock as the login returns, whichever way
 ```
