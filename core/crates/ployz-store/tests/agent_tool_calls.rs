@@ -2681,6 +2681,41 @@ fn a_removal_resumed_with_the_wrong_number_of_answers_after_its_write_says_it_co
     assert_eq!(refusal.writes, Writes::None, "{refusal:?}");
 }
 
+/// Removing a Service asks approval when a Deploy may have run what it removes:
+/// one in flight, one that completed, and a first Deploy that failed with no
+/// operation completed all do, for the Store reads a failed first Deploy as
+/// possibly having run.
+#[test]
+fn removing_a_service_asks_approval_for_a_deploy_in_flight_completed_or_failed_first() {
+    let error = json!({
+        "type": "machine", "action": "RemoveContainer",
+        "error": { "code": "internal", "message": "failed", "details": {} },
+    });
+    for phase in ["in flight", "completed", "failed with nothing completed"] {
+        let (store, _) = match phase {
+            "in flight" => deploying(),
+            "completed" => ended(
+                json!({ "type": "completed" }),
+                json!({ "type": "success", "completed": [remove_container()] }),
+            ),
+            _ => ended(
+                json!({ "type": "failed", "error": error }),
+                json!({
+                    "type": "failed", "completed": [], "unexecuted": [],
+                    "failed": { "type": "operation", "operation": remove_container(), "error": error },
+                }),
+            ),
+        };
+        let run = call(
+            &store,
+            "service_remove",
+            json!({ "service": "web" }),
+            "rm-web",
+        );
+        assert_eq!(run.ok()["asks_approval"], true, "{phase}");
+    }
+}
+
 #[test]
 fn a_failed_deployments_next_calls_read_its_own_window_as_given() {
     let error = json!({
