@@ -76,12 +76,87 @@ pub(crate) fn enforce_command(command: Command) -> Command {
 /// One Server as this run found it.
 struct Found {
     machine_id: MachineId,
+    /// Whether these facts are the Server's own word or another Server's.
+    told: Told,
     member: Member,
     report: Option<ActivationReport>,
     identity: Option<SealingPublicKey>,
     /// The recipient key this Server holds once a rotation installed one.
     recipient: Option<SealingPublicKey>,
     enforces: bool,
+}
+
+/// Who told this run a Server's facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Told {
+    /// The Server itself, over the route the person chose to it.
+    Itself(told::Own),
+    /// The entry, from replicated rows any Member can write before activation. Nothing
+    /// here is evidence for that Server: only a pin checks its key.
+    Relayed,
+}
+
+impl Told {
+    fn is_own(self) -> bool {
+        matches!(self, Self::Itself(_))
+    }
+}
+
+mod told {
+    use ployz_core::{ENFORCED_CAPABILITY, InspectRequest, MachineDetails, MachineId, op};
+
+    use crate::cluster::Call;
+    use crate::connect::Client;
+
+    /// Proof that a Server's facts came from that Server, over the route the person chose
+    /// to it. Only [`read`] makes one, so a relayed row can't pass for it.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) struct Own(());
+
+    #[cfg(test)]
+    impl Own {
+        pub(super) fn for_test() -> Self {
+            Self(())
+        }
+    }
+
+    /// What answered on `machine`'s own chosen route: whether it enforces, its Inspect, and
+    /// the proof. `None` when it has no such route, or what answered there isn't it.
+    ///
+    /// # Errors
+    /// Fails when the route doesn't connect or the Server doesn't answer over it.
+    pub(super) async fn read(
+        client: &Client,
+        machine: MachineId,
+    ) -> Result<Option<(bool, MachineDetails, Own)>, ployz_core::RpcError> {
+        let Some(own) = client
+            .own_route(&machine)
+            .await
+            .map_err(crate::connect::rpc_error)?
+        else {
+            return Ok(None);
+        };
+        let enforces = own
+            .supports(None, ENFORCED_CAPABILITY)
+            .await
+            .map_err(crate::connect::rpc_error)?;
+        let details: MachineDetails = own
+            .call_shared::<op::Inspect>(InspectRequest::default(), Call::once())
+            .await
+            .map_err(crate::connect::rpc_error)?;
+        let itself = details.id == machine
+            && details.machine.as_ref().is_some_and(|record| {
+                record.id == machine && record.public_key == details.public_key
+            });
+        Ok(itself.then_some((enforces, details, Own(()))))
+    }
+}
+
+/// What this run learned about one Server: its facts, or that a route the person chose to
+/// it didn't answer, which leaves it out rather than trusting the entry's rows for it.
+enum Looked {
+    Found(Box<Found>),
+    Silent,
 }
 
 /// What became of one Server.
@@ -129,17 +204,27 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         let (found, gaps) = reach
             .fan_out(|machine_id| found_on(client.clone(), machine_id))
             .await;
-        let found: Vec<Found> = found.into_iter().map(|(_, server)| server).collect();
+        let mut silent = Vec::new();
+        let found: Vec<Found> = found
+            .into_iter()
+            .filter_map(|(machine_id, looked)| match looked {
+                Looked::Found(server) => Some(*server),
+                Looked::Silent => {
+                    silent.push(machine_id);
+                    None
+                }
+            })
+            .collect();
         let known = KnownMachines::beside(&config);
         let pinned = known.load()?;
-        // A Server reached over its own SSH or local socket, on a route the person chose,
-        // answers for itself, and takes the set from there whatever it holds from before.
-        // An SSH endpoint Cloud's Server Access handed over answers for nobody.
-        let direct: BTreeSet<MachineId> = reach
-            .asked
+        // A Server that told this run its facts itself, over the route the person chose to
+        // it, takes the set from there whatever it holds from before. A row the entry
+        // relays for it, or an SSH endpoint Cloud's Server Access handed over, answers for
+        // nobody.
+        let direct: BTreeSet<MachineId> = found
             .iter()
-            .filter(|machine| client.answers_for_itself(machine))
-            .copied()
+            .filter(|server| server.told.is_own())
+            .map(|server| server.machine_id)
             .collect();
         let Pinning {
             included,
@@ -150,7 +235,6 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
             &reach,
             &Pinned {
                 known: &pinned,
-                direct: &direct,
                 typed: &typed_pins,
             },
             |name, member| {
@@ -164,6 +248,16 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         for member in newly {
             known.record(member)?;
         }
+        outcomes.extend(silent.into_iter().map(|machine_id| {
+            let server = reach.name(&machine_id);
+            Outcome {
+                machine_id,
+                state: State::LeftOut(format!(
+                    "didn't answer over the connection you saved for it, so it's left out rather than trusting another Server's word for it. Check it with `ployz status` on {server}, then run this again."
+                )),
+                server,
+            }
+        }));
         if included.is_empty() {
             return Err(Error::conflict(
                 "No Server is pinned on this computer, so nothing was signed.",
@@ -251,7 +345,6 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
                 &client,
                 &Installing {
                     reach: &reach,
-                    direct: &direct,
                     activated: &activated,
                 },
                 &set,
@@ -283,22 +376,39 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-async fn found_on(client: Client, machine_id: MachineId) -> Result<Option<Found>, RpcError> {
+async fn found_on(client: Client, machine_id: MachineId) -> Result<Option<Looked>, RpcError> {
+    if client.answers_for_itself(&machine_id) {
+        return Ok(Some(match told::read(&client, machine_id).await {
+            Ok(Some((enforces, details, own))) => {
+                found_from(machine_id, &details, enforces, Told::Itself(own))
+                    .map_or(Looked::Silent, |found| Looked::Found(Box::new(found)))
+            }
+            Ok(None) | Err(_) => Looked::Silent,
+        }));
+    }
     let target = MachineTarget::from(&machine_id);
     let enforces = compat::supports(&client, &target, ENFORCED_CAPABILITY).await?;
     let details: MachineDetails = client
         .call_shared::<op::Inspect>(InspectRequest::default(), Call::once().to(&target))
         .await
         .map_err(crate::connect::rpc_error)?;
-    let Some(machine) = details
+    Ok(found_from(machine_id, &details, enforces, Told::Relayed)
+        .map(|found| Looked::Found(Box::new(found))))
+}
+
+fn found_from(
+    machine_id: MachineId,
+    details: &MachineDetails,
+    enforces: bool,
+    told: Told,
+) -> Option<Found> {
+    let machine = details
         .machine
         .as_ref()
-        .filter(|machine| machine.id == machine_id)
-    else {
-        return Ok(None);
-    };
-    Ok(Some(Found {
+        .filter(|machine| machine.id == machine_id)?;
+    Some(Found {
         machine_id,
+        told,
         member: Member::from(machine),
         report: details.activation.clone(),
         identity: match details.sealing {
@@ -307,15 +417,12 @@ async fn found_on(client: Client, machine_id: MachineId) -> Result<Option<Found>
         },
         recipient: details.sealing_recipient,
         enforces,
-    }))
+    })
 }
 
 /// What this computer trusts each Server's key from, other than asking.
 struct Pinned<'a> {
     known: &'a BTreeMap<MachineId, Member>,
-    /// The Servers this run reached over their own SSH or local socket, which answer for
-    /// themselves.
-    direct: &'a BTreeSet<MachineId>,
     /// Fingerprints the person typed with `--pin`.
     typed: &'a BTreeSet<String>,
 }
@@ -354,7 +461,7 @@ fn pin_each<'a>(
             if *pin != server.member {
                 return Err(substituted(&name, pin, &server.member));
             }
-        } else if pinned.direct.contains(&server.machine_id)
+        } else if server.told.is_own()
             || pinned
                 .typed
                 .contains(&server.member.public_key.fingerprint())
@@ -650,12 +757,11 @@ impl Recipient<'_> {
 
 /// The recipient key the activated Servers already hold, with one Server holding it. `None`
 /// when none holds one. More than one key can't be healed by a run. A key counts only when
-/// a holder this run reached in `direct` reports it, or it is the recipient this computer
-/// `pinned`: through Cloud's Server Access, Cloud could report the real Members with a key
-/// of its own.
+/// a holder told this run itself, over the route the person chose to it, or it is the
+/// recipient this computer `pinned`: through Cloud's Server Access, Cloud could report the
+/// real Members with a key of its own.
 fn held_recipient<'a>(
     activated: &[&'a Found],
-    direct: &BTreeSet<MachineId>,
     pinned: Option<SealingPublicKey>,
 ) -> Result<Option<Recipient<'a>>, String> {
     let mut held: BTreeMap<SealingPublicKey, Vec<&'a Found>> = BTreeMap::new();
@@ -668,9 +774,7 @@ fn held_recipient<'a>(
     match (keys.next(), keys.next()) {
         (None, _) => Ok(None),
         (Some((recipient, holders)), None) => {
-            let answering = holders
-                .iter()
-                .find(|holder| direct.contains(&holder.machine_id));
+            let answering = holders.iter().find(|holder| holder.told.is_own());
             match (answering, holders.first()) {
                 (Some(holder), _) => Ok(Some(Recipient::Held { recipient, holder })),
                 (None, Some(holder)) if pinned == Some(recipient) => {
@@ -767,11 +871,9 @@ async fn settled(
     Err("it didn't report the activation committed. Check it with `ployz status`.".to_owned())
 }
 
-/// The Servers a recipient key goes to, and which of them this run reached over their own
-/// SSH or local socket.
+/// The Servers a recipient key goes to, and how to name them.
 struct Installing<'a> {
     reach: &'a Reach,
-    direct: &'a BTreeSet<MachineId>,
     activated: &'a [&'a Found],
 }
 
@@ -781,11 +883,7 @@ struct Installing<'a> {
 async fn install_recipient(
     config: &std::path::Path,
     client: &Client,
-    &Installing {
-        reach,
-        direct,
-        activated,
-    }: &Installing<'_>,
+    &Installing { reach, activated }: &Installing<'_>,
     set: &StartingSet,
     signer: &Signer,
 ) -> Result<(), Error> {
@@ -800,7 +898,7 @@ async fn install_recipient(
         return Ok(());
     };
     let pins = crate::sealing_pin::Pins::beside(config);
-    let source = match held_recipient(activated, direct, pins.recipient_of(identity)?) {
+    let source = match held_recipient(activated, pins.recipient_of(identity)?) {
         Ok(Some(held)) => held,
         Ok(None) => Recipient::Fresh(RecipientSecret::generate()),
         Err(why) => {

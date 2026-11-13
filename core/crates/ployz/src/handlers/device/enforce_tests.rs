@@ -12,6 +12,7 @@ fn found(hex: char, name: &str) -> Found {
     let machine = machine(hex, name);
     Found {
         machine_id: machine.id,
+        told: Told::Relayed,
         member: Member::from(&machine),
         report: None,
         identity: None,
@@ -84,12 +85,13 @@ fn enforce_refuses_a_substituted_identity_and_answer() {
     let servers = [honest, answered];
     let reach = reach_of(&servers.iter().collect::<Vec<_>>());
 
+    let mut servers = servers;
+    servers[1].told = Told::Itself(told::Own::for_test());
     let refused = pin_each(
         &servers,
         &reach,
         &Pinned {
             known: &known,
-            direct: &BTreeSet::from([servers[1].machine_id]),
             typed: &BTreeSet::from([servers[1].member.public_key.fingerprint()]),
         },
         |_, _| Ok(true),
@@ -119,6 +121,10 @@ fn enforce_leaves_out_an_unpinned_legacy_member() {
     let mut old = found('5', "machine-5");
     old.enforces = false;
     let known = BTreeMap::from([(known_server.machine_id, known_server.member.clone())]);
+    let over_ssh = Found {
+        told: Told::Itself(told::Own::for_test()),
+        ..over_ssh
+    };
     let servers = [known_server, over_ssh, typed, unpinned, old];
     let reach = reach_of(&servers.iter().collect::<Vec<_>>());
     let mut asked = Vec::new();
@@ -128,7 +134,6 @@ fn enforce_leaves_out_an_unpinned_legacy_member() {
         &reach,
         &Pinned {
             known: &known,
-            direct: &BTreeSet::from([servers[1].machine_id]),
             typed: &BTreeSet::from([servers[2].member.public_key.fingerprint()]),
         },
         |name, _| {
@@ -346,11 +351,11 @@ fn a_rerun_shares_the_recipient_key_the_activated_servers_hold_rather_than_makin
     let key = ployz_core::Keypair::generate().public();
     let holder = Found {
         recipient: Some(key),
+        told: Told::Itself(told::Own::for_test()),
         ..found('1', "machine-1")
     };
     let lacking = found('2', "machine-2");
-    let direct = BTreeSet::from([holder.machine_id]);
-    match held_recipient(&[&lacking, &holder], &direct, None).unwrap() {
+    match held_recipient(&[&lacking, &holder], None).unwrap() {
         Some(Recipient::Held { recipient, holder }) => {
             assert_eq!(recipient, key);
             assert_eq!(holder.machine_id, found('1', "machine-1").machine_id);
@@ -358,18 +363,14 @@ fn a_rerun_shares_the_recipient_key_the_activated_servers_hold_rather_than_makin
         _ => panic!("the held key is shared"),
     }
     assert!(
-        held_recipient(&[&lacking], &direct, None)
-            .unwrap()
-            .is_none(),
+        held_recipient(&[&lacking], None).unwrap().is_none(),
         "with no key held, a new one is made"
     );
     let split = Found {
         recipient: Some(ployz_core::Keypair::generate().public()),
         ..found('2', "machine-2")
     };
-    let refusal = held_recipient(&[&holder, &split], &direct, None)
-        .err()
-        .unwrap();
+    let refusal = held_recipient(&[&holder, &split], None).err().unwrap();
     assert!(refusal.contains("different recipient keys"), "{refusal}");
 }
 
@@ -386,20 +387,168 @@ fn a_rerun_takes_a_held_recipient_only_from_a_server_that_answers_for_itself_or_
         recipient: Some(planted),
         ..found('2', "machine-2")
     };
-    let through_cloud = BTreeSet::new();
-
-    let refusal = held_recipient(&[&one, &two], &through_cloud, None)
-        .err()
-        .unwrap();
+    let refusal = held_recipient(&[&one, &two], None).err().unwrap();
 
     assert!(refusal.contains("Nothing was signed"), "{refusal}");
     let other = ployz_core::Keypair::generate().public();
     assert!(
-        held_recipient(&[&one, &two], &through_cloud, Some(other)).is_err(),
+        held_recipient(&[&one, &two], Some(other)).is_err(),
         "a pin naming another key vouches for nothing"
     );
     assert!(matches!(
-        held_recipient(&[&one, &two], &through_cloud, Some(planted)),
+        held_recipient(&[&one, &two], Some(planted)),
         Ok(Some(Recipient::Held { recipient, .. })) if recipient == planted
     ));
+}
+
+/// Before first activation, a Member Cloud added over the mesh can rewrite Server B's
+/// replicated row. B has a saved SSH route, but a row the entry relays for B is the entry's
+/// word, not B's: only a pin or the person's own check of its fingerprint includes it.
+#[test]
+fn a_row_the_entry_relays_for_a_server_with_its_own_route_pins_nothing() {
+    let entry = Found {
+        told: Told::Itself(told::Own::for_test()),
+        ..found('1', "machine-1")
+    };
+    let mut forged = found('2', "machine-2");
+    forged.member.public_key = WireGuardPublicKey([9; 32]);
+    let servers = [entry, forged];
+    let reach = reach_of(&servers.iter().collect::<Vec<_>>());
+
+    let pinning = pin_each(
+        &servers,
+        &reach,
+        &Pinned {
+            known: &BTreeMap::new(),
+            typed: &BTreeSet::new(),
+        },
+        never,
+    )
+    .unwrap();
+
+    assert!(
+        !pinning
+            .newly
+            .iter()
+            .chain(pinning.included.iter().map(|server| &server.member))
+            .any(|member| member.public_key == WireGuardPublicKey([9; 32])),
+        "the forged key was pinned or signed"
+    );
+}
+
+fn details_of(machine: ployz_core::Machine) -> MachineDetails {
+    MachineDetails {
+        activation: None,
+        sealing_recipient: None,
+        id: machine.id,
+        public_key: machine.public_key,
+        machine: Some(machine),
+        phase: ployz_core::LocalMachinePhase::Participating,
+        advertised_endpoints: Vec::new(),
+        store_version: BTreeMap::new(),
+        rtts: Vec::new(),
+        management_clients: Vec::new(),
+        passkeys: Vec::new(),
+        storage: None,
+        upgrade: None,
+        telemetry: None,
+        token: None,
+        sealing: None,
+        founding: Default::default(),
+    }
+}
+
+fn describing(id: MachineId) -> ployz_core::ContractDescription {
+    ployz_core::ContractDescription {
+        attest: None,
+        machine_id: id,
+        protocol_major: ployz_core::PROTOCOL_MAJOR,
+        daemon_version: "fixture".into(),
+        capabilities: [ployz_core::CapabilityName::parse(ENFORCED_CAPABILITY).unwrap()].into(),
+        sealing: None,
+    }
+}
+
+/// A daemon on `path` describing itself as `id`, which answers every Inspect, whatever
+/// its target, with `row`.
+fn daemon_at(
+    path: &std::path::Path,
+    id: MachineId,
+    row: ployz_core::Machine,
+) -> tokio::runtime::Runtime {
+    crate::connect::test_support::unix_daemon_describing(path, describing(id), move |body| {
+        let row = row.clone();
+        async move {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "any other call is the bug this fixture catches"
+            )]
+            match body {
+                ployz_core::RpcRequestBody::Inspect(_) => {
+                    Ok(ployz_core::RpcResponse::from(details_of(row)))
+                }
+                other => panic!("enforce sent {other:?}"),
+            }
+        }
+    })
+}
+
+/// Entry Server machine-1 on its own socket in `root`, relaying a forged row for
+/// `server`, with the route the person chose to `server` at `route`.
+async fn entering(
+    root: &std::path::Path,
+    server: &ployz_core::Machine,
+    route: &std::path::Path,
+) -> (Client, tokio::runtime::Runtime) {
+    let path = root.join("entry.sock");
+    let forged = ployz_core::Machine {
+        public_key: WireGuardPublicKey([9; 32]),
+        ..server.clone()
+    };
+    let entry = daemon_at(&path, machine('1', "machine-1").id, forged);
+    let client = crate::connect::test_support::unix_client(&path).await;
+    let route = crate::context::Connection::unix(route)
+        .unwrap()
+        .with_machine_id(server.id);
+    (
+        client.with_full_routes(crate::cluster::FullRoutes::chosen(vec![route], false)),
+        entry,
+    )
+}
+
+/// A Server the person saved a connection to answers only over it. When that connection
+/// fails, the entry's relayed row for it is no stand-in: the Server is left out.
+#[tokio::test]
+async fn a_server_whose_own_route_fails_is_left_out_rather_than_read_through_the_entry() {
+    let server = machine('2', "machine-2");
+    let root = tempfile::tempdir().unwrap();
+    let (client, entry) = entering(root.path(), &server, &root.path().join("absent.sock")).await;
+
+    let looked = found_on(client, server.id).await.unwrap();
+
+    entry.shutdown_background();
+    assert!(
+        matches!(looked, Some(Looked::Silent)),
+        "the relayed row was taken"
+    );
+}
+
+/// Over its own route a Server reports its own key, whatever the entry relays for it.
+#[tokio::test]
+async fn a_server_with_its_own_route_is_read_over_it() {
+    let server = machine('2', "machine-2");
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("own.sock");
+    let own = daemon_at(&path, server.id, server.clone());
+    let (client, entry) = entering(root.path(), &server, &path).await;
+
+    let looked = found_on(client, server.id).await.unwrap();
+
+    own.shutdown_background();
+    entry.shutdown_background();
+    let Some(Looked::Found(found)) = looked else {
+        panic!("the Server answered over its own route");
+    };
+    assert!(found.told.is_own());
+    assert_eq!(found.member.public_key, server.public_key);
 }

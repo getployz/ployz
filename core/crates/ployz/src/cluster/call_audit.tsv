@@ -85,6 +85,7 @@ src/handlers/device.rs::sign_waiting_join	op::PendingJoins	call	unary	-	redial	r
 src/handlers/device/enforce.rs::deliver	op::SetDeviceEnforcement	invoke	single	-	-	once
 src/handlers/device/enforce.rs::deliver_over_mesh	op::ActivateEnforcement	invoke	single	-	-	once
 src/handlers/device/enforce.rs::found_on	op::Inspect	invoke	single	-	-	once
+src/handlers/device/enforce.rs::read	op::Inspect	-	single	-	-	once
 src/handlers/device/enforce.rs::install_recipient	op::SetRecipientKey	invoke	single	-	-	once
 src/handlers/device/enforce.rs::settled	op::Inspect	call	setup	wait(WAIT)	redial	read
 src/handlers/device/enforce.rs::shared	op::SetRecipientKey	invoke	single	-	-	once

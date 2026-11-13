@@ -53,9 +53,12 @@ Activation:
   device you activate from is always kept. Approve a removed one again with
   `ployz device request` on that computer, signed in with `ployz login`, then
   `ployz device approve <code>` from yours.
-- leaves out a server you didn't confirm or that runs a Ployz older than 0.4. Once the others
-  activate, that server is no longer part of the cluster, and `ployz server rm` no longer finds
-  it. [Add it back](#add-back-a-server-left-out). Upgrade every server first.
+- leaves out a server you didn't confirm, that runs a Ployz older than 0.4, or that didn't
+  answer over the SSH connection you saved for it. It never reads that server's key through
+  another server instead. Once the others activate, that server is no longer part of the
+  cluster, and `ployz server rm` no longer finds it.
+  [Add it back](#add-back-a-server-left-out). Upgrade every server first, and check each one
+  answers over SSH.
 - cancels any build Ployz Cloud approved and any volume change waiting on an approval. Start them
   again from an approved device or with your passkey.
 - gives the cluster a new key for sealed values. Values you seal from then on use it. A server
