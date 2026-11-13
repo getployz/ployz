@@ -72,8 +72,26 @@ pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, R
     Ok(ConsentedView { volumes })
 }
 
+/// When a refusal to delete data says the deletion happens.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Deletes {
+    /// The Deploy being reviewed deletes it.
+    Now,
+    /// Publishing saves the removal, which the next Deploy deletes.
+    NextDeploy,
+}
+
+impl Deletes {
+    const fn subject(self) -> &'static str {
+        match self {
+            Self::Now => "This permanently deletes",
+            Self::NextDeploy => "Next deploy deletes",
+        }
+    }
+}
+
 /// Review `removed` against what the Servers hold, for the Deploy or Publish of
-/// review `base` (its version). Refuses with `unavailable` when the observation is
+/// review `base` (its version), `deletes` when the deletion happens. Refuses with `unavailable` when the observation is
 /// missing, didn't look for one of them, or a Server didn't answer; with
 /// `invalid_argument` for an accepted name this doesn't remove; and with
 /// `confirmation_required` unless `accepted` names every Volume whose data some
@@ -85,7 +103,7 @@ pub(crate) fn review(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
-    (base, version): (&str, Option<&str>),
+    (base, version, deletes): (&str, Option<&str>, Deletes),
     removed: Vec<RemovedVolume>,
     observed: Option<&VolumeObservation>,
     (accepted, consent): (&[VolumeName], &[VolumeLoss]),
@@ -125,7 +143,7 @@ pub(crate) fn review(
         ..Confirmation::default()
     }
     .refuse(error::data_loss_message(
-        "This permanently deletes",
+        deletes.subject(),
         lost.iter().map(|loss| &loss.volume.name),
     )))
 }

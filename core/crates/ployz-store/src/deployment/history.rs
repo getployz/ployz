@@ -2,12 +2,6 @@
 
 use super::*;
 
-/// The rule every reading of "the Deployment history" shares: only numbered rows
-/// count, in number order. A hold that never promoted (waiting, superseded or
-/// cancelled while waiting) has no number and is not history. Postgres sorts
-/// NULLs first under `DESC`, so the filter is never left to the sort order.
-pub(crate) const NUMBERED: &str = "number IS NOT NULL";
-
 /// `environment`'s latest `limit` Deployments that were admitted and weren't
 /// superseded, newest first: none waiting for CI.
 pub(crate) fn history(
@@ -19,8 +13,9 @@ pub(crate) fn history(
     tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
-             WHERE environment_id = ?1 AND {NUMBERED} AND status NOT IN ('superseded') \
-             ORDER BY number DESC LIMIT ?2"
+             WHERE environment_id = ?1 AND {NUMBERED} AND {not_superseded} \
+             ORDER BY number DESC LIMIT ?2",
+            not_superseded = NOT_SUPERSEDED.as_str()
         ),
         &[environment.as_str().into(), limit.into()],
     )?
@@ -64,8 +59,9 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         .query(
             &format!(
                 "SELECT COUNT(*) FROM config_deployment \
-                 WHERE environment_id = ?1 AND {NUMBERED} AND status NOT IN ('superseded') \
-                 AND NOT {in_flight}"
+                 WHERE environment_id = ?1 AND {NUMBERED} AND {not_superseded} \
+                 AND NOT {in_flight}",
+                not_superseded = NOT_SUPERSEDED.as_str()
             ),
             &[id.as_str().into()],
         )?
@@ -187,11 +183,10 @@ fn may_run(
         &format!(
             "SELECT saved_revision, nodes, status, run, id FROM config_deployment \
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
-             AND (status IN ('unknown', 'failed', 'cancelled') \
-              OR (status IN ('running', 'cancelling') AND lease <= {})) \
+             AND (status IN ('unknown', 'failed', 'cancelled') OR {lapsed}) \
              AND number > COALESCE((SELECT MAX(number) FROM config_deployment \
               WHERE environment_id = ?1 AND status = 'applied' AND services = '[]'), 0)",
-            now()
+            lapsed = lapsed_sql()
         ),
         &[environment.as_str().into()],
     )?;
@@ -305,11 +300,7 @@ pub(crate) fn claimed_or_queued(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    latest_where(
-        tx,
-        environment,
-        "status IN ('queued', 'running', 'cancelling')",
-    )
+    latest_where(tx, environment, IN_FLIGHT.as_str())
 }
 
 /// How long after a Deployment that ran ends its Servers may still be doing what it
@@ -321,9 +312,9 @@ pub(crate) const SETTLING: i64 = 10 * 60;
 /// Servers may still be doing what it sent at `looked`, or at now if that is
 /// earlier: it started (a runner claimed it), and it ended, or its runner may have
 /// acted, no earlier than [`SETTLING`] before then. Which column says so:
-/// - `ended`, for every row: the end its last edge stamped (lifecycle.rs `end`,
+/// - `ended`, for every row: the end its last edge stamped (record.rs `end`,
 ///   `cancel_in_flight`).
-/// - Its runner lease, which every record renews (lifecycle.rs `record`), for one
+/// - Its runner lease, which every record renews (record.rs `record`), for one
 ///   whose runner may act until it: the row says `running` or `cancelling` while
 ///   it holds and once it lapsed unwritten, and `unknown` once lost. Losing its
 ///   runner stamps `ended` no later than the lease ([`super::runner_lost`]), so the
@@ -437,7 +428,8 @@ pub(crate) fn only_ran_nothing(
         &format!(
             "SELECT status, run FROM config_deployment \
              WHERE environment_id = ?1 AND {NUMBERED} AND saved_revision = ?2 \
-             AND status NOT IN ('superseded')"
+             AND {not_superseded}",
+            not_superseded = NOT_SUPERSEDED.as_str()
         ),
         &[
             environment.as_str().into(),
@@ -658,12 +650,6 @@ pub(crate) fn build_log(
     build::log(tx, &stored, &query.service)
 }
 
-/// The rows a list of an Environment's Deployments shows: every numbered one, a
-/// hold still waiting for CI, and a hold cancelled while waiting. A hold a newer
-/// push replaced before CI answered is left out: it never got a number, and a
-/// burst of them would push real Deployments off the first page.
-const LISTED: &str = "(number IS NOT NULL OR status <> 'superseded')";
-
 /// Where a page ended: the list position of its last row. A position is taken once,
 /// at insert, and never moves, so the next page starts below it whatever became of
 /// the row since: superseded, it leaves the list; promoted, it keeps its place, and
@@ -712,8 +698,9 @@ pub(crate) fn page(
     let rows = tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
-             WHERE environment_id = ?1 AND {LISTED}{after_sql} \
-             ORDER BY listed DESC LIMIT ?2"
+             WHERE environment_id = ?1 AND {listed}{after_sql} \
+             ORDER BY listed DESC LIMIT ?2",
+            listed = LISTED.as_str()
         ),
         &params,
     )?;

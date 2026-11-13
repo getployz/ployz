@@ -8713,3 +8713,61 @@ fn cloud_keeps_the_upload_a_deploy_chooses_from_a_superseded_one() {
         .unwrap();
     assert!(held[at], "{chosen:?} chosen but released: {held:?}");
 }
+
+/// What a refused claim answers: its code, its words and the Deployment it names.
+fn refusal(error: &RpcError, deployment: u8, message: &str) {
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert_eq!(error.message, message, "{error:?}");
+    assert_eq!(error.details, json!({ "deployment": id(deployment) }));
+}
+
+#[test]
+fn a_refused_claim_says_why_and_leaves_the_deployment_as_its_refusal_recorded() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+
+    // A newer Deployment replaced #1 before it started: nothing about it changes.
+    refusal(
+        &store.claim(&id(1), &a).unwrap_err(),
+        1,
+        "A newer Deployment replaced this one before it started",
+    );
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Superseded);
+
+    // Another runner holds #2: it stays Running for its own.
+    store.claim(&id(2), &a).unwrap();
+    refusal(
+        &store.claim(&id(2), &runner("runner-b")).unwrap_err(),
+        2,
+        "Another runner owns this Deployment",
+    );
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
+
+    // Its own runner comes back after preparing it: what ran is unknown, and what the
+    // refusal recorded stays.
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    refusal(
+        &store.claim(&id(2), &a).unwrap_err(),
+        2,
+        "This Deployment's runner lost track of it after preparing it, so what ran is \
+         unknown. Start a new Deployment",
+    );
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+
+    // An ended one is over for every runner.
+    refusal(
+        &store.claim(&id(2), &a).unwrap_err(),
+        2,
+        "This Deployment already ended",
+    );
+    refusal(
+        &store.claim(&id(2), &runner("runner-b")).unwrap_err(),
+        2,
+        "This Deployment already ended",
+    );
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+}

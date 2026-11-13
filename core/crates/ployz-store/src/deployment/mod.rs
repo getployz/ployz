@@ -6,27 +6,39 @@
 
 pub(crate) mod admit;
 pub(crate) mod applied;
+mod claim;
 mod history;
 mod landing;
 mod lifecycle;
 pub(crate) mod loss;
 mod lowering;
+mod outcomes;
 pub(crate) mod query;
+mod record;
 #[cfg(test)]
 mod reference_tests;
 #[cfg(test)]
 mod retire_tests;
+mod retry;
 mod rows;
+mod status;
+#[cfg(test)]
+mod status_tests;
 pub(crate) mod uploads;
+pub(crate) use claim::*;
 pub(crate) use history::*;
 pub(crate) use landing::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
+use outcomes::*;
+pub(crate) use record::*;
+pub(crate) use retry::*;
 pub(crate) use rows::server_names;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
     StoppedBy,
 };
+pub(crate) use status::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1008,17 +1020,6 @@ static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     )
 });
 
-/// SQL selecting Deployments that may still run: queued, or claimed by a runner
-/// whose lease holds. The inverse of [`lapsed`] for claimed ones. The status set
-/// comes first, spelled as the `config_deployment_in_flight` index's predicate is,
-/// so SQLite's planner takes the index.
-pub(crate) fn in_flight_sql() -> String {
-    format!(
-        "(status IN ('queued', 'running', 'cancelling') AND (status = 'queued' OR lease > {}))",
-        now()
-    )
-}
-
 /// Whether a claimed Deployment's runner is gone at `now`: its runner lease lapsed,
 /// so what ran is unknown. Every read shows a lapsed one as `unknown`
 /// ([`Standing::status`]).
@@ -1094,7 +1095,7 @@ struct ClaimedRun {
     phase: Phase,
 }
 
-/// A runner's claim: `claim` sets all three at once (lifecycle.rs `claim`).
+/// A runner's claim: `claim` sets all three at once (claim.rs `claim`).
 #[derive(Debug)]
 struct Claim {
     runner: RunnerId,
@@ -1830,7 +1831,7 @@ impl Stored {
 ///   `lease` and `ended` columns, with the run, its outcome and its preview. A claim
 ///   whose runner lease lapsed it writes as its row holds it, `running` or
 ///   `cancelling` ([`Standing::kept`]): only an edge that loses the runner writes
-///   Unknown, with its end (lifecycle.rs `claim` and `record`).
+///   Unknown, with its end (claim.rs `claim` and record.rs `record`).
 ///
 /// Once the summary says the Deployment can't run any more, at each save:
 /// - History drops the sealed values only a Deployment in flight kept, rewriting

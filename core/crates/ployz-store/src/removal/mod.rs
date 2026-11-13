@@ -26,7 +26,7 @@ pub(crate) use self::due::{admit, close, sweep};
 pub(crate) use self::due::{ask_taking_off, due, shut_down};
 use self::mark::{Accepted, Closed, Mark, State};
 pub use self::review::{ConsentedQuery, ConsentedView};
-pub(crate) use self::review::{consented, review};
+pub(crate) use self::review::{Deletes, consented, review};
 use crate::deployment::loss::{VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::digest::short_digest;
