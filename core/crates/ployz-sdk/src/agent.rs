@@ -6,7 +6,8 @@ use ployz_core::{ContainerId, MachineId, Namespace, ServiceName};
 use ployz_store::tools::{self, Act, Answer, CloudQuery, Place};
 use serde::{Deserialize, Serialize};
 
-use crate::{Client, from_js, invalid_argument, rpc_to_napi, to_json, whole_numbers};
+use crate::Client;
+use crate::boundary::{from_js, invalid_argument, rpc_to_napi, to_json, whole_numbers};
 
 /// What a model is told: `{ instructions, tools }`.
 ///

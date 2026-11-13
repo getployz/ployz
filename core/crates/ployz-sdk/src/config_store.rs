@@ -13,7 +13,9 @@ use ployz_core::{RpcError, ServiceName};
 use ployz_store::{Actor, DeploymentId, GithubBuildId, OrganizationId, RunEvidence, RunnerId};
 use serde::de::DeserializeOwned;
 
-use crate::{invalid_argument, rpc_to_napi, whole_numbers};
+use crate::boundary::{
+    from_js, invalid_argument, parse_connections, parse_expect, rpc_to_napi, whole_numbers,
+};
 
 /// One Config Store over one database.
 #[napi]
@@ -56,8 +58,8 @@ pub async fn observe_volumes(
     sought: Vec<String>,
     #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let connections = crate::parse_connections(connections)?;
-    let expect = crate::parse_expect(expect)?;
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
     let sought = sought
         .into_iter()
         .map(ployz_core::DockerVolumeName::parse)
@@ -79,8 +81,8 @@ pub async fn observe_copies(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let connections = crate::parse_connections(connections)?;
-    let expect = crate::parse_expect(expect)?;
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
     to_json(ployz::sdk::observe_copies(connections, expect).await)
 }
 
@@ -96,8 +98,8 @@ pub async fn observe_running(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let connections = crate::parse_connections(connections)?;
-    let expect = crate::parse_expect(expect)?;
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
     to_json(ployz::sdk::observe_running_expecting(connections, expect).await)
 }
 
@@ -261,8 +263,8 @@ impl ConfigStore {
         }
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         let sources: Sources = sources
             .map(|sources| decode(sources, "Expected checkouts, upload and failure"))
             .transpose()?
@@ -348,8 +350,8 @@ impl ConfigStore {
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::retire_old(
                 Arc::clone(&self.store),
@@ -552,8 +554,8 @@ impl ConfigStore {
         #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
         expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
-        let expect = crate::parse_expect(expect)?;
+        let (build, connections) = (github_id(&build)?, parse_connections(connections)?);
+        let expect = parse_expect(expect)?;
         to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections, expect).await)
     }
 
@@ -621,8 +623,8 @@ impl ConfigStore {
                     .map_err(|_| invalid_argument("Expected a holder of 64 lowercase hex"))
             })
             .transpose()?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::github_check_in(
                 Arc::clone(&self.store),
@@ -672,8 +674,8 @@ impl ConfigStore {
         expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let claims = claims_of(claims)?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::github_rule_check_in(
                 Arc::clone(&self.store),
@@ -704,8 +706,8 @@ impl ConfigStore {
     ) -> Result<serde_json::Value> {
         let claims = claims_of(claims)?;
         let ask: ployz::sdk::RuleAsk = decode(ask, "Expected a rule build's grant ask")?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::github_rule_grant(
                 Arc::clone(&self.store),
@@ -762,9 +764,9 @@ impl ConfigStore {
         #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
         expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
+        let (build, connections) = (github_id(&build)?, parse_connections(connections)?);
         let look = decode(look, "Expected a GitHub look")?;
-        let expect = crate::parse_expect(expect)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::github_finish(Arc::clone(&self.store), build, look, connections, expect)
                 .await,
@@ -796,7 +798,7 @@ fn repository(repository_id: i64) -> Result<u64> {
 }
 
 fn decode<T: DeserializeOwned>(value: serde_json::Value, refusal: &str) -> Result<T> {
-    crate::from_js(value).map_err(|error| refused(refusal, &error))
+    from_js(value).map_err(|error| refused(refusal, &error))
 }
 
 /// `refusal`, then where and why the input did not fit, never a value it holds.
