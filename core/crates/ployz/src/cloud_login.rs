@@ -4,6 +4,9 @@
 //! The sign-in lives next to the Ployz config as `cloud.json` (mode 0600). A pending
 //! code is stored too, so `ployz login --wait`, a repeated `ployz login`, or any
 //! other command can finish a sign-in a browser approved in the meantime.
+//!
+//! Every request goes out through [`crate::cloud_account::client`], whose User-Agent marks
+//! the sessions it starts as signed-in devices.
 
 use std::{
     io,
@@ -11,14 +14,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use ployz_core::cloud_contract::AGENT_HEADER;
 use ployz_core::cloud_contract::CLIENT_ID;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// RFC 8628 §3.5: a `slow_down` answer adds five seconds to the polling interval.
 const SLOW_DOWN: Duration = Duration::from_secs(5);
 
@@ -279,7 +279,7 @@ pub(crate) async fn signed_in(store: &CredentialStore) -> Result<SignedIn, Login
         Some(Stored::SignedIn(signed_in)) => Ok(signed_in),
         Some(Stored::Pending(pending)) => {
             let url = pending.url.clone();
-            poll_once(store, &http()?, pending)
+            poll_once(store, &crate::cloud_account::client()?, pending)
                 .await?
                 .ok_or(LoginError::AwaitingApproval { url })
         }
@@ -303,7 +303,7 @@ pub(crate) enum Start {
 /// Returns [`LoginError::OtherCloud`] when signed in elsewhere, or a Cloud or store failure.
 pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
     let cloud = crate::cloud_origin::CloudOrigin::new(cloud).into_string();
-    let http = http()?;
+    let http = crate::cloud_account::client()?;
     match store.replaceable()? {
         Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {
             return Err(LoginError::OtherCloud {
@@ -349,7 +349,7 @@ pub(crate) async fn wait(
     store: &CredentialStore,
     pending: Pending,
 ) -> Result<SignedIn, LoginError> {
-    let http = http()?;
+    let http = crate::cloud_account::client()?;
     let mut interval = Duration::from_secs(pending.interval_secs);
     loop {
         tokio::time::sleep(interval).await;
@@ -407,7 +407,7 @@ pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>,
         },
         Some(Stored::SignedIn(signed_in)) => {
             let url = format!("{}/api/cli/logout", signed_in.cloud);
-            let sent = http()?
+            let sent = crate::cloud_account::client()?
                 .post(url)
                 .bearer_auth(&signed_in.token.0)
                 .send()
@@ -699,43 +699,6 @@ pub(crate) fn lost(cloud: &str, error: reqwest::Error) -> LoginError {
     }
 }
 
-/// Cloud's client; its User-Agent marks the sessions it starts as signed-in devices,
-/// and `X-Ployz-Agent` names a detected coding agent, for telemetry only.
-pub(crate) fn http() -> Result<reqwest::Client, LoginError> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(agent) = agent(|name| std::env::var(name).ok())
-        .and_then(|agent| reqwest::header::HeaderValue::from_str(&agent).ok())
-    {
-        headers.insert(AGENT_HEADER, agent);
-    }
-    reqwest::Client::builder()
-        .user_agent(concat!("ployz-cli/", env!("CARGO_PKG_VERSION")))
-        .default_headers(headers)
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|error| LoginError::Reply(error.to_string()))
-}
-
-/// The coding agent running this CLI, from the markers agent harnesses set. It
-/// never changes output, prompts or consent.
-fn agent(var: impl Fn(&str) -> Option<String>) -> Option<String> {
-    if let Some(agent) = var("AI_AGENT").filter(|agent| !agent.is_empty()) {
-        return Some(agent);
-    }
-    [
-        ("CLAUDECODE", "claude-code"),
-        ("CURSOR_AGENT", "cursor"),
-        ("CODEX_THREAD_ID", "codex"),
-        ("GEMINI_CLI", "gemini-cli"),
-        ("OPENCODE", "opencode"),
-        ("AMP_CURRENT_THREAD_ID", "amp"),
-    ]
-    .into_iter()
-    .find(|(marker, _)| var(marker).is_some_and(|value| !value.is_empty()))
-    .map(|(_, agent)| agent.to_owned())
-}
-
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -751,28 +714,6 @@ pub(crate) mod tests {
     };
 
     use super::*;
-
-    #[test]
-    fn agent_names_the_harness_from_its_markers() {
-        let only = |pairs: &'static [(&'static str, &'static str)]| {
-            move |name: &str| {
-                pairs
-                    .iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            }
-        };
-        assert_eq!(agent(only(&[])), None);
-        assert_eq!(agent(only(&[("CLAUDECODE", "")])), None);
-        assert_eq!(
-            agent(only(&[("CLAUDECODE", "1")])).as_deref(),
-            Some("claude-code")
-        );
-        assert_eq!(
-            agent(only(&[("CODEX_THREAD_ID", "t1"), ("AI_AGENT", "pi")])).as_deref(),
-            Some("pi")
-        );
-    }
 
     /// A fake Cloud on loopback: `reply("POST /api/auth/device/token", body)` → (status, JSON).
     pub(crate) fn fake_cloud(

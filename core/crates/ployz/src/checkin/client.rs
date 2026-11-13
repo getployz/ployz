@@ -24,7 +24,6 @@ use super::wire::{self, Answer, CheckinRequest};
 const SIGNATURE_CONTEXT: &[u8] = b"ployz-checkin-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const BACKOFF: Duration = Duration::from_secs(60);
 pub(super) const OUTDATED_BACKOFF: Duration = Duration::from_secs(60 * 60);
@@ -187,11 +186,7 @@ pub(super) enum Reply {
 
 impl CheckinClient {
     pub(crate) fn new(cloud_url: &str, token: FleetToken) -> Result<Self, reqwest::Error> {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("ployz-cli/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()?;
+        let http = crate::cloud_account::builder(REQUEST_TIMEOUT).build()?;
         Ok(Self {
             http,
             url: crate::cloud_origin::CloudOrigin::new(cloud_url).checkin_url(),
