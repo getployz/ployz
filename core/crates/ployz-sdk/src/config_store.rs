@@ -13,7 +13,9 @@ use ployz_core::{RpcError, ServiceName};
 use ployz_store::{Actor, DeploymentId, GithubBuildId, OrganizationId, RunEvidence, RunnerId};
 use serde::de::DeserializeOwned;
 
-use crate::{invalid_argument, rpc_to_napi, whole_numbers};
+use crate::boundary::{
+    from_js, invalid_argument, parse_connections, parse_expect, rpc_to_napi, whole_numbers,
+};
 
 /// One Config Store over one database.
 #[napi]
@@ -52,12 +54,12 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 /// Returns `invalid_argument` for malformed input.
 #[napi(ts_return_type = "Promise<VolumeObservation>")]
 pub async fn observe_volumes(
-    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
     sought: Vec<String>,
-    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let connections = crate::parse_connections(connections)?;
-    let expect = crate::parse_expect(expect)?;
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
     let sought = sought
         .into_iter()
         .map(ployz_core::DockerVolumeName::parse)
@@ -76,11 +78,11 @@ pub async fn observe_volumes(
 /// no Server can be reached.
 #[napi(ts_return_type = "Promise<CopyObservation & { foreign: string[] }>")]
 pub async fn observe_copies(
-    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let connections = crate::parse_connections(connections)?;
-    let expect = crate::parse_expect(expect)?;
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
     to_json(ployz::sdk::observe_copies(connections, expect).await)
 }
 
@@ -93,11 +95,11 @@ pub async fn observe_copies(
 /// Returns `invalid_argument` for malformed input.
 #[napi(ts_return_type = "Promise<RunningObservation>")]
 pub async fn observe_running(
-    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let connections = crate::parse_connections(connections)?;
-    let expect = crate::parse_expect(expect)?;
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
     to_json(ployz::sdk::observe_running_expecting(connections, expect).await)
 }
 
@@ -242,13 +244,12 @@ impl ConfigStore {
         organization: String,
         deployment: String,
         runner: String,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
         #[napi(
             ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string; reader?: string }"
         )]
         sources: Option<serde_json::Value>,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         #[derive(Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -261,8 +262,8 @@ impl ConfigStore {
         }
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         let sources: Sources = sources
             .map(|sources| decode(sources, "Expected checkouts, upload and failure"))
             .transpose()?
@@ -342,14 +343,13 @@ impl ConfigStore {
         &self,
         organization: String,
         deployment: String,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::retire_old(
                 Arc::clone(&self.store),
@@ -548,12 +548,11 @@ impl ConfigStore {
     pub async fn github_start(
         &self,
         build: String,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
-        let expect = crate::parse_expect(expect)?;
+        let (build, connections) = (github_id(&build)?, parse_connections(connections)?);
+        let expect = parse_expect(expect)?;
         to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections, expect).await)
     }
 
@@ -610,9 +609,8 @@ impl ConfigStore {
         build: String,
         #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
         #[napi(ts_arg_type = "string | null")] holder: Option<String>,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, claims) = (github_id(&build)?, claims_of(claims)?);
         let holder = holder
@@ -621,8 +619,8 @@ impl ConfigStore {
                     .map_err(|_| invalid_argument("Expected a holder of 64 lowercase hex"))
             })
             .transpose()?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::github_check_in(
                 Arc::clone(&self.store),
@@ -667,13 +665,12 @@ impl ConfigStore {
         &self,
         #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
         commit: String,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let claims = claims_of(claims)?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::github_rule_check_in(
                 Arc::clone(&self.store),
@@ -698,14 +695,13 @@ impl ConfigStore {
         #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
         #[napi(ts_arg_type = "unknown")] ask: serde_json::Value,
         #[napi(ts_arg_type = "string | null")] reader: Option<String>,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let claims = claims_of(claims)?;
         let ask: ployz::sdk::RuleAsk = decode(ask, "Expected a rule build's grant ask")?;
-        let connections = crate::parse_connections(connections)?;
-        let expect = crate::parse_expect(expect)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::github_rule_grant(
                 Arc::clone(&self.store),
@@ -758,13 +754,12 @@ impl ConfigStore {
         &self,
         build: String,
         #[napi(ts_arg_type = "\"start_limit\" | \"budget\" | \"ended\"")] look: serde_json::Value,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
+        let (build, connections) = (github_id(&build)?, parse_connections(connections)?);
         let look = decode(look, "Expected a GitHub look")?;
-        let expect = crate::parse_expect(expect)?;
+        let expect = parse_expect(expect)?;
         to_json(
             ployz::sdk::github_finish(Arc::clone(&self.store), build, look, connections, expect)
                 .await,
@@ -796,7 +791,7 @@ fn repository(repository_id: i64) -> Result<u64> {
 }
 
 fn decode<T: DeserializeOwned>(value: serde_json::Value, refusal: &str) -> Result<T> {
-    crate::from_js(value).map_err(|error| refused(refusal, &error))
+    from_js(value).map_err(|error| refused(refusal, &error))
 }
 
 /// `refusal`, then where and why the input did not fit, never a value it holds.
