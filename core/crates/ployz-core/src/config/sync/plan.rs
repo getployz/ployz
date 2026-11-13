@@ -8,9 +8,8 @@ use serde_json::json;
 
 use super::*;
 use crate::config::{
-    ConfigAttachment, ConfigError, SavedConfigFile, SavedConfigIntent,
-    SavedEnvironmentIntent as Intent, SavedServiceIntent, SavedVolumeIntent,
-    ServiceImageCredentials, ServiceSource, ServiceTemplate, VolumeAttachment,
+    ConfigError, Link, MountKind, SavedConfigIntent, SavedEnvironmentIntent as Intent,
+    SavedServiceIntent, SavedVolumeIntent, ServiceImageCredentials, ServiceSource, ServiceTemplate,
     parse_environment_intent, redact_environment_intent,
 };
 
@@ -733,8 +732,8 @@ impl Plan {
                 ..source.clone()
             };
             if let Some(base) = base {
-                forget_volumes(base, |v| {
-                    v.name == copy.name && !held.contains(&v.resource_lineage_id)
+                base.forget_resources(MountKind::Volume, |name, lineage| {
+                    name == copy.name && !held.contains(lineage)
                 });
                 base.volumes.push(copy.clone());
             }
@@ -751,8 +750,8 @@ impl Plan {
                 ..source.clone()
             };
             if let Some(base) = base {
-                forget_configs(base, |c| {
-                    c.name == copy.name && !held.contains(&c.resource_lineage_id)
+                base.forget_resources(MountKind::Config, |name, lineage| {
+                    name == copy.name.as_str() && !held.contains(lineage)
                 });
                 base.configs.push(copy.clone());
             }
@@ -1002,35 +1001,17 @@ pub fn unchanged_since(
 
 /// Whether `env` references a lineage it does not own, i.e. uses it live.
 fn uses(env: &Intent, lineage: &str) -> bool {
-    env.services
+    env.edges()
         .iter()
-        .flat_map(|s| &s.variables)
-        .flat_map(|v| v.value.referenced_lineages())
-        .chain(
-            env.configs
-                .iter()
-                .flat_map(|c| c.files.values())
-                .flat_map(SavedConfigFile::referenced_lineages),
-        )
-        .any(|used| used == lineage)
+        .any(|edge| edge.link == Link::Reads && edge.used == lineage)
 }
 
 /// Whether a variable or Config file of another node in `env` references `lineage`.
 #[must_use]
 pub fn referenced_by_others(env: &Intent, lineage: &str) -> bool {
-    env.services
+    env.edges()
         .iter()
-        .filter(|s| s.lineage_id != lineage)
-        .flat_map(|s| &s.variables)
-        .flat_map(|v| v.value.referenced_lineages())
-        .chain(
-            env.configs
-                .iter()
-                .filter(|c| c.resource_lineage_id != lineage)
-                .flat_map(|c| c.files.values())
-                .flat_map(SavedConfigFile::referenced_lineages),
-        )
-        .any(|used| used == lineage)
+        .any(|edge| edge.link == Link::Reads && edge.used == lineage && edge.user != lineage)
 }
 
 /// The rows of other nodes in `env` that mount `lineage`: a Volume mount or a Config
@@ -1038,59 +1019,22 @@ pub fn referenced_by_others(env: &Intent, lineage: &str) -> bool {
 /// goes, that reference is broken, and a Deploy leaves out what reads it.
 #[must_use]
 pub fn dependents(env: &Intent, lineage: &str) -> Vec<RowId> {
-    let mut rows = Vec::new();
-    for service in env.services.iter().filter(|s| s.lineage_id != lineage) {
-        let at = |at| RowId::of(&service.lineage_id, at);
-        for attachment in &service.volume_attachments {
-            if env.volumes.iter().any(|v| {
-                v.resource_id == attachment.volume_resource_id && v.resource_lineage_id == lineage
-            }) {
-                rows.push(at(At::Mount(lineage.to_owned())));
-            }
-        }
-        for attachment in &service.config_attachments {
-            if env.configs.iter().any(|c| {
-                c.resource_id == attachment.config_resource_id && c.resource_lineage_id == lineage
-            }) {
-                rows.push(at(At::ConfigMount(lineage.to_owned())));
-            }
-        }
-    }
+    let mut rows: Vec<RowId> = env
+        .edges()
+        .into_iter()
+        .filter(|edge| edge.used == lineage && edge.user != lineage)
+        .filter_map(|edge| {
+            let at = match edge.link {
+                Link::Reads => return None,
+                Link::Mounts(MountKind::Volume) => At::Mount(lineage.to_owned()),
+                Link::Mounts(MountKind::Config) => At::ConfigMount(lineage.to_owned()),
+            };
+            Some(RowId::of(edge.user, at))
+        })
+        .collect();
     rows.sort();
     rows.dedup();
     rows
-}
-
-/// Drop from `base` the Volumes `gone` matches, and every mount on them.
-fn forget_volumes(base: &mut Intent, gone: impl Fn(&SavedVolumeIntent) -> bool) {
-    let ids: Vec<String> = base
-        .volumes
-        .iter()
-        .filter(|v| gone(v))
-        .map(|v| v.resource_id.clone())
-        .collect();
-    base.volumes.retain(|v| !ids.contains(&v.resource_id));
-    for service in &mut base.services {
-        service
-            .volume_attachments
-            .retain(|a| !ids.contains(&a.volume_resource_id));
-    }
-}
-
-/// Drop from `base` the Configs `gone` matches, and every mount on them.
-fn forget_configs(base: &mut Intent, gone: impl Fn(&SavedConfigIntent) -> bool) {
-    let ids: Vec<String> = base
-        .configs
-        .iter()
-        .filter(|c| gone(c))
-        .map(|c| c.resource_id.clone())
-        .collect();
-    base.configs.retain(|c| !ids.contains(&c.resource_id));
-    for service in &mut base.services {
-        service
-            .config_attachments
-            .retain(|a| !ids.contains(&a.config_resource_id));
-    }
 }
 
 /// A base that predates a row's node (or the Volume it mounts) starts it from `into`'s.
@@ -1115,41 +1059,14 @@ fn adopt(base: &mut Intent, into: &Intent, row: &RowId) {
             base.configs.push(config.clone());
         } else if let Some(service) = service(into, lineage) {
             // Mounts on Volumes the base lacks stay out until a mount row lands them.
-            let attachments = service
-                .volume_attachments
-                .iter()
-                .filter_map(|attachment| {
-                    let lineage = &into
-                        .volumes
-                        .iter()
-                        .find(|v| v.resource_id == attachment.volume_resource_id)?
-                        .resource_lineage_id;
-                    Some(VolumeAttachment {
-                        volume_resource_id: volume(base, lineage)?.resource_id.clone(),
-                        mount_path: attachment.mount_path.clone(),
-                    })
-                })
-                .collect();
-            let config_attachments = service
-                .config_attachments
-                .iter()
-                .filter_map(|attachment| {
-                    let lineage = &into
-                        .configs
-                        .iter()
-                        .find(|c| c.resource_id == attachment.config_resource_id)?
-                        .resource_lineage_id;
-                    Some(ConfigAttachment {
-                        config_resource_id: config(base, lineage)?.resource_id.clone(),
-                        mount_dir: attachment.mount_dir.clone(),
-                    })
-                })
-                .collect();
-            base.services.push(SavedServiceIntent {
-                volume_attachments: attachments,
-                config_attachments,
-                ..service.clone()
-            });
+            let mut copy = service.clone();
+            for kind in MountKind::ALL {
+                copy.retarget(kind, |resource_id| {
+                    let lineage = into.resource_lineage(kind, resource_id)?;
+                    base.resource_id(kind, lineage).map(str::to_owned)
+                });
+            }
+            base.services.push(copy);
         }
     }
 }

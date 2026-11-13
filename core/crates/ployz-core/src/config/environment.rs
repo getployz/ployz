@@ -203,6 +203,245 @@ impl SavedServiceIntent {
     }
 }
 
+/// What a Service mounts: the one difference between a Volume and a Config attachment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MountKind {
+    Volume,
+    Config,
+}
+
+impl MountKind {
+    pub const ALL: [Self; 2] = [Self::Volume, Self::Config];
+}
+
+/// One mount of a Service, whichever kind: the resource and where it appears.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Attachment<'a> {
+    pub resource_id: &'a str,
+    pub at: &'a str,
+}
+
+/// How one node of an Environment depends on another.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Link {
+    /// A variable or Config file references the other's variable.
+    Reads,
+    /// A Service mounts the other.
+    Mounts(MountKind),
+}
+
+/// A node (`user`) that reads or mounts another (`used`), by lineage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Edge<'a> {
+    pub user: &'a str,
+    pub used: &'a str,
+    pub link: Link,
+}
+
+impl SavedServiceIntent {
+    /// The mounts of `kind`, in the order the document holds them.
+    #[must_use]
+    pub fn attachments(&self, kind: MountKind) -> Vec<Attachment<'_>> {
+        match kind {
+            MountKind::Volume => self
+                .volume_attachments
+                .iter()
+                .map(|a| Attachment {
+                    resource_id: &a.volume_resource_id,
+                    at: &a.mount_path,
+                })
+                .collect(),
+            MountKind::Config => self
+                .config_attachments
+                .iter()
+                .map(|a| Attachment {
+                    resource_id: &a.config_resource_id,
+                    at: a.mount_dir.as_str(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Mount `resource_id` at `at`, replacing the mount it had.
+    ///
+    /// # Errors
+    /// Returns the decode error when `at` is not a place this kind mounts at.
+    pub fn attach(
+        &mut self,
+        kind: MountKind,
+        resource_id: &str,
+        at: &Value,
+    ) -> Result<(), serde_json::Error> {
+        match kind {
+            MountKind::Volume => {
+                let mount_path = serde_json::from_value(at.clone())?;
+                self.detach(kind, resource_id);
+                self.volume_attachments.push(VolumeAttachment {
+                    volume_resource_id: resource_id.to_owned(),
+                    mount_path,
+                });
+            }
+            MountKind::Config => {
+                let mount_dir = serde_json::from_value(at.clone())?;
+                self.detach(kind, resource_id);
+                self.config_attachments.push(ConfigAttachment {
+                    config_resource_id: resource_id.to_owned(),
+                    mount_dir,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop the mount of `resource_id`.
+    pub fn detach(&mut self, kind: MountKind, resource_id: &str) {
+        match kind {
+            MountKind::Volume => self
+                .volume_attachments
+                .retain(|a| a.volume_resource_id != resource_id),
+            MountKind::Config => self
+                .config_attachments
+                .retain(|a| a.config_resource_id != resource_id),
+        }
+    }
+
+    /// Point each mount of `kind` at the resource `to` names for it, and drop the
+    /// mounts it names none for.
+    pub fn retarget(&mut self, kind: MountKind, to: impl Fn(&str) -> Option<String>) {
+        match kind {
+            MountKind::Volume => {
+                self.volume_attachments = std::mem::take(&mut self.volume_attachments)
+                    .into_iter()
+                    .filter_map(|a| {
+                        Some(VolumeAttachment {
+                            volume_resource_id: to(&a.volume_resource_id)?,
+                            ..a
+                        })
+                    })
+                    .collect();
+            }
+            MountKind::Config => {
+                self.config_attachments = std::mem::take(&mut self.config_attachments)
+                    .into_iter()
+                    .filter_map(|a| {
+                        Some(ConfigAttachment {
+                            config_resource_id: to(&a.config_resource_id)?,
+                            ..a
+                        })
+                    })
+                    .collect();
+            }
+        }
+    }
+}
+
+impl SavedEnvironmentIntent {
+    /// The lineage of the Volume or Config `resource_id` names.
+    #[must_use]
+    pub fn resource_lineage(&self, kind: MountKind, resource_id: &str) -> Option<&str> {
+        match kind {
+            MountKind::Volume => self
+                .volumes
+                .iter()
+                .find(|v| v.resource_id == resource_id)
+                .map(|v| v.resource_lineage_id.as_str()),
+            MountKind::Config => self
+                .configs
+                .iter()
+                .find(|c| c.resource_id == resource_id)
+                .map(|c| c.resource_lineage_id.as_str()),
+        }
+    }
+
+    /// The id of the Volume or Config of lineage `lineage`.
+    #[must_use]
+    pub fn resource_id(&self, kind: MountKind, lineage: &str) -> Option<&str> {
+        match kind {
+            MountKind::Volume => self
+                .volumes
+                .iter()
+                .find(|v| v.resource_lineage_id == lineage)
+                .map(|v| v.resource_id.as_str()),
+            MountKind::Config => self
+                .configs
+                .iter()
+                .find(|c| c.resource_lineage_id == lineage)
+                .map(|c| c.resource_id.as_str()),
+        }
+    }
+
+    /// Drop the Volumes or Configs `gone` matches (given name and lineage), and every
+    /// mount on them.
+    pub fn forget_resources(&mut self, kind: MountKind, gone: impl Fn(&str, &str) -> bool) {
+        let ids: Vec<String> = match kind {
+            MountKind::Volume => self
+                .volumes
+                .iter()
+                .filter(|v| gone(&v.name, &v.resource_lineage_id))
+                .map(|v| v.resource_id.clone())
+                .collect(),
+            MountKind::Config => self
+                .configs
+                .iter()
+                .filter(|c| gone(c.name.as_str(), &c.resource_lineage_id))
+                .map(|c| c.resource_id.clone())
+                .collect(),
+        };
+        match kind {
+            MountKind::Volume => self.volumes.retain(|v| !ids.contains(&v.resource_id)),
+            MountKind::Config => self.configs.retain(|c| !ids.contains(&c.resource_id)),
+        }
+        for service in &mut self.services {
+            for id in &ids {
+                service.detach(kind, id);
+            }
+        }
+    }
+
+    /// Every read and mount between nodes, by lineage. A Service's reading of itself is
+    /// an edge too; a mount of a resource the document lacks is not.
+    #[must_use]
+    pub fn edges(&self) -> Vec<Edge<'_>> {
+        let mut edges = Vec::new();
+        for service in &self.services {
+            let user = service.lineage_id.as_str();
+            for variable in &service.variables {
+                edges.extend(variable.value.referenced_lineages().map(|used| Edge {
+                    user,
+                    used,
+                    link: Link::Reads,
+                }));
+            }
+            for kind in MountKind::ALL {
+                for attachment in service.attachments(kind) {
+                    if let Some(used) = self.resource_lineage(kind, attachment.resource_id) {
+                        edges.push(Edge {
+                            user,
+                            used,
+                            link: Link::Mounts(kind),
+                        });
+                    }
+                }
+            }
+        }
+        for config in &self.configs {
+            let user = config.resource_lineage_id.as_str();
+            edges.extend(
+                config
+                    .files
+                    .values()
+                    .flat_map(SavedConfigFile::referenced_lineages)
+                    .map(|used| Edge {
+                        user,
+                        used,
+                        link: Link::Reads,
+                    }),
+            );
+        }
+        edges
+    }
+}
+
 /// A Config owner reference and the Service directory where its files appear.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -267,13 +506,7 @@ pub struct SavedConfigFile {
 impl SavedConfigFile {
     /// The service lineages this file reads through references.
     pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
-        self.content.iter().filter_map(|part| match part {
-            ValuePart::Ref {
-                owner: ValuePartOwner::Service { lineage_id },
-                ..
-            } => Some(lineage_id.as_str()),
-            ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
-        })
+        self.content.iter().filter_map(ValuePart::service_lineage)
     }
 }
 
@@ -583,13 +816,7 @@ impl VariableValue {
 
     /// The service lineages this value reads through template references.
     pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
-        self.parts().iter().filter_map(|part| match part {
-            ValuePart::Ref {
-                owner: ValuePartOwner::Service { lineage_id },
-                ..
-            } => Some(lineage_id.as_str()),
-            ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
-        })
+        self.parts().iter().filter_map(ValuePart::service_lineage)
     }
 
     /// Whether `other` holds the same text or secret, whatever its fingerprint or

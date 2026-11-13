@@ -334,6 +334,20 @@ pub enum ValuePart {
     Ref { owner: ValuePartOwner, key: String },
 }
 
+impl ValuePart {
+    /// The Service lineage this part reads, if it is a reference to one.
+    #[must_use]
+    pub fn service_lineage(&self) -> Option<&str> {
+        match self {
+            Self::Ref {
+                owner: ValuePartOwner::Service { lineage_id },
+                ..
+            } => Some(lineage_id.as_str()),
+            Self::Ref { .. } | Self::Text { .. } => None,
+        }
+    }
+}
+
 /// Opaque encrypted material; configuration rules do not decrypt it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

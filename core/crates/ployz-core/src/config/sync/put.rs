@@ -4,9 +4,8 @@ use serde_json::Value;
 
 use super::*;
 use crate::config::{
-    ConfigAttachment, ConfigError, PlainText, SavedEnvironmentIntent as Intent, SavedServiceIntent,
+    ConfigError, MountKind, PlainText, SavedEnvironmentIntent as Intent, SavedServiceIntent,
     SavedVariableIntent, SavedVariableValue, ServiceSource, ValueFingerprint, VariableValue,
-    VolumeAttachment,
 };
 
 /// Give `intent` `cell` at `row`, the inverse of the projection a plan's cells come
@@ -52,6 +51,48 @@ pub(super) fn put_sealed(
         && let VariableValue::Sealed { ciphertext, .. } = &mut variable.value
     {
         *ciphertext = Some(secret.value.clone());
+    }
+    Ok(())
+}
+
+/// Mount (or unmount, on `Absent`) the Volume or Config of lineage `resource` on the
+/// Service at `row`. A kind differs only in what it can be mounted at and what it says
+/// when it cannot be.
+fn put_mount(
+    env: &mut Intent,
+    row: &RowId,
+    kind: MountKind,
+    resource: &str,
+    cell: &Cell,
+) -> Result<(), ConfigError> {
+    let (place, absent) = match kind {
+        MountKind::Volume => (
+            "Not a mount path",
+            "Mounted Volume is not in the receiving configuration",
+        ),
+        MountKind::Config => (
+            "Not a mount directory",
+            "Mounted Config is not in the receiving configuration",
+        ),
+    };
+    let invalid = |message: &str| ConfigError::at(&row.to_string(), message);
+    let mounted = env.resource_id(kind, resource).map(str::to_owned);
+    let Some(service) = service_mut(env, &row.lineage) else {
+        return match cell {
+            Cell::Absent => Ok(()),
+            Cell::Value(_) | Cell::Secret { .. } | Cell::SecretWithoutValue => {
+                Err(invalid("The node isn't in this configuration"))
+            }
+        };
+    };
+    match (cell, mounted) {
+        (Cell::Absent, Some(id)) => service.detach(kind, &id),
+        (Cell::Absent, None) => {}
+        (Cell::Value(value), Some(id)) => service
+            .attach(kind, &id, value)
+            .map_err(|_| invalid(place))?,
+        (Cell::Value(_), None) => return Err(ConfigError::at("picks", absent)),
+        (Cell::Secret { .. } | Cell::SecretWithoutValue, _) => return Err(invalid(place)),
     }
     Ok(())
 }
@@ -117,34 +158,8 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
                 }
             }
         }
-        At::ConfigMount(config_lineage) => {
-            let mounted = config(env, config_lineage).map(|c| c.resource_id.clone());
-            let Some(service) = service_mut(env, lineage) else {
-                return missing();
-            };
-            let attachments = &mut service.config_attachments;
-            match (cell, mounted) {
-                (Cell::Absent, Some(id)) => attachments.retain(|a| a.config_resource_id != id),
-                (Cell::Absent, None) => {}
-                (Cell::Value(value), Some(id)) => {
-                    let mount_dir = serde_json::from_value(value.clone())
-                        .map_err(|_| invalid("Not a mount directory"))?;
-                    attachments.retain(|a| a.config_resource_id != id);
-                    attachments.push(ConfigAttachment {
-                        config_resource_id: id,
-                        mount_dir,
-                    });
-                }
-                (Cell::Value(_), None) => {
-                    return Err(ConfigError::at(
-                        "picks",
-                        "Mounted Config is not in the receiving configuration",
-                    ));
-                }
-                (Cell::Secret { .. } | Cell::SecretWithoutValue, _) => {
-                    return Err(invalid("Not a mount directory"));
-                }
-            }
+        At::ConfigMount(resource) => {
+            return put_mount(env, row, MountKind::Config, resource, cell);
         }
         At::Name | At::Storage => {
             let Some(target) = env
@@ -164,32 +179,8 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
                 target.storage = serde_json::from_value(value.clone()).map_err(wrong)?;
             }
         }
-        At::Mount(volume_lineage) => {
-            let mounted = volume(env, volume_lineage).map(|v| v.resource_id.clone());
-            let Some(service) = service_mut(env, lineage) else {
-                return missing();
-            };
-            let attachments = &mut service.volume_attachments;
-            match (cell, mounted) {
-                (Cell::Absent, Some(id)) => attachments.retain(|a| a.volume_resource_id != id),
-                (Cell::Absent, None) => {}
-                (Cell::Value(Value::String(path)), Some(id)) => {
-                    attachments.retain(|a| a.volume_resource_id != id);
-                    attachments.push(VolumeAttachment {
-                        volume_resource_id: id,
-                        mount_path: path.clone(),
-                    });
-                }
-                (Cell::Value(_), None) => {
-                    return Err(ConfigError::at(
-                        "picks",
-                        "Mounted Volume is not in the receiving configuration",
-                    ));
-                }
-                (Cell::Value(_) | Cell::Secret { .. } | Cell::SecretWithoutValue, _) => {
-                    return Err(invalid("Not a mount path"));
-                }
-            }
+        At::Mount(resource) => {
+            return put_mount(env, row, MountKind::Volume, resource, cell);
         }
         At::Variable(key) => {
             let Some(service) = service_mut(env, lineage) else {
