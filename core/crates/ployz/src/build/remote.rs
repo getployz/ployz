@@ -402,12 +402,7 @@ fn validate_outcome(
             if *machine_id == expected && images.len() == count =>
         {
             if images.iter().any(|image| {
-                !image
-                    .reference
-                    .strip_prefix("sha256:")
-                    .is_some_and(|digest| {
-                        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
+                ployz_core::ImageDigest::parse(image.reference.as_str()).is_err()
                     || image.tags.is_empty()
                     || image.platforms.is_empty()
                     || image
@@ -507,6 +502,31 @@ mod tests {
                 panic!("malformed success was accepted")
             };
             assert_eq!(retained.0, work.0);
+        }
+        for reference in [
+            format!("sha256:{}", "A".repeat(64)),
+            format!("sha256:{}", "1".repeat(63)),
+            format!("sha256:{}g", "1".repeat(63)),
+            "1".repeat(64),
+        ] {
+            let Outcome::Unknown { message, .. } = validate_outcome(
+                Outcome::Images {
+                    machine_id,
+                    images: vec![BuiltImage {
+                        reference: reference.clone(),
+                        ..image.clone()
+                    }],
+                },
+                machine_id,
+                1,
+                work.clone(),
+            ) else {
+                panic!("{reference} was accepted")
+            };
+            assert_eq!(
+                message,
+                "Build returned an invalid image identity or platform"
+            );
         }
         assert!(matches!(
             validate_outcome(
