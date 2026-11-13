@@ -15,6 +15,10 @@ Upgrade each server from **Servers** in the dashboard, or with `ployz server upg
 running while each server upgrades. Automatic upgrades never move a server from 0.3 to 0.4, so
 you start this one yourself.
 
+[Upgrade the CLI](../cli/overview.md#install-the-cli) on each computer you use to 0.4 as well.
+Once a server runs 0.4, a 0.3 CLI's `exec` into it through another server is refused with
+`This Server takes this call only from an approved Device connected to it directly`.
+
 Until you activate, your servers keep running your services, and the **Servers** page shows each
 one as **Awaiting activation**. Activate soon after you upgrade. Until then:
 
@@ -29,15 +33,32 @@ one as **Awaiting activation**. Activate soon after you upgrade. Until then:
 
 Pick one of these.
 
-**From your computer.** Run `ployz device enforce` from a device you approved, as in
+**From your computer.** Run `ployz device enforce` from a device you approved, with Ployz 0.4
+on that computer too, as in
 [Require a device's signature](manage-servers.md#require-a-devices-signature-for-restarts-and-joins).
-Run it without `--connect` in the context where you added your servers over SSH, so it reaches
-each one over its own SSH connection. On a cluster that ran 0.3, every server holds keys from
-before, so each one takes the list only over its own SSH. A server that joined only through
-Ployz Cloud has no SSH connection saved: leave it out by not confirming its key, then after
-activation [add it back](#add-back-a-server-left-out). If no server was added over SSH, run
-`ployz device enforce --connect ssh://root@SERVER` for one server, leave the others out, and add
-them back the same way.
+On a cluster that ran 0.3, every server holds keys from before, so each one takes the list only
+over its own SSH connection. Reach every server in the one run:
+
+- If you added your servers with `ployz server add` over SSH, run `ployz device enforce`
+  without `--connect`, in the context `server add` saved. It reaches each server over the SSH
+  connection saved for it.
+- If your servers joined through Ployz Cloud, nothing on your computer knows their SSH
+  connections. Give one `--connect` for each server:
+
+  ```sh
+  ployz device enforce \
+    --connect ssh://root@203.0.113.10 \
+    --connect ssh://root@203.0.113.11 \
+    --connect ssh://root@203.0.113.12
+  ```
+
+  Each server names itself over its own connection, so what Ployz Cloud or another server says
+  about it never decides what is signed.
+
+If a server holding keys from before isn't reached over its own SSH, `enforce` signs nothing and
+names it, so you can run it again with that server's connection added. Leave a server out only
+when you can't reach it over SSH: [adding it back](#add-back-a-server-left-out) after activation
+wipes its volumes.
 
 If a server is refused or stops partway, fix what it names and run `ployz device enforce` again.
 The new run finishes the same activation: servers that already activated take it again without
@@ -59,7 +80,7 @@ Activation:
   `ployz device request` on that computer, signed in with `ployz login`, then
   `ployz device approve <code>` from yours.
 - leaves out a server you didn't confirm, that runs a Ployz older than 0.4, or that didn't
-  answer over the SSH connection you saved for it. It never reads that server's key through
+  answer over the SSH connection you gave or saved for it. It never reads that server's key through
   another server instead. Once the others activate, that server is no longer part of the
   cluster, and `ployz server rm` no longer finds it.
   [Add it back](#add-back-a-server-left-out). Upgrade every server first, and check each one

@@ -552,3 +552,38 @@ async fn a_server_with_its_own_route_is_read_over_it() {
     assert!(found.told.is_own());
     assert_eq!(found.member.public_key, server.public_key);
 }
+
+/// A Cluster enrolled through Cloud has no saved SSH connections. With one `--connect` for
+/// each Server, every Server answers for itself over its own, whatever the entry relays.
+#[tokio::test]
+async fn each_connect_reaches_its_own_server_rather_than_the_entrys_row_for_it() {
+    let server = machine('2', "machine-2");
+    let root = tempfile::tempdir().unwrap();
+    let entry_path = root.path().join("entry.sock");
+    let own_path = root.path().join("own.sock");
+    let forged = ployz_core::Machine {
+        public_key: WireGuardPublicKey([9; 32]),
+        ..server.clone()
+    };
+    let entry = daemon_at(&entry_path, machine('1', "machine-1").id, forged);
+    let own = daemon_at(&own_path, server.id, server.clone());
+    let connections = [&entry_path, &own_path]
+        .map(|path| crate::context::Connection::unix(path).unwrap())
+        .to_vec();
+
+    let client = route::connect_each(
+        connections,
+        std::sync::Arc::new(crate::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    let looked = found_on(client, server.id).await.unwrap();
+
+    own.shutdown_background();
+    entry.shutdown_background();
+    let Some(Looked::Found(found)) = looked else {
+        panic!("the Server answered over its own connection");
+    };
+    assert!(found.told.is_own());
+    assert_eq!(found.member.public_key, server.public_key);
+}
