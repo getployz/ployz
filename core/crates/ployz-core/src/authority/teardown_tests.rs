@@ -367,7 +367,7 @@ fn a_browser_key_under_a_session_grant_is_refused() {
         ),
         &browser,
         SessionGrant {
-            body: unsigned.body.clone(),
+            body: unsigned.body,
             assertion,
         },
     )

@@ -1817,9 +1817,7 @@ impl From<tonic::Status> for TransportError {
                 lines.dedup();
                 ployz_core::error_chain::JoinedChain::of(lines)
             }
-            None => sent
-                .clone()
-                .and_then(ployz_core::error_chain::JoinedChain::of),
+            None => sent.and_then(ployz_core::error_chain::JoinedChain::of),
         };
         // Tonic merges the response headers into a local failure's metadata.
         let marked = |key| status.metadata().contains_key(key);

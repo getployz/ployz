@@ -306,7 +306,6 @@ impl MachineService {
     /// [`Self::volume_verb`] for a step a Volume approval admitted: once `landed` reads the
     /// step's effect in the reply, `operation` ends here, so the approval never runs again.
     /// A reply that fails to end it fails the call, and the resend finds it still open.
-    #[expect(clippy::result_large_err, reason = "tonic::Status is the RPC error type")]
     async fn landing_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
         &self,
         (verb, route): (&'static str, &str),
