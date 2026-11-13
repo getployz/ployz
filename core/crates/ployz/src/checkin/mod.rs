@@ -32,9 +32,12 @@ pub(crate) use wire::{
     Attempt, DOCKER_INSTALL_FAILED, DockerPrep, EnrollInstruction, Issue, Prep, StopReason, ZfsPrep,
 };
 
+#[cfg(all(test, target_os = "linux"))]
+use host::{keeps_locks_local, marked_on};
+
 #[cfg(test)]
 use {
-    host::{keeps_locks_local, marked_on, preparation_marked},
+    host::preparation_marked,
     plan::{
         Liveness, PREPARE_RETRY, PREPARE_TRIES, Preparation, REFUSED_ONCE, REVOKED,
         observe_liveness, pass_from, preparation, read_prep_state,
