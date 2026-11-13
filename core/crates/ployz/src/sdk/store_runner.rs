@@ -12,7 +12,8 @@ use std::time::Duration;
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
     HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
-    RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceName,
+    RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, RunnerOptions,
+    ServiceName,
 };
 use ployz_decide::standing::{Latch, Over, Read, Standing, standing};
 use ployz_store::tools::{LogText, SealedValues, Withheld};
@@ -617,7 +618,10 @@ impl Run {
             .iter()
             .filter_map(|ended| ended.as_str().parse().ok())
             .collect();
-        claimed.intent.options = claimed.intent.options.as_runner(operator, ended_runs);
+        claimed.intent.options = claimed.intent.options.as_runner(RunnerOptions {
+            operator,
+            ended_runs,
+        });
         Ok(claimed)
     }
 
@@ -960,10 +964,7 @@ impl Run {
         let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
             claimed.intent.registry_auth,
-            Some((
-                claimed.intent.options.operator,
-                claimed.intent.options.ended_runs,
-            )),
+            claimed.intent.options.runner(),
         )?;
         self.renewing(running.finished(), || running.abort()).await
     }

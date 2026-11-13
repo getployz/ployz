@@ -2179,13 +2179,13 @@ fn a_deploy_removes_first_the_copies_ended_runs_left_pending() {
         ],
         ..Default::default()
     };
-    let options = PlanOptions::default().as_runner(
-        ployz_core::Operator::Cloud,
-        ["run-1", "run-2"]
+    let options = PlanOptions::default().as_runner(ployz_core::RunnerOptions {
+        operator: ployz_core::Operator::Cloud,
+        ended_runs: ["run-1", "run-2"]
             .into_iter()
             .map(|run| ployz_core::DeploymentLogId::parse(run).unwrap())
             .collect(),
-    );
+    });
     let intent = DeployIntent::apply_all(Namespace::parse("app").unwrap(), [&requested], options);
 
     let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();

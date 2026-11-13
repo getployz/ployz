@@ -5,9 +5,9 @@ description: Model-check how a Deployment's runner reads its standing in the Con
 
 # Verify the runner's standing
 
-The model in `core/crates/ployz-verify/src/runner_standing.rs` explores every interleaving of one Deployment's run with the Config Store that holds its status. The runner claims the Deployment (`core/crates/ployz/src/sdk/store_runner.rs:178`), dials under `connecting` (`:191-215`), then plans, or builds and prepares, under `renewing` (`:795-808`, `:953`, `:1115`). It records the Deploy Preview (`:813-824`), executes under `renewing` (`:830-834`), deletes the Volumes the Deploy removes (`:849-854`), fills ingress (`:855-861`, `:869-881`) and records what executing did through `executed` (`:862`, `:1336-1365`).
+The model in `core/crates/ployz-verify/src/runner_standing.rs` explores every interleaving of one Deployment's run with the Config Store that holds its status. The runner claims the Deployment (`Run::claim` in `core/crates/ployz/src/sdk/store_runner.rs`), dials under `connecting` (`run_deployment_expecting`), then plans, or builds and prepares, under `renewing` (`execute`, `Run::prepare`). It records the Deploy Preview (`execute`), executes under `renewing` (`execute`), deletes the Volumes the Deploy removes (`remove_volumes` in `execute`), fills ingress (`fill_ingress`) and records what executing did through `executed`.
 
-While it awaits a piece of work, `connecting` and `renewing` call `standing()` every `CANCEL_POLL`, 2 s (`:40`, `:1259-1275`, `:1277-1292`), and the work can end before the next call (`:1272`, `:1284`). `execute` also calls it once after executing (`:837-846`) and once at the gate before `fill_ingress` (`:855`). `Run::standing` returns the latch `Run::over`, a `ployz_decide::standing::Latch`, once it holds an `Over`, and otherwise sends `record(RunEvidence::Alive)`, maps the answer to a `Read` with `read_of`, and `Latch::settle`s it through `ployz_decide::standing::standing`:
+While it awaits a piece of work, `connecting` and `renewing` call `standing()` every `CANCEL_POLL`, 2 s (`CANCEL_POLL`, `connecting`, `renewing`), and the work can end before the next call (the arm of each that returns the work's result). `execute` also calls it once after executing and once at the gate before `fill_ingress`. `Run::standing` returns the latch `Run::over`, a `ployz_decide::standing::Latch`, once it holds an `Over`, and otherwise sends `record(RunEvidence::Alive)`, maps the answer to a `Read` with `read_of`, and `Latch::settle`s it through `ployz_decide::standing::standing`:
 
 | The read | `Standing` | Latches |
 |---|---|---|
@@ -18,9 +18,9 @@ While it awaits a piece of work, `connecting` and `renewing` call `standing()` e
 | `Err` with code Conflict | `Over(Ended)` | yes |
 | any other `Err` | `Unread` | no |
 
-Every site stops on `Cancel` and `Over`, and goes on on `Keep` and `Unread`. The read after executing is the exception: on `Cancel` it goes on, since deleting is never interrupted, and on `Over(Lost)` it records Interrupted (`:838-840`, `:1321-1334`). `execute` reads `record(Prepared)`'s answer through the same `standing` (`:813-824`), with no latch. The model gives each read its own step.
+Every site stops on `Cancel` and `Over`, and goes on on `Keep` and `Unread`. The read after executing is the exception: on `Cancel` it goes on, since deleting is never interrupted, and on `Over(Lost)` it records Interrupted (`execute`, `interrupted`). `execute` reads `record(Prepared)`'s answer through the same `standing`, with no latch. The model gives each read its own step.
 
-`executed` sends `record(Executed)`. When the store refuses it as a Conflict and the run attempted no Volume deletion (every removal `Omitted`; a `Failed` removal counts as attempted), it sends the outcome again as Interrupted and returns that answer, or the first refusal if the store refuses again (`:1349-1364`). The store answers that resend in one of three ways:
+`executed` sends `record(Executed)`. When the store refuses it as a Conflict and the run attempted no Volume deletion (every removal `Omitted`; a `Failed` removal counts as attempted), it sends the outcome again as Interrupted and returns that answer, or the first refusal if the store refuses again (`executed`). The store answers that resend in one of three ways:
 
 - **New evidence on an Unknown Deployment: kept.** An Unknown Deployment refuses any outcome but Interrupted (`record`'s `taken_over` check, `core/crates/ployz-store/src/deployment/record.rs`), keeps the Interrupted one, and stays Unknown (`record`'s `taken_over` branch). This is the case the resend is for.
 - **A Conflict that turns on what the store holds: refused again.** Another runner (`record`'s owner check), no preview (`record`'s Executed arm), and an ended Deployment through `finish` (`running`) don't depend on the outcome sent, so the resend meets them again. `executed` then returns the first refusal.
@@ -47,8 +47,8 @@ The properties, each one sentence:
 
 - `TAKEOVER_KEEPS_OUTCOME`: **a run never returns with its `Executed` refused because the Deployment went Unknown.** This is finding 1. Without the resend, the store keeps no outcome for a run that executed (`record`'s `taken_over` check).
 - `DELETIONS_KEPT`: **once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless `cancel_in_flight` ended the Deployment.** This is finding 1 with Volumes deleted. It checks only the `removed_volume` node projection (`removed_volume` in `deployment/outcomes.rs`), not Applied State. `cancel_in_flight` is exempt because `forget_cluster`, which runs it, lets go of the Organization's Applied State and Volumes' fixed storage (`teardown.rs:444-447`, `460-471`).
-- `NO_WORK_AFTER_END`: **once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes.** "Over" is Unknown or ended, the two `running` refuses (`running` and `ended` in `deployment/mod.rs`). Deleting is exempt from "keeps on" because its abort is `|| ()` by design (`store_runner.rs:850-851`). This is finding 2.
-- `HEEDS_CANCEL`: **while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes.** Deleting is exempt because the code never stops it on a cancel: the read before `remove_volumes` goes on on `Cancel` (`store_runner.rs:845`), and its abort is `|| ()` (`:851`).
+- `NO_WORK_AFTER_END`: **once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes.** "Over" is Unknown or ended, the two `running` refuses (`running` and `ended` in `deployment/mod.rs`). Deleting is exempt from "keeps on" because its abort is `|| ()` by design (`remove_volumes`' call in `execute` in `store_runner.rs`). This is finding 2.
+- `HEEDS_CANCEL`: **while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes.** Deleting is exempt because the code never stops it on a cancel: the read before `remove_volumes` goes on on `Cancel` (`execute` in `store_runner.rs`), and its abort is `|| ()` (the same call).
 - `TAKEN_OVER_INTERRUPTED`: **the store keeps no outcome but Interrupted on a Deployment that went Unknown.** This is what `record`'s takeover refusal keeps (`record`'s `taken_over` check).
 
 ## Run it
@@ -78,20 +78,20 @@ The run is green when all nineteen tests pass. Read them as five groups.
 
   | Part of the code | `Broken` flag | Test | Property it keeps |
   |---|---|---|---|
-  | `executed` sends a refused outcome again as Interrupted (`store_runner.rs:1359-1361`) | `no_resend` | `the_code_needs_to_send_a_refused_outcome_again` | `TAKEOVER_KEEPS_OUTCOME` |
+  | `executed` sends a refused outcome again as Interrupted (`executed` in `store_runner.rs`) | `no_resend` | `the_code_needs_to_send_a_refused_outcome_again` | `TAKEOVER_KEEPS_OUTCOME` |
   | `read_of` reads a Conflict as `Read::Ended`, which `standing` reads as `Over(Ended)` | `ended_reads_as_keep` | `the_code_needs_an_ended_read_to_stop_it` | `NO_WORK_AFTER_END` |
-  | `connecting` and the gate stop on `Over(Lost)` (`:1270`, `:860`) | `unknown_reads_as_keep` | `the_code_needs_connecting_and_the_gate_to_stop_on_lost` | `NO_WORK_AFTER_END` |
+  | `connecting` and the gate stop on `Over(Lost)` (`connecting` and `execute`'s gate) | `unknown_reads_as_keep` | `the_code_needs_connecting_and_the_gate_to_stop_on_lost` | `NO_WORK_AFTER_END` |
   | `Latch::settle` latches the first `Over` read | `latch_does_not_stick` | `the_code_needs_its_latch_to_stick` | `NO_WORK_AFTER_END` |
-| The read after executing stops on `Over(Ended)` (`:841-844`) | `check_ignores_ended` | `deleting_needs_the_read_after_executing_to_stop_on_ended` | `NO_WORK_AFTER_END` |
-| The gate skips `fill_ingress` on `Over(Ended)` (`:860`) | `gate_ignores_ended` | `fill_ingress_needs_the_gate_to_stop_on_ended` | `NO_WORK_AFTER_END` |
+| The read after executing stops on `Over(Ended)` (`execute`'s read after executing) | `check_ignores_ended` | `deleting_needs_the_read_after_executing_to_stop_on_ended` | `NO_WORK_AFTER_END` |
+| The gate skips `fill_ingress` on `Over(Ended)` (`execute`'s gate) | `gate_ignores_ended` | `fill_ingress_needs_the_gate_to_stop_on_ended` | `NO_WORK_AFTER_END` |
 
   `the_code_needs_its_latch_to_stick` runs `failing(...)`, since only a failed read can follow Lost or Ended with another answer: `actions` offers no store step once the Deployment is Unknown or ended. `every_sometimes_needs_what_it_names` cannot show the latch, because with `latch_does_not_stick` set every `COVERAGE` row is still reached.
 - **The code's older guards.** Six tests each drop one guard from `as_is()` and expect the property it keeps to break.
-  - `connecting_needs_its_cancel_check` drops `Cancel` stopping `connecting` (`store_runner.rs:1270`) and breaks `HEEDS_CANCEL`.
-  - `renewing_needs_its_abort` drops `renewing`'s abort (`:1288-1289`) and breaks `HEEDS_CANCEL`.
-  - `executing_needs_the_prepared_cancel_check` drops the `Cancel` check on `record(Prepared)`'s answer (`:817-821`) and breaks `HEEDS_CANCEL`.
-  - `deleting_needs_the_read_after_executing` makes that read take `Over(Lost)` as keep (`:838-840`) and breaks `NO_WORK_AFTER_END`.
-  - `fill_ingress_needs_the_gate` drops the gate's `Cancel` check (`:860`) and breaks `HEEDS_CANCEL`.
+  - `connecting_needs_its_cancel_check` drops `Cancel` stopping `connecting` (`store_runner.rs`) and breaks `HEEDS_CANCEL`.
+  - `renewing_needs_its_abort` drops `renewing`'s abort and breaks `HEEDS_CANCEL`.
+  - `executing_needs_the_prepared_cancel_check` drops the `Cancel` check on `record(Prepared)`'s answer (`execute`) and breaks `HEEDS_CANCEL`.
+  - `deleting_needs_the_read_after_executing` makes that read take `Over(Lost)` as keep (`execute`) and breaks `NO_WORK_AFTER_END`.
+  - `fill_ingress_needs_the_gate` drops the gate's `Cancel` check (`execute`) and breaks `HEEDS_CANCEL`.
   - `the_store_needs_its_takeover_refusal` drops `running` for a non-Interrupted `Executed` on an Unknown Deployment (`record`'s `taken_over` check) and breaks `TAKEN_OVER_INTERRUPTED`.
 - **The store fix's parts.** Two tests each drop one part of `store_fixed()`. They are under What is still open.
 
@@ -103,11 +103,11 @@ Passing `breaks` an `always` that holds panics with "a path breaks the property"
 
 Finding 1 is closed except when the run deleted Volumes. `the_code_still_loses_the_volumes_a_run_deleted_once_taken_over` prints 9 rows:
 
-1. The runner claims, dials, and plans or builds and prepares (`store_runner.rs:178`, `191-215`, `795-808`). `record(Prepared)` keeps the preview, and its answer reads `Keep`, so executing starts (`:813-824`, `:830-834`).
-2. Executing returns a Success. The read after executing says `Keep` (`:837-846`), and `remove_volumes` starts under `renewing` with the no-op abort `|| ()` (`:849-851`).
+1. The runner claims, dials, and plans or builds and prepares (`Run::claim`, `connecting` and `execute` in `store_runner.rs`). `record(Prepared)` keeps the preview, and its answer reads `Keep`, so executing starts (`execute`).
+2. Executing returns a Success. The read after executing says `Keep` (`execute`), and `remove_volumes` starts under `renewing` with the no-op abort `|| ()` (`execute`).
 3. Another Deployment of the Environment is claimed. Its takeover saves this one Unknown and leaves its runner column (`claim`'s takeover).
-4. `remove_volumes` returns the Volumes it deleted. The gate reads `Ok(Unknown)`, latches `Over(Lost)`, and skips `fill_ingress` (`store_runner.rs:855-861`).
-5. `executed` sends the Success, naming the deleted Volumes (`:862`, `:1352-1358`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`record`'s `taken_over` check, `running` in `deployment/mod.rs`). The run deleted Volumes, so it sends nothing again, and `execute` returns the refusal (`store_runner.rs:1349-1351`, `1359-1363`).
+4. `remove_volumes` returns the Volumes it deleted. The gate reads `Ok(Unknown)`, latches `Over(Lost)`, and skips `fill_ingress` (`execute`'s gate in `store_runner.rs`).
+5. `executed` sends the Success, naming the deleted Volumes (`execute`, `executed`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`record`'s `taken_over` check, `running` in `deployment/mod.rs`). The run deleted Volumes, so it sends nothing again, and `execute` returns the refusal (`execute`, `executed` in `store_runner.rs`).
 
 No `standing()` read fails on this path. The runner cannot keep this outcome alone. A resend as Interrupted would be kept, but the store reads an Interrupted outcome's deleted Volumes NotAttempted (`removed_volume` in `deployment/outcomes.rs`), so it would say the Volumes still exist. The refusal at least claims nothing.
 
@@ -192,15 +192,15 @@ These are the bounds. There is one Deployment and one runner. The Deploy deletes
 
 These are out of scope:
 
-- a takeover or `cancel_in_flight` between a read and the record the model merges with it, such as `connecting`'s `Cancel` read and its `NotExecuted` (`store_runner.rs:202`), which the store then refuses
-- `build`'s own records (`Build`, `Built`), the Deploy's warnings (`record_warnings`, `:848`), and what `fill_ingress` records about ingress (`:886-907`)
+- a takeover or `cancel_in_flight` between a read and the record the model merges with it, such as `connecting`'s `Cancel` read and its `NotExecuted` (`run_deployment_expecting` in `store_runner.rs`), which the store then refuses
+- `build`'s own records (`Build`, `Built`), the Deploy's warnings (`record_warnings`), and what `fill_ingress` records about ingress
 - the lease lapsing, which every read remaps to Unknown (`mod.rs:992-994`, `1291-1301`), after `LEASE` (600 s, `mod.rs:344`) with no record
 - a second claim by the same runner after a preview, which also sets the Deployment Unknown and keeps its runner (`claim`'s re-claim)
 - Cloud's `abandonDeployment` while the run is still going, and the Abandoned arm's `NotExecuted` for a run with no preview (`record`'s Abandoned arm)
 - a dial that fails, a refused prepare, or a build that needs an upload
-- a store call other than `standing()` failing, such as `record(Prepared)`, which the run returns as it is (`store_runner.rs:823`), or the resend, which returns the first refusal (`:1361`)
+- a store call other than `standing()` failing, such as `record(Prepared)`, which the run returns as it is (`execute` in `store_runner.rs`), or the resend, which returns the first refusal (`executed`)
 - an abort that comes too late to stop its work
-- the select order in `connecting` (`biased`, `:1267`) and `renewing`
+- the select order in `connecting` (`biased`) and `renewing`
 - Applied State: it still lists a deleted Volume under the store fix, since a run that was taken over moves no Applied State (`record`'s `taken_over` branch), and `DELETIONS_KEPT` checks only the node projection
 
 A green model says nothing about them. Cover them with `cargo nextest run -p ployz sdk::store_runner` and `cargo nextest run -p ployz --test deploy_client runner_cancellation`.
@@ -220,4 +220,4 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployz-core/src/config/runtime_outcome.rs`: the Interrupted arm of the projection.
 - `core/crates/ployz-store/src/teardown.rs`: `forget_cluster`'s call to `cancel_in_flight`.
 
-Sync commit: `8307a523654f3c99eee0685a4e7f790088a375e7`, the `main` this model was checked against. Every line cited above is at it, except the `store_runner.rs` lines. Those are at the commit that last changed this file (`git log -1 -- .claude/skills/verify-runner-standing/SKILL.md`), which added `Standing` and the resend; `store_runner_tests.rs` names are at the same commit. Code in the list above that changed after these has not been rechecked.
+Sync commit: `8307a523654f3c99eee0685a4e7f790088a375e7`, the `main` this model was checked against. Every line cited above is at it; `store_runner.rs` is cited by symbol. `store_runner_tests.rs` names are at the commit that last changed this file (`git log -1 -- .claude/skills/verify-runner-standing/SKILL.md`), which added `Standing` and the resend. Code in the list above that changed after these has not been rechecked.

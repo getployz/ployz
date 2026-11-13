@@ -51,9 +51,10 @@ fn start(scenario: Scenario) -> (FakeFleet, tempfile::TempDir) {
 }
 
 async fn session(fleet: &FakeFleet, machine: &str) -> Result<sdk::Session, sdk::CallError> {
-    sdk::connect_answered(
+    sdk::connect_expecting(
         vec![Connection::unix(fleet.socket(&name(machine)).unwrap()).unwrap()],
         Arc::new(SystemConnector::default()),
+        None,
     )
     .await
 }
@@ -655,5 +656,51 @@ async fn set_ingress_doors_runs_the_holder_and_caddy_once() {
             .filter(|entry| entry.command == "set_ingress_doors")
             .count(),
         2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_target_that_does_not_parse_is_an_invalid_argument_before_any_call() {
+    let (fleet, _sockets) = start(Scenario::default());
+    let session = session(&fleet, "web-1").await.unwrap();
+    let connected = commands(&fleet.ledger().unwrap());
+    let why = MachineTarget::parse("").unwrap_err().to_string();
+    let refused = |error: ployz_core::RpcError| {
+        assert_eq!(error.code, ployz_core::RpcErrorCode::InvalidArgument);
+        assert_eq!(error.message, why);
+    };
+    refused(session.inspect_machine("").await.unwrap_err());
+    refused(session.data_loss_if_machine_removed("").await.unwrap_err());
+    refused(
+        session
+            .remove_machine_membership("", None)
+            .await
+            .unwrap_err(),
+    );
+    refused(
+        session
+            .drain_machine("", &ployz::drain::DrainScope::EveryNamespace)
+            .await
+            .unwrap_err(),
+    );
+    refused(session.start_ingress("").await.unwrap_err());
+    refused(session.stop_ingress("").await.unwrap_err());
+    refused(session.inspect_container("", "abc").await.unwrap_err());
+    refused(
+        session
+            .copy_container_image("", "abc", "web-1")
+            .await
+            .unwrap_err(),
+    );
+    refused(
+        session
+            .copy_container_image("web-1", "abc", "")
+            .await
+            .unwrap_err(),
+    );
+    assert_eq!(
+        commands(&fleet.ledger().unwrap()),
+        connected,
+        "no Machine was called after connecting"
     );
 }
