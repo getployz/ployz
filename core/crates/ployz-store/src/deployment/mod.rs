@@ -17,6 +17,8 @@ mod reference_tests;
 #[cfg(test)]
 mod retire_tests;
 mod rows;
+#[cfg(test)]
+mod status_tests;
 pub(crate) mod uploads;
 pub(crate) use history::*;
 pub(crate) use landing::*;
