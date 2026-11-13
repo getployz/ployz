@@ -17,6 +17,7 @@ mod reference_tests;
 #[cfg(test)]
 mod retire_tests;
 mod rows;
+mod status;
 #[cfg(test)]
 mod status_tests;
 pub(crate) mod uploads;
@@ -29,6 +30,7 @@ pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
     StoppedBy,
 };
+pub(crate) use status::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1009,17 +1011,6 @@ static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
          END, listed, service_uploads"
     )
 });
-
-/// SQL selecting Deployments that may still run: queued, or claimed by a runner
-/// whose lease holds. The inverse of [`lapsed`] for claimed ones. The status set
-/// comes first, spelled as the `config_deployment_in_flight` index's predicate is,
-/// so SQLite's planner takes the index.
-pub(crate) fn in_flight_sql() -> String {
-    format!(
-        "(status IN ('queued', 'running', 'cancelling') AND (status = 'queued' OR lease > {}))",
-        now()
-    )
-}
 
 /// Whether a claimed Deployment's runner is gone at `now`: its runner lease lapsed,
 /// so what ran is unknown. Every read shows a lapsed one as `unknown`

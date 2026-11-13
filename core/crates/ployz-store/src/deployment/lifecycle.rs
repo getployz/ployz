@@ -831,8 +831,11 @@ pub(crate) fn retry(
     // and one whose lease lapsed is unknown: its runner is gone.
     if let Some(newer) = tx
         .query(
-            "SELECT MAX(number) FROM config_deployment WHERE environment_id = ?1 \
-             AND number > ?2 AND status IN ('running', 'cancelling') AND lease > ?3",
+            &format!(
+                "SELECT MAX(number) FROM config_deployment WHERE environment_id = ?1 \
+                 AND number > ?2 AND {} AND lease > ?3",
+                CLAIMED.as_str()
+            ),
             &[
                 stored.summary.environment_id.as_str().into(),
                 i64::try_from(stored.summary.numbered()?)
@@ -1506,8 +1509,10 @@ pub(crate) fn claim(
         // Every other claimed Deployment of the Environment loses its runner, its runner
         // lease lapsed or not; each keeps its runner column for an Interrupted record.
         let taken_over = tx.query(
-            "SELECT id FROM config_deployment \
-             WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
+            &format!(
+                "SELECT id FROM config_deployment WHERE environment_id = ?1 AND {}",
+                CLAIMED.as_str()
+            ),
             &[stored.summary.environment_id.as_str().into()],
         )?;
         for row in &taken_over {
@@ -1622,8 +1627,10 @@ fn ended_runs(
     claimed: &DeploymentSummary,
 ) -> Result<BTreeSet<DeploymentId>, RpcError> {
     tx.query(
-        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND id <> ?2 \
-         AND status IN ('applied', 'failed', 'unknown', 'cancelled')",
+        &format!(
+            "SELECT id FROM config_deployment WHERE environment_id = ?1 AND id <> ?2 AND {}",
+            ENDED.as_str()
+        ),
         &[
             claimed.environment_id.as_str().into(),
             claimed.id.as_str().into(),
