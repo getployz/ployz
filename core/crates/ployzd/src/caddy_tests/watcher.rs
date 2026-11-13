@@ -2413,7 +2413,7 @@ async fn a_restart_beside_a_refused_certificate_never_drops_what_caddy_serves() 
         vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
     ));
     let good = material("good.example.com");
-    let stem = crate::ingress::certificate_file_stem(
+    let stem = crate::ingress::certificates::certificate_file_stem(
         &ployz_core::IngressHost::parse("good.example.com").unwrap(),
         &good,
     );

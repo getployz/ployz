@@ -1,7 +1,7 @@
 //! Trace page facts in the projection and their rendering.
 
 use super::{ingress, observation, projection};
-use crate::ingress::{IngressProjection, PublicationTrace};
+use crate::ingress::projection::{IngressProjection, PublicationTrace};
 use ployz_core::labels;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DeploymentLogId,

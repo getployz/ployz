@@ -1,6 +1,6 @@
 //! Projection fixture shared by concrete renderer tests.
 
-use super::{
+use super::projection::{
     IngressEndpoint, IngressProjection, IngressPublication, IngressSite, ProjectedCertificate,
     PublicationTrace,
 };
