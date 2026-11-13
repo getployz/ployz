@@ -1,7 +1,6 @@
 //! Durable Local Machine record ownership and persistence.
 
 use std::{
-    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -319,11 +318,26 @@ impl LocalMachineStore {
         if self.record.trusted_snapshot.is_some() {
             return Ok(());
         }
+        self.commit(|record| {
+            record.trusted_snapshot = Some(super::TrustedSnapshot::default());
+            Ok(())
+        })
+    }
+
+    /// Run `edit` on a copy of the record and keep what it left: a copy equal to the record
+    /// writes nothing, and a refusal from `edit` or a failed write leaves the record, and
+    /// the file, as they were. The store holds the copy only once the file does.
+    fn commit<R, E: From<StoreError>>(
+        &mut self,
+        edit: impl FnOnce(&mut LocalMachineRecord) -> Result<R, E>,
+    ) -> Result<R, E> {
         let mut updated = self.record.clone();
-        updated.trusted_snapshot = Some(super::TrustedSnapshot::default());
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+        let answer = edit(&mut updated)?;
+        if updated != self.record {
+            save(&self.data_dir, &updated)?;
+            self.record = updated;
+        }
+        Ok(answer)
     }
 
     #[must_use]
@@ -338,27 +352,14 @@ impl LocalMachineStore {
 
     fn refresh_runtime(&mut self) -> Result<(), StoreError> {
         let runtime = local_runtime(&self.data_dir);
-        let stale = match &self.record.body {
-            LocalMachineBody::Joining { machine, .. }
-            | LocalMachineBody::Participating { machine, .. } => machine.runtime != runtime,
-            LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
-                return Ok(());
+        self.commit(|record| {
+            if let LocalMachineBody::Joining { machine, .. }
+            | LocalMachineBody::Participating { machine, .. } = &mut record.body
+            {
+                machine.runtime = runtime;
             }
-        };
-        if !stale {
-            return Ok(());
-        }
-        let mut refreshed = self.record.clone();
-        match &mut refreshed.body {
-            LocalMachineBody::Joining { machine, .. }
-            | LocalMachineBody::Participating { machine, .. } => machine.runtime = runtime,
-            LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
-                return Ok(());
-            }
-        }
-        save(&self.data_dir, &refreshed)?;
-        self.record = refreshed;
-        Ok(())
+            Ok(())
+        })
     }
 
     pub fn begin_reset(&mut self) -> Result<(), StoreError> {
@@ -671,83 +672,86 @@ impl LocalMachineStore {
 
     pub(crate) fn install(&mut self, installation: Installation) -> Result<(), StoreError> {
         self.require_uninitialized()?;
-        let mut installed = self.record.clone();
-        installed.body = installation.body;
-        installed.filters_peers = true;
-        installed.born_enforcing = true;
-        let joins = installed.phase() == LocalMachinePhase::Joining;
-        installed.trusted_machines = installed.body.bootstrap().iter().map(Into::into).collect();
-        installed.membership_cluster = installation
-            .sealing_key
-            .as_ref()
-            .map(SealingKey::public_key);
-        installed.enrollment = Some(installation.enrollment);
-        installed.wireguard_mtu = installation.wireguard_mtu;
-        installed.pinned_addresses = installation.pinned;
-        if joins {
-            installed
-                .management_clients
-                .retain(|label, _| !DeviceCode::reserves(label));
-            installed.passkeys = installation.keys.passkeys.clone();
-        }
-        installed
-            .management_clients
-            .extend(installation.keys.devices.iter().map(|&key| {
-                (
-                    key.label(),
-                    ManagementClientSlot::Live(LiveSlot::Active {
-                        accepted: ClientKey::from(key),
-                    }),
-                )
-            }));
         if let Some(joined) = &installation.recipient {
             SealingKey::set_recipient_rotation(&self.data_dir, &joined.rotation)?;
             SealingKey::set_recipient(&self.data_dir, &joined.key)?;
-            let snapshot = installed
-                .trusted_snapshot
-                .get_or_insert_with(super::TrustedSnapshot::default);
-            for member in installed
-                .trusted_machines
-                .iter()
-                .chain(installed.body.machine().map(Into::into).as_ref())
-            {
-                snapshot.add_member(member.clone());
-            }
-            let codes = installation.keys.devices.iter().map(DeviceKey::code).chain(
-                installation
-                    .keys
-                    .passkeys
-                    .iter()
-                    .map(|trusted| trusted.passkey.code()),
-            );
-            for code in codes {
-                snapshot.add_key(
-                    code,
-                    super::Evidence::Activation {
-                        operation: joined.operation,
-                    },
-                );
-            }
-            installed.activation = Some(joined.operation);
-            installed.activated_at = Some(ployz_core::authority::Timestamp::now());
             tracing::info!(
                 operation = %joined.operation,
                 "installed the Cluster's recipient key from the join"
             );
         }
         self.set_sealing_key(installation.sealing_key.as_ref())?;
-        save(&self.data_dir, &installed)?;
-        self.record = installed;
-        Ok(())
+        self.commit(|installed| {
+            installed.body = installation.body;
+            installed.filters_peers = true;
+            installed.born_enforcing = true;
+            let joins = installed.phase() == LocalMachinePhase::Joining;
+            installed.trusted_machines =
+                installed.body.bootstrap().iter().map(Into::into).collect();
+            installed.membership_cluster = installation
+                .sealing_key
+                .as_ref()
+                .map(SealingKey::public_key);
+            installed.enrollment = Some(installation.enrollment);
+            installed.wireguard_mtu = installation.wireguard_mtu;
+            installed.pinned_addresses = installation.pinned;
+            if joins {
+                installed
+                    .management_clients
+                    .retain(|label, _| !DeviceCode::reserves(label));
+                installed.passkeys = installation.keys.passkeys.clone();
+            }
+            installed
+                .management_clients
+                .extend(installation.keys.devices.iter().map(|&key| {
+                    (
+                        key.label(),
+                        ManagementClientSlot::Live(LiveSlot::Active {
+                            accepted: ClientKey::from(key),
+                        }),
+                    )
+                }));
+            if let Some(joined) = &installation.recipient {
+                let snapshot = installed
+                    .trusted_snapshot
+                    .get_or_insert_with(super::TrustedSnapshot::default);
+                for member in installed
+                    .trusted_machines
+                    .iter()
+                    .chain(installed.body.machine().map(Into::into).as_ref())
+                {
+                    snapshot.add_member(member.clone());
+                }
+                let codes = installation.keys.devices.iter().map(DeviceKey::code).chain(
+                    installation
+                        .keys
+                        .passkeys
+                        .iter()
+                        .map(|trusted| trusted.passkey.code()),
+                );
+                for code in codes {
+                    snapshot.add_key(
+                        code,
+                        super::Evidence::Activation {
+                            operation: joined.operation,
+                        },
+                    );
+                }
+                installed.activation = Some(joined.operation);
+                installed.activated_at = Some(ployz_core::authority::Timestamp::now());
+            }
+            Ok(())
+        })
     }
 
     pub(crate) fn set_sealing_key(&mut self, key: Option<&SealingKey>) -> io::Result<()> {
         SealingKey::set(&self.data_dir, key)?;
         if self.record.filters_peers && self.record.membership_cluster.is_none() {
-            let mut updated = self.record.clone();
-            updated.membership_cluster = key.map(SealingKey::public_key);
-            save(&self.data_dir, &updated).map_err(io::Error::other)?;
-            self.record = updated;
+            self.commit::<_, StoreError>(|record| {
+                record.membership_cluster = key.map(SealingKey::public_key);
+                Ok(())
+            })
+            .map_err(io::Error::other)?;
         }
         self.sealing
             .send_replace(SealingKey::observe(&self.data_dir));
@@ -810,16 +814,15 @@ impl LocalMachineStore {
         visible: &[Machine],
         pinned: PinnedAddresses,
     ) -> Result<Machine, StoreError> {
-        let mut record = self.record.clone();
-        let LocalMachineBody::Participating { machine, .. } = &mut record.body else {
-            return Err(StoreError::NotParticipating);
-        };
-        let updated = apply_machine_update(machine, visible, update)?;
-        *machine = updated.clone();
-        record.pinned_addresses = pinned;
-        save(&self.data_dir, &record)?;
-        self.record = record;
-        Ok(updated)
+        self.commit(|record| {
+            let LocalMachineBody::Participating { machine, .. } = &mut record.body else {
+                return Err(StoreError::NotParticipating);
+            };
+            let updated = apply_machine_update(machine, visible, update)?;
+            *machine = updated.clone();
+            record.pinned_addresses = pinned;
+            Ok(updated)
+        })
     }
 
     fn require_uninitialized(&self) -> Result<(), StoreError> {
@@ -831,20 +834,19 @@ impl LocalMachineStore {
     }
 
     pub fn complete_catch_up(&mut self) -> Result<(), StoreError> {
-        let mut participating = self.record.clone();
-        let LocalMachineBody::Joining {
-            machine, bootstrap, ..
-        } = participating.body
-        else {
-            return Err(StoreError::NotJoining);
-        };
-        participating.body = LocalMachineBody::Participating {
-            machine,
-            origin: ParticipationOrigin::Join { bootstrap },
-        };
-        save(&self.data_dir, &participating)?;
-        self.record = participating;
-        Ok(())
+        self.commit(|record| {
+            let LocalMachineBody::Joining {
+                machine, bootstrap, ..
+            } = record.body.clone()
+            else {
+                return Err(StoreError::NotJoining);
+            };
+            record.body = LocalMachineBody::Participating {
+                machine,
+                origin: ParticipationOrigin::Join { bootstrap },
+            };
+            Ok(())
+        })
     }
 
     pub fn persist_selected_endpoint(
@@ -852,11 +854,10 @@ impl LocalMachineStore {
         machine_id: MachineId,
         endpoint: SelectedEndpoint,
     ) -> Result<(), StoreError> {
-        let mut updated = self.record.clone();
-        updated.selected_endpoints.insert(machine_id, endpoint);
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+        self.commit(|record| {
+            record.selected_endpoints.insert(machine_id, endpoint);
+            Ok(())
+        })
     }
 
     /// Stage a fresh client key in `label`'s slot, beside any key it has accepted.
@@ -873,8 +874,9 @@ impl LocalMachineStore {
             Some(accepted) => ManagementClientSlot::Live(LiveSlot::Rotating { accepted, pending }),
             None => ManagementClientSlot::Live(LiveSlot::Pending { pending }),
         };
-        self.persist_management_clients(|clients| {
-            clients.insert(label, slot);
+        self.commit(|record| {
+            record.management_clients.insert(label, slot);
+            Ok(())
         })
     }
 
@@ -895,8 +897,11 @@ impl LocalMachineStore {
         else {
             return Ok(());
         };
-        self.persist_management_clients(|clients| {
-            clients.insert(label.clone(), ManagementClientSlot::Cleared { was });
+        self.commit(|record| {
+            record
+                .management_clients
+                .insert(label.clone(), ManagementClientSlot::Cleared { was });
+            Ok(())
         })
     }
 
@@ -908,11 +913,12 @@ impl LocalMachineStore {
         let Some(label) = self.record.pending_label(&remote).cloned() else {
             return Ok(());
         };
-        self.persist_management_clients(|clients| {
-            clients.insert(
+        self.commit(|record| {
+            record.management_clients.insert(
                 label,
                 ManagementClientSlot::Live(LiveSlot::Active { accepted: remote }),
             );
+            Ok(())
         })
     }
 
@@ -931,22 +937,13 @@ impl LocalMachineStore {
             accepted: ClientKey::from(key),
         });
         let held = self.record.management_clients.get(&label) == Some(&slot);
-        let evidenced = evidence.is_none()
-            || self
-                .record
-                .trusted_snapshot
-                .as_ref()
-                .is_none_or(|snapshot| snapshot.holds_key(key.code()));
-        if held && evidenced {
-            return Ok(false);
-        }
-        let mut updated = self.record.clone();
-        updated.management_clients.insert(label, slot);
-        if let (Some(evidence), Some(snapshot)) = (evidence, updated.trusted_snapshot.as_mut()) {
-            snapshot.add_key(key.code(), evidence);
-        }
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
+        self.commit::<_, StoreError>(|record| {
+            record.management_clients.insert(label, slot);
+            if let (Some(evidence), Some(snapshot)) = (evidence, record.trusted_snapshot.as_mut()) {
+                snapshot.add_key(key.code(), evidence);
+            }
+            Ok(())
+        })?;
         Ok(!held)
     }
 
@@ -971,17 +968,17 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn remove_passkey(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
-        let mut updated = self.record.clone();
-        updated.passkeys.retain(|held| held.passkey.code() != code);
-        if updated.passkeys.len() == self.record.passkeys.len() {
-            return Ok(false);
-        }
-        if let Some(snapshot) = updated.trusted_snapshot.as_mut() {
-            snapshot.remove_key(code);
-        }
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(true)
+        self.commit(|record| {
+            let trusted = record.passkeys.len();
+            record.passkeys.retain(|held| held.passkey.code() != code);
+            if record.passkeys.len() == trusted {
+                return Ok(false);
+            }
+            if let Some(snapshot) = record.trusted_snapshot.as_mut() {
+                snapshot.remove_key(code);
+            }
+            Ok(true)
+        })
     }
 
     /// Trust `trusted` to approve workflows. Returns `false` when a passkey with its code
@@ -995,22 +992,20 @@ impl LocalMachineStore {
         evidence: Option<super::Evidence>,
     ) -> Result<bool, StoreError> {
         let code = trusted.passkey.code();
-        if self
-            .record
-            .passkeys
-            .iter()
-            .any(|held| held.passkey.code() == code)
-        {
-            return Ok(false);
-        }
-        let mut updated = self.record.clone();
-        updated.passkeys.push(trusted);
-        if let (Some(evidence), Some(snapshot)) = (evidence, updated.trusted_snapshot.as_mut()) {
-            snapshot.add_key(code, evidence);
-        }
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(true)
+        self.commit(|record| {
+            if record
+                .passkeys
+                .iter()
+                .any(|held| held.passkey.code() == code)
+            {
+                return Ok(false);
+            }
+            record.passkeys.push(trusted);
+            if let (Some(evidence), Some(snapshot)) = (evidence, record.trusted_snapshot.as_mut()) {
+                snapshot.add_key(code, evidence);
+            }
+            Ok(true)
+        })
     }
 
     /// Replace the push target in one write. An unchanged target skips the write.
@@ -1018,14 +1013,10 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn set_push_target(&mut self, url: Option<Url>) -> Result<(), StoreError> {
-        if self.record.push_target == url {
-            return Ok(());
-        }
-        let mut updated = self.record.clone();
-        updated.push_target = url;
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+        self.commit(|record| {
+            record.push_target = url;
+            Ok(())
+        })
     }
 
     /// Pin approved members so removing the Device that signed them keeps them peered.
@@ -1033,21 +1024,15 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub(crate) fn pin_machines(&mut self, machines: &[Machine]) -> Result<(), StoreError> {
-        let mut updated = self.record.clone();
-        updated.trusted_machines.extend(
-            machines
+        self.commit(|record| {
+            let pinned: Vec<_> = machines
                 .iter()
-                .filter(|machine| {
-                    self.record.accepts_machine(machine) && !self.record.pins_machine(machine)
-                })
-                .map(Into::into),
-        );
-        if updated.trusted_machines.len() == self.record.trusted_machines.len() {
-            return Ok(());
-        }
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+                .filter(|machine| record.accepts_machine(machine) && !record.pins_machine(machine))
+                .map(Into::into)
+                .collect();
+            record.trusted_machines.extend(pinned);
+            Ok(())
+        })
     }
 
     /// Trust `starting` as Members beside those already trusted, and filter peers by them.
@@ -1060,43 +1045,34 @@ impl LocalMachineStore {
         &mut self,
         starting: Vec<ployz_core::authority::Member>,
     ) -> Result<(), StoreError> {
-        let mut updated = self.record.clone();
-        if !self.record.filters_peers {
-            updated.trusted_machines.clear();
-            updated.membership_cluster =
-                SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
-        }
-        updated.filters_peers = true;
-        for member in starting {
-            if !updated.trusted_machines.contains(&member) {
-                updated.trusted_machines.push(member);
+        let held_cluster = if self.record.filters_peers {
+            None
+        } else {
+            Some(SealingKey::load(&self.data_dir)?.map(|key| key.public_key()))
+        };
+        self.commit(|record| {
+            if let Some(cluster) = held_cluster {
+                record.trusted_machines.clear();
+                record.membership_cluster = cluster;
             }
-        }
-        if updated == self.record {
-            return Ok(());
-        }
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+            record.filters_peers = true;
+            for member in starting {
+                if !record.trusted_machines.contains(&member) {
+                    record.trusted_machines.push(member);
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Drop `code`'s evidence, as a person removing the key asked.
     fn forget_evidence(&mut self, code: DeviceCode) -> Result<(), StoreError> {
-        if !self
-            .record
-            .trusted_snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.holds_key(code))
-        {
-            return Ok(());
-        }
-        let mut updated = self.record.clone();
-        if let Some(snapshot) = updated.trusted_snapshot.as_mut() {
-            snapshot.remove_key(code);
-        }
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+        self.commit(|record| {
+            if let Some(snapshot) = record.trusted_snapshot.as_mut() {
+                snapshot.remove_key(code);
+            }
+            Ok(())
+        })
     }
 
     /// Commit an activation in one write: enforce, trust exactly the set's Members, put
@@ -1110,60 +1086,52 @@ impl LocalMachineStore {
         &mut self,
         pending: &super::local_machine::PendingActivation,
     ) -> Result<super::local_machine::Retired, StoreError> {
-        let mut updated = self.record.clone();
-        let snapshot = updated
-            .trusted_snapshot
-            .get_or_insert_with(super::TrustedSnapshot::default);
-        for member in &pending.members {
-            snapshot.add_member(member.clone());
-        }
-        for (code, evidence) in pending.kept() {
-            snapshot.add_key(code, evidence);
-        }
-        let keeps = |code: DeviceCode| snapshot.holds_key(code);
-        let mut retired = super::local_machine::Retired::default();
-        for (label, slot) in &mut updated.management_clients {
-            let Some(code) = DeviceCode::named_by(label) else {
-                continue;
-            };
-            let Some(live) = slot.live() else {
-                continue;
-            };
-            if !keeps(code) {
-                *slot = ManagementClientSlot::Cleared { was: live };
-                retired.devices.push(code);
+        let held_cluster = if self.record.membership_cluster.is_none() {
+            SealingKey::load(&self.data_dir)?.map(|key| key.public_key())
+        } else {
+            None
+        };
+        self.commit(|updated| {
+            let snapshot = updated
+                .trusted_snapshot
+                .get_or_insert_with(super::TrustedSnapshot::default);
+            for member in &pending.members {
+                snapshot.add_member(member.clone());
             }
-        }
-        updated.passkeys.retain(|held| {
-            let code = held.passkey.code();
-            let kept = keeps(code);
-            if !kept {
-                retired.passkeys.push(code);
+            for (code, evidence) in pending.kept() {
+                snapshot.add_key(code, evidence);
             }
-            kept
-        });
-        updated.filters_peers = true;
-        updated.trusted_machines = pending.members.clone();
-        if updated.membership_cluster.is_none() {
-            updated.membership_cluster =
-                SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
-        }
-        updated.activation = Some(pending.operation);
-        updated.activated_at = Some(ployz_core::authority::Timestamp::now());
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(retired)
-    }
-
-    fn persist_management_clients(
-        &mut self,
-        change: impl FnOnce(&mut BTreeMap<ManagementClientLabel, ManagementClientSlot>),
-    ) -> Result<(), StoreError> {
-        let mut updated = self.record.clone();
-        change(&mut updated.management_clients);
-        save(&self.data_dir, &updated)?;
-        self.record = updated;
-        Ok(())
+            let keeps = |code: DeviceCode| snapshot.holds_key(code);
+            let mut retired = super::local_machine::Retired::default();
+            for (label, slot) in &mut updated.management_clients {
+                let Some(code) = DeviceCode::named_by(label) else {
+                    continue;
+                };
+                let Some(live) = slot.live() else {
+                    continue;
+                };
+                if !keeps(code) {
+                    *slot = ManagementClientSlot::Cleared { was: live };
+                    retired.devices.push(code);
+                }
+            }
+            updated.passkeys.retain(|held| {
+                let code = held.passkey.code();
+                let kept = keeps(code);
+                if !kept {
+                    retired.passkeys.push(code);
+                }
+                kept
+            });
+            updated.filters_peers = true;
+            updated.trusted_machines = pending.members.clone();
+            if updated.membership_cluster.is_none() {
+                updated.membership_cluster = held_cluster;
+            }
+            updated.activation = Some(pending.operation);
+            updated.activated_at = Some(ployz_core::authority::Timestamp::now());
+            Ok(retired)
+        })
     }
 
     pub fn complete_reset(&self) -> Result<(), StoreError> {
@@ -1774,5 +1742,86 @@ mod device_slot_tests {
             store.record().management_scope(&key().into()),
             Some(ManagementScope::Full)
         );
+    }
+}
+
+#[cfg(test)]
+mod commit_tests {
+    use std::fs;
+
+    use super::{LocalMachineRecord, LocalMachineStore, StoreError, TEMPORARY_FILE_NAME, path};
+
+    fn opened() -> (tempfile::TempDir, LocalMachineStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalMachineStore::open(dir.path().join("data")).unwrap();
+        (dir, store)
+    }
+
+    fn url(text: &str) -> Option<reqwest::Url> {
+        Some(reqwest::Url::parse(text).unwrap())
+    }
+
+    fn stored(store: &LocalMachineStore) -> LocalMachineRecord {
+        serde_json::from_slice(&fs::read(path(store.data_dir())).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_change_is_written_and_then_held() {
+        let (_dir, mut store) = opened();
+
+        store
+            .set_push_target(url("https://cloud.example/push"))
+            .unwrap();
+
+        assert_eq!(
+            store.record().push_target(),
+            url("https://cloud.example/push").as_ref()
+        );
+        assert_eq!(stored(&store), *store.record());
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_writes_nothing() {
+        let (_dir, mut store) = opened();
+        store
+            .set_push_target(url("https://cloud.example/push"))
+            .unwrap();
+        let file = path(store.data_dir());
+        fs::remove_file(&file).unwrap();
+
+        store
+            .set_push_target(url("https://cloud.example/push"))
+            .unwrap();
+
+        assert!(!file.exists());
+        store.set_push_target(None).unwrap();
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn an_edit_that_refuses_leaves_the_record_and_the_file() {
+        let (_dir, mut store) = opened();
+        let before = store.record().clone();
+        let file = fs::read(path(store.data_dir())).unwrap();
+
+        let refused = store.complete_catch_up();
+
+        assert!(matches!(refused, Err(StoreError::NotJoining)));
+        assert_eq!(*store.record(), before);
+        assert_eq!(fs::read(path(store.data_dir())).unwrap(), file);
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_record_as_it_was() {
+        let (_dir, mut store) = opened();
+        let before = store.record().clone();
+        let file = fs::read(path(store.data_dir())).unwrap();
+        fs::create_dir(store.data_dir().join(TEMPORARY_FILE_NAME)).unwrap();
+
+        let failed = store.set_push_target(url("https://cloud.example/push"));
+
+        assert!(matches!(failed, Err(StoreError::Io(_))));
+        assert_eq!(*store.record(), before);
+        assert_eq!(fs::read(path(store.data_dir())).unwrap(), file);
     }
 }
