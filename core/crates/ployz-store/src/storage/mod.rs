@@ -215,27 +215,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0035_build_interrupted",
         Step::Rust(|tx, _| {
             tx.batch(include_str!("migrations/0035_build_interrupted.sql"))?;
-            // The in-flight test is the text `deployment::in_flight_sql` gave when this
-            // migration shipped, as the migrated index spells it: a later status joins
-            // that function and the index, never this statement.
-            tx.execute(
-                "UPDATE config_build SET status = 'failed', interrupted = 1, message = ?2, \
-                 finished = COALESCE(finished, (SELECT CASE WHEN d.ended IS NOT NULL \
-                   THEN d.ended WHEN d.lease < ?1 THEN d.lease ELSE ?1 END \
-                   FROM config_deployment d WHERE d.id = config_build.deployment_id)) \
-                 WHERE status = 'building' AND github IS NULL AND EXISTS (\
-                   SELECT 1 FROM config_deployment \
-                   WHERE config_deployment.id = config_build.deployment_id \
-                   AND NOT (status IN ('queued', 'running', 'cancelling') \
-                     AND (status = 'queued' OR lease > ?1)) \
-                   AND (ended IS NOT NULL OR (runner IS NOT NULL \
-                     AND started IS NOT NULL AND (status = 'unknown' \
-                       OR (status IN ('running', 'cancelling') AND number IS NOT NULL)))))",
-                &[
-                    crate::deployment::now().into(),
-                    crate::build::INTERRUPTED.into(),
-                ],
-            )?;
+            // The clock is read twice, as it was when this shipped: first for the
+            // in-flight test, then for the parameters. The reads may straddle a second.
+            let in_flight_at = crate::deployment::now();
+            steps::interrupt_builds(tx, in_flight_at, crate::deployment::now())?;
             Ok(None)
         }),
     ),
