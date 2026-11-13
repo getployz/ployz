@@ -2568,7 +2568,13 @@ fn a_redeploy_nobody_approved_again_after_its_builds_fails_when_it_would_run() {
         .claim(&again.id, &ployz_store::RunnerId::parse("runner").unwrap())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
-    assert!(error.message.contains("Nobody approved"), "{error:?}");
+    assert_eq!(
+        error.message,
+        "Nobody approved this redeploy after its builds, so it didn't run. Run ployz \
+         deployment redeploy again.",
+        "{error:?}"
+    );
+    assert_eq!(error.details, json!({ "deployment": again.id }));
     let view = store
         .read(&person(), &ployz_store::DeploymentQuery { id: again.id })
         .unwrap();
