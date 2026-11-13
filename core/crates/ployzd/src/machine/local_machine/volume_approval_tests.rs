@@ -518,7 +518,7 @@ async fn enforcing_with(starting: Vec<ployz_core::authority::Member>) -> Enforci
     let device = DeviceKey::from(signer.public());
     owner
         .mutate(move |store| {
-            store.approve_device(device).unwrap();
+            store.approve_device(device, None).unwrap();
             store.set_device_enforcement(true, starting).unwrap();
         })
         .await

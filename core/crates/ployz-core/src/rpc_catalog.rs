@@ -62,6 +62,7 @@ macro_rules! rpc_catalog {
                 SetDevice: (set_device, "SetDevice", SetDeviceRequest, "set_device", DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
                 SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
                 SetDeviceEnforcement: (set_device_enforcement, "SetDeviceEnforcement", SetDeviceEnforcementRequest, "set_device_enforcement", DeviceEnforcementSet, SET_DEVICE_ENFORCEMENT_CAPABILITY, "ployz.machine.set-device-enforcement.v2", Always, Full),
+                ActivateEnforcement: (activate_enforcement, "ActivateEnforcement", ActivateEnforcementRequest, "activate_enforcement", DeviceEnforcementSet, ACTIVATE_ENFORCEMENT_CAPABILITY, "ployz.machine.activate.v1", Always, Operator),
                 SetPasskey: (set_passkey, "SetPasskey", SetPasskeyRequest, "set_passkey", DeviceSet, SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1", Always, Full),
                 RemoveTrustedKey: (remove_trusted_key, "RemoveTrustedKey", RemoveTrustedKeyRequest, "remove_trusted_key", TrustedKeyRemoved, REMOVE_TRUSTED_KEY_CAPABILITY, "ployz.machine.remove-trusted-key.v1", Always, Full),
                 SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
@@ -71,6 +72,8 @@ macro_rules! rpc_catalog {
                 GenerateSealingKey: (generate_sealing_key, "GenerateSealingKey", GenerateSealingKeyRequest, "generate_sealing_key", SealingKeyHeld, GENERATE_SEALING_KEY_CAPABILITY, "ployz.sealing.generate.v1", Always, Operator),
                 ShareSealingKey: (share_sealing_key, "ShareSealingKey", ShareSealingKeyRequest, "share_sealing_key", SealingKeyShared, SHARE_SEALING_KEY_CAPABILITY, "ployz.sealing.share.v1", Always, Operator),
                 InstallSealingKey: (install_sealing_key, "InstallSealingKey", InstallSealingKeyRequest, "install_sealing_key", SealingKeyHeld, INSTALL_SEALING_KEY_CAPABILITY, "ployz.sealing.install.v1", Always, Operator),
+                SetRecipientKey: (set_recipient_key, "SetRecipientKey", SetRecipientKeyRequest, "set_recipient_key", RecipientKeySet, SET_RECIPIENT_KEY_CAPABILITY, "ployz.sealing.recipient.v1", Always, Operator),
+                ResealValues: (reseal_values, "ResealValues", ResealValuesRequest, "reseal_values", ValuesResealed, RESEAL_VALUES_CAPABILITY, "ployz.sealing.reseal.v1", Always, Operator),
                 Leave: (leave, "Leave", LeaveRequest, "leave", Left, LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1", Always, Operator),
                 Forget: (forget, "Forget", ForgetRequest, "forget", Forgotten, FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1", Always, Operator),
                 ListContainers: (list_containers, "ListContainers", ListContainersRequest, "list_containers", ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container, Operator),
@@ -114,6 +117,10 @@ macro_rules! rpc_catalog {
             }
             capabilities {
                 JOIN_APPROVAL_CAPABILITY: ("ployz.machine.join.device-approval.v1", Always),
+                /// The daemon gates every route the coverage table classes `Signed`, publishes an approved joiner only after its confirmation, keeps a trusted snapshot of the Members and keys it holds evidence for, and never gives a mesh caller Full scope. Activation admits only a set inside that snapshot or one sent over its local socket, commits it across a restart, and can't be undone. Its meaning is fixed and never widens.
+                ENFORCED_CAPABILITY: ("ployz.machine.enforced.v1", Always),
+                /// `WrapSealingKey` takes `key: recipient` and answers the rotation that named it, and `RecoverSealingKey` takes a rotation and recovers the recipient key it names.
+                RECIPIENT_RECOVERY_CAPABILITY: ("ployz.sealing.recipient-recovery.v1", Always),
                 /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
                 VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
                 /// `SetVolumeSize` takes `allow_shrink` and lowers a bound down to its floor.

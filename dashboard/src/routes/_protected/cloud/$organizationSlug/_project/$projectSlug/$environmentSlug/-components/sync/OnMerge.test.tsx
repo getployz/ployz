@@ -345,7 +345,7 @@ it("reads a Kept row of any kind as Kept, with nothing to do", async () => {
 async function sealingReady() {
   const kem = new DhkemX25519HkdfSha256();
   const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
-  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)) } });
+  vi.spyOn(sealingFunctions, "readSealingFn").mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)), sealTo: btoa(String.fromCharCode(...raw)) } });
 }
 
 it("seals a secret's Edit for the Destination's Service, and keeps a plain Edit as typed", async () => {
@@ -387,7 +387,7 @@ it("refuses a secret's Edit, keeping what was typed, when the fresh read seals a
   const raw = new Uint8Array(await kem.serializePublicKey((await kem.generateKeyPair()).publicKey));
   vi.spyOn(sealingFunctions, "readSealingFn")
     .mockResolvedValueOnce({ organizationId: "org", sealing: { state: "no_server" } })
-    .mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)) } });
+    .mockResolvedValue({ organizationId: "org", sealing: { state: "ready", publicKey: btoa(String.fromCharCode(...raw)), sealTo: btoa(String.fromCharCode(...raw)) } });
   const { write } = open({ services: [] });
   const list = await panel();
   await choose(list, "TOKEN", "Edit");

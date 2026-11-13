@@ -60,11 +60,22 @@ describe("sealPlatform", () => {
       return createSenderContext.call(this, { ...params, ekm: hex(EPHEMERAL_IKM) });
     });
 
-    const sealed = await sealPlatform(RECIPIENT_PUBLIC_KEY, "private-access", AUTH_KEY);
+    const sealed = await sealPlatform({ publicKey: RECIPIENT_PUBLIC_KEY, sealTo: RECIPIENT_PUBLIC_KEY }, "private-access", AUTH_KEY);
 
     expect(sealed).toBe(PLATFORM_CIPHERTEXT);
     expect(await open(sealed, hex(PLATFORM_AAD), RECIPIENT_PRIVATE_KEY, "ployz-platform-sealed-v1")).toBe(AUTH_KEY);
     await expect(open(sealed, hex(PLATFORM_AAD))).rejects.toThrow();
+  });
+
+  it("seals to the recipient key once the Cluster activated, still bound to the Cluster's identity", async () => {
+    const recipientKey = await suite.kem.generateKeyPair();
+    const sealTo = Buffer.from(await suite.kem.serializePublicKey(recipientKey.publicKey)).toString("base64");
+    const privateKey = Buffer.from(await suite.kem.serializePrivateKey(recipientKey.privateKey)).toString("hex");
+
+    const sealed = await sealPlatform({ publicKey: RECIPIENT_PUBLIC_KEY, sealTo }, "private-access", AUTH_KEY);
+
+    expect(await open(sealed, hex(PLATFORM_AAD), privateKey, "ployz-platform-sealed-v1")).toBe(AUTH_KEY);
+    await expect(open(sealed, hex(PLATFORM_AAD), RECIPIENT_PRIVATE_KEY, "ployz-platform-sealed-v1")).rejects.toThrow();
   });
 });
 

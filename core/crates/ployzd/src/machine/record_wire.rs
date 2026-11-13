@@ -43,6 +43,10 @@ pub(super) struct LocalMachineRecordWire {
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
     enrollment: Option<ployz_core::EnrollRequest>,
+    #[serde(default)]
+    trusted_snapshot: Option<super::TrustedSnapshot>,
+    #[serde(default)]
+    activation: Option<ployz_core::OperationId>,
 }
 
 impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
@@ -64,6 +68,11 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         record.passkeys = readable_passkeys(wire.passkeys);
         record.membership_cluster = wire.membership_cluster;
         record.enrollment = wire.enrollment;
+        record.trusted_snapshot = wire.trusted_snapshot;
+        record.activation = wire.activation;
+        if record.activation.is_some() {
+            record.device_enforcement = true;
+        }
         Ok(record)
     }
 }

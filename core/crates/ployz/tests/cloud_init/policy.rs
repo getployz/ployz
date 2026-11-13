@@ -15,6 +15,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
             target_versions: Default::default(),
             sealing_key: None,
             devices: Vec::new(),
+            recipient: None,
         };
         let pairing = json!({ "secret": PAIRING });
         let response = if resume_founder {

@@ -181,7 +181,14 @@ fn a_refused_key_is_told_from_a_router_that_merely_stopped() {
 #[test]
 fn the_auth_key_opens_only_for_the_cluster_it_was_sealed_to() {
     let cluster = ployz_core::Keypair::generate();
-    let sealed = seal_key(&cluster.public(), "tskey-auth-secret").unwrap();
+    let sealed = seal_key(
+        &crate::sealing_pin::SealFor {
+            cluster: cluster.public(),
+            recipient: cluster.public(),
+        },
+        "tskey-auth-secret",
+    )
+    .unwrap();
 
     assert_eq!(
         cluster

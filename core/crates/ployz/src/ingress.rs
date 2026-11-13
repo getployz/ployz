@@ -26,7 +26,7 @@ use crate::{
     connect::{Client, ConnectError},
     deploy::{ProxyPlacement, RestartTolerant, SlotAction},
     failure::Failure,
-    sealing_pin::SealTo,
+    sealing_pin::{SealFor, SealTo},
     ui::progress::{Detail, Diagnostic, StartFailure},
 };
 
@@ -196,12 +196,17 @@ pub(crate) struct Doors {
     /// The Cluster's Sealing Key as the first Server's row claims it. Cloud can write
     /// that row, so the CLI seals only to a key [`SealTo`] checks.
     pub(crate) sealing: Option<SealingPublicKey>,
+    /// The key new values seal to once the Cluster activated, as the entry reports it for
+    /// that Sealing Key. Only Cloud's own SDK seals to it; the CLI seals to the recipient its
+    /// pin names.
+    pub(crate) recipient: Option<SealingPublicKey>,
 }
 
-/// A Cloudflare tunnel token to seal, with the Cluster Sealing Key to seal it to.
+/// A Cloudflare tunnel token to seal, with the Cluster's keys to seal it to.
 pub(crate) struct NewToken<'token> {
-    /// A key the caller trusts for the Cluster, never one a row merely claims.
-    pub(crate) cluster: SealingPublicKey,
+    /// Keys the caller trusts for the Cluster, never ones a row merely claims: its identity,
+    /// and the recipient key new values seal to once it activated.
+    pub(crate) seal_for: SealFor,
     pub(crate) token: &'token str,
 }
 
@@ -224,17 +229,19 @@ pub(crate) fn cluster_doors_for(
         });
     }
     let sealed_token = match token {
-        Some(NewToken { cluster, token }) => {
-            seal_platform(&cluster, PlatformPurpose::IngressTunnel, token.as_bytes()).map_err(
-                |error| {
-                    Failure::caused(
-                        RpcErrorCode::Internal,
-                        "Could not seal the tunnel token for this Cluster",
-                        error,
-                    )
-                },
-            )?
-        }
+        Some(NewToken { seal_for, token }) => seal_platform(
+            &seal_for.cluster,
+            &seal_for.recipient,
+            PlatformPurpose::IngressTunnel,
+            token.as_bytes(),
+        )
+        .map_err(|error| {
+            Failure::caused(
+                RpcErrorCode::Internal,
+                "Could not seal the tunnel token for this Cluster",
+                error,
+            )
+        })?,
         None => observed.cluster.sealed_token.clone().ok_or_else(|| {
             Failure::usage(
                 "The Tunnel Door needs the tunnel's Cloudflare token. Pipe it with --token-stdin.",
@@ -268,7 +275,7 @@ pub(crate) async fn checked_doors(
     if !new_token {
         return cluster_doors_for(observed, doors, None);
     }
-    let cluster = seal_to(client).await?.key(client, observed.sealing).await?;
+    let seal_for = seal_to(client).await?.key(client, observed.sealing).await?;
     let token = match given {
         Some(token) => token,
         None => ask()?,
@@ -277,7 +284,7 @@ pub(crate) async fn checked_doors(
         observed,
         doors,
         Some(NewToken {
-            cluster,
+            seal_for,
             token: &token,
         }),
     )
@@ -317,6 +324,15 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
             Some(Sealing::Held { public_key }) => Some(*public_key),
             Some(Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. }) | None => None,
         });
+    let recipient = match sealing {
+        Some(identity) => client
+            .call::<op::Inspect>(ployz_core::InspectRequest::default(), Call::read())
+            .await
+            .ok()
+            .filter(|details| matches!(details.sealing, Some(Sealing::Held { public_key }) if public_key == identity))
+            .and_then(|details| details.sealing_recipient),
+        None => None,
+    };
     Ok(Doors {
         machines: door_machines(&machines),
         proxy: proxy_service(&services),
@@ -326,6 +342,7 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         open: machine_doors(&services),
         listed: live.containers,
         sealing,
+        recipient,
     })
 }
 

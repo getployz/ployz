@@ -53,7 +53,7 @@ pub(super) async fn connect_full(
             crate::connect::connect_selected_with(selected, Arc::new(connector))
                 .await
                 .map(|client| {
-                    client.with_full_routes(FullRoutes::new(connections, direct.is_some()))
+                    client.with_full_routes(FullRoutes::chosen(connections, direct.is_some()))
                 })
         }
         Err(error) => Err(error),
@@ -70,7 +70,9 @@ pub(super) async fn connect_full(
     let connections = access.connections.clone();
     dial(matches, access)
         .await?
-        .map(|client| client.with_full_routes(FullRoutes::new(connections, direct.is_some())))
+        .map(|client| {
+            client.with_full_routes(FullRoutes::from_cloud(connections, direct.is_some()))
+        })
         .ok_or_else(no_servers)
 }
 
@@ -244,7 +246,8 @@ pub(super) async fn connect_full_avoiding(
     let Some(leaving) = leaving.filter(|leaving| leaving.id == entry) else {
         return Ok((client, entry, false));
     };
-    let every = client.full_routes().connections().to_vec();
+    let routes = client.full_routes().spread();
+    let every = routes.connections().to_vec();
     let others: Vec<Connection> = every
         .iter()
         .filter(|connection| connection.machine_id().is_some_and(|id| *id != leaving.id))
@@ -260,7 +263,7 @@ pub(super) async fn connect_full_avoiding(
         };
         let mut client = crate::connect::connect_selected_with(selected, Arc::new(connector))
             .await?
-            .with_full_routes(FullRoutes::new(every, false));
+            .with_full_routes(routes);
         let entry = client
             .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
             .await?

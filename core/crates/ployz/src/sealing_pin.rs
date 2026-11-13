@@ -11,7 +11,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ployz_core::{Hint, InspectRequest, MachineName, RpcErrorCode, Sealing, SealingPublicKey, op};
+use ployz_core::{
+    ActivationState, Hint, InspectRequest, MachineDetails, MachineName, RpcErrorCode, Sealing,
+    SealingPublicKey, op,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -32,6 +35,29 @@ pub(crate) struct Pin {
     pub(crate) public_key: SealingPublicKey,
     /// The Server that reported it.
     pub(crate) server: MachineName,
+    /// The recipient key new values seal to once the Cluster activated, as a Server reported
+    /// it over SSH or the local socket or as `ployz device enforce` here named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recipient: Option<SealingPublicKey>,
+}
+
+impl Pin {
+    /// What an entry's own report seals to: [`pin_from`] gave no pin for an activated
+    /// Server without a recipient key, so its identity is used only before activation.
+    fn seal_for(&self) -> SealFor {
+        SealFor {
+            cluster: self.public_key,
+            recipient: self.recipient.unwrap_or(self.public_key),
+        }
+    }
+}
+
+/// The Cluster a value seals for and the key it seals to: its recipient key once it
+/// activated, its identity before.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SealFor {
+    pub(crate) cluster: SealingPublicKey,
+    pub(crate) recipient: SealingPublicKey,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -90,6 +116,48 @@ impl Pins {
         let replaced = file.organizations.insert(organization.to_owned(), pin);
         self.save(&file)?;
         Ok(replaced)
+    }
+
+    /// The recipient key a pin of the Cluster whose identity is `cluster` names, if any.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file can't be read or isn't a pin file.
+    pub(crate) fn recipient_of(
+        &self,
+        cluster: SealingPublicKey,
+    ) -> Result<Option<SealingPublicKey>, PinError> {
+        Ok(self
+            .load()?
+            .organizations
+            .into_values()
+            .filter(|pin| pin.public_key == cluster)
+            .find_map(|pin| pin.recipient))
+    }
+
+    /// Name `recipient` on every pin of the Cluster whose identity is `cluster`, as
+    /// `ployz device enforce` does once it installed the recipient it generated here.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file can't be read, isn't a pin file, or can't be written.
+    pub(crate) fn name_recipient(
+        &self,
+        cluster: SealingPublicKey,
+        recipient: SealingPublicKey,
+    ) -> Result<(), PinError> {
+        let mut file = self.load()?;
+        let mut named = false;
+        for pin in file.organizations.values_mut() {
+            if pin.public_key == cluster {
+                pin.recipient = Some(recipient);
+                named = true;
+            }
+        }
+        if named {
+            self.save(&file)?;
+        }
+        Ok(())
     }
 
     fn load(&self) -> Result<PinFile, PinError> {
@@ -171,9 +239,9 @@ impl SealTo {
         &self,
         client: &mut Client,
         relayed: Option<SealingPublicKey>,
-    ) -> Result<SealingPublicKey, Failure> {
+    ) -> Result<SealFor, Failure> {
         match self {
-            Self::Entry => entry_key(client).await,
+            Self::Entry => Ok(entry_pin(client).await?.seal_for()),
             Self::Pinned(pin) => {
                 let Some(relayed) = relayed else {
                     return Err(Failure::coded(
@@ -193,18 +261,31 @@ fn trusts(source: &ConnectionSource, transport: &Transport) -> bool {
         && matches!(transport, Transport::Ssh { .. } | Transport::Unix(_))
 }
 
-/// `relayed`, a key Cloud passed on, when it is the one this computer pinned.
+/// `relayed`, a key Cloud passed on, when it is the one this computer pinned, sealing to the
+/// recipient key the pin names. Cloud can hide that a Cluster activated, and everything
+/// planted before activation holds its identity key, so a pin that names no recipient
+/// seals nothing through Cloud.
 ///
 /// # Errors
 ///
-/// Refuses with `conflict` when nothing is pinned or the pin is another key, naming the
-/// command that pins it.
-pub(crate) fn check(
-    pin: Option<&Pin>,
-    relayed: SealingPublicKey,
-) -> Result<SealingPublicKey, Failure> {
+/// Refuses with `conflict` when nothing is pinned, the pin is another key, or it names no
+/// recipient key, naming the command that pins it.
+pub(crate) fn check(pin: Option<&Pin>, relayed: SealingPublicKey) -> Result<SealFor, Failure> {
     match pin {
-        Some(pin) if pin.public_key == relayed => Ok(pin.public_key),
+        Some(Pin {
+            public_key,
+            recipient: Some(recipient),
+            ..
+        }) if *public_key == relayed => Ok(SealFor {
+            cluster: *public_key,
+            recipient: *recipient,
+        }),
+        Some(pin) if pin.public_key == relayed => Err(Failure::conflict(
+            "This computer pinned your cluster's key before it was activated, so it can't tell \
+             which key new values go to, and nothing was sealed. Activate your cluster with \
+             `ployz device enforce`, or if it already is, pin its key again from a server.",
+        )
+        .hint(Hint::Next(PIN_COMMAND.to_owned()))),
         Some(pin) => Err(Failure::conflict(format!(
             "Ployz Cloud sent a Sealing Key other than the one this computer pinned from {}, \
              so nothing was sealed. If your Cluster's key changed, pin it again from a Server.",
@@ -231,10 +312,33 @@ pub(crate) async fn entry_pin(client: &mut Client) -> Result<Pin, Failure> {
             Call::read().waiting(Wait::standard()),
         )
         .await?;
+    pin_from(details)
+}
+
+/// The pin an entry's own report gives. A Server that activated, or is activating, with no
+/// recipient key gives none: everything planted before activation holds its identity key.
+fn pin_from(details: MachineDetails) -> Result<Pin, Failure> {
+    let activated = details.activation.as_ref().is_some_and(|report| {
+        matches!(
+            report.state,
+            ActivationState::Activating | ActivationState::Activated
+        )
+    });
     match (details.sealing, details.machine) {
+        (Some(Sealing::Held { .. }), Some(machine))
+            if activated && details.sealing_recipient.is_none() =>
+        {
+            Err(Failure::conflict(format!(
+                "Server {} is activated but holds no recipient key yet, so nothing can be \
+                 sealed for it. Run `ployz device enforce` again to finish activating it.",
+                machine.name
+            ))
+            .hint(Hint::Next("ployz device enforce".to_owned())))
+        }
         (Some(Sealing::Held { public_key }), Some(machine)) => Ok(Pin {
             public_key,
             server: machine.name,
+            recipient: details.sealing_recipient,
         }),
         (_, machine) => Err(Failure::conflict(format!(
             "Server {} holds no Sealing Key it can open with, so nothing can be sealed for it.",
@@ -245,10 +349,6 @@ pub(crate) async fn entry_pin(client: &mut Client) -> Result<Pin, Failure> {
         ))
         .hint(Hint::Inspect("ployz status".to_owned()))),
     }
-}
-
-async fn entry_key(client: &mut Client) -> Result<SealingPublicKey, Failure> {
-    Ok(entry_pin(client).await?.public_key)
 }
 
 #[cfg(test)]

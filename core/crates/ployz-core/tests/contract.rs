@@ -1960,7 +1960,10 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
     let public_key = ployz_core::SealingPublicKey::from_bytes([9; 32]);
     let backup = ployz_core::SealingKeyBackup::from_bytes(vec![3; 77]);
 
-    let wrap = ployz_core::WrapSealingKeyRequest { code: code.clone() };
+    let wrap = ployz_core::WrapSealingKeyRequest {
+        code: code.clone(),
+        key: ployz_core::SealingKeyRole::Identity,
+    };
     assert_eq!(
         op::WrapSealingKey::into_request(wrap.clone())
             .encode()
@@ -1974,6 +1977,7 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
         let recover = ployz_core::RecoverSealingKeyRequest {
             code: code.clone(),
             backup,
+            rotation: None,
         };
         assert_eq!(
             op::RecoverSealingKey::into_request(recover.clone())
@@ -1986,7 +1990,11 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
         );
     }
 
-    let wrapped = ployz_core::SealingKeyWrapped { public_key, backup };
+    let wrapped = ployz_core::SealingKeyWrapped {
+        public_key,
+        backup,
+        rotation: None,
+    };
     assert_eq!(
         RpcResponse::from(wrapped.clone())
             .decode::<op::WrapSealingKey>()
@@ -2057,6 +2065,8 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         upgrade: None,
         token: None,
         sealing: None,
+        activation: None,
+        sealing_recipient: None,
         founding: Default::default(),
     };
     let encoded = serde_json::to_value(&details).unwrap();

@@ -143,8 +143,8 @@ from a mirror whose first copy never finished, is deleted without an approval.
 Ployz Cloud can't delete a copy that holds data on these servers on its own. **Remove** under
 **Copies**, and a deploy that drops a mirror or an old copy, fail before they change anything and
 name the command to run from an approved device. When you delete a volume, Ployz Cloud leaves its
-mirrors' copies on servers that enforce. Turn enforcement off with `ployz device enforce --off` to
-let Ployz Cloud clean them up, then turn it back on.
+mirrors' copies on servers that enforce. Remove each mirror with `ployz volume mirror rm` from an
+approved device before you delete the volume.
 
 If `ployz volume mirror` can't reach your servers to ask whether they enforce, it warns and runs
 without signing, and servers that enforce refuse it. A server from before Ployz 0.4 ignores the

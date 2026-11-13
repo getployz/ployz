@@ -41,6 +41,8 @@ fn founder() -> Machine {
 fn departing() -> ployz_core::MachineDetails {
     let machine = founder();
     ployz_core::MachineDetails {
+        activation: None,
+        sealing_recipient: None,
         id: machine.id,
         phase: LocalMachinePhase::Participating,
         public_key: machine.public_key,
@@ -317,6 +319,8 @@ async fn restarting_cluster_store(
                     })
                 }
                 RpcRequestBody::Inspect(_) => RpcResponse::from(ployz_core::MachineDetails {
+                    activation: None,
+                    sealing_recipient: None,
                     id: machine.id,
                     phase: LocalMachinePhase::Participating,
                     machine: Some(machine.clone()),
@@ -401,6 +405,8 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
                         std::future::pending().await
                     }
                     RpcRequestBody::Inspect(_) => RpcResponse::from(ployz_core::MachineDetails {
+                        activation: None,
+                        sealing_recipient: None,
                         id: machine.id,
                         phase: LocalMachinePhase::Participating,
                         machine: Some(machine.clone()),

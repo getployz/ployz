@@ -24,6 +24,8 @@ use crate::{DeviceCode, DeviceKey, value::hex_newtype};
 pub enum Purpose {
     Workflow,
     Join,
+    /// An activation's starting set, or the recipient key it adds. A Device signs one, or a
+    /// passkey answers its own prompt for it: a session grant covers none.
     Enforce,
     /// Standing authority over every future push, such as an automatic deploy rule. A
     /// Device signs one, or a passkey answers its own prompt for it: a session grant
@@ -394,8 +396,11 @@ impl<T: Statement> Signed<T> {
         }
         // A workflow rests on a passkey only through a session grant, whose limits the
         // workflow's own check reads. A passkey's own answer has none, so only a statement
-        // no session may sign takes one: a rule, or a Volume workflow.
-        if !matches!(T::PURPOSE, Purpose::Rule | Purpose::Volume) {
+        // no session may sign takes one: a rule, a Volume workflow, or an activation.
+        if !matches!(
+            T::PURPOSE,
+            Purpose::Rule | Purpose::Volume | Purpose::Enforce
+        ) {
             return Err(AuthorityRefusal::Mismatch { field: "a passkey" });
         }
         let challenge = self.challenge();

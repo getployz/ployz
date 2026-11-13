@@ -7,16 +7,13 @@ use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    DeviceCode, DeviceEnforcementSet, DeviceKey, DeviceSet, InspectRequest, MachineId, MachineName,
-    MachineTarget, OperationId, REMOVE_TRUSTED_KEY_CAPABILITY, RemoveTrustedKeyRequest, Rpc,
-    RpcError, RpcErrorCode, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_PASSKEY_CAPABILITY, SetDeviceEnforcementRequest, SetDeviceRequest, SetPasskeyRequest,
+    DeviceCode, DeviceKey, DeviceSet, InspectRequest, MachineId, MachineName, MachineTarget,
+    REMOVE_TRUSTED_KEY_CAPABILITY, RemoveTrustedKeyRequest, Rpc, RpcError, RpcErrorCode,
+    SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY, SetDeviceRequest, SetPasskeyRequest,
     TrustedKeyRemoved,
     authority::{
-        Member, Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey, Signed, Signer,
-        StartingSet, Timestamp,
+        Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey,
         trusted_key::{CredentialId, RelyingParty},
-        validity,
     },
     op,
 };
@@ -32,7 +29,10 @@ use crate::connect::Client;
 use crate::ui::{self, Cell, Gaps, Table, Tone};
 use ployz_core::Hint;
 
+mod enforce;
+mod known;
 mod pin;
+pub(crate) use enforce::{enforce, enforce_command};
 pub(super) use pin::seal_to;
 pub(crate) use pin::{pin, pin_command};
 
@@ -80,24 +80,6 @@ pub(crate) fn remove_command(command: Command) -> Command {
     base(command, "Remove a device or a passkey from every server")
         .after_help(concat!("Examples:\n", "  ployz device rm mmg42klgyq"))
         .arg(positional("code", true).help("The device's or passkey's code, from ployz device ls"))
-}
-
-pub(crate) fn enforce_command(command: Command) -> Command {
-    base(
-        command,
-        "Require an approved device's signature on every service restart",
-    )
-    .after_help(concat!(
-        "Examples:\n",
-        "  ployz device enforce\n",
-        "  ployz device enforce --off"
-    ))
-    .arg(
-        Arg::new("off")
-            .long("off")
-            .action(ArgAction::SetTrue)
-            .help("Let restarts through without a device's signature again"),
-    )
 }
 
 pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
@@ -335,6 +317,8 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
         )
         .await
         .map_err(crate::connect::rpc_error)?;
+    known::KnownMachines::beside(&config_path(leaf)?)
+        .record(ployz_core::authority::Member::from(&body.machine))?;
     ui::finish(&json!({ "approved_join": body.machine.id }), || {
         ui::stream("Approved the Server join. Rerun its join command.")
     })
@@ -395,6 +379,8 @@ pub(super) async fn sign_waiting_join(
     client
         .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, Call::keyed())
         .await?;
+    known::KnownMachines::beside(config)
+        .record(ployz_core::authority::Member::from(&body.machine))?;
     Ok(true)
 }
 
@@ -414,6 +400,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
 pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
+    let own = key::load(&key::path(&config_path(leaf)?))?.map(|secret| key::public(&secret).code());
     runtime()?.block_on(async {
         let mut client = route::connect(leaf, context(leaf)).await?;
         let reach = Reach::of(&mut client).await?;
@@ -450,7 +437,11 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
                 KeyKind::Passkey { account } => ("passkey, approve-only", account.as_str()),
             };
             table.row([
-                Cell::from(device.code.as_str()),
+                Cell::from(if Some(device.code) == own {
+                    format!("{} (this computer)", device.code)
+                } else {
+                    device.code.to_string()
+                }),
                 Cell::from(kind),
                 Cell::from(account),
                 Cell::from(device.approvers(&reach)),
@@ -462,139 +453,6 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
             ui::rows(&table);
         })
     })
-}
-
-pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
-    let leaf = leaf_matches(root);
-    let enforced = !leaf.get_flag("off");
-    runtime()?.block_on(async {
-        let mut client = route::connect_full(leaf, context(leaf)).await?;
-        let reach = Reach::full(&mut client).await?;
-        let starting_set = if enforced {
-            Some(sign_starting_set(&config_path(leaf)?, &client, &reach).await?)
-        } else {
-            None
-        };
-        let request = SetDeviceEnforcementRequest {
-            enforced,
-            starting_set,
-        };
-        let (answers, gaps) = reach
-            .fan_out(|machine_id| enforce_on(client.clone(), machine_id, request.clone()))
-            .await;
-        let answers: Vec<Enforcement> = answers
-            .into_iter()
-            .map(|(machine_id, set)| Enforcement {
-                server: reach.name(&machine_id),
-                machine_id,
-                enforced: set.enforced,
-            })
-            .collect();
-        let gaps = reach.named(gaps);
-        let mut table = Table::new(["SERVER", "DEVICE ENFORCEMENT"], "No servers answered.");
-        for answer in &answers {
-            let (state, tone) = if answer.enforced {
-                ("on", Tone::Good)
-            } else {
-                ("off", Tone::Change)
-            };
-            table.row([Cell::from(&answer.server), Cell::status(state, tone)]);
-        }
-        ui::finish_fanout("machines", &answers, &gaps, || {
-            if !answers.is_empty() || gaps.is_complete() {
-                ui::rows(&table);
-            }
-        })
-    })
-}
-
-#[derive(Serialize)]
-struct Enforcement {
-    machine_id: MachineId,
-    server: String,
-    enforced: bool,
-}
-
-async fn enforce_on(
-    client: Client,
-    machine_id: MachineId,
-    request: SetDeviceEnforcementRequest,
-) -> Result<Option<DeviceEnforcementSet>, RpcError> {
-    let target = MachineTarget::from(&machine_id);
-    if !compat::supports(&client, &target, SET_DEVICE_ENFORCEMENT_CAPABILITY).await? {
-        return Ok(None);
-    }
-    client
-        .call_shared::<op::SetDeviceEnforcement>(request, Call::once().to(&target))
-        .await
-        .map_err(crate::connect::rpc_error)
-        .map(Some)
-}
-
-/// Sign the Servers that answer for themselves as the Members every Server trusts once
-/// enforcement is on. A row no Server answers for is left out.
-async fn sign_starting_set(
-    config: &Path,
-    client: &Client,
-    reach: &Reach,
-) -> Result<Signed<StartingSet>, Error> {
-    let secret = key::load(&key::path(config))?.ok_or_else(|| {
-        Error::conflict("Turning on Device enforcement needs this computer's approved Device key.")
-    })?;
-    let signer = Signer::from_seed(&secret);
-    let (answers, _) = reach
-        .fan_out(|machine_id| member_of(client.clone(), machine_id))
-        .await;
-    let members: Vec<Member> = answers.into_iter().map(|(_, member)| member).collect();
-    ui::note(starting_set_summary(reach, &members));
-    let issued_at = Timestamp::now();
-    Signed::sign(
-        &StartingSet {
-            operation: OperationId::random(),
-            members,
-            issued_at,
-            expires_at: issued_at.plus(validity::MAX_LIFETIME_MILLIS),
-            signer: signer.public().into(),
-        },
-        &signer,
-    )
-    .map_err(Error::command)
-}
-
-async fn member_of(client: Client, machine_id: MachineId) -> Result<Option<Member>, RpcError> {
-    let details = client
-        .call_shared::<op::Inspect>(
-            InspectRequest::default(),
-            Call::once().to(&MachineTarget::from(&machine_id)),
-        )
-        .await
-        .map_err(crate::connect::rpc_error)?;
-    Ok(details
-        .machine
-        .as_ref()
-        .filter(|machine| machine.id == machine_id)
-        .map(Member::from))
-}
-
-fn starting_set_summary(reach: &Reach, members: &[Member]) -> String {
-    let servers = members
-        .iter()
-        .map(|member| {
-            format!(
-                "{} ({}, {}, key {})",
-                reach.name(&member.id),
-                member.subnet,
-                member.id,
-                member.public_key.fingerprint()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "Trusting {} Servers from the start: {}.",
-        members.len(),
-        if servers.is_empty() { "none" } else { &servers }
-    )
 }
 
 fn context(leaf: &ArgMatches) -> Option<&str> {

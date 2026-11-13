@@ -67,8 +67,8 @@ pub(crate) async fn fixture() -> Fixture {
     let device = DeviceKey::from(signer.public());
     owner
         .mutate(move |store| {
-            store.approve_device(device).unwrap();
-            store.approve_passkey(passkey()).unwrap();
+            store.approve_device(device, None).unwrap();
+            store.approve_passkey(passkey(), None).unwrap();
             store.set_device_enforcement(true, Vec::new()).unwrap();
         })
         .await

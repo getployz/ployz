@@ -1022,6 +1022,7 @@ fn pin_of(key: SealingPublicKey) -> crate::sealing_pin::Pin {
     crate::sealing_pin::Pin {
         public_key: key,
         server: MachineName::parse("edge").unwrap(),
+        recipient: None,
     }
 }
 
@@ -1113,7 +1114,7 @@ async fn a_tunnel_token_is_sealed_only_to_a_key_this_computer_can_vouch_for() {
 }
 
 #[tokio::test]
-async fn a_relayed_key_that_is_the_pin_seals_the_token_asked_for_once_it_checks_out() {
+async fn a_pin_that_names_no_recipient_seals_no_tunnel_token_through_cloud() {
     use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
 
     let cluster = ployz_core::Keypair::generate();
@@ -1127,22 +1128,88 @@ async fn a_relayed_key_that_is_the_pin_seals_the_token_asked_for_once_it_checks_
     .unwrap();
     let mut through_cloud = entry_from(&fleet, crate::context::ConnectionSource::Cloud).await;
     let observed = observe_doors(&mut through_cloud).await.unwrap();
-    assert_eq!(observed.cluster.sealed_token, None);
 
-    let doors = checked_doors(
+    let refusal = checked_doors(
         &mut through_cloud,
         &observed,
         IngressDoors::tunnel(),
         None,
         async |_| Ok(SealTo::Pinned(Some(pin_of(cluster.public())))),
-        || Ok(TUNNEL_TOKEN.to_owned()),
+        || panic!("no token is asked for when nothing can be sealed"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(refusal.report().code, ployz_core::RpcErrorCode::Conflict);
+}
+
+#[tokio::test]
+async fn an_activated_pin_seals_the_tunnel_token_to_its_recipient_key_once_the_relayed_key_checks_out()
+ {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+
+    let cluster = ployz_core::Keypair::generate();
+    let recipient = ployz_core::Keypair::generate();
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        fleet_claiming(cluster.public(), cluster.public()),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut through_cloud = entry_from(&fleet, crate::context::ConnectionSource::Cloud).await;
+    let observed = observe_doors(&mut through_cloud).await.unwrap();
+    let activated = crate::sealing_pin::Pin {
+        recipient: Some(recipient.public()),
+        ..pin_of(cluster.public())
+    };
+
+    let doors = checked_doors(
+        &mut through_cloud,
+        &observed,
+        IngressDoors::tunnel(),
+        Some(TUNNEL_TOKEN.to_owned()),
+        async |_| Ok(SealTo::Pinned(Some(activated))),
+        || unreachable!(),
     )
     .await
     .unwrap();
 
-    assert_eq!(doors.doors, IngressDoors::tunnel());
+    let sealed = doors.sealed_token.as_ref().unwrap();
     assert_eq!(
-        opened(&cluster, &doors).as_deref(),
-        Some(TUNNEL_TOKEN.as_bytes())
+        recipient
+            .open_platform_for(&cluster.public(), PlatformPurpose::IngressTunnel, sealed)
+            .as_deref(),
+        Some(TUNNEL_TOKEN.as_bytes()),
+        "the token seals to the recipient key, bound to the Cluster's identity"
+    );
+    assert_eq!(
+        opened(&cluster, &doors),
+        None,
+        "the identity no longer opens what is sealed after activation"
+    );
+
+    let planted = ployz_core::Keypair::generate();
+    let refusal = checked_doors(
+        &mut through_cloud,
+        &observed,
+        IngressDoors::tunnel(),
+        Some(TUNNEL_TOKEN.to_owned()),
+        async |_| {
+            Ok(SealTo::Pinned(Some(crate::sealing_pin::Pin {
+                recipient: Some(recipient.public()),
+                ..pin_of(planted.public())
+            })))
+        },
+        || unreachable!(),
+    )
+    .await
+    .unwrap_err()
+    .report();
+    assert_eq!(
+        refusal.code,
+        RpcErrorCode::Conflict,
+        "a pinned recipient seals nothing when the relayed identity is not the pin"
     );
 }

@@ -300,18 +300,20 @@ mod sealer {
         })
     }
 
-    /// Seals `plaintext` for `purpose` to the Cluster whose Sealing Key is `recipient`.
+    /// Seals `plaintext` for `purpose` to the Cluster whose identity is `cluster`, under the
+    /// key `recipient`: the Cluster's recipient key once it activated, its identity before.
     ///
     /// # Errors
     /// [`SealError`] when `recipient` is not a usable public key or HPKE refuses.
     pub fn seal_platform(
+        cluster: &SealingPublicKey,
         recipient: &SealingPublicKey,
         purpose: PlatformPurpose,
         plaintext: &[u8],
     ) -> Result<Ciphertext, SealError> {
         let public = <Kem as hpke::Kem>::PublicKey::from_bytes(recipient.as_bytes())
             .map_err(|_| SealError::Recipient)?;
-        let aad = purpose.associated_data(recipient);
+        let aad = purpose.associated_data(cluster);
         let (encapped, ciphertext) =
             hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
                 &OpModeS::Base,
@@ -325,6 +327,139 @@ mod sealer {
         let mut sealed = encapped.to_bytes().to_vec();
         sealed.extend(ciphertext);
         Ok(Ciphertext::from_bytes(sealed))
+    }
+
+    /// HPKE `info` for a recipient key's private half sealed to one Machine's WireGuard key.
+    const RECIPIENT_KEY_INFO: &[u8] = b"ployz-recipient-key-v1";
+
+    /// A Cluster's recipient key, generated where no Cloud page can see it: a Device's CLI,
+    /// or the Machine an activation picks.
+    pub struct RecipientSecret(zeroize::Zeroizing<[u8; 32]>);
+
+    impl RecipientSecret {
+        #[must_use]
+        pub fn generate() -> Self {
+            let (private, _) = <Kem as hpke::Kem>::gen_keypair(&mut OsRng.unwrap_err());
+            Self(zeroize::Zeroizing::new(private.to_bytes().into()))
+        }
+
+        #[must_use]
+        pub fn from_secret(bytes: [u8; 32]) -> Self {
+            Self(zeroize::Zeroizing::new(bytes))
+        }
+
+        #[must_use]
+        pub fn secret(&self) -> &[u8; 32] {
+            &self.0
+        }
+
+        #[must_use]
+        pub fn public(&self) -> SealingPublicKey {
+            let private = <Kem as hpke::Kem>::PrivateKey::from_bytes(self.0.as_ref())
+                .expect("an X25519 private key is any 32 bytes");
+            SealingPublicKey::from_bytes(<Kem as hpke::Kem>::sk_to_pk(&private).to_bytes().into())
+        }
+
+        /// Seal this key to the Machine whose WireGuard public key is `machine`, bound to
+        /// `binding` (see [`crate::authority::rotation::sealed_key_binding`]). Anyone who
+        /// knows `machine` can build such a blob, so it vouches only for a key the signer
+        /// chose itself. Between Machines use [`Self::seal_from`].
+        ///
+        /// # Errors
+        /// [`SealError`] when `machine` is not a usable public key or HPKE refuses.
+        pub fn seal_to(
+            &self,
+            machine: &crate::WireGuardPublicKey,
+            binding: &[u8],
+        ) -> Result<Ciphertext, SealError> {
+            self.sealed(&OpModeS::Base, machine, binding)
+        }
+
+        /// Seal this key to `machine` from the Machine whose WireGuard private key is
+        /// `sender`, so it opens only as sent by that Machine. See [`Self::open_from`].
+        ///
+        /// # Errors
+        /// [`SealError`] when a key is not usable or HPKE refuses.
+        pub fn seal_from(
+            &self,
+            sender: &[u8; 32],
+            machine: &crate::WireGuardPublicKey,
+            binding: &[u8],
+        ) -> Result<Ciphertext, SealError> {
+            let private = <Kem as hpke::Kem>::PrivateKey::from_bytes(sender)
+                .map_err(|_| SealError::Recipient)?;
+            let public = <Kem as hpke::Kem>::sk_to_pk(&private);
+            self.sealed(&OpModeS::Auth((private, public)), machine, binding)
+        }
+
+        fn sealed(
+            &self,
+            mode: &OpModeS<'_, Kem>,
+            machine: &crate::WireGuardPublicKey,
+            binding: &[u8],
+        ) -> Result<Ciphertext, SealError> {
+            let public = <Kem as hpke::Kem>::PublicKey::from_bytes(&machine.0)
+                .map_err(|_| SealError::Recipient)?;
+            let (encapped, ciphertext) =
+                hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
+                    mode,
+                    &public,
+                    RECIPIENT_KEY_INFO,
+                    self.0.as_ref(),
+                    binding,
+                    &mut OsRng.unwrap_err(),
+                )
+                .map_err(|_| SealError::Seal)?;
+            let mut sealed = encapped.to_bytes().to_vec();
+            sealed.extend(ciphertext);
+            Ok(Ciphertext::from_bytes(sealed))
+        }
+
+        /// Open a key [`Self::seal_to`] sealed to the Machine whose WireGuard private key is
+        /// `machine`, under `binding`. `None` when it was sealed to another Machine, under
+        /// another binding, or is not a key.
+        #[must_use]
+        pub fn open(machine: &[u8; 32], binding: &[u8], sealed: &Ciphertext) -> Option<Self> {
+            Self::opened(&hpke::OpModeR::Base, machine, binding, sealed)
+        }
+
+        /// Open a key [`Self::seal_from`] sealed to `machine` from the Machine whose
+        /// WireGuard public key is `sender`. `None` when another Machine or no Machine sent
+        /// it, as for [`Self::open`].
+        #[must_use]
+        pub fn open_from(
+            machine: &[u8; 32],
+            sender: &crate::WireGuardPublicKey,
+            binding: &[u8],
+            sealed: &Ciphertext,
+        ) -> Option<Self> {
+            let sender = <Kem as hpke::Kem>::PublicKey::from_bytes(&sender.0).ok()?;
+            Self::opened(&hpke::OpModeR::Auth(sender), machine, binding, sealed)
+        }
+
+        fn opened(
+            mode: &hpke::OpModeR<'_, Kem>,
+            machine: &[u8; 32],
+            binding: &[u8],
+            sealed: &Ciphertext,
+        ) -> Option<Self> {
+            let (encapped, ciphertext) = sealed.as_bytes().split_at_checked(32)?;
+            let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
+            let private = <Kem as hpke::Kem>::PrivateKey::from_bytes(machine).ok()?;
+            let opened = zeroize::Zeroizing::new(
+                hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
+                    mode,
+                    &private,
+                    &encapped,
+                    RECIPIENT_KEY_INFO,
+                    ciphertext,
+                    binding,
+                )
+                .ok()?,
+            );
+            let bytes: [u8; 32] = opened.as_slice().try_into().ok()?;
+            Some(Self::from_secret(bytes))
+        }
     }
 
     /// A throwaway Sealing Key for tests that open what [`seal_value`] sealed, as a
@@ -388,7 +523,19 @@ mod sealer {
             purpose: PlatformPurpose,
             sealed: &Ciphertext,
         ) -> Option<Vec<u8>> {
-            let aad = purpose.associated_data(&self.public);
+            self.open_platform_for(&self.public, purpose, sealed)
+        }
+
+        /// The bytes of `sealed` as sealed for `purpose` to the Cluster whose identity is
+        /// `cluster`, under this key as its recipient key, or `None` when it doesn't open.
+        #[must_use]
+        pub fn open_platform_for(
+            &self,
+            cluster: &SealingPublicKey,
+            purpose: PlatformPurpose,
+            sealed: &Ciphertext,
+        ) -> Option<Vec<u8>> {
+            let aad = purpose.associated_data(cluster);
             let (encapped, ciphertext) =
                 sealed.as_bytes().split_at_checked(Self::ENCAPPED_KEY_LEN)?;
             let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
@@ -464,6 +611,7 @@ mod sealer {
             let cluster = Keypair::generate();
             let sealed = seal_platform(
                 &cluster.public(),
+                &cluster.public(),
                 PlatformPurpose::PrivateAccess,
                 b"tskey-auth-k",
             )
@@ -485,6 +633,7 @@ mod sealer {
         fn a_platform_value_opens_for_its_purpose_on_its_cluster_only() {
             let cluster = Keypair::generate();
             let sealed = seal_platform(
+                &cluster.public(),
                 &cluster.public(),
                 PlatformPurpose::IngressTunnel,
                 b"eyJhIjoxfQ",

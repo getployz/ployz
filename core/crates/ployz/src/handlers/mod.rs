@@ -953,7 +953,18 @@ mod tests {
             (&["device", "rm", "mmg42klgyq"], Some("b")),
             (&["device", "approve", "mmg42klgyq"], Some("b")),
             (&["device", "enforce"], Some("b")),
-            (&["device", "enforce", "--off"], Some("b")),
+            (
+                &[
+                    "device",
+                    "enforce",
+                    "--pin",
+                    "3f9a1c2e",
+                    "--keep",
+                    "mmg42klgyq",
+                    "--yes",
+                ],
+                Some("b"),
+            ),
         ] {
             let argv = args
                 .iter()

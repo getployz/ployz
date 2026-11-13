@@ -68,6 +68,7 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog.tsx": "token mint in flight, then listening for the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "token mint in flight, then listening for the first server; Find zones and Check in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/activation-card.tsx": "an activation running: two passkey prompts, each Server's restart, and the new key's install",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "the tunnel setting up on the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-web-traffic-section.tsx": "the web server starting or stopping on the Server",
@@ -98,6 +99,7 @@ const NETWORK_FILES = {
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
+  activationQueryOptions: "each Server is asked live once the Servers list shows; one that doesn't answer takes up to ten seconds, which the page never waits on",
   waitingServerDetailQueryOptions: "opening a Waiting row fetches its full report and probe",
   enrollmentPlanQueryOptions: "the Enroll sheet previews the selected hosts and storage choices when it opens or changes",
   githubFileSearchQueryOptions: "searches as the user types",

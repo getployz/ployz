@@ -137,6 +137,39 @@ impl Client {
         )
     }
 
+    /// Whether `machine` answers for itself through this client: over SSH or the local
+    /// socket, on a route the person chose and a session Cloud didn't pick. Cloud's Server
+    /// Access can hand over an SSH endpoint of its own, so its routes never do.
+    pub(crate) fn answers_for_itself(&self, machine: &MachineId) -> bool {
+        !matches!(self.connection_source(), ConnectionSource::Cloud)
+            && self.routes.answers_for_itself(
+                machine,
+                self.session.entry.as_ref(),
+                self.session.connection(),
+            )
+    }
+
+    /// A client to `machine` over the route the person chose to it, so what it answers is
+    /// its own word: this client when `machine` is the entry, else a fresh dial of that
+    /// route. `None` when `machine` doesn't [answer for itself](Self::answers_for_itself)
+    /// here. An RPC routed through the entry instead reaches whatever the replicated rows
+    /// say `machine` is.
+    ///
+    /// # Errors
+    /// Fails when the chosen route doesn't connect.
+    pub(crate) async fn own_route(
+        &self,
+        machine: &MachineId,
+    ) -> Result<Option<Self>, ConnectError> {
+        if !self.answers_for_itself(machine) {
+            return Ok(None);
+        }
+        if self.session.entry.as_ref() == Some(machine) {
+            return Ok(Some(self.clone()));
+        }
+        self.full_client(&MachineTarget::from(machine)).await
+    }
+
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         self.session.ended()?;
         if self.routes.is_empty()
