@@ -19,7 +19,7 @@ use crate::followup::FollowUp;
 use crate::id::EnvironmentId;
 use crate::scope::Environment;
 use crate::sealing::SealingKey;
-use crate::settings::ServiceSetting;
+use crate::settings::{SecretInput, ServiceSetting};
 use crate::storage::Tx;
 use crate::{Actor, deployment::Frozen};
 
@@ -94,19 +94,12 @@ fn input(value: &Value) -> Result<Option<Credential>, RpcError> {
             "expected {\"secret\": \"…\"} with an optional username, or {\"secret\": true} to keep the stored one; a secret comes from --secret or --patch -",
         )
     };
-    // The CLI sends `web.registryCredential={"secret":true}` as JSON text. Text never carries a
-    // new secret: that would put it in shell history.
+    // The CLI sends `web.registryCredential={"secret":true}` as JSON text.
     if let Some(text) = value.as_str() {
-        // A typed parse refuses a duplicate key, so `{"secret":"…","secret":true}` can't slip
-        // through. It also takes `[true]`, hence the object check.
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Keep {
-            secret: bool,
-        }
-        return match serde_json::from_str::<Keep>(text) {
-            Ok(Keep { secret: true }) if text.trim_start().starts_with('{') => Ok(None),
-            _ => Err(invalid()),
+        return if SecretInput::keeps_by_text(text) {
+            Ok(None)
+        } else {
+            Err(invalid())
         };
     }
     let fields = value.as_object().ok_or_else(invalid)?;
@@ -125,16 +118,16 @@ fn input(value: &Value) -> Result<Option<Credential>, RpcError> {
         }
         Some(_) => return Err(SETTING.invalid("username is text of at most 255 characters")),
     };
-    match fields.get("secret") {
-        Some(Value::Bool(true)) if username.is_none() => Ok(None),
-        Some(Value::Bool(true)) => {
+    match fields.get("secret").and_then(SecretInput::of) {
+        Some(SecretInput::Keep) if username.is_none() => Ok(None),
+        Some(SecretInput::Keep) => {
             Err(SETTING.invalid("a new username needs its secret: send both, with --patch -"))
         }
-        Some(Value::String(secret)) if !secret.trim().is_empty() => Ok(Some(Credential {
+        Some(SecretInput::Seal(secret)) if !secret.trim().is_empty() => Ok(Some(Credential {
             username,
             secret: secret.trim().to_owned(),
         })),
-        Some(_) | None => Err(invalid()),
+        Some(SecretInput::Seal(_) | SecretInput::Generate) | None => Err(invalid()),
     }
 }
 

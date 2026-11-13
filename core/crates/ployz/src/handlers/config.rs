@@ -15,10 +15,10 @@ use std::io::{IsTerminal as _, Read};
 use ployz_core::{Hint, MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
-    NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
+    NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow, TypedAddresses,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::input::{self, InputError, Source};
 use super::shared::staged::{StagedReport, Then};
@@ -301,7 +301,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             root,
             vec![Change::Set {
                 path: SettingPath::parse(&path)?,
-                value: json!({ "secret": secret }),
+                value: SecretInput::Seal(secret).to_value(),
             }],
         );
     }
@@ -376,7 +376,11 @@ fn seals(variable: &Value) -> bool {
     [Some(variable), variable.get("value")]
         .into_iter()
         .flatten()
-        .any(|value| value.get("secret").is_some_and(Value::is_string))
+        .any(|value| {
+            SecretInput::in_object(value)
+                .as_ref()
+                .is_some_and(SecretInput::seals)
+        })
 }
 
 /// Whether `set PATH=VALUE` would send a new secret as text. A variable's value is any
@@ -391,13 +395,13 @@ fn seals_as_text(path: &str, value: &str) -> bool {
         return false;
     };
     match path.split('.').collect::<Vec<_>>()[..] {
-        [_, "env", _] => value.as_object().is_some_and(|fields| {
-            fields.len() == 1
-                && fields
-                    .get("secret")
-                    .and_then(Value::as_str)
+        [_, "env", _] => {
+            value.as_object().is_some_and(|fields| fields.len() == 1)
+                && SecretInput::in_object(&value)
+                    .as_ref()
+                    .and_then(SecretInput::seal)
                     .is_some_and(|secret| !secret.is_empty())
-        }),
+        }
         [_, "registryCredential"] => seals(&value),
         _ => false,
     }
@@ -516,13 +520,13 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
             path: Some(service.clone()),
             all: false,
         })?;
-        let marker = json!({ "secret": true });
+        let set = |value: &Value| SecretCell::of(value) == Some(SecretCell::Set);
         view.values
             .and_then(|mut values| values.remove("env"))
             .and_then(|env| env.as_object().cloned())
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_, value)| *value == marker || value.get("value") == Some(&marker))
+            .filter(|(_, value)| set(value) || value.get("value").is_some_and(set))
             .map(|(key, _)| key)
             .collect()
     };
@@ -533,7 +537,7 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
             Ok(Change::Set {
                 path: SettingPath::parse(&format!("{service}.env.{key}"))?,
                 value: if sealed {
-                    json!({ "secret": value })
+                    SecretInput::Seal(value).to_value()
                 } else {
                     Value::String(value)
                 },
@@ -666,6 +670,8 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     fn path(text: &str) -> SettingPath {

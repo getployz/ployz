@@ -123,7 +123,7 @@ pub use review::{
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
-pub use settings::{Apply, NodeName, SettingPath};
+pub use settings::{Apply, NodeName, SecretCell, SecretInput, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView,

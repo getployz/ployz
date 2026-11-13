@@ -4,7 +4,7 @@ use clap::ArgMatches;
 use ployz_core::config::At;
 use ployz_store::{
     ApprovePullRequest, DeploymentStatus, EnvironmentName, MergeRow, OpenPullRequest, PrPlansQuery,
-    PullRequestNumber, Ride, Standing,
+    PullRequestNumber, Ride, SecretCell, Standing,
 };
 use serde_json::{Value, json};
 
@@ -353,11 +353,10 @@ fn is_file(value: &Value) -> bool {
 /// A value as the On merge list shows it: a secret only as set or Not set, a
 /// Config file's contents as a file.
 fn shown(value: &Value) -> String {
-    if *value == json!({ "secret": true }) {
-        return "secret".to_owned();
-    }
-    if *value == json!({ "secret": false }) {
-        return "Not set".to_owned();
+    match SecretCell::of(value) {
+        Some(SecretCell::Set) => return "secret".to_owned(),
+        Some(SecretCell::NotSet) => return "Not set".to_owned(),
+        None => {}
     }
     match value {
         Value::Null => "not set".to_owned(),

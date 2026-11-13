@@ -14,8 +14,8 @@ use crate::catalog::{NODE_NAME, VARIABLE_KEY};
 use crate::followup::FollowUp;
 use crate::{
     BatchCommand, BranchName, Change, CreateGitService, CreateService, DestructiveKind,
-    DomainsQuery, Edit, EnvironmentRef, RemoveService, RenameService, RepositoryName, ServiceQuery,
-    ServicesQuery, SettingPath, SourceKind, Written,
+    DomainsQuery, Edit, EnvironmentRef, RemoveService, RenameService, RepositoryName, SecretInput,
+    ServiceQuery, ServicesQuery, SettingPath, SourceKind, Written,
 };
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 
@@ -409,7 +409,7 @@ impl ServiceUpdate {
             }
             changes.push(Change::Set {
                 path: path(&field, generate)?,
-                value: json!({ "secret": { "generate": true } }),
+                value: SecretInput::Generate.to_value(),
             });
         }
         if changes.is_empty() {
@@ -465,13 +465,12 @@ impl ServiceUpdate {
 
 /// The Setting path, such as `env.KEY`, of the first secret value `set` gives.
 fn secret_value(set: &Map<String, Value>) -> Option<String> {
-    let sealing = |value: &Value| {
-        value.get("secret").is_some_and(Value::is_string)
-            || value
-                .get("value")
-                .and_then(|value| value.get("secret"))
-                .is_some_and(Value::is_string)
+    let seals = |value: &Value| {
+        SecretInput::in_object(value)
+            .as_ref()
+            .is_some_and(SecretInput::seals)
     };
+    let sealing = |value: &Value| seals(value) || value.get("value").is_some_and(seals);
     if set.get("registryCredential").is_some_and(sealing) {
         return Some("registryCredential".to_owned());
     }
