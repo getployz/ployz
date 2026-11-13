@@ -3,7 +3,7 @@ use ployz_core::config::SavedEnvironmentIntent;
 use serde_json::json;
 
 use crate::error;
-use crate::scope::Environment;
+use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 
 /// A name one node holds. No other node may hold it: a Service name or Private
@@ -275,8 +275,40 @@ pub(crate) struct OtherEnvironment {
     pub(crate) working: SavedEnvironmentIntent,
 }
 
+/// Every other Environment of the Organization, and the one `project/environment`
+/// walk over them with the Environment being written that every domain check shares.
+pub(crate) struct Neighbourhood {
+    others: Vec<OtherEnvironment>,
+}
+
+impl Neighbourhood {
+    pub(crate) fn of(tx: &mut dyn Tx, environment: &Environment) -> Result<Self, RpcError> {
+        Ok(Self {
+            others: other_environments(tx, environment)?,
+        })
+    }
+
+    /// Each place of the Organization as people name it, with the Working State
+    /// there: the other Environments first, then `this` with the intent the caller
+    /// passes for it.
+    pub(crate) fn places<'a>(
+        &'a self,
+        this: (&'a EnvironmentSummary, &'a SavedEnvironmentIntent),
+    ) -> impl Iterator<Item = (String, &'a SavedEnvironmentIntent)> {
+        self.others
+            .iter()
+            .map(|other| {
+                (
+                    crate::scope::environment_label(&other.project, &other.name),
+                    &other.working,
+                )
+            })
+            .chain(std::iter::once((this.0.to_string(), this.1)))
+    }
+}
+
 /// Every other Environment of the Organization.
-pub(crate) fn other_environments(
+fn other_environments(
     tx: &mut dyn Tx,
     environment: &Environment,
 ) -> Result<Vec<OtherEnvironment>, RpcError> {
