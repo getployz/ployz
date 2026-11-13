@@ -1831,7 +1831,7 @@ impl Stored {
 ///   `lease` and `ended` columns, with the run, its outcome and its preview. A claim
 ///   whose runner lease lapsed it writes as its row holds it, `running` or
 ///   `cancelling` ([`Standing::kept`]): only an edge that loses the runner writes
-///   Unknown, with its end (lifecycle.rs `claim` and `record`).
+///   Unknown, with its end (claim.rs `claim` and record.rs `record`).
 ///
 /// Once the summary says the Deployment can't run any more, at each save:
 /// - History drops the sealed values only a Deployment in flight kept, rewriting

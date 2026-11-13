@@ -312,9 +312,9 @@ pub(crate) const SETTLING: i64 = 10 * 60;
 /// Servers may still be doing what it sent at `looked`, or at now if that is
 /// earlier: it started (a runner claimed it), and it ended, or its runner may have
 /// acted, no earlier than [`SETTLING`] before then. Which column says so:
-/// - `ended`, for every row: the end its last edge stamped (lifecycle.rs `end`,
+/// - `ended`, for every row: the end its last edge stamped (record.rs `end`,
 ///   `cancel_in_flight`).
-/// - Its runner lease, which every record renews (lifecycle.rs `record`), for one
+/// - Its runner lease, which every record renews (record.rs `record`), for one
 ///   whose runner may act until it: the row says `running` or `cancelling` while
 ///   it holds and once it lapsed unwritten, and `unknown` once lost. Losing its
 ///   runner stamps `ended` no later than the lease ([`super::runner_lost`]), so the
