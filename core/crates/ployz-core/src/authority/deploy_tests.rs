@@ -901,13 +901,15 @@ fn a_browser_draft_names_the_golden_digest_and_refuses_a_build_or_a_tag() {
     ));
     let tagged = requested(with(&["container", "image"], json!(TAG)));
     assert!(matches!(
-        DeployApproval::browser_draft(terms.clone(), namespace(), &[tagged.clone()]),
+        DeployApproval::browser_draft(terms.clone(), namespace(), std::slice::from_ref(&tagged)),
         Err(BrowserDraftError::Tag(_))
     ));
 
     // Every tagged Service is named at once, so a person fixes them in one pass.
     let mut db = with(&["container", "image"], json!("postgres:18"));
-    db["name"] = json!("db");
+    if let Some(name) = db.get_mut("name") {
+        *name = json!("db");
+    }
     let refusal = DeployApproval::browser_draft(terms, namespace(), &[tagged, requested(db)])
         .unwrap_err()
         .to_string();

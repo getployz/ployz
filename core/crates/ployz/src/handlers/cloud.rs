@@ -1834,8 +1834,18 @@ mod tests {
                     }
                 })
                 .await;
+            // A config of its own, so this host's contexts don't make the add remote.
+            let config = tempfile::tempdir().unwrap();
+            let config_path = config.path().join("config.yaml");
             let root = crate::cli::command()
-                .try_get_matches_from(["ployz", "server", "add", "--yes"])
+                .try_get_matches_from([
+                    "ployz",
+                    "--ployz-config",
+                    config_path.to_str().unwrap(),
+                    "server",
+                    "add",
+                    "--yes",
+                ])
                 .unwrap();
             let matches = leaf_matches(&root);
             let token = CloudEnrollToken::parse("pmet_unacknowledged_enroll").unwrap();
@@ -2066,8 +2076,18 @@ mod tests {
                 panic!("a refused add sends no daemon RPC");
             })
             .await;
+            // A config of its own, so this host's contexts don't make the add remote.
+            let config = tempfile::tempdir().unwrap();
+            let config_path = config.path().join("config.yaml");
             let root = crate::cli::command()
-                .try_get_matches_from(["ployz", "server", "add", "--yes"])
+                .try_get_matches_from([
+                    "ployz",
+                    "--ployz-config",
+                    config_path.to_str().unwrap(),
+                    "server",
+                    "add",
+                    "--yes",
+                ])
                 .unwrap();
             let error = enroll_join(
                 EnrollCommand::ServerAdd,
