@@ -167,6 +167,30 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// Approve this computer's Device key, made now if it has none, on the Server `client` reaches
+/// over a connection the person chose. A new Cluster's first Server trusts no key, and every
+/// later join needs a Device to sign it.
+///
+/// # Errors
+/// Fails when the key can't be read or written, or the Server refuses it.
+pub(crate) async fn approve_own(client: &Client, config: &Path) -> Result<DeviceCode, Error> {
+    let path = key::path(config);
+    let secret = match key::load(&path)? {
+        Some(secret) => secret,
+        None => {
+            let secret = key::generate();
+            key::store(&path, &secret)?;
+            key::load(&path)?.unwrap_or(secret)
+        }
+    };
+    let key = key::public(&secret);
+    client
+        .call_shared::<op::SetDevice>(SetDeviceRequest::Approve { key }, Call::once())
+        .await
+        .map_err(crate::connect::rpc_error)?;
+    Ok(key.code())
+}
+
 /// Say what approving the Device `code` grants, and ask. A code copied from a compromised
 /// Ployz Cloud page could name someone else's Device, so the grant is spelled out first.
 fn confirm_device(leaf: &ArgMatches, code: DeviceCode) -> Result<(), Error> {

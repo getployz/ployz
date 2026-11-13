@@ -691,8 +691,29 @@ fn refuse_unreachable(
 ///
 /// # Errors
 /// Refuses, before anything is signed, when Servers committed different operations: no one
-/// set activates them together.
+/// set activates them together, or when a Server enforces from its first start and has
+/// nothing to activate.
 fn resumed(included: &[&Found], reach: &Reach) -> Result<Option<OperationId>, Error> {
+    let born: Vec<String> = included
+        .iter()
+        .filter(|server| {
+            matches!(
+                &server.report,
+                Some(ActivationReport {
+                    state: ActivationState::Activated,
+                    operation: None,
+                    ..
+                })
+            )
+        })
+        .map(|server| reach.name(&server.machine_id))
+        .collect();
+    if !born.is_empty() {
+        return Err(Error::conflict(format!(
+            "{} enforce from their first start, so there is nothing to activate. Nothing was signed.",
+            born.join(", ")
+        )));
+    }
     let mut under: BTreeMap<OperationId, Vec<String>> = BTreeMap::new();
     for server in included {
         if let Some(ActivationReport {

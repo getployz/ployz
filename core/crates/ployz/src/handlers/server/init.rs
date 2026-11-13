@@ -157,6 +157,20 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                     }),
             );
         }
+        let code =
+            crate::handlers::device::approve_own(&ready, &crate::handlers::config_path(matches)?)
+                .await
+                .map_err(|error| {
+                    error
+                        .context(
+                            "Server initialized; this computer's device isn't approved on it yet.",
+                        )
+                        .hint(Hint::Next("ployz device request".to_owned()))
+                })?;
+        crate::ui::note(format_args!(
+            "Approved this computer's device {code} on {}.",
+            machine.name
+        ));
         let closed = matches.get_flag("ingress-closed");
         let incomplete = |error: crate::failure::Failure| {
             ingress_incomplete(

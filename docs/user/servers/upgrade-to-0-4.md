@@ -21,8 +21,9 @@ one as **Awaiting activation**. Activate soon after you upgrade. Until then:
 - Deploys, restarts, builds and volume changes through Ployz Cloud are refused with
   `this Server awaits its Cluster's activation`. Upgrades still work.
 - No new server can join.
-- Over `--connect ssh://`, your servers take changes as before. Approving a device and other
-  actions that need full access go over a direct SSH connection to each server.
+- Only a server you reach over its own SSH connection takes changes. A change the CLI passes on
+  to another server is refused there too, so reach each server over its own SSH, or activate
+  first. Approving a device and other actions that need full access already work this way.
 
 ## 2. Activate
 

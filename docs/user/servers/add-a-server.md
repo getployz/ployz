@@ -55,7 +55,9 @@ which usually takes under a minute. If it is still catching up after a minute, t
 and names UDP 51820, which your servers use to reach each other. The wait gives up after 5
 minutes.
 
-Add more servers the same way, even at different providers. Nothing moves onto a new server until
+Add more servers the same way, even at different providers. Each server after your cluster's
+first stops and names a code until a device you approved signs its join; see
+[Approve a join](#approve-a-join). Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
 ### Approve a join
@@ -141,7 +143,8 @@ need an approval. Approve one over SSH on that server:
   `sudo ployz login` and `sudo ployz device approve CODE`, as in
   [Approve a device](manage-servers.md#approve-a-device).
 
-Servers you add later get your devices from the join approval.
+`ployz server add --standalone root@HOST` approves this computer's device on the new server for
+you. Servers you add later get your devices from the join approval.
 
 ## Add servers from the dashboard
 
@@ -150,6 +153,11 @@ Before your first server, the **Servers** page shows one card instead of a list.
 with the token under it, then **Shown once. Expires in 24h.** Copy the token now: Ployz can't show
 it again. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste the
 token when it asks. The card then says **Listening for servers…** until the first one checks in.
+
+Adding a second server needs a device you approved: a passkey can't approve a join. Install the
+CLI, approve your device on your first server as in
+[Your first server's first key](#your-first-servers-first-key), then approve each join with
+`ployz device approve --join CODE`.
 
 Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can make a token. For a member, **Get install command** and **Add servers**
 say so instead.

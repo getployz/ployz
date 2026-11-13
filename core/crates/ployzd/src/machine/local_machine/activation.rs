@@ -37,6 +37,8 @@ pub enum Refusal {
     NoOff,
     #[error("this Server is already activated under another starting set")]
     Activated,
+    #[error("this Server enforces from its first start, so it has nothing to activate")]
+    BornEnforcing,
 }
 
 /// An admitted starting set, written before the restart that commits it.
@@ -170,6 +172,9 @@ impl LocalMachine {
                         let body = signed
                             .open()
                             .map_err(|refusal| refused(Refusal::Authority(refusal)))?;
+                        if record.born_enforcing() {
+                            return Err(refused(Refusal::BornEnforcing));
+                        }
                         if let Some(operation) = record.activation() {
                             return if operation == body.operation {
                                 Ok(None)

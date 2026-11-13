@@ -1019,7 +1019,8 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn trust_members(
+    #[cfg(test)]
+    pub(crate) fn trust_members(
         &mut self,
         starting: Vec<ployz_core::authority::Member>,
     ) -> Result<(), StoreError> {

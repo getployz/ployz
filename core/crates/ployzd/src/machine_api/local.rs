@@ -1650,7 +1650,10 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 Refusal::LegacyKey(code) => {
                     details.insert("legacy_key".to_owned(), serde_json::json!(code));
                 }
-                Refusal::Authority(_) | Refusal::NoOff | Refusal::Activated => {}
+                Refusal::Authority(_)
+                | Refusal::NoOff
+                | Refusal::Activated
+                | Refusal::BornEnforcing => {}
             }
             let details = serde_json::Value::Object(details);
             Err(ployz_core::rpc::hinted_status(

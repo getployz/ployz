@@ -31,11 +31,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let no_install = matches.get_flag("no-install");
     let runtime = runtime()?;
     let assigned = runtime.block_on(async {
-        if !no_install {
-            crate::provisioning::provision(matches, &storage).await?;
-        }
         let mut entry = connect_context_chosen(matches, options.context()).await?;
-        let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let entry_id = entry
             .call::<op::Inspect>(
                 InspectRequest::default(),
@@ -43,6 +39,15 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?
             .id;
+        let own_device =
+            crate::handlers::device::key::load(&crate::handlers::device::key::path(config.path()))?
+                .map(|secret| crate::handlers::device::key::public(&secret));
+        let entry_answers = entry.answers_for_itself(&entry_id);
+        require_a_pin(own_device.is_some() || entry_answers, destination)?;
+        if !no_install {
+            crate::provisioning::provision(matches, &storage).await?;
+        }
+        let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let mut target_client = if no_install {
             helpers::connect_direct(matches, &connection).await?
         } else {
@@ -51,11 +56,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let (details, mut token) =
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
         require_another_entry(entry_id, token.id, destination)?;
-        let own_device =
-            crate::handlers::device::key::load(&crate::handlers::device::key::path(config.path()))?
-                .map(|secret| crate::handlers::device::key::public(&secret));
-        let entry_answers = entry.answers_for_itself(&entry_id);
-        require_a_pin(own_device.is_some() || entry_answers, destination)?;
         // Before the reset, so a taken name leaves the Server as it was.
         let name = helpers::machine_name(requested_name, &token);
         require_free_name(&snapshot, token.id, &name, destination)?;

@@ -287,7 +287,9 @@ pub enum Error {
     /// This Machine awaits its Cluster's activation, so it refuses the change an Operator
     /// asked, or a join from anyone. The refusal names `capability` and says how to
     /// activate.
-    #[error("{capability}: this Server awaits its Cluster's activation. Activate the Cluster, then try again")]
+    #[error(
+        "{capability}: this Server awaits its Cluster's activation. Activate the Cluster, then try again"
+    )]
     AwaitingActivation { capability: &'static str },
     #[error("could not keep the pending activation")]
     ActivationRecord(#[source] std::io::Error),
