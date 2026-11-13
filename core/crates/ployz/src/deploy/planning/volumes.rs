@@ -287,11 +287,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                 if copy.role == CopyRole::Writer {
                     return None;
                 }
-                let machine = self
-                    .snapshot
-                    .machines
-                    .iter()
-                    .find(|machine| machine.machine.id == *machine_id)?;
+                let machine = self.snapshot.machine(*machine_id)?;
                 Some(KnownCopy {
                     machine: machine.machine.name.clone(),
                     role: copy.role,
@@ -404,9 +400,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             );
             let machine = self
                 .snapshot
-                .machines
-                .iter()
-                .find(|machine| machine.machine.id == id)
+                .machine(id)
                 .expect("assigned Machine belongs to the snapshot");
             budgets.push(ployz_core::MachineStorageBudget {
                 machine_id: id,
@@ -595,9 +589,7 @@ pub(super) fn preserved_owned_volumes(
             continue;
         }
         let machine_name = snapshot
-            .machines
-            .iter()
-            .find(|machine| machine.machine.id == volume.id.machine_id)
+            .machine(volume.id.machine_id)
             .map(|machine| machine.machine.name.clone());
         preserved.push(PreservedVolume {
             id: volume.id.clone(),
@@ -886,11 +878,7 @@ fn shared_component_anchor(
         .iter()
         .copied()
         .filter(|id| {
-            let machine = snapshot
-                .machines
-                .iter()
-                .find(|machine| machine.machine.id == *id)
-                .expect("eligible Machine is observed");
+            let machine = snapshot.machine(*id).expect("eligible Machine is observed");
             plan.storage_budget(
                 machine,
                 requested
@@ -1194,9 +1182,7 @@ fn volume_anchor(
         .filter(|located| located.name == name)
     {
         let Some(machine_name) = snapshot
-            .machines
-            .iter()
-            .find(|machine| machine.machine.id == located.machine_id)
+            .machine(located.machine_id)
             .map(|machine| machine.machine.name.clone())
         else {
             continue;

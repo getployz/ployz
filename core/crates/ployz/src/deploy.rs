@@ -384,6 +384,20 @@ pub struct DeploySnapshot {
 }
 
 impl DeploySnapshot {
+    /// The observation of the Machine `id`, if this snapshot read it.
+    pub(crate) fn machine(&self, id: MachineId) -> Option<&MachineObservation> {
+        self.machines
+            .iter()
+            .find(|machine| machine.machine.id == id)
+    }
+
+    /// The observation of the Machine called `name`, if this snapshot read it.
+    pub(crate) fn machine_named(&self, name: &MachineName) -> Option<&MachineObservation> {
+        self.machines
+            .iter()
+            .find(|machine| &machine.machine.name == name)
+    }
+
     /// The ingress Servers whose Ingress Proxy a Deploy brings back: eligible for the
     /// Ingress Proxy's placement, observed in full, and holding none running.
     #[must_use]

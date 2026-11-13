@@ -670,9 +670,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
                 Some(VolumeToCreate {
                     machine_id,
                     machine_name: snapshot
-                        .machines
-                        .iter()
-                        .find(|machine| machine.machine.id == machine_id)
+                        .machine(machine_id)
                         .map(|machine| machine.machine.name.clone()),
                     name,
                     maximum_bytes,
@@ -974,15 +972,11 @@ fn volume_server_away(
             .volume_graph()
             .mounted_provisioned_volumes()
             .any(|mounted| mounted.source.docker_volume_name() == Some(volume));
-        snapshot
-            .machines
-            .iter()
-            .find(|machine| &machine.machine.name == name)
-            .is_some_and(|machine| {
-                machine.membership == MembershipObservation::Down
-                    || snapshot.silent(machine)
-                    || (provisioned && storage::capacity(snapshot, machine).is_err())
-            })
+        snapshot.machine_named(name).is_some_and(|machine| {
+            machine.membership == MembershipObservation::Down
+                || snapshot.silent(machine)
+                || (provisioned && storage::capacity(snapshot, machine).is_err())
+        })
     };
     let constraints = constraints.as_slice();
     let located = constraints
@@ -1023,10 +1017,7 @@ fn silent_volume_server(
                 .is_some_and(|spec| spec.volume_graph().has_mounted_provisioned_volume())
         })
         .find_map(|operation| {
-            let machine = snapshot
-                .machines
-                .iter()
-                .find(|machine| machine.machine.id == operation.machine_id())?;
+            let machine = snapshot.machine(operation.machine_id())?;
             storage::capacity(snapshot, machine).err()
         })
 }
