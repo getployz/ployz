@@ -1095,7 +1095,7 @@ struct ClaimedRun {
     phase: Phase,
 }
 
-/// A runner's claim: `claim` sets all three at once (lifecycle.rs `claim`).
+/// A runner's claim: `claim` sets all three at once (claim.rs `claim`).
 #[derive(Debug)]
 struct Claim {
     runner: RunnerId,
