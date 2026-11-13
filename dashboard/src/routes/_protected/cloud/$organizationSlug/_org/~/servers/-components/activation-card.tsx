@@ -134,8 +134,9 @@ export function ActivationCard({ organizationSlug, servers }: {
 
   switch (gate.kind) {
     case "none":
-    case "activated":
       return null;
+    case "activated":
+      return <p className="text-sm text-muted-foreground">Device enforcement is on. Servers take changes only from devices and passkeys you approve.</p>;
     case "activating":
       return (
         <Alert role="status">
