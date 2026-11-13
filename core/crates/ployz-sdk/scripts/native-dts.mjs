@@ -6,6 +6,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 const [input, output] = process.argv.slice(2);
 if (!input || !output) throw new Error("usage: native-dts.mjs <type-def-tmp> <out.d.ts>");
 
+// Names a `ts_arg_type` writes for a TypeScript text the addon's arguments share, spelled out once here.
+const aliases = {
+  Connections: "Connection[]",
+  ExpectedCluster: "{ sealingPublicKey: string; allowUnverified?: boolean }",
+};
+const expandAliases = (text) => text.replace(/\b[A-Z]\w*\b/g, (name) => aliases[name] ?? name);
+
 const lines = [
   ...new Set(
     readFileSync(input, "utf8")
@@ -14,7 +21,10 @@ const lines = [
       .filter(Boolean)
       .map((line) => (line.startsWith("{") ? line : line.split(":").slice(1).join(":"))),
   ),
-].map((line) => JSON.parse(line));
+].map((line) => {
+  const def = JSON.parse(line);
+  return { ...def, def: expandAliases(def.def) };
+});
 if (lines.length === 0) {
   throw new Error(`${input} has no napi type defs: was the addon built with TYPE_DEF_TMP_PATH set?`);
 }

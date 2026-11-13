@@ -54,9 +54,9 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 /// Returns `invalid_argument` for malformed input.
 #[napi(ts_return_type = "Promise<VolumeObservation>")]
 pub async fn observe_volumes(
-    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
     sought: Vec<String>,
-    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let connections = parse_connections(connections)?;
     let expect = parse_expect(expect)?;
@@ -78,8 +78,8 @@ pub async fn observe_volumes(
 /// no Server can be reached.
 #[napi(ts_return_type = "Promise<CopyObservation & { foreign: string[] }>")]
 pub async fn observe_copies(
-    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let connections = parse_connections(connections)?;
     let expect = parse_expect(expect)?;
@@ -95,8 +95,8 @@ pub async fn observe_copies(
 /// Returns `invalid_argument` for malformed input.
 #[napi(ts_return_type = "Promise<RunningObservation>")]
 pub async fn observe_running(
-    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<serde_json::Value>,
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let connections = parse_connections(connections)?;
     let expect = parse_expect(expect)?;
@@ -244,13 +244,12 @@ impl ConfigStore {
         organization: String,
         deployment: String,
         runner: String,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
         #[napi(
             ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string; reader?: string }"
         )]
         sources: Option<serde_json::Value>,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         #[derive(Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -344,9 +343,8 @@ impl ConfigStore {
         &self,
         organization: String,
         deployment: String,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
@@ -550,9 +548,8 @@ impl ConfigStore {
     pub async fn github_start(
         &self,
         build: String,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, parse_connections(connections)?);
         let expect = parse_expect(expect)?;
@@ -612,9 +609,8 @@ impl ConfigStore {
         build: String,
         #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
         #[napi(ts_arg_type = "string | null")] holder: Option<String>,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, claims) = (github_id(&build)?, claims_of(claims)?);
         let holder = holder
@@ -669,9 +665,8 @@ impl ConfigStore {
         &self,
         #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
         commit: String,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let claims = claims_of(claims)?;
         let connections = parse_connections(connections)?;
@@ -700,9 +695,8 @@ impl ConfigStore {
         #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
         #[napi(ts_arg_type = "unknown")] ask: serde_json::Value,
         #[napi(ts_arg_type = "string | null")] reader: Option<String>,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let claims = claims_of(claims)?;
         let ask: ployz::sdk::RuleAsk = decode(ask, "Expected a rule build's grant ask")?;
@@ -760,9 +754,8 @@ impl ConfigStore {
         &self,
         build: String,
         #[napi(ts_arg_type = "\"start_limit\" | \"budget\" | \"ended\"")] look: serde_json::Value,
-        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
-        expect: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, parse_connections(connections)?);
         let look = decode(look, "Expected a GitHub look")?;

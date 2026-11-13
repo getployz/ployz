@@ -54,9 +54,7 @@ pub fn start_connections(
     #[napi(ts_arg_type = "readonly Connection[]")] connections: serde_json::Value,
     sample_dial_timing: Option<bool>,
     dial_correlation: Option<String>,
-    #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")] expect: Option<
-        serde_json::Value,
-    >,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
 ) -> Result<PendingConnection> {
     // Cloud's container log keeps stderr; its own logger never sees these (#3786).
     ployz_store::stderr_log::install();
