@@ -266,6 +266,27 @@ mod tests {
     }
 
     #[test]
+    fn the_published_file_keeps_its_field_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpecFile::in_run_dir(dir.path());
+        file.publish(Some(&spec())).unwrap();
+        assert_eq!(
+            fs::read_to_string(file.path()).unwrap(),
+            r#"{
+  "machine": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "listen": "10.210.3.1:53",
+  "subnet": "10.210.3.0/24",
+  "upstreams": [
+    "192.0.2.53:53"
+  ],
+  "corrosion_api": "127.0.0.1:7571",
+  "corrosion_admin_socket": "/run/ployz/corrosion/admin.sock",
+  "corrosion_token_file": "/var/lib/ployz/corrosion/.api-token"
+}"#
+        );
+    }
+
+    #[test]
     fn read_ignores_unknown_fields_and_defaults_upstreams() {
         let dir = tempfile::tempdir().unwrap();
         let file = SpecFile::in_run_dir(dir.path());
@@ -286,6 +307,67 @@ mod tests {
         let read = file.read().unwrap().unwrap();
         assert_eq!(read.upstreams, Vec::<SocketAddr>::new());
         assert_eq!(read.listen, "10.210.3.1:53".parse().unwrap());
+    }
+
+    fn stored(file: &SpecFile, listen: &str, subnet: &str) {
+        fs::write(
+            file.path(),
+            json!({
+                "machine": "b".repeat(32),
+                "listen": listen,
+                "subnet": subnet,
+                "corrosion_api": "127.0.0.1:7571",
+                "corrosion_admin_socket": "/a",
+                "corrosion_token_file": "/t",
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn read_keeps_any_stored_subnet_exactly_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpecFile::in_run_dir(dir.path());
+        for (listen, subnet) in [
+            ("127.0.0.1:53", "127.0.0.0/8"),
+            ("10.210.3.1:53", "10.210.0.0/16"),
+            ("10.210.3.1:53", "10.210.3.7/24"),
+        ] {
+            stored(&file, listen, subnet);
+            let read = file.read().unwrap().unwrap();
+            assert_eq!(read.local_subnet, subnet.parse::<Ipv4Net>().unwrap());
+            assert_eq!(read.local_subnet.to_string(), subnet);
+            assert_eq!(read.listen, listen.parse().unwrap());
+        }
+    }
+
+    #[test]
+    fn a_non_machine_subnet_spec_publishes_back_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpecFile::in_run_dir(dir.path());
+        stored(&file, "10.210.3.1:53", "10.210.3.7/24");
+        let read = file.read().unwrap().unwrap();
+        assert!(file.publish(Some(&read)).unwrap());
+        assert_eq!(file.read().unwrap(), Some(read));
+        assert!(
+            fs::read_to_string(file.path())
+                .unwrap()
+                .contains(r#""subnet": "10.210.3.7/24""#)
+        );
+    }
+
+    #[test]
+    fn listen_outside_a_wide_subnet_is_still_rejected_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpecFile::in_run_dir(dir.path());
+        stored(&file, "10.211.0.1:53", "10.210.0.0/16");
+        let error = file.read().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "listen address 10.211.0.1 is outside the Machine subnet 10.210.0.0/16"
+        );
     }
 
     #[test]

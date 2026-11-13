@@ -1,17 +1,34 @@
 //! Projection tests for Internal DNS answers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 
-use hickory_server::proto::op::{Edns, Query as WireQuery};
+use hickory_server::{
+    Server,
+    proto::{
+        op::{Edns, Message, Query as WireQuery, ResponseCode},
+        rr::{Name, RecordType},
+    },
+};
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, CopyRotation,
-    DeploymentLogId, HealthObservation, MachineId, Namespace, ResolvedServiceSpec, ServiceId,
-    ServiceName,
+    ClusterName, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, CopyRotation, DeploymentLogId, HealthObservation, MachineId,
+    Namespace, ResolvedServiceSpec, ServiceId, ServiceName,
 };
 use serde_json::json;
-use tokio::net::TcpListener;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream, UdpSocket},
+};
 
-use super::*;
+use super::{
+    TCP_REQUEST_TIMEOUT, TCP_RESPONSE_BUFFER,
+    forward::{Handler, Upstreams, nameservers_from_resolv_conf},
+    projection::{Answers, CALLER_WAIT, Projection, ProjectionInputs, ResponsePlan},
+};
 use crate::corrosion::Error as CorrosionError;
 
 const SUBNET: &str = "10.210.1.0/24";
@@ -352,6 +369,33 @@ fn api_and_migrate_hook() -> [ContainerObservation; 2] {
 }
 
 #[test]
+fn a_caller_in_a_wider_subnet_is_projected_except_its_network_plus_one_gateway() {
+    let [api, _] = api_and_migrate_hook();
+    let projection = unfiltered_projection(&[api]);
+    let plan = |subnet: &str, source: Ipv4Addr| {
+        projection.plan(
+            &Name::from_ascii("api.internal.").unwrap(),
+            RecordType::A,
+            subnet.parse().unwrap(),
+            IpAddr::V4(source),
+        )
+    };
+
+    assert_eq!(
+        plan("10.210.0.0/16", Ipv4Addr::new(10, 210, 7, 9)),
+        ResponsePlan::UnknownCaller
+    );
+    assert_nxdomain(plan("10.210.0.0/16", Ipv4Addr::new(10, 210, 0, 1)));
+    assert_nxdomain(plan("10.210.0.0/16", Ipv4Addr::new(10, 211, 0, 9)));
+    // Host bits in the stored subnet leave the gateway at network plus one.
+    assert_eq!(
+        plan("10.210.3.7/24", Ipv4Addr::new(10, 210, 3, 7)),
+        ResponsePlan::UnknownCaller
+    );
+    assert_nxdomain(plan("10.210.3.7/24", Ipv4Addr::new(10, 210, 3, 1)));
+}
+
+#[test]
 fn caller_service_from_an_unprojected_bridge_address_waits_for_its_caller() {
     let [api, _] = api_and_migrate_hook();
     let projection = unfiltered_projection(&[api]);
@@ -399,7 +443,6 @@ async fn hook_query_before_its_observation_lands_answers_once_it_does() {
     let answers = Answers::loaded(
         unfiltered_projection(std::slice::from_ref(&api)),
         SUBNET.parse().unwrap(),
-        Upstreams::fixed(Vec::new()),
     );
     let name = Name::from_ascii("api.internal.").unwrap();
     let caller = IpAddr::V4(Ipv4Addr::new(10, 210, 1, 9));
@@ -1032,11 +1075,13 @@ async fn small_internal_udp_answer_is_not_truncated() {
 }
 
 async fn serve_internal(count: u16) -> (SocketAddr, SocketAddr, Server<Handler>) {
-    let handler = Handler::new(Answers::loaded(
-        unfiltered_projection(&replica_observations(count)),
-        SUBNET.parse().unwrap(),
+    let handler = Handler::new(
+        Answers::loaded(
+            unfiltered_projection(&replica_observations(count)),
+            SUBNET.parse().unwrap(),
+        ),
         Upstreams::fixed(Vec::new()),
-    ));
+    );
     let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let udp_addr = udp.local_addr().unwrap();
     let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
