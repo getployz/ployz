@@ -1,8 +1,8 @@
 use super::history::NotSetVariable;
 use super::publish::DiscardTarget;
-use super::sealed::{SealLedger, sealed};
 use super::{NodeChange, Review};
 use crate::scope::{Environment, EnvironmentSummary};
+use crate::seal_scrub::ledger::{SealLedger, sealed};
 use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, shown};
 use crate::storage::Tx;
 use crate::trusted::Evidence;

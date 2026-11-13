@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use ployz_core::RpcError;
 use ployz_core::config::{SavedEnvironmentIntent, VariableValue};
 
-use super::walk;
+use super::{ledger, walk};
 use crate::id::{EnvironmentId, Revision};
 use crate::storage::Tx;
 use crate::{review, scope};
@@ -19,13 +19,13 @@ use crate::{review, scope};
 /// from that revision when it finishes.
 pub(crate) struct Scrub {
     latest: Option<review::Saved>,
-    ledger: review::sealed::SealLedger,
+    ledger: ledger::SealLedger,
     running: BTreeSet<Revision>,
 }
 
 impl Scrub {
     pub(crate) fn load(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Self, RpcError> {
-        let ledger = review::sealed::SealLedger::load_with_saves(tx, environment.as_str())?;
+        let ledger = ledger::SealLedger::load_with_saves(tx, environment.as_str())?;
         if ledger.is_empty() {
             return Ok(Self {
                 latest: None,
@@ -51,7 +51,7 @@ impl Scrub {
         })
     }
 
-    pub(crate) fn ledger(&self) -> &review::sealed::SealLedger {
+    pub(crate) fn ledger(&self) -> &ledger::SealLedger {
         &self.ledger
     }
 
@@ -82,18 +82,16 @@ impl Scrub {
                         .or_else(|| now.iter().find(|now| now.key == was.key))
                 });
                 let value = match now {
-                    Some(now) if review::sealed::sealed(&now.value) => &now.value,
+                    Some(now) if ledger::sealed(&now.value) => &now.value,
                     // Added again plain since: only this very variable was sealed.
                     Some(now)
                         if now.id != was.id
-                            && !review::sealed::sealed(&was.value)
+                            && !ledger::sealed(&was.value)
                             && self.ledger.holds_id(&service.id, was) =>
                     {
                         &VariableValue::NotSet
                     }
-                    None if !review::sealed::sealed(&was.value)
-                        && self.ledger.holds(&service.id, was) =>
-                    {
+                    None if !ledger::sealed(&was.value) && self.ledger.holds(&service.id, was) => {
                         &VariableValue::NotSet
                     }
                     Some(_) | None => continue,
@@ -128,7 +126,7 @@ pub(crate) fn scrub_sealed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Resu
         let mut saved = row.intent(1, "Saved State")?;
         if scrub.apply(earlier, &mut saved) {
             // A scrub matched by key seals a variable under its own ID.
-            review::sealed::SealLedger::record(tx, environment.as_str(), &saved)?;
+            ledger::SealLedger::record(tx, environment.as_str(), &saved)?;
             review::saved::rewrite_intent(tx, environment, earlier, &saved)?;
         }
     }

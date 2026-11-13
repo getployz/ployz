@@ -3,6 +3,8 @@
 use super::*;
 use crate::Trusted;
 use crate::followup::{FollowUp, Place};
+use crate::seal_scrub::empty::empty_plain_in;
+use crate::seal_scrub::ledger::sealed_rows;
 
 pub(crate) fn create_branch(
     tx: &mut dyn Tx,
@@ -188,8 +190,8 @@ pub(crate) fn create_branch(
                 .apply(&BTreeSet::new(), &none)
                 .map_err(config)?
                 .base;
-            let sealed = review::sealed::sealed_rows(tx, parent.summary.id.as_str())?;
-            review::sealed::empty_plain_in(&mut base, &sealed);
+            let sealed = sealed_rows(tx, parent.summary.id.as_str())?;
+            empty_plain_in(&mut base, &sealed);
             base
         }
         None => applied.base,
