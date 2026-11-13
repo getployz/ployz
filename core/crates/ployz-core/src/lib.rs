@@ -12,6 +12,7 @@ pub mod error_chain;
 pub mod framing;
 pub use enrollment::*;
 mod founding;
+pub mod hex;
 mod hint;
 mod host_config;
 pub mod host_preparation;

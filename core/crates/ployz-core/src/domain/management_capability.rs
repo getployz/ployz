@@ -133,7 +133,7 @@ impl ManagementIdentity {
     /// Lowercase hex of the public key: the form Machine records and tombstones carry.
     #[must_use]
     pub fn to_hex(&self) -> String {
-        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+        crate::hex::encode(&self.0)
     }
 
     /// Parse the 64-digit lowercase hex form.
@@ -141,19 +141,9 @@ impl ManagementIdentity {
     /// # Errors
     /// Returns a [`ValueError`] when `value` is not 64 lowercase hex digits.
     pub fn parse_hex(value: &str) -> Result<Self, ValueError> {
-        if !crate::value::is_lower_hex(value, 64) {
-            return Err(ValueError::new(
-                "Management Identity",
-                value,
-                "64 lowercase hex digits",
-            ));
-        }
-        let mut bytes = [0; 32];
-        for (byte, pair) in bytes.iter_mut().zip(value.as_bytes().chunks(2)) {
-            *byte = u8::from_str_radix(std::str::from_utf8(pair).expect("ascii hex"), 16)
-                .expect("checked lowercase hex");
-        }
-        Ok(Self(bytes))
+        crate::hex::decode(value)
+            .map(Self)
+            .ok_or_else(|| ValueError::new("Management Identity", value, "64 lowercase hex digits"))
     }
 }
 
@@ -316,6 +306,27 @@ mod tests {
             serde_json::from_str::<ManagementCapability>(&encoded).unwrap(),
             capability
         );
+    }
+
+    #[test]
+    fn an_identity_is_64_lowercase_hex_digits_and_nothing_else_parses() {
+        let identity = ManagementIdentity::from_bytes(std::array::from_fn(|index| index as u8 * 8));
+        let hex = "0008101820283038404850586068707880889098a0a8b0b8c0c8d0d8e0e8f0f8";
+        assert_eq!(identity.to_hex(), hex);
+        assert_eq!(ManagementIdentity::parse_hex(hex).unwrap(), identity);
+        for refused in [
+            hex.to_uppercase(),
+            hex[1..].to_owned(),
+            format!("{hex}0"),
+            String::new(),
+        ] {
+            assert_eq!(
+                ManagementIdentity::parse_hex(&refused)
+                    .unwrap_err()
+                    .to_string(),
+                format!("invalid Management Identity {refused:?}: 64 lowercase hex digits")
+            );
+        }
     }
 
     #[test]

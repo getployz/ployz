@@ -8,7 +8,7 @@ use sha2::Digest as _;
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp, hex_bytes},
+    canonical::{self, CanonicalError, Timestamp},
     proposal::ProposalApproval,
     refusal::AuthorityRefusal,
     restart::SignerKey,
@@ -151,19 +151,14 @@ fn signature_hex<S: serde::Serializer>(
     signature: &[u8; 64],
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    use fmt::Write as _;
-    let mut hex = String::with_capacity(128);
-    for byte in signature {
-        write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    serializer.serialize_str(&hex)
+    serializer.serialize_str(&crate::hex::encode(signature))
 }
 
 fn signature_bytes<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<[u8; 64], D::Error> {
     let value = String::deserialize(deserializer)?;
-    hex_bytes(&value)
+    crate::hex::decode(&value)
         .ok_or_else(|| serde::de::Error::custom("signature must be 128 lowercase hex digits"))
 }
 
@@ -550,5 +545,54 @@ impl<T: MachineStatement> MachineSigned<T> {
                 problem: error.to_string(),
             }
         })
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::indexing_slicing, reason = "JSON fixtures")]
+mod tests {
+    use super::{KeySignature, SigningPublicKey};
+
+    fn signature() -> KeySignature {
+        KeySignature {
+            key: SigningPublicKey::from_bytes([0x11; 32]),
+            signature: std::array::from_fn(|index| index as u8 * 4),
+        }
+    }
+
+    #[test]
+    fn a_signature_travels_as_128_lowercase_hex_digits() {
+        let json = serde_json::to_value(signature()).unwrap();
+        assert_eq!(json["key"], "11".repeat(32));
+        assert_eq!(
+            json["signature"],
+            "0004080c1014181c2024282c3034383c4044484c5054585c6064686c7074787c8084888c9094989ca0a4a8acb0b4b8bcc0c4c8ccd0d4d8dce0e4e8ecf0f4f8fc"
+        );
+        assert_eq!(
+            serde_json::from_value::<KeySignature>(json).unwrap(),
+            signature()
+        );
+    }
+
+    #[test]
+    fn a_signature_that_is_not_lowercase_hex_of_64_bytes_is_refused() {
+        let json = serde_json::to_value(signature()).unwrap();
+        let hex = json["signature"].as_str().unwrap().to_owned();
+        for refused in [
+            hex.to_uppercase(),
+            hex[2..].to_owned(),
+            format!("{hex}00"),
+            String::new(),
+        ] {
+            let mut edited = json.clone();
+            edited["signature"] = refused.into();
+            let error = serde_json::from_value::<KeySignature>(edited).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("signature must be 128 lowercase hex digits"),
+                "{error}"
+            );
+        }
     }
 }
