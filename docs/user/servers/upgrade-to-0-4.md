@@ -46,7 +46,8 @@ working.
 
 **From the dashboard.** When every server runs 0.4 and none holds a device, passkey or server it
 can't vouch for, the dashboard offers **Activate** on the **Servers** page. Otherwise it names
-what stops it. Your passkey approves the list of servers.
+what stops it. Your passkey approves the list of servers, so each server must trust it first.
+The **Servers** page names each one that doesn't and the command to run on it.
 A second passkey prompt approves the cluster's new key for sealed values, which one of your
 servers makes. If the dashboard says a server holds keys from before, activate from your
 computer instead. The dashboard never shows a recovery code, so make one afterwards from your
