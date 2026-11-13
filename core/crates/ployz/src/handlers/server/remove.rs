@@ -8,6 +8,7 @@ use ployz_core::{
 
 use super::super::route::Reached;
 use super::super::runtime;
+use super::fence::{Forgotten, already_forgotten};
 use super::{ConnectionOptions, target};
 use crate::approval;
 use crate::cloud_account::{self, Credential, Release, StoreCallError};
@@ -174,15 +175,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         Ok::<_, Error>((machines, selected, current, hold, held, by_device))
     })?;
     if let Some(HeldCopies::Gone(_)) = &held {
-        crate::ui::stream(format_args!(
-            "Server {} was already forgotten. Nothing to do.",
-            selected.name
-        ));
-        crate::ui::emit(&json!({
-            "server": super::server_json(&selected),
-            "already_forgotten": true,
-        }))?;
-        return Ok(());
+        return already_forgotten(&selected);
     }
     if let Some(HeldCopies::Answered(held)) = &held
         && !held.is_empty()
@@ -459,29 +452,11 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             selected.name
         ));
         if removal == Removal::Forget {
-            // A Server reachable now may restore its own row, so only a dead one is told
-            // about the self-fence (#2927); it is best effort, so the operator step stays.
-            let server = &selected.name;
-            crate::ui::warn(if dead {
-                format!(
-                    "Server {server} isn't told it was forgotten. If it runs again as it is, its \
-                     services start again on its own copy of each Volume, and Ployz never brings back \
-                     what they write there. When it boots, run sudo ployz-uninstall on it to stop them \
-                     and keep every Volume copy on its disk. As a best effort, if {server} and at least \
-                     one other Server ran 0.3.1 or later while it was still connected, and the Server \
-                     that forgot it runs 0.3.1 or later, it does that itself up to about 15 minutes \
-                     after its network returns. Adding it back with ployz server add --reset keeps its \
-                     writer copies read-only but can delete its mirrors, so don't while one may be a \
-                     Volume's last copy. Wipe its disk only if you need nothing on it."
-                )
+            if dead {
+                Forgotten::Dead(&selected.name).warn();
             } else {
-                format!(
-                    "Server {server} still runs and doesn't know it was forgotten, so its services keep \
-                     running there. Run sudo ployz-uninstall on it to stop them and keep every Volume \
-                     copy on its disk. Adding it back with ployz server add --reset can delete its \
-                     mirrors, so don't while one may be a Volume's last copy."
-                )
-            });
+                Forgotten::Answering(&selected.name).warn();
+            }
         }
         if cloud_released == Some(true) {
             crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");
@@ -602,15 +577,7 @@ async fn cloud_forgot(
         )
         .hint(Hint::Inspect("ployz server ls".into())));
     }
-    crate::ui::stream(format_args!(
-        "Server {} was already forgotten. Nothing to do.",
-        selected.name
-    ));
-    crate::ui::emit(&json!({
-        "server": super::server_json(selected),
-        "already_forgotten": true,
-    }))?;
-    Ok(())
+    already_forgotten(selected)
 }
 
 /// Cloud manages this Server, so Cloud removes it through its durable removal and drops

@@ -12,6 +12,13 @@ use std::{
 
 use serde_json::{Value, json};
 
+/// What a forget of Servers no daemon reached tells the operator, word for word (#2927).
+const FENCE_WARNING: &str = "A forgotten Server doesn't know it was forgotten. If one runs again as it is, its \
+     services start again on its own copy of each Volume, and Ployz never brings back what \
+     they write there. When it boots, run sudo ployz-uninstall on it to stop them and keep \
+     every Volume copy on its disk. Adding it back with ployz server add --reset keeps its \
+     writer copies read-only but can delete its mirrors, so don't while one may be a \
+     Volume's last copy. Wipe its disk only if you need nothing on it.";
 const ASKED_REMOVE: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this remove of acme before it runs.","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_organization","name":"acme","node":"o1","path":"organizations/o1"}],"operation":{"verb":"remove","name":"acme"},"organization":"acme"}}}"#;
 const ASKED_RENAME: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this rename to beta before it runs.","details":{"approval_id":"apr_9","approval":"set_cluster_name:abc","effects":[],"operation":{"verb":"set_cluster_name","name":"beta"},"organization":"acme"}}}"#;
 const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this forget of acme before it runs.","details":{"approval_id":"apr_9","approval":"forget:abc","effects":[{"kind":"removes_server","name":"web-1","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"acme"},"organization":"acme"}}}"#;
@@ -325,13 +332,7 @@ fn forgetting_a_lone_server_that_does_not_answer_says_it_is_asking_cloud() {
         "{stderr}"
     );
     asks_to_forget_around_the_approval(&stderr);
-    assert!(
-        stderr.contains(
-            "A forgotten Server doesn't know it was forgotten. If one runs again as it is, its \
-             services start again on its own copy of each Volume"
-        ),
-        "{stderr}"
-    );
+    assert!(stderr.contains(&format!("! {FENCE_WARNING}\n")), "{stderr}");
 }
 
 #[test]
@@ -341,7 +342,9 @@ fn forgetting_every_server_says_it_asks_cloud_to_forget_them_before_each_send_ex
 
     let forgot = ployz(&cloud, &["server", "forget", "--confirm", "acme"]);
     assert!(forgot.status.success(), "{forgot:?}");
-    asks_to_forget_around_the_approval(&String::from_utf8_lossy(&forgot.stderr));
+    let stderr = String::from_utf8_lossy(&forgot.stderr);
+    asks_to_forget_around_the_approval(&stderr);
+    assert!(stderr.contains(&format!("! {FENCE_WARNING}\n")), "{stderr}");
     assert_eq!(seen.lock().unwrap().drain(..).count(), 2);
 
     let approved = ployz(

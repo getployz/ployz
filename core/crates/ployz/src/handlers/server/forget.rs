@@ -6,6 +6,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 
 use super::super::{Error, config_path, leaf_matches, rerun, runtime};
+use super::fence::Forgotten;
 use crate::approval;
 use crate::cli::{base, positional, value};
 use crate::cloud_account::{self, Credential, ForgetCheck, ObservedServer, ServersForgotten};
@@ -172,15 +173,7 @@ async fn check(credential: &Credential) -> Result<ForgetCheck, Error> {
 
 fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
     let next = "ployz server add".to_owned();
-    // Nothing reaches a forgotten Server to fence it (#2927), so the operator must.
-    crate::ui::warn(
-        "A forgotten Server doesn't know it was forgotten. If one runs again as it is, its \
-         services start again on its own copy of each Volume, and Ployz never brings back \
-         what they write there. When it boots, run sudo ployz-uninstall on it to stop them \
-         and keep every Volume copy on its disk. Adding it back with ployz server add --reset \
-         keeps its writer copies read-only but can delete its mirrors, so don't while one may \
-         be a Volume's last copy. Wipe its disk only if you need nothing on it.",
-    );
+    Forgotten::All.warn();
     crate::ui::finish(&Next::new(forgotten, Some(next)), || {
         let check = &forgotten.check;
         crate::ui::stream(format_args!(
