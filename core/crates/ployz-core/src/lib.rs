@@ -40,6 +40,7 @@ mod sealing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sealing_backup;
 pub mod service;
+pub mod shell;
 mod storage_capacity;
 pub mod stream;
 pub mod value;

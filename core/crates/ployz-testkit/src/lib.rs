@@ -23,7 +23,7 @@ use ployz_core::{
     DescribeContractRequest, DockerVolumeName, EnrollAs, EnrollRequest, Enrolled, InspectRequest,
     LeaveRequest, Left, ListImagesRequest, LocalMachinePhase, MACHINE_API_PORT, Machine,
     MachineName, MachineRpcClient, MembershipObservation, OpaquePayload, Registered, RpcResponse,
-    RpcResponseBody, op,
+    RpcResponseBody, op, shell,
 };
 use thiserror::Error;
 
@@ -478,7 +478,7 @@ impl Cluster {
     ) -> Result<Output, TestkitError> {
         let script = format!(
             "token=$(cat /var/lib/ployz/corrosion/.api-token); curl --fail --silent --show-error --http2-prior-knowledge -H \"Authorization: Bearer $token\" -H 'Content-Type: application/json' --data-binary {} http://127.0.0.1:{CORROSION_API_PORT}/{path}",
-            shell_quote(payload)
+            shell::quote(payload)
         );
         let output = docker_output(["exec", &self.container_name(index)?, "sh", "-c", &script])?;
         if output.status.success() {
@@ -526,7 +526,7 @@ impl Cluster {
             "-c",
             &format!(
                 "printf %s {} > /var/lib/docker/volumes/{}/_data/value",
-                shell_quote(value),
+                shell::quote(value),
                 name
             ),
         ])
@@ -541,7 +541,7 @@ impl Cluster {
     }
 
     pub fn prepare_bind(&self, index: usize, path: &str, value: &str) -> Result<(), TestkitError> {
-        let path = shell_quote(path);
+        let path = shell::quote(path);
         docker([
             "exec",
             &self.container_name(index)?,
@@ -549,7 +549,7 @@ impl Cluster {
             "-c",
             &format!(
                 "mkdir -p {path} && printf %s {} > {path}/value",
-                shell_quote(value)
+                shell::quote(value)
             ),
         ])
     }
@@ -817,7 +817,7 @@ touch /tmp/probe.done",
             machine_index,
             &format!(
                 "pid=$(docker inspect --format '{{{{.State.Pid}}}}' {container_id}); nsenter --target \"$pid\" --net sh -c {}",
-                shell_quote(script)
+                shell::quote(script)
             ),
         )
     }
@@ -1028,10 +1028,6 @@ fn fixed_width_time(time: &str) -> String {
 
 fn command_error(output: Output) -> TestkitError {
     TestkitError::DockerCommand(String::from_utf8_lossy(&output.stderr).trim().to_owned())
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn version_reached(current: &BTreeMap<String, i64>, target: &BTreeMap<String, i64>) -> bool {

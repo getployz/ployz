@@ -1,4 +1,4 @@
-use ployz_core::error_chain;
+use ployz_core::{error_chain, shell};
 use std::{
     env,
     ffi::OsString,
@@ -328,7 +328,7 @@ impl Remote {
 
     async fn stage(&self, bootstrap: &Bootstrap, directory: &str) -> Result<(), ProvisionError> {
         let mut create = self.ssh();
-        create.arg(format!("mkdir -m 700 -- {}", shell_quote(directory)));
+        create.arg(format!("mkdir -m 700 -- {}", shell::quote(directory)));
         transfer_status(tokio::process::Command::from(create).status().await)?;
 
         let mut transfer = self.scp();
@@ -341,7 +341,7 @@ impl Remote {
         let mut command = self.ssh();
         command.arg(format!(
             "chmod 700 {path} && {path} version",
-            path = shell_quote(daemon)
+            path = shell::quote(daemon)
         ));
         bootstrap::verify_command_version(
             "preflight remote bootstrap daemon",
@@ -369,7 +369,7 @@ impl Remote {
 
     async fn cleanup(&self, directory: &str) -> Result<(), ProvisionError> {
         let mut cleanup = self.ssh();
-        cleanup.arg(format!("rm -rf -- {}", shell_quote(directory)));
+        cleanup.arg(format!("rm -rf -- {}", shell::quote(directory)));
         let status = tokio::process::Command::from(cleanup)
             .status()
             .await
@@ -482,9 +482,9 @@ fn remove_command(destination: &SshDestination, key: &Path, directory: &str) -> 
         .unwrap_or_default();
     format!(
         "ssh {port}-i {} {} rm -rf -- {}",
-        shell_quote(&key.to_string_lossy()),
+        shell::quote(&key.to_string_lossy()),
         destination.target(),
-        shell_quote(directory)
+        shell::quote(directory)
     )
 }
 
@@ -503,10 +503,6 @@ fn ssh_key(matches: &ArgMatches) -> PathBuf {
     )
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 /// The remote installer downloads the release again, so it gets this CLI's mirror
 /// overrides: neither ssh nor sudo carries them.
 fn remote_command(
@@ -522,14 +518,14 @@ fn remote_command(
     if !environment.is_empty() {
         command.push_str("env ");
         for (name, value) in environment {
-            command.push_str(&shell_quote(&format!("{name}={value}")));
+            command.push_str(&shell::quote(&format!("{name}={value}")));
             command.push(' ');
         }
     }
-    command.push_str(&shell_quote(program));
+    command.push_str(&shell::quote(program));
     for argument in arguments {
         command.push(' ');
-        command.push_str(&shell_quote(&argument.to_string_lossy()));
+        command.push_str(&shell::quote(&argument.to_string_lossy()));
     }
     command
 }
