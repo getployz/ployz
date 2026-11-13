@@ -3313,6 +3313,7 @@ mod tests {
                 if docker.accept().is_ok() {
                     return Some(Instant::now());
                 }
+                // real-wait: polls a non-blocking OS socket accept from a plain thread; nothing in-process signals the connection.
                 std::thread::sleep(Duration::from_millis(1));
             }
             None

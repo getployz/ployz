@@ -334,6 +334,7 @@ impl LogHolder {
         }
         #[cfg(test)]
         if let Some(stall) = SYNC_STALL.get() {
+            // real-wait: stalls the blocking sync on purpose so the test can observe whether the inspect request already left.
             std::thread::sleep(stall);
             SYNC_STALLED_UNTIL.set(Some(std::time::Instant::now()));
         }
