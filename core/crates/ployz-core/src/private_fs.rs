@@ -58,41 +58,58 @@ impl From<ReplaceError> for io::Error {
 }
 
 /// Put `contents` at `path` in one rename, so a reader sees the old file or the new one. The
-/// temporary is created with `replace.mode`, and removed when the write fails before the rename.
+/// temporary is created with `replace.mode`, and removed when the write fails after it was
+/// opened and before the rename. A temporary that could not be opened is left as it was.
 ///
 /// # Errors
 /// [`ReplaceError::Write`] when the old file is still in place, [`ReplaceError::Unsynced`] when
 /// only the directory sync after the rename failed.
 pub fn replace_file(path: &Path, contents: &[u8], replace: Replace) -> Result<(), ReplaceError> {
-    let temporary = replace.temp.path(path);
-    let written =
-        write_temporary(&temporary, contents, replace).and_then(|()| fs::rename(&temporary, path));
+    replace_through(&replace.temp.path(path), path, contents, replace)
+}
+
+fn replace_through(
+    temporary: &Path,
+    path: &Path,
+    contents: &[u8],
+    replace: Replace,
+) -> Result<(), ReplaceError> {
+    let written = open_temporary(temporary, replace).and_then(|mut file| {
+        let written = write_temporary(&mut file, contents, replace)
+            .and_then(|()| fs::rename(temporary, path));
+        if written.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        written
+    });
     if let Err(source) = written {
-        let _ = fs::remove_file(&temporary);
         return Err(ReplaceError::Write {
             path: path.to_owned(),
             source,
         });
     }
     if replace.durability == Durability::FileAndDirectory {
-        File::open(parent(path))
-            .and_then(|directory| directory.sync_all())
-            .map_err(|source| ReplaceError::Unsynced {
-                path: path.to_owned(),
-                source,
-            })?;
+        sync_directory(path).map_err(|source| ReplaceError::Unsynced {
+            path: path.to_owned(),
+            source,
+        })?;
     }
     Ok(())
 }
 
-fn write_temporary(temporary: &Path, contents: &[u8], replace: Replace) -> io::Result<()> {
+/// Open the temporary. Only a file this returns is the caller's to remove: a failed `create_new`
+/// means the name belongs to someone else.
+fn open_temporary(temporary: &Path, replace: Replace) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).mode(replace.mode);
     match replace.temp {
         TempName::Sibling => options.create(true).truncate(true),
         TempName::Unique => options.create_new(true),
     };
-    let mut file = options.open(temporary)?;
+    options.open(temporary)
+}
+
+fn write_temporary(file: &mut File, contents: &[u8], replace: Replace) -> io::Result<()> {
     file.set_permissions(fs::Permissions::from_mode(replace.mode))?;
     file.write_all(contents)?;
     file.sync_all()
@@ -119,10 +136,13 @@ impl TempName {
     }
 }
 
-fn parent(path: &Path) -> &Path {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
+/// Sync the directory that holds `path`, as `path` names it: a bare file name has the empty
+/// parent, which cannot be opened, so a caller that means the current directory passes `./name`.
+fn sync_directory(path: &Path) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "path has no parent directory")
+    })?;
+    File::open(parent)?.sync_all()
 }
 
 /// Create the file `path` with mode `0600` and `contents`, and fail when it exists.
@@ -138,7 +158,7 @@ pub fn create_private_file(path: &Path, contents: &[u8], durability: Durability)
     file.write_all(contents)?;
     file.sync_all()?;
     if durability == Durability::FileAndDirectory {
-        File::open(parent(path))?.sync_all()?;
+        sync_directory(path)?;
     }
     Ok(())
 }
@@ -209,7 +229,7 @@ mod tests {
 
     use super::{
         Durability, Existing, Replace, ReplaceError, TempName, create_private_dir,
-        create_private_file, replace_file,
+        create_private_file, replace_file, replace_through,
     };
 
     fn mode(path: &Path) -> u32 {
@@ -289,6 +309,29 @@ mod tests {
             assert_eq!(names(directory.path()), ["taken"]);
         }
         assert_eq!(fs::read(path.join("inside")).unwrap(), b"kept");
+    }
+
+    #[test]
+    fn a_temporary_that_cannot_be_opened_is_left_as_it_was() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+
+        let taken = directory.path().join(".state.json.1.0.tmp");
+        fs::write(&taken, b"another process's half write").unwrap();
+        let error = replace_through(&taken, &path, b"new", replace(TempName::Unique)).unwrap_err();
+        assert_eq!(
+            std::io::Error::from(error).kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&taken).unwrap(), b"another process's half write");
+        assert!(!path.exists());
+
+        let sibling = TempName::Sibling.path(&path);
+        fs::create_dir(&sibling).unwrap();
+        fs::write(sibling.join("inside"), b"kept").unwrap();
+        replace_file(&path, b"new", replace(TempName::Sibling)).unwrap_err();
+        assert_eq!(fs::read(sibling.join("inside")).unwrap(), b"kept");
+        assert!(!path.exists());
     }
 
     #[test]

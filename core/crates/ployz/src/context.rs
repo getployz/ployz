@@ -223,8 +223,14 @@ impl Config {
         if self.has_capability() {
             require_private_parent(&self.path)?;
         }
+        // `replace_file` syncs the directory the path names, and a bare file name names none.
+        let target = if self.path.parent().is_some_and(|p| p.as_os_str().is_empty()) {
+            Path::new(".").join(&self.path)
+        } else {
+            self.path.clone()
+        };
         replace_file(
-            &self.path,
+            &target,
             yaml.as_bytes(),
             Replace {
                 mode: 0o600,
