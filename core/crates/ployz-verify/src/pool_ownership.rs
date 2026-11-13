@@ -5,7 +5,7 @@
 //! :96-106), checks the Pool with `existing_device_pool` (:107-112), and only then records
 //! ownership with `remember_device_pool` (:113), an atomic write of the CONFIRMED marker
 //! (:77-83). `install_at` holds the installation gate's exclusive guard throughout
-//! (installer/mod.rs:271-276, :298). The plugin's `VolumeStorage::create`
+//! (`install_at` and `install_locked` in installer/mod.rs). The plugin's `VolumeStorage::create`
 //! (volume_plugin/pool.rs:96-124) takes that gate's shared guard (`admit_mutation`,
 //! :102, volume_plugin/storage.rs:115-125), then the Pool mutation lock (pool.rs:103), then
 //! runs `one_usable` (:213), `recover` (:276) and, when both find nothing, `create`
@@ -24,11 +24,11 @@
 //!
 //! The finding needs a volume plugin installed before the installer creates `ployz-device`.
 //! `install_locked` runs `prepare_storage` before it installs the binaries and units and
-//! enables the plugin's socket (installer/mod.rs:301, :310-313, installer/host.rs:273), so
+//! enables the plugin's socket (`install_locked` in installer/mod.rs, installer/host.rs:273), so
 //! a fresh host has no plugin until a run completes. An earlier `ployzd install`, whose
 //! `--storage` defaults to `none` (ployzd main.rs:108-109), installs both and enables the
 //! socket whatever its storage, and a later `ployzd install --storage zfs:<device>` runs
-//! `prepare_storage` again (installer/mod.rs:295-301); docs/user/servers/add-a-server.md:207-208
+//! `prepare_storage` again (`install_locked`'s `PrepareHost` arm in installer/mod.rs); docs/user/servers/add-a-server.md:207-208
 //! names that command. The model starts from either host.
 //!
 //! Docker's List (volume_plugin/removal.rs:100-108) and Inspect (:52-57) take the Pool
@@ -124,7 +124,7 @@ struct Host {
 
 /// Where the installer is in `prepare_storage` and `create_device_pool`
 /// (installer/storage.rs). In every phase but `Start`, `Done` and `Stopped`, `install_at`
-/// holds the installation gate's exclusive guard (installer/mod.rs:271-276).
+/// holds the installation gate's exclusive guard (`install_at` in installer/mod.rs).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Installer {
     /// `install_at` has not run.
@@ -203,8 +203,8 @@ enum Branch {
     /// active" (volume_plugin/storage.rs:115-125, ployzd mutation.rs:55-69).
     InstallationActive,
     /// `install_at`'s `try_installation` refused at once while a Volume create holds the
-    /// shared guard (ployzd mutation.rs:77-81, installer/mod.rs:271-272). The installer
-    /// prints "another Ployz installation is active" (`Error::Busy` in installer/mod.rs, :336-344).
+    /// shared guard (ployzd mutation.rs:77-81, `install_at` in installer/mod.rs). The installer
+    /// prints "another Ployz installation is active" (`Error::Busy`, from `map_admission_error` in installer/mod.rs).
     InstallerBusy,
     /// `prepare_storage` refuses beside a root-backed Pool: the backing check
     /// (installer/storage.rs:48-53), or `existing_device_pool` finding `ployz`
@@ -289,7 +289,7 @@ enum Action {
     /// and the guard goes with it (ployzd mutation.rs:37).
     InstallerStops,
     /// `install_at` tries the installation gate's exclusive guard once
-    /// (installer/mod.rs:271-272, ployzd mutation.rs:77-81), then `prepare_storage`'s checks
+    /// (`install_at` in installer/mod.rs, ployzd mutation.rs:77-81), then `prepare_storage`'s checks
     /// run, from resolving the device (the `fs::canonicalize` call in `prepare_storage`) to `empty_device`.
     Assess,
     /// The fix: the installer writes the intent atomically.
@@ -356,7 +356,7 @@ struct State {
 )]
 struct Broken {
     /// The installation gate admits a Volume create while `install_at` runs, and lets
-    /// `install_at` start while a Volume create holds the shared guard (installer/mod.rs:272,
+    /// `install_at` start while a Volume create holds the shared guard (`install_at` in installer/mod.rs,
     /// volume_plugin/storage.rs:119-122).
     gate_admits_during_install: bool,
     /// `recover` (volume_plugin/pool.rs:307-312) ignores the marker.
@@ -1007,7 +1007,7 @@ fn reads_as(model: &PoolOwnership, before: &State, action: Action, after: &State
         ),
         Action::Assess => match after.took {
             Some(Branch::InstallerBusy) => {
-                "Installer: install_at's try_installation finds a Volume create holding the gate and returns \"another Ployz installation is active\" at once (installer/mod.rs install_at :254, mutation.rs try_installation)".to_owned()
+                "Installer: install_at's try_installation finds a Volume create holding the gate and returns \"another Ployz installation is active\" at once (installer/mod.rs install_at, mutation.rs try_installation)".to_owned()
             }
             Some(Branch::InstallerRefusesRoot) => {
                 "Installer: install_at takes the installation gate; a file-backed Machine Pool already exists; refuses (installer/storage.rs prepare_storage :48)".to_owned()
@@ -1042,7 +1042,7 @@ fn reads_as(model: &PoolOwnership, before: &State, action: Action, after: &State
             "Installer: remember_device_pool writes CONFIRMED atomically (installer/storage.rs :113, :77)".to_owned()
         }
         Action::Record => {
-            "Installer: remember_device_pool writes CONFIRMED atomically, then install_locked installs the release and enables the volume plugin's socket (installer/storage.rs :113; installer/mod.rs :292-295)".to_owned()
+            "Installer: remember_device_pool writes CONFIRMED atomically, then install_locked installs the release and enables the volume plugin's socket (installer/storage.rs :113; installer/mod.rs install_locked)".to_owned()
         }
         Action::Request => match after.took {
             Some(Branch::InstallationActive) => {
