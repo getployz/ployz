@@ -1101,21 +1101,25 @@ fn assemble_plan(
                     .any(|entry| entry.service == dependency.service)
             })
         {
-            blocked.push(BlockedService {
-                service: spec.name.clone(),
-                error: dependency_blocked(&dependency.service),
-            });
-            budget.release(&spec.name);
+            block_service(
+                &mut blocked,
+                &mut budget,
+                &spec.name,
+                dependency_blocked(&dependency.service),
+                Reservation::Release,
+            );
             continue;
         }
         if let Some(handover) = handovers.iter().find(|handover| {
             handover.from == spec.name && blocked.iter().any(|entry| entry.service == handover.to)
         }) {
-            blocked.push(BlockedService {
-                service: spec.name.clone(),
-                error: handover_blocked(handover),
-            });
-            budget.release(&spec.name);
+            block_service(
+                &mut blocked,
+                &mut budget,
+                &spec.name,
+                handover_blocked(handover),
+                Reservation::Release,
+            );
             continue;
         }
         let first = service_operations.len();
@@ -1139,19 +1143,23 @@ fn assemble_plan(
                 | PlanError::VolumeHolderUnknown { .. }
                 | PlanError::VolumeServerTakesNoServices { .. }),
             ) if blocks_unmountable => {
-                blocked.push(BlockedService {
-                    service: spec.name.clone(),
-                    error: error.into_rpc_error(),
-                });
-                budget.release(&spec.name);
+                block_service(
+                    &mut blocked,
+                    &mut budget,
+                    &spec.name,
+                    error.into_rpc_error(),
+                    Reservation::Release,
+                );
                 continue;
             }
             Err(error) if blocks_unmountable && volume_server_away(&error, snapshot, spec) => {
-                blocked.push(BlockedService {
-                    service: spec.name.clone(),
-                    error: error.into_rpc_error(),
-                });
-                budget.release(&spec.name);
+                block_service(
+                    &mut blocked,
+                    &mut budget,
+                    &spec.name,
+                    error.into_rpc_error(),
+                    Reservation::Release,
+                );
                 continue;
             }
             Err(source) => {
@@ -1165,14 +1173,13 @@ fn assemble_plan(
         // A Volume on a Server that didn't return its storage can't be budgeted there, so
         // only the Service mounting it waits; the rest of the Deploy goes ahead (bet 4).
         if blocks_unmountable && let Some(error) = silent_volume_server(&operations, snapshot) {
-            blocked.push(BlockedService {
-                service: spec.name.clone(),
-                error: error.into_rpc_error(),
-            });
-            if let Some(before) = before {
-                budget = before;
-            }
-            budget.release(&spec.name);
+            block_service(
+                &mut blocked,
+                &mut budget,
+                &spec.name,
+                error.into_rpc_error(),
+                Reservation::Restore(before),
+            );
             continue;
         }
         if let Some(machine_id) = operations.iter().find_map(|operation| match operation {
@@ -1528,6 +1535,33 @@ impl<'intent> DependencyWalk<'_, 'intent> {
 struct ServiceBudget<'snapshot> {
     volumes: VolumePlan<'snapshot>,
     placement: PlacementState,
+}
+
+/// What a Service blocked once `plan_one_service` placed it does with the budget it spent.
+enum Reservation<'snapshot> {
+    /// Give back what the Service had committed.
+    Release,
+    /// Put back the budget as it was before the Service was placed, then give back what it
+    /// had committed.
+    Restore(Option<ServiceBudget<'snapshot>>),
+}
+
+/// Report `service` not attempted with `error` and settle its share of the budget.
+fn block_service<'snapshot>(
+    blocked: &mut Vec<BlockedService>,
+    budget: &mut ServiceBudget<'snapshot>,
+    service: &ServiceName,
+    error: RpcError,
+    reservation: Reservation<'snapshot>,
+) {
+    blocked.push(BlockedService {
+        service: service.clone(),
+        error,
+    });
+    if let Reservation::Restore(Some(before)) = reservation {
+        *budget = before;
+    }
+    budget.release(service);
 }
 
 impl ServiceBudget<'_> {
