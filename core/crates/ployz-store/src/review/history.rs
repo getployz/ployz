@@ -136,7 +136,7 @@ pub(crate) fn history(
     query: &HistoryQuery,
 ) -> Result<HistoryView, RpcError> {
     let mut environment = scope::environment(tx, who, &query.environment)?;
-    let scrub = review::Scrub::load(tx, &environment.summary.id)?;
+    let scrub = crate::seal_scrub::history::Scrub::load(tx, &environment.summary.id)?;
     // What an Environment above sealed since reads as Sealed here too, as in a review
     // (#3756). The loop below reuses `environment` for each revision.
     let (id, working) = (environment.summary.id.clone(), environment.working.clone());
@@ -319,7 +319,7 @@ pub(crate) fn stage(
 fn snapshot(
     tx: &mut dyn Tx,
     environment: &Environment,
-    scrub: &review::Scrub,
+    scrub: &crate::seal_scrub::history::Scrub,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     let mut intent =
@@ -353,7 +353,7 @@ fn prepare(
             json!({ "revision": revision }),
         ));
     }
-    let scrub = review::Scrub::load(tx, &environment.summary.id)?;
+    let scrub = crate::seal_scrub::history::Scrub::load(tx, &environment.summary.id)?;
     let selected = snapshot(tx, environment, &scrub, revision)?;
     let previous = match action {
         HistoryAction::Restore => None,

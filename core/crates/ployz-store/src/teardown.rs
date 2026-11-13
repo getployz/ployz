@@ -18,6 +18,7 @@ use crate::id::{
 use crate::project::ProjectSummary;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
+use crate::storage::tables::{CLUSTER_TABLES, ORGANIZATION_TABLES};
 
 /// List a Project's Environments.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -378,15 +379,7 @@ pub(crate) fn remove_organization(
             .within(json!({ "projects": names })),
         ));
     }
-    for table in [
-        "config_create",
-        "config_branch",
-        "config_check_suite",
-        "config_build_order",
-        "config_pull_request",
-        "config_sync_receipt",
-        "config_removal_mark",
-    ] {
+    for table in ORGANIZATION_TABLES {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),
             &[who.organization.as_str().into()],
@@ -452,7 +445,7 @@ pub(crate) fn forget_cluster(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Deploym
     // Every Deployment write locks its Environment; so does this, against a concurrent admission.
     scope::lock_all(tx, environments)?;
     let cancelled = deployment::cancel_in_flight(tx, who)?;
-    for table in ["config_applied", "config_namespace"] {
+    for table in CLUSTER_TABLES {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),
             &[organization.into()],

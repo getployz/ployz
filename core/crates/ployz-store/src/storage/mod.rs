@@ -8,6 +8,8 @@
 mod convert;
 mod pg;
 mod sqlite;
+mod steps;
+pub(crate) mod tables;
 
 pub use convert::Converted;
 use ployz_core::RpcError;
@@ -159,33 +161,15 @@ const MIGRATIONS: &[(&str, Step)] = &[
     ),
     (
         "0029_scrub_sealed_bases",
-        Step::Rust(|tx, _| {
-            for row in tx.query("SELECT id FROM config_environment", &[])? {
-                crate::branch::scrub_bases(tx, row.text(0)?)?;
-            }
-            Ok(None)
-        }),
+        Step::Rust(|tx, _| crate::seal_scrub::backfill::scrub_every_base(tx).map(|()| None)),
     ),
     (
         "0030_scrub_sealed_arrivals",
-        Step::Rust(|tx, _| {
-            for row in tx.query("SELECT id FROM config_environment", &[])? {
-                crate::branch::scrub_bases(tx, row.text(0)?)?;
-            }
-            Ok(None)
-        }),
+        Step::Rust(|tx, _| crate::seal_scrub::backfill::scrub_every_base(tx).map(|()| None)),
     ),
     (
         "0031_scrub_sealed_history",
-        Step::Rust(|tx, _| {
-            for row in tx.query("SELECT id FROM config_environment", &[])? {
-                crate::review::scrub_sealed(
-                    tx,
-                    &row.parse::<crate::EnvironmentId>(0, "Environment")?,
-                )?;
-            }
-            Ok(None)
-        }),
+        Step::Rust(|tx, _| crate::seal_scrub::backfill::scrub_every_history(tx).map(|()| None)),
     ),
     (
         "0032_node_copied_from",
@@ -260,7 +244,7 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0037_arrival_checks",
         Step::Rust(|tx, backend| {
             // First: once a CHECK holds, a repair that leaves a row illegal fails.
-            crate::branch::repair_arrivals(tx)?;
+            steps::repair_arrivals(tx)?;
             match backend {
                 Backend::Postgres => {
                     tx.batch(include_str!("migrations/0037_arrival_checks_postgres.sql"))?
