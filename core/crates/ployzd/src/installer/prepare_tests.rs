@@ -594,6 +594,69 @@ fn zfs_is_skipped_only_by_a_storage_stage_refusal() {
             message: "identify Linux distribution: No such file or directory (os error 2)".into()
         }
     );
+
+    fs::write(&paths.os_release, UBUNTU_24).unwrap();
+    fs::create_dir_all(paths.proc_dir.join("vz")).unwrap();
+    assert_eq!(
+        zfs_step(&paths, &mut job),
+        ZfsOutcome::Skipped {
+            reason: "OpenVZ does not allow this Machine to load the host ZFS kernel module".into()
+        }
+    );
+
+    fs::write(&paths.os_release, DEBIAN_12).unwrap();
+    fs::create_dir_all(&paths.secure_boot).unwrap();
+    assert_eq!(
+        zfs_step(&paths, &mut job),
+        ZfsOutcome::Failed {
+            message: "read Secure Boot state: Is a directory (os error 21)".into()
+        }
+    );
+}
+
+/// An Amazon Linux whose repositories offer no `kernel-devel` for the running kernel can't
+/// build ahead, which skips ZFS rather than failing it.
+#[test]
+fn a_prebuild_without_kernel_devel_is_skipped() {
+    const CASE: &str = "PLOYZ_PREPARE_NO_KERNEL_DEVEL_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let mut job = opened(&paths);
+        assert_eq!(
+            zfs_step(&paths, &mut job),
+            ZfsOutcome::Skipped {
+                reason: format!(
+                    "Amazon Linux 2023 has no kernel-devel package for the running kernel {AMAZON_KERNEL}, so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`."
+                )
+            }
+        );
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "no-kernel-devel",
+        AMAZON_LINUX_2023,
+        &[
+            ("uname", &format!("echo {AMAZON_KERNEL}")),
+            ("dnf", "exit 0"),
+        ],
+    );
+    run_contract_child_with_environment(
+        "installer::prepare::tests::a_prebuild_without_kernel_devel_is_skipped",
+        fixture.path(),
+        OsString::from(CASE),
+        OsString::from("no-kernel-devel"),
+        "no-kernel-devel",
+        [],
+    );
+    assert_eq!(
+        read_log(fixture.path()),
+        format!(
+            "uname -r\ndnf -q repoquery --whatprovides kernel-devel-uname-r = {AMAZON_KERNEL}\n"
+        )
+    );
 }
 
 #[tokio::test]

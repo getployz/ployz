@@ -1,6 +1,7 @@
 use std::{env, ffi::OsString, fs, io, path::PathBuf};
 
 use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API};
+use ployz_core::probe_document::OsRelease;
 use serde_json::json;
 
 use super::*;

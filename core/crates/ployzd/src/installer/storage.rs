@@ -11,14 +11,14 @@ use std::{
 
 use crate::machine_pool::DEVICE_BACKED_POOL_NAME;
 use ployz_core::StoragePreparation;
-use ployz_core::probe_document::{Blocker, OsRelease, Virtualization};
+use ployz_core::probe_document::{OsRelease, Virtualization};
 
 use super::assess::{
     ZFS_SMOKE_BYTES, read_root_filesystem, read_secure_boot_variable, read_virtualization,
-    root_reserve_blocker, secure_boot_blocker, virtualization_blocker, zfs_os_route,
+    root_reserve_blocker,
 };
 use super::packages::PackageManager;
-use super::zfs_route::ZfsRoute;
+use super::zfs_route::{RouteStop, ZfsRoute, choose};
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
     host::write_file_atomically,
@@ -336,23 +336,23 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
 }
 
 pub(super) fn zfs_preflight(paths: &InstallPaths) -> Result<(OsRelease, ZfsRoute), Error> {
-    let refusal = |reason: Blocker| refuse(STAGE, reason.message);
     let os = super::os_release::read(&paths.os_release)?;
-    let route = zfs_os_route(&os).map_err(refusal)?;
-    if route.builds_module() {
-        let secure_boot = read_secure_boot_variable(&paths.secure_boot)?;
-        if let Some(reason) = secure_boot_blocker(route, &os, Some(secure_boot)) {
-            return Err(refusal(reason));
-        }
-    }
-    let (virt, unread) = read_virtualization(&paths.proc_dir);
-    // Install never refused a Machine whose virtualization it couldn't detect.
-    if let (Virtualization::Lxc { privileged: None }, Some(error)) = (&virt, unread) {
-        return Err(error);
-    }
-    if let Some(reason) = virtualization_blocker(&virt) {
-        return Err(refusal(reason));
-    }
+    let route = choose(
+        &os,
+        || read_secure_boot_variable(&paths.secure_boot).map(Some),
+        || {
+            let (virt, unread) = read_virtualization(&paths.proc_dir);
+            // Install never refused a Machine whose virtualization it couldn't detect.
+            match (&virt, unread) {
+                (Virtualization::Lxc { privileged: None }, Some(error)) => Err(error),
+                _ => Ok(virt),
+            }
+        },
+    )
+    .map_err(|stop| match stop {
+        RouteStop::Blocked(reason) => refuse(STAGE, reason.message),
+        RouteStop::Unread(error) => error,
+    })?;
     let package_manager = route.package_manager().command();
     if !command_exists(package_manager) {
         return Err(refuse(
