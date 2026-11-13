@@ -32,7 +32,7 @@ const typeScaleRule = defineRule({
       // checked where its value is written.
       Property(node) {
         if (node.parent.type !== "ObjectExpression") return;
-        const key = node.key.type === "Identifier" ? node.key.name : node.key.type === "Literal" ? node.key.value : null;
+        const key = node.key.type === "Identifier" && !node.computed ? node.key.name : node.key.type === "Literal" ? node.key.value : null;
         if (key !== "fontSize" && key !== "font-size") return;
         const { value } = node;
         const literal =
