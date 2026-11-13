@@ -5,13 +5,13 @@ use std::io::Read;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{ArgMatches, Command};
-use ployz_core::{Hint, IngressDoors, PartialResult, RpcErrorCode};
+use ployz_core::{Hint, IngressDoors, RpcErrorCode};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
 use crate::cli::{base, positional, switch};
-use crate::ingress::{Doors, MachineDoors, checked_doors, use_doors};
+use crate::ingress::{DoorMachine, Doors, MachineDoors, checked_doors, use_doors};
 use crate::ui::{self, Cell, Gaps, Table};
 
 /// The most a Cloudflare tunnel token holds on stdin. Cloudflare's run a few hundred bytes.
@@ -77,7 +77,7 @@ pub(crate) fn show(root: &ArgMatches) -> Result<(), Error> {
                         .unwrap_or_default(),
                 })
                 .collect::<Vec<_>>();
-            let gaps = gaps(&observed, Vec::new());
+            let gaps = gaps(&observed);
             let table = table(&rows);
             ui::finish_fanout("machines", &rows, &gaps, || {
                 if rows.is_empty() && gaps.is_complete() {
@@ -122,8 +122,9 @@ pub(crate) fn use_doors_on(root: &ArgMatches) -> Result<(), Error> {
                 ask_token,
             )
             .await?;
+            let addressed = observed.machines.clone();
             let changed = use_doors(client, observed, doors, &CancellationToken::new()).await?;
-            let gaps = gaps_of(&changed.machines, changed.failures);
+            let gaps = gaps_of(&addressed, changed.failures);
             let table = table(&changed.machines);
             ui::finish_fanout("machines", &changed.machines, &gaps, || {
                 if changed.machines.is_empty() && gaps.is_complete() {
@@ -157,25 +158,31 @@ fn table(rows: &[MachineDoors]) -> Table {
 }
 
 /// The fan-out gaps of a listing: the ingress Servers that didn't list their
-/// containers, and `failures`.
-fn gaps(observed: &Doors, failures: Vec<ployz_core::MachineFailure<ployz_core::RpcError>>) -> Gaps {
-    let mut listing: PartialResult<(), ployz_core::RpcError> = PartialResult {
-        successes: Vec::new(),
-        failures: observed.listed.failures.clone(),
-        omissions: observed.listed.omissions.clone(),
-    };
+/// containers.
+fn gaps(observed: &Doors) -> Gaps {
     let ingress = |machine_id: &ployz_core::MachineId| {
         observed
             .machines
             .iter()
             .any(|machine| machine.id == *machine_id)
     };
-    listing
-        .failures
-        .retain(|failure| ingress(&failure.machine_id));
-    listing.omissions.retain(ingress);
-    listing.failures.extend(failures);
-    Gaps::of(&listing).named(
+    Gaps::from_parts(
+        observed
+            .listed
+            .failures
+            .iter()
+            .filter(|failure| ingress(&failure.machine_id))
+            .cloned()
+            .collect(),
+        observed
+            .listed
+            .omissions
+            .iter()
+            .filter(|machine_id| ingress(machine_id))
+            .cloned()
+            .collect(),
+    )
+    .named(
         observed
             .machines
             .iter()
@@ -183,24 +190,14 @@ fn gaps(observed: &Doors, failures: Vec<ployz_core::MachineFailure<ployz_core::R
     )
 }
 
+/// The gaps in a change, naming every ingress Server the command addressed: one whose
+/// answer was a failure has no row, and its warning still carries its name.
 fn gaps_of(
-    rows: &[MachineDoors],
+    addressed: &[DoorMachine],
     failures: Vec<ployz_core::MachineFailure<ployz_core::RpcError>>,
 ) -> Gaps {
-    let listing: PartialResult<(), ployz_core::RpcError> = PartialResult {
-        successes: Vec::new(),
-        failures,
-        omissions: Vec::new(),
-    };
-    let names = rows
-        .iter()
-        .filter_map(|row| {
-            ployz_core::MachineName::parse(&row.server)
-                .ok()
-                .map(|name| (row.machine, name))
-        })
-        .collect::<Vec<_>>();
-    Gaps::of(&listing).named(names.iter().map(|(id, name)| (*id, name)))
+    Gaps::from_parts(failures, Vec::new())
+        .named(addressed.iter().map(|machine| (machine.id, &machine.name)))
 }
 
 fn read_token(stdin: impl Read) -> Result<String, Error> {
@@ -360,5 +357,100 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    fn machine_id(seed: char) -> ployz_core::MachineId {
+        ployz_core::MachineId::parse(seed.to_string().repeat(32)).unwrap()
+    }
+
+    fn door_machine(seed: char) -> crate::ingress::DoorMachine {
+        crate::ingress::DoorMachine {
+            id: machine_id(seed),
+            name: ployz_core::MachineName::parse(format!("machine-{seed}")).unwrap(),
+            supported: true,
+            tunnels: true,
+        }
+    }
+
+    fn silent(seed: char) -> ployz_core::MachineFailure<ployz_core::RpcError> {
+        ployz_core::MachineFailure {
+            machine_id: machine_id(seed),
+            error: ployz_core::RpcError::unavailable("no answer".to_owned()),
+        }
+    }
+
+    fn gap_ids(gaps: &Gaps) -> (Vec<ployz_core::MachineId>, Vec<ployz_core::MachineId>) {
+        (
+            gaps.failures
+                .iter()
+                .map(|failure| failure.machine_id)
+                .collect(),
+            gaps.omitted.clone(),
+        )
+    }
+
+    /// `ployz ingress` warns about the Servers with the ingress role that didn't list their
+    /// containers, never about one without the role, and names each by its Server name.
+    #[test]
+    fn the_listing_gaps_are_those_of_the_ingress_servers() {
+        let observed = Doors {
+            machines: vec![door_machine('a'), door_machine('b')],
+            proxy: ployz_core::ServiceId::random(),
+            cluster: ployz_core::ClusterDoors {
+                doors: IngressDoors::public(),
+                sealed_token: None,
+            },
+            declared: None,
+            declaration: crate::ingress::Declaration::Entry,
+            open: std::collections::BTreeMap::new(),
+            listed: ployz_core::PartialResult {
+                successes: Vec::new(),
+                failures: vec![silent('a'), silent('c')],
+                omissions: vec![machine_id('b'), machine_id('c')],
+            },
+            sealing: None,
+            recipient: None,
+        };
+        let gaps = gaps(&observed);
+        assert_eq!(
+            gap_ids(&gaps),
+            (vec![machine_id('a')], vec![machine_id('b')])
+        );
+        assert!(
+            gaps.stopped_answering(&machine_id('a'))
+                .starts_with("machine-a ")
+        );
+        assert!(
+            gaps.stopped_answering(&machine_id('b'))
+                .starts_with("machine-b ")
+        );
+    }
+
+    /// A change names every ingress Server it addressed by its Server name in a failure's
+    /// warning, one that answered with no row included; a Machine it never addressed is
+    /// named by its id.
+    #[test]
+    fn a_door_change_names_the_servers_it_addressed() {
+        let addressed = [door_machine('a'), door_machine('b')];
+        let gaps = gaps_of(&addressed, vec![silent('a'), silent('b'), silent('d')]);
+        assert_eq!(
+            gap_ids(&gaps),
+            (
+                vec![machine_id('a'), machine_id('b'), machine_id('d')],
+                Vec::new()
+            )
+        );
+        assert!(
+            gaps.stopped_answering(&machine_id('a'))
+                .starts_with("machine-a ")
+        );
+        assert!(
+            gaps.stopped_answering(&machine_id('b'))
+                .starts_with("machine-b ")
+        );
+        assert!(
+            gaps.stopped_answering(&machine_id('d'))
+                .starts_with(&"d".repeat(32))
+        );
     }
 }
