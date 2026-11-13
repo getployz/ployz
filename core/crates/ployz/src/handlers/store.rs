@@ -10,6 +10,7 @@ use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
+use ployz_store::tools::{Accept, Confirmation};
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
     EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId, ProjectName, Publish,
@@ -571,15 +572,15 @@ impl<'m> Store<'m> {
                 error: StoreCallError::Refused(error),
                 ..
             } if error.code == RpcErrorCode::ConfirmationRequired => {
-                let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
                 let carried = self.carried();
+                let confirmation = Confirmation::of(&error.details);
                 let mut accept: Vec<String> = Vec::new();
-                for name in accepted_names(error.details.get("accept")) {
+                for name in accepted_names(&confirmation) {
                     if !accept.contains(&name) {
                         accept.push(name);
                     }
                 }
-                let version = error.details.get("version").and_then(text);
+                let version = confirmation.version;
                 let retry = self.retry(Carried {
                     accept,
                     version: version.or(carried.version),
@@ -611,12 +612,9 @@ impl<'m> Store<'m> {
             && error.code == RpcErrorCode::ConfirmationRequired
         {
             let carried = self.carried();
-            let accept = accepted_names(error.details.get("accept"));
-            let bound = error
-                .details
-                .get("version")
-                .and_then(serde_json::Value::as_str);
-            if let (Some(typed), Some(bound)) = (&carried.version, bound)
+            let asked = Confirmation::of(&error.details);
+            let accept = accepted_names(&asked);
+            if let (Some(typed), Some(bound)) = (&carried.version, &asked.version)
                 && typed != bound
                 && !accept.is_empty()
                 && accept.iter().all(|name| carried.accept.contains(name))
@@ -631,17 +629,18 @@ impl<'m> Store<'m> {
         let carried = self.carried();
         let next = match &refusal.error {
             StoreCallError::Refused(error) if error.code == RpcErrorCode::Conflict => {
-                let loss = error.details.get("volume_loss");
-                let accept = accepted_names(loss.and_then(|loss| loss.get("accept")));
-                let bound = loss
-                    .and_then(|loss| loss.get("version"))
-                    .and_then(serde_json::Value::as_str);
-                match bound {
+                let loss = error
+                    .details
+                    .get("volume_loss")
+                    .map(Confirmation::of)
+                    .unwrap_or_default();
+                let accept = accepted_names(&loss);
+                match loss.version {
                     Some(bound)
                         if !accept.is_empty()
                             && accept.iter().all(|name| carried.accept.contains(name)) =>
                     {
-                        Some((bound.to_owned(), accept))
+                        Some((bound, accept))
                     }
                     Some(_) | None => error
                         .details
@@ -733,22 +732,16 @@ impl<'m> Store<'m> {
     }
 }
 
-/// The Volume names a refusal's `accept` lists: flat, or by Environment.
-fn accepted_names(accept: Option<&serde_json::Value>) -> Vec<String> {
-    let names = |list: &serde_json::Value| {
-        list.as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|name| name.as_str().map(str::to_owned))
-            .collect::<Vec<_>>()
-    };
-    match accept {
-        Some(serde_json::Value::Object(by_environment)) => {
-            by_environment.values().flat_map(names).collect()
-        }
-        Some(list) => names(list),
-        None => Vec::new(),
-    }
+/// The Volume names a refusal's `accept` lists, flat or by Environment.
+fn accepted_names(confirmation: &Confirmation) -> Vec<String> {
+    confirmation
+        .accept
+        .as_ref()
+        .map(Accept::names)
+        .unwrap_or_default()
+        .into_iter()
+        .map(ToString::to_string)
+        .collect()
 }
 
 pub(crate) fn sweep(store: &ConfigStore, who: &Actor) -> Result<(), ployz_core::RpcError> {

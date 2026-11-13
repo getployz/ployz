@@ -8,6 +8,10 @@ use serde_json::Value;
 
 use crate::review::ApprovalRequired;
 
+mod confirmation;
+pub(crate) use confirmation::data_loss_message;
+pub use confirmation::{Accept, Confirmation};
+
 fn error(code: RpcErrorCode, message: impl Into<String>, details: Value) -> RpcError {
     RpcError::new(code, message).with_details(details)
 }

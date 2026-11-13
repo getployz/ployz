@@ -487,3 +487,69 @@ fn a_built_retry_never_repeats_a_secret_s_text() {
         "a retry without a secret stays"
     );
 }
+
+/// The retry a confirmation refusal names for each shape of evidence a Store
+/// producer writes, pinned from the code that built it by hand.
+#[test]
+fn a_confirmation_retry_is_the_call_with_the_evidence_it_was_asked() {
+    let table = [
+        (
+            "volume loss, accept as a flat list",
+            json!({ "volumes": [], "accept": ["data", "logs"], "version": "3:1:0.1:9f2c" }),
+            json!({ "environment": "staging" }),
+            json!({
+                "environment": "staging",
+                "accept_volume_loss": ["data", "logs"],
+                "version": "3:1:0.1:9f2c",
+            }),
+        ),
+        (
+            "removal, accept by Environment",
+            json!({
+                "volumes": {}, "effects": [], "version": "v1",
+                "accept": { "production": ["data"] },
+            }),
+            json!({ "project": "shop" }),
+            json!({
+                "project": "shop",
+                "accept_volume_loss": { "production": ["data"] },
+                "version": "v1",
+            }),
+        ),
+        (
+            "no accept and no version",
+            json!({ "deployment": 3, "number": 4, "rolls_back": [] }),
+            json!({ "deployment": 4 }),
+            json!({ "deployment": 4, "accept_volume_loss": [], "version": null }),
+        ),
+        (
+            "the call's own accept and version are replaced",
+            json!({ "accept": ["data"], "version": "v2" }),
+            json!({ "accept_volume_loss": ["old"], "version": "v1", "skip_deploy": true }),
+            json!({ "accept_volume_loss": ["data"], "version": "v2", "skip_deploy": true }),
+        ),
+        (
+            "an input that is not an object is left as it was",
+            json!({ "accept": ["data"], "version": "v2" }),
+            Value::Null,
+            Value::Null,
+        ),
+    ];
+    for (name, details, input, retried) in table {
+        let error = store_error(RpcErrorCode::ConfirmationRequired, "refused", details);
+        let refusal = from_store(error, &Call::new("service_update", input), Writes::None);
+        assert_eq!(
+            refusal.retry,
+            Call::new("service_update", retried),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn only_a_confirmation_names_a_retry_with_loss_accepted() {
+    let details = json!({ "accept": ["data"], "version": "v2" });
+    let error = store_error(RpcErrorCode::Conflict, "stale", details);
+    let refusal = from_store(error, &Call::new("service_update", json!({})), Writes::None);
+    assert_eq!(refusal.retry, Call::same());
+}

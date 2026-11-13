@@ -10,9 +10,10 @@ use super::act::{server_show, servers};
 use super::cloud::ServersAnswer;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, store};
-use super::refusal::{Call, Refusal, Writes, from_store};
+use super::refusal::{Call, Refusal, Writes, from_store_with};
 use super::step::{AcceptedLoss, DashboardPage, Fix, Gate, ServerName};
 use crate::catalog::NODE_NAME;
+use crate::error::Accept;
 use crate::{
     EnvironmentName, EnvironmentsQuery, Left, ProjectName, Removal, Remove, RemovedQuery,
     VolumeName, Waiting,
@@ -132,16 +133,13 @@ fn names(cx: &mut Cx<'_>, waiting: &[Waiting]) -> Result<BTreeMap<String, Server
 /// an every-copy offer list Volumes as the tool takes them.
 fn refused(target: Target, error: RpcError, call: &Call, writes: Writes) -> Refusal {
     let details = error.details.clone();
-    let code = error.code.clone();
-    let mut refusal = from_store(error, call, writes);
-    if code == RpcErrorCode::ConfirmationRequired
-        && let Value::Object(input) = &mut refusal.retry.input
-    {
-        input.insert(
-            "accept_volume_loss".into(),
-            listed(target, &details, "accept"),
-        );
-    }
+    let mut refusal = from_store_with(error, call, writes, |confirmation, call| {
+        let volumes = match &confirmation.accept {
+            Some(Accept::ByEnvironment(volumes)) => target.list(volumes),
+            Some(Accept::Names(_)) | None => Vec::new(),
+        };
+        confirmation.retry_accepting(call, json!(volumes))
+    });
     if let Some(offer) = details
         .get("every_copy")
         .and_then(|offer| offer.get("input"))

@@ -80,3 +80,46 @@ fn a_volume_named_without_its_environment_is_refused() {
     };
     assert_eq!(refusal.field.as_deref(), Some("every_copy"));
 }
+
+#[test]
+fn a_removal_confirmation_retries_with_each_tool_s_volume_list() {
+    let table = [
+        (
+            "an Environment by name",
+            Target::Environment,
+            json!({ "version": "v1", "accept": { "production": ["data", "logs"] } }),
+            json!(["data", "logs"]),
+        ),
+        (
+            "a Project by environment/volume",
+            Target::Project,
+            json!({ "version": "v1", "accept": { "production": ["data"], "staging": ["data"] } }),
+            json!(["production/data", "staging/data"]),
+        ),
+        (
+            "a flat list is no Volumes by Environment",
+            Target::Environment,
+            json!({ "version": "v1", "accept": ["data"] }),
+            json!([]),
+        ),
+        (
+            "nothing to accept",
+            Target::Project,
+            json!({ "version": "v1" }),
+            json!([]),
+        ),
+    ];
+    for (name, target, details, listed) in table {
+        let call = Call::new(target.tool().name(), json!({ "project": "shop" }));
+        let error = store_error(RpcErrorCode::ConfirmationRequired, details);
+        let refusal = refused(target, error, &call, Writes::None);
+        assert_eq!(
+            refusal.retry,
+            Call::new(
+                target.tool().name(),
+                json!({ "project": "shop", "accept_volume_loss": listed, "version": "v1" }),
+            ),
+            "{name}"
+        );
+    }
+}

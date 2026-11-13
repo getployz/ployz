@@ -6,6 +6,7 @@ use ployz_core::authority::{TeardownApproval, TeardownScope};
 use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use std::collections::BTreeMap;
 
+use ployz_store::tools::{Accept, Confirmation};
 use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
     DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
@@ -545,10 +546,11 @@ impl Reviewed {
         if refused.code != RpcErrorCode::ConfirmationRequired {
             return None;
         }
-        let details = &refused.details;
-        let lost: BTreeMap<EnvironmentName, Vec<VolumeName>> = match details.get("accept") {
-            Some(accept) => serde_json::from_value(accept.clone()).ok()?,
+        let confirmation = Confirmation::of(&refused.details);
+        let lost = match confirmation.accept {
             None => BTreeMap::new(),
+            Some(Accept::ByEnvironment(lost)) => lost,
+            Some(Accept::Names(_)) => return None,
         };
         let unaccepted = lost.iter().any(|(environment, volumes)| {
             volumes.iter().any(|volume| {
@@ -558,11 +560,9 @@ impl Reviewed {
             })
         });
         Some(Self {
-            version: details.get("version")?.as_str()?.to_owned(),
-            effects: serde_json::from_value(details.get("effects")?.clone()).ok()?,
-            by_environment: details
-                .get("effects_by_environment")
-                .and_then(|by| serde_json::from_value(by.clone()).ok()),
+            version: confirmation.version?,
+            effects: confirmation.effects?,
+            by_environment: confirmation.effects_by_environment,
             unaccepted,
         })
     }

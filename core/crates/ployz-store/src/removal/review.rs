@@ -20,7 +20,7 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::deployment::loss::{RemovedVolume, VolumeLoss, covered, held};
 use crate::digest::short_digest;
-use crate::error;
+use crate::error::{self, Accept, Confirmation};
 use crate::id::{EnvironmentId, VolumeName};
 use crate::storage::Tx;
 use crate::trusted::VolumeObservation;
@@ -115,20 +115,18 @@ pub(crate) fn review(
     if confirmed {
         return Ok(losses);
     }
-    Err(error::confirmation_required(
-        format!(
-            "This permanently deletes the data of {}. Accept each by name",
-            lost.iter()
-                .map(|loss| loss.volume.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        json!({
-            "volumes": lost,
-            "accept": lost.iter().map(|loss| &loss.volume.name).collect::<Vec<_>>(),
-            "version": bound,
-        }),
-    ))
+    Err(Confirmation {
+        volumes: json!(lost),
+        accept: Some(Accept::Names(
+            lost.iter().map(|loss| loss.volume.name.clone()).collect(),
+        )),
+        version: Some(bound),
+        ..Confirmation::default()
+    }
+    .refuse(error::data_loss_message(
+        "This permanently deletes",
+        lost.iter().map(|loss| &loss.volume.name),
+    )))
 }
 
 /// The refusal for removing `volumes` while the Servers `unanswered` didn't answer
