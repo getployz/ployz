@@ -13,21 +13,21 @@
 //! every RPC: Inspect, a resend, Leave, a new upgrade request and the mutations that admit
 //! through `admit_installation` (local_machine.rs:331-334). A kill ends all of them at once.
 //! systemd restarts it (`Restart=always`, installer/host.rs:296), and daemon start
-//! reconciles before it serves (daemon.rs:184-186). The worker is its own unit (:397-459),
+//! reconciles before it serves (`Daemon::start`, before it serves). The worker is its own unit (:397-459),
 //! `ployzd install` its own process, and the volume plugin its own unit
 //! (installer/host.rs:359-382), which admits through `admit_mutation`
 //! (volume_plugin/storage.rs:115-124).
 //!
 //! Daemon start clears the marker only if its `settle` wins `try_installation` (:258-260).
 //! Otherwise `settle` returns Ok (:263), `reconcile` drops it (:349-351) and the daemon
-//! serves (daemon.rs:187). `ployzd install` runs beside the daemon's reader, and a worker
+//! serves (`Daemon::start`, after `reconcile`). `ployzd install` runs beside the daemon's reader, and a worker
 //! that finds its receipt terminal holds the lock until it returns `NotActive` (:306-309),
 //! so either can hold the lock while daemon start settles.
 //!
 //! Settling readers repair a receipt and marker that a stopped writer left. `settle`
 //! (installer/upgrade.rs:251-276) runs for Inspect (local_machine.rs:512, through `latest`,
 //! :109-117), for a resend of the same attempt (local_machine/upgrade.rs:27-31, through
-//! `replay`, :90-105), for Leave (local_machine.rs:945) and at daemon start (daemon.rs:184,
+//! `replay`, :90-105), for Leave (local_machine.rs:945) and at daemon start (`Daemon::start`,
 //! through `reconcile`, :349-351). `reconcile_locked` (:372-395) runs under the lock for a
 //! new upgrade request (:185, after local_machine/upgrade.rs:38) and for `ployzd install`
 //! (`reconcile_for_install`, :353-370, from `install_at` in installer/mod.rs).
@@ -115,7 +115,7 @@ enum Daemon {
     /// Killed or exited; systemd starts it again (`Restart=always`, `RestartSec=2`,
     /// installer/host.rs:296-298).
     Down,
-    /// Daemon start's `reconcile` runs (daemon.rs:184-186); nothing is served yet.
+    /// Daemon start's `reconcile` runs (`Daemon::start`, before it serves); nothing is served yet.
     Starting,
 }
 
@@ -178,7 +178,7 @@ enum Caller {
     Replay,
     /// Leave's `depart` (local_machine.rs:938-961), through `latest`, then `finish_mutation`.
     Leave,
-    /// Daemon start (daemon.rs:184), through `reconcile` and `latest`, before it serves.
+    /// Daemon start (`Daemon::start`), through `reconcile` and `latest`, before it serves.
     DaemonStart,
     /// A request for another attempt: `replay` returns None for its id (:98-99), then
     /// `try_installation` (local_machine/upgrade.rs:38) and `request_locked`'s
@@ -511,7 +511,7 @@ struct Broken {
     /// `reconcile_locked` writes Interrupted without its `worker_state` check (:381).
     reconcile_skips_worker_state: bool,
     /// The daemon serves again after a kill without daemon start's `reconcile`
-    /// (daemon.rs:184-186).
+    /// (`Daemon::start`, before it serves).
     serves_before_reconcile: bool,
 }
 
@@ -972,7 +972,7 @@ impl UpgradeAttempt {
                     Some(Holder::Worker) => state.worker = Worker::Stopped,
                     Some(Holder::Reader) => {
                         // Daemon start returns the error, and the daemon exits
-                        // (daemon.rs:184-186).
+                        // (`Daemon::start`, before it serves).
                         if state
                             .reader
                             .is_some_and(|reader| reader.caller == Caller::DaemonStart)
@@ -1434,7 +1434,7 @@ fn enters(caller: Caller) -> &'static str {
         Caller::Replay => "a resend of the same attempt (local_machine/upgrade.rs:28) calls replay",
         Caller::Leave => "Leave's depart (local_machine.rs:945) calls latest",
         Caller::DaemonStart => {
-            "daemon start (daemon.rs:184) calls reconcile, then latest, before it serves"
+            "daemon start (`Daemon::start`) calls reconcile, then latest, before it serves"
         }
         Caller::NewRequest => {
             "a request for another attempt: replay returns None for its id (:98-99), and try_installation (local_machine/upgrade.rs:38)"
@@ -1599,7 +1599,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                 "returns Io before removing .upgrade-active, which stays (mutation.rs:116, :119)"
             },
             if before.daemon == Daemon::Starting && before.holder == Some(Holder::Reader) {
-                "; daemon start fails and the daemon exits (daemon.rs:184-186)"
+                "; daemon start fails and the daemon exits (`Daemon::start`, before it serves)"
             } else {
                 ""
             }
@@ -2207,7 +2207,7 @@ mod tests {
     /// Daemon start's `settle` clears the marker only if it wins `try_installation`
     /// (:258-260). When `ployzd install` holds the lock (`installer::install_at`), `settle`
     /// returns the terminal receipt as Ok (:260, :263), `reconcile` drops it (:349-351) and
-    /// the daemon serves (daemon.rs:187). Install then stops before its `clear_active`, and a
+    /// the daemon serves (`Daemon::start`, after `reconcile`). Install then stops before its `clear_active`, and a
     /// daemon RPC answers Busy on the marker the killed daemon left.
     #[test]
     fn daemon_start_loses_the_lock_to_ployzd_install() {
@@ -2285,7 +2285,7 @@ mod tests {
     }
 
     /// If the daemon served again after a kill without daemon start's `reconcile`
-    /// (daemon.rs:184-186), a daemon RPC would answer Busy on the marker the killed
+    /// (`Daemon::start`, before it serves), a daemon RPC would answer Busy on the marker the killed
     /// request left, with no start that lost the lock.
     #[test]
     fn daemon_start_settles_before_serving() {

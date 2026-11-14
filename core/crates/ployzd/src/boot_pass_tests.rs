@@ -878,6 +878,59 @@ fn counts_a_copy_whose_newest_sibling_went_unconfirmed_as_unjudged() {
     assert_eq!(super::superseded(&candidates, &specs), (Vec::new(), 1));
 }
 
+/// The boot pass and rotation's `confirm_newer` read an owner's answer through
+/// `confirmed_row`, so one row and answer decide alike in both.
+#[tokio::test(start_paused = true)]
+async fn a_row_and_an_answer_are_confirmed_alike_by_the_pass_and_the_predicate() {
+    let cluster = Cluster::new();
+    let newer = greeting(copy(2, &cluster.peer, 2), "new");
+    let stored = row(&newer);
+    let moved = |update: fn(&mut ContainerObservation)| {
+        let mut answer = newer.clone();
+        update(&mut answer);
+        answer
+    };
+    let answers = [
+        (Some(newer.clone()), true),
+        (
+            Some(moved(|answer| {
+                answer
+                    .try_update(|parts| parts.machine_id = MachineId::random())
+                    .unwrap();
+            })),
+            false,
+        ),
+        (
+            Some(moved(|answer| {
+                answer
+                    .try_update(|parts| parts.r#gen = Some(Gen::new(3)))
+                    .unwrap();
+            })),
+            false,
+        ),
+        (
+            Some(moved(|answer| {
+                answer
+                    .try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+                    .unwrap();
+            })),
+            false,
+        ),
+        (None, false),
+    ];
+    for (answer, confirmed) in answers {
+        let mut host = FakeHost::new(&cluster.local, cluster.acked_everywhere());
+        host.answers.clear();
+        host.answers
+            .extend(answer.clone().map(|answer| (stored.container_id, answer)));
+        let by_pass = super::confirmed(&host, &stored, Instant::now()).await;
+        let by_predicate =
+            answer.and_then(|answer| crate::mesh_peer::confirmed_row(&stored, answer));
+        assert_eq!(by_pass.is_some(), confirmed);
+        assert_eq!(by_pass, by_predicate);
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn kept_when_this_machine_cannot_read_its_copy() {
     let cluster = Cluster::new();

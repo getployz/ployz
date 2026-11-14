@@ -4,12 +4,15 @@ use std::{
     fs::File,
     io,
     net::{IpAddr, SocketAddr},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
 
-use ployz_core::{CORROSION_API_ADDRESS, LocalMachinePhase, MachineLayout, VOLUME_SEND_PORT};
+use ployz_core::{
+    CORROSION_API_ADDRESS, LocalMachinePhase, MachineLayout, VOLUME_SEND_PORT,
+    startup_refusal::StartupRefusal,
+};
 use sd_notify::NotifyState;
 use thiserror::Error;
 use tokio::{
@@ -17,7 +20,6 @@ use tokio::{
     signal::unix::{SignalKind, signal},
     sync::watch,
     task::JoinHandle,
-    time::Instant,
 };
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tokio_util::sync::CancellationToken;
@@ -120,31 +122,9 @@ impl Error {
     }
 }
 
-fn record_refusal(path: &Path, error: &Error) {
-    if !error.needs_operator() {
-        return;
-    }
-    let line = format!("{}\n", ployz_core::error_chain::inline(error));
-    if let Err(write) = std::fs::write(path, line) {
-        eprintln!(
-            "WARNING: could not record the refusal in {}: {write}",
-            path.display()
-        );
-    }
-}
-
-/// Removes the refusal an earlier start left beside the socket in `run_dir`.
-/// A daemon process does this first, so no failure of its start, however
-/// early, leaves an earlier refusal to be reported as its own.
-pub fn clear_refusal(run_dir: &Path) {
-    let path = run_dir.join(ployz_core::STARTUP_REFUSAL_FILE);
-    if let Err(error) = std::fs::remove_file(&path)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        eprintln!(
-            "WARNING: could not clear the last refusal in {}: {error}",
-            path.display()
-        );
+fn record_refusal(refusal: &StartupRefusal, error: &Error) {
+    if error.needs_operator() {
+        refusal.record(&ployz_core::error_chain::inline(error));
     }
 }
 
@@ -213,7 +193,7 @@ impl Daemon {
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
         let queued = socket.listener.try_clone()?;
-        let refusal = run_dir.join(ployz_core::STARTUP_REFUSAL_FILE);
+        let refusal = StartupRefusal::new(&run_dir);
         let started = Self::start_planes(config, socket, build_policy, run_dir).await;
         if let Err(error) = &started {
             // Recorded before the close, so a client it closes finds the line.
@@ -756,55 +736,6 @@ fn join_servers(result: Result<io::Result<()>, tokio::task::JoinError>) -> io::R
     }
 }
 
-fn socket_not_ready(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-    )
-}
-
-/// Connect to the Machine API Unix socket, waiting while it is missing or refusing
-/// connections, unless `refused` says no daemon will start to accept them.
-///
-/// # Errors
-///
-/// Returns a human-readable I/O error when `timeout` elapses, `refused` holds
-/// while the socket is not ready, or connect fails for a reason other than the
-/// socket not being ready.
-pub async fn wait_until_socket_accepts(
-    path: &Path,
-    timeout: Duration,
-    refused: impl Fn() -> bool,
-) -> io::Result<tokio::net::UnixStream> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match tokio::net::UnixStream::connect(path).await {
-            Ok(stream) => return Ok(stream),
-            Err(error) if socket_not_ready(&error) && Instant::now() < deadline && !refused() => {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            Err(error) if socket_not_ready(&error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!(
-                        "Machine API socket did not become ready: {error}",
-                        error = ployz_core::error_chain::inline(&error),
-                    ),
-                ));
-            }
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!(
-                        "could not connect to the Machine API socket: {error}",
-                        error = ployz_core::error_chain::inline(&error),
-                    ),
-                ));
-            }
-        }
-    }
-}
-
 async fn serve_machine_api(
     listener: Option<TcpListener>,
     machine_api: EndsOnShutdown<MachineApi>,
@@ -956,12 +887,11 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use tokio::net::UnixListener;
-
     use crate::runtime_unit::UnitSupervision;
     use ployz_core::{
         CERTIFICATE_POLICY_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest,
         LIST_CONTAINERS_CAPABILITY, LeaveRequest, MachineRpcClient, op,
+        startup_refusal::StartupRefusal,
     };
     use tonic::transport::Endpoint;
 
@@ -969,7 +899,7 @@ mod tests {
         ContainerMode, CorrosionError, Daemon, DaemonConfig, Error, InterruptedReset,
         LocalMachineStore, MachineApiSocket, ManagementConfig, NetworkError, Opened, StoreError,
         close_queued_if_refused, finish_interrupted_reset, finish_reset, record_refusal,
-        wait_for_participation, wait_until_socket_accepts,
+        wait_for_participation,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -1097,20 +1027,20 @@ mod tests {
     fn a_refused_start_leaves_its_refusal_and_a_failed_one_leaves_none() {
         let root = TestDir::new("ployzd-daemon-refusal-file");
         fs::create_dir_all(&root.0).unwrap();
-        let path = root.0.join(ployz_core::STARTUP_REFUSAL_FILE);
+        let refusal = StartupRefusal::new(&root.0);
 
-        record_refusal(&path, &Error::Io(io::Error::other("transient")));
-        assert_eq!(ployz_core::startup_refusal(&root.0), None);
+        record_refusal(&refusal, &Error::Io(io::Error::other("transient")));
+        assert_eq!(refusal.read(), None);
 
         record_refusal(
-            &path,
+            &refusal,
             &Error::Network(NetworkError::WireGuardConflict {
                 reason: "the existing device listen port differs from the mesh port",
                 recovery: "delete ployz-wg",
             }),
         );
         assert_eq!(
-            ployz_core::startup_refusal(&root.0).as_deref(),
+            refusal.read().map(|read| read.to_string()).as_deref(),
             Some(
                 "ployzd refused to start: refusing to change the retained WireGuard interface: the existing device listen port differs from the mesh port; safe recovery: delete ployz-wg"
             )
@@ -1625,36 +1555,5 @@ mod tests {
         shutdown.cancel();
         drop(owner);
         assert!(!wait_for_participation(records, shutdown).await.unwrap());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn socket_wait_connects_once_the_listener_appears() {
-        let root = TestDir::new("ployzd-socket-wait-ready");
-        fs::create_dir_all(&root.0).unwrap();
-        let path = root.0.join("ployz.sock");
-        let listener_path = path.clone();
-        let server = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-            let listener = UnixListener::bind(&listener_path).unwrap();
-            listener.accept().await.unwrap()
-        });
-        wait_until_socket_accepts(&path, std::time::Duration::from_secs(1), || false)
-            .await
-            .unwrap();
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn socket_wait_times_out_with_a_message_not_a_debug_struct() {
-        let root = TestDir::new("ployzd-socket-wait-timeout");
-        fs::create_dir_all(&root.0).unwrap();
-        let path = root.0.join("missing.sock");
-        let error =
-            wait_until_socket_accepts(&path, std::time::Duration::from_millis(20), || false)
-                .await
-                .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("did not become ready"), "{message}");
-        assert!(!message.contains("Os {"), "{message}");
     }
 }
