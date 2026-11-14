@@ -257,8 +257,8 @@ ployz device ls
 ployz device rm mmg42klgyq
 ```
 
-`device ls` shows each device by the first 10 characters of its code, and marks this computer's
-device with its full code. `device rm` takes either form and removes the device from every server
+`device ls` shows this computer's device and each passkey by its full code, and other devices by
+the first 10 characters of theirs. `device rm` takes either form and removes the device from every server
 that answers. A server that doesn't answer is listed under failures, and one with no direct
 connection under omissions. Either way the command exits 3.
 

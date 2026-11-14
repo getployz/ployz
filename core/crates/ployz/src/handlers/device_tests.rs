@@ -1115,6 +1115,7 @@ fn ls_lists_passkeys_under_the_devices_with_their_account_and_approvers() {
         code: passkey_key(1).code(),
         key: KeyKind::Passkey {
             account: account.clone(),
+            full_code: passkey_key(1).check_code(),
         },
         approved_by: Some(by),
     };
@@ -1144,7 +1145,10 @@ fn ls_lists_passkeys_under_the_devices_with_their_account_and_approvers() {
             (key(0).code(), KeyKind::Device, vec![id('3')]),
             (
                 passkey_key(1).code(),
-                KeyKind::Passkey { account },
+                KeyKind::Passkey {
+                    account,
+                    full_code: passkey_key(1).check_code(),
+                },
                 vec![id('2')]
             ),
         ]
@@ -1166,6 +1170,10 @@ fn ls_lists_passkeys_under_the_devices_with_their_account_and_approvers() {
     let json = serde_json::to_value(passkey).unwrap();
     assert_eq!(json.get("kind"), Some(&json!("passkey")));
     assert_eq!(json.get("account"), Some(&json!("ada@example.com")));
+    assert_eq!(
+        json.get("full_code"),
+        Some(&json!(String::from(passkey_key(1).check_code())))
+    );
     assert_eq!(
         json.get("approved_by"),
         Some(&json!([

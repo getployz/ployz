@@ -612,15 +612,23 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
             } else {
                 Tone::Change
             };
-            let (kind, account) = match &device.key {
-                KeyKind::Device => ("device", ""),
-                KeyKind::Passkey { account } => ("passkey, approve-only", account.as_str()),
+            let (kind, account, shown) = match &device.key {
+                KeyKind::Device => (
+                    "device",
+                    "",
+                    match own.filter(|own| own.code() == device.code) {
+                        Some(own) => format!("{} (this computer)", own.check_code()),
+                        None => device.code.to_string(),
+                    },
+                ),
+                KeyKind::Passkey { account, full_code } => (
+                    "passkey, approve-only",
+                    account.as_str(),
+                    full_code.to_string(),
+                ),
             };
             table.row([
-                Cell::from(match own.filter(|own| own.code() == device.code) {
-                    Some(own) => format!("{} (this computer)", own.check_code()),
-                    None => device.code.to_string(),
-                }),
+                Cell::from(shown),
                 Cell::from(kind),
                 Cell::from(account),
                 Cell::from(device.approvers(&reach)),
@@ -804,6 +812,7 @@ async fn devices_on(
     let passkeys = details.passkeys.into_iter().map(|trusted| Listed {
         code: trusted.passkey.code(),
         key: KeyKind::Passkey {
+            full_code: trusted.passkey.public_key.check_code(),
             account: trusted.passkey.account,
         },
         approved_by: Some(trusted.approved_by),
@@ -1080,7 +1089,10 @@ impl Device {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum KeyKind {
     Device,
-    Passkey { account: PasskeyAccount },
+    Passkey {
+        account: PasskeyAccount,
+        full_code: CheckCode,
+    },
 }
 
 /// One row per key, Devices first, then passkeys under them.
