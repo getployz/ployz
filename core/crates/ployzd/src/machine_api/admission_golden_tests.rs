@@ -245,7 +245,8 @@ fn describe(result: Result<RpcResponse, Status>) -> String {
     }
 }
 
-/// Ids and paths differ per run; the words around them don't.
+/// Ids and paths differ per run, and the Docker daemon's own error words per runner; the words
+/// Ployz writes around them don't.
 fn normalize(text: &str) -> String {
     use std::sync::LazyLock;
     static VARIABLE: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -254,7 +255,14 @@ fn normalize(text: &str) -> String {
         )
         .unwrap()
     });
-    VARIABLE.replace_all(text, "<id>").into_owned()
+    // The Docker daemon words its own failure by version and image store, not Ployz.
+    static DOCKER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"Error response from daemon: .*connection reset by peer").unwrap()
+    });
+    let text = VARIABLE.replace_all(text, "<id>");
+    DOCKER
+        .replace_all(&text, "Error response from daemon: <docker's words>")
+        .into_owned()
 }
 
 #[tokio::test(flavor = "multi_thread")]
