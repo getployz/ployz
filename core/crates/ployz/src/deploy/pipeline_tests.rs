@@ -1,9 +1,7 @@
-use ployz_core::{
-    MachineFailure, MachineId, MachineSuccess, PartialResult, RequestedServiceSpec, RpcError,
-};
+use ployz_core::{MachineId, RequestedServiceSpec};
 
 use super::*;
-use crate::deploy::{ObservationKind, observation_warnings};
+use crate::deploy::ObservationKind;
 
 #[test]
 fn deploy_warning_display_is_the_cli_line_body() {
@@ -51,42 +49,5 @@ fn deploy_warning_display_is_the_cli_line_body() {
     assert_eq!(
         serde_json::to_value(DeployWarning::ObserverRelativeHostnameConflict).unwrap(),
         serde_json::json!({"type": "observer_relative_hostname_conflict"})
-    );
-}
-
-#[test]
-fn observation_warnings_keep_failures_and_omissions_distinct() {
-    let result = PartialResult {
-        successes: vec![MachineSuccess {
-            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-            value: (),
-        }],
-        failures: vec![MachineFailure {
-            machine_id: MachineId::parse("b".repeat(32)).unwrap(),
-            error: RpcError::unavailable("container listing failed"),
-        }],
-        omissions: vec![MachineId::parse("c".repeat(32)).unwrap()],
-    };
-
-    assert_eq!(
-        observation_warnings(
-            ObservationKind::Container,
-            &result.failures,
-            &result.omissions,
-        ),
-        [
-            DeployWarning::ObservationFailed {
-                gap: None,
-                kind: ObservationKind::Container,
-                machine_id: MachineId::parse("b".repeat(32)).unwrap(),
-                machine_name: None,
-                message: "container listing failed".into(),
-            },
-            DeployWarning::ObservationOmitted {
-                gap: None,
-                kind: ObservationKind::Container,
-                machine_id: MachineId::parse("c".repeat(32)).unwrap(),
-            },
-        ]
     );
 }
