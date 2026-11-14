@@ -102,6 +102,59 @@ mod tests {
         assert!(admit_reserved_door(&Namespace::system(), &mounted, Some(network)).is_err());
     }
 
+    // Catches a refusal naming the wrong kind of spec: the wire text differs between a
+    // door and the router, and each reserved identity is admitted only as the daemon's own.
+    #[test]
+    fn each_reserved_identity_is_refused_in_its_own_words() {
+        let door_words = "this isn't an Ingress Proxy spec Ployz builds";
+        let router_words = "This isn't a router spec Ployz builds.";
+        let token = ployz_core::Ciphertext::from_bytes(vec![7; 48]);
+        let id = ServiceId::parse("c".repeat(32)).unwrap();
+        let tunnel = DoorSpecs::new(id, ployz_core::IngressPorts::Closed, Some(&token));
+        let pair = tunnel.tunnel.clone().unwrap();
+        let system = Namespace::system();
+        for own in [&tunnel.holder, &tunnel.proxy, &pair.origin, &pair.connector] {
+            assert!(
+                admit_reserved_door(&system, own, None).is_ok(),
+                "{}",
+                own.name
+            );
+            let mut foreign = own.clone();
+            foreign.container.image = "example.test/other:1".into();
+            let refused = admit_reserved_door(&system, &foreign, None).unwrap_err();
+            assert!(
+                matches!(refused, LocalMachineError::IngressProxyServiceSpec(_)),
+                "{}",
+                own.name
+            );
+            assert_eq!(refused.to_string(), door_words, "{}", own.name);
+        }
+        let mut renamed = tunnel.holder.clone();
+        renamed.name = pair.connector.name.clone();
+        let refused = admit_reserved_door(&system, &renamed, None).unwrap_err();
+        assert_eq!(refused.to_string(), door_words);
+
+        let network: Ipv4Net = "10.210.0.0/16".parse().unwrap();
+        let refused = admit_reserved_door(&system, &router(network), None).unwrap_err();
+        assert!(matches!(
+            refused,
+            LocalMachineError::PrivateAccessRouterSpec
+        ));
+        assert_eq!(refused.to_string(), router_words);
+        let mut door_under_the_router_name = tunnel.holder;
+        door_under_the_router_name.name = router(network).name;
+        let refused =
+            admit_reserved_door(&system, &door_under_the_router_name, Some(network)).unwrap_err();
+        assert_eq!(refused.to_string(), router_words);
+        let refused =
+            admit_reserved_door(&Namespace::parse("app").unwrap(), &router(network), None)
+                .and_then(|()| {
+                    admit_reserved_door(&Namespace::parse("app").unwrap(), &pair.connector, None)
+                })
+                .unwrap_err();
+        assert_eq!(refused.to_string(), door_words);
+    }
+
     #[test]
     fn an_app_spec_may_not_join_the_holders_network() {
         let mut app = specs().proxy;

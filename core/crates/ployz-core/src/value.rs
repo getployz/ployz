@@ -1453,6 +1453,39 @@ impl From<CloudEnrollToken> for String {
 
 #[cfg(test)]
 mod tests {
+    // Catches a reserved identity answering as the wrong kind: the daemon's doors and its
+    // router are placed through different routes, and everything else through neither.
+    #[test]
+    fn each_reserved_identity_is_one_door_or_the_router_and_nothing_else_is() {
+        use super::QualifiedService as Identity;
+        let doors = [
+            Identity::system_ingress(),
+            Identity::system_ingress_holder(),
+            Identity::system_tunnel_origin(),
+            Identity::system_tunnel(),
+        ];
+        for door in &doors {
+            assert!(door.is_ingress_door(), "{door}");
+            assert!(!door.is_private_access_router(), "{door}");
+        }
+        let router = Identity::system_tailscale();
+        assert!(router.is_private_access_router());
+        assert!(!router.is_ingress_door());
+        for other in [
+            "ployz-system/web",
+            "ployz-system/ingress-holder-2",
+            "app/ingress",
+            "app/ingress-holder",
+            "app/tunnel",
+            "app/tunnel-origin",
+            "app/tailscale",
+        ] {
+            let other = Identity::parse(other).unwrap();
+            assert!(!other.is_ingress_door(), "{other}");
+            assert!(!other.is_private_access_router(), "{other}");
+        }
+    }
+
     /// A CLI and a daemon of different versions must print the same fingerprint.
     #[test]
     fn a_wireguard_key_fingerprint_is_stable_and_tells_keys_apart() {
