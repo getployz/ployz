@@ -1054,36 +1054,39 @@ impl LocalMachine {
                 capability: ployz_core::REGISTER_MACHINE_CAPABILITY,
             });
         }
-        if let Some(stored) = self.approvals.join_result(request.machine_id)? {
-            if ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
-                != stored.approval.open().map_err(Error::JoinRefused)?.machine
-                || request
-                    .join_approval
-                    .as_ref()
-                    .is_some_and(|approval| approval != &stored.approval)
-            {
-                return Err(Error::JoinConsumed(request.machine_id));
-            }
-            let restart_approval::JoinReply::Register(registration) = stored.reply else {
-                return Err(Error::JoinConsumed(request.machine_id));
-            };
-            if let Some(confirmation) = &request.join_confirmation {
-                let confirmed = SealingKey::load(self.owner.data_dir())
-                    .map_err(Error::JoinRecord)?
-                    .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
-                if !confirmed {
-                    return Err(Error::JoinRefused(
-                        ployz_core::authority::AuthorityRefusal::Mismatch {
-                            field: "a join confirmation",
-                        },
-                    ));
+        let fresh = match self.enter_join(request.machine_id, |stored| {
+            Ok(
+                ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
+                    == stored.approval.open().map_err(Error::JoinRefused)?.machine
+                    && request
+                        .join_approval
+                        .as_ref()
+                        .is_none_or(|approval| approval == &stored.approval),
+            )
+        })? {
+            join_approval::Entered::Fresh(fresh) => fresh,
+            join_approval::Entered::Replayed(stored) => {
+                let restart_approval::JoinReply::Register(registration) = stored.reply else {
+                    return Err(Error::JoinConsumed(request.machine_id));
+                };
+                if let Some(confirmation) = &request.join_confirmation {
+                    let confirmed = SealingKey::load(self.owner.data_dir())
+                        .map_err(Error::JoinRecord)?
+                        .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
+                    if !confirmed {
+                        return Err(Error::JoinRefused(
+                            ployz_core::authority::AuthorityRefusal::Mismatch {
+                                field: "a join confirmation",
+                            },
+                        ));
+                    }
+                    publication
+                        .register(registration.assigned_machine.clone())
+                        .await?;
                 }
-                publication
-                    .register(registration.assigned_machine.clone())
-                    .await?;
+                return Ok(*registration);
             }
-            return Ok(*registration);
-        }
+        };
         let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
         if snapshot.machines.iter().any(|peer| {
             let other = ipnet::Ipv4Net::from(peer.subnet);
@@ -1096,6 +1099,7 @@ impl LocalMachine {
             ));
         }
         let approval = self.admit_join(
+            &fresh,
             &assignment.machine,
             snapshot.network,
             request.join_approval,
@@ -1115,10 +1119,13 @@ impl LocalMachine {
             self.record().devices().collect(),
         );
         registration.recipient = self.join_recipient(&registration.assigned_machine.public_key)?;
-        self.consume_join(restart_approval::JoinResult {
-            approval,
-            reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
-        })?;
+        self.consume_join(
+            fresh,
+            restart_approval::JoinResult {
+                approval,
+                reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
+            },
+        )?;
         Ok(registration)
     }
 

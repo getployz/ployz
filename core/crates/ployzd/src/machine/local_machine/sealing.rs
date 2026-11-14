@@ -20,6 +20,7 @@ use ployz_core::{
 use thiserror::Error as ThisError;
 
 use super::LocalMachine;
+use super::join_approval::Entered;
 use crate::corrosion::ClusterSealing;
 use crate::sealing_key::{KeyFile, OpenError, SealingKey};
 
@@ -177,19 +178,20 @@ impl LocalMachine {
                 },
             ));
         }
-        if let Some(stored) = self.approvals.join_result(request.machine)? {
-            if stored.approval != *approval {
-                return Err(super::Error::JoinConsumed(request.machine));
-            }
-            return match stored.reply {
-                super::restart_approval::JoinReply::Share(sealed) => {
-                    Ok(SealingKeyShared { sealed })
-                }
-                super::restart_approval::JoinReply::Register(_) => {
-                    Err(super::Error::JoinConsumed(request.machine))
+        let fresh =
+            match self.enter_join(request.machine, |stored| Ok(stored.approval == *approval))? {
+                Entered::Fresh(fresh) => fresh,
+                Entered::Replayed(stored) => {
+                    return match stored.reply {
+                        super::restart_approval::JoinReply::Share(sealed) => {
+                            Ok(SealingKeyShared { sealed })
+                        }
+                        super::restart_approval::JoinReply::Register(_) => {
+                            Err(super::Error::JoinConsumed(request.machine))
+                        }
+                    };
                 }
             };
-        }
         let network = super::published_network(&record, self.replicated()?).await?;
         self.verify_join(
             approval,
@@ -197,10 +199,13 @@ impl LocalMachine {
             network,
         )?;
         let sealed = key.seal_from(record.private_key(), &request.public_key)?;
-        self.consume_join(super::restart_approval::JoinResult {
-            approval: approval.clone(),
-            reply: super::restart_approval::JoinReply::Share(sealed.clone()),
-        })?;
+        self.consume_join(
+            fresh,
+            super::restart_approval::JoinResult {
+                approval: approval.clone(),
+                reply: super::restart_approval::JoinReply::Share(sealed.clone()),
+            },
+        )?;
         tracing::info!(
             machine = %record.id(),
             recipient = %request.machine,
