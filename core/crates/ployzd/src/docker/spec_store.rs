@@ -1219,14 +1219,16 @@ mod tests {
         let machine = machine();
         let namespace = Namespace::parse("app").unwrap();
         let mut ids = Vec::new();
-        for _ in 0..2 {
+        for copy in 0..2 {
             let spec = spec_with_sources(Vec::new());
-            let request = container_request(
+            let key = format!("copy-{copy}");
+            let mut request = container_request(
                 ContainerKind::ServiceContainer,
                 &namespace,
                 &spec,
                 std::future::ready(None),
             );
+            request.creation_key = &key;
             ids.push(
                 runtime
                     .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
@@ -1315,7 +1317,7 @@ mod tests {
             &spec,
             std::future::ready(None),
         );
-        request.creation_key = Some("restore-1");
+        request.creation_key = "restore-1";
         let id = runtime
             .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
             .await
@@ -1403,7 +1405,7 @@ mod tests {
             &copy.spec,
             std::future::ready(None),
         );
-        request.creation_key = Some("restore-1");
+        request.creation_key = "restore-1";
 
         let resent = copy
             .runtime
@@ -1484,7 +1486,7 @@ mod tests {
             &copy.spec,
             std::future::ready(None),
         );
-        request.creation_key = Some("restore-1");
+        request.creation_key = "restore-1";
 
         let resent = copy
             .runtime
@@ -1559,7 +1561,7 @@ mod tests {
             &copy.spec,
             std::future::ready(None),
         );
-        request.creation_key = Some("restore-1");
+        request.creation_key = "restore-1";
         let replacement = copy
             .runtime
             .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
