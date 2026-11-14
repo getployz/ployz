@@ -7,8 +7,8 @@
 use std::io;
 
 use ployz_core::{
-    EnrollForRecoveryRequest, Enrolled, LocalMachinePhase, RecoverSealingKeyRequest, RecoveryCode,
-    SealingKeyBackup, SealingKeyRecovered, SealingKeyRole, SealingKeyWrapped, SealingPublicKey,
+    EnrollForRecoveryRequest, Enrolled, RecoverSealingKeyRequest, RecoveryCode, SealingKeyBackup,
+    SealingKeyRecovered, SealingKeyRole, SealingKeyWrapped, SealingPublicKey,
     WrapSealingKeyRequest,
     authority::{AuthorityRefusal, SealingRotation, Signed, Timestamp, rotation},
 };
@@ -63,9 +63,10 @@ impl LocalMachine {
         &self,
         EnrollForRecoveryRequest { enroll, recovery }: EnrollForRecoveryRequest,
     ) -> Result<Enrolled, super::Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.enroll_admitted(enroll, Some(recovery)).await })
-            .await
+        self.finish_mutation(move |local| async move {
+            local.enroll_admitted(enroll, Some(recovery)).await
+        })
+        .await
     }
 
     /// Wrap this Machine's Sealing Key under the caller's recovery code.
@@ -140,8 +141,7 @@ impl LocalMachine {
         if cloud_routed {
             return Err(Error::CloudRouted.into());
         }
-        let local = self.clone();
-        self.finish_mutation(async move { local.recover_admitted(request).await })
+        self.finish_mutation(move |local| async move { local.recover_admitted(request).await })
             .await
     }
 
@@ -168,9 +168,7 @@ impl LocalMachine {
             return self.recover_recipient(&code, backup, &rotation);
         }
         let record = self.record();
-        if record.phase() != LocalMachinePhase::Participating {
-            return Err(super::Error::NotParticipating);
-        }
+        record.require_participating()?;
         let replicated = self.replicated()?;
         let expected = match replicated.cluster_sealing(record.recovery_seed()).await? {
             ClusterSealing::Published { key: published, .. } => published,
@@ -234,9 +232,7 @@ impl LocalMachine {
         signed: &Signed<SealingRotation>,
     ) -> Result<SealingKeyRecovered, super::Error> {
         let record = self.record();
-        if record.phase() != LocalMachinePhase::Participating {
-            return Err(super::Error::NotParticipating);
-        }
+        record.require_participating()?;
         let data_dir = self.owner.data_dir();
         let identity = SealingKey::load(data_dir)
             .map_err(Error::Unreadable)?

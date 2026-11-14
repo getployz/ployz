@@ -20,8 +20,7 @@ impl LocalMachine {
         request: SetPushTargetRequest,
     ) -> Result<PushTargetSet, Error> {
         let url = request.url.map(admit).transpose()?;
-        let local = self.clone();
-        self.finish_mutation(async move {
+        self.finish_mutation(move |local| async move {
             local
                 .owner
                 .mutate(move |store| {

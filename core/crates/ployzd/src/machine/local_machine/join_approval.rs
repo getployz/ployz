@@ -112,8 +112,7 @@ impl LocalMachine {
         &self,
         request: ApproveJoinRequest,
     ) -> Result<JoinApproved, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
+        self.finish_mutation(move |local| async move {
             let body = request.approval.open().map_err(Error::JoinRefused)?;
             local.verify_join(&request.approval, &body.machine, body.network)?;
             let mut joins = local.read_joins()?;

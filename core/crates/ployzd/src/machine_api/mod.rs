@@ -270,9 +270,10 @@ impl Service<http::Request<Body>> for MachineApi {
                 return Ok(refused);
             }
             if request.uri().path() == op::SetManagementClient::PATH {
-                if let Err(error) =
-                    crate::machine::LocalMachine::require_slot_authority(Some(remote), &record)
-                {
+                if let Err(error) = crate::machine::LocalMachine::require_slot_authority(
+                    crate::machine::Caller::Management(remote),
+                    &record,
+                ) {
                     return Ok(ployz_core::rpc::caused_status(
                         tonic::Code::PermissionDenied,
                         &error,

@@ -5,6 +5,7 @@
 //! ineligible or unknown. Starting, stopping and removing existing Containers stay
 //! available, and editing Machine Labels evicts nothing.
 
+use crate::machine::has_cluster_identity;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -99,14 +100,10 @@ impl LocalMachine {
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::RawVolumeSource;
-        let local = self.clone();
-        self.finish_mutation(async move {
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        self.finish_mutation(move |local| async move {
+            let containers = local.docker()?;
             let record = local.record();
-            if !matches!(
-                record.phase(),
-                LocalMachinePhase::Joining | LocalMachinePhase::Participating
-            ) {
+            if !record.has_cluster_identity() {
                 return Err(Error::NotParticipating);
             }
             let machine = record.machine().ok_or(Error::NotParticipating)?;
@@ -237,8 +234,8 @@ impl LocalMachine {
         deployment_id: Option<ployz_core::DeploymentLogId>,
         registry_auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
-        let (local, namespace, spec) = (self.clone(), namespace.clone(), spec.clone());
-        self.finish_mutation(async move {
+        let (namespace, spec) = (namespace.clone(), spec.clone());
+        self.finish_mutation(move |local| async move {
             local
                 .create_container_admitted(
                     kind,
@@ -262,14 +259,8 @@ impl LocalMachine {
     /// Returns when Docker is unavailable, admission is busy, or Docker cannot start the
     /// container.
     pub(crate) async fn start_container(&self, container_id: ContainerId) -> Result<(), Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
-                .start(&container_id)
-                .await?;
+        self.finish_mutation(move |local| async move {
+            local.docker()?.start(&container_id).await?;
             Ok(())
         })
         .await
@@ -290,9 +281,8 @@ impl LocalMachine {
         name: DockerVolumeName,
         r#gen: VolumeGen,
     ) -> Result<Result<(), VolumeGen>, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        self.finish_mutation(move |local| async move {
+            let containers = local.docker()?;
             if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
                 return Ok(Err(floor));
             }
@@ -338,12 +328,9 @@ impl LocalMachine {
         remove_volumes: bool,
         force: bool,
     ) -> Result<(), Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
+        self.finish_mutation(move |local| async move {
             local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
+                .docker()?
                 .remove(&container_id, remove_volumes, force)
                 .await?;
             Ok(())
@@ -382,7 +369,7 @@ impl LocalMachine {
         drain: Drain,
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, VolumeGen>, Error> {
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let withdraw = || async move { Ok(Ok(containers.withdraw(*container))) };
         let admit = || async move {
             let Some((name, r#gen)) = fence else {
@@ -421,7 +408,7 @@ impl LocalMachine {
         drain: Drain,
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, ContainerRefusal>, Error> {
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let record = target == RotationTarget::Stopped;
         let target = &target;
         let withdraw = || async move {
@@ -475,7 +462,7 @@ impl LocalMachine {
         Fut: std::future::Future<Output = Result<Result<G, R>, Error>>,
     {
         let _ = installation;
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let machine_id = self.record().id();
         let observed = containers.inspect_managed(container, &machine_id).await?;
         if !is_running(&observed.runtime) {
@@ -586,9 +573,8 @@ impl LocalMachine {
         Z: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
     {
-        let local = self.clone();
-        self.finish_installed(move |installation| async move {
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        self.finish_installed(move |local, installation| async move {
+            let containers = local.docker()?;
             let stop = StopOptions::default();
             let holders = containers.volume_holder_ids(&name).await?;
             let machine_id = local.record().id();
@@ -635,7 +621,7 @@ impl LocalMachine {
         &self,
         name: &DockerVolumeName,
     ) -> Result<bool, Error> {
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let machine_id = self.record().id();
         for holder in containers.volume_holder_ids(name).await? {
             match containers.inspect_managed(&holder, &machine_id).await {
@@ -658,14 +644,8 @@ impl LocalMachine {
         name: DockerVolumeName,
         force: bool,
     ) -> Result<VolumeRemoved, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
-                .remove_volume(&name, force)
-                .await?;
+        self.finish_mutation(move |local| async move {
+            local.docker()?.remove_volume(&name, force).await?;
             Ok(VolumeRemoved {})
         })
         .await
@@ -682,14 +662,8 @@ impl LocalMachine {
         &self,
         request: PruneImagesRequest,
     ) -> Result<ImagesRemoved, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            Ok(local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
-                .prune_images(&request.repositories)
-                .await?)
+        self.finish_mutation(move |local| async move {
+            Ok(local.docker()?.prune_images(&request.repositories).await?)
         })
         .await
     }
@@ -730,13 +704,10 @@ impl LocalMachine {
     ///
     /// Returns when Docker is unavailable, admission is busy, or the pull fails.
     pub(crate) async fn pull_image(&self, request: PullImageRequest) -> Result<ImagePulled, Error> {
-        let local = self.clone();
         let shared = self.owner.admission_lock().read_owned().await;
-        self.finish_admitted(shared, async move {
+        self.finish_admitted(shared, move |local| async move {
             let exposed_ports = local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
+                .docker()?
                 .pull_image(
                     &request.image,
                     request.policy,
@@ -758,10 +729,9 @@ impl LocalMachine {
         &self,
         request: PullImageFromMachineRequest,
     ) -> Result<ImagePulled, Error> {
-        let local = self.clone();
         let shared = self.owner.admission_lock().read_owned().await;
-        self.finish_admitted(shared, async move {
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        self.finish_admitted(shared, move |local| async move {
+            let containers = local.docker()?;
             if let Err(error) = crate::docker::pull_from_ingest(
                 &containers.local_docker(),
                 &request.pull,
@@ -790,15 +760,9 @@ impl LocalMachine {
         container_id: ContainerId,
         spec: ResolvedServiceSpec,
     ) -> Result<ContainerLimitsUpdated, Error> {
-        let local = self.clone();
         let shared = self.owner.admission_lock().read_owned().await;
-        self.finish_admitted(shared, async move {
-            Ok(local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
-                .update_limits(&container_id, &spec)
-                .await?)
+        self.finish_admitted(shared, move |local| async move {
+            Ok(local.docker()?.update_limits(&container_id, &spec).await?)
         })
         .await
     }
@@ -934,10 +898,7 @@ impl LocalMachine {
             });
         }
         let record = self.record();
-        let participating = matches!(
-            record.phase(),
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating
-        );
+        let participating = record.has_cluster_identity();
         let Some(machine) = record.machine().filter(|_| participating) else {
             return Ok(EnsuredContainer::Refused {
                 now: self.container_now(&locator).await?,
@@ -1003,7 +964,7 @@ impl LocalMachine {
         let identity = match want_locator(want) {
             ContainerLocator::Key(slot) => QualifiedService::new(slot.namespace, slot.service),
             ContainerLocator::Id(id) => {
-                let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                let containers = self.docker()?;
                 match containers.inspect_managed(&id, &self.record().id()).await {
                     Ok(observed) => observed.identity(),
                     Err(_) => return Ok(false),
@@ -1023,7 +984,7 @@ impl LocalMachine {
         // never finds the Container it just started gone under it. The work is detached
         // with the lock, so a caller that stops waiting cannot free the lock while a
         // stop it began still runs.
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let doors = containers.door_lifecycle().await;
         let local = self.clone();
         tokio::spawn(async move {
@@ -1079,7 +1040,7 @@ impl LocalMachine {
                 .or_default() += 1;
             self.pause_for_test(EnsurePausePoint::BeforeSettle).await;
         }
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let machine_id = self.record().id();
         let healthcheck = spec.container.healthcheck.as_ref();
         let checked = matches!(
@@ -1183,7 +1144,7 @@ impl LocalMachine {
         if settled_by != *deploy {
             return Ok(false);
         }
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let details = containers
             .inspect_managed_details(container_id, &self.record().id())
             .await?;
@@ -1258,8 +1219,7 @@ impl LocalMachine {
                 }
             },
             ContainerStep::Stop { id, drain, stop } => {
-                let local = self.clone();
-                self.finish_installed(move |installation| async move {
+                self.finish_installed(move |local, installation| async move {
                     Ok(local
                         .stop_out_of_rotation(
                             &installation,
@@ -1274,9 +1234,8 @@ impl LocalMachine {
                 .await?
             }
             ContainerStep::Hold(id) => {
-                let local = self.clone();
-                self.finish_mutation(async move {
-                    let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                self.finish_mutation(move |local| async move {
+                    let containers = local.docker()?;
                     let turn =
                         match leave_rotation(containers, &id, &RotationTarget::Stopped).await? {
                             Ok(turn) => turn,
@@ -1293,8 +1252,7 @@ impl LocalMachine {
                 drain,
                 anonymous_volumes,
             } => {
-                let local = self.clone();
-                self.finish_installed(move |installation| async move {
+                self.finish_installed(move |local, installation| async move {
                     match local
                         .stop_out_of_rotation(
                             &installation,
@@ -1311,7 +1269,7 @@ impl LocalMachine {
                         Err(error) => return Err(error),
                     }
                     let _turn = local.exclusive_turn().await?;
-                    let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                    let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(
                             containers,
@@ -1324,9 +1282,8 @@ impl LocalMachine {
                 .await?
             }
             ContainerStep::Remove(id, anonymous_volumes) => {
-                let local = self.clone();
-                self.finish_mutation(async move {
-                    let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                self.finish_mutation(move |local| async move {
+                    let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(
                             containers,
@@ -1354,7 +1311,7 @@ impl LocalMachine {
         &self,
         locator: &ContainerLocator,
     ) -> Result<ContainerNow, Error> {
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let machine_id = self.record().id();
         let observed = match locator {
             ContainerLocator::Id(id) => match containers.inspect_managed(id, &machine_id).await {
@@ -1379,9 +1336,8 @@ impl LocalMachine {
         new: NewContainer,
         fence: Option<StartFence>,
     ) -> Result<Option<ContainerRefusal>, Error> {
-        let local = self.clone();
         let outcome = self
-            .finish_mutation(async move {
+            .finish_mutation(move |local| async move {
                 let created = local
                     .create_container_admitted(
                         new.slot.kind,
@@ -1401,7 +1357,7 @@ impl LocalMachine {
                     Ok(created) => created,
                     Err(error) => return create_refusal(error).map(Some),
                 };
-                let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                let containers = local.docker()?;
                 // A racing create adopted a hook another request already started: never run it twice.
                 if new.slot.kind == ContainerKind::PreDeployHook {
                     let adopted = containers
@@ -1444,12 +1400,9 @@ impl LocalMachine {
         r#gen: Gen,
         image: ImagePull<'_>,
     ) -> Result<ContainerCreated, Error> {
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let record = self.record();
-        if !matches!(
-            record.phase(),
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating
-        ) {
+        if !record.has_cluster_identity() {
             return Err(Error::NotParticipating);
         }
         let machine = record.machine().ok_or(Error::NotParticipating)?;
@@ -1559,12 +1512,7 @@ fn plan_container(
         ContainerNow::Absent { .. } => None,
     };
     match want {
-        ContainerWant::Running { .. }
-            if !matches!(
-                phase,
-                LocalMachinePhase::Joining | LocalMachinePhase::Participating
-            ) =>
-        {
+        ContainerWant::Running { .. } if !has_cluster_identity(phase) => {
             ContainerStep::Refuse(refuse(
                 ContainerRefusalReason::NotParticipating,
                 "Machine is not participating",

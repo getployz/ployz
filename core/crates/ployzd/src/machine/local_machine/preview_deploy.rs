@@ -329,7 +329,7 @@ impl LocalMachine {
     /// Whether `service` has no Service Container in `namespace` on this Machine, so its
     /// Hook Container may still run the Setup Commands: none deployed here yet.
     async fn first_in(&self, namespace: &Namespace, service: &ServiceName) -> Result<bool, Error> {
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let copies = containers
             .service_copies(&QualifiedService::new(namespace.clone(), service.clone()))
             .await?;

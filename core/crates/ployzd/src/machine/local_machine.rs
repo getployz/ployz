@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError,
+    has_cluster_identity,
     store::{Installation, PreparedReset, Rediscovered},
 };
 
@@ -43,16 +44,38 @@ use crate::{
 const REDISCOVERY_RETRY_MIN: Duration = Duration::from_millis(250);
 const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 
+/// Where a call to this Machine came from, as its Machine API decided at the edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Caller {
+    /// This Server's own local socket: its terminal, or SSH.
+    LocalSocket,
+    /// An authenticated management connection: Cloud's or a Device's.
+    Management(ClientKey),
+    /// A call routed here over the mesh, which carries no key of its own.
+    Routed,
+}
+
+/// This Machine inside work admitted to run, which no one else can build: `finish_*` hands
+/// one to the work after the call passed admission, owning the handle so the work outlives
+/// its RPC.
+pub(crate) struct Admission(LocalMachine);
+
+impl std::ops::Deref for Admission {
+    type Target = LocalMachine;
+
+    fn deref(&self) -> &LocalMachine {
+        &self.0
+    }
+}
+
 /// Live Observation and membership operations for this Machine.
 #[derive(Clone)]
 pub struct LocalMachine {
     owner: RecordOwner,
-    management_client: Option<ClientKey>,
+    caller: Caller,
     /// The Operator's teardown this call was admitted under, which each admitted turn
     /// checks again before its effect.
     teardown: Option<teardown::HeldTeardown>,
-    /// Whether this call came over this Server's local socket, rather than the mesh.
-    local_socket: bool,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
@@ -402,9 +425,8 @@ impl LocalMachine {
         Self {
             approvals: owner.restart_approvals(),
             owner,
-            management_client: None,
+            caller: Caller::Routed,
             teardown: None,
-            local_socket: false,
             cluster: None,
             containers: None,
             plugin: crate::storage::Plugin::default(),
@@ -461,7 +483,7 @@ impl LocalMachine {
     /// Bind subsequent mutation admission to this authenticated management client.
     #[must_use]
     pub(crate) fn with_management_client(mut self, remote: ClientKey) -> Self {
-        self.management_client = Some(remote);
+        self.caller = Caller::Management(remote);
         self
     }
 
@@ -483,7 +505,7 @@ impl LocalMachine {
     /// Mark subsequent calls as from this Server's local socket: its terminal, or SSH.
     #[must_use]
     pub(crate) fn on_local_socket(mut self) -> Self {
-        self.local_socket = true;
+        self.caller = Caller::LocalSocket;
         self
     }
 
@@ -510,6 +532,11 @@ impl LocalMachine {
         self.containers.as_ref()
     }
 
+    /// The Docker this Machine runs containers on, which a Machine without it refuses.
+    pub(crate) fn docker(&self) -> Result<&ContainerRuntime, Error> {
+        self.containers.as_ref().ok_or(Error::DockerUnavailable)
+    }
+
     /// The persisted Local Machine record as last published by its owner.
     #[must_use]
     pub fn record(&self) -> Arc<LocalMachineRecord> {
@@ -523,7 +550,7 @@ impl LocalMachine {
     }
 
     pub(crate) fn require_management_access(&self) -> Result<(), Error> {
-        if let Some(remote) = self.management_client
+        if let Caller::Management(remote) = self.caller
             && !self.record().accepts_management_client(&remote)
         {
             return Err(Error::ManagementRevoked);
@@ -534,10 +561,10 @@ impl LocalMachine {
     /// Refuse a slot change from any management client other than Cloud's.
     /// Local-socket callers carry no client key and keep full authority.
     pub(crate) fn require_slot_authority(
-        client: Option<ClientKey>,
+        caller: Caller,
         record: &LocalMachineRecord,
     ) -> Result<(), Error> {
-        let Some(remote) = client else {
+        let Caller::Management(remote) = caller else {
             return Ok(());
         };
         let label = record.accepted_label(&remote);
@@ -559,10 +586,11 @@ impl LocalMachine {
     }
 
     /// Run `work` alone: no other admitted work runs on this Machine meanwhile.
-    async fn finish_mutation<T, F>(&self, work: F) -> Result<T, Error>
+    async fn finish_mutation<T, F, Fut>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
-        F: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+        F: FnOnce(Admission) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
     {
         let exclusive = self.owner.admission_lock().write_owned().await;
         self.finish_admitted(exclusive, work).await
@@ -571,19 +599,21 @@ impl LocalMachine {
     /// Run `work` holding `turn`, an exclusive or shared admission guard. Admitted
     /// work is detached from its RPC: a caller that stops waiting does not abandon it
     /// halfway.
-    async fn finish_admitted<T, F, G>(&self, turn: G, work: F) -> Result<T, Error>
+    async fn finish_admitted<T, F, Fut, G>(&self, turn: G, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
-        F: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+        F: FnOnce(Admission) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
         G: Send + 'static,
     {
         let installation = self.admit_installation()?;
         // Under the turn: a trusted key removed or enforcement turned on while this waited
         // has taken its own turn before this one.
         self.recheck_teardown()?;
+        let admission = Admission(self.clone());
         tokio::spawn(async move {
-            let _admission = (turn, installation);
-            work.await
+            let _held = (turn, installation);
+            work(admission).await
         })
         .await?
     }
@@ -604,11 +634,12 @@ impl LocalMachine {
     async fn finish_installed<T, F, Fut>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
-        F: FnOnce(crate::mutation::MutationGuard) -> Fut + Send + 'static,
+        F: FnOnce(Admission, crate::mutation::MutationGuard) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
     {
         let installation = self.admit_installation()?;
-        tokio::spawn(work(installation)).await?
+        let admission = Admission(self.clone());
+        tokio::spawn(work(admission, installation)).await?
     }
 
     #[cfg(test)]
@@ -617,7 +648,7 @@ impl LocalMachine {
         started: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
     ) -> Result<(), Error> {
-        self.finish_mutation(async move {
+        self.finish_mutation(move |_| async move {
             started.notify_one();
             release.notified().await;
             Ok(())
@@ -753,13 +784,13 @@ impl LocalMachine {
         let telemetry = match request.telemetry {
             ployz_core::InspectTelemetry::None => None,
             ployz_core::InspectTelemetry::BridgeCapacity => {
-                let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                let containers = self.docker()?;
                 Some(ployz_core::TelemetryObservation::BridgeCapacity {
                     bridge: containers.bridge_capacity().await?,
                 })
             }
             ployz_core::InspectTelemetry::Full => {
-                let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                let containers = self.docker()?;
                 let (host, bridge) =
                     tokio::try_join!(containers.telemetry(), containers.bridge_capacity())?;
                 Some(ployz_core::TelemetryObservation::Full { host, bridge })
@@ -805,10 +836,7 @@ impl LocalMachine {
     /// alone: what a confirmation can carry without a replicated read. A key file that holds
     /// no key, or that could not be read, names none.
     pub(crate) fn held_sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
-        if !matches!(
-            phase,
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating
-        ) {
+        if !has_cluster_identity(&phase) {
             return None;
         }
         SealingKey::observe(self.owner.data_dir())
@@ -822,10 +850,7 @@ impl LocalMachine {
         &self,
         phase: LocalMachinePhase,
     ) -> Option<ployz_core::authority::AttestKey> {
-        if !matches!(
-            phase,
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating
-        ) {
+        if !has_cluster_identity(&phase) {
             return None;
         }
         crate::sealing_key::ClusterKeys::load(self.owner.data_dir())
@@ -838,10 +863,7 @@ impl LocalMachine {
     /// awaits as Generate reads it, and otherwise that it needs access. `None` when the
     /// file or the Cluster's Sealing could not be read.
     async fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
-        if !matches!(
-            phase,
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating
-        ) {
+        if !has_cluster_identity(&phase) {
             return None;
         }
         SealingKey::observe(self.owner.data_dir())?
@@ -930,10 +952,9 @@ impl LocalMachine {
         let discovered = discover_network(public_ip).await?;
         let mut retry = REDISCOVERY_RETRY_MIN;
         loop {
-            let local = self.clone();
             let discovered = discovered.clone();
             match self
-                .finish_mutation(async move {
+                .finish_mutation(move |local| async move {
                     Ok(local
                         .owner
                         .mutate(move |store| store.rediscover(discovered))
@@ -960,8 +981,7 @@ impl LocalMachine {
     /// Returns when mutation admission is busy, the record owner has stopped, the
     /// request is invalid, or storage departure fails.
     pub async fn enroll(&self, request: EnrollRequest) -> Result<Enrolled, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.enroll_admitted(request, None).await })
+        self.finish_mutation(move |local| async move { local.enroll_admitted(request, None).await })
             .await
     }
 
@@ -1029,11 +1049,8 @@ impl LocalMachine {
     /// Rejects absent assignments, invalid assignments, unavailable storage, or
     /// a Cluster network not yet published.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            if local.record().phase() != LocalMachinePhase::Participating {
-                return Err(Error::NotParticipating);
-            }
+        self.finish_mutation(move |local| async move {
+            local.record().require_participating()?;
             if request.assigned_subnet.is_none() {
                 return Err(Error::MissingAssignment);
             }
@@ -1156,9 +1173,7 @@ impl LocalMachine {
     /// replicated I/O fails.
     pub async fn list_machines(&self) -> Result<MachineList, Error> {
         let local = self.record();
-        if local.phase() != LocalMachinePhase::Participating {
-            return Err(Error::NotParticipating);
-        }
+        local.require_participating()?;
         let replicated = self.replicated()?;
         let network = published_network(&local, replicated).await?;
         let machines = replicated.machines().await?.observations;
@@ -1227,7 +1242,7 @@ impl LocalMachine {
             })
             .await?;
         }
-        self.finish_mutation(async move { local.update_admitted(request).await })
+        self.finish_mutation(move |local| async move { local.update_admitted(request).await })
             .await
     }
 
@@ -1256,8 +1271,7 @@ impl LocalMachine {
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
     /// missing and [`Error::Cluster`] when the replicated delete fails.
     pub async fn forget(&self, request: ForgetRequest) -> Result<Forgotten, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
+        self.finish_mutation(move |local| async move {
             let now = local.record().now();
             if now.id == request.machine_id {
                 return Ok(Forgotten::Refused {
@@ -1327,8 +1341,7 @@ impl LocalMachine {
             Ok(_) => {}
             Err(error) => return Err(error.into()),
         }
-        let local = self.clone();
-        self.finish_mutation(async move { local.leave_admitted(exit).await })
+        self.finish_mutation(move |local| async move { local.leave_admitted(exit).await })
             .await
     }
 

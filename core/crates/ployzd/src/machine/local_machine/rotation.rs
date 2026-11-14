@@ -252,9 +252,8 @@ impl LocalMachine {
         run: Option<DeploymentLogId>,
         expect: Option<CopyRotation>,
     ) -> Result<Option<ContainerRefusal>, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        self.finish_mutation(move |local| async move {
+            let containers = local.docker()?;
             start_fenced(containers, &id, run, expect.as_ref()).await
         })
         .await
@@ -275,12 +274,11 @@ impl LocalMachine {
             .expect("only an existing copy reaches the rotation write");
         let locator = ContainerLocator::Id(id);
         let reads = self.guard_reads(&copy, &want).await?;
-        let local = self.clone();
         let written = self
             .finish_mutation({
                 let locator = locator.clone();
-                async move {
-                    let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                move |local| async move {
+                    let containers = local.docker()?;
                     // Only admitted work takes a copy away from In, so a copy read In here is
                     // In at the turn. Adoption can give In to a copy with no record without
                     // admission; `check` refuses if the turn finds In where this read didn't.
@@ -427,7 +425,7 @@ impl LocalMachine {
         confirmed: &BTreeMap<ContainerId, ResolvedServiceSpec>,
     ) -> Result<Option<ContainerRefusal>, Error> {
         let machine_id = self.record().id();
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?;
         let published = published_spec(copy.spec.clone());
         let mut newer = observed
             .into_iter()
@@ -647,7 +645,7 @@ impl LocalMachine {
         let recorded = if local.is_empty() {
             BTreeMap::new()
         } else {
-            let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let containers = self.docker()?;
             containers.rotations(local).await?
         };
         Ok(others
