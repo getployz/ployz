@@ -397,7 +397,7 @@ async fn enroll_current_identity(
                     runtime: Default::default(),
                     capabilities: Vec::new(),
                 };
-                if super::device::sign_waiting_join(&mut entry, &config, &expected, true).await? {
+                if super::device::sign_waiting_join(&mut entry, &config, &expected, false).await? {
                     cloud_enroll::enroll(command, url, token, &identity, progress).await?
                 } else {
                     return Err(error.into());

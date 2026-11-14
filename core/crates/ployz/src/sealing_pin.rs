@@ -118,6 +118,19 @@ impl Pins {
         Ok(replaced)
     }
 
+    /// Whether this computer pinned `cluster` for any Organization.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file can't be read or isn't a pin file.
+    pub(crate) fn knows(&self, cluster: SealingPublicKey) -> Result<bool, PinError> {
+        Ok(self
+            .load()?
+            .organizations
+            .values()
+            .any(|pin| pin.public_key == cluster))
+    }
+
     /// The recipient key a pin of the Cluster whose identity is `cluster` names, if any.
     ///
     /// # Errors

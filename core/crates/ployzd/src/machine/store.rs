@@ -80,15 +80,16 @@ type Enrolled = (
 );
 
 /// The recipient key in `recipient`, when its rotation is for the join's Cluster and signed by
-/// a Device the verified join approval `body` names, and its sealed key opens to the key the
-/// rotation names. Anything else is refused: the joiner installs no recipient key and says so.
+/// a Device the joiner trusts, and its sealed key opens to the key the rotation names.
+/// Anything else is refused: the joiner installs no recipient key and says so.
 fn joined_recipient(
     recipient: &ployz_core::JoinRecipient,
     body: &ployz_core::authority::JoinApproval,
+    devices: &[DeviceKey],
     wireguard: &crate::network::WireGuardPrivateKey,
 ) -> Option<JoinedRecipient> {
     let trusted = ployz_core::authority::TrustedKeys {
-        devices: body.devices.clone(),
+        devices: devices.to_vec(),
         passkeys: Vec::new(),
     };
     let verified = ployz_core::authority::rotation::verify_for_join(
@@ -547,8 +548,8 @@ impl LocalMachineStore {
 
     /// A Member's enrollment, admitted only under an approved capsule: one that opens to this
     /// Machine and carries a join approval signed by a key in `pin`, or with no pin, by a
-    /// Device the approval lists. Only an unpinned join trusts the approval's passkeys.
-    /// Anything else is refused and the record stays as it was.
+    /// Device the approval lists. A pinned join trusts only the pinned Devices the approval
+    /// names, and no passkey. Anything else is refused and the record stays as it was.
     fn member(
         &self,
         registration: Registered,
@@ -589,16 +590,22 @@ impl LocalMachineStore {
             ));
         };
         let body = approval.open().map_err(StoreError::JoinRefused)?;
-        // A pinned join's body may come through Cloud under a Sealing Key of Cloud's own, so
-        // its passkeys aren't trusted. The install line already runs Cloud's script.
+        // A pinned join's body may come through Cloud, which can name a Device or passkey of
+        // its own beside the person's. The install line already runs Cloud's script.
         let carries_passkeys = pin.is_none();
-        let trusted = pin.map_or(body.devices, |pin| pin.devices);
+        let signers = pin.as_ref().map_or(body.devices, |pin| pin.devices.clone());
         let body = ployz_core::authority::join::verify_signature(
             &approval,
-            &trusted,
+            &signers,
             ployz_core::authority::Timestamp::now(),
         )
         .map_err(StoreError::JoinRefused)?;
+        let devices: Vec<_> = body
+            .devices
+            .iter()
+            .copied()
+            .filter(|device| pin.as_ref().is_none_or(|pin| pin.devices.contains(device)))
+            .collect();
         if body.machine != ployz_core::authority::join::JoinAllocation::from(&machine)
             || body.sealing_recipient != machine.public_key
             || sealing_key.as_ref().map(SealingKey::public_key) != Some(body.cluster)
@@ -608,6 +615,13 @@ impl LocalMachineStore {
             return Err(StoreError::JoinRefused(
                 ployz_core::authority::AuthorityRefusal::Mismatch {
                     field: "a joining Machine",
+                },
+            ));
+        }
+        if !devices.contains(&body.signer) {
+            return Err(StoreError::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Mismatch {
+                    field: "approved Devices",
                 },
             ));
         }
@@ -651,7 +665,12 @@ impl LocalMachineStore {
         }
         machine.join_approval = Some(approval);
         let joined = recipient.and_then(|recipient| {
-            joined_recipient(&recipient, &body, &self.record.wireguard_private_key)
+            joined_recipient(
+                &recipient,
+                &body,
+                &devices,
+                &self.record.wireguard_private_key,
+            )
         });
         machine.runtime = local_runtime(&self.data_dir);
         Ok((
@@ -662,7 +681,7 @@ impl LocalMachineStore {
             },
             sealing_key,
             ployz_core::authority::TrustedKeys {
-                devices: body.devices,
+                devices,
                 passkeys: approved_passkeys,
             },
             joined,
