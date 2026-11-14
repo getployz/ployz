@@ -119,7 +119,13 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                         assigned_subnet: Some(assigned.subnet),
                         ..assignment.request.clone()
                     },
-                    true,
+                    if entry_answers {
+                        crate::handlers::device::JoinEntry::Chosen {
+                            pins_its_devices: true,
+                        }
+                    } else {
+                        crate::handlers::device::JoinEntry::Relayed
+                    },
                 )
                 .await?
                 {

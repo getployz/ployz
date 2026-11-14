@@ -83,8 +83,8 @@ ployz device approve --join CODE
 ```
 
 The code carries 100 bits of the server's identity and key fingerprint. Check the name, subnet
-and endpoints the CLI shows before it signs. It also lists the passkeys the server will trust, if
-your cluster has any, and what a passkey can do. Then enroll the server again: choose **Enroll**
+and endpoints the CLI shows before it signs. It also lists the devices the server will trust, and
+the passkeys, if your cluster has any, with what a passkey can do. Then enroll the server again: choose **Enroll**
 for it in the dashboard, or run the same join command on the server again, with its token and
 options. A new admission needs an approval less than 15 minutes old. If the reply is lost,
 run the same command again to recover the stored capsule, even after the approval expires.
@@ -99,8 +99,22 @@ server that already joined; approve it there too. A server you add with `ployz s
 no passkeys from the approval, so approve each passkey there too. When you run
 `ployz server add` over SSH, the CLI also tells the new server which devices may sign that
 approval: your own, and with `--standalone`, those of the server it joins through. The new
-server refuses an approval signed by any other key. A join from the pasted line has no such
-list, so it trusts whichever devices the approval names.
+server refuses an approval signed by any other key, and trusts only the devices on that list that
+the approval also names. A join from the pasted line has no such list, so it trusts whichever
+devices the approval names.
+
+When `ployz server add` reaches your cluster through Ployz Cloud, the CLI signs the approval for
+this computer's device alone, so the new server trusts only that device. The CLI names the other
+devices it left out; approve each one on the new server afterwards with `ployz device approve`.
+It also signs only for a cluster whose key you pinned with `ployz device pin`, and otherwise stops
+before it signs anything:
+
+```text
+Server web-2 would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.
+```
+
+Run `ployz device pin --connect ssh://USER@SERVER` against one of your servers, then add the
+server again.
 
 Each server checks new servers against its own devices before it accepts them as members or
 WireGuard peers. The servers in the starting set you signed with `ployz device enforce` are
