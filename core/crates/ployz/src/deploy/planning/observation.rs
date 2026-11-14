@@ -431,4 +431,125 @@ mod tests {
             &std::collections::BTreeSet::from([machines[1].id])
         );
     }
+
+    /// Every way a Machine's Container listing goes missing, in one snapshot: what the
+    /// plan warns, which Machines it keeps as unobserved or dropping large packets, and
+    /// what the ingress repairs and the placement exclusion read of each.
+    #[test]
+    fn each_missing_listing_reads_the_same_everywhere_it_is_used() {
+        use crate::deploy::planning::ingress_repairs::servers;
+        use crate::deploy::{SlotAction, plan_ingress_repairs};
+
+        let dropped = Some(PathObservation {
+            mtu: 1420,
+            large_packets: LargePackets::Dropped,
+            lowered: false,
+        });
+        let silent = || {
+            RpcError::unanswered_target(
+                RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            )
+        };
+        let machines = ['1', '2', '3', '4', '5', '6']
+            .map(|hex| crate::global_fixtures::machine(hex, &format!("web-{hex}")));
+        let mut snapshot = servers(&machines, Vec::new());
+        snapshot.machines[1].path = dropped;
+        snapshot.machines[2].membership = MembershipObservation::Suspect;
+        snapshot.machines[3].membership = MembershipObservation::Down;
+        snapshot.container_failures = vec![
+            MachineFailure {
+                machine_id: machines[1].id,
+                error: silent(),
+            },
+            MachineFailure {
+                machine_id: machines[2].id,
+                error: silent(),
+            },
+            MachineFailure {
+                machine_id: machines[0].id,
+                error: RpcError::conflict("refused"),
+            },
+        ];
+        snapshot.container_omissions = vec![machines[3].id, machines[4].id];
+
+        let spec = crate::global_fixtures::requested(ployz_core::ServiceMode::Global);
+        let intent = ployz_core::DeployIntent::apply_all(
+            ployz_core::Namespace::parse("app").unwrap(),
+            [&spec],
+            ployz_core::PlanOptions::default(),
+        );
+        let plan = crate::deploy::plan_deploy(&intent, &snapshot).expect("a plan");
+
+        let container_warnings: Vec<String> = plan
+            .preview()
+            .warnings
+            .iter()
+            .filter(|warning| {
+                matches!(
+                    warning,
+                    DeployWarning::ObservationFailed {
+                        kind: ObservationKind::Container,
+                        ..
+                    } | DeployWarning::ObservationOmitted {
+                        kind: ObservationKind::Container,
+                        ..
+                    }
+                )
+            })
+            .map(|warning| format!("{warning:?}"))
+            .collect();
+        let named = |hex: char| machines[hex as usize - '1' as usize].id;
+        let failed = |hex: char, message: &str| {
+            format!(
+                "ObservationFailed {{ gap: Some(ObservationGap {{ machine_name: MachineName(\"web-{hex}\"), reason: Failed }}), kind: Container, machine_id: {:?}, machine_name: None, message: {message:?} }}",
+                named(hex)
+            )
+        };
+        let omitted = |hex: char| {
+            format!(
+                "ObservationOmitted {{ gap: None, kind: Container, machine_id: {:?} }}",
+                named(hex)
+            )
+        };
+        assert_eq!(
+            container_warnings,
+            [
+                failed(
+                    '2',
+                    "target Machine RPC timed out; large packets to web-2 are dropped on its mesh path from the Server this command entered by"
+                ),
+                failed('3', "target Machine RPC timed out"),
+                failed('1', "refused"),
+                omitted('4'),
+                omitted('5'),
+            ]
+        );
+
+        assert_eq!(
+            plan.dropped_large_packets(),
+            &std::collections::BTreeSet::from([named('2')])
+        );
+        assert!(snapshot.silent(&snapshot.machines[1]));
+        assert!(snapshot.silent(&snapshot.machines[2]));
+        assert!(!snapshot.silent(&snapshot.machines[0]));
+        assert!(!snapshot.silent(&snapshot.machines[4]));
+
+        let causes: Vec<(MachineId, String)> = plan_ingress_repairs(&snapshot)
+            .into_iter()
+            .filter_map(|repair| match repair.action {
+                SlotAction::Unchecked(cause) => Some((repair.machine_id, cause)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            causes,
+            [
+                (named('1'), "refused".to_owned()),
+                (named('2'), "target Machine RPC timed out".to_owned()),
+                (named('3'), "target Machine RPC timed out".to_owned()),
+                (named('5'), "no answer".to_owned()),
+            ]
+        );
+    }
 }
