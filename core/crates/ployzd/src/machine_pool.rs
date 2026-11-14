@@ -15,7 +15,6 @@ pub const UNCONFIRMED_DEVICE_POOL_MARKER: &str = "ployz-device\n";
 /// What a device Pool's marker file holds.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeviceMarker {
-    Absent,
     Unconfirmed,
     Confirmed,
     Unrecognized(String),
@@ -57,13 +56,12 @@ impl DevicePoolFiles {
     ///
     /// # Errors
     ///
-    /// Returns an error when the marker exists and cannot be read as text.
+    /// Returns an error when the marker is missing or cannot be read as text, as a plain read does.
     pub fn read(&self) -> io::Result<DeviceMarker> {
         match fs::read_to_string(&self.marker) {
             Ok(text) if text == CONFIRMED_DEVICE_POOL_MARKER => Ok(DeviceMarker::Confirmed),
             Ok(text) if text == UNCONFIRMED_DEVICE_POOL_MARKER => Ok(DeviceMarker::Unconfirmed),
             Ok(text) => Ok(DeviceMarker::Unrecognized(text)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(DeviceMarker::Absent),
             Err(error) => Err(error),
         }
     }
@@ -280,7 +278,7 @@ mod tests {
         assert_eq!(UNCONFIRMED_DEVICE_POOL_MARKER, "ployz-device\n");
         let root = tempfile::tempdir().unwrap();
         let files = DevicePoolFiles::new(root.path().join("machine-pool"));
-        assert_eq!(files.read().unwrap(), DeviceMarker::Absent);
+        assert_eq!(files.read().unwrap_err().kind(), io::ErrorKind::NotFound);
         for (text, expected) in [
             (CONFIRMED_DEVICE_POOL_MARKER, DeviceMarker::Confirmed),
             (UNCONFIRMED_DEVICE_POOL_MARKER, DeviceMarker::Unconfirmed),
@@ -310,7 +308,7 @@ mod tests {
         files.confirm_in_place().unwrap();
         assert_eq!(files.read().unwrap(), DeviceMarker::Confirmed);
         files.discard().unwrap();
-        assert_eq!(files.read().unwrap(), DeviceMarker::Absent);
+        assert_eq!(files.read().unwrap_err().kind(), io::ErrorKind::NotFound);
         assert_eq!(files.discard().unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 
