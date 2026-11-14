@@ -22,7 +22,7 @@ mod firewall;
 mod linux;
 mod path;
 
-pub use crate::docker::DOCKER_NETWORK_NAME;
+pub use crate::docker::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME};
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
 pub use firewall::{BridgeFence, Installed, Restored, apply_firewall_rules, fence_builder};

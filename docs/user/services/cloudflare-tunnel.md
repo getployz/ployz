@@ -92,6 +92,9 @@ agents. Approved while a switch the same way already runs, they say so and start
    Don't follow Cloudflare's install steps; Ployz runs the connector for you.
 2. Add a public hostname to the tunnel for each domain, with service `http://localhost:8480`.
    Point the hostname's DNS record at the tunnel; Cloudflare proxies it.
+   That's the only service the tunnel reaches. Ployz runs the connector on a network of its
+   own, so a hostname whose service names another address or port doesn't answer, and
+   `localhost:8480` serves only the domains your apps publish.
 3. Switch your servers to the tunnel, with the token on stdin:
 
 ```sh

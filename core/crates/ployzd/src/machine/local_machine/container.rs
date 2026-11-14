@@ -1795,7 +1795,11 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     let reason = match &error {
         Error::NotParticipating => ContainerRefusalReason::NotParticipating,
         Error::IngressProxyServiceSpec(_) => ContainerRefusalReason::InvalidIngress,
-        Error::Docker(Docker::IngressHolderNotRunning | Docker::UnrecognizedNetwork) => {
+        Error::Docker(
+            Docker::IngressHolderNotRunning
+            | Docker::TunnelOriginNotRunning
+            | Docker::UnrecognizedNetwork,
+        ) => {
             return Ok(ContainerRefusal {
                 reason: ContainerRefusalReason::InvalidIngress,
                 message: ployz_core::error_chain::inline(&error),

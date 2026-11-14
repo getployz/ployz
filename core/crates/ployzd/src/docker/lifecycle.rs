@@ -23,7 +23,7 @@ use ployz_core::MachineGateway;
 
 use crate::{
     docker_image::{ImagePull, prepare_image},
-    network::DOCKER_NETWORK_NAME,
+    network::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME},
 };
 
 use super::{
@@ -254,10 +254,19 @@ impl ContainerRuntime {
         let network = match spec.container.network {
             None => CreationNetwork::Bridge,
             Some(ServiceNetwork::IngressHolder) => CreationNetwork::Holder(
-                self.running_holder()
+                self.running_door(Door::Holder)
                     .await?
                     .ok_or(Error::IngressHolderNotRunning)?,
             ),
+            Some(ServiceNetwork::TunnelOrigin) => CreationNetwork::Holder(
+                self.running_door(Door::TunnelOrigin)
+                    .await?
+                    .ok_or(Error::TunnelOriginNotRunning)?,
+            ),
+            Some(ServiceNetwork::Tunnel) => {
+                self.docker.ensure_tunnel_network().await?;
+                CreationNetwork::Tunnel
+            }
             Some(ServiceNetwork::Unrecognized) => return Err(Error::UnrecognizedNetwork),
         };
         let mut body = create::container_create_body(
@@ -556,22 +565,12 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         inspected: &ContainerInspectResponse,
     ) -> Result<(), Error> {
-        if lost_ployz_network(inspected)
-            && let Err(error) = self
-                .docker
-                .join_bridge(
-                    container_id,
-                    inspected
-                        .config
-                        .as_ref()
-                        .and_then(|config| config.labels.as_ref())
-                        .is_some_and(super::takes_bridge_ipv6),
-                )
-                .await
+        if let Some(network) = lost_network(inspected)
+            && let Err(error) = self.rejoin(container_id, network, inspected).await
             // A concurrent start may have attached it first.
-            && lost_ployz_network(&self.ensure_managed(container_id).await?)
+            && lost_network(&self.ensure_managed(container_id).await?).is_some()
         {
-            return Err(docker_error(container_id, error));
+            return Err(error);
         }
         let result = self
             .docker
@@ -579,6 +578,38 @@ impl ContainerRuntime {
             .start_container(container_id.as_str(), None)
             .await;
         idempotent_lifecycle_result(container_id, result)
+    }
+
+    /// Attach a Container to the network a failed start took from it. The Tunnel
+    /// Origin's network is checked as at creation, so it never joins one the firewall
+    /// doesn't fence.
+    async fn rejoin(
+        &self,
+        container_id: &ContainerId,
+        network: &str,
+        inspected: &ContainerInspectResponse,
+    ) -> Result<(), Error> {
+        let joined = if network == DOCKER_NETWORK_NAME {
+            let ipv6 = inspected
+                .config
+                .as_ref()
+                .and_then(|config| config.labels.as_ref())
+                .is_some_and(super::takes_bridge_ipv6);
+            self.docker.join_bridge(container_id, ipv6).await
+        } else {
+            self.docker.ensure_tunnel_network().await?;
+            self.docker
+                .client
+                .connect_network(
+                    network,
+                    NetworkConnectRequest {
+                        container: container_id.to_string(),
+                        endpoint_config: None,
+                    },
+                )
+                .await
+        };
+        joined.map_err(|error| docker_error(container_id, error))
     }
 
     /// Carry out one Ingress door recovery, unless a request stopped its Container or
@@ -651,15 +682,15 @@ impl ContainerRuntime {
                 self.start_inspected(caddy, &inspected).await?;
                 Ok(true)
             }
-            IngressRecovery::RejoinCaddy { holder, caddy } => {
-                let holder_now = self.ensure_managed(holder).await?;
-                let caddy_now = self.ensure_managed(caddy).await?;
-                let stale = match (doors::netns_of(&holder_now), doors::netns_of(&caddy_now)) {
-                    (Some(holder_ns), Some(caddy_ns)) => holder_ns != caddy_ns,
+            IngressRecovery::Rejoin { owner, joined } => {
+                let owner_now = self.ensure_managed(owner).await?;
+                let joined_now = self.ensure_managed(joined).await?;
+                let stale = match (doors::netns_of(&owner_now), doors::netns_of(&joined_now)) {
+                    (Some(owner_ns), Some(joined_ns)) => owner_ns != joined_ns,
                     _ => false,
                 };
                 if !stale
-                    || doors::joined_to(&caddy_now) != Some(*holder)
+                    || doors::joined_to(&joined_now) != Some(*owner)
                     || !self.docker.created_nothing_since(creates)
                 {
                     return Ok(false);
@@ -669,11 +700,11 @@ impl ContainerRuntime {
                 let result = self
                     .docker
                     .client
-                    .stop_container(caddy.as_str(), None)
+                    .stop_container(joined.as_str(), None)
                     .await;
-                idempotent_lifecycle_result(caddy, result)?;
-                let inspected = self.ensure_managed(caddy).await?;
-                self.start_inspected(caddy, &inspected).await?;
+                idempotent_lifecycle_result(joined, result)?;
+                let inspected = self.ensure_managed(joined).await?;
+                self.start_inspected(joined, &inspected).await?;
                 Ok(true)
             }
         }
@@ -779,12 +810,13 @@ impl ContainerRuntime {
         self.departing
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut config_operation = self.specs.config_operation().await;
-        // A Caddy in a holder's network goes before the holder, so no Container is ever
-        // left in a removed Container's network.
+        // A Caddy in a holder's network goes before the holder, and a connector before
+        // its Tunnel Origin, so no Container is ever left in a removed Container's
+        // network.
         let mut managed = self.docker.managed_containers().await?;
         managed.sort_by_key(|(_, labels)| {
             ServiceLabels::parse(labels)
-                .is_ok_and(|managed| Door::of(&managed.identity) == Some(Door::Holder))
+                .is_ok_and(|managed| Door::of(&managed.identity).is_some_and(Door::owns_netns))
         });
         for (container_id, _) in managed {
             self.retire(&mut config_operation, &container_id, How::Departing)
@@ -1090,19 +1122,24 @@ pub(super) fn is_running(inspected: &ContainerInspectResponse) -> bool {
 
 /// Docker 29 empties a container's networks when its start fails, and a later start
 /// then runs it with no network and no published ports. A Container in another's
-/// network has none to lose.
-fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
-    let created_on_ployz = inspected
+/// network has none to lose. Answers the network a Container on the `ployz` bridge
+/// or a Tunnel Origin lost.
+fn lost_network(inspected: &ContainerInspectResponse) -> Option<&'static str> {
+    let network = match inspected
         .host_config
         .as_ref()
         .and_then(|host| host.network_mode.as_deref())
-        == Some(DOCKER_NETWORK_NAME);
+    {
+        Some(DOCKER_NETWORK_NAME) => DOCKER_NETWORK_NAME,
+        Some(TUNNEL_NETWORK_NAME) => TUNNEL_NETWORK_NAME,
+        _ => return None,
+    };
     let attached = inspected
         .network_settings
         .as_ref()
         .and_then(|settings| settings.networks.as_ref())
-        .is_some_and(|networks| networks.contains_key(DOCKER_NETWORK_NAME));
-    created_on_ployz && !attached
+        .is_some_and(|networks| networks.contains_key(network));
+    (!attached).then_some(network)
 }
 
 #[cfg(test)]
@@ -1122,26 +1159,37 @@ mod tests {
 
     #[test]
     fn a_container_whose_failed_start_dropped_its_network_gets_it_back() {
-        assert!(lost_ployz_network(&inspected(
-            "ployz",
-            serde_json::json!({})
-        )));
-        assert!(lost_ployz_network(&inspected(
-            "ployz",
-            serde_json::json!({ "bridge": {} })
-        )));
+        assert_eq!(
+            lost_network(&inspected("ployz", serde_json::json!({}))),
+            Some("ployz")
+        );
+        assert_eq!(
+            lost_network(&inspected("ployz", serde_json::json!({ "bridge": {} }))),
+            Some("ployz")
+        );
+        assert_eq!(
+            lost_network(&inspected("ployz-tunnel", serde_json::json!({}))),
+            Some("ployz-tunnel")
+        );
     }
 
     #[test]
     fn an_attached_or_differently_networked_container_is_left_alone() {
-        assert!(!lost_ployz_network(&inspected(
-            "ployz",
-            serde_json::json!({ "ployz": {} })
-        )));
-        assert!(!lost_ployz_network(&inspected(
-            "host",
-            serde_json::json!({})
-        )));
+        assert_eq!(
+            lost_network(&inspected("ployz", serde_json::json!({ "ployz": {} }))),
+            None
+        );
+        assert_eq!(
+            lost_network(&inspected(
+                "ployz-tunnel",
+                serde_json::json!({ "ployz-tunnel": {} })
+            )),
+            None
+        );
+        assert_eq!(
+            lost_network(&inspected("host", serde_json::json!({}))),
+            None
+        );
     }
 
     #[tokio::test]
@@ -2118,6 +2166,37 @@ mod tests {
             .await;
 
         assert!(!started(&fake));
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_origin_whose_failed_start_dropped_its_network_rejoins_it_before_starting() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+        *fake
+            .existing_container
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|container| container.pointer_mut("/HostConfig/NetworkMode"))
+            .unwrap() = TUNNEL_NETWORK_NAME.into();
+
+        runtime.start(&container_id).await.unwrap();
+
+        let posts: Vec<String> = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == axum::http::Method::POST)
+            .map(|(_, path)| path.clone())
+            .collect();
+        let joined = posts
+            .iter()
+            .position(|path| path.ends_with(&format!("/networks/{TUNNEL_NETWORK_NAME}/connect")));
+        let started = posts.iter().position(|path| path.ends_with("/start"));
+        assert!(
+            joined.is_some() && joined < started,
+            "it must be back on its fenced bridge before it runs: {posts:?}"
+        );
     }
 
     #[tokio::test]

@@ -75,6 +75,7 @@ pub(crate) async fn run(
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let local = machine.id;
+    caddy::prepare_origin_directory(&runtime_dir.join("tunnel"))?;
     caddy::run(
         machine,
         replicated,

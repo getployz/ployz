@@ -422,6 +422,16 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             StatusCode::CREATED,
             serde_json::json!({"Id": id, "Warnings": []}),
         )
+    } else if method == Method::GET && path.ends_with(&format!("/networks/{TUNNEL_NETWORK_NAME}")) {
+        (
+            StatusCode::OK,
+            serde_json::json!({
+                "Name": TUNNEL_NETWORK_NAME,
+                "Driver": "bridge",
+                "EnableIPv6": false,
+                "Options": {"com.docker.network.bridge.name": TUNNEL_NETWORK_NAME},
+            }),
+        )
     } else if method == Method::GET && path.contains("/networks/") {
         let network = fake.network.lock().unwrap().clone().unwrap_or_else(|| {
             serde_json::json!({
@@ -670,6 +680,12 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             (StatusCode::NO_CONTENT, serde_json::Value::Null)
         }
     } else if method == Method::POST && path.ends_with("/connect") {
+        let network = path
+            .trim_end_matches("/connect")
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
         if let Some(networks) = fake
             .existing_container
             .lock()
@@ -678,7 +694,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             .and_then(|container| container.pointer_mut("/NetworkSettings/Networks"))
             .and_then(serde_json::Value::as_object_mut)
         {
-            networks.insert("ployz".into(), serde_json::json!({}));
+            networks.insert(network, serde_json::json!({}));
         }
         if fake.connect_raced.load(Ordering::SeqCst) {
             (

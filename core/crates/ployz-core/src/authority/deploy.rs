@@ -326,6 +326,9 @@ pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
     }));
     match container.network {
         Some(ServiceNetwork::IngressHolder) => host.push(Shown::words("joins the ingress network")),
+        Some(ServiceNetwork::Tunnel | ServiceNetwork::TunnelOrigin) => {
+            host.push(Shown::words("joins the tunnel network"));
+        }
         Some(ServiceNetwork::Unrecognized) => host.push(Shown::words("joins an unknown network")),
         None => {}
     }

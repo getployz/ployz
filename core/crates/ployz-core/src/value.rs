@@ -1090,13 +1090,22 @@ impl QualifiedService {
         )
     }
 
-    /// Reserved Tunnel Connector that joins the holder's network and reaches Caddy on
-    /// loopback.
+    /// Reserved Tunnel Connector that joins the Tunnel Origin's network.
     #[must_use]
     pub fn system_tunnel() -> Self {
         Self::new(
             Namespace::system(),
             ServiceName::parse("tunnel").expect("tunnel is a DNS-label Service Name"),
+        )
+    }
+
+    /// Reserved Tunnel Origin that owns the Tunnel Connector's network namespace on its
+    /// own bridge and answers the connector's loopback listener.
+    #[must_use]
+    pub fn system_tunnel_origin() -> Self {
+        Self::new(
+            Namespace::system(),
+            ServiceName::parse("tunnel-origin").expect("tunnel-origin is a DNS-label Service Name"),
         )
     }
 
@@ -1116,12 +1125,14 @@ impl QualifiedService {
         *self == Self::system_tailscale()
     }
 
-    /// Whether this is one of the three reserved Ingress Proxy identities: the holder,
-    /// Caddy, or the Tunnel Connector. All three are placed only through SetIngressDoors.
+    /// Whether this is one of the four reserved Ingress Proxy identities: the holder,
+    /// Caddy, the Tunnel Origin or the Tunnel Connector. All four are placed only
+    /// through SetIngressDoors.
     #[must_use]
     pub fn is_ingress_door(&self) -> bool {
         *self == Self::system_ingress()
             || *self == Self::system_ingress_holder()
+            || *self == Self::system_tunnel_origin()
             || *self == Self::system_tunnel()
     }
 }
