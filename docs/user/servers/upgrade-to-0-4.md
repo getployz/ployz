@@ -28,6 +28,11 @@ one as **Awaiting activation**. Activate soon after you upgrade. Until then:
 - Only a server you reach over its own SSH connection takes changes. A change the CLI passes on
   to another server is refused there too, so reach each server over its own SSH, or activate
   first. Approving a device and other actions that need full access already work this way.
+- A server trusts no device or passkey added before it ran 0.4, yours included, since Ployz
+  Cloud could have added one. A change from such a device is refused with
+  `this Server awaits its Cluster's activation and doesn't trust Devices added before Ployz 0.4
+  until then`. Run it over SSH instead. A device or passkey you approve over the server's own
+  SSH from then on is trusted at once. When you activate, keep the older ones you recognize.
 
 ## 2. Activate
 

@@ -1004,7 +1004,8 @@ impl LocalMachineStore {
     }
 
     /// Trust `trusted` to approve workflows. Returns `false` when a passkey with its code
-    /// is already trusted, which keeps its first approval.
+    /// is already trusted, which keeps its first approval and gains `evidence` if it had
+    /// none, as a held key a person approves again at the console does.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
@@ -1014,22 +1015,30 @@ impl LocalMachineStore {
         evidence: Option<super::Evidence>,
     ) -> Result<bool, StoreError> {
         let code = trusted.passkey.code();
-        if self
+        let held = self
             .record
             .passkeys
             .iter()
-            .any(|held| held.passkey.code() == code)
-        {
+            .any(|held| held.passkey.code() == code);
+        let evidenced = evidence.is_none()
+            || self
+                .record
+                .trusted_snapshot
+                .as_ref()
+                .is_none_or(|snapshot| snapshot.holds_key(code));
+        if held && evidenced {
             return Ok(false);
         }
         let mut updated = self.record.clone();
-        updated.passkeys.push(trusted);
+        if !held {
+            updated.passkeys.push(trusted);
+        }
         if let (Some(evidence), Some(snapshot)) = (evidence, updated.trusted_snapshot.as_mut()) {
             snapshot.add_key(code, evidence);
         }
         save(&self.data_dir, &updated)?;
         self.record = updated;
-        Ok(true)
+        Ok(!held)
     }
 
     /// Replace the push target in one write. An unchanged target skips the write.
