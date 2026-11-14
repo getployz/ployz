@@ -356,6 +356,12 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
         }
         "succeeded" => {
             crate::ui::stream(format_args!("Upgraded Server {server} to {target}."));
+            if let (Some(from), Ok(to)) = (
+                upgrade.from_version.as_deref(),
+                MachineVersion::parse(target),
+            ) {
+                note_awaiting(server, from, &to);
+            }
             return None;
         }
         "failed" => {
@@ -740,7 +746,8 @@ fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
                     machine.runtime.daemon_version
                 )),
                 Some(UpgradeChange::Upgraded) => {
-                    crate::ui::stream(format_args!("Upgraded Server {name} to {version}."))
+                    crate::ui::stream(format_args!("Upgraded Server {name} to {version}."));
+                    note_awaiting(name, &machine.runtime.daemon_version, version);
                 }
                 None => crate::ui::stream(format_args!("Server {name} now runs {version}.")),
             }
@@ -753,6 +760,17 @@ fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
             "Server {name} stopped upgrading to {target} while {}.",
             stage.as_str()
         )),
+    }
+}
+
+/// Said when a Server moves from 0.3 to 0.4: it then awaits its Cluster's activation, and
+/// trusts no Device or passkey added before.
+fn note_awaiting(server: impl std::fmt::Display, from: &str, to: &MachineVersion) {
+    let first = MachineVersion::parse("0.4.0-beta.0").expect("a release version");
+    if MachineVersion::parse(from).is_ok_and(|from| from < first) && *to >= first {
+        crate::ui::note(format!(
+            "Server {server} now awaits your Cluster's activation. Until then it trusts no Device or passkey added before 0.4, so reach it over SSH. Once every Server runs 0.4, activate with `ployz device enforce`."
+        ));
     }
 }
 

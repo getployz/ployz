@@ -651,7 +651,7 @@ What a Management Client may do on a Machine, read from its slot: a Device slot 
 _Avoid_: role, permission level, access tier
 
 **Device**:
-A person's computer a Machine admits at Full Scope, named by the code of its management public key: the first 10 base32 characters of its SHA-256. Its slot is `device-<code>`, and only a Full caller adds or removes one, so Cloud can relay a Device's request but never approve it. A joining Machine takes the issuing member's Devices from its registration, never from Corrosion.
+A person's computer a Machine admits at Full Scope, named by the code of its management public key: the first 10 base32 characters of its SHA-256. Its slot is `device-<code>`, and only a Full caller adds or removes one, so Cloud can relay a Device's request but never approve it. A person approves or keeps a key only by its full code, the first 20 characters, since Cloud can grind a second key with the same 10. A joining Machine takes the issuing member's Devices from its registration, never from Corrosion.
 _Avoid_: device login, signed-in computer (that is a `cli-<id>` Management Client), user, roster as a replicated table
 
 **Passkey**:

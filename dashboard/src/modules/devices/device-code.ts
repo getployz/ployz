@@ -5,8 +5,8 @@ const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 export const DEVICE_KEY = /^[0-9a-f]{64}$/;
 
 /**
- * The code a Device's holder reads out for `key`: the top 50 bits of its SHA-256 in lowercase base32, as the Engine's
- * `DeviceCode::of` computes it.
+ * The name Cloud files a request for `key` under: the top 50 bits of its SHA-256 in lowercase base32, as the Engine's
+ * `DeviceCode::of` computes it. The CLI checks the key against the 100-bit code its holder printed, never this.
  */
 export function deviceCodeOf(key: string) {
   return codeOfKeyBytes(Buffer.from(key, "hex"));

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    Ciphertext, DeviceCode, MachineId, OperationId, PlatformPurpose, SealedIdentity, SealedValue,
+    CheckCode, Ciphertext, MachineId, OperationId, PlatformPurpose, SealedIdentity, SealedValue,
     SealingPublicKey,
     authority::{SealingRotation, Signed, StartingSet},
 };
@@ -42,7 +42,8 @@ pub enum TrustedKeyKind {
 /// first 0.4 start, or by a caller other than its local socket or a key with evidence.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct LegacyKey {
-    pub code: DeviceCode,
+    /// The key's full code, which the person compares before keeping it.
+    pub code: CheckCode,
     pub kind: TrustedKeyKind,
     /// A passkey's account name, so a person can tell which one it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]

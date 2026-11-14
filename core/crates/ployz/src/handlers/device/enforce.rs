@@ -16,10 +16,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    ActivateEnforcementRequest, ActivationReport, ActivationState, Ciphertext, DeviceCode,
-    DeviceKey, ENFORCED_CAPABILITY, Hint, InspectRequest, LegacyKey, MachineDetails, MachineId,
-    MachineTarget, OperationId, RecipientKeySet, RecipientSecret, RecoveryCode, RpcError, Sealing,
-    SealingPublicKey, SetDeviceEnforcementRequest, SetRecipientKeyRequest, TrustedKeyKind,
+    ActivateEnforcementRequest, ActivationReport, ActivationState, CheckCode, Ciphertext,
+    DeviceCode, DeviceKey, ENFORCED_CAPABILITY, Hint, InspectRequest, LegacyKey, MachineDetails,
+    MachineId, MachineTarget, OperationId, RecipientKeySet, RecipientSecret, RecoveryCode,
+    RpcError, Sealing, SealingPublicKey, SetDeviceEnforcementRequest, SetRecipientKeyRequest,
+    TrustedKeyKind,
     authority::{
         Member, SealingRotation, Signed, Signer, SignerKey, StartingSet, Timestamp,
         rotation::sealed_key_binding, validity,
@@ -56,7 +57,7 @@ pub(crate) fn enforce_command(command: Command) -> Command {
         "Examples:\n",
         "  ployz device enforce\n",
         "  ployz device enforce --connect ssh://root@203.0.113.10 --connect ssh://root@203.0.113.11\n",
-        "  ployz device enforce --pin 3f9a1c2e --keep mmg42klgyq"
+        "  ployz device enforce --pin 3f9a1c2e --keep mmg42-klgyq-p3w7d-xa5re"
     ))
     .mut_arg("connect", |arg| {
         arg.action(ArgAction::Append)
@@ -74,7 +75,7 @@ pub(crate) fn enforce_command(command: Command) -> Command {
             .long("keep")
             .value_name("CODE")
             .action(ArgAction::Append)
-            .help("Keep this key added while enforcement was off, after checking it with `ployz device ls` on that computer"),
+            .help("Keep this key added while enforcement was off, after checking its full code with `ployz device ls` on that computer"),
     )
     .arg(yes("Don't ask: keep no older key and leave out every Server not yet pinned"))
 }
@@ -199,7 +200,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
         .get_many::<String>("keep")
         .into_iter()
         .flatten()
-        .map(|code| DeviceCode::parse(code))
+        .map(|code| CheckCode::parse(code))
         .collect::<Result<BTreeSet<_>, _>>()?;
     let unattended = leaf.get_flag("yes");
     runtime()?.block_on(async {
@@ -538,12 +539,12 @@ fn confirms_fingerprint(name: &str, member: &Member) -> Result<bool, Error> {
     Ok(answer == 1)
 }
 
-/// The legacy keys the person keeps, each one `keep` confirms by code. The rest are
-/// listed first so the person sees what activation removes.
+/// The legacy keys the person keeps, each one `keep` confirms by its full code. The rest
+/// are listed first so the person sees what activation removes.
 fn kept_keys(
-    legacy: &BTreeMap<DeviceCode, (LegacyKey, Vec<String>)>,
+    legacy: &BTreeMap<CheckCode, (LegacyKey, Vec<String>)>,
     mut keep: impl FnMut(&LegacyKey) -> Result<bool, Error>,
-) -> Result<BTreeSet<DeviceCode>, Error> {
+) -> Result<BTreeSet<CheckCode>, Error> {
     if legacy.is_empty() {
         return Ok(BTreeSet::new());
     }
@@ -551,7 +552,7 @@ fn kept_keys(
     for (key, servers) in legacy.values() {
         ui::note(format!("  {}   on {}", key_label(key), servers.join(", ")));
     }
-    ui::note("To keep a key, check its code first with `ployz device ls` on that computer.");
+    ui::note("To keep a key, check its full code first with `ployz device ls` on that computer.");
     let mut kept = BTreeSet::new();
     for (code, (key, _)) in legacy {
         if keep(key)? {
@@ -576,14 +577,14 @@ fn legacy_keys(
     included: &[&Found],
     reach: &Reach,
     own: DeviceCode,
-) -> BTreeMap<DeviceCode, (LegacyKey, Vec<String>)> {
-    let mut legacy: BTreeMap<DeviceCode, (LegacyKey, Vec<String>)> = BTreeMap::new();
+) -> BTreeMap<CheckCode, (LegacyKey, Vec<String>)> {
+    let mut legacy: BTreeMap<CheckCode, (LegacyKey, Vec<String>)> = BTreeMap::new();
     for server in included {
         for key in server
             .report
             .iter()
             .flat_map(|report| &report.legacy_keys)
-            .filter(|key| key.code != own)
+            .filter(|key| key.code.code() != own)
         {
             legacy
                 .entry(key.code)
@@ -604,12 +605,7 @@ fn key_label(key: &LegacyKey) -> String {
 }
 
 /// The legacy keys activation removed from the Servers that activated.
-fn print_retired(
-    activated: &[&Found],
-    reach: &Reach,
-    kept: &BTreeSet<DeviceCode>,
-    own: DeviceCode,
-) {
+fn print_retired(activated: &[&Found], reach: &Reach, kept: &BTreeSet<CheckCode>, own: DeviceCode) {
     let retired: Vec<_> = legacy_keys(activated, reach, own)
         .into_values()
         .filter(|(key, _)| !kept.contains(&key.code))

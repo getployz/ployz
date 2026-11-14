@@ -9,7 +9,7 @@ use std::path::Path;
 use bollard::models::{ContainerInspectResponse, ContainerStateStatusEnum};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, MachineId,
-    PullPolicy, QualifiedService,
+    Namespace, PullPolicy, QualifiedService, ServiceName,
 };
 
 use super::{
@@ -28,6 +28,12 @@ pub(crate) enum Door {
 
 impl Door {
     pub(crate) const ALL: [Self; 3] = [Self::Holder, Self::Proxy, Self::Tunnel];
+
+    /// The door the Service `name` in `namespace` is, whatever its Containers' labels say.
+    #[must_use]
+    pub(crate) fn of_service(namespace: &Namespace, name: &ServiceName) -> Option<Self> {
+        Self::of(&QualifiedService::new(namespace.clone(), name.clone()))
+    }
 
     #[must_use]
     pub(crate) fn of(identity: &QualifiedService) -> Option<Self> {

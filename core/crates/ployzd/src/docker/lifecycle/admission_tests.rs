@@ -22,7 +22,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
                 deployment_id: None,
                 r#gen: ployz_core::Gen::FIRST,
                 image: crate::docker_image::ImagePull::Policy(None),
-                creation_key: None,
+                creation_key: "ordinary",
                 kind: ContainerKind::ServiceContainer,
                 namespace: &namespace,
                 spec: &ineligible,
@@ -40,7 +40,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
         &unknown,
         std::future::ready(None),
     );
-    request.creation_key = Some("unknown-storage");
+    request.creation_key = "unknown-storage";
     assert!(matches!(
         runtime.create_with_admission(&machine, request).await,
         Err(Error::StorageUnobservable)

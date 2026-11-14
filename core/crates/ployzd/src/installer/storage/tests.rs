@@ -536,6 +536,148 @@ fn zfs_unsupported_os_contract() {
     }
 }
 
+struct PreflightCase {
+    name: &'static str,
+    os_release: &'static str,
+    secure_boot: Option<[u8; 5]>,
+    virt: &'static str,
+    proc_files: &'static [(&'static str, &'static str)],
+    /// The refusal message, or `None` when the case fails instead.
+    refusal: Option<&'static str>,
+    manager: Option<&'static str>,
+}
+
+const UBUNTU_24: &str = "NAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nID=ubuntu\n";
+
+/// What the ZFS preflight answers, in its order, for each way a Machine can be refused after
+/// its OS is known: Secure Boot, then virtualization, then a missing package manager.
+const PREFLIGHT_CASES: [PreflightCase; 7] = [
+    PreflightCase {
+        name: "openvz",
+        os_release: UBUNTU_24,
+        secure_boot: None,
+        virt: "kvm",
+        proc_files: &[("vz/placeholder", "")],
+        refusal: Some("OpenVZ does not allow this Machine to load the host ZFS kernel module"),
+        manager: Some("apt-get"),
+    },
+    PreflightCase {
+        name: "unprivileged-lxc",
+        os_release: UBUNTU_24,
+        secure_boot: None,
+        virt: "lxc",
+        proc_files: &[("self/uid_map", "0 100000 65536\n")],
+        refusal: Some(
+            "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module",
+        ),
+        manager: Some("apt-get"),
+    },
+    PreflightCase {
+        name: "lxc-unread",
+        os_release: UBUNTU_24,
+        secure_boot: None,
+        virt: "lxc",
+        proc_files: &[],
+        refusal: None,
+        manager: Some("apt-get"),
+    },
+    PreflightCase {
+        name: "secure-boot-before-lxc-unread",
+        os_release: DEBIAN_13,
+        secure_boot: Some([6, 0, 0, 0, 1]),
+        virt: "lxc",
+        proc_files: &[],
+        refusal: Some(
+            "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for Debian. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
+        ),
+        manager: Some("apt-get"),
+    },
+    PreflightCase {
+        name: "no-apt-get",
+        os_release: UBUNTU_24,
+        secure_boot: None,
+        virt: "kvm",
+        proc_files: &[],
+        refusal: Some("Ubuntu apt-get is required for ZFS storage preparation"),
+        manager: None,
+    },
+    PreflightCase {
+        name: "no-dnf",
+        os_release: AMAZON_LINUX_2023,
+        secure_boot: Some([6, 0, 0, 0, 0]),
+        virt: "kvm",
+        proc_files: &[],
+        refusal: Some("Amazon Linux dnf is required for ZFS storage preparation"),
+        manager: Some("apt-get"),
+    },
+    PreflightCase {
+        name: "no-secure-boot-variable",
+        os_release: DEBIAN_13,
+        secure_boot: None,
+        virt: "openvz",
+        proc_files: &[],
+        refusal: Some("OpenVZ does not allow this Machine to load the host ZFS kernel module"),
+        manager: Some("apt-get"),
+    },
+];
+
+#[test]
+fn zfs_preflight_contract() {
+    const CASE: &str = "PLOYZ_ZFS_PREFLIGHT_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let case = PREFLIGHT_CASES
+            .iter()
+            .find(|case| case.name == name)
+            .unwrap();
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let result = prepare_storage(&StoragePreparation::Zfs { device: None }, &paths);
+        match case.refusal {
+            Some(message) => assert_refused(result, message),
+            None => assert!(
+                matches!(&result, Err(Error::Io { stage, .. }) if *stage == "inspect LXC user namespace"),
+                "{result:?}"
+            ),
+        }
+        assert!(!paths.modprobe_dir.exists());
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    for case in &PREFLIGHT_CASES {
+        let fixture = fixture(case.name);
+        let root = fixture.path();
+        let commands = root.join("commands");
+        fs::create_dir_all(&commands).unwrap();
+        fs::write(root.join("os-release"), case.os_release).unwrap();
+        if let Some(variable) = case.secure_boot {
+            fs::create_dir_all(root.join("efivars")).unwrap();
+            fs::write(root.join("efivars/SecureBoot"), variable).unwrap();
+        }
+        for (file, text) in case.proc_files {
+            let path = root.join("proc").join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        write_script(
+            &commands.join("systemd-detect-virt"),
+            &format!("echo {}", case.virt),
+        );
+        if let Some(manager) = case.manager {
+            write_script(&commands.join(manager), "exit 97");
+        }
+        write_script(&commands.join("uname"), "exit 97");
+        run_contract_child_with_environment(
+            "installer::storage::tests::zfs_preflight_contract",
+            root,
+            OsString::from(CASE),
+            OsString::from(case.name),
+            case.name,
+            [],
+        );
+    }
+}
+
 struct DebianCase {
     name: &'static str,
     version: &'static str,
@@ -700,6 +842,22 @@ esac"#,
         ]);
         let zfs = installs(&["zfs-dkms", "zfsutils-linux"]);
         assert!(headers < zfs, "{name}: headers after zfs-dkms\n{apt}");
+        let install =
+            "noninteractive -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends";
+        let call = |at: usize| calls.get(at).map(|words| words.join(" "));
+        assert_eq!(
+            call(headers),
+            Some(format!(
+                "{install} linux-headers-{} linux-headers-{}",
+                case.kernel, case.flavour
+            )),
+            "{name}"
+        );
+        assert_eq!(
+            call(zfs),
+            Some(format!("{install} zfs-dkms zfsutils-linux")),
+            "{name}"
+        );
         let dkms = read_log(root, "dkms.log");
         if name == "packaged-unbuilt" {
             assert_eq!(
@@ -1103,9 +1261,12 @@ done"#,
             let [dependencies, packages] = installs.as_slice() else {
                 panic!("unexpected dnf installs:\n{dnf}");
             };
-            assert!(
-                dependencies.contains(&format!("kernel-devel-uname-r = {AMAZON_KERNEL}")),
-                "{dependencies}"
+            assert_eq!(
+                *dependencies,
+                format!(
+                    "install -y kernel-devel-uname-r = {AMAZON_KERNEL} {}",
+                    OPENZFS_BUILD_DEPENDENCIES.join(" ")
+                )
             );
             packages
         };

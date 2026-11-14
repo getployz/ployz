@@ -333,7 +333,7 @@ impl LocalMachineRecord {
     }
 
     /// Every key this Machine trusts, from its own record: its Devices and its passkeys.
-    /// Once activated, only those in the trusted snapshot.
+    /// Once activated, and while awaiting activation, only those in the trusted snapshot.
     #[must_use]
     pub fn trusted_keys(&self) -> ployz_core::authority::TrustedKeys {
         ployz_core::authority::TrustedKeys {
@@ -358,8 +358,8 @@ impl LocalMachineRecord {
     }
 
     /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
-    /// Once activated, a slot whose key is outside the trusted snapshot is answered as if
-    /// absent.
+    /// Once activated, and while awaiting activation, a slot whose key is outside the
+    /// trusted snapshot is answered as if absent.
     pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
         self.held_devices()
             .filter(|key| self.trusts_key(key.code()))
@@ -372,10 +372,14 @@ impl LocalMachineRecord {
         })
     }
 
-    /// Whether `code` is a key this record lets approve: any held key before activation,
-    /// and only a snapshot key after.
+    /// Whether `code` is a key this record lets approve. An activated record, and one that
+    /// awaits activation, trust only snapshot keys: before its first 0.4 start the mesh had
+    /// Full scope, so any other key held then may be Cloud's. A record born enforcing that
+    /// no activation reached trusts every key it holds, since only its join approval or a
+    /// Full caller installed one.
     fn trusts_key(&self, code: DeviceCode) -> bool {
-        self.activation.is_none()
+        let reads_snapshot = self.activation.is_some() || self.awaits_activation();
+        !reads_snapshot
             || self
                 .trusted_snapshot
                 .as_ref()
@@ -564,6 +568,16 @@ impl LocalMachineRecord {
                     || self.trusts_key(DeviceKey::from_bytes(*remote.as_bytes()).code())
             })
             .max()
+    }
+
+    /// Whether `remote` is a Device this record holds but trusts only once its Cluster
+    /// activates: a key from before its first 0.4 start, while it awaits activation.
+    #[must_use]
+    pub fn trusts_after_activation(&self, remote: &ClientKey) -> bool {
+        self.awaits_activation()
+            && self
+                .held_devices()
+                .any(|key| ClientKey::from(key) == *remote && !self.trusts_key(key.code()))
     }
 
     /// Whether `remote` is any slot's accepted or pending key, so it may connect.

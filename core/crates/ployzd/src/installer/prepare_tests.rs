@@ -1,4 +1,5 @@
 use super::*;
+use crate::installer::packages::{deb_installed, dpkg_status_installed, rpm_provided};
 use crate::installer::test_support::{fixture, run_contract_child_with_environment, write_script};
 use ployz_core::host_preparation::{DockerOutcome, PrepStep, ZfsOutcome};
 use std::{cell::Cell, env, ffi::OsString, os::unix::fs::symlink};
@@ -593,6 +594,69 @@ fn zfs_is_skipped_only_by_a_storage_stage_refusal() {
             message: "identify Linux distribution: No such file or directory (os error 2)".into()
         }
     );
+
+    fs::write(&paths.os_release, UBUNTU_24).unwrap();
+    fs::create_dir_all(paths.proc_dir.join("vz")).unwrap();
+    assert_eq!(
+        zfs_step(&paths, &mut job),
+        ZfsOutcome::Skipped {
+            reason: "OpenVZ does not allow this Machine to load the host ZFS kernel module".into()
+        }
+    );
+
+    fs::write(&paths.os_release, DEBIAN_12).unwrap();
+    fs::create_dir_all(&paths.secure_boot).unwrap();
+    assert_eq!(
+        zfs_step(&paths, &mut job),
+        ZfsOutcome::Failed {
+            message: "read Secure Boot state: Is a directory (os error 21)".into()
+        }
+    );
+}
+
+/// An Amazon Linux whose repositories offer no `kernel-devel` for the running kernel can't
+/// build ahead, which skips ZFS rather than failing it.
+#[test]
+fn a_prebuild_without_kernel_devel_is_skipped() {
+    const CASE: &str = "PLOYZ_PREPARE_NO_KERNEL_DEVEL_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let mut job = opened(&paths);
+        assert_eq!(
+            zfs_step(&paths, &mut job),
+            ZfsOutcome::Skipped {
+                reason: format!(
+                    "Amazon Linux 2023 has no kernel-devel package for the running kernel {AMAZON_KERNEL}, so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`."
+                )
+            }
+        );
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "no-kernel-devel",
+        AMAZON_LINUX_2023,
+        &[
+            ("uname", &format!("echo {AMAZON_KERNEL}")),
+            ("dnf", "exit 0"),
+        ],
+    );
+    run_contract_child_with_environment(
+        "installer::prepare::tests::a_prebuild_without_kernel_devel_is_skipped",
+        fixture.path(),
+        OsString::from(CASE),
+        OsString::from("no-kernel-devel"),
+        "no-kernel-devel",
+        [],
+    );
+    assert_eq!(
+        read_log(fixture.path()),
+        format!(
+            "uname -r\ndnf -q repoquery --whatprovides kernel-devel-uname-r = {AMAZON_KERNEL}\n"
+        )
+    );
 }
 
 #[tokio::test]
@@ -709,6 +773,43 @@ fn discard_removes_only_what_preparation_added_case(case: &str, name: &str, inst
     assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Off));
     assert!(state.added_packages.is_empty());
     assert_eq!(state.zfs_build, None);
+}
+
+/// A Machine whose OS is none of the supported ones has no package manager of its own, and a
+/// discard removes what preparation added with apt-get, as it always has.
+#[test]
+fn discard_on_an_unrecognised_os_removes_packages_with_apt_get() {
+    const CASE: &str = "PLOYZ_PREPARE_DISCARD_UNKNOWN_OS_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        discard_in_child(&name);
+        return;
+    }
+
+    let fixture = host(
+        "unknown-os",
+        "NAME=\"Mystery\"\nID=mystery\n",
+        &[("apt-get", ""), ("dpkg-query", &dpkg_query(&[]))],
+    );
+    let root = fixture.path();
+    seed(
+        &InstallPaths::at(root),
+        &PrepState {
+            added_packages: vec!["dkms".into(), "lsb-release".into()],
+            ..PrepState::default()
+        },
+    );
+    run_contract_child_with_environment(
+        "installer::prepare::tests::discard_on_an_unrecognised_os_removes_packages_with_apt_get",
+        root,
+        OsString::from(CASE),
+        OsString::from("unknown-os"),
+        "unknown-os",
+        [],
+    );
+    assert_eq!(
+        host_changes(root),
+        ["apt-get -o DPkg::Lock::Timeout=300 remove -y -qq dkms lsb-release"]
+    );
 }
 
 fn claimed_build(source_dir: &Path) -> PrepState {
@@ -1234,7 +1335,7 @@ fn waiting_installs_and_discards_leave_no_mark() {
     fs::create_dir_all(prepare_dir(&paths)).unwrap();
     seed(&paths, &PrepState::default());
     let marked_while_installing = Cell::new(true);
-    install_waiting_for_preparation(&paths, "apt-get", || {
+    install_waiting_for_preparation(&paths, PackageManager::Apt, || {
         marked_while_installing.set(marked(&paths));
         Ok(())
     })
@@ -1385,7 +1486,7 @@ async fn a_state_file_that_cannot_be_read_stops_the_runs_that_would_overwrite_it
         "{refused:?}"
     );
 
-    take_over_preparation(&paths, "apt-get");
+    take_over_preparation(&paths, PackageManager::Apt);
     assert!(state_path(&paths).is_dir());
 }
 
@@ -1407,10 +1508,8 @@ fn a_host_query_that_cannot_answer_is_unknown_rather_than_no() {
         );
         assert_eq!(rpm_provided("present"), known(true));
         assert_eq!(rpm_provided("absent"), known(false));
-        assert_eq!(
-            dkms_status(&["-m", "zfs"]),
-            "zfs/2.1.11, 6.1.0, x86_64: built\n"
-        );
+        let dkms = DkmsStatus::read(None, None);
+        assert!(dkms.registered() && dkms.built_or_installed() && !dkms.installed());
         fs::write(contract_root().join("child-completed"), name).unwrap();
         return;
     }
@@ -1448,9 +1547,9 @@ fn a_host_query_whose_command_cannot_start_is_unknown() {
             matches!(rpm_provided("any"), Fact::Unknown(cause) if cause.contains("couldn't run"))
         );
         assert!(
-            matches!(zfs_dkms_installed("dnf"), Fact::Unknown(cause) if cause.contains("couldn't run"))
+            matches!(PackageManager::Dnf.zfs_dkms_installed(), Fact::Unknown(cause) if cause.contains("couldn't run"))
         );
-        assert_eq!(dkms_status(&["-m", "zfs"]), "");
+        assert!(!DkmsStatus::read(None, None).registered());
         fs::write(contract_root().join("child-completed"), name).unwrap();
         return;
     }
@@ -1580,7 +1679,7 @@ fn taking_over_records_nothing_added_and_leaves_the_steps() {
         ..PrepState::default()
     };
     seed(&paths, &state);
-    take_over_preparation(&paths, "apt-get");
+    take_over_preparation(&paths, PackageManager::Apt);
     let after = read_state(root);
     assert_eq!(after.docker.outcome(), Some(&DockerOutcome::Ready));
     assert!(after.added_packages.is_empty());

@@ -1235,7 +1235,8 @@ fn an_approval_by_a_key_this_machine_does_not_trust_is_refused() {
     );
 }
 
-/// A browser key under a session grant for `environment`, and the approval it signs.
+/// A browser key under a session grant for `environment`, whose ID the fixture's Sealed
+/// values are sealed for, and the approval it signs.
 fn session_signed(environment: &str) -> (Signed<CommitApproval>, TrustedKeys) {
     let browser = Signer::from_seed(&[4; 32]);
     let passkey = Authenticator::es256(4);
@@ -1243,7 +1244,7 @@ fn session_signed(environment: &str) -> (Signed<CommitApproval>, TrustedKeys) {
         browser_key: browser.public(),
         cluster: SealingPublicKey::from_bytes([9; 32]),
         environment: Namespace::parse(environment).unwrap(),
-        environment_id: uuid::Uuid::from_u128(1),
+        environment_id: uuid::Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111),
         machines: vec![machine()],
         families: vec![super::super::session::ActionFamily::Deploy],
         issued_at: Timestamp::from_millis(0).unwrap(),
@@ -1281,6 +1282,45 @@ fn a_session_grant_approves_a_commit_only_in_the_rules_environment() {
         verify_commit_approval(&elsewhere, &approved_rule(), &facts(&trusted)).is_err(),
         "a grant for another Environment"
     );
+}
+
+/// A session approves whatever commit Cloud's page names, so it runs that commit only with
+/// settings that reach nothing past its Environment. The rule's template here binds a host
+/// path and publishes a host port, which a Device's approval runs.
+#[test]
+fn a_commit_a_session_approved_runs_no_host_reach() {
+    let machine = machine();
+    let (signed, trusted) = session_signed("app");
+    let facts = ApprovalFacts {
+        cluster: SealingPublicKey::from_bytes([9; 32]),
+        machine: &machine,
+        trusted: &trusted,
+        now: Timestamp::from_millis(2_000).unwrap(),
+    };
+    let session = verify_commit_approval(&signed, &approved_rule(), &facts).unwrap();
+    let device = checked(&approval(|_| {}));
+    for (approved, expected) in [
+        (
+            &session,
+            Err(AuthorityRefusal::Mismatch {
+                field: super::super::deploy::HOST_ACCESS,
+            }),
+        ),
+        (&device, Ok(ImageDigest::from_bytes([0x44; 32]))),
+    ] {
+        assert_eq!(
+            create_at(
+                &approved_rule(),
+                &built_older(CommitAuthority::Approved(approved.digest())),
+                requested_json(),
+                ContainerKind::ServiceContainer,
+                CommitNow::Approved(approved),
+            ),
+            expected,
+            "{}",
+            approved.by()
+        );
+    }
 }
 
 #[test]

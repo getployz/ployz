@@ -411,7 +411,13 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             barrier.wait().await;
         }
         let id = "a".repeat(64);
-        *fake.existing_container.lock().unwrap() = Some(serde_json::json!({"Id": id}));
+        let name = uri
+            .query()
+            .and_then(|query| query.split('&').find_map(|pair| pair.strip_prefix("name=")));
+        *fake.existing_container.lock().unwrap() = Some(match name {
+            Some(name) => serde_json::json!({"Id": id, "Name": format!("/{name}")}),
+            None => serde_json::json!({"Id": id}),
+        });
         (
             StatusCode::CREATED,
             serde_json::json!({"Id": id, "Warnings": []}),
@@ -451,15 +457,35 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         });
         (StatusCode::OK, listed)
     } else if method == Method::GET && path.contains("/containers/") && path.ends_with("/json") {
-        fake.existing_container.lock().unwrap().clone().map_or_else(
-            || {
-                (
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"message":"no such container"}),
-                )
-            },
-            |container| (StatusCode::OK, container),
-        )
+        let asked = path
+            .trim_end_matches("/json")
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
+        // A container made under a name answers only to its ID or that name.
+        fake.existing_container
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|container| {
+                container
+                    .get("Name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(|name| {
+                        asked == name.trim_start_matches('/')
+                            || container.get("Id").and_then(serde_json::Value::as_str)
+                                == Some(asked)
+                    })
+            })
+            .map_or_else(
+                || {
+                    (
+                        StatusCode::NOT_FOUND,
+                        serde_json::json!({"message":"no such container"}),
+                    )
+                },
+                |container| (StatusCode::OK, container),
+            )
     } else if method == Method::POST && path.ends_with("/images/create") {
         (StatusCode::OK, serde_json::json!({}))
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
@@ -800,7 +826,7 @@ pub(super) fn container_request<'spec, Storage>(
         deployment_id: None,
         r#gen: ployz_core::Gen::FIRST,
         image: crate::docker_image::ImagePull::Policy(None),
-        creation_key: None,
+        creation_key: "test-key",
         kind,
         namespace,
         spec,

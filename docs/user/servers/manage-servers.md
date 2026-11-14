@@ -221,12 +221,15 @@ Over `--connect ssh://` they still work.
 ployz device request
 ```
 
-It prints a code, such as `mmg42klgyq`. Anyone in the Organization can request one. An owner or
-admin approves it from a device that's already approved:
+It prints a 20-character code, such as `mmg42-klgyq-p3w7d-xa5re`. Anyone in the Organization can
+request one. An owner or admin approves it from a device that's already approved:
 
 ```sh
-ployz device approve mmg42klgyq
+ployz device approve mmg42-klgyq-p3w7d-xa5re
 ```
+
+`approve` takes the code with or without dashes, in any case. It refuses a 10-character code from
+an older CLI. Run `ployz device request` again with this version to get the full code.
 
 For your first device, approve it over SSH on a server. Run `ployz login` there first, then the
 same `ployz device approve`. A request lasts 24 hours.
@@ -254,7 +257,8 @@ ployz device ls
 ployz device rm mmg42klgyq
 ```
 
-`device ls` shows each device and the servers missing it. `device rm` takes it off every server
+`device ls` shows this computer's device and each passkey by its full code, and other devices by
+the first 10 characters of theirs. `device rm` takes either form and removes the device from every server
 that answers. A server that doesn't answer is listed under failures, and one with no direct
 connection under omissions. Either way the command exits 3.
 
@@ -372,8 +376,8 @@ signed. A server you don't confirm is left out, and so is a server running a Plo
 your approved device.
 
 Next, `enforce` lists the devices and passkeys added while enforcement was off. Activation
-removes each one unless you keep it. Keep a key only after checking its code with
-`ployz device ls` on that computer, or pass it with `--keep`. With `--yes`, `enforce` keeps no
+removes each one unless you keep it. Keep a key only after checking its full 20-character code
+with `ployz device ls` on that computer, or pass that code with `--keep`. With `--yes`, `enforce` keeps no
 older key and leaves out every server it hasn't confirmed.
 
 It then prints `Signing the N Servers every Server trusts from now on:`, each server's name,
@@ -441,8 +445,13 @@ per container for a restart, stop or start, and one per deployment for a deploy.
 it, the passkey's grant of the browser key and the passkey itself before it acts. Its log names the passkey that approved it. A grant
 that was changed after the passkey answered, names another Environment or server, or lasts over
 an hour is refused. Ployz Cloud carries the grant but can't make one, so it can't deploy, restart,
-stop or start a container on its own. Upgrade a server to 0.4 before the dashboard deploys to it
-or stops or starts services on it. The dashboard names a server that enforces and needs a newer
+stop or start a container on its own. The browser's key never approves a container that reaches
+the server itself, such as one that runs privileged or binds a path on the server. Deploy those
+from an approved device, as in
+[Deploy from the dashboard](../deploy/deployments.md#deploy-from-the-dashboard), and restart or
+start them with `ployz service restart` or `ployz service start` there. The dashboard still stops
+them. Upgrade a server
+to 0.4 before the dashboard deploys to it or stops or starts services on it. The dashboard names a server that enforces and needs a newer
 Ployz, and deploys nothing there. With enforcement on, the dashboard won't stop a service on an older server, since
 nothing could start it again there, and says which server needs a newer Ployz.
 

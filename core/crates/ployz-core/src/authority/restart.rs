@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     ContainerId, ContainerKind, ContainerLocator, ContainerWant, DeviceKey, MachineId, Namespace,
-    OperationId, RunTarget, SealingPublicKey, ServiceName,
+    OperationId, ResolvedServiceSpec, RunTarget, SealingPublicKey, ServiceName,
 };
 
 /// The workflow an approval is for. One approval never serves another kind.
@@ -192,6 +192,8 @@ pub struct RestartFacts<'a> {
     pub container: &'a ContainerId,
     /// Whether the requested Container is a Service copy or a pre-deploy hook, by its own labels.
     pub kind: ContainerKind,
+    /// The spec the requested Container was created from, by its own labels.
+    pub spec: &'a ResolvedServiceSpec,
     pub step: RestartStep,
     pub now: Timestamp,
 }
@@ -211,15 +213,28 @@ pub struct Approved {
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature or grant problem, a
 /// malformed body, a body naming a different Cluster, workflow, Service, Machine or
-/// signer, a grant that does not cover the approval, or an expired approval. Replay is
-/// the Machine's consumption record to refuse.
+/// signer, a grant that does not cover the approval, an expired approval, or a session's
+/// restart or start of a Container with host reach (see
+/// [`super::deploy::refuse_host_reach`]), refused at its first step so nothing stops.
+/// Replay is the Machine's consumption record to refuse.
 pub fn verify(
     approval: &Signed<RestartApproval>,
     facts: &RestartFacts<'_>,
 ) -> Result<Approved, AuthorityRefusal> {
-    if let Some(bundle) = &approval.proposal {
-        return super::proposal::verify_step(bundle, approval, facts);
+    let approved = match &approval.proposal {
+        Some(bundle) => super::proposal::verify_step(bundle, approval, facts)?,
+        None => verify_single(approval, facts)?,
+    };
+    if approved.body.kind != WorkflowKind::Stop && matches!(approved.by, Approver::Browser { .. }) {
+        super::deploy::refuse_host_reach(facts.spec, facts.namespace)?;
     }
+    Ok(approved)
+}
+
+fn verify_single(
+    approval: &Signed<RestartApproval>,
+    facts: &RestartFacts<'_>,
+) -> Result<Approved, AuthorityRefusal> {
     let approvers = approval.approvers(facts.trusted, facts.now)?;
     let body = approval.open()?;
     let Some(cluster) = facts.cluster else {
@@ -257,6 +272,18 @@ pub fn verify(
 /// Returns a mismatch for an invalid lifetime or future issue time, or an expired refusal.
 pub fn verify_time(body: &RestartApproval, now: Timestamp) -> Result<(), AuthorityRefusal> {
     super::validity::verify(body.issued_at, body.expires_at, now)
+}
+
+/// A Service copy's spec that reaches nothing on its Machine.
+#[cfg(test)]
+pub(crate) fn contained_spec() -> ResolvedServiceSpec {
+    serde_json::from_value(serde_json::json!({
+        "service_id": "c".repeat(32),
+        "name": "web",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": "nginx", "pull_policy": "missing"},
+    }))
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -297,6 +324,7 @@ mod tests {
         namespace: Namespace,
         service: ServiceName,
         container: ContainerId,
+        spec: ResolvedServiceSpec,
     }
 
     impl Machine {
@@ -309,6 +337,7 @@ mod tests {
                 service: &self.service,
                 container: &self.container,
                 kind: ContainerKind::ServiceContainer,
+                spec: &self.spec,
                 step: RestartStep::Stop,
                 now: Timestamp::from_millis(999_999).unwrap(),
             }
@@ -325,6 +354,7 @@ mod tests {
             namespace: Namespace::parse("app").unwrap(),
             service: ServiceName::parse("api").unwrap(),
             container: ContainerId::parse("a".repeat(64)).unwrap(),
+            spec: contained_spec(),
         }
     }
 

@@ -990,7 +990,8 @@ impl LocalMachineStore {
     }
 
     /// Trust `trusted` to approve workflows. Returns `false` when a passkey with its code
-    /// is already trusted, which keeps its first approval.
+    /// is already trusted, which keeps its first approval and gains `evidence` if it had
+    /// none, as a held key a person approves again at the console does.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
@@ -1001,18 +1002,25 @@ impl LocalMachineStore {
     ) -> Result<bool, StoreError> {
         let code = trusted.passkey.code();
         self.commit_if_changed(|record| {
-            if record
+            let held = record
                 .passkeys
                 .iter()
-                .any(|held| held.passkey.code() == code)
-            {
+                .any(|held| held.passkey.code() == code);
+            let evidenced = evidence.is_none()
+                || record
+                    .trusted_snapshot
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.holds_key(code));
+            if held && evidenced {
                 return Ok(false);
             }
-            record.passkeys.push(trusted);
+            if !held {
+                record.passkeys.push(trusted);
+            }
             if let (Some(evidence), Some(snapshot)) = (evidence, record.trusted_snapshot.as_mut()) {
                 snapshot.add_key(code, evidence);
             }
-            Ok(true)
+            Ok(!held)
         })
     }
 
@@ -1099,6 +1107,7 @@ impl LocalMachineStore {
         } else {
             None
         };
+        let held = self.record.held_keys();
         self.commit(|updated| {
             let snapshot = updated
                 .trusted_snapshot
@@ -1106,7 +1115,7 @@ impl LocalMachineStore {
             for member in &pending.members {
                 snapshot.add_member(member.clone());
             }
-            for (code, evidence) in pending.kept() {
+            for (code, evidence) in pending.kept(&held) {
                 snapshot.add_key(code, evidence);
             }
             let keeps = |code: DeviceCode| snapshot.holds_key(code);

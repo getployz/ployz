@@ -156,10 +156,22 @@ impl LocalMachine {
                 service: &identity.name,
                 container: &observed.container_id,
                 kind: observed.kind,
+                spec: &observed.resolved_spec,
                 step,
                 now,
             },
-        )?;
+        )
+        .map_err(|refusal| {
+            if refusal
+                == (AuthorityRefusal::Mismatch {
+                    field: ployz_core::authority::deploy::HOST_ACCESS,
+                })
+            {
+                Error::RestartReachesHost
+            } else {
+                Error::RestartRefused(refusal)
+            }
+        })?;
         self.approvals
             .consume(&approved.body, &observed.container_id, step, now)?;
         tracing::info!(

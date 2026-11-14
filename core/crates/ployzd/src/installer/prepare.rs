@@ -17,6 +17,7 @@ use ployz_core::probe_document::OsRelease;
 use super::assess::{Fact, assess, read_facts};
 use super::host::{install_docker, verify_docker};
 use super::os_release;
+use super::packages::{DkmsStatus, Ownership, PackageManager};
 use super::storage::{
     self, BuildFailure, OPENZFS_BUILD_DEPENDENCIES, OPENZFS_SHA256, debian_contrib_source,
     debian_kernel_flavour_step, download_openzfs, enable_debian_contrib, kernel_devel,
@@ -24,8 +25,7 @@ use super::storage::{
 };
 use super::zfs_route::ZfsRoute;
 use super::{
-    Error, InstallPaths, apt_get, command_exists, refuse, require_root, run_apt, run_command,
-    run_host,
+    Error, InstallPaths, command_exists, refuse, require_root, run_apt, run_command, run_host,
 };
 
 const STAGE: &str = "prepare the host";
@@ -139,7 +139,7 @@ async fn docker_step(paths: &InstallPaths) -> Result<(), String> {
 
 fn debian_family(paths: &InstallPaths) -> bool {
     os_release::read(&paths.os_release)
-        .is_ok_and(|os| matches!(os.id.as_str(), "debian" | "ubuntu"))
+        .is_ok_and(|os| PackageManager::of(&os) == Some(PackageManager::Apt))
 }
 
 /// Configures packages a killed run left unpacked, which would stop every apt call after it.
@@ -347,19 +347,13 @@ fn build_debian_zfs(
     ]
     .into_iter()
     .chain(DEBIAN_ZFS_DKMS_DEPENDENCIES.map(str::to_owned));
-    let lacked: Vec<String> = wanted
-        .filter(|package| {
-            !deb_installed(package)
-                .or_report(&format!("ask dpkg whether {package} is installed"), false)
-        })
-        .collect();
+    let lacked = PackageManager::Apt.lacking(wanted);
     if !lacked.is_empty() {
         job.apply(|state| state.note_packages(&lacked))?;
-        let mut install = apt_get();
-        install
-            .args(["install", "-y", "-qq", "--no-install-recommends"])
-            .args(&lacked);
-        run_command("install ZFS build dependencies", &mut install)?;
+        run_command(
+            "install ZFS build dependencies",
+            &mut PackageManager::Apt.install(&lacked),
+        )?;
     }
     let dir = fresh_build_dir(paths)?;
     run_apt("download zfs-dkms", ["download", "zfs-dkms"], Some(&dir))?;
@@ -370,7 +364,7 @@ fn build_debian_zfs(
     let mut unpack = Command::new("dpkg-deb");
     unpack.arg("-x").arg(&archive).arg(&root);
     run_command("unpack zfs-dkms", &mut unpack)?;
-    dkms_build(paths, job, &root, kernel, "apt-get")
+    dkms_build(paths, job, &root, kernel, PackageManager::Apt)
 }
 
 fn build_amazon_zfs(
@@ -390,18 +384,15 @@ fn build_amazon_zfs(
         source,
     })?;
     let tarball = download_openzfs(&dir, sha256).map_err(build_error)?;
-    let lacked: Vec<String> = std::iter::once(kernel_devel(kernel))
-        .chain(OPENZFS_BUILD_DEPENDENCIES.map(str::to_owned))
-        .filter(|package| {
-            !rpm_provided(package)
-                .or_report(&format!("ask rpm whether {package} is installed"), false)
-        })
-        .collect();
+    let lacked = PackageManager::Dnf.lacking(
+        std::iter::once(kernel_devel(kernel)).chain(OPENZFS_BUILD_DEPENDENCIES.map(str::to_owned)),
+    );
     if !lacked.is_empty() {
         job.apply(|state| state.note_packages(&lacked))?;
-        let mut install = Command::new("dnf");
-        install.args(["install", "-y"]).args(&lacked);
-        run_command("install ZFS build dependencies", &mut install)?;
+        run_command(
+            "install ZFS build dependencies",
+            &mut PackageManager::Dnf.install(&lacked),
+        )?;
     }
     let rpms = make_openzfs_rpms(&dir, &tarball).map_err(build_error)?;
     let dkms_rpm = rpms
@@ -419,7 +410,7 @@ fn build_amazon_zfs(
         source,
     })?;
     unpack_rpm(dkms_rpm, &root)?;
-    dkms_build(paths, job, &root, kernel, "dnf")
+    dkms_build(paths, job, &root, kernel, PackageManager::Dnf)
 }
 
 fn unpack_rpm(rpm: &Path, root: &Path) -> Result<(), Error> {
@@ -477,7 +468,7 @@ fn dkms_build(
     job: &mut Job,
     root: &Path,
     kernel: &str,
-    package_manager: &str,
+    package_manager: PackageManager,
 ) -> Result<(), Error> {
     let unpacked = only_file(&root.join("usr/src"), |name| name.starts_with("zfs-"))?;
     let name = unpacked
@@ -495,7 +486,7 @@ fn dkms_build(
     let registered = dkms_registered(&version);
     let recorded = job.state().zfs_build.as_ref() == Some(&build);
     // A package may have shipped the same version since this Machine recorded it.
-    let packaged = match package_ownership(package_manager, &build) {
+    let packaged = match package_manager.owns(&build) {
         Ownership::Packaged => true,
         Ownership::Unpackaged => false,
         // A registration this Machine didn't make is only built, whoever owns it.
@@ -523,10 +514,9 @@ fn dkms_build(
             && !registered
             && let Err(error) = built
         {
-            let fix = if package_manager == "dnf" {
-                "dnf reinstall zfs-dkms"
-            } else {
-                "dpkg-reconfigure zfs-dkms"
+            let fix = match package_manager {
+                PackageManager::Dnf => "dnf reinstall zfs-dkms",
+                PackageManager::Apt => "dpkg-reconfigure zfs-dkms",
             };
             return Err(refuse(
                 "build ZFS with DKMS",
@@ -605,12 +595,8 @@ pub(super) fn prepared_dkms_build(paths: &InstallPaths, kernel: &str) -> Option<
     else {
         return None;
     };
-    dkms_status(&["-m", "zfs", "-v", &version, "-k", kernel])
-        .lines()
-        .any(|line| {
-            let line = line.trim_end();
-            line.ends_with(": built") || line.ends_with(": installed")
-        })
+    DkmsStatus::read(Some(&version), Some(kernel))
+        .built_or_installed()
         .then_some(PreparedBuild {
             version,
             source_dir,
@@ -635,172 +621,11 @@ fn build_error(BuildFailure { step, cause }: BuildFailure) -> Error {
 }
 
 fn dkms_built(kernel: &str) -> bool {
-    command_exists("dkms")
-        && dkms_status(&["-m", "zfs", "-k", kernel])
-            .lines()
-            .any(|line| {
-                let line = line.trim_end();
-                line.ends_with(": built") || line.ends_with(": installed")
-            })
+    command_exists("dkms") && DkmsStatus::read(None, Some(kernel)).built_or_installed()
 }
 
 fn dkms_registered(version: &str) -> bool {
-    command_exists("dkms") && !dkms_status(&["-m", "zfs", "-v", version]).trim().is_empty()
-}
-
-/// What `dkms status` printed for `args`, whatever its exit code. DKMS that can't run has built
-/// nothing this Machine can use, so it answers no text, after saying why.
-fn dkms_status(args: &[&str]) -> String {
-    Fact::from(
-        Command::new("dkms")
-            .arg("status")
-            .args(args)
-            .output()
-            .map_err(|error| format!("`dkms status` couldn't run: {error}")),
-    )
-    .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-    .or_report("read the DKMS status of the ZFS build", String::new())
-}
-
-/// Whether dpkg leaves `package`'s files on the Machine. Only a status dpkg printed counts as an
-/// answer: dpkg-query exits 1 for a package it doesn't know, and anything else, such as exit 2 or
-/// a status that isn't `<want> <flag> <state>`, is no answer.
-fn deb_installed(package: &str) -> Fact<bool> {
-    let query = format!("dpkg-query -W -f=${{Status}} {package}");
-    let output = match Command::new("dpkg-query")
-        .args(["-W", "-f=${Status}", package])
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) => return Fact::Unknown(format!("`{query}` couldn't run: {error}")),
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match output.status.code() {
-        Some(0) => dpkg_status_installed(&stdout).map_or_else(
-            || Fact::Unknown(format!("`{query}` printed {:?}", stdout.trim())),
-            Fact::Known,
-        ),
-        Some(1) => Fact::Known(false),
-        _ => Fact::Unknown(format!("`{query}` {}", output.status)),
-    }
-}
-
-/// Whether a dpkg `${Status}` (`<want> <flag> <state>`) leaves the package's files on the
-/// Machine, or `None` when it isn't one. The want (`hold`, `deinstall`, `purge`) is only a wish
-/// and the flag only marks a failed operation, so neither removes anything. A half-installed,
-/// unpacked or half-configured package counts too, since apt would still remove it along with
-/// its dependencies.
-fn dpkg_status_installed(status: &str) -> Option<bool> {
-    match status.split_whitespace().collect::<Vec<_>>()[..] {
-        [_, _, state] => Some(!matches!(state, "not-installed" | "config-files")),
-        _ => None,
-    }
-}
-
-/// Whether an installed package provides `capability`. rpm exits 1 for any failed query, so a
-/// refusal to answer is the same as no provider; only an rpm that can't run is no answer.
-fn rpm_provided(capability: &str) -> Fact<bool> {
-    Fact::from(
-        Command::new("rpm")
-            .args(["-q", "--whatprovides", capability])
-            .output()
-            .map_err(|error| format!("`rpm -q --whatprovides {capability}` couldn't run: {error}")),
-    )
-    .map(|output| output.status.success())
-}
-
-/// Whether a package ships a build's source, by the package manager's own answer.
-enum Ownership {
-    Packaged,
-    Unpackaged,
-    /// The query failed, so neither answer is safe to act on.
-    Unknown(String),
-}
-
-fn package_ownership(package_manager: &str, build: &ZfsBuild) -> Ownership {
-    match build {
-        ZfsBuild::Ubuntu { .. } => match deb_installed("zfsutils-linux") {
-            Fact::Known(true) => Ownership::Packaged,
-            Fact::Known(false) => Ownership::Unpackaged,
-            Fact::Unknown(cause) => Ownership::Unknown(cause),
-        },
-        // rpm exits 1 for any failed query, and prints its negative even when the database
-        // didn't open. Only that negative for this path, alone, says no package owns it.
-        ZfsBuild::Dkms { source_dir, .. } if package_manager == "dnf" => {
-            let path = source_dir.display();
-            let unowned = [
-                format!("file {path} is not owned by any package"),
-                format!("error: file {path}: No such file or directory"),
-            ];
-            path_ownership("rpm", "-qf", source_dir, |text| {
-                unowned.iter().any(|line| text.trim_end() == line)
-            })
-        }
-        // dpkg exits 1 only when no package matches; errors exit 2.
-        ZfsBuild::Dkms { source_dir, .. } => path_ownership("dpkg", "-S", source_dir, |_| true),
-    }
-}
-
-fn path_ownership(
-    command: &str,
-    flag: &str,
-    path: &Path,
-    unowned: impl Fn(&str) -> bool,
-) -> Ownership {
-    let query = format!("{command} {flag} {}", path.display());
-    let output = match Command::new(command)
-        .arg(flag)
-        .arg(path)
-        .env("LC_ALL", "C")
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) => return Ownership::Unknown(format!("`{query}` couldn't run: {error}")),
-    };
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    match output.status.code() {
-        Some(0) => Ownership::Packaged,
-        Some(1) if unowned(&text) => Ownership::Unpackaged,
-        _ => Ownership::Unknown(format!("`{query}` {}: {}", output.status, text.trim())),
-    }
-}
-
-/// Whether `zfs-dkms` is installed, or why the package manager couldn't say.
-fn zfs_dkms_installed(package_manager: &str) -> Fact<bool> {
-    let dnf = package_manager == "dnf";
-    let (command, args) = if dnf {
-        ("rpm", ["-q", "zfs-dkms"].as_slice())
-    } else {
-        ("dpkg-query", ["-W", "-f=${Status}", "zfs-dkms"].as_slice())
-    };
-    let query = format!("{command} {}", args.join(" "));
-    let output = match Command::new(command).args(args).env("LC_ALL", "C").output() {
-        Ok(output) => output,
-        Err(error) => return Fact::Unknown(format!("`{query}` couldn't run: {error}")),
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    match output.status.code() {
-        Some(0) if dnf => Fact::Known(true),
-        Some(0) if let Some(installed) = dpkg_status_installed(&stdout) => Fact::Known(installed),
-        // dpkg-query exits 1 only for a package it doesn't know; errors exit 2.
-        Some(1) if !dnf => Fact::Known(false),
-        Some(1)
-            if stdout.trim_end() == "package zfs-dkms is not installed" && stderr.is_empty() =>
-        {
-            Fact::Known(false)
-        }
-        _ => Fact::Unknown(format!(
-            "`{query}` {}: {} {}",
-            output.status,
-            stdout.trim(),
-            stderr.trim()
-        )),
-    }
+    command_exists("dkms") && DkmsStatus::read(Some(version), None).registered()
 }
 
 fn remove_build(module: &str, version: &str, source_dir: &Path) -> Result<(), Error> {
@@ -815,18 +640,19 @@ fn remove_build(module: &str, version: &str, source_dir: &Path) -> Result<(), Er
 }
 
 fn installed_by_dkms(build: &ZfsBuild) -> bool {
-    matches!(build, ZfsBuild::Dkms { version, .. } if dkms_status(&["-m", "zfs", "-v", version])
-        .lines()
-        .any(|line| line.trim_end().ends_with(": installed")))
+    matches!(build, ZfsBuild::Dkms { version, .. } if DkmsStatus::read(Some(version), None).installed())
 }
 
-fn remove_unowned_build(package_manager: &str, build: Option<ZfsBuild>) -> Option<ZfsBuild> {
+fn remove_unowned_build(
+    package_manager: PackageManager,
+    build: Option<ZfsBuild>,
+) -> Option<ZfsBuild> {
     let build = build?;
     // Ployz never removes an installed build, whoever owns it.
     if installed_by_dkms(&build) {
         return None;
     }
-    match package_ownership(package_manager, &build) {
+    match package_manager.owns(&build) {
         Ownership::Packaged => return None,
         Ownership::Unknown(cause) => {
             eprintln!(
@@ -851,7 +677,7 @@ fn remove_unowned_build(package_manager: &str, build: Option<ZfsBuild>) -> Optio
 
 pub(super) fn install_waiting_for_preparation(
     paths: &InstallPaths,
-    package_manager: &str,
+    package_manager: PackageManager,
     install: impl FnOnce() -> Result<(), Error>,
 ) -> Result<(), Error> {
     if !state_path(paths).exists() {
@@ -869,7 +695,7 @@ pub(super) fn install_waiting_for_preparation(
     Ok(())
 }
 
-fn take_over_preparation(paths: &InstallPaths, package_manager: &str) {
+fn take_over_preparation(paths: &InstallPaths, package_manager: PackageManager) {
     let mut job = match Job::open(paths) {
         Fact::Known(job) => job,
         Fact::Unknown(cause) => {
@@ -914,11 +740,11 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         .ok()
         .as_ref()
         .and_then(ZfsRoute::for_os)
-        .map_or("apt-get", ZfsRoute::package_manager);
+        .map_or(PackageManager::Apt, ZfsRoute::package_manager);
     match state
         .zfs_build
         .as_ref()
-        .map(|build| package_ownership(package_manager, build))
+        .map(|build| package_manager.owns(build))
     {
         Some(Ownership::Packaged) => {
             println!("ZFS is installed from packages, so there is no build to discard");
@@ -933,7 +759,7 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         Some(Ownership::Unpackaged) | None => {}
     }
     let keep_packages = (!state.added_packages.is_empty() || state.added_contrib_source)
-        && match zfs_dkms_installed(package_manager) {
+        && match package_manager.zfs_dkms_installed() {
             Fact::Known(installed) => installed,
             Fact::Unknown(cause) => {
                 return Err(refuse(
@@ -971,17 +797,10 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         }
     }
     if !added_packages.is_empty() {
-        let mut remove = if package_manager == "dnf" {
-            let mut dnf = Command::new("dnf");
-            dnf.args(["remove", "-y"]);
-            dnf
-        } else {
-            let mut apt = apt_get();
-            apt.args(["remove", "-y", "-qq"]);
-            apt
-        };
-        remove.args(added_packages);
-        run_command("remove ZFS build dependencies", &mut remove)?;
+        run_command(
+            "remove ZFS build dependencies",
+            &mut package_manager.remove(added_packages),
+        )?;
     }
     if matches!(state.zfs_build, Some(ZfsBuild::Ubuntu { .. })) {
         run_apt("clear downloaded ZFS packages", ["clean"], None)?;

@@ -212,6 +212,11 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
             "The device approved no pre-deploy command for this service."
         }
         AuthorityRefusal::Mismatch {
+            field: deploy::HOST_ACCESS,
+        } => {
+            "This service reaches the server itself, so only an approved device can approve it. Run ployz deploy on that device."
+        }
+        AuthorityRefusal::Mismatch {
             field: "a hook run",
         }
         | AuthorityRefusal::Replayed { .. } => {

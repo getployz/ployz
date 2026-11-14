@@ -393,7 +393,8 @@ impl PreviewRule {
     /// Check a new Container of a preview: everything [`Self::verify_step`] checks, the
     /// image the token names built with secrets sealed from this Machine's attest key, its
     /// Sealed values, and its spec's [`template`] against what the person signed: the
-    /// rule's, or for a reviewed build the review's. Returns the image, and whether the
+    /// rule's, or for a reviewed build the review's. A review a session signed admits no
+    /// [`host_reach`](super::deploy::refuse_host_reach). Returns the image, and whether the
     /// creation runs the Setup Commands.
     ///
     /// # Errors
@@ -431,6 +432,9 @@ impl PreviewRule {
         }
         let spec = creation.spec.to_requested();
         self.verify_sealed(&spec, service, review)?;
+        if review.is_some_and(|review| matches!(review.signer, ReviewSigner::Session(_))) {
+            super::deploy::refuse_host_reach(creation.spec, facts.namespace)?;
+        }
         let digest = template(&spec, facts.namespace, service)?;
         let setup = match review {
             Some(review) => {

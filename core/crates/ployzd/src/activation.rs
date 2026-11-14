@@ -262,7 +262,10 @@ pub(crate) fn commit_pending(
 /// The Device keys the commit keeps: those in the snapshot, the signer, and the kept keys.
 fn kept_devices(store: &LocalMachineStore, pending: &PendingActivation) -> Vec<DeviceKey> {
     let record = store.record();
-    let kept: Vec<DeviceCode> = pending.kept().map(|(code, _)| code).collect();
+    let kept: Vec<DeviceCode> = pending
+        .kept(&record.held_keys())
+        .map(|(code, _)| code)
+        .collect();
     record
         .held_keys()
         .devices

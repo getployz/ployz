@@ -52,7 +52,7 @@ fn body_of(
         None,
     )
     .unwrap();
-    create::ingress_sysctls(&mut body, namespace, spec, true);
+    create::ingress_sysctls(&mut body, Door::of_service(namespace, &spec.name), true);
     serde_json::to_value(body).unwrap()
 }
 
@@ -71,7 +71,7 @@ async fn keyed_config(
     let namespace = Namespace::parse("app").unwrap();
     let app = app_spec();
     let mut request = container_request(kind, &namespace, &app, std::future::ready(None));
-    request.creation_key = Some(creation_key);
+    request.creation_key = creation_key;
     let created = runtime
         .create_with_admission(&machine, request)
         .await
