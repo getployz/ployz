@@ -12,10 +12,10 @@
 //! Four processes take part. The daemon runs `request_locked` in a task (:156-158) and hosts
 //! every RPC: Inspect, a resend, Leave, a new upgrade request and the mutations that admit
 //! through `admit_installation` (local_machine.rs:331-334). A kill ends all of them at once.
-//! systemd restarts it (`Restart=always`, installer/host.rs:296), and daemon start
+//! systemd restarts it (`Restart=always` in `machine_daemon_service_unit`, installer/host.rs), and daemon start
 //! reconciles before it serves (`Daemon::start`, before it serves). The worker is its own unit (:397-459),
 //! `ployzd install` its own process, and the volume plugin its own unit
-//! (installer/host.rs:359-382), which admits through `admit_mutation`
+//! (`volume_plugin_service_unit` in installer/host.rs), which admits through `admit_mutation`
 //! (volume_plugin/storage.rs:115-124).
 //!
 //! Daemon start clears the marker only if its `settle` wins `try_installation` (:258-260).
@@ -113,7 +113,7 @@ enum Daemon {
     /// Serves RPCs.
     Serving,
     /// Killed or exited; systemd starts it again (`Restart=always`, `RestartSec=2`,
-    /// installer/host.rs:296-298).
+    /// `machine_daemon_service_unit` in installer/host.rs).
     Down,
     /// Daemon start's `reconcile` runs (`Daemon::start`, before it serves); nothing is served yet.
     Starting,
@@ -1521,10 +1521,10 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
                     "it serves again without daemon start's reconcile (under Broken)"
                 }
                 (_, true) => {
-                    "its locks are released, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:296-298)"
+                    "its locks are released, and systemd starts it again (Restart=always, RestartSec=2, `machine_daemon_service_unit` in installer/host.rs)"
                 }
                 (_, false) => {
-                    "it held no lock, and systemd starts it again (Restart=always, RestartSec=2, installer/host.rs:296-298)"
+                    "it held no lock, and systemd starts it again (Restart=always, RestartSec=2, `machine_daemon_service_unit` in installer/host.rs)"
                 }
             }
         ),
