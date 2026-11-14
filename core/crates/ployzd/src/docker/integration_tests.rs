@@ -81,6 +81,51 @@ async fn image_ingest_reconciles_observed_docker_state_on_every_open() {
 }
 
 #[tokio::test]
+#[ignore = "requires Docker with the containerd image store, alpine:3.23.3 and ghcr.io"]
+async fn image_ingest_runs_the_pinned_helper_when_its_tag_names_other_content() {
+    let _lock = DOCKER_NETWORK_LOCK.lock().await;
+    let docker = LocalDocker::connect().unwrap();
+    let ingest = ImageIngest::new(None, Some(docker.clone()));
+    ingest.shutdown().await.unwrap();
+    // What a peer pull's `docker tag -- <pulled> <tag>` leaves when its tag is the helper's.
+    let helper_tag = super::unregistry::IMAGE.as_str().split_once('@').unwrap().0;
+    let (repo, tag) = helper_tag.rsplit_once(':').unwrap();
+    docker
+        .client
+        .tag_image(
+            "alpine:3.23.3",
+            Some(
+                bollard::query_parameters::TagImageOptionsBuilder::default()
+                    .repo(repo)
+                    .tag(tag)
+                    .build(),
+            ),
+        )
+        .await
+        .unwrap();
+    let planted = docker.client.inspect_image(helper_tag).await.unwrap().id;
+
+    let opened = ingest.open(ManagementAddress(Ipv6Addr::LOCALHOST)).await;
+    let helper = docker
+        .client
+        .inspect_container("ployz-unregistry", None)
+        .await
+        .unwrap();
+    ingest.shutdown().await.unwrap();
+    let _ = docker
+        .client
+        .remove_image(
+            helper_tag,
+            None::<bollard::query_parameters::RemoveImageOptions>,
+            None,
+        )
+        .await;
+
+    assert_ne!(helper.image, planted, "the helper ran the planted tag");
+    opened.unwrap();
+}
+
+#[tokio::test]
 #[ignore = "requires Docker and alpine:3.23.3"]
 async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     let _lock = DOCKER_NETWORK_LOCK.lock().await;
