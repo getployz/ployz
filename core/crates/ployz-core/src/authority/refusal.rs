@@ -27,6 +27,10 @@ pub enum AuthorityRefusal {
         "the move's source has not handed this Volume here; this Machine becomes its writer only with the source's handoff receipt"
     )]
     Unreceipted,
+    #[error(
+        "the rule pins getployz/build {sha}, which installs a ployz no Ployz release built; approve the rule again to pin the current builder"
+    )]
+    RetiredBuilder { sha: String },
     #[error("the approval expired")]
     Expired,
     #[error("this Machine holds no Sealing Key, so it cannot tell which Cluster was approved")]

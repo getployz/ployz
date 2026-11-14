@@ -318,6 +318,9 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Expired => {
             "The approval for this rollback expired. Run ployz deployment redeploy again."
         }
+        AuthorityRefusal::RetiredBuilder { .. } => {
+            "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
+        }
         AuthorityRefusal::Mismatch {
             field: "a generation",
         } => "A newer approval of the automatic deploy rule replaced this one.",

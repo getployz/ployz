@@ -1328,3 +1328,23 @@ fn a_commit_shows_its_first_twelve_digits() {
     let commit = CommitSha::parse(BUILDER_SHA).unwrap();
     assert_eq!(commit.short(), "0123456789ab");
 }
+
+#[test]
+fn a_build_by_a_builder_that_installs_a_lab_ployz_is_refused_under_a_rule_pinning_it() {
+    let lab = "a19b4fca3adea371c25ec29f181e8c7d21037d1e";
+    let mut pinned = rule();
+    pinned.source.builder = Builder {
+        r#ref: format!("getployz/build/.github/workflows/build.yml@{lab}"),
+        sha: CommitSha::parse(lab).unwrap(),
+    };
+    let ran = claims(|value| {
+        value["job_workflow_ref"] = json!(pinned.source.builder.r#ref);
+        value["job_workflow_sha"] = json!(lab);
+    });
+    assert_eq!(
+        pinned.verify_claims(&ran),
+        Err(AuthorityRefusal::RetiredBuilder {
+            sha: lab.to_owned()
+        })
+    );
+}

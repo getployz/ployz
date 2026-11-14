@@ -454,6 +454,9 @@ pub(crate) fn refusal_text(refusal: &AuthorityRefusal) -> String {
             "A preview that uses secrets needs a review approved with a passkey or from an approved device."
         }
         AuthorityRefusal::Expired => "The preview's approval expired. Approve it again.",
+        AuthorityRefusal::RetiredBuilder { .. } => {
+            "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
+        }
         AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
             "This server doesn't trust the device that approved the preview rule or review."
         }

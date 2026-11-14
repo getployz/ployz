@@ -14,7 +14,7 @@ const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB
 
 /// The digest of the body [`golden`] drafts. The dashboard's `autoDeployRuleBody` test
 /// pins the same digest: a browser that drafts other bytes than the CLI fails there.
-const GOLDEN: &str = "b90fce2595824dea529a4a32b03fcb9576a160e0d623fbbf6c1cdbf5ceb546a4";
+const GOLDEN: &str = "5fe1b138faa40462100905f967e762cae20eec664bf4a2c9e8e40066ec9fcd20";
 
 /// What the dashboard's test passes as the rule view: one Git Service and one image
 /// Service, as the Store's `rule` view writes them.

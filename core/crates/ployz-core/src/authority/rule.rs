@@ -158,7 +158,19 @@ pub struct Builder {
 /// The commit of `getployz/build` whose reusable workflow a rule approved from the CLI
 /// pins by default. It must be in `getployz/build`'s own history: GitHub won't start a
 /// run that calls a commit only a fork holds. Cloud's rule template pins the same.
-pub const BUILDER_SHA: &str = "a19b4fca3adea371c25ec29f181e8c7d21037d1e";
+pub const BUILDER_SHA: &str = "39e1f488e492c0641e520777e481e8f5b266985b";
+
+/// The `getployz/build` commits whose workflow installs a `ployz` that no Ployz release built,
+/// a lab build without the checks a rule build relies on. A Server refuses a build they ran,
+/// even under a rule a person signed for one.
+const RETIRED_BUILDERS: [&str; 6] = [
+    "eb8e7b1daab07ba132454b385029b2ba033d3d31",
+    "86765b8df6f8e87640a557d70fededbb19d2ec7d",
+    "a19b4fca3adea371c25ec29f181e8c7d21037d1e",
+    "a703b95af1af871dd299f300649601f047e329ad",
+    "bd0e279a2753a04d3964fcb498e8c11b6f8c1e3e",
+    "609eb221a49af9cefaf86bc083f57c4afaae4b7c",
+];
 
 impl Builder {
     /// `getployz/build`'s reusable workflow at [`BUILDER_SHA`].
@@ -368,6 +380,10 @@ impl RuleSource {
         claims: &GithubClaims,
         git_ref: &str,
     ) -> Result<(), AuthorityRefusal> {
+        let sha = self.builder.sha.to_string();
+        if RETIRED_BUILDERS.contains(&sha.as_str()) {
+            return Err(AuthorityRefusal::RetiredBuilder { sha });
+        }
         first_mismatch([
             ("repository_id", claims.repository_id == self.repository_id),
             (
