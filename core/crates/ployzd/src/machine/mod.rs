@@ -36,12 +36,20 @@ pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    Admitted, CopyStep, CutRefusal, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
+    Admitted, Caller, CopyStep, CutRefusal, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
     SealingError,
 };
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
+
+/// [`LocalMachineRecord::has_cluster_identity`] for a phase read on its own.
+pub(crate) fn has_cluster_identity(phase: &LocalMachinePhase) -> bool {
+    matches!(
+        phase,
+        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+    )
+}
 
 #[cfg(test)]
 mod enrollment_tests;
@@ -796,12 +804,27 @@ impl LocalMachineRecord {
     /// else an Operator asks.
     #[must_use]
     pub fn awaits_activation(&self) -> bool {
-        self.activation.is_none()
-            && !self.born_enforcing
-            && matches!(
-                self.phase(),
-                LocalMachinePhase::Joining | LocalMachinePhase::Participating
-            )
+        self.activation.is_none() && !self.born_enforcing && self.has_cluster_identity()
+    }
+
+    /// Whether this Machine has joined or founded a Cluster, which `Joining` and
+    /// `Participating` both hold and `Resetting` no longer does, though its record still
+    /// names a Machine.
+    #[must_use]
+    pub fn has_cluster_identity(&self) -> bool {
+        has_cluster_identity(&self.phase())
+    }
+
+    /// Admit work that runs only in a Cluster this Machine has joined.
+    ///
+    /// # Errors
+    /// Returns [`LocalMachineError::NotParticipating`] in any other phase, `Joining` too.
+    pub(crate) fn require_participating(&self) -> Result<(), LocalMachineError> {
+        if self.phase() == LocalMachinePhase::Participating {
+            Ok(())
+        } else {
+            Err(LocalMachineError::NotParticipating)
+        }
     }
 
     /// Whether this Machine enrolled under enforcement as the only mode, so it never awaits an

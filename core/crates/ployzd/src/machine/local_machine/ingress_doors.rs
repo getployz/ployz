@@ -488,7 +488,7 @@ impl LocalMachine {
                 .sealed_token
                 .as_ref()
                 .ok_or(Error::TunnelTokenMissing)?;
-            let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let containers = self.docker()?;
             let token = containers
                 .open_tunnel_token(sealed)
                 .map_err(Error::TunnelToken)?;
@@ -523,10 +523,9 @@ impl LocalMachine {
     /// the errors of the Docker reads and the token write. A Docker stage that fails
     /// is answered in the result's `failure`.
     pub(crate) async fn restore_doors(&self) -> Result<Option<IngressDoorsSet>, Error> {
-        let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?.clone();
         self.door_effect()?;
-        let local = self.clone();
-        self.finish_installed(move |_installation| async move {
+        self.finish_installed(move |local, _installation| async move {
             let _doors = containers.door_lifecycle().await;
             local.door_effect()?;
             let inventory = containers.door_inventory(&local.record().id()).await?;
@@ -596,11 +595,10 @@ impl LocalMachine {
         legacy: Legacy,
         token: Option<TunnelToken>,
     ) -> Result<IngressDoorsSet, Error> {
-        let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?.clone();
         self.door_effect()?;
-        let local = self.clone();
         let specs = specs.clone();
-        self.finish_installed(move |_installation| async move {
+        self.finish_installed(move |local, _installation| async move {
             let _doors = containers.door_lifecycle().await;
             local.door_effect()?;
             let machine_id = local.record().id();

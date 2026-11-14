@@ -1,13 +1,13 @@
 //! Management Client slots and the client keys they admit, as admitted mutations.
 
 use ployz_core::{
-    ClientKey, DeviceCode, DeviceSet, LocalMachinePhase, ManagementCapability,
-    RemoveTrustedKeyRequest, SetDeviceRequest, SetManagementClientRequest,
-    SetManagementClientResponse, SetPasskeyRequest, TrustedKeyRemoved,
+    ClientKey, DeviceCode, DeviceSet, ManagementCapability, RemoveTrustedKeyRequest,
+    SetDeviceRequest, SetManagementClientRequest, SetManagementClientResponse, SetPasskeyRequest,
+    TrustedKeyRemoved,
     authority::{PasskeyApprover, TrustedPasskey},
 };
 
-use super::{Error, LocalMachine};
+use super::{Caller, Error, LocalMachine};
 use crate::machine::LocalMachineRecord;
 
 impl LocalMachine {
@@ -35,16 +35,13 @@ impl LocalMachine {
         if DeviceCode::reserves(label) {
             return Err(Error::DeviceSlot);
         }
-        let local = self.clone();
-        let client = self.management_client;
-        self.finish_mutation(async move {
+        let caller = self.caller;
+        self.finish_mutation(move |local| async move {
             local
                 .owner
                 .mutate(move |store| {
-                    if store.record().phase() != LocalMachinePhase::Participating {
-                        return Err(Error::NotParticipating);
-                    }
-                    LocalMachine::require_slot_authority(client, store.record())?;
+                    store.record().require_participating()?;
+                    LocalMachine::require_slot_authority(caller, store.record())?;
                     let capability = match request {
                         SetManagementClientRequest::Set { label } => {
                             let client = iroh::SecretKey::generate();
@@ -83,15 +80,12 @@ impl LocalMachine {
     /// failures, [`Error::RecordOwner`] when the record owner has stopped, and
     /// [`Error::Store`] when the record cannot be written.
     pub async fn set_device(&self, request: SetDeviceRequest) -> Result<DeviceSet, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
+        self.finish_mutation(move |local| async move {
             let caller = local.clone();
             local
                 .owner
                 .mutate(move |store| {
-                    if store.record().phase() != LocalMachinePhase::Participating {
-                        return Err(Error::NotParticipating);
-                    }
+                    store.record().require_participating()?;
                     let by = caller.full_caller(store.record())?;
                     Ok(match request {
                         SetDeviceRequest::Approve { key } => {
@@ -140,16 +134,13 @@ impl LocalMachine {
     /// failures, [`Error::RecordOwner`] when the record owner has stopped, and
     /// [`Error::Store`] when the record cannot be written.
     pub async fn set_passkey(&self, request: SetPasskeyRequest) -> Result<DeviceSet, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
+        self.finish_mutation(move |local| async move {
             let caller = local.clone();
             local
                 .owner
                 .mutate(move |store| {
                     let record = store.record();
-                    if record.phase() != LocalMachinePhase::Participating {
-                        return Err(Error::NotParticipating);
-                    }
+                    record.require_participating()?;
                     let by = caller.full_caller(record)?;
                     let SetPasskeyRequest::Approve { passkey } = request;
                     let code = passkey.code();
@@ -198,15 +189,12 @@ impl LocalMachine {
         &self,
         RemoveTrustedKeyRequest { code }: RemoveTrustedKeyRequest,
     ) -> Result<TrustedKeyRemoved, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
+        self.finish_mutation(move |local| async move {
             let caller = local.clone();
             local
                 .owner
                 .mutate(move |store| {
-                    if store.record().phase() != LocalMachinePhase::Participating {
-                        return Err(Error::NotParticipating);
-                    }
+                    store.record().require_participating()?;
                     let by = caller.full_caller(store.record())?;
                     if store.remove_device(code)? {
                         tracing::info!("trusted key removed kind=device code={code} by={by}");
@@ -236,16 +224,16 @@ impl LocalMachine {
     /// This Machine's own view of a Full caller: the Device whose connection asked, a
     /// caller on this Server's local socket, or a call routed here over the mesh.
     fn full_caller(&self, record: &LocalMachineRecord) -> Result<PasskeyApprover, Error> {
-        match self.management_client {
-            Some(remote) => record
+        match self.caller {
+            Caller::Management(remote) => record
                 .devices()
                 .find(|device| ClientKey::from(*device) == remote)
                 .map(|device| PasskeyApprover::Device {
                     code: device.code(),
                 })
                 .ok_or(Error::NeedsFullScope),
-            None if self.local_socket => Ok(PasskeyApprover::Server),
-            None => Ok(PasskeyApprover::Routed),
+            Caller::LocalSocket => Ok(PasskeyApprover::Server),
+            Caller::Routed => Ok(PasskeyApprover::Routed),
         }
     }
 
@@ -257,8 +245,7 @@ impl LocalMachine {
         if self.record().pending_label(&remote).is_none() {
             return Ok(());
         }
-        let local = self.clone();
-        self.finish_mutation(async move {
+        self.finish_mutation(move |local| async move {
             local
                 .owner
                 .mutate(move |store| {

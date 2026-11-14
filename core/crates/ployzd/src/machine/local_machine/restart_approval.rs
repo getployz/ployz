@@ -11,7 +11,7 @@ use ployz_core::{
     },
 };
 
-use super::{Error, LocalMachine};
+use super::{Caller, Error, LocalMachine};
 
 mod consumption;
 
@@ -30,9 +30,8 @@ impl LocalMachine {
         request: SetDeviceEnforcementRequest,
     ) -> Result<DeviceEnforcementSet, Error> {
         let record = self.record();
-        if self
-            .management_client
-            .is_some_and(|remote| record.management_scope(&remote) != Some(ManagementScope::Full))
+        if let Caller::Management(remote) = self.caller
+            && record.management_scope(&remote) != Some(ManagementScope::Full)
         {
             return Err(Error::NeedsFullScope);
         }

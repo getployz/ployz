@@ -2,6 +2,7 @@
 
 mod ends_on_shutdown;
 mod local;
+mod provenance;
 mod routing;
 
 use std::{convert::Infallible, path::PathBuf, sync::Arc, task::Context};
@@ -15,6 +16,8 @@ use tonic::{
     codegen::{Service, http},
     service::Routes,
 };
+
+use provenance::Provenance;
 
 use crate::{
     corrosion::{AdminClient, ReplicatedStore},
@@ -184,52 +187,10 @@ impl Service<http::Request<Body>> for MachineApi {
             .extensions()
             .get::<iroh::endpoint::WeakConnectionHandle>()
         else {
-            let local = request
-                .extensions()
-                .get::<tonic::transport::server::UdsConnectInfo>()
-                .is_some();
-            // A daemon that advertises `ployz.machine.enforced.v1` never gives a mesh
-            // caller Full scope: only this Server's local socket and a Device's own
-            // connection make Full calls, which is what the trusted snapshot rests on.
-            let scope = if local
-                && !request
-                    .headers()
-                    .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
-            {
-                ManagementScope::Full
-            } else {
-                ManagementScope::Operator
+            return match refuse_local(&mut request) {
+                None => self.proxy.call(request),
+                Some(refused) => Box::pin(async { Ok(refused) }),
             };
-            if !local && request.uri().path() == op::SetManagementClient::PATH {
-                return Box::pin(async {
-                    Ok(ployz_core::rpc::hinted_status(
-                        tonic::Code::PermissionDenied,
-                        &NeedsManagementConnection,
-                        serde_json::json!({ "capability": ployz_core::SET_MANAGEMENT_CLIENT_CAPABILITY }),
-                    ).into_http())
-                });
-            }
-            if scope == ManagementScope::Operator {
-                request.headers_mut().insert(
-                    ployz_core::OPERATOR_SCOPE_HEADER,
-                    http::HeaderValue::from_static("1"),
-                );
-            }
-            if !local && ployz_core::scope_of(request.uri().path()) == Some(ManagementScope::Full) {
-                let capability =
-                    ployz_core::capability_of(request.uri().path()).expect("catalogued Full route");
-                return Box::pin(async move {
-                    Ok(ployz_core::rpc::hinted_status(
-                    tonic::Code::PermissionDenied,
-                    &NeedsDirectDevice,
-                    serde_json::json!({ "capability": capability, "next": "Connect directly to the target Server as an approved Device, or over SSH." }),
-                ).into_http())
-                });
-            }
-            if let Some(refused) = refuse_scope(request.uri().path(), scope, false) {
-                return Box::pin(async { Ok(refused) });
-            }
-            return self.proxy.call(request);
         };
         let remote = connection
             .upgrade()
@@ -242,74 +203,109 @@ impl Service<http::Request<Body>> for MachineApi {
                     tonic::Status::unauthenticated("management connection closed").into_http(),
                 );
             };
-            let local = service.local();
-            let verification = request.uri().path() == op::DescribeContract::PATH;
-            // Negotiation is read-only: Cloud must save a verified candidate before
-            // any operational RPC can activate it and retire the previous credential.
-            if !verification && let Err(error) = local.activate_management_client(remote).await {
-                return Ok(
-                    ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error).into_http(),
-                );
-            }
-            let record = local.record();
-            let allowed = if verification {
-                record.admits_management_client(&remote)
-            } else {
-                record.accepts_management_client(&remote)
-            };
-            if !allowed {
-                return Ok(
-                    tonic::Status::unauthenticated("management credential revoked").into_http(),
-                );
-            }
-            let scope = record
-                .management_scope(&remote)
-                .unwrap_or(ManagementScope::Operator);
-            let awaiting = record.trusts_after_activation(&remote);
-            if let Some(refused) = refuse_scope(request.uri().path(), scope, awaiting) {
+            if let Some(refused) = refuse_remote(&service, remote, &mut request).await {
                 return Ok(refused);
             }
-            if request.uri().path() == op::SetManagementClient::PATH {
-                if let Err(error) =
-                    crate::machine::LocalMachine::require_slot_authority(Some(remote), &record)
-                {
-                    return Ok(ployz_core::rpc::caused_status(
-                        tonic::Code::PermissionDenied,
-                        &error,
-                    )
-                    .into_http());
-                }
-                // Forwarding drops the client key, and only a Machine's own `cloud` slot
-                // governs its slots, so a slot change is never routed to another Machine.
-                let routing = ployz_core::routing_from_metadata(
-                    &tonic::metadata::MetadataMap::from_headers(request.headers().clone()),
-                );
-                if !matches!(routing, Ok(RoutingRequest::Local)) {
-                    return Ok(tonic::Status::invalid_argument(
-                        "slots change only on the Server that holds them",
-                    )
-                    .into_http());
-                }
-            }
-            let mut request = request;
-            request.headers_mut().insert(
-                ployz_core::CLOUD_ROUTED_HEADER,
-                http::HeaderValue::from_static("1"),
-            );
-            match scope {
-                ManagementScope::Operator => request.headers_mut().insert(
-                    ployz_core::OPERATOR_SCOPE_HEADER,
-                    http::HeaderValue::from_static("1"),
-                ),
-                ManagementScope::Full => request
-                    .headers_mut()
-                    .remove(ployz_core::OPERATOR_SCOPE_HEADER),
-            };
             // Carry the authenticated key into detached/queued local work as well.
             let mut proxy = proxy.with_local(routes(service.with_management_client(remote)));
             proxy.call(request).await
         })
     }
+}
+
+/// The refusal of a call that arrived over this Server's local socket or a mesh connection,
+/// or else the call marked with the scope it is served at.
+///
+/// A daemon that advertises `ployz.machine.enforced.v1` never gives a mesh caller Full scope:
+/// only this Server's local socket and a Device's own connection make Full calls, which is
+/// what the trusted snapshot rests on.
+fn refuse_local(request: &mut http::Request<Body>) -> Option<http::Response<Body>> {
+    let local = request
+        .extensions()
+        .get::<tonic::transport::server::UdsConnectInfo>()
+        .is_some();
+    let provenance = if local && !Provenance::of_headers(request.headers()).operator() {
+        Provenance::new(ManagementScope::Full, false)
+    } else {
+        Provenance::new(ManagementScope::Operator, false)
+    };
+    if !local && request.uri().path() == op::SetManagementClient::PATH {
+        return Some(
+            ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &NeedsManagementConnection,
+                serde_json::json!({ "capability": ployz_core::SET_MANAGEMENT_CLIENT_CAPABILITY }),
+            )
+            .into_http(),
+        );
+    }
+    provenance.stamp(request.headers_mut());
+    if !local && ployz_core::scope_of(request.uri().path()) == Some(ManagementScope::Full) {
+        let capability =
+            ployz_core::capability_of(request.uri().path()).expect("catalogued Full route");
+        return Some(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &NeedsDirectDevice,
+            serde_json::json!({ "capability": capability, "next": "Connect directly to the target Server as an approved Device, or over SSH." }),
+        )
+        .into_http());
+    }
+    refuse_scope(request.uri().path(), provenance.scope(), false)
+}
+
+/// The refusal of a call over a Management connection that `remote` authenticated, or else
+/// the call marked as Cloud routed at the scope its Device slot gives it.
+async fn refuse_remote(
+    service: &local::MachineService,
+    remote: ployz_core::ClientKey,
+    request: &mut http::Request<Body>,
+) -> Option<http::Response<Body>> {
+    let local = service.local();
+    let verification = request.uri().path() == op::DescribeContract::PATH;
+    // Negotiation is read-only: Cloud must save a verified candidate before
+    // any operational RPC can activate it and retire the previous credential.
+    if !verification && let Err(error) = local.activate_management_client(remote).await {
+        return Some(ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error).into_http());
+    }
+    let record = local.record();
+    let allowed = if verification {
+        record.admits_management_client(&remote)
+    } else {
+        record.accepts_management_client(&remote)
+    };
+    if !allowed {
+        return Some(tonic::Status::unauthenticated("management credential revoked").into_http());
+    }
+    let scope = record
+        .management_scope(&remote)
+        .unwrap_or(ManagementScope::Operator);
+    let awaiting = record.trusts_after_activation(&remote);
+    if let Some(refused) = refuse_scope(request.uri().path(), scope, awaiting) {
+        return Some(refused);
+    }
+    if request.uri().path() == op::SetManagementClient::PATH {
+        if let Err(error) = crate::machine::LocalMachine::require_slot_authority(
+            crate::machine::Caller::Management(remote),
+            &record,
+        ) {
+            return Some(
+                ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error).into_http(),
+            );
+        }
+        // Forwarding drops the client key, and only a Machine's own `cloud` slot
+        // governs its slots, so a slot change is never routed to another Machine.
+        let routing = ployz_core::routing_from_metadata(
+            &tonic::metadata::MetadataMap::from_headers(request.headers().clone()),
+        );
+        if !matches!(routing, Ok(RoutingRequest::Local)) {
+            return Some(
+                tonic::Status::invalid_argument("slots change only on the Server that holds them")
+                    .into_http(),
+            );
+        }
+    }
+    Provenance::new(scope, true).stamp(request.headers_mut());
+    None
 }
 
 /// Whether `path` is a catalog route the coverage table classes as a read.

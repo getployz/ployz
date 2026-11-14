@@ -5,7 +5,7 @@ use ployz_core::{
     authority::{AuthorityRefusal, Purpose, Timestamp, upgrade},
 };
 
-use super::{Error, LocalMachine};
+use super::{Caller, Error, LocalMachine};
 use crate::installer::upgrade::ReleaseChoice;
 
 impl LocalMachine {
@@ -107,7 +107,7 @@ impl LocalMachine {
     }
 
     fn downgrade(&self, cloud_routed: bool) -> crate::installer::upgrade::Downgrade {
-        if cloud_routed || self.management_client.is_some() {
+        if cloud_routed || matches!(self.caller, Caller::Management(_)) {
             crate::installer::upgrade::Downgrade::Refused
         } else {
             crate::installer::upgrade::Downgrade::Allowed

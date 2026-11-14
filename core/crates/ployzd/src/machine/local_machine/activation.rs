@@ -18,7 +18,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
-use super::{Error, LocalMachine};
+use super::{Caller, Error, LocalMachine};
 use crate::machine::{Evidence, LocalMachineRecord};
 
 const PENDING_FILE: &str = "activation-pending.json";
@@ -172,10 +172,10 @@ impl LocalMachine {
         signed: Signed<StartingSet>,
         capability: &'static str,
     ) -> Result<DeviceEnforcementSet, Error> {
-        let local = self.local_socket;
+        let local_socket = self.caller == Caller::LocalSocket;
         let phase = self.record().phase();
         let cluster = self.cluster_identity(phase);
-        let rows = match (local, self.replicated()) {
+        let rows = match (local_socket, self.replicated()) {
             (false, Ok(replicated)) => replicated.machines().await?.observations,
             _ => Vec::new(),
         };
@@ -184,13 +184,11 @@ impl LocalMachine {
         let data_dir = owner.data_dir().to_path_buf();
         let refused = move |reason| Error::ActivationRefused { capability, reason };
         let admitted = self
-            .finish_mutation(async move {
+            .finish_mutation(move |_| async move {
                 owner
                     .mutate(move |store| {
                         let record = store.record();
-                        if record.phase() != LocalMachinePhase::Participating {
-                            return Err(Error::NotParticipating);
-                        }
+                        record.require_participating()?;
                         let body = signed
                             .open()
                             .map_err(|refusal| refused(Refusal::Authority(refusal)))?;
@@ -221,7 +219,7 @@ impl LocalMachine {
                             }))
                         })?;
                         let snapshot = record.trusted_snapshot();
-                        let signer_evidence = if local {
+                        let signer_evidence = if local_socket {
                             Evidence::LocalSocket
                         } else {
                             let Some(evidence) =

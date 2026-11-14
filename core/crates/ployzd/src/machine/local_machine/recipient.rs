@@ -5,6 +5,7 @@
 //! installs only the recipient a verified `SealingRotation` names, for the activation its
 //! own record committed, and re-seals only to the recipient its own file holds.
 
+use crate::machine::has_cluster_identity;
 use ployz_core::{
     LocalMachinePhase, PLATFORM_SEALED_INFO, RecipientKeySet, RecipientSecret, ResealValue,
     ResealValuesRequest, SEALED_VALUE_INFO, SealingPublicKey, SetRecipientKeyRequest,
@@ -24,10 +25,7 @@ use crate::{
 impl LocalMachine {
     /// The recipient key this Machine holds, on the phases a Sealing Key is reported.
     pub(crate) fn held_recipient(&self, phase: LocalMachinePhase) -> Option<SealingPublicKey> {
-        if !matches!(
-            phase,
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating
-        ) {
+        if !has_cluster_identity(&phase) {
             return None;
         }
         SealingKey::load_recipient(self.owner.data_dir())
@@ -49,8 +47,7 @@ impl LocalMachine {
         &self,
         request: SetRecipientKeyRequest,
     ) -> Result<RecipientKeySet, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.recipient_admitted(request) })
+        self.finish_mutation(move |local| async move { local.recipient_admitted(request) })
             .await
     }
 

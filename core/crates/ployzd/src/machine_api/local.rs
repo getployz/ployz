@@ -10,12 +10,13 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ClientKey,
     ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
     ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, ManagementScope,
-    OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
+    LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, OpaquePayload,
+    PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
 
+use super::provenance::Provenance;
 use crate::{
     corrosion::{AdminClient, CertificateMaterial, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
@@ -424,9 +425,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let cloud_routed = request
-            .metadata()
-            .contains_key(ployz_core::CLOUD_ROUTED_HEADER);
+        let cloud_routed = Provenance::of(&request).cloud_routed();
         finish(
             self.local
                 .wrap_sealing_key(expect::<op::WrapSealingKey>(request)?, cloud_routed),
@@ -437,9 +436,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let cloud_routed = request
-            .metadata()
-            .contains_key(ployz_core::CLOUD_ROUTED_HEADER);
+        let cloud_routed = Provenance::of(&request).cloud_routed();
         finish(
             self.local
                 .recover_sealing_key(expect::<op::RecoverSealingKey>(request)?, cloud_routed)
@@ -614,7 +611,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::InspectContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
@@ -642,7 +639,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let mut request = expect::<op::EnsureContainer>(request)?;
         let teardown_only = request.approval.is_none()
             && request.deploy.is_none()
@@ -732,7 +729,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::RemoveVolume>(request)?;
         let held = if operator {
             match self
@@ -769,7 +766,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::SetVolumeCopy>(request)?;
         // An unapproved start is refused before the switch lock, so nothing is planned
         // against the copy. One that carries an approval is checked once the plan says the
@@ -789,7 +786,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::SeedVolume>(request)?;
         // Admitted under the switch lock, so a resend queued behind the seed that lands
         // finds its operation ended and only reads.
@@ -836,7 +833,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::SetVolumeSize>(request)?;
         // Admitted under the switch lock, so a resend queued behind the resize that lands
         // finds its operation ended and writes nothing.
@@ -870,7 +867,7 @@ impl MachineRpc for MachineService {
         request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::BuildStream>, Status> {
         // Refused before the request stream is read, so no source or recipe is taken.
-        if from_operator(&request) {
+        if Provenance::of(&request).operator() {
             let error = LocalMachineError::BuildRefused {
                 capability: ployz_core::BUILD_CAPABILITY,
             };
@@ -1051,20 +1048,13 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let cloud_routed = request
-            .metadata()
-            .contains_key(ployz_core::CLOUD_ROUTED_HEADER);
-        let scope = if from_operator(&request) {
-            ManagementScope::Operator
-        } else {
-            ManagementScope::Full
-        };
+        let provenance = Provenance::of(&request);
         finish(
             self.local
                 .request_upgrade(
                     expect::<op::RequestMachineUpgrade>(request)?,
-                    cloud_routed,
-                    scope,
+                    provenance.cloud_routed(),
+                    provenance.scope(),
                 )
                 .await,
         )
@@ -1074,7 +1064,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let mut request = expect::<op::Leave>(request)?;
         let held = if operator {
             match self
@@ -1094,7 +1084,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let mut request = expect::<op::Forget>(request)?;
         let held = if operator {
             match self
@@ -1175,7 +1165,8 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let provenance = Provenance::of(&request);
+        let operator = provenance.operator();
         let request = expect::<op::MintBuildGrant>(request)?;
         // Refused before `Mint::check`, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
@@ -1227,11 +1218,7 @@ impl MachineRpc for MachineService {
             .containers()
             .ok()
             .and_then(|containers| containers.sealing_key_dir());
-        let scope = if operator {
-            ployz_core::ManagementScope::Operator
-        } else {
-            ployz_core::ManagementScope::Full
-        };
+        let scope = provenance.scope();
         let mint = match crate::management::build_grant::Mint::check_admitted(
             request, key_dir, admitted,
         ) {
@@ -1353,7 +1340,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::SetPrivateAccess>(request)?;
         if operator && let Err(error) = self.local.admit_operator_private_access(&request) {
             return local_error(error);
@@ -1987,12 +1974,6 @@ fn build_refused(error: &LocalMachineError, capability: &'static str) -> Status 
         error,
         serde_json::json!({ "capability": capability }),
     )
-}
-
-fn from_operator<T>(request: &Request<T>) -> bool {
-    request
-        .metadata()
-        .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
 }
 
 fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &BTreeSet<String>) {

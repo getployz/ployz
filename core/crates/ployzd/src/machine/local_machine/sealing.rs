@@ -14,8 +14,8 @@
 use std::io;
 
 use ployz_core::{
-    GenerateSealingKeyRequest, InstallSealingKeyRequest, LocalMachinePhase, MachineId,
-    SealingKeyHeld, SealingKeyShared, SealingPublicKey, ShareSealingKeyRequest,
+    GenerateSealingKeyRequest, InstallSealingKeyRequest, MachineId, SealingKeyHeld,
+    SealingKeyShared, SealingPublicKey, ShareSealingKeyRequest,
 };
 use thiserror::Error as ThisError;
 
@@ -59,13 +59,34 @@ pub enum Error {
 }
 
 impl LocalMachine {
+    /// Write `key` as this Machine's Sealing Key, over `replaced`, the file read before: none,
+    /// or one that was not 32 bytes.
+    async fn store_sealing_key(
+        &self,
+        key: SealingKey,
+        replaced: &KeyFile,
+    ) -> Result<(), super::Error> {
+        let public_key = key.public_key();
+        self.owner
+            .mutate(move |store| store.set_sealing_key(Some(&key)))
+            .await?
+            .map_err(Error::Unwritable)?;
+        if *replaced == KeyFile::Unusable {
+            tracing::warn!(
+                machine = %self.record().id(),
+                %public_key,
+                "replaced a Sealing Key file that was not 32 bytes"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) async fn generate_sealing_key(
         &self,
         GenerateSealingKeyRequest {}: GenerateSealingKeyRequest,
     ) -> Result<SealingKeyHeld, super::Error> {
         self.require_management_access()?;
-        let local = self.clone();
-        self.finish_mutation(async move { local.generate_admitted().await })
+        self.finish_mutation(move |local| async move { local.generate_admitted().await })
             .await
     }
 
@@ -81,9 +102,7 @@ impl LocalMachine {
     /// - a file that cannot be read: refuses [`Error::Unreadable`].
     async fn generate_admitted(&self) -> Result<SealingKeyHeld, super::Error> {
         let record = self.record();
-        if record.phase() != LocalMachinePhase::Participating {
-            return Err(super::Error::NotParticipating);
-        }
+        record.require_participating()?;
         let data_dir = self.owner.data_dir();
         let file = SealingKey::read(data_dir).map_err(Error::Unreadable)?;
         match &file {
@@ -110,17 +129,7 @@ impl LocalMachine {
         }
         let key = SealingKey::generate();
         let public_key = key.public_key();
-        self.owner
-            .mutate(move |store| store.set_sealing_key(Some(&key)))
-            .await?
-            .map_err(Error::Unwritable)?;
-        if file == KeyFile::Unusable {
-            tracing::warn!(
-                machine = %record.id(),
-                %public_key,
-                "replaced a Sealing Key file that was not 32 bytes"
-            );
-        }
+        self.store_sealing_key(key, &file).await?;
         replicated.publish_sealing_public_key(public_key).await?;
         tracing::info!(
             machine = %record.id(),
@@ -135,9 +144,10 @@ impl LocalMachine {
         request: ShareSealingKeyRequest,
     ) -> Result<SealingKeyShared, super::Error> {
         self.require_management_access()?;
-        let local = self.clone();
-        self.finish_mutation(async move { local.share_sealing_key_admitted(request).await })
-            .await
+        self.finish_mutation(
+            move |local| async move { local.share_sealing_key_admitted(request).await },
+        )
+        .await
     }
 
     async fn share_sealing_key_admitted(
@@ -220,8 +230,7 @@ impl LocalMachine {
         request: InstallSealingKeyRequest,
     ) -> Result<SealingKeyHeld, super::Error> {
         self.require_management_access()?;
-        let local = self.clone();
-        self.finish_mutation(async move { local.install_admitted(request).await })
+        self.finish_mutation(move |local| async move { local.install_admitted(request).await })
             .await
     }
 
@@ -250,9 +259,7 @@ impl LocalMachine {
         request: InstallSealingKeyRequest,
     ) -> Result<SealingKeyHeld, super::Error> {
         let record = self.record();
-        if record.phase() != LocalMachinePhase::Participating {
-            return Err(super::Error::NotParticipating);
-        }
+        record.require_participating()?;
         let replicated = self.replicated()?;
         let sender = replicated
             .machine(&request.from.to_string())
@@ -317,17 +324,7 @@ impl LocalMachine {
             | ClusterSealing::AwaitsRecovery(_)
             | ClusterSealing::Unsealed => {}
         }
-        self.owner
-            .mutate(move |store| store.set_sealing_key(Some(&key)))
-            .await?
-            .map_err(Error::Unwritable)?;
-        if file == KeyFile::Unusable {
-            tracing::warn!(
-                machine = %record.id(),
-                %public_key,
-                "replaced a Sealing Key file that was not 32 bytes"
-            );
-        }
+        self.store_sealing_key(key, &file).await?;
         replicated.publish_sealing_public_key(public_key).await?;
         tracing::info!(
             machine = %record.id(),

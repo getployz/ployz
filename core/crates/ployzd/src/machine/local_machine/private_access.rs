@@ -217,7 +217,7 @@ impl LocalMachine {
         &self,
         request: SetPrivateAccessRequest,
     ) -> Result<PrivateAccessSet, Error> {
-        let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?.clone();
         let opened = if request.enabled {
             let sealed = request
                 .sealed_auth_key
@@ -230,8 +230,7 @@ impl LocalMachine {
             None
         };
         self.reserved_effect(Gate::Router)?;
-        let local = self.clone();
-        self.finish_installed(move |_installation| async move {
+        self.finish_installed(move |local, _installation| async move {
             let _doors = containers.door_lifecycle().await;
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
@@ -282,10 +281,9 @@ impl LocalMachine {
     /// [`Error::PrivateAccessRouterStays`] when a router turned off still cannot be
     /// removed, and the errors of the Docker reads and the key write.
     pub(crate) async fn restore_private_access(&self) -> Result<Option<PrivateAccessSet>, Error> {
-        let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
+        let containers = self.docker()?.clone();
         self.reserved_effect(Gate::Router)?;
-        let local = self.clone();
-        self.finish_installed(move |_installation| async move {
+        self.finish_installed(move |local, _installation| async move {
             let _doors = containers.door_lifecycle().await;
             local.reserved_effect(Gate::Router)?;
             let routers = containers.routers(&local.record().id()).await?;
