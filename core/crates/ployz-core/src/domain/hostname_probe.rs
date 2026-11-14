@@ -1,10 +1,28 @@
 //! The HTTP client that fetches [`HOSTNAME_VERIFY_PATH`] through an Ingress Hostname.
 
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    collections::BTreeSet,
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use reqwest::{Client, redirect::Policy};
 
 use crate::{HOSTNAME_VERIFY_PATH, IngressHost, VerifyAnswer};
+
+/// The A and AAAA addresses an Ingress Hostname resolves to, sorted and without repeats.
+/// `port` is only what the resolver is asked for: the CLI asks with 0, a Machine with 80.
+/// A failed lookup is an empty set.
+pub async fn resolve_ingress_addresses(hostname: &IngressHost, port: u16) -> Vec<IpAddr> {
+    let Ok(lookup) = tokio::net::lookup_host((hostname.as_str(), port)).await else {
+        return Vec::new();
+    };
+    lookup
+        .map(|address| address.ip())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
 
 /// Fetches plain HTTP from one address with an Ingress Hostname as `Host`, never following a
 /// redirect and never going through a proxy. The CLI's Deploy warning and a Machine's HTTP-01
@@ -65,8 +83,25 @@ mod tests {
         time::Duration,
     };
 
-    use super::HostnameProbe;
+    use super::{HostnameProbe, resolve_ingress_addresses};
     use crate::{IngressHost, VerifyAnswer};
+
+    #[tokio::test]
+    async fn an_address_literal_resolves_to_itself_whatever_the_port_and_a_failed_lookup_to_nothing()
+     {
+        let literal = IngressHost::parse("127.0.0.1").unwrap();
+        for port in [0, 80] {
+            assert_eq!(
+                resolve_ingress_addresses(&literal, port).await,
+                ["127.0.0.1".parse::<std::net::IpAddr>().unwrap()]
+            );
+        }
+        assert!(
+            resolve_ingress_addresses(&IngressHost::parse("no-such-host.invalid").unwrap(), 80)
+                .await
+                .is_empty()
+        );
+    }
 
     fn serve_once(response: &'static str) -> (SocketAddr, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

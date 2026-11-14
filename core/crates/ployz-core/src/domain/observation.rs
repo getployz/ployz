@@ -14,8 +14,8 @@ use super::{
 };
 use crate::labels::{self, LabelMap};
 use crate::{
-    ContainerAddress, ContainerId, DeploymentLogId, MachineId, Namespace, QualifiedService,
-    ServiceId, ServiceName,
+    ContainerAddress, ContainerId, DeploymentLogId, HeldDoor, MachineId, Namespace,
+    QualifiedService, ServiceId, ServiceName,
 };
 
 /// Value that replaces each environment value in a redacted observation.
@@ -433,6 +433,16 @@ impl ContainerObservation {
     #[must_use]
     pub fn is_system_ingress(&self) -> bool {
         self.identity() == QualifiedService::system_ingress()
+    }
+
+    /// The door this Container holds for its Server, when it is a door Container of a
+    /// wiring Ployz builds. Whether the Container runs is for the caller to ask.
+    #[must_use]
+    pub fn door(&self) -> Option<HeldDoor> {
+        if !self.identity().is_ingress_door() {
+            return None;
+        }
+        HeldDoor::of_spec(&self.resolved_spec)
     }
 
     /// Replace every Service and pre-deploy hook environment value, keeping the keys,

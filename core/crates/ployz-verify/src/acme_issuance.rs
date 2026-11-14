@@ -101,8 +101,8 @@ fn ago_cap() -> u8 {
     ))
 }
 
-/// What one Machine's probe of the hostname sees (`HostnameVerdict`,
-/// core/crates/ployz-core/src/domain/hostname_verdict.rs:45-50), in the one refusal and the one
+/// What one Machine's probe of the hostname sees (`HostnameVerdict` in
+/// core/crates/ployz-core/src/domain/hostname_verdict.rs), in the one refusal and the one
 /// route the model explores.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Verdict {

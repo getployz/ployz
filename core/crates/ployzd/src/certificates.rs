@@ -19,11 +19,11 @@ use instant_acme::{
     ExternalAccountKey, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute, ContainerKind,
-    ContainerObservation, HostnameProbe, HttpProtocol, IngressHost, IngressPorts, IngressWiring,
-    IssuanceFailure, Machine, MachineId, PortPublication, TUNNEL_SERVES_CERTIFICATE, VerifyAnswer,
-    hostname_verdict, issuance_failure_clock, issuance_gate, refusal_reason,
-    resolve_certificate_policy, validate_ingress_service_spec,
+    ACME_CHALLENGE_PREFIX, CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute,
+    ContainerObservation, HeldDoor, HostnameProbe, HttpProtocol, IngressHost, IssuanceFailure,
+    Machine, MachineId, TUNNEL_SERVES_CERTIFICATE, VerifyAnswer, hostname_verdict,
+    issuance_failure_clock, issuance_gate, published_hostnames, refusal_reason,
+    resolve_certificate_policy, resolve_ingress_addresses,
 };
 use ployz_decide::issuance::{
     Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, issuance_action, issued,
@@ -193,19 +193,15 @@ pub(crate) fn door_standing(observations: &[ContainerObservation]) -> DoorStandi
     for observation in observations
         .iter()
         .filter(|observation| observation.runtime.may_serve())
-        .filter(|observation| observation.identity().is_ingress_door())
     {
-        match validate_ingress_service_spec(&observation.resolved_spec).ok() {
-            Some(IngressWiring::LegacyProxy | IngressWiring::Holder(IngressPorts::Public)) => {
+        match observation.door() {
+            Some(HeldDoor::Public) => {
                 standing.public.insert(observation.machine_id);
             }
-            Some(IngressWiring::Holder(IngressPorts::Closed)) => {
+            Some(HeldDoor::Closed) => {
                 standing.closed.insert(observation.machine_id);
             }
-            Some(
-                IngressWiring::JoinedProxy | IngressWiring::TunnelOrigin | IngressWiring::Tunnel,
-            )
-            | None => {}
+            Some(HeldDoor::Tunnel) | None => {}
         }
     }
     standing
@@ -336,26 +332,11 @@ pub(crate) fn wanted_certificate_hosts<'a>(
     observations: impl IntoIterator<Item = &'a ContainerObservation>,
     rows: &BTreeMap<CertificateHost, CertificateRow>,
 ) -> BTreeSet<IngressHost> {
-    let mut wanted = BTreeSet::new();
-    for observation in observations {
-        if observation.kind != ContainerKind::ServiceContainer {
-            continue;
-        }
-        for port in &observation.resolved_spec.ports {
-            let PortPublication::Ingress {
-                hostname,
-                http_protocol: HttpProtocol::Https,
-                ..
-            } = port
-            else {
-                continue;
-            };
-            if published_cover(hostname, rows).is_none() {
-                wanted.insert(hostname.clone());
-            }
-        }
-    }
-    wanted
+    published_hostnames(observations)
+        .filter(|(_, _, protocol)| *protocol == HttpProtocol::Https)
+        .map(|(hostname, ..)| hostname)
+        .filter(|hostname| published_cover(hostname, rows).is_none())
+        .collect()
 }
 
 pub(crate) async fn run(
@@ -539,7 +520,7 @@ async fn issue_wanted(
                 since: now,
             },
             None => {
-                let addresses = resolve_host(hostname)
+                let addresses = resolve_ingress_addresses(hostname, 80)
                     .await
                     .into_iter()
                     .map(|address| SocketAddr::new(address, 80))
@@ -693,7 +674,7 @@ async fn obtain(
                 .publish_certificate_challenge(&hostname, &challenge)
                 .await?;
             note_acme_write(&hostname, write, "publish the HTTP-01 challenge");
-            let resolved = resolve_host(&hostname).await;
+            let resolved = resolve_ingress_addresses(&hostname, 80).await;
             let machines = store.machines().await?;
             let containers = store.containers().await?;
             let ingress_ips =
@@ -885,17 +866,6 @@ async fn account(
     Ok(account)
 }
 
-async fn resolve_host(hostname: &IngressHost) -> Vec<IpAddr> {
-    let Ok(lookup) = tokio::net::lookup_host((hostname.as_str(), 80)).await else {
-        return Vec::new();
-    };
-    lookup
-        .map(|address| address.ip())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
 /// Fetch the verify path from each address with `hostname` as `Host`, without following redirects.
 pub(crate) async fn verify_answers(
     probe: &HostnameProbe,
@@ -950,7 +920,7 @@ async fn challenge_is_served(
     address: SocketAddr,
 ) -> bool {
     let url = format!(
-        "http://{address}/.well-known/acme-challenge/{}",
+        "http://{address}{ACME_CHALLENGE_PREFIX}{}",
         challenge.token()
     );
     let Ok(response) = client

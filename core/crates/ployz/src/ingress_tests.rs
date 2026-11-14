@@ -1,6 +1,7 @@
 use ployz_core::error_chain;
 use ployz_core::{
-    ContainerRuntimeObservation, Machine, MembershipObservation, Placement, RpcErrorCode,
+    ContainerRuntimeObservation, IngressPorts, Machine, MembershipObservation, Placement,
+    RpcErrorCode,
 };
 
 use super::*;
@@ -1325,7 +1326,7 @@ fn the_doors_a_set_left_open_are_named_public_then_tunnel() {
             serving(),
         );
         DoorOutcome {
-            now: service.containers[0].as_observation().clone(),
+            now: service.containers.first().unwrap().as_observation().clone(),
             change: DoorChange::Created,
         }
     };

@@ -72,6 +72,33 @@ pub enum IngressWiring {
     Tunnel,
 }
 
+/// The door a door Container holds for its Server.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeldDoor {
+    /// The Public Door: host ports 80 and 443 answer here.
+    Public,
+    /// The holder that keeps the host ports closed, for the Tunnel Door.
+    Closed,
+    /// The Tunnel Door: a Tunnel Connector.
+    Tunnel,
+}
+
+impl HeldDoor {
+    /// The door a door spec stands for. A Caddy that joins the holder's network and the
+    /// Tunnel Origin stand for none, and neither does a spec Ployz doesn't build.
+    #[must_use]
+    pub fn of_spec(spec: &ResolvedServiceSpec) -> Option<Self> {
+        match validate_ingress_service_spec(spec).ok()? {
+            IngressWiring::LegacyProxy | IngressWiring::Holder(IngressPorts::Public) => {
+                Some(Self::Public)
+            }
+            IngressWiring::Holder(IngressPorts::Closed) => Some(Self::Closed),
+            IngressWiring::Tunnel => Some(Self::Tunnel),
+            IngressWiring::JoinedProxy | IngressWiring::TunnelOrigin => None,
+        }
+    }
+}
+
 impl IngressWiring {
     /// The host ports this wiring answers on.
     #[must_use]
@@ -405,6 +432,46 @@ mod tests {
             assert_eq!(wiring_of(&spec), Some(wiring));
             assert_eq!(wiring.ports(), ports);
         }
+    }
+
+    #[test]
+    fn a_door_spec_stands_for_the_door_its_wiring_names() {
+        let image = "example.test/ingress:override";
+        let token = crate::Ciphertext::from_bytes(vec![7; 48]);
+        let cases = [
+            (
+                legacy_caddy_spec(image.into(), edge()),
+                Some(HeldDoor::Public),
+            ),
+            (placed(caddy_service_spec(image)), None),
+            (
+                placed(holder_service_spec(image, IngressPorts::Public)),
+                Some(HeldDoor::Public),
+            ),
+            (
+                holder_service_spec(image, IngressPorts::Closed),
+                Some(HeldDoor::Closed),
+            ),
+            (placed(crate::tunnel_origin_service_spec(image)), None),
+            (
+                placed(crate::tunnel_service_spec(image, &token)),
+                Some(HeldDoor::Tunnel),
+            ),
+            (requested_without_a_door(), None),
+        ];
+
+        for (spec, door) in cases {
+            let resolved = spec
+                .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+                .expect("built-in door mounts are resolved");
+            assert_eq!(HeldDoor::of_spec(&resolved), door, "{}", spec.name);
+        }
+    }
+
+    fn requested_without_a_door() -> RequestedServiceSpec {
+        let mut spec = holder_service_spec("example.test/ingress:1", IngressPorts::Public);
+        spec.container.command = vec!["sleep".into()];
+        spec
     }
 
     #[test]

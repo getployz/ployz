@@ -4,7 +4,7 @@ use ployz_core::labels;
 use ployz_core::{
     CertificateHost, ContainerAddress, ContainerId, DeploymentLogId, HttpProtocol, IngressHost,
     Machine, MachineId, PortPublication, ProxyRoutes, QualifiedService, ServiceContainer,
-    hostname_owners,
+    hostname_owners, published_hostnames,
 };
 use serde::Serialize;
 use std::{
@@ -255,25 +255,10 @@ impl IngressProjection {
     ) -> Self {
         let owners = hostname_owners(containers.iter().map(ServiceContainer::as_observation));
         let mut sites = BTreeMap::<IngressHost, SiteBuilder>::new();
-        for container in containers {
-            let observation = container.as_observation();
-            let owner = observation.identity();
-            for port in &observation.resolved_spec.ports {
-                let PortPublication::Ingress {
-                    hostname,
-                    http_protocol,
-                    ..
-                } = port
-                else {
-                    continue;
-                };
-                if owners.get(hostname) == Some(&owner) {
-                    sites
-                        .entry(hostname.clone())
-                        .or_default()
-                        .publish(owner.clone(), *http_protocol);
-                }
-            }
+        for (hostname, owner, protocol) in
+            published_hostnames(containers.iter().map(ServiceContainer::as_observation))
+        {
+            sites.entry(hostname).or_default().publish(owner, protocol);
         }
 
         let mut serving: Vec<_> = routes.values().flatten().collect();

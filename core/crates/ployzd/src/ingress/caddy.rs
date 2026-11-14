@@ -2,8 +2,9 @@
 
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_RUNTIME_MOUNT, INGRESS_VERIFY_PATH, Machine,
-    MachineId, TUNNEL_SITE_PORT, ingress_certs_dir, ingress_upstream, tunnel_origin_listener,
+    ACME_CHALLENGE_PREFIX, HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_RUNTIME_MOUNT,
+    INGRESS_VERIFY_PATH, Machine, MachineId, TUNNEL_SITE_PORT, ingress_certs_dir, ingress_upstream,
+    tunnel_origin_listener,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -589,7 +590,7 @@ fn write_site(
     let handle = challenge
         .map(|challenge| {
             format!(
-                "\thandle /.well-known/acme-challenge/{} {{\n\t\trespond {} 200\n\t}}\n",
+                "\thandle {ACME_CHALLENGE_PREFIX}{} {{\n\t\trespond {} 200\n\t}}\n",
                 challenge.token(),
                 serde_json::to_string(challenge.response())
                     .expect("string serialization cannot fail")

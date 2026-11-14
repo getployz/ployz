@@ -262,6 +262,31 @@ fn published_material_and_published_wildcards_are_not_wanted() {
     );
 }
 
+#[test]
+fn a_losing_services_https_publication_orders_no_certificate() {
+    let observations = [
+        observation(
+            1,
+            "api",
+            vec![ingress("shared.example.com", HttpProtocol::Http)],
+        ),
+        observation(
+            2,
+            "web",
+            vec![
+                ingress("shared.example.com", HttpProtocol::Https),
+                ingress("own.example.com", HttpProtocol::Https),
+            ],
+        ),
+    ];
+
+    assert_eq!(
+        wanted_certificate_hosts(observations.iter(), &BTreeMap::new()),
+        BTreeSet::from([host("own.example.com")]),
+        "api owns shared.example.com and publishes it over http only"
+    );
+}
+
 fn certificate_host(name: &str) -> ployz_core::CertificateHost {
     ployz_core::CertificateHost::parse(name).unwrap()
 }
@@ -1060,7 +1085,7 @@ fn observation(
     .unwrap()
 }
 
-/// A hostname whose probe reaches no Machine of the replica: an IP literal, so `resolve_host`
+/// A hostname whose probe reaches no Machine of the replica: an IP literal, so `resolve_ingress_addresses`
 /// asks no DNS server, and the verify probe gets no Machine id from `127.0.0.1:80`.
 const UNREACHED: &str = "127.0.0.1";
 

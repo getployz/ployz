@@ -216,7 +216,7 @@ async fn respond_http01(
         .lines()
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|path| path.strip_prefix("/.well-known/acme-challenge/"))
+        .and_then(|path| path.strip_prefix(ployz_core::ACME_CHALLENGE_PREFIX))
         .unwrap_or_default();
     let body = answers
         .lock()
@@ -385,7 +385,10 @@ async fn chall(
         )
     };
     let expected = format!("{token}.{thumbprint}");
-    let url = format!("http://{host}:{port}/.well-known/acme-challenge/{token}");
+    let url = format!(
+        "http://{host}:{port}{}{token}",
+        ployz_core::ACME_CHALLENGE_PREFIX
+    );
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
