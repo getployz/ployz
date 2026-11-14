@@ -521,14 +521,16 @@ impl DockerVolumeStorageObservation {
         }
     }
 
-    /// Records where the copy sits on a Provisioned Volume; an ordinary Volume has no copy.
-    pub fn set_copy_place(&mut self, place: Option<crate::CopyPlace>) {
+    /// Records a copy's two wire fields as received on a Provisioned Volume; an ordinary Volume
+    /// has no copy.
+    pub fn set_copy(&mut self, copy: Option<&crate::ProvisionedCopy>) {
         if let Self::Provisioned {
             role, slot_role, ..
         } = self
         {
-            *role = place.map(crate::CopyPlace::role);
-            *slot_role = place.and_then(crate::CopyPlace::slot_role);
+            let pair = copy.map(crate::ProvisionedCopy::wire_pair);
+            *role = pair.map(|(role, _)| role);
+            *slot_role = pair.and_then(|(_, slot_role)| slot_role);
         }
     }
 }

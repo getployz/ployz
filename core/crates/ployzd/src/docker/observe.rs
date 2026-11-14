@@ -9,8 +9,8 @@ use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
     CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, CopyPlace, DockerVolume,
-    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, ProvisionedCopy,
-    ResolvedServiceSpec, VolumeInventory,
+    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, ResolvedServiceSpec,
+    VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -482,9 +482,7 @@ fn observe_copies(
     copies: &std::collections::BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>,
 ) {
     for volume in volumes.iter_mut() {
-        volume
-            .storage
-            .set_copy_place(copies.get(&volume.id.name).map(ProvisionedCopy::place));
+        volume.storage.set_copy(copies.get(&volume.id.name));
     }
     for (name, copy) in copies {
         let place @ CopyPlace::Slot(_) = copy.place() else {
@@ -1381,6 +1379,56 @@ mod tests {
                 ("unmarked".to_owned(), (Some(CopyRole::Slot), None, 4)),
             ]
         );
+    }
+
+    #[test]
+    fn a_stray_slot_role_on_a_writer_or_switching_copy_reaches_its_observation_as_received() {
+        use ployz_core::DockerVolumeStorageObservation::Provisioned;
+        let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
+        let name = DockerVolumeName::parse("stray").unwrap();
+        let mut volumes = vec![DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id,
+                name: name.clone(),
+            },
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            storage: Provisioned {
+                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/stray").unwrap(),
+                bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
+                used_bytes: 0,
+                role: None,
+                slot_role: None,
+            },
+        }];
+        for (role, slot_role) in [
+            ("writer", "mirror"),
+            ("writer", "old_copy"),
+            ("switching", "mirror"),
+            ("switching", "old_copy"),
+        ] {
+            let copy: ployz_core::ProvisionedCopy = serde_json::from_str(&format!(
+                r#"{{"role":"{role}","maximum_bytes":1024,"used_bytes":0,"slot_role":"{slot_role}"}}"#
+            ))
+            .unwrap();
+            observe_copies(
+                &machine_id,
+                &mut volumes,
+                &BTreeMap::from([(name.clone(), copy)]),
+            );
+            let Provisioned {
+                role: seen_role,
+                slot_role: seen_slot_role,
+                ..
+            } = &volumes.first().unwrap().storage
+            else {
+                panic!("not provisioned");
+            };
+            assert_eq!(
+                serde_json::to_string(&(seen_role, seen_slot_role)).unwrap(),
+                format!(r#"["{role}","{slot_role}"]"#)
+            );
+        }
     }
 
     #[test]

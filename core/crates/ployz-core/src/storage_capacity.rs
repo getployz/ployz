@@ -134,6 +134,11 @@ impl ProvisionedCopy {
     pub const fn place(&self) -> CopyPlace {
         CopyPlace::of(self.role, self.slot_role)
     }
+
+    /// The two wire fields as received, for an observation that repeats them whole.
+    pub(crate) const fn wire_pair(&self) -> (CopyRole, Option<crate::SlotRole>) {
+        (self.role, self.slot_role)
+    }
 }
 
 /// Fresh storage evidence, including commitments whose Docker metadata may be missing.
