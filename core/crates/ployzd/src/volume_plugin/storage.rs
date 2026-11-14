@@ -52,6 +52,35 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
     }
 }
 
+/// What a Pool's datasets commit it to once `requested` more bytes are bound, and the
+/// Pool bytes no managed dataset accounts for. The one place admission adds bounds up.
+pub(super) struct Commitment {
+    pub(super) bytes: u64,
+    pub(super) unmanaged_used_bytes: u64,
+}
+
+impl Commitment {
+    pub(super) fn of(pool: &MachinePool, datasets: &[Dataset], requested: u64) -> Result<Self> {
+        let layout = DatasetLayout::of(pool);
+        let committed = datasets
+            .iter()
+            .filter(|dataset| layout.place(&dataset.name).commits());
+        let bytes = committed
+            .clone()
+            .map(|dataset| committed_bytes(dataset, pool.name()))
+            .try_fold(requested, u64::checked_add)
+            .ok_or_else(|| PluginError::from("Provisioned Volume commitments overflowed u64"))?;
+        let managed_used = committed
+            .map(|dataset| dataset.active_used_bytes)
+            .try_fold(0u64, u64::checked_add)
+            .ok_or("Dataset occupancy overflows u64")?;
+        Ok(Self {
+            bytes,
+            unmanaged_used_bytes: pool.used_bytes().saturating_sub(managed_used),
+        })
+    }
+}
+
 /// The plugin's one mutation lock: every storage change runs under it.
 #[derive(Clone, Default)]
 pub(super) struct MutationLock {
@@ -169,24 +198,9 @@ impl VolumeStorage {
         datasets: &[Dataset],
         requested: u64,
     ) -> Result<()> {
-        let committed = datasets
-            .iter()
-            .filter(|dataset| DatasetLayout::of(pool).place(&dataset.name).commits());
-        let commitment = committed
-            .clone()
-            .map(|dataset| committed_bytes(dataset, pool.name()))
-            .try_fold(requested, u64::checked_add)
-            .ok_or_else(|| PluginError::from("Provisioned Volume commitments overflowed u64"))?;
-        let managed_used = committed
-            .map(|dataset| dataset.active_used_bytes)
-            .try_fold(0u64, u64::checked_add)
-            .ok_or("Dataset occupancy overflows u64")?;
-        self.ensure_pool_capacity(
-            pool,
-            commitment,
-            pool.used_bytes().saturating_sub(managed_used),
-        )
-        .await?;
+        let commitment = Commitment::of(pool, datasets, requested)?;
+        self.ensure_pool_capacity(pool, commitment.bytes, commitment.unmanaged_used_bytes)
+            .await?;
         Ok(())
     }
 
