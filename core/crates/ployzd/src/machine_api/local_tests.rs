@@ -7184,54 +7184,15 @@ mod ensure_container {
             spec
         }
 
-        /// Service `web` of `namespace`, on another Machine, published at `hostname`.
-        fn claimant(
-            suffix: u8,
-            namespace: &str,
-            hostname: &str,
-        ) -> ployz_core::ContainerObservation {
-            let resolved_spec: ployz_core::ResolvedServiceSpec = serde_json::from_value(json!({
-                "service_id": format!("{suffix:x}").repeat(32),
-                "name": "web",
-                "mode": { "mode": "replicated", "replicas": 1 },
-                "container": { "image": "example.test/web", "pull_policy": "missing" },
-                "ports": [{
-                    "mode": "ingress",
-                    "hostname": hostname,
-                    "load_balancer_port": 80,
-                    "container_port": 80,
-                    "http_protocol": "http"
-                }],
-            }))
-            .unwrap();
-            ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-                rotation: None,
-                r#gen: None,
-                container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
-                display_name: format!("web-{suffix}"),
-                created_at_unix_nanos: 1,
-                machine_id: MachineId::random(),
-                namespace: Namespace::parse(namespace).unwrap(),
-                kind: ployz_core::ContainerKind::ServiceContainer,
-                runtime: ContainerRuntimeObservation::Created,
-                effective_healthcheck: None,
-                resolved_spec,
-                address: None,
-                labels: BTreeMap::new(),
-                stopped: false,
-                run: None,
-            })
-            .unwrap()
-        }
-
         #[tokio::test]
         async fn a_browser_approval_never_claims_a_hostname_another_environment_owns() {
             let mut fixture = enforced("ployzd-deploy-hostname-owner").await;
             trust_passkey(&fixture).await;
+            use crate::docker::test_support::hostname_claimant;
             let (replicated, _cluster) = crate::corrosion::fake_cluster::store().await;
             for claimant in [
-                claimant(0xa, "shop", "shop.example.com"),
-                claimant(0xb, "app", "app.example.com"),
+                hostname_claimant(0xa, "shop", "shop.example.com"),
+                hostname_claimant(0xb, "app", "app.example.com"),
             ] {
                 replicated.publish_container(&claimant).await.unwrap();
             }

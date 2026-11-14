@@ -1470,16 +1470,19 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 }),
             ))
         }
-        LocalMachineError::DeployRefused(_) | LocalMachineError::HostnameOwned { .. } => {
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                serde_json::json!({
-                    "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY,
-                    "next": "ployz deploy from an approved device",
-                }),
-            ))
-        }
+        LocalMachineError::DeployRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY,
+                "next": "ployz deploy from an approved device",
+            }),
+        )),
+        LocalMachineError::HostnameOwned { capability, .. } => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({ "capability": capability }),
+        )),
         LocalMachineError::RuleDeployRefused(ref refusal) => {
             let details = match refusal.next() {
                 Some(next) => serde_json::json!({

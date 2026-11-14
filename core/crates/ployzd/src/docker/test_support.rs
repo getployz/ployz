@@ -920,3 +920,43 @@ pub(crate) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSp
     .unwrap();
     spec
 }
+
+/// A Service Container of `namespace`'s `web` on another Machine, published at `hostname`.
+pub(crate) fn hostname_claimant(
+    suffix: u8,
+    namespace: &str,
+    hostname: &str,
+) -> ployz_core::ContainerObservation {
+    let resolved_spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+        "service_id": format!("{suffix:x}").repeat(32),
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "example.test/web", "pull_policy": "missing" },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": hostname,
+            "load_balancer_port": 80,
+            "container_port": 80,
+            "http_protocol": "http"
+        }],
+    }))
+    .unwrap();
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
+        container_id: ployz_core::ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
+        display_name: format!("web-{suffix}"),
+        created_at_unix_nanos: 1,
+        machine_id: MachineId::random(),
+        namespace: Namespace::parse(namespace).unwrap(),
+        kind: ployz_core::ContainerKind::ServiceContainer,
+        runtime: ployz_core::ContainerRuntimeObservation::Created,
+        effective_healthcheck: None,
+        resolved_spec,
+        address: None,
+        labels: BTreeMap::new(),
+        stopped: false,
+        run: None,
+    })
+    .unwrap()
+}

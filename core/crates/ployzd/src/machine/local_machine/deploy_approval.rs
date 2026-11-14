@@ -78,8 +78,12 @@ impl LocalMachine {
         if matches!(approved.by, Approver::Browser { .. })
             && new.slot.kind == ContainerKind::ServiceContainer
         {
-            self.admit_session_hostnames(&new.slot.namespace, &new.resolved_spec)
-                .await?;
+            self.admit_session_hostnames(
+                ployz_core::DEPLOY_APPROVAL_CAPABILITY,
+                &new.slot.namespace,
+                &new.resolved_spec,
+            )
+            .await?;
         }
         if new.slot.kind == ContainerKind::PreDeployHook {
             self.approvals.consume_hook(
@@ -167,17 +171,19 @@ impl LocalMachine {
         Ok(pinned(want, observed.container_id))
     }
 
-    /// Refuse a session's Service Container that claims an Ingress Hostname whose owner,
-    /// from this Machine's view of every Service Container, is in another Namespace. The
-    /// oldest claim owns a hostname, so a newer claim admitted beside the owner's would take
-    /// it once the owner's next Deploy replaced its Containers. A Device may still move a
-    /// hostname on purpose. A view this Machine can't read refuses the claim.
+    /// Refuse a Service Container a session approved, by a deploy approval or a preview
+    /// review, that claims an Ingress Hostname whose owner, from this Machine's view of
+    /// every Service Container, is in another Namespace. The oldest claim owns a hostname,
+    /// so a newer claim admitted beside the owner's would take it once the owner's next
+    /// Deploy replaced its Containers. A Device may still move a hostname on purpose. A
+    /// view this Machine can't read refuses the claim.
     ///
     /// # Errors
-    /// Returns [`Error::HostnameOwned`] naming the hostname and its owner,
+    /// Returns [`Error::HostnameOwned`] naming `capability`, the hostname and its owner,
     /// [`Error::ClusterUnavailable`] or [`Error::Cluster`] when the view can't be read.
-    async fn admit_session_hostnames(
+    pub(super) async fn admit_session_hostnames(
         &self,
+        capability: &'static str,
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
     ) -> Result<(), Error> {
@@ -199,7 +205,11 @@ impl LocalMachine {
             service = %spec.name,
             "refused deploy in {namespace}: hostname {hostname} belongs to {owner}",
         );
-        Err(Error::HostnameOwned { hostname, owner })
+        Err(Error::HostnameOwned {
+            capability,
+            hostname,
+            owner,
+        })
     }
 
     pub(super) fn cluster_key(

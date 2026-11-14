@@ -218,11 +218,12 @@ pub enum Error {
     #[error("{}", deploy_approval::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
     /// A session's creation claims an Ingress Hostname another Namespace owns. The refusal
-    /// names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
+    /// names `capability`, the route's approval, in its details.
     #[error(
-        "{hostname} belongs to {owner} in another environment, so a passkey approval can't take it. Remove it there first, or run ployz deploy from an approved device."
+        "{hostname} belongs to {owner} in another environment, so a passkey approval can't take it. Remove it there first, or deploy from an approved device."
     )]
     HostnameOwned {
+        capability: &'static str,
         hostname: ployz_core::IngressHost,
         owner: ployz_core::QualifiedService,
     },
