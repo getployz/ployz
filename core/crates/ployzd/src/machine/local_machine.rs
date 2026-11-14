@@ -22,7 +22,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError, local_runtime,
+    EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError,
     store::{Installation, PreparedReset, Rediscovered},
 };
 
@@ -32,7 +32,7 @@ use crate::{
         membership_states_by_address,
     },
     docker::{ContainerRuntime, LocalDocker},
-    host_capacity,
+    host_capacity, host_facts,
     network::{
         DOCKER_NETWORK_NAME, Leftover, NetworkError, NetworkPlane, WIREGUARD_INTERFACE_NAME,
         discover_network,
@@ -871,7 +871,7 @@ impl LocalMachine {
             } else {
                 requested_endpoints.to_vec()
             },
-            runtime: local_runtime(self.owner.data_dir()),
+            runtime: host_facts::local_runtime(self.owner.data_dir()).await,
             memory_total_bytes: capacity.memory_total_bytes,
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,

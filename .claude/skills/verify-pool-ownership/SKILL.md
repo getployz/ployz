@@ -1,6 +1,6 @@
 ---
 name: verify-pool-ownership
-description: Model-check who owns a Machine's Machine Pool, between the installer's named-device path (install_at's installation gate, prepare_storage, create_device_pool, existing_device_pool, remember_device_pool and its CONFIRMED marker) and the volume plugin's first Pool (VolumeStorage::create and copy's first_pool under admit_mutation and lock_mutation, one_usable, recover, has_device_pool, PoolStorage::create) and its ungated List and Inspect, against the installer stopping between two steps, the disk going missing and returning, and ZFS's cache-file import at boot, with what local_storage reports, using the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployzd/src/installer/storage.rs (prepare_storage's named-device path, create_device_pool, existing_device_pool, remember_device_pool), core/crates/ployzd/src/installer/mod.rs (install_at, install_locked), core/crates/ployzd/src/installer/host.rs (activate_units), core/crates/ployzd/src/main.rs (ployzd install's --storage default), core/crates/ployzd/src/docker/observe.rs (the Docker volume rescan), core/crates/ployzd/src/mutation.rs (MutationGate), core/crates/ployzd/src/volume_plugin/pool.rs (VolumeStorage::create, lock_mutation, one_usable, admit, recover, has_device_pool, create), core/crates/ployzd/src/volume_plugin/storage.rs (admit_mutation), core/crates/ployzd/src/volume_plugin/removal.rs (list, inspect), core/crates/ployzd/src/volume_plugin/copy.rs (admit, first_pool), core/crates/ployzd/src/machine_pool.rs (one_usable, the marker and backing paths), or core/crates/ployzd/src/machine/mod.rs (local_storage).
+description: Model-check who owns a Machine's Machine Pool, between the installer's named-device path (install_at's installation gate, prepare_storage, create_device_pool, existing_device_pool, remember_device_pool and its CONFIRMED marker) and the volume plugin's first Pool (VolumeStorage::create and copy's first_pool under admit_mutation and lock_mutation, one_usable, recover, has_device_pool, PoolStorage::create) and its ungated List and Inspect, against the installer stopping between two steps, the disk going missing and returning, and ZFS's cache-file import at boot, with what local_storage reports, using the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployzd/src/installer/storage.rs (prepare_storage's named-device path, create_device_pool, existing_device_pool, remember_device_pool), core/crates/ployzd/src/installer/mod.rs (install_at, install_locked), core/crates/ployzd/src/installer/host.rs (activate_units), core/crates/ployzd/src/main.rs (ployzd install's --storage default), core/crates/ployzd/src/docker/observe.rs (the Docker volume rescan), core/crates/ployzd/src/mutation.rs (MutationGate), core/crates/ployzd/src/volume_plugin/pool.rs (VolumeStorage::create, lock_mutation, one_usable, admit, recover, has_device_pool, create), core/crates/ployzd/src/volume_plugin/storage.rs (admit_mutation), core/crates/ployzd/src/volume_plugin/removal.rs (list, inspect), core/crates/ployzd/src/volume_plugin/copy.rs (admit, first_pool), core/crates/ployzd/src/machine_pool.rs (one_usable, the marker and backing paths), or core/crates/ployzd/src/host_facts.rs (local_storage).
 ---
 
 # Verify Machine Pool ownership
@@ -40,7 +40,7 @@ A Volume create or copy records it the same way. The model has that step: `one_u
 - List and Inspect run the same `admit` and create no Pool (`removal.rs:100-108`, `:52-57`). The model takes each as two steps, offered whenever no Volume create holds the Pool lock, including while the installer runs: `List` is `one_usable`, and `ListRecover` is `recover` when `one_usable` found nothing. The installer can step between them. A List whose `one_usable` read `zpool list` before the installer's `zpool create`, and whose `recover` runs after `remember_device_pool`, finds no importable Pool and the marker, and refuses while `ployz-device` is imported (`a_list_across_the_install_refuses_beside_the_imported_device`). One step could not reach that: a List that starts after the installer finds `ployz-device` in `one_usable`. A scratch `ployzd` test from PR #3842's round-1d review (`scratch_list_nonatomic_admission`, with a fake `zpool`) held the installation guard, let List's `zpool list` read empty, then wrote CONFIRMED and listed `ployz-device`. List answered `{"Err":"device Machine Pool is unavailable; refusing to create a root-backed Pool","Volumes":[]}`. The refusal is transient: the next List's `one_usable` finds `ployz-device` imported and returns it (the `COVERAGE` row "one_usable returns the recorded device Pool").
 - `create` refuses on the marker (`:391-395`), creates the backing file (`:400-411`), runs `zpool create ployz` on it (`:421-443`), and its `one_usable` returns `ployz` (`:444-453`). The model takes that, and the Volume create after it, as one step.
 
-**`local_storage`** (`core/crates/ployzd/src/machine/mod.rs`) reads `zpool list` alone. It answers Ready for no Pool, Pool for one, and `None` when `machine_pool::one_usable` refuses.
+**`local_storage`** (`core/crates/ployzd/src/host_facts.rs`) reads `zpool list` alone. It answers Ready for no Pool, Pool for one, and `None` when `machine_pool::one_usable` refuses.
 
 **ZFS at boot.** This is an outside fact, verified on one host only: a Boat on Ubuntu 24.04.4 with ZFS 2.2.2 (`zfs-2.2.2-0ubuntu9.5`), rebooted with sysrq. The table of what the cache file listed after each step is in PR #3842's Summary.
 
@@ -199,7 +199,7 @@ Every `always` holds on `proposed()`, so passing it to `breaks` with an `always`
 
 Notes for the PR that ships the fix:
 
-- `local_storage` gets heavier. Today it runs `zpool list` alone (`local_storage` in `machine/mod.rs`). To read `None` where `recover` would refuse, it also needs an import scan, the marker and the intent. It reads them under neither the gate nor the lock, as it reads `zpool list` today.
+- `local_storage` gets heavier. Today it runs `zpool list` alone (`local_storage` in `host_facts.rs`). To read `None` where `recover` would refuse, it also needs an import scan, the marker and the intent. It reads them under neither the gate nor the lock, as it reads `zpool list` today.
 - Check every reader of `observe_storage` (`machine/local_machine.rs:506-507`, `machine/local_machine/container.rs:112`, `:1308`). `None` makes the Machine's own container create refuse through `require_eligible` with `StorageUnobservable` (`container.rs:112-116`, `docker/lifecycle.rs:922-928`, `:936-938`), where Ready let it through.
 - The stale-intent clear trusts the device the intent names. Name it by a stable ID, such as a `/dev/disk/by-id` path, so a renamed device is not read as present with no label.
 - Machines already in finding 1's state, with `ployz` beside an unimported `ployz-device`, have no intent and no marker, so the fix does not repair them.
@@ -250,7 +250,7 @@ What a user sees on this path:
 - A rerun of the installer with that disk refuses at `installer/storage.rs:48-53`, since the backing file exists. A rerun is out of the model's bounds.
 - If an operator imports the disk by hand (`zpool import ployz-device`), `machine_pool::one_usable` refuses both Pools with "multiple usable Machine Pools (ployz-device, ployz) are ambiguous; Ployz will not choose one" (`machine_pool.rs:78-85`), and Volume create and Path both fail with it. A scratch test at the sync commit reproduced that over the plugin socket, with a fake `zpool`. An operator's import is out of the model's bounds.
 
-Finding 2 has 7 rows (`current_code_reads_ready_while_the_recorded_device_is_missing`). The installer records the device Pool, and the host boots without the disk. `local_storage` reads only `zpool list`, so it answers Ready (`local_storage` in `machine/mod.rs`), while `recover` refuses a root-backed Pool on that host (`pool.rs:307-312`).
+Finding 2 has 7 rows (`current_code_reads_ready_while_the_recorded_device_is_missing`). The installer records the device Pool, and the host boots without the disk. `local_storage` reads only `zpool list`, so it answers Ready (`local_storage` in `host_facts.rs`), while `recover` refuses a root-backed Pool on that host (`pool.rs:307-312`).
 
 - `ployz server show` and Cloud print "Managed volumes available" (`show.rs:188`, `server-status.ts:8`), and placement treats the Machine as eligible (`eligibility.rs:126-129`).
 - A Deploy's Volume create there then fails with "device Machine Pool is unavailable; refusing to create a root-backed Pool" (`pool.rs:309`).
@@ -279,7 +279,7 @@ When a change intentionally alters how the installer records a device Pool, when
    - `one_usable` (`pool.rs`) and `machine_pool::one_usable`: `PoolOwnership::one_usable`.
    - `recover` and `has_device_pool`: `PoolOwnership::recover`.
    - `PoolStorage::create`: the `CreateRoot` arm.
-   - `local_storage` (`machine/mod.rs`): `PoolOwnership::observe`.
+   - `local_storage` (`host_facts.rs`): `PoolOwnership::observe`.
    - A `zpool create` or import that changes the cache file: every arm that sets or clears `cache_lists_device`.
 2. If the change adds a guard, add a `Broken` flag that removes it and a `breaks` test naming the property it keeps. A guard with no failing variant is untested.
 3. If the change ships the fix, model it as the code writes it and flip the finding tests as described under Run it. Do not delete them, since their printed paths are the record of what the fix keeps out.
@@ -340,6 +340,6 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployzd/src/volume_plugin/copy.rs`: `admit` and `first_pool`.
 - `core/crates/ployzd/src/machine_pool.rs`: `one_usable`, `importable_names` and `CONFIRMED_DEVICE_POOL_MARKER`.
 - `core/crates/ployz-core/src/machine_layout.rs`: `machine_pool_file` and `device_pool_marker`.
-- `core/crates/ployzd/src/machine/mod.rs`: `local_storage`.
+- `core/crates/ployzd/src/host_facts.rs`: `local_storage`.
 
 Sync commit: `538657f812e6aff0d7b7b4f10f24b6fa6e76653e`, the code commit of the change that moved these lines onto `MachineLayout`, rebased on `main`, and every line cited above is at it. Code in the list above that changed after it has not been rechecked.
