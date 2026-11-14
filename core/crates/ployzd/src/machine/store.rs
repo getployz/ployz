@@ -19,7 +19,7 @@ use thiserror::Error;
 
 use super::{
     FoundingCluster, LiveSlot, LocalMachineBody, LocalMachineRecord, ManagementClientSlot,
-    ParticipationOrigin, local_runtime,
+    ParticipationOrigin,
 };
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
@@ -365,7 +365,7 @@ impl LocalMachineStore {
     }
 
     fn refresh_runtime(&mut self) -> Result<(), StoreError> {
-        let runtime = local_runtime(&self.data_dir);
+        let runtime = crate::host_facts::local_runtime_blocking(&self.data_dir);
         self.commit_if_changed(|record| {
             if let LocalMachineBody::Joining { machine, .. }
             | LocalMachineBody::Participating { machine, .. } = &mut record.body
@@ -546,7 +546,7 @@ impl LocalMachineStore {
             public_key: self.record.wireguard_private_key.public_key(),
             public_ip,
             advertised_endpoints,
-            runtime: local_runtime(&self.data_dir),
+            runtime: crate::host_facts::local_runtime_blocking(&self.data_dir),
             join_approval: None,
             build_concurrency: None,
         };
@@ -662,7 +662,7 @@ impl LocalMachineStore {
                 &self.record.wireguard_private_key,
             )
         });
-        machine.runtime = local_runtime(&self.data_dir);
+        machine.runtime = crate::host_facts::local_runtime_blocking(&self.data_dir);
         Ok((
             LocalMachineBody::Joining {
                 machine,

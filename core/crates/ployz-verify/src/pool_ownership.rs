@@ -4,7 +4,7 @@
 //! :40-73) checks the host, runs `zpool create ployz-device` (`create_device_pool`,
 //! :96-106), checks the Pool with `existing_device_pool` (:107-112), and only then records
 //! ownership with `remember_device_pool` (:113), an atomic write of the CONFIRMED marker
-//! (:77-83). `install_at` holds the installation gate's exclusive guard throughout
+//! (`DevicePoolFiles::confirm` in machine_pool.rs). `install_at` holds the installation gate's exclusive guard throughout
 //! (`install_at` and `install_locked` in installer/mod.rs). The plugin's `VolumeStorage::create`
 //! (volume_plugin/pool.rs:96-124) takes that gate's shared guard (`admit_mutation`,
 //! :102, volume_plugin/storage.rs:115-125), then the Pool mutation lock (pool.rs:103), then
@@ -12,7 +12,7 @@
 //! (:391), which builds the root-backed `ployz` Pool on a backing file. Copy's `first_pool`
 //! takes the same path (volume_plugin/copy.rs:143-157 and `first_pool` in the same file). Meanwhile the disk can go
 //! missing and return, ZFS imports at boot the Pools its cache file lists, and
-//! `local_storage` (ployzd machine/mod.rs) reports what `zpool list` shows.
+//! `local_storage` (ployzd host_facts.rs) reports what `zpool list` shows.
 //!
 //! How ZFS imports at boot comes from a reboot run on Ubuntu 24.04.4 with ZFS 2.2.2 (the
 //! verify-pool-ownership skill's ZFS at boot). Neither `zpool create` sets a cachefile, so
@@ -116,7 +116,7 @@ struct Host {
     /// (`MachineLayout::machine_pool_file`, machine_layout.rs:112-116).
     root: bool,
     /// `/var/lib/ployz-machine-pool.device` holds CONFIRMED (`MachineLayout::device_pool_marker`,
-    /// machine_layout.rs:118-122; machine_pool.rs `CONFIRMED_DEVICE_POOL_MARKER`).
+    /// machine_layout.rs:118-122; machine_pool.rs `DevicePoolFiles` and `CONFIRMED_DEVICE_POOL_MARKER`).
     marker: bool,
     /// The fix's intent file names the disk. Nothing in the code as it is writes one.
     intent: bool,
@@ -180,7 +180,7 @@ impl Plugin {
     }
 }
 
-/// What `local_storage` (ployzd machine/mod.rs) answered.
+/// What `local_storage` (ployzd host_facts.rs) answered.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Observed {
     /// `MachineStorageObservation::Ready`: `zpool list` lists no Pool (:710).
@@ -298,7 +298,7 @@ enum Action {
     ZpoolCreate,
     /// `create_device_pool`'s `existing_device_pool` (installer/storage.rs:107-112).
     Verify,
-    /// `remember_device_pool` (installer/storage.rs:77-83, :113). `install_locked` then
+    /// `remember_device_pool` (installer/storage.rs, :113). `install_locked` then
     /// installs the binaries and units and enables the plugin's socket
     /// (`install_binaries`, `install_units` and `activate_units` in installer/mod.rs, installer/host.rs:273), which this step includes.
     Record,
@@ -314,7 +314,7 @@ enum Action {
     /// `PoolStorage::create`: the marker check, the backing file, `fallocate`,
     /// `zpool create ployz`, and its `one_usable` (volume_plugin/pool.rs:391-453).
     CreateRoot,
-    /// `local_storage` runs `zpool list` (ployzd machine/mod.rs), in an installed
+    /// `local_storage` runs `zpool list` (ployzd host_facts.rs), in an installed
     /// ployzd.
     Observe,
     /// Docker lists Volumes (`VolumeStorage::list`, volume_plugin/removal.rs:100-108) or
@@ -757,7 +757,7 @@ impl PoolOwnership {
         );
     }
 
-    /// `local_storage` (ployzd machine/mod.rs) over `zpool list`. With no Pool
+    /// `local_storage` (ployzd host_facts.rs) over `zpool list`. With no Pool
     /// listed, the fix reads None where `recover` would refuse: no importable
     /// `ployz-device`, and the marker, or an intent that is not stale.
     fn observe(&self, state: &mut State) {
@@ -1136,7 +1136,7 @@ fn reads_as(model: &PoolOwnership, before: &State, action: Action, after: &State
                 Some(Observed::Unresolved) => "no Pool listed, and recover would refuse for device ownership: None (the fix)",
                 _ => "two usable Pools: one_usable refuses, so None",
             };
-            format!("Machine: local_storage reads zpool list; {what} (machine/mod.rs local_storage)")
+            format!("Machine: local_storage reads zpool list; {what} (host_facts.rs local_storage)")
         }
     }
 }

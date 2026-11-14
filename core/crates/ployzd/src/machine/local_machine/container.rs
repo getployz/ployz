@@ -31,8 +31,8 @@ use crate::docker::{
     same_creation,
 };
 use crate::docker_image::ImagePull;
+use crate::host_facts::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 use crate::images::DoorSpecs;
-use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 /// A settle inspects local Docker, so a short poll costs little and sets how late a
 /// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
