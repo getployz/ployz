@@ -19,6 +19,9 @@ use super::{Error, Subscription};
 pub(crate) struct Debounce {
     pub(crate) quiet: Duration,
     pub(crate) limit: Duration,
+    /// Whether a snapshot still open when the quiet window ends is waited out, up to the
+    /// limit, before waking. Off, the wake follows the quiet window whatever is open.
+    pub(crate) settle_snapshots: bool,
 }
 
 /// What a watch does with a subscription that failed to open, ended or stalled.
@@ -173,7 +176,12 @@ where
             }
             changed = any_changed(&mut self.held) => changed?,
         }
-        let Some(Debounce { quiet, limit }) = self.policy.debounce else {
+        let Some(Debounce {
+            quiet,
+            limit,
+            settle_snapshots,
+        }) = self.policy.debounce
+        else {
             return Ok(Wake::Changed);
         };
         let quiet_for = tokio::time::sleep(quiet);
@@ -187,12 +195,15 @@ where
                 () = &mut limit => return Ok(Wake::Changed),
                 changed = any_changed(&mut self.held) => changed?,
                 () = &mut quiet_for => {
-                    if !self.stalled() {
+                    if !settle_snapshots || !self.stalled() {
                         return Ok(Wake::Changed);
                     }
-                    // A snapshot cut short by the quiet window is not a table to read yet.
+                    // A snapshot cut short by the quiet window is not a table to read yet,
+                    // but the limit still ends the wait.
                     tokio::select! {
+                        biased;
                         () = self.shutdown.cancelled() => return Ok(Wake::Shutdown),
+                        () = &mut limit => return Ok(Wake::Changed),
                         changed = any_changed(&mut self.held) => changed?,
                         _ = self.refresh.tick() => return Err(Error::SnapshotStalled),
                     }
@@ -286,7 +297,42 @@ mod tests {
     const DEBOUNCE: Debounce = Debounce {
         quiet: Duration::from_millis(200),
         limit: Duration::from_secs(2),
+        settle_snapshots: false,
     };
+
+    /// The debounce Ingress's watch has, with its refresh.
+    const INGRESS_DEBOUNCE: Debounce = Debounce {
+        quiet: Duration::from_millis(50),
+        limit: Duration::from_secs(2),
+        settle_snapshots: true,
+    };
+    const INGRESS_REFRESH: Duration = Duration::from_secs(5);
+
+    fn ingress_policy() -> WatchPolicy {
+        WatchPolicy {
+            debounce: Some(INGRESS_DEBOUNCE),
+            refresh: INGRESS_REFRESH,
+            retry: Retry::InPlace(RETRY),
+        }
+    }
+
+    /// A change, then a snapshot that opens and never ends.
+    fn change_then_open_snapshot() -> Subscription {
+        Subscription::streaming(
+            stream::iter([
+                Ok::<_, io::Error>(Bytes::from_static(CHANGE)),
+                Ok(Bytes::from_static(b"{\"columns\":[\"id\"]}\n")),
+            ])
+            .chain(stream::pending()),
+        )
+    }
+
+    /// One change, then nothing.
+    fn one_change() -> Subscription {
+        Subscription::streaming(
+            stream::iter([Ok::<_, io::Error>(Bytes::from_static(CHANGE))]).chain(stream::pending()),
+        )
+    }
 
     type Opened = Result<Vec<Subscription>, Error>;
 
@@ -560,12 +606,19 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_snapshot_cut_short_by_the_quiet_window_is_not_a_wake() {
+    async fn a_snapshot_cut_short_by_the_quiet_window_is_waited_out_only_when_asked_and_only_to_the_limit()
+     {
         let (sender, subscription) = feed();
         let script = Script::of([Ok(vec![subscription])]);
         let mut changes = watch(
             &script,
-            policy(Retry::Surface, Some(DEBOUNCE)),
+            policy(
+                Retry::Surface,
+                Some(Debounce {
+                    settle_snapshots: true,
+                    ..DEBOUNCE
+                }),
+            ),
             CancellationToken::new(),
         );
         assert_eq!(changes.next().await.unwrap(), Wake::Changed);
@@ -578,10 +631,68 @@ mod tests {
             )))
             .unwrap();
 
-        let error = changes.next().await.unwrap_err();
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+        assert_eq!(started.elapsed(), DEBOUNCE.limit);
 
+        let error = changes.next().await.unwrap_err();
         assert!(matches!(error, Error::SnapshotStalled), "{error}");
         assert_eq!(started.elapsed(), REFRESH);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_change_then_an_open_snapshot_wakes_a_watch_that_does_not_settle_after_the_quiet_window()
+     {
+        let script = Script::of([Ok(vec![change_then_open_snapshot()])]);
+        let mut changes = watch(
+            &script,
+            policy(Retry::InPlace(RETRY), Some(DEBOUNCE)),
+            CancellationToken::new(),
+        );
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+        let started = Instant::now();
+
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+
+        assert_eq!(started.elapsed(), DEBOUNCE.quiet);
+        assert_eq!(script.opens(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_container_change_wakes_ingress_at_the_quiet_window_when_no_snapshot_is_open() {
+        let script = Script::of([Ok(vec![one_change(), quiet(), quiet()])]);
+        let mut changes = watch(&script, ingress_policy(), CancellationToken::new());
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+        let started = Instant::now();
+
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+
+        assert_eq!(started.elapsed(), INGRESS_DEBOUNCE.quiet);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_open_snapshot_on_one_subscription_cannot_hold_ingress_past_the_limit() {
+        let script = Script::of([Ok(vec![one_change(), quiet(), stalled()])]);
+        let mut changes = watch(&script, ingress_policy(), CancellationToken::new());
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+        let started = Instant::now();
+
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+
+        assert_eq!(started.elapsed(), INGRESS_DEBOUNCE.limit);
+        assert_eq!(script.opens(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_change_then_an_open_snapshot_cannot_hold_ingress_past_the_limit() {
+        let script = Script::of([Ok(vec![change_then_open_snapshot()])]);
+        let mut changes = watch(&script, ingress_policy(), CancellationToken::new());
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+        let started = Instant::now();
+
+        assert_eq!(changes.next().await.unwrap(), Wake::Changed);
+
+        assert_eq!(started.elapsed(), INGRESS_DEBOUNCE.limit);
+        assert_eq!(script.opens(), 1);
     }
 
     /// Cancels `shutdown` while `changes` is in its next wait and reports what woke it.
@@ -629,6 +740,7 @@ mod tests {
                 Some(Debounce {
                     quiet: Duration::from_secs(5),
                     limit: Duration::from_secs(9),
+                    settle_snapshots: false,
                 }),
             ),
             shutdown.clone(),

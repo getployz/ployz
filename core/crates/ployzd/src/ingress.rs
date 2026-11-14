@@ -363,6 +363,7 @@ where
             debounce: Some(Debounce {
                 quiet: WATCH_DEBOUNCE,
                 limit: WATCH_DEBOUNCE_LIMIT,
+                settle_snapshots: true,
             }),
             refresh: WATCH_RESNAPSHOT,
             retry: Retry::InPlace(WATCH_RETRY),

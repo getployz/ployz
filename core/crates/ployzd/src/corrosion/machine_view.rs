@@ -84,6 +84,7 @@ async fn run(
             debounce: Some(Debounce {
                 quiet: DEBOUNCE,
                 limit: DEBOUNCE_LIMIT,
+                settle_snapshots: false,
             }),
             refresh: REFRESH_INTERVAL,
             retry: Retry::InPlace(RETRY_INTERVAL),
