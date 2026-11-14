@@ -424,20 +424,7 @@ impl LocalMachineRecord {
         if !self.filters_peers || self.pins_machine(machine) {
             return true;
         }
-        let Some(approval) = &machine.join_approval else {
-            return false;
-        };
-        let Ok(signers) = approval.verified_signers(self.devices().map(Into::into)) else {
-            return false;
-        };
-        let Ok(body) = approval.open() else {
-            return false;
-        };
-
-        ployz_core::authority::Member::from(&body.machine).matches(machine)
-            && body.sealing_recipient == machine.public_key
-            && signers.contains(&body.signer.into())
-            && self.membership_cluster == Some(body.cluster)
+        ployz_core::authority::join::admits_row(machine, self.devices(), self.membership_cluster)
     }
 
     /// Whether this Machine holds evidence for `machine` as a Member: itself, a Member an
@@ -458,22 +445,10 @@ impl LocalMachineRecord {
         if snapshot.holds_member(&member) {
             return true;
         }
-        let Some(approval) = &machine.join_approval else {
-            return false;
-        };
         let evidenced = self
             .held_devices()
             .filter(|key| snapshot.holds_key(key.code()));
-        let Ok(signers) = approval.verified_signers(evidenced.map(Into::into)) else {
-            return false;
-        };
-        let Ok(body) = approval.open() else {
-            return false;
-        };
-        ployz_core::authority::Member::from(&body.machine).matches(machine)
-            && body.sealing_recipient == machine.public_key
-            && signers.contains(&body.signer.into())
-            && cluster == Some(body.cluster)
+        ployz_core::authority::join::admits_row(machine, evidenced, cluster)
     }
 
     /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
@@ -614,29 +589,47 @@ impl LocalMachineRecord {
 
 static EMPTY_STORE_VERSION: BTreeMap<String, i64> = BTreeMap::new();
 
-impl LocalMachinePrior {
-    fn id(&self) -> MachineId {
+/// The fields the three live phases share, borrowed from a Body or its Prior.
+/// A Resetting Machine reads them through the phase it left.
+#[derive(Clone, Copy)]
+enum LiveParts<'a> {
+    Uninitialized {
+        id: MachineId,
+    },
+    Joining {
+        machine: &'a Machine,
+        bootstrap: &'a [Machine],
+        min_store_version: &'a BTreeMap<String, i64>,
+    },
+    Participating {
+        machine: &'a Machine,
+        origin: &'a ParticipationOrigin,
+    },
+}
+
+impl<'a> LiveParts<'a> {
+    fn id(self) -> MachineId {
         match self {
-            Self::Uninitialized { id } => *id,
+            Self::Uninitialized { id } => id,
             Self::Joining { machine, .. } | Self::Participating { machine, .. } => machine.id,
         }
     }
 
-    fn machine(&self) -> Option<&Machine> {
+    fn machine(self) -> Option<&'a Machine> {
         match self {
             Self::Uninitialized { .. } => None,
             Self::Joining { machine, .. } | Self::Participating { machine, .. } => Some(machine),
         }
     }
 
-    fn cluster_network(&self) -> Option<Ipv4Net> {
+    fn cluster_network(self) -> Option<Ipv4Net> {
         match self {
             Self::Participating { origin, .. } => origin.cluster_network(),
             Self::Uninitialized { .. } | Self::Joining { .. } => None,
         }
     }
 
-    fn bootstrap(&self) -> &[Machine] {
+    fn bootstrap(self) -> &'a [Machine] {
         match self {
             Self::Uninitialized { .. } => &[],
             Self::Joining { bootstrap, .. } => bootstrap,
@@ -644,7 +637,7 @@ impl LocalMachinePrior {
         }
     }
 
-    fn min_store_version(&self) -> &BTreeMap<String, i64> {
+    fn min_store_version(self) -> &'a BTreeMap<String, i64> {
         match self {
             Self::Joining {
                 min_store_version, ..
@@ -654,13 +647,45 @@ impl LocalMachinePrior {
     }
 }
 
-impl LocalMachineBody {
-    fn id(&self) -> MachineId {
+impl LocalMachinePrior {
+    fn live(&self) -> LiveParts<'_> {
         match self {
-            Self::Uninitialized { id } => *id,
-            Self::Joining { machine, .. } | Self::Participating { machine, .. } => machine.id,
-            Self::Resetting { prior } => prior.id(),
+            Self::Uninitialized { id } => LiveParts::Uninitialized { id: *id },
+            Self::Joining {
+                machine,
+                bootstrap,
+                min_store_version,
+            } => LiveParts::Joining {
+                machine,
+                bootstrap,
+                min_store_version,
+            },
+            Self::Participating { machine, origin } => LiveParts::Participating { machine, origin },
         }
+    }
+}
+
+impl LocalMachineBody {
+    /// The live phase's shared fields, or those of the phase a Resetting Machine left.
+    fn live(&self) -> LiveParts<'_> {
+        match self {
+            Self::Uninitialized { id } => LiveParts::Uninitialized { id: *id },
+            Self::Joining {
+                machine,
+                bootstrap,
+                min_store_version,
+            } => LiveParts::Joining {
+                machine,
+                bootstrap,
+                min_store_version,
+            },
+            Self::Participating { machine, origin } => LiveParts::Participating { machine, origin },
+            Self::Resetting { prior } => prior.live(),
+        }
+    }
+
+    fn id(&self) -> MachineId {
+        self.live().id()
     }
 
     fn phase(&self) -> LocalMachinePhase {
@@ -673,19 +698,11 @@ impl LocalMachineBody {
     }
 
     fn machine(&self) -> Option<&Machine> {
-        match self {
-            Self::Uninitialized { .. } => None,
-            Self::Joining { machine, .. } | Self::Participating { machine, .. } => Some(machine),
-            Self::Resetting { prior } => prior.machine(),
-        }
+        self.live().machine()
     }
 
     fn cluster_network(&self) -> Option<Ipv4Net> {
-        match self {
-            Self::Participating { origin, .. } => origin.cluster_network(),
-            Self::Resetting { prior } => prior.cluster_network(),
-            Self::Uninitialized { .. } | Self::Joining { .. } => None,
-        }
+        self.live().cluster_network()
     }
 
     fn recovery_seed(&self) -> Option<&RecoverySeed> {
@@ -696,22 +713,11 @@ impl LocalMachineBody {
     }
 
     fn bootstrap(&self) -> &[Machine] {
-        match self {
-            Self::Uninitialized { .. } => &[],
-            Self::Joining { bootstrap, .. } => bootstrap,
-            Self::Participating { origin, .. } => origin.bootstrap(),
-            Self::Resetting { prior } => prior.bootstrap(),
-        }
+        self.live().bootstrap()
     }
 
     fn min_store_version(&self) -> &BTreeMap<String, i64> {
-        match self {
-            Self::Joining {
-                min_store_version, ..
-            } => min_store_version,
-            Self::Resetting { prior } => prior.min_store_version(),
-            Self::Uninitialized { .. } | Self::Participating { .. } => &EMPTY_STORE_VERSION,
-        }
+        self.live().min_store_version()
     }
 
     fn into_prior(self) -> LocalMachinePrior {

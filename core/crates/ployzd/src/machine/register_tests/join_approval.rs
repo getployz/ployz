@@ -1051,6 +1051,56 @@ async fn share_refuses_an_approval_for_another_allocation_of_the_recipient() {
 }
 
 #[tokio::test]
+async fn a_shared_key_is_replayed_for_its_own_approval_and_consumed_for_any_other_entry() {
+    let (entry, raw, founder, directory, server) = participating().await;
+    let existing = joined_before_activation(&raw, &founder).await;
+    let member = (&existing).into();
+    entry
+        .owner()
+        .mutate(move |store| store.trust_members(vec![member]).unwrap())
+        .await
+        .unwrap();
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let mut other = request("other", WireGuardPublicKey([5; 32]));
+    other.assigned_subnet = Some("10.210.5.0/24".parse().unwrap());
+    assert!(entry.register(other).await.is_err());
+    let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    body.signer = signer.public().into();
+    body.sealing_recipient = existing.public_key;
+    body.machine = (&existing).into();
+    let share = |body: &ployz_core::authority::JoinApproval| ShareSealingKeyRequest {
+        join_approval: Some(Signed::sign(body, &signer).unwrap()),
+        machine: existing.id,
+        public_key: existing.public_key,
+    };
+
+    let shared = entry.share_sealing_key(share(&body)).await.unwrap();
+
+    let replayed = entry.share_sealing_key(share(&body)).await.unwrap();
+    assert_eq!(
+        replayed.sealed, shared.sealed,
+        "the same approval is answered again"
+    );
+    let mut longer = body.clone();
+    longer.expires_at = longer.expires_at.plus(1);
+    assert!(matches!(
+        entry.share_sealing_key(share(&longer)).await,
+        Err(LocalMachineError::JoinConsumed(id)) if id == existing.id
+    ));
+    let mut register = request("again", existing.public_key);
+    register.machine_id = existing.id;
+    register.assigned_subnet = Some(existing.subnet);
+    assert!(matches!(
+        entry.register(register).await,
+        Err(LocalMachineError::JoinConsumed(id)) if id == existing.id
+    ));
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn resending_the_original_enroll_while_resetting_conflicts() {
     let (entry, _, _, directory, server) = participating().await;
     let signer = Signer::from_seed(&[1; 32]);

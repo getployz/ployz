@@ -21,6 +21,20 @@ struct Proposal {
     approval: Option<Signed<JoinApproval>>,
 }
 
+/// What entering a join found for one Machine.
+pub(crate) enum Entered {
+    /// An earlier entry already answered this request; the answer stands.
+    Replayed(super::restart_approval::JoinResult),
+    /// Nothing is stored for the Machine, so this entry may admit it.
+    Fresh(FreshJoin),
+}
+
+/// The fact that no answer is stored for `machine`, which only
+/// [`LocalMachine::enter_join`] can state and which consuming a join takes.
+pub(crate) struct FreshJoin {
+    machine: MachineId,
+}
+
 /// Drop each approved proposal in `data_dir`'s join record whose signer is not one of
 /// `trusted`, and name the Machines dropped. A proposal nobody approved admits nothing and
 /// stays.
@@ -121,8 +135,30 @@ impl LocalMachine {
         self.approvals.require_unused_join(machine)
     }
 
+    /// Where a join stands for `machine` as this Machine is asked to admit it: already
+    /// answered, or untouched. A stored answer is replayed only when `same_entry` says the
+    /// request repeats the one it answered; any other request for that Machine is
+    /// [`Error::JoinConsumed`].
+    pub(crate) fn enter_join(
+        &self,
+        machine: MachineId,
+        same_entry: impl FnOnce(&super::restart_approval::JoinResult) -> Result<bool, Error>,
+    ) -> Result<Entered, Error> {
+        let Some(stored) = self.approvals.join_result(machine)? else {
+            return Ok(Entered::Fresh(FreshJoin { machine }));
+        };
+        if same_entry(&stored)? {
+            Ok(Entered::Replayed(stored))
+        } else {
+            Err(Error::JoinConsumed(machine))
+        }
+    }
+
+    /// Record the answer to a join [`enter_join`](Self::enter_join) found untouched, so no
+    /// join is consumed without having been entered.
     pub(crate) fn consume_join(
         &self,
+        fresh: FreshJoin,
         result: super::restart_approval::JoinResult,
     ) -> Result<(), Error> {
         let machine = result
@@ -131,6 +167,11 @@ impl LocalMachine {
             .map_err(Error::JoinRefused)?
             .machine
             .id;
+        if machine != fresh.machine {
+            return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
+                field: "a joining Machine",
+            }));
+        }
         self.approvals.consume_join(result, Timestamp::now())?;
         let mut joins = self.read_joins()?;
         joins.proposals.remove(&machine);
@@ -167,13 +208,17 @@ impl LocalMachine {
 
     pub(crate) fn admit_join(
         &self,
+        fresh: &FreshJoin,
         machine: &Machine,
         network: ipnet::Ipv4Net,
         approval: Option<Signed<JoinApproval>>,
         peers: &[Machine],
     ) -> Result<Signed<JoinApproval>, Error> {
+        debug_assert_eq!(
+            fresh.machine, machine.id,
+            "a join is admitted as it was entered"
+        );
         let mut joins = self.read_joins()?;
-        self.require_unused_join(machine.id)?;
         let approval = approval.or_else(|| {
             joins
                 .proposals
