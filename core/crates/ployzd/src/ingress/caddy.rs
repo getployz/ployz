@@ -2,9 +2,8 @@
 
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_BIND_V6,
-    INGRESS_LOOPBACK_PORT, INGRESS_RUNTIME_MOUNT, INGRESS_VERIFY_PATH, Machine, MachineId,
-    ingress_certs_dir, ingress_upstream,
+    HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_RUNTIME_MOUNT, INGRESS_VERIFY_PATH, Machine,
+    MachineId, TUNNEL_SITE_PORT, ingress_certs_dir, ingress_upstream, tunnel_origin_listener,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -164,6 +163,18 @@ impl CaddyAdmin for AdminClient {
     }
 }
 
+/// Make the directory Caddy binds the origin socket in, since Caddy makes no parent
+/// directory of a socket. The Tunnel Origin mounts it alone, and other users may enter
+/// it to reach the socket but list nothing.
+///
+/// # Errors
+///
+/// Returns when the directory can't be made or its mode set.
+pub(crate) fn prepare_origin_directory(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o711))
+}
+
 #[must_use]
 /// Return the Caddy configuration path beneath the shared ingress data root.
 pub(crate) fn config_path(data_dir: &Path) -> PathBuf {
@@ -311,10 +322,10 @@ https:// {{\n\
 \t}}\n\
 }}\n\
 \n\
-# The Tunnel door reaches this Machine's routes on loopback and terminates TLS itself. It says\n\
-# what the visitor used in X-Forwarded-Proto, which defaults to https when it says nothing.\n\
-(loopback_site) {{\n\
-\tbind {} {}\n\
+# The Tunnel door reaches this Machine's public routes on the origin socket and terminates TLS\n\
+# itself. It says what the visitor used in X-Forwarded-Proto, which defaults to https.\n\
+(tunnel_site) {{\n\
+\tbind {}\n\
 \timport ployz_headers {{args[0]}}\n\
 \t@plain header X-Forwarded-Proto http\n\
 \tredir @plain https://{{host}}{{uri}} 308\n\
@@ -323,13 +334,13 @@ https:// {{\n\
 }}\n\
 \n\
 # The later header_up replaces the scheme Caddy saw with the one the door reported.\n\
-(loopback_proxy) {{\n\
+(tunnel_proxy) {{\n\
 \timport common_proxy\n\
 \theader_up X-Forwarded-Proto {{header.X-Forwarded-Proto}}\n\
 }}\n",
-        INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_BIND_V6,
+        tunnel_origin_listener(),
     );
-    write_loopback_sites(&mut output, projection, &unpublished, &hostname_verify);
+    write_tunnel_sites(&mut output, projection, &unpublished, &hostname_verify);
     if projection
         .sites
         .iter()
@@ -408,24 +419,25 @@ fn answer(
     }
 }
 
-/// The loopback sites the Tunnel door reaches: one per routed hostname, with or without
-/// Certificate Material, since the door terminates TLS itself, and a catch-all that answers
-/// a hostname it does not route like the public one.
-fn write_loopback_sites(
+/// The sites the Tunnel door reaches on the origin socket: one per routed hostname, with or
+/// without Certificate Material, since the door terminates TLS itself, and a catch-all that
+/// answers a hostname it does not route like the public one. The socket serves nothing else,
+/// so a Host header a tunnel's route sets reaches only a route the public listeners serve.
+fn write_tunnel_sites(
     output: &mut String,
     projection: &IngressProjection,
     unpublished: &str,
     hostname_verify: &str,
 ) {
     let local_machine = &projection.machine.id;
-    let port = INGRESS_LOOPBACK_PORT;
-    let loopback = format!("\timport loopback_site {local_machine}\n");
+    let port = TUNNEL_SITE_PORT;
+    let tunnel = format!("\timport tunnel_site {local_machine}\n");
     let not_deployed = ErrorPage::NotDeployed.directive();
     let _ = write!(
         output,
         "\n# Unknown hostnames through the Tunnel door.\n\
 http://:{port} {{\n\
-{loopback}{unpublished}{hostname_verify}{not_deployed}\
+{tunnel}{unpublished}{hostname_verify}{not_deployed}\
 \timport error_page {local_machine}\n\
 \timport ployz_log\n\
 }}\n"
@@ -440,9 +452,9 @@ http://:{port} {{\n\
             local_machine,
             "http",
             &format!("{}:{port}", site.hostname),
-            &format!("{loopback}{trace}{hostname_verify}"),
+            &format!("{tunnel}{trace}{hostname_verify}"),
             None,
-            &loopback_proxy(endpoints),
+            &tunnel_proxy(endpoints),
         );
     }
 }
@@ -546,8 +558,8 @@ fn proxy(endpoints: &[IngressEndpoint]) -> String {
 }
 
 /// The same through the Tunnel door, which already said the visitor's scheme.
-fn loopback_proxy(endpoints: &[IngressEndpoint]) -> String {
-    proxy_with(endpoints, "loopback_proxy")
+fn tunnel_proxy(endpoints: &[IngressEndpoint]) -> String {
+    proxy_with(endpoints, "tunnel_proxy")
 }
 
 fn proxy_with(endpoints: &[IngressEndpoint], snippet: &str) -> String {

@@ -86,10 +86,13 @@ pub(super) fn holds_sealed(kind: ContainerKind, spec: &ResolvedServiceSpec) -> b
 pub(super) enum CreationNetwork {
     /// Its own endpoint on the ployz bridge.
     Bridge,
-    /// The network namespace of this running Container, as Docker's `container:` mode.
-    /// Docker refuses a hostname, DNS, hosts, ports and an endpoint in that mode, so the
-    /// joined Container carries none and inherits the holder's.
+    /// The network namespace of this running Container, as Docker's `container:` mode:
+    /// the holder for a Caddy, the Tunnel Origin for a connector. Docker refuses a
+    /// hostname, DNS, hosts, ports and an endpoint in that mode, so the joined Container
+    /// carries none and inherits the owner's.
     Holder(ContainerId),
+    /// The Tunnel Origin's own bridge, with Docker's resolver and no other setting.
+    Tunnel,
 }
 
 pub(super) fn container_create_body(
@@ -176,6 +179,7 @@ pub(super) fn container_create_body(
         network_mode: Some(match network {
             CreationNetwork::Bridge => crate::network::DOCKER_NETWORK_NAME.into(),
             CreationNetwork::Holder(holder) => format!("container:{holder}"),
+            CreationNetwork::Tunnel => crate::network::TUNNEL_NETWORK_NAME.into(),
         }),
         log_config: Some(container_log_config()),
         port_bindings: port_bindings.filter(|_| on_bridge),

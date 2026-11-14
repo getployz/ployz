@@ -556,7 +556,7 @@ fn a_server_with_the_public_door_closed_is_never_ranked_or_probed() {
         door_on(&open, &public.proxy),
         door_on(&closed, &tunnel.holder),
         door_on(&closed, &tunnel.proxy),
-        door_on(&closed, tunnel.tunnel.as_ref().unwrap()),
+        door_on(&closed, &tunnel.tunnel.as_ref().unwrap().connector),
     ];
     let standing = door_standing(&observations);
     assert_eq!(

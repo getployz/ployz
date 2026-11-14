@@ -202,7 +202,10 @@ pub(crate) fn door_standing(observations: &[ContainerObservation]) -> DoorStandi
             Some(IngressWiring::Holder(IngressPorts::Closed)) => {
                 standing.closed.insert(observation.machine_id);
             }
-            Some(IngressWiring::JoinedProxy | IngressWiring::Tunnel) | None => {}
+            Some(
+                IngressWiring::JoinedProxy | IngressWiring::TunnelOrigin | IngressWiring::Tunnel,
+            )
+            | None => {}
         }
     }
     standing

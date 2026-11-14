@@ -3,7 +3,7 @@
 //! Caddy answers the page itself. Facts known at render time reach it as snippet arguments;
 //! everything about the request stays a Caddy placeholder, so a request never reloads Caddy.
 
-use ployz_core::{INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_PORT, MachineId};
+use ployz_core::{CLOUDFLARE_RANGES, MachineId, tunnel_origin_listener};
 use std::fmt::Write as _;
 
 use crate::ingress::{
@@ -14,38 +14,10 @@ use crate::ingress::{
 /// Path the trace page answers on every routed hostname.
 pub(crate) const TRACE_PATH: &str = "/.well-known/ployz/trace";
 
-/// Cloudflare's published edge ranges, checked 2026-10-13 against
-/// <https://www.cloudflare.com/ips-v4> and <https://www.cloudflare.com/ips-v6>.
-pub(super) const CLOUDFLARE_RANGES: [&str; 22] = [
-    "173.245.48.0/20",
-    "103.21.244.0/22",
-    "103.22.200.0/22",
-    "103.31.4.0/22",
-    "141.101.64.0/18",
-    "108.162.192.0/18",
-    "190.93.240.0/20",
-    "188.114.96.0/20",
-    "197.234.240.0/22",
-    "198.41.128.0/17",
-    "162.158.0.0/15",
-    "104.16.0.0/13",
-    "104.24.0.0/14",
-    "172.64.0.0/13",
-    "131.0.72.0/22",
-    "2400:cb00::/32",
-    "2606:4700::/32",
-    "2803:f800::/32",
-    "2405:b500::/32",
-    "2405:8100::/32",
-    "2a06:98c0::/29",
-    "2c0f:f248::/32",
-];
-
 /// The `servers` global options. The public listeners read the visitor's address from
-/// a Cloudflare peer, and the loopback listener from the Tunnel door beside it. Caddy
-/// applies an unaddressed block to every server, the loopback one included, so each
-/// listener is addressed; the loopback block names the bound address, since a bare
-/// port matches no server bound to an address.
+/// a Cloudflare peer, and the origin socket from the Tunnel door, its only peer. Caddy
+/// applies an unaddressed block to every server, the socket's included, so each
+/// listener is addressed by the address it binds.
 pub(super) fn servers_options() -> String {
     let mut output = String::new();
     for address in [":80", ":443"] {
@@ -57,13 +29,11 @@ pub(super) fn servers_options() -> String {
     }
     let _ = write!(
         output,
-        "\tservers {INGRESS_LOOPBACK_BIND}:{INGRESS_LOOPBACK_PORT} {{\n\t\ttrusted_proxies static {LOOPBACK_RANGES}\n\t\tclient_ip_headers CF-Connecting-IP X-Forwarded-For\n\t}}\n"
+        "\tservers {} {{\n\t\ttrusted_proxies_unix\n\t\tclient_ip_headers CF-Connecting-IP X-Forwarded-For\n\t}}\n",
+        tunnel_origin_listener()
     );
     output
 }
-
-/// Where the loopback site listens: the Tunnel door dials it on the Machine itself.
-const LOOPBACK_RANGES: &str = "127.0.0.1/32 ::1/128";
 
 /// One line of the page. Keys are only ever appended, so readers can rely on the order.
 struct TraceField {

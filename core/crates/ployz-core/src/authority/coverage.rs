@@ -190,7 +190,7 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (
         SET_INGRESS_DOORS_CAPABILITY,
         Bound(
-            "the request names no image; the daemon places only its pinned images; the tunnel token is thread X's",
+            "the request names no image; the daemon places only its pinned images; a tunnel token Cloud seals, remotely managed or not, runs a connector that reaches only DNS, Cloudflare's edge and the Tunnel Origin, which serves only public routes",
         ),
     ),
     (SET_PRIVATE_ACCESS_CAPABILITY, Signed(&[PrivateAccess])),
@@ -631,6 +631,14 @@ pub const CASES: &[Case] = &[
         "any doors",
         "a SetIngressDoors placing the HTTP Doors, naming an image of its own",
         Expected::Bounded(PINNED_DOORS),
+    ),
+    case(
+        SET_INGRESS_DOORS_CAPABILITY,
+        "tunnel door",
+        "a SetIngressDoors opening the Tunnel Door on a token for a remotely managed tunnel whose routes name the host, the mesh and a Container",
+        Expected::Bounded(
+            "the connector reaches only DNS, Cloudflare's edge and the Tunnel Origin",
+        ),
     ),
     case(
         SET_PRIVATE_ACCESS_CAPABILITY,

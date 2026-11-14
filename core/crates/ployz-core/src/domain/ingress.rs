@@ -10,17 +10,13 @@ use crate::{
     PlacementConstraint, PortPublication, PullPolicy, QualifiedService, RawVolumeSource,
     RequestedServiceSpec, ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode,
     ServiceMount, ServiceMountGraph, ServiceNetwork, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, TransportProtocol, UpdateConfig, tunnel_sealed_token,
-    tunnel_service_spec,
+    ServiceVolumeReference, TransportProtocol, UpdateConfig, tunnel_origin_service_spec,
+    tunnel_sealed_token, tunnel_service_spec,
 };
 
 pub const INGRESS_CONFIG_MOUNT: &str = "/config";
 const INGRESS_DATA_MOUNT: &str = "/data";
 pub const INGRESS_RUNTIME_MOUNT: &str = "/run/ingress";
-/// The port of Caddy's loopback listener, which the Tunnel Connector dials.
-pub const INGRESS_LOOPBACK_PORT: u16 = 8480;
-pub const INGRESS_LOOPBACK_BIND: &str = "127.0.0.1";
-pub const INGRESS_LOOPBACK_BIND_V6: &str = "::1";
 /// Environment variable selecting Caddy's administrative endpoint.
 pub const CADDY_ADMIN_ENV: &str = "CADDY_ADMIN";
 const INGRESS_PROXY_DATA_PATH: &str = "/var/lib/ployz/ingress";
@@ -70,7 +66,9 @@ pub enum IngressWiring {
     JoinedProxy,
     /// The holder that owns the network namespace and, when public, the host ports.
     Holder(IngressPorts),
-    /// The Tunnel Connector that joins the holder's network and publishes nothing.
+    /// The Tunnel Origin that owns the connector's network on its own bridge.
+    TunnelOrigin,
+    /// The Tunnel Connector that joins the Tunnel Origin's network and publishes nothing.
     Tunnel,
 }
 
@@ -80,9 +78,10 @@ impl IngressWiring {
     pub fn ports(self) -> IngressPorts {
         match self {
             Self::LegacyProxy | Self::Holder(IngressPorts::Public) => IngressPorts::Public,
-            Self::JoinedProxy | Self::Holder(IngressPorts::Closed) | Self::Tunnel => {
-                IngressPorts::Closed
-            }
+            Self::JoinedProxy
+            | Self::Holder(IngressPorts::Closed)
+            | Self::TunnelOrigin
+            | Self::Tunnel => IngressPorts::Closed,
         }
     }
 }
@@ -173,6 +172,10 @@ fn canonical_doors(
         (
             IngressWiring::Holder(IngressPorts::Closed),
             placed(holder_service_spec(image, IngressPorts::Closed)),
+        ),
+        (
+            IngressWiring::TunnelOrigin,
+            placed(tunnel_origin_service_spec(image)),
         ),
     ]
     .into_iter()
@@ -325,18 +328,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_proxy_paths_and_loopback_port_keep_their_values() {
+    fn the_proxy_paths_keep_their_values() {
         assert_eq!(ingress_certs_dir(), "/config/caddy/certs");
         assert_eq!(
             caddy_ingress_command(),
             ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
         );
         assert_eq!(caddy_ingress_admin(), "unix//run/ingress/caddy/admin.sock");
-        assert_eq!(INGRESS_LOOPBACK_PORT, 8480);
-        assert_eq!(INGRESS_LOOPBACK_BIND, "127.0.0.1");
-        assert_eq!(INGRESS_LOOPBACK_BIND_V6, "::1");
         assert_eq!(INGRESS_PROXY_DATA_PATH, "/var/lib/ployz/ingress");
         assert_eq!(INGRESS_PROXY_RUNTIME_PATH, "/run/ployz/ingress");
+        assert_eq!(
+            crate::TUNNEL_ORIGIN_MACHINE_DIR,
+            format!("{INGRESS_PROXY_RUNTIME_PATH}/tunnel"),
+            "Caddy reaches the origin socket through its runtime mount"
+        );
     }
 
     fn edge() -> BTreeSet<PlacementConstraint> {
@@ -387,6 +392,11 @@ mod tests {
             (
                 holder_service_spec(image, IngressPorts::Closed),
                 IngressWiring::Holder(IngressPorts::Closed),
+                IngressPorts::Closed,
+            ),
+            (
+                placed(crate::tunnel_origin_service_spec(image)),
+                IngressWiring::TunnelOrigin,
                 IngressPorts::Closed,
             ),
         ];

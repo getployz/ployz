@@ -27,6 +27,11 @@ use crate::sealing_key::SealingKey;
 /// own connection is an iroh connection, and a rule grant needs GitHub's signed token.
 const UNIT_ONLY: &[(&str, &str, &str)] = &[
     (
+        ployz_core::SET_INGRESS_DOORS_CAPABILITY,
+        "tunnel door",
+        "tests/network_namespace.rs::the_tunnel_connector_reaches_dns_and_the_cloudflare_edge_but_no_origin_a_route_names, with ingress_doors::the_tunnel_door_closes_the_ports_and_runs_the_connector_on_the_opened_token",
+    ),
+    (
         ployz_core::SET_MANAGEMENT_CLIENT_CAPABILITY,
         "from Cloud's own connection",
         "management_client::tests::no_caller_writes_a_device_slot_through_set_management_client",

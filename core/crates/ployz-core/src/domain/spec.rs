@@ -533,6 +533,11 @@ pub struct ServiceContainerSpec {
 pub enum ServiceNetwork {
     /// The running reserved Ingress holder on the same Machine.
     IngressHolder,
+    /// The Tunnel Origin's own bridge, which the Machine's firewall lets reach only
+    /// DNS and Cloudflare's edge.
+    Tunnel,
+    /// The running reserved Tunnel Origin on the same Machine.
+    TunnelOrigin,
     /// A value this build does not know. Creation refuses it.
     #[serde(other)]
     Unrecognized,

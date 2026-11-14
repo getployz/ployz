@@ -79,6 +79,10 @@ use ployz_core::{Namespace, ServiceId};
 
 /// The Docker network every Service Container and the Ingress Proxy join.
 pub const DOCKER_NETWORK_NAME: &str = "ployz";
+/// The Docker network the Tunnel Origin alone joins, with the Tunnel Connector in its
+/// network namespace, and its bridge's name, which the Machine's firewall fences to DNS
+/// and Cloudflare's edge.
+pub const TUNNEL_NETWORK_NAME: &str = "ployz-tunnel";
 
 /// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
 /// reach it by DNAT with their own address (#2837). So does a container created
@@ -1584,8 +1588,14 @@ pub enum Error {
     SlotNameOccupied(String),
     #[error("no Ingress Proxy holder is running on this Server")]
     IngressHolderNotRunning,
+    #[error("no Tunnel Origin is running on this Server")]
+    TunnelOriginNotRunning,
     #[error("the spec names a network this Server's Ployz doesn't know")]
     UnrecognizedNetwork,
+    #[error(
+        "a Docker network named `{TUNNEL_NETWORK_NAME}` exists that Ployz didn't make; remove it so the Tunnel Door gets its fenced bridge"
+    )]
+    ForeignTunnelNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
     /// A registry or peer pull failed while the Docker root had almost no free space.
@@ -1668,6 +1678,7 @@ impl Error {
             | Self::InvalidValue { .. }
             | Self::NotAServiceContainer(_)
             | Self::IngressHolderNotRunning
+            | Self::TunnelOriginNotRunning
             | Self::UnrecognizedNetwork
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
@@ -1681,6 +1692,7 @@ impl Error {
             | Self::Clock(_)
             | Self::LimitsUnapplied { .. }
             | Self::StoppedAfterLimitsUpdate(_)
+            | Self::ForeignTunnelNetwork
             | Self::InvalidVolumeStatus(_)
             | Self::UnexpectedVolumeName { .. }
             | Self::Observation(_) => RpcErrorCode::Internal,

@@ -377,10 +377,10 @@ impl ContainerRuntime {
             .await?;
         self.first_synced
             .send_if_modified(|synced| !std::mem::replace(synced, true));
-        // The Ingress doors, the holder and its Caddy, are the only Service Containers the
-        // daemon starts unasked, and only while this Machine participates and accepts
-        // ingress. It starts an existing container, or restarts a Caddy left in a
-        // holder's old network; it never creates, replaces, moves or removes one.
+        // The Ingress doors are the only Service Containers the daemon starts unasked,
+        // and only while this Machine participates and accepts ingress. It starts an
+        // existing holder or Caddy, or restarts a Caddy or connector left in its owner's
+        // old network; it never creates, replaces, moves or removes one.
         // Started after the guard drops, so a slow Docker start never stalls publication.
         // A reset that takes the guard meanwhile removes the container anyway. The record
         // is read again here, so a policy change that committed during publication holds.
@@ -608,10 +608,11 @@ pub(crate) enum IngressRecovery {
         holder: Option<ContainerId>,
         caddy: ContainerId,
     },
-    /// A running Caddy left in a network namespace the running holder no longer has.
-    RejoinCaddy {
-        holder: ContainerId,
-        caddy: ContainerId,
+    /// A running Caddy left in a network namespace the running holder no longer has,
+    /// or a running connector left in one the running Tunnel Origin no longer has.
+    Rejoin {
+        owner: ContainerId,
+        joined: ContainerId,
     },
 }
 
@@ -620,14 +621,15 @@ impl IngressRecovery {
     pub(super) fn target(&self) -> &ContainerId {
         match self {
             Self::StartHolder(id) => id,
-            Self::StartCaddy { caddy, .. } | Self::RejoinCaddy { caddy, .. } => caddy,
+            Self::StartCaddy { caddy, .. } => caddy,
+            Self::Rejoin { joined, .. } => joined,
         }
     }
 
     pub(super) fn verb(&self) -> &'static str {
         match self {
             Self::StartHolder(_) | Self::StartCaddy { .. } => "started",
-            Self::RejoinCaddy { .. } => "rejoined",
+            Self::Rejoin { .. } => "rejoined",
         }
     }
 }
@@ -644,6 +646,11 @@ fn ingress_recovery(doors: &[DoorFacts], complete: bool) -> Option<IngressRecove
     if !complete {
         return None;
     }
+    proxy_recovery(doors).or_else(|| tunnel_recovery(doors))
+}
+
+/// The holder's or its Caddy's recovery, if any.
+fn proxy_recovery(doors: &[DoorFacts]) -> Option<IngressRecovery> {
     let newest = |facts: &[&DoorFacts]| {
         facts
             .iter()
@@ -698,9 +705,9 @@ fn ingress_recovery(doors: &[DoorFacts], complete: bool) -> Option<IngressRecove
     if let Some(caddy) = joined.iter().find(|facts| facts.running()) {
         return match (holder.netns, caddy.netns) {
             (Some(holder_ns), Some(caddy_ns)) if holder_ns != caddy_ns => {
-                Some(IngressRecovery::RejoinCaddy {
-                    holder: holder.id,
-                    caddy: caddy.id,
+                Some(IngressRecovery::Rejoin {
+                    owner: holder.id,
+                    joined: caddy.id,
                 })
             }
             _ => None,
@@ -714,6 +721,42 @@ fn ingress_recovery(doors: &[DoorFacts], complete: bool) -> Option<IngressRecove
         holder: Some(holder.id),
         caddy: caddy.id,
     })
+}
+
+/// A running connector to move into the running Tunnel Origin's network, if any.
+///
+/// Only that: a door at rest stays at rest, since the route starts the Tunnel Door
+/// only once it has written the token and the Cluster still declares it. Docker
+/// restarts a connector that exits into the origin's current network, so only a
+/// connector that keeps running after its origin restarted is left behind.
+fn tunnel_recovery(doors: &[DoorFacts]) -> Option<IngressRecovery> {
+    let origins = doors
+        .iter()
+        .filter(|facts| facts.door == Door::TunnelOrigin)
+        .collect::<Vec<_>>();
+    let mut running = origins.iter().copied().filter(|facts| facts.running());
+    let (Some(origin), None) = (running.next(), running.next()) else {
+        return None;
+    };
+    if origins
+        .iter()
+        .any(|facts| !facts.running() && !facts.at_rest())
+    {
+        return None;
+    }
+    let origin_ns = origin.netns?;
+    doors
+        .iter()
+        .find(|facts| {
+            facts.door == Door::Tunnel
+                && facts.running()
+                && facts.joined_to == Some(origin.id)
+                && facts.netns.is_some_and(|ns| ns != origin_ns)
+        })
+        .map(|connector| IngressRecovery::Rejoin {
+            owner: origin.id,
+            joined: connector.id,
+        })
 }
 
 #[cfg(test)]
@@ -871,6 +914,45 @@ mod tests {
         );
     }
 
+    fn tunnel_origin(id: char, created_at: i64, runtime: serde_json::Value) -> DoorFacts {
+        door(id, Door::TunnelOrigin, created_at, runtime)
+    }
+
+    fn connector(id: char, created_at: i64, runtime: serde_json::Value) -> DoorFacts {
+        door(id, Door::Tunnel, created_at, runtime)
+    }
+
+    #[test]
+    fn a_running_connector_in_the_origins_old_namespace_is_rejoined() {
+        let doors = |connector_ns| {
+            [
+                in_netns(holder('a', 1, running()), 1),
+                in_netns(joined(caddy('b', 2, running()), 'a'), 1),
+                in_netns(tunnel_origin('e', 3, running()), 10),
+                in_netns(joined(connector('f', 4, running()), 'e'), connector_ns),
+            ]
+        };
+        assert_eq!(
+            ingress_recovery(&doors(11), true),
+            Some(IngressRecovery::Rejoin {
+                owner: id('e'),
+                joined: id('f'),
+            })
+        );
+        assert_eq!(ingress_recovery(&doors(10), true), None);
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    in_netns(tunnel_origin('e', 3, running()), 10),
+                    failed(joined(connector('f', 4, created()), 'e')),
+                ],
+                true
+            ),
+            None,
+            "a connector at rest waits for the route, which writes its token first"
+        );
+    }
+
     #[test]
     fn a_running_caddy_in_the_holders_old_namespace_is_rejoined() {
         assert_eq!(
@@ -881,9 +963,9 @@ mod tests {
                 ],
                 true
             ),
-            Some(IngressRecovery::RejoinCaddy {
-                holder: id('a'),
-                caddy: id('c'),
+            Some(IngressRecovery::Rejoin {
+                owner: id('a'),
+                joined: id('c'),
             })
         );
         assert_eq!(

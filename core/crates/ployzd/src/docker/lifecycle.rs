@@ -250,10 +250,19 @@ impl ContainerRuntime {
         let network = match spec.container.network {
             None => CreationNetwork::Bridge,
             Some(ServiceNetwork::IngressHolder) => CreationNetwork::Holder(
-                self.running_holder()
+                self.running_door(Door::Holder)
                     .await?
                     .ok_or(Error::IngressHolderNotRunning)?,
             ),
+            Some(ServiceNetwork::TunnelOrigin) => CreationNetwork::Holder(
+                self.running_door(Door::TunnelOrigin)
+                    .await?
+                    .ok_or(Error::TunnelOriginNotRunning)?,
+            ),
+            Some(ServiceNetwork::Tunnel) => {
+                self.docker.ensure_tunnel_network().await?;
+                CreationNetwork::Tunnel
+            }
             Some(ServiceNetwork::Unrecognized) => return Err(Error::UnrecognizedNetwork),
         };
         let mut body = create::container_create_body(
@@ -688,15 +697,15 @@ impl ContainerRuntime {
                 self.start_inspected(caddy, &inspected).await?;
                 Ok(true)
             }
-            IngressRecovery::RejoinCaddy { holder, caddy } => {
-                let holder_now = self.ensure_managed(holder).await?;
-                let caddy_now = self.ensure_managed(caddy).await?;
-                let stale = match (doors::netns_of(&holder_now), doors::netns_of(&caddy_now)) {
-                    (Some(holder_ns), Some(caddy_ns)) => holder_ns != caddy_ns,
+            IngressRecovery::Rejoin { owner, joined } => {
+                let owner_now = self.ensure_managed(owner).await?;
+                let joined_now = self.ensure_managed(joined).await?;
+                let stale = match (doors::netns_of(&owner_now), doors::netns_of(&joined_now)) {
+                    (Some(owner_ns), Some(joined_ns)) => owner_ns != joined_ns,
                     _ => false,
                 };
                 if !stale
-                    || doors::joined_to(&caddy_now) != Some(*holder)
+                    || doors::joined_to(&joined_now) != Some(*owner)
                     || !self.docker.created_nothing_since(creates)
                 {
                     return Ok(false);
@@ -706,11 +715,11 @@ impl ContainerRuntime {
                 let result = self
                     .docker
                     .client
-                    .stop_container(caddy.as_str(), None)
+                    .stop_container(joined.as_str(), None)
                     .await;
-                idempotent_lifecycle_result(caddy, result)?;
-                let inspected = self.ensure_managed(caddy).await?;
-                self.start_inspected(caddy, &inspected).await?;
+                idempotent_lifecycle_result(joined, result)?;
+                let inspected = self.ensure_managed(joined).await?;
+                self.start_inspected(joined, &inspected).await?;
                 Ok(true)
             }
         }
@@ -816,12 +825,13 @@ impl ContainerRuntime {
         self.departing
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut config_operation = self.specs.config_operation().await;
-        // A Caddy in a holder's network goes before the holder, so no Container is ever
-        // left in a removed Container's network.
+        // A Caddy in a holder's network goes before the holder, and a connector before
+        // its Tunnel Origin, so no Container is ever left in a removed Container's
+        // network.
         let mut managed = self.docker.managed_containers().await?;
         managed.sort_by_key(|(_, labels)| {
             ServiceLabels::parse(labels)
-                .is_ok_and(|managed| Door::of(&managed.identity) == Some(Door::Holder))
+                .is_ok_and(|managed| Door::of(&managed.identity).is_some_and(Door::owns_netns))
         });
         for (container_id, _) in managed {
             self.retire(&mut config_operation, &container_id, How::Departing)

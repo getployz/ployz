@@ -1,19 +1,23 @@
 //! The reserved Ingress doors as Docker shows them: the holder that owns the Ingress
-//! Proxy's network namespace, the Caddy that joins it, and the Tunnel Connector that
-//! joins it too.
+//! Proxy's network namespace, the Caddy that joins it, and the Tunnel Origin with the
+//! Tunnel Connector that joins it.
 
 use ployz_core::labels;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use bollard::models::{ContainerInspectResponse, ContainerStateStatusEnum};
+use std::collections::HashMap;
+
+use bollard::models::{
+    ContainerInspectResponse, ContainerStateStatusEnum, NetworkCreateRequest, NetworkInspect,
+};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, MachineId,
     PullPolicy, QualifiedService,
 };
 
 use super::{
-    ContainerRuntime, Error, docker_error,
+    ContainerRuntime, Error, Status, TUNNEL_NETWORK_NAME, classify, docker_error,
     lifecycle::{failed_start, is_running},
 };
 use crate::docker_image::prepare_image;
@@ -23,11 +27,12 @@ use crate::docker_image::prepare_image;
 pub(crate) enum Door {
     Holder,
     Proxy,
+    TunnelOrigin,
     Tunnel,
 }
 
 impl Door {
-    pub(crate) const ALL: [Self; 3] = [Self::Holder, Self::Proxy, Self::Tunnel];
+    pub(crate) const ALL: [Self; 4] = [Self::Holder, Self::Proxy, Self::TunnelOrigin, Self::Tunnel];
 
     #[must_use]
     pub(crate) fn of(identity: &QualifiedService) -> Option<Self> {
@@ -52,8 +57,16 @@ impl Door {
         match self {
             Self::Holder => QualifiedService::system_ingress_holder(),
             Self::Proxy => QualifiedService::system_ingress(),
+            Self::TunnelOrigin => QualifiedService::system_tunnel_origin(),
             Self::Tunnel => QualifiedService::system_tunnel(),
         }
+    }
+
+    /// Whether other doors join this one's network namespace: the holder's Caddy, or
+    /// the Tunnel Origin's connector.
+    #[must_use]
+    pub(crate) fn owns_netns(self) -> bool {
+        matches!(self, Self::Holder | Self::TunnelOrigin)
     }
 }
 
@@ -192,10 +205,10 @@ impl ContainerRuntime {
             .map_err(Error::ImagePull)
     }
 
-    /// The newest running holder, which a joined Caddy is created in.
-    pub(super) async fn running_holder(&self) -> Result<Option<ContainerId>, Error> {
+    /// The newest running Container of `door`, which a joined door is created in.
+    pub(super) async fn running_door(&self, door: Door) -> Result<Option<ContainerId>, Error> {
         let mut running = Vec::new();
-        for (id, _) in self.docker.door_containers(Door::Holder).await? {
+        for (id, _) in self.docker.door_containers(door).await? {
             let Some(inspected) = self.inspect_present(&id).await? else {
                 continue;
             };
@@ -230,7 +243,67 @@ impl ContainerRuntime {
     }
 }
 
+/// Bollard's option that names a bridge network's interface, which the Machine's
+/// firewall matches the Tunnel Door's traffic by.
+const BRIDGE_NAME_OPTION: &str = "com.docker.network.bridge.name";
+
+fn tunnel_network_request() -> NetworkCreateRequest {
+    NetworkCreateRequest {
+        name: TUNNEL_NETWORK_NAME.into(),
+        driver: Some("bridge".into()),
+        scope: Some("local".into()),
+        enable_ipv6: Some(false),
+        options: Some(HashMap::from([
+            (BRIDGE_NAME_OPTION.into(), TUNNEL_NETWORK_NAME.into()),
+            (
+                "com.docker.network.bridge.enable_icc".into(),
+                "false".into(),
+            ),
+        ])),
+        labels: Some(labels::system_labels()),
+        ..Default::default()
+    }
+}
+
+/// Whether `network` is a bridge the firewall fences: one backed by the interface the
+/// fence names, with no IPv6.
+fn tunnel_network_fenced(network: &NetworkInspect) -> Result<(), Error> {
+    let bridge = network.driver.as_deref() == Some("bridge")
+        && network
+            .options
+            .as_ref()
+            .and_then(|options| options.get(BRIDGE_NAME_OPTION))
+            .map(String::as_str)
+            == Some(TUNNEL_NETWORK_NAME);
+    if bridge && network.enable_ipv6 != Some(true) {
+        Ok(())
+    } else {
+        Err(Error::ForeignTunnelNetwork)
+    }
+}
+
 impl super::LocalDocker {
+    /// Make the Tunnel Origin's network when it is missing. A network of that name
+    /// that another interface backs, or that takes IPv6, is refused rather than joined,
+    /// since the firewall would not fence it.
+    pub(super) async fn ensure_tunnel_network(&self) -> Result<(), Error> {
+        match self.client.inspect_network(TUNNEL_NETWORK_NAME, None).await {
+            Ok(network) => return tunnel_network_fenced(&network),
+            Err(error) if classify(&error) == Status::Absent => {}
+            Err(error) => return Err(Error::Docker(error)),
+        }
+        match self.client.create_network(tunnel_network_request()).await {
+            Ok(_) => Ok(()),
+            Err(error) if classify(&error) == Status::Conflict => tunnel_network_fenced(
+                &self
+                    .client
+                    .inspect_network(TUNNEL_NETWORK_NAME, None)
+                    .await?,
+            ),
+            Err(error) => Err(Error::Docker(error)),
+        }
+    }
+
     pub(super) async fn door_containers(
         &self,
         door: Door,
@@ -249,6 +322,43 @@ impl super::LocalDocker {
 mod tests {
     use super::*;
     use bollard::models::{ContainerState, HostConfig};
+
+    fn network(driver: &str, bridge: &str, ipv6: bool) -> NetworkInspect {
+        NetworkInspect {
+            driver: Some(driver.into()),
+            enable_ipv6: Some(ipv6),
+            options: Some(HashMap::from([(BRIDGE_NAME_OPTION.into(), bridge.into())])),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_tunnel_origin_joins_only_a_network_the_firewall_fences() {
+        let made = tunnel_network_request();
+        assert_eq!(made.name, TUNNEL_NETWORK_NAME);
+        assert!(
+            tunnel_network_fenced(&NetworkInspect {
+                driver: made.driver,
+                enable_ipv6: made.enable_ipv6,
+                options: made.options,
+                ..Default::default()
+            })
+            .is_ok()
+        );
+        for foreign in [
+            network("bridge", "br-0123456789ab", false),
+            network("bridge", TUNNEL_NETWORK_NAME, true),
+            network("macvlan", TUNNEL_NETWORK_NAME, false),
+        ] {
+            assert!(
+                matches!(
+                    tunnel_network_fenced(&foreign),
+                    Err(Error::ForeignTunnelNetwork)
+                ),
+                "{foreign:?}"
+            );
+        }
+    }
 
     fn inspected(
         status: ContainerStateStatusEnum,

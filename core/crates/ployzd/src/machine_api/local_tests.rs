@@ -1231,18 +1231,48 @@ mod ingress_doors {
         let connector = set.tunnel.unwrap();
         assert_eq!(connector.change, DoorChange::Created);
         assert_eq!(connector.now.identity(), QualifiedService::system_tunnel());
-        assert_eq!(connector.now.resolved_spec, specs.tunnel.unwrap());
+        let pair = specs.tunnel.unwrap();
+        assert_eq!(connector.now.resolved_spec, pair.connector);
         let token = data_dir.join("root/run/ployz/tunnel/token");
         assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
         let inventory = runtime
             .door_inventory(&service.local.record().id())
             .await
             .unwrap();
-        assert_eq!(inventory.len(), 3);
-        assert!(inventory.iter().all(|entry| {
-            entry.facts.door == crate::docker::Door::Holder
-                || entry.facts.joined_to == Some(holder.now.container_id)
-        }));
+        assert_eq!(inventory.len(), 4);
+        let origin = inventory
+            .iter()
+            .find(|entry| entry.facts.door == crate::docker::Door::TunnelOrigin)
+            .unwrap();
+        assert_eq!(origin.observation.resolved_spec, pair.origin);
+        for entry in &inventory {
+            let joined = match entry.facts.door {
+                crate::docker::Door::Proxy => Some(holder.now.container_id),
+                crate::docker::Door::Tunnel => Some(origin.facts.id),
+                crate::docker::Door::Holder | crate::docker::Door::TunnelOrigin => None,
+            };
+            assert_eq!(entry.facts.joined_to, joined, "{:?}", entry.facts.door);
+        }
+        let network_modes = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| path.ends_with("/containers/create"))
+            .filter_map(|(_, body)| {
+                body.pointer("/HostConfig/NetworkMode")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            network_modes
+                .iter()
+                .filter(|mode| *mode == "ployz-tunnel")
+                .count(),
+            1,
+            "the Tunnel Origin alone is created on its own bridge: {network_modes:?}"
+        );
 
         let again = set_doors(&service, tunnel, false).await.unwrap().unwrap();
         assert_eq!(again.holder.unwrap().change, DoorChange::Unchanged);
@@ -1972,7 +2002,9 @@ mod ingress_doors {
             runtime.stop(&entry.facts.id, None, None).await.unwrap();
             match entry.facts.door {
                 crate::docker::Door::Holder => holder = Some(entry.facts.id),
-                crate::docker::Door::Proxy | crate::docker::Door::Tunnel => {
+                crate::docker::Door::Proxy
+                | crate::docker::Door::TunnelOrigin
+                | crate::docker::Door::Tunnel => {
                     runtime.remove(&entry.facts.id, true, true).await.unwrap();
                 }
             }

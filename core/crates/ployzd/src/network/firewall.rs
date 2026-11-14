@@ -4,13 +4,17 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use ployz_core::{MANAGEMENT_PORT, MachineSubnet, ManagementAddress, VOLUME_SEND_PORT, mesh_cidr};
+use ployz_core::{
+    CLOUDFLARE_EDGE_PORT, CLOUDFLARE_RANGES, MANAGEMENT_PORT, MachineSubnet, ManagementAddress,
+    VOLUME_SEND_PORT, mesh_cidr,
+};
 
 use crate::dns;
 
 use super::{
-    CORROSION_GOSSIP_PORT, DOCKER_NETWORK_NAME, MACHINE_API_PORT, NetworkError, UNREGISTRY_PORT,
-    WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, docker_firewall::Ipv6Off,
+    CORROSION_GOSSIP_PORT, DOCKER_NETWORK_NAME, MACHINE_API_PORT, NetworkError,
+    TUNNEL_NETWORK_NAME, UNREGISTRY_PORT, WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT,
+    docker_firewall::Ipv6Off,
 };
 
 const INPUT_CHAIN: &str = "PLOYZ-INPUT";
@@ -19,6 +23,8 @@ const INPUT_CHAIN: &str = "PLOYZ-INPUT";
 const BUILD_CHAIN: &str = "PLOYZ-BUILD";
 /// Hooked first in mangle FORWARD for traffic off any build bridge.
 const BUILD_FORWARD_CHAIN: &str = "PLOYZ-BUILD-FORWARD";
+/// Hooked first in mangle FORWARD for traffic off the Tunnel Door's bridge.
+const TUNNEL_FORWARD_CHAIN: &str = "PLOYZ-TUNNEL-FORWARD";
 
 /// Each writer here moves hooks from a listing it read first, and a Build's
 /// fence runs beside the network's periodic re-apply. One writer at a time
@@ -157,6 +163,11 @@ fn install(
         &ipv4_build_forwarding(),
         moved,
     )?);
+    ipv4_document.push_str(&tunnel_forward_document(
+        "iptables",
+        &ipv4_tunnel_forwarding(),
+        moved,
+    )?);
     restore("iptables", &ipv4_document)?;
     add_mss_clamp(moved);
     for rule in loose_build_forwarding() {
@@ -175,6 +186,11 @@ fn install(
     ipv6_document.push_str(&build_forward_document(
         "ip6tables",
         &ipv6_build_forwarding(),
+        moved,
+    )?);
+    ipv6_document.push_str(&tunnel_forward_document(
+        "ip6tables",
+        &ipv6_tunnel_forwarding(),
         moved,
     )?);
     restore("ip6tables", &ipv6_document)?;
@@ -380,6 +396,64 @@ fn build_forward_document(
     )
 }
 
+/// The Tunnel Connector dials whatever origin its tunnel's routes name, and a tunnel
+/// managed in Cloudflare's dashboard takes its routes from Cloudflare. So the bridge
+/// its Tunnel Origin owns reaches only what the connector itself needs: DNS to the resolver Docker forwards
+/// to, which may sit on the LAN or on link-local, and Cloudflare's edge on the
+/// tunnel port. Nothing on this Machine, on the mesh or on any other bridge answers
+/// it, DNS included.
+fn ipv4_tunnel_forwarding() -> Vec<String> {
+    let mut rules: Vec<String> = [
+        DOCKER_NETWORK_NAME,
+        WIREGUARD_INTERFACE_NAME,
+        &build_bridges(),
+        "docker0",
+    ]
+    .iter()
+    .map(|output| format!("-o {output} -j DROP"))
+    .collect();
+    rules.extend(dns_returns());
+    rules.extend(edge_returns(|range| !range.contains(':')));
+    rules.push("-j DROP".to_owned());
+    rules
+}
+
+/// The bridge takes no IPv6, and nothing it would reach over IPv6 is the connector's.
+fn ipv6_tunnel_forwarding() -> Vec<String> {
+    vec!["-j DROP".to_owned()]
+}
+
+fn edge_returns(family: impl Fn(&str) -> bool) -> impl Iterator<Item = String> {
+    CLOUDFLARE_RANGES
+        .into_iter()
+        .filter(move |range| family(range))
+        .flat_map(|range| {
+            ["udp", "tcp"].into_iter().map(move |protocol| {
+                format!("-d {range} -p {protocol} --dport {CLOUDFLARE_EDGE_PORT} -j RETURN")
+            })
+        })
+}
+
+fn tunnel_forward_jump() -> String {
+    format!("-i {TUNNEL_NETWORK_NAME} -j {TUNNEL_FORWARD_CHAIN}")
+}
+
+fn tunnel_forward_document(
+    program: &str,
+    rules: &[String],
+    moved: &mut Vec<String>,
+) -> Result<String, NetworkError> {
+    chain_document(
+        program,
+        "mangle",
+        "FORWARD",
+        &tunnel_forward_jump(),
+        TUNNEL_FORWARD_CHAIN,
+        rules,
+        moved,
+    )
+}
+
 const LINK_LOCAL: &str = "169.254.0.0/16";
 const DNS_PORT: u16 = 53;
 
@@ -498,10 +572,13 @@ fn ipv6_fence(fence: &ployz_build::Fence) -> Vec<String> {
     fenced(fence, "::1/128", allowed, &drops, &PRIVATE_V6)
 }
 
-/// Build steps run on their slot's bridge and get only the internet: nothing
-/// on the host answers them, on any address.
+/// Build steps run on their slot's bridge and get only the internet, and the Tunnel
+/// Connector its bridge: nothing on the host answers either, on any address.
 fn mesh_ports() -> Vec<String> {
-    let mut rules = vec![format!("-i {} -j DROP", build_bridges())];
+    let mut rules = vec![
+        format!("-i {} -j DROP", build_bridges()),
+        format!("-i {TUNNEL_NETWORK_NAME} -j DROP"),
+    ];
     rules.extend(
         [WIREGUARD_PORT, MANAGEMENT_PORT]
             .into_iter()
@@ -697,6 +774,13 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             "FORWARD",
             &build_forward_jump(),
             BUILD_FORWARD_CHAIN,
+        ));
+        attempt(remove_chain(
+            program,
+            "mangle",
+            "FORWARD",
+            &tunnel_forward_jump(),
+            TUNNEL_FORWARD_CHAIN,
         ));
         attempt(remove_build_fences(program));
     }
@@ -1053,6 +1137,16 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
+            for (program, rules) in [
+                ("iptables", ipv4_tunnel_forwarding()),
+                ("ip6tables", ipv6_tunnel_forwarding()),
+            ] {
+                restore(
+                    program,
+                    &tunnel_forward_document(program, &rules, &mut Vec::new()).unwrap(),
+                )
+                .unwrap();
+            }
             remove_firewall_rules("10.210.1.0/24".parse().unwrap()).unwrap();
             return;
         }

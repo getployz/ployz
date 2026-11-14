@@ -109,7 +109,11 @@ pub(crate) fn machine_doors(services: &[ServiceObservation]) -> BTreeMap<Machine
                     IngressDoor::Public
                 }
                 Some(IngressWiring::Tunnel) => IngressDoor::Tunnel,
-                Some(IngressWiring::JoinedProxy | IngressWiring::Holder(IngressPorts::Closed))
+                Some(
+                    IngressWiring::JoinedProxy
+                    | IngressWiring::Holder(IngressPorts::Closed)
+                    | IngressWiring::TunnelOrigin,
+                )
                 | None => continue,
             };
             doors

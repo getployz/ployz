@@ -416,6 +416,16 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             StatusCode::CREATED,
             serde_json::json!({"Id": id, "Warnings": []}),
         )
+    } else if method == Method::GET && path.ends_with(&format!("/networks/{TUNNEL_NETWORK_NAME}")) {
+        (
+            StatusCode::OK,
+            serde_json::json!({
+                "Name": TUNNEL_NETWORK_NAME,
+                "Driver": "bridge",
+                "EnableIPv6": false,
+                "Options": {"com.docker.network.bridge.name": TUNNEL_NETWORK_NAME},
+            }),
+        )
     } else if method == Method::GET && path.contains("/networks/") {
         let network = fake.network.lock().unwrap().clone().unwrap_or_else(|| {
             serde_json::json!({
