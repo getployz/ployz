@@ -553,8 +553,8 @@ fn build_steps_reach_the_internet_and_dns_but_never_the_host_or_the_lan() {
             .filter(|rule| rule.contains(" -i "))
             .collect::<Vec<_>>(),
         [
-            "-A FORWARD -i ployz-tunnel -j PLOYZ-TUNNEL-FORWARD",
             "-A FORWARD -i ployz-build+ -j PLOYZ-BUILD-FORWARD",
+            "-A FORWARD -i ployz-tunnel -j PLOYZ-TUNNEL-FORWARD",
         ],
         "a loose rule survived"
     );

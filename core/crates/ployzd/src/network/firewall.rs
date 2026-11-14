@@ -158,14 +158,15 @@ fn install(
     if !forward_moves.is_empty() {
         ipv4_document.push_str(&format!("*filter\n{forward_moves}COMMIT\n"));
     }
-    ipv4_document.push_str(&build_forward_document(
-        "iptables",
-        &ipv4_build_forwarding(),
-        moved,
-    )?);
+    // The tunnel's hook first, so the build hook's insert lands above it.
     ipv4_document.push_str(&tunnel_forward_document(
         "iptables",
         &ipv4_tunnel_forwarding(),
+        moved,
+    )?);
+    ipv4_document.push_str(&build_forward_document(
+        "iptables",
+        &ipv4_build_forwarding(),
         moved,
     )?);
     restore("iptables", &ipv4_document)?;
@@ -183,14 +184,15 @@ fn install(
     if keeps_fence(fence, docker_ipv6_firewall())? {
         ipv6_document.push_str(&container_mesh_fence_document(moved)?);
     }
-    ipv6_document.push_str(&build_forward_document(
-        "ip6tables",
-        &ipv6_build_forwarding(),
-        moved,
-    )?);
+    // The tunnel's hook first, so the build hook's insert lands above it.
     ipv6_document.push_str(&tunnel_forward_document(
         "ip6tables",
         &ipv6_tunnel_forwarding(),
+        moved,
+    )?);
+    ipv6_document.push_str(&build_forward_document(
+        "ip6tables",
+        &ipv6_build_forwarding(),
         moved,
     )?);
     restore("ip6tables", &ipv6_document)?;
@@ -438,20 +440,28 @@ fn tunnel_forward_jump() -> String {
     format!("-i {TUNNEL_NETWORK_NAME} -j {TUNNEL_FORWARD_CHAIN}")
 }
 
+/// The tunnel's hook goes first in mangle FORWARD but for the build bridges' hook,
+/// which matches other interfaces, so neither reapply moves the other. Its document
+/// goes before the build one, whose insert at the top then lands above it.
 fn tunnel_forward_document(
     program: &str,
     rules: &[String],
     moved: &mut Vec<String>,
 ) -> Result<String, NetworkError> {
-    chain_document(
+    let mut document = format!("*mangle\n:{TUNNEL_FORWARD_CHAIN} - [0:0]\n");
+    for rule in rules {
+        document.push_str(&format!("-A {TUNNEL_FORWARD_CHAIN} {rule}\n"));
+    }
+    document.push_str(&move_behind(
         program,
         "mangle",
         "FORWARD",
         &tunnel_forward_jump(),
-        TUNNEL_FORWARD_CHAIN,
-        rules,
+        &[build_forward_jump()],
         moved,
-    )
+    )?);
+    document.push_str("COMMIT\n");
+    Ok(document)
 }
 
 const LINK_LOCAL: &str = "169.254.0.0/16";
@@ -663,13 +673,31 @@ fn move_to_top(
     rule: &str,
     moved: &mut Vec<String>,
 ) -> Result<String, NetworkError> {
+    move_behind(program, table, chain, rule, &[], moved)
+}
+
+/// Restore lines that put `rule` in `chain` right after the leading rules that are
+/// among `ahead`, so first but for them; none when it already is there.
+fn move_behind(
+    program: &str,
+    table: &str,
+    chain: &str,
+    rule: &str,
+    ahead: &[String],
+    moved: &mut Vec<String>,
+) -> Result<String, NetworkError> {
     let listing = xtables(program, &["-t", table, "-S", chain])?;
-    let expected = format!("-A {chain} {rule}");
-    let first = String::from_utf8_lossy(&listing.stdout)
+    let listing = String::from_utf8_lossy(&listing.stdout);
+    let appended = |rule: &str| format!("-A {chain} {rule}");
+    let rules = listing
         .lines()
-        .find(|line| line.starts_with("-A "))
-        .map(str::to_owned);
-    if first.as_deref() == Some(expected.as_str()) {
+        .filter(|line| line.starts_with("-A "))
+        .collect::<Vec<_>>();
+    let leading = rules
+        .iter()
+        .take_while(|line| ahead.iter().any(|rule| **line == appended(rule)))
+        .count();
+    if rules.get(leading).copied() == Some(appended(rule).as_str()) {
         return Ok(String::new());
     }
     moved.push(format!("{table} {chain}: {rule}"));
@@ -678,7 +706,7 @@ fn move_to_top(
     if rule_exists(program, table, chain, &words)? {
         moves.push_str(&format!("-D {chain} {rule}\n"));
     }
-    moves.push_str(&format!("-I {chain} 1 {rule}\n"));
+    moves.push_str(&format!("-I {chain} {} {rule}\n", leading + 1));
     Ok(moves)
 }
 
@@ -1159,6 +1187,31 @@ mod tests {
                 "a rule survived teardown:\n{rules}"
             );
         }
+    }
+
+    /// The periodic re-apply finds every hook where the install put it, the build
+    /// bridges' and the tunnel's in mangle FORWARD included, so it moves none.
+    #[test]
+    #[ignore = "needs root and ip netns"]
+    fn reapplying_an_untouched_firewall_moves_nothing() {
+        if in_child() {
+            xtables("iptables", &["-N", "DOCKER-USER"]).unwrap();
+            let installed = apply_firewall_rules(
+                "10.210.1.0/24".parse().unwrap(),
+                ManagementAddress("fdcc::1".parse().unwrap()),
+                BridgeFence::IfAvailable,
+            )
+            .unwrap();
+            for _ in 0..2 {
+                let restored = installed.reapply().unwrap().unwrap();
+                assert_eq!(restored.displaced, Vec::<String>::new());
+            }
+            return;
+        }
+        in_namespace(
+            "network::firewall::tests::reapplying_an_untouched_firewall_moves_nothing",
+            &["mangle"],
+        );
     }
 
     /// A re-apply that was queued while reset removed the firewall runs last.
