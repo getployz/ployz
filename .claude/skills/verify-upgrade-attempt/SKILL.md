@@ -57,8 +57,8 @@ The model has three askers:
 - **`Asker::Daemon`**, for a daemon RPC. It runs only while the daemon serves.
   - `admit_installation` (`machine/local_machine.rs:331-334`), and through it:
     - `finish_mutation` (`:337-344`, `:355`), for enroll, register, update, forget and Leave;
-    - `finish_installed` (`:359-367`), for a Deploy's container step (`EnsureContainer`, `machine_api/local.rs:469`, `machine/local_machine/container.rs:1081`, `:1108`, `:1143`) and volume copy cuts (`:581`);
-    - image ingest (`machine/local_machine/container.rs:690`);
+    - `finish_installed` (`:359-367`), for a Deploy's container step (`EnsureContainer`, `machine_api/local.rs:469`, `ensure_container` and `converge_now` in `machine/local_machine/container.rs`) and volume copy cuts (`cut_volume_copy`);
+    - image ingest (`ensure_image_ingest` in `machine/local_machine/container.rs`);
     - a Build's admission (`build.rs:196-201`).
   - The Update fast path (`machine/local_machine.rs:846-856`, `try_mutation` at `:851`). It takes every update that leaves the name, the public IP and the advertised endpoints unchanged (`:846-848`). That includes labels and the policy fields: `accepts_builds`, `accepts_services`, `accepts_ingress` and build concurrency (`core/crates/ployz-core/src/domain/machine.rs:523-541`). Other updates go through `finish_mutation`.
 - **`Asker::Plugin`**, for the volume plugin, at any time. Its `admit_mutation` gates:
@@ -120,7 +120,7 @@ A daemon start that loses the lock needs a second rare event after the daemon's 
   - The CLI returns the `RpcError` (`core/crates/ployz/src/handlers/server.rs:1057`) as `Failure::command` (`core/crates/ployz/src/failure.rs`, its `Display` impl prints the message, and `report` builds the `--json` error).
   - `ployz server set --accepts-ingress=true` sends Inspect first (`ingress_off`, `core/crates/ployz/src/handlers/server.rs:1178-1190`), and that clears the marker before the update.
 - **Enroll, register, forget and Leave.** Leave runs its own `settle` first, which clears the marker unless its `try_installation` loses to another lock holder.
-- **Builds and Deploys.** A Build on the Machine fails at its Admission stage (`build.rs:196-201`). A Deploy to this Machine fails its container step (`machine/local_machine/container.rs:1108`, `:1143`). Image ingest (`:690`) and volume copy cuts (`:581`) fail too.
+- **Builds and Deploys.** A Build on the Machine fails at its Admission stage (`build.rs:196-201`). A Deploy to this Machine fails its container step (`ensure_container` and `converge_now` in `machine/local_machine/container.rs`). Image ingest (`ensure_image_ingest`) and volume copy cuts (`cut_volume_copy`) fail too.
 - **The volume plugin.** Every plugin path listed under Admission fails, such as `docker volume create`.
 - **A Cloud policy change** gets Conflict, and the function retries 3 times (`dashboard/src/modules/machines/server-policy.inngest.ts:50`). Any settling reader between two attempts ends the window, and the next attempt applies. If every attempt gets Conflict, the Servers page reads the policy back unchanged from Runtime observation (`:20-23`), and shows no error.
 - **Not refused, and no error shown:**

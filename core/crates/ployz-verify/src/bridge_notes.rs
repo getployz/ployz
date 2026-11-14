@@ -11,7 +11,7 @@
 //! API is built and served only after `NetworkPlane::start` returns
 //! (core/crates/ployzd/src/daemon.rs:347-372, :411-417), so the operator's own steps on a
 //! Container (`ContainerStep::Start`, `Stop` and `Hold`,
-//! core/crates/ployzd/src/machine/local_machine/container.rs:1106-1136) run only between daemon
+//! core/crates/ployzd/src/machine/local_machine/container.rs, `converge_now`) run only between daemon
 //! starts. Docker's restart policy acts at any step. A crash ends the process: the in-memory
 //! `Stopped`, `Pins` and member list go, and the files and Docker's state stay. Each Docker call
 //! is one atomic step, and so is each `atomic_write` (core/crates/ployzd/src/filesystem.rs, which
@@ -505,7 +505,7 @@ enum Started {
 }
 
 /// What the operator's step on a member is (`plan_container`,
-/// core/crates/ployzd/src/machine/local_machine/container.rs:1420-1441).
+/// core/crates/ployzd/src/machine/local_machine/container.rs).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Operator {
     /// `ContainerStep::Start` of a Container at rest; `attached` is where Docker put a detached
@@ -1656,7 +1656,7 @@ impl BridgeNotes {
         let container = state.docker.get_mut(member);
         let step = match pick {
             Pick::Stop if container.run == Run::Exited => {
-                // ContainerStep::Hold: `containers.stop` (container.rs:1131), which reads
+                // ContainerStep::Hold: `containers.stop` (`converge_now`'s Hold arm in container.rs), which reads
                 // Docker's 304 as success (`idempotent_lifecycle_result` in core/crates/ployzd/src/docker/lifecycle.rs).
                 Operator::Hold
             }
@@ -3080,11 +3080,11 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
         ),
         Branch::Operator { member, step } => match step {
             Operator::Start { attached } => format!(
-                "ContainerStep::Start starts {member:?} (core/crates/ployzd/src/machine/local_machine/container.rs:1099-1105){}",
+                "ContainerStep::Start starts {member:?} (`converge_now`'s Start arm in core/crates/ployzd/src/machine/local_machine/container.rs){}",
                 attached.map_or_else(String::new, |address| format!(", and Docker attaches it on {address:?}"))
             ),
-            Operator::Stop => format!("ContainerStep::Stop stops {member:?}, which runs: stop_out_of_rotation calls containers.stop (core/crates/ployzd/src/machine/local_machine/container.rs:1106-1121, :499-505)"),
-            Operator::Hold => format!("ContainerStep::Hold holds {member:?}, at rest: containers.stop, whose 304 reads as success (core/crates/ployzd/src/machine/local_machine/container.rs:1122-1136; `idempotent_lifecycle_result` in core/crates/ployzd/src/docker/lifecycle.rs)"),
+            Operator::Stop => format!("ContainerStep::Stop stops {member:?}, which runs: stop_out_of_rotation calls containers.stop (`converge_now`'s Stop arm and `stop_checked` in core/crates/ployzd/src/machine/local_machine/container.rs)"),
+            Operator::Hold => format!("ContainerStep::Hold holds {member:?}, at rest: containers.stop, whose 304 reads as success (`converge_now`'s Hold arm in core/crates/ployzd/src/machine/local_machine/container.rs; `idempotent_lifecycle_result` in core/crates/ployzd/src/docker/lifecycle.rs)"),
             Operator::Remove => format!("the operator removes {member:?}"),
         },
     };

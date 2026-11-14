@@ -2031,10 +2031,8 @@ mod reserved_lifecycle {
         fixture.finish();
     }
 
-    // Pins the router's lock gap: its stop and removal do not wait for the placement
-    // route, as a door's do.
     #[tokio::test]
-    async fn a_stop_or_removal_of_the_router_does_not_wait_for_the_placement_route() {
+    async fn a_stop_or_removal_of_the_router_waits_for_the_placement_route_under_way() {
         let fixture = Fixture::start().await;
         let id = fixture.create(&router()).await;
         assert_eq!(
@@ -2047,10 +2045,30 @@ mod reserved_lifecycle {
             QualifiedService::system_tailscale()
         );
 
-        let (waited, _) = fixture.under_the_lock(stopped(id)).await;
-        assert!(!waited);
-        let (waited, _) = fixture.under_the_lock(gone(id)).await;
-        assert!(!waited);
+        let (waited, stop) = fixture.under_the_lock(stopped(id)).await;
+        assert!(
+            waited,
+            "the router's stop answered while its route held the lock"
+        );
+        assert!(matches!(
+            stop,
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Present(_),
+                ..
+            }
+        ));
+        let (waited, removal) = fixture.under_the_lock(gone(id)).await;
+        assert!(
+            waited,
+            "the router's removal answered while its route held the lock"
+        );
+        assert!(matches!(
+            removal,
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Absent { .. },
+                ..
+            }
+        ));
         fixture.finish();
     }
 }

@@ -15,9 +15,9 @@ use ployz_core::{
     ContainerRuntimeObservation, ContainerWant, CopyRotation, DockerVolumeName, Drain,
     EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled, ImagesRemoved,
     LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer, PruneImagesRequest,
-    PullImageFromMachineRequest, PullImageRequest, QualifiedService, ResolvedServiceSpec,
-    RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget, Start, StopOptions,
-    VolumeGen, VolumeRemoved,
+    PullImageFromMachineRequest, PullImageRequest, QualifiedService, ReservedKind,
+    ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget,
+    Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
@@ -25,7 +25,7 @@ use ployz_core::{
 };
 
 use self::rotation::RotationWant;
-use super::super::ingress::{admit_reserved_door, is_private_access_router};
+use super::super::ingress::{admit_door, admit_router, admit_unreserved};
 use super::{Error, LocalMachine};
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
@@ -237,16 +237,16 @@ impl LocalMachine {
         let (namespace, spec) = (namespace.clone(), spec.clone());
         self.finish_mutation(move |local| async move {
             local
-                .create_container_admitted(
+                .create_container_admitted(CreationFacts {
                     kind,
-                    &namespace,
-                    &spec,
-                    creation_key
+                    namespace: &namespace,
+                    spec: &spec,
+                    creation_key: creation_key
                         .unwrap_or_else(|| format!("test:{}", ployz_core::MachineId::random())),
                     deployment_id,
-                    Gen::FIRST,
-                    ImagePull::Policy(registry_auth.as_ref()),
-                )
+                    r#gen: Gen::FIRST,
+                    image: ImagePull::Policy(registry_auth.as_ref()),
+                })
                 .await
         })
         .await
@@ -296,15 +296,15 @@ impl LocalMachine {
                     ..
                 } => {
                     local
-                        .create_container_admitted(
-                            ContainerKind::ServiceContainer,
-                            &namespace,
-                            &resolved_spec,
-                            creation_key.as_str().to_owned(),
-                            None,
-                            copy_gen,
-                            ImagePull::Policy(None),
-                        )
+                        .create_container_admitted(CreationFacts {
+                            kind: ContainerKind::ServiceContainer,
+                            namespace: &namespace,
+                            spec: &resolved_spec,
+                            creation_key: creation_key.as_str().to_owned(),
+                            deployment_id: None,
+                            r#gen: copy_gen,
+                            image: ImagePull::Policy(None),
+                        })
                         .await?
                         .container_id
                 }
@@ -369,32 +369,13 @@ impl LocalMachine {
         drain: Drain,
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, VolumeGen>, Error> {
-        let containers = self.docker()?;
-        let withdraw = || async move { Ok(Ok(containers.withdraw(*container))) };
-        let admit = || async move {
-            let Some((name, r#gen)) = fence else {
-                return Ok(Ok(None));
-            };
-            let mut floor = containers.floor_turn().await;
-            Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
-        };
-        let drained = || async move {
-            let Some((name, r#gen)) = fence else {
-                return Ok(Ok(()));
-            };
-            Ok(containers.floor_turn().await.admit(name, r#gen).await?)
-        };
-        self.stop_checked(
-            installation,
+        let guard = Fence {
+            containers: self.docker()?,
             container,
-            drain,
-            stop,
-            false,
-            withdraw,
-            drained,
-            admit,
-        )
-        .await
+            fence,
+        };
+        self.stop_checked(installation, container, drain, stop, guard)
+            .await
     }
 
     /// The rotation is read before the withdrawal, so a copy In is never taken out of
@@ -408,59 +389,34 @@ impl LocalMachine {
         drain: Drain,
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, ContainerRefusal>, Error> {
-        let containers = self.docker()?;
-        let record = target == RotationTarget::Stopped;
-        let target = &target;
-        let withdraw = || async move {
-            Ok(leave_rotation(containers, container, target)
-                .await?
-                .map(|_turn| containers.withdraw(*container)))
-        };
-        self.stop_checked(
-            installation,
+        let guard = Leaving {
+            containers: self.docker()?,
             container,
-            drain,
-            stop,
-            record,
-            withdraw,
-            || async { Ok(Ok(())) },
-            || leave_rotation(containers, container, target),
-        )
-        .await
+            target: &target,
+        };
+        self.stop_checked(installation, container, drain, stop, guard)
+            .await
     }
 
-    /// Drains before the exclusive turn, then stops under it while holding what
-    /// `check` returned. `drained` may refuse once the drain ends, so a refusal it can
-    /// already see returns the copy to ingress before the turn, which other work may
-    /// hold long. A refusal from `withdraw`, `drained` or `check` stops nothing.
+    /// Drains before the exclusive turn, then stops under it while holding what the
+    /// guard's `check` returned. The guard's `drained` may refuse once the drain ends,
+    /// so a refusal it can already see returns the copy to ingress before the turn,
+    /// which other work may hold long. A refusal from `withdraw`, `drained` or `check`
+    /// stops nothing.
     ///
-    /// With `record`, a stop that ended a run records it, so its exit reads as a stop.
-    /// The run is read after the stop, under the turn, so it is the one the stop ended
-    /// even when the Container restarted during the drain. A run that exited before
-    /// the stop was issued ended on its own, so its exit stays a crash.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one stop's facts and its three guards, shared by every stop path"
-    )]
-    async fn stop_checked<G, R, W, WFut, D, DFut, F, Fut>(
+    /// With a guard that `records`, a stop that ended a run records it, so its exit
+    /// reads as a stop. The run is read after the stop, under the turn, so it is the
+    /// one the stop ended even when the Container restarted during the drain. A run
+    /// that exited before the stop was issued ended on its own, so its exit stays a
+    /// crash.
+    async fn stop_checked<G: StopGuard>(
         &self,
         installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
         drain: Drain,
         stop: &StopOptions,
-        record: bool,
-        withdraw: W,
-        drained: D,
-        check: F,
-    ) -> Result<Result<ContainerObservation, R>, Error>
-    where
-        W: FnOnce() -> WFut,
-        WFut: std::future::Future<Output = Result<Result<Withdrawal, R>, Error>>,
-        D: FnOnce() -> DFut,
-        DFut: std::future::Future<Output = Result<Result<(), R>, Error>>,
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<Result<G, R>, Error>>,
-    {
+        guard: G,
+    ) -> Result<Result<ContainerObservation, G::Refusal>, Error> {
         let _ = installation;
         let containers = self.docker()?;
         let machine_id = self.record().id();
@@ -468,7 +424,7 @@ impl LocalMachine {
         if !is_running(&observed.runtime) {
             return Ok(Ok(observed));
         }
-        let _withdrawal = match withdraw().await? {
+        let _withdrawal = match guard.withdraw().await? {
             Ok(withdrawal) => withdrawal,
             Err(refused) => return Ok(Err(refused)),
         };
@@ -478,11 +434,11 @@ impl LocalMachine {
             self.until_idle(containers, container, spread),
         )
         .await;
-        if let Err(refused) = drained().await? {
+        if let Err(refused) = guard.drained().await? {
             return Ok(Err(refused));
         }
         let turn = self.exclusive_turn().await?;
-        let held = match check().await? {
+        let held = match guard.check().await? {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
         };
@@ -494,7 +450,7 @@ impl LocalMachine {
                 stop.grace_period_seconds.map(i32::from),
             )
             .await?;
-        let ended = if record {
+        let ended = if guard.records() {
             containers.run_ended_since(container, issued).await?
         } else {
             None
@@ -958,9 +914,9 @@ impl LocalMachine {
         }
     }
 
-    /// Whether `want` names a reserved Ingress door, which the doors route may be
-    /// replacing at the same time.
-    async fn wants_door(&self, want: &ContainerWant) -> Result<bool, Error> {
+    /// Whether `want` names a reserved identity, an Ingress door or the Private Access
+    /// router, which its route may be replacing at the same time.
+    async fn wants_reserved(&self, want: &ContainerWant) -> Result<bool, Error> {
         let identity = match want_locator(want) {
             ContainerLocator::Key(slot) => QualifiedService::new(slot.namespace, slot.service),
             ContainerLocator::Id(id) => {
@@ -971,17 +927,17 @@ impl LocalMachine {
                 }
             }
         };
-        Ok(identity.is_ingress_door())
+        Ok(identity.reserved().is_some())
     }
 
     /// Moves no rotation. An In want only re-checks itself before a start.
     async fn ensure_docker(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
-        if !self.wants_door(&want).await? {
-            // Boxed so the door check keeps every ensure's future the size it was.
+        if !self.wants_reserved(&want).await? {
+            // Boxed so the reserved check keeps every ensure's future the size it was.
             return Box::pin(self.ensure_unlocked(want)).await;
         }
-        // A stop or remove of a door waits for a doors route under way, so the route
-        // never finds the Container it just started gone under it. The work is detached
+        // A stop or remove of a door or the router waits for its route under way, so the
+        // route never finds the Container it just started gone under it. The work is detached
         // with the lock, so a caller that stops waiting cannot free the lock while a
         // stop it began still runs.
         let containers = self.docker()?;
@@ -1339,19 +1295,19 @@ impl LocalMachine {
         let outcome = self
             .finish_mutation(move |local| async move {
                 let created = local
-                    .create_container_admitted(
-                        new.slot.kind,
-                        &new.slot.namespace,
-                        &new.resolved_spec,
-                        new.slot.creation_key.as_str().to_owned(),
-                        new.deployment_id,
-                        new.r#gen,
-                        if new.image_prepared {
+                    .create_container_admitted(CreationFacts {
+                        kind: new.slot.kind,
+                        namespace: &new.slot.namespace,
+                        spec: &new.resolved_spec,
+                        creation_key: new.slot.creation_key.as_str().to_owned(),
+                        deployment_id: new.deployment_id,
+                        r#gen: new.r#gen,
+                        image: if new.image_prepared {
                             ImagePull::Prepared
                         } else {
                             ImagePull::Policy(new.registry_auth.as_ref())
                         },
-                    )
+                    })
                     .await;
                 let created = match created {
                     Ok(created) => created,
@@ -1386,20 +1342,19 @@ impl LocalMachine {
         Ok(outcome)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "A NewContainer's creation facts, also reached from Volume holders that have no NewContainer."
-    )]
     pub(super) async fn create_container_admitted(
         &self,
-        kind: ContainerKind,
-        namespace: &Namespace,
-        spec: &ResolvedServiceSpec,
-        creation_key: String,
-        deployment_id: Option<ployz_core::DeploymentLogId>,
-        r#gen: Gen,
-        image: ImagePull<'_>,
+        facts: CreationFacts<'_>,
     ) -> Result<ContainerCreated, Error> {
+        let CreationFacts {
+            kind,
+            namespace,
+            spec,
+            creation_key,
+            deployment_id,
+            r#gen,
+            image,
+        } = facts;
         let containers = self.docker()?;
         let record = self.record();
         if !record.has_cluster_identity() {
@@ -1418,12 +1373,15 @@ impl LocalMachine {
                     namespace,
                     spec,
                     admission: async {
-                        let network = if is_private_access_router(namespace, spec) {
-                            Some(Box::pin(self.cluster_network()).await?)
-                        } else {
-                            None
-                        };
-                        admit_reserved_door(namespace, spec, network)?;
+                        let identity = QualifiedService::new(namespace.clone(), spec.name.clone());
+                        match identity.reserved() {
+                            Some(ReservedKind::Router) => {
+                                let network = Box::pin(self.cluster_network()).await?;
+                                admit_router(namespace, spec, network)?;
+                            }
+                            Some(_) => admit_door(namespace, spec)?,
+                            None => admit_unreserved(spec)?,
+                        }
                         // A deploy's hook runs once: a slot whose hook was made and
                         // is now gone is never made again, so it never reruns.
                         if kind == ContainerKind::PreDeployHook
@@ -1445,6 +1403,107 @@ impl LocalMachine {
             )
             .await
     }
+}
+
+/// What a stop checks around its drain and its exclusive turn.
+trait StopGuard {
+    /// Why the stop is refused.
+    type Refusal;
+    /// What `check` holds through the stop.
+    type Held;
+
+    /// Whether a stop that ended a run records it.
+    fn records(&self) -> bool;
+    /// Takes the copy out of ingress, held until the stop ends.
+    async fn withdraw(&self) -> Result<Result<Withdrawal, Self::Refusal>, Error>;
+    /// Checked once the drain ends, before the turn.
+    async fn drained(&self) -> Result<Result<(), Self::Refusal>, Error>;
+    /// Checked under the turn.
+    async fn check(&self) -> Result<Result<Self::Held, Self::Refusal>, Error>;
+}
+
+/// A stop of a Container that holds a Volume, refused once that Volume's floor is
+/// raised above `gen`.
+struct Fence<'a> {
+    containers: &'a ContainerRuntime,
+    container: &'a ContainerId,
+    fence: Option<(&'a DockerVolumeName, VolumeGen)>,
+}
+
+impl<'a> StopGuard for Fence<'a> {
+    type Refusal = VolumeGen;
+    type Held = Option<crate::docker::FloorTurn<'a>>;
+
+    fn records(&self) -> bool {
+        false
+    }
+
+    async fn withdraw(&self) -> Result<Result<Withdrawal, VolumeGen>, Error> {
+        Ok(Ok(self.containers.withdraw(*self.container)))
+    }
+
+    async fn drained(&self) -> Result<Result<(), VolumeGen>, Error> {
+        let Some((name, r#gen)) = self.fence else {
+            return Ok(Ok(()));
+        };
+        Ok(self
+            .containers
+            .floor_turn()
+            .await
+            .admit(name, r#gen)
+            .await?)
+    }
+
+    async fn check(&self) -> Result<Result<Self::Held, VolumeGen>, Error> {
+        let Some((name, r#gen)) = self.fence else {
+            return Ok(Ok(None));
+        };
+        let mut floor = self.containers.floor_turn().await;
+        Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
+    }
+}
+
+/// A stop of a Container taken out of routing for `target`, refused while a copy is
+/// In.
+struct Leaving<'a> {
+    containers: &'a ContainerRuntime,
+    container: &'a ContainerId,
+    target: &'a RotationTarget,
+}
+
+impl<'a> StopGuard for Leaving<'a> {
+    type Refusal = ContainerRefusal;
+    type Held = RotationTurn<'a>;
+
+    fn records(&self) -> bool {
+        *self.target == RotationTarget::Stopped
+    }
+
+    async fn withdraw(&self) -> Result<Result<Withdrawal, ContainerRefusal>, Error> {
+        Ok(leave_rotation(self.containers, self.container, self.target)
+            .await?
+            .map(|_turn| self.containers.withdraw(*self.container)))
+    }
+
+    async fn drained(&self) -> Result<Result<(), ContainerRefusal>, Error> {
+        Ok(Ok(()))
+    }
+
+    async fn check(&self) -> Result<Result<Self::Held, ContainerRefusal>, Error> {
+        leave_rotation(self.containers, self.container, self.target).await
+    }
+}
+
+/// What a Container is created from: a NewContainer's facts, or those of a door or a
+/// Volume holder, which have no NewContainer.
+pub(super) struct CreationFacts<'a> {
+    pub(super) kind: ContainerKind,
+    pub(super) namespace: &'a Namespace,
+    pub(super) spec: &'a ResolvedServiceSpec,
+    pub(super) creation_key: String,
+    pub(super) deployment_id: Option<DeploymentLogId>,
+    pub(super) r#gen: Gen,
+    pub(super) image: ImagePull<'a>,
 }
 
 /// Whether Docker still runs the Container's process. Paused and restarting count as

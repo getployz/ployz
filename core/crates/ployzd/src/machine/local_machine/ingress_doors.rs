@@ -20,6 +20,7 @@ use ployz_core::{
 };
 use zeroize::Zeroizing;
 
+use super::container::CreationFacts;
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerRuntime, Door, DoorEntry, same_creation};
 use crate::docker_image::ImagePull;
@@ -928,15 +929,15 @@ impl LocalMachine {
             None => key,
         };
         let created = self
-            .create_container_admitted(
-                ContainerKind::ServiceContainer,
-                &Namespace::system(),
+            .create_container_admitted(CreationFacts {
+                kind: ContainerKind::ServiceContainer,
+                namespace: &Namespace::system(),
                 spec,
-                key,
-                None,
-                Gen::FIRST,
-                ImagePull::Prepared,
-            )
+                creation_key: key,
+                deployment_id: None,
+                r#gen: Gen::FIRST,
+                image: ImagePull::Prepared,
+            })
             .await?;
         effects.created.push(created.container_id);
         Ok(created.container_id)

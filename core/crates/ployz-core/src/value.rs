@@ -1118,11 +1118,30 @@ impl QualifiedService {
         )
     }
 
+    /// Which reserved identity this is, if any. A new reserved identity is classified
+    /// here and nowhere else.
+    #[must_use]
+    pub fn reserved(&self) -> Option<ReservedKind> {
+        if *self == Self::system_ingress_holder() {
+            Some(ReservedKind::Holder)
+        } else if *self == Self::system_ingress() {
+            Some(ReservedKind::Caddy)
+        } else if *self == Self::system_tunnel_origin() {
+            Some(ReservedKind::TunnelOrigin)
+        } else if *self == Self::system_tunnel() {
+            Some(ReservedKind::Tunnel)
+        } else if *self == Self::system_tailscale() {
+            Some(ReservedKind::Router)
+        } else {
+            None
+        }
+    }
+
     /// Whether this is the reserved Private Access router. It is placed only through
     /// SetPrivateAccess.
     #[must_use]
     pub fn is_private_access_router(&self) -> bool {
-        *self == Self::system_tailscale()
+        self.reserved() == Some(ReservedKind::Router)
     }
 
     /// Whether this is one of the four reserved Ingress Proxy identities: the holder,
@@ -1130,11 +1149,23 @@ impl QualifiedService {
     /// through SetIngressDoors.
     #[must_use]
     pub fn is_ingress_door(&self) -> bool {
-        *self == Self::system_ingress()
-            || *self == Self::system_ingress_holder()
-            || *self == Self::system_tunnel_origin()
-            || *self == Self::system_tunnel()
+        self.reserved()
+            .is_some_and(|kind| kind != ReservedKind::Router)
     }
+}
+
+/// A reserved identity in the system Namespace, which only the daemon's own specs may
+/// fill.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservedKind {
+    /// The holder that owns the Ingress Proxy's network namespace and host ports.
+    Holder,
+    Caddy,
+    TunnelOrigin,
+    /// The Tunnel Connector.
+    Tunnel,
+    /// The Private Access router.
+    Router,
 }
 
 fn qualified_service_error(value: &str) -> ValueError {
@@ -1468,7 +1499,17 @@ mod tests {
             assert!(door.is_ingress_door(), "{door}");
             assert!(!door.is_private_access_router(), "{door}");
         }
+        assert_eq!(
+            doors.each_ref().map(Identity::reserved),
+            [
+                Some(super::ReservedKind::Caddy),
+                Some(super::ReservedKind::Holder),
+                Some(super::ReservedKind::TunnelOrigin),
+                Some(super::ReservedKind::Tunnel),
+            ]
+        );
         let router = Identity::system_tailscale();
+        assert_eq!(router.reserved(), Some(super::ReservedKind::Router));
         assert!(router.is_private_access_router());
         assert!(!router.is_ingress_door());
         for other in [
@@ -1483,6 +1524,7 @@ mod tests {
             let other = Identity::parse(other).unwrap();
             assert!(!other.is_ingress_door(), "{other}");
             assert!(!other.is_private_access_router(), "{other}");
+            assert_eq!(other.reserved(), None, "{other}");
         }
     }
 
