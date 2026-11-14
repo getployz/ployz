@@ -541,6 +541,11 @@ async fn runs_are_read_by_volume_and_environment_and_one_by_its_id() {
     assert_eq!(asked(&one.args), "full");
 }
 
+#[test]
+fn a_waiting_command_reads_its_run_every_two_seconds() {
+    assert_eq!(Pacing::default().poll, Duration::from_secs(2));
+}
+
 #[tokio::test]
 async fn wait_polls_the_run_until_it_ends() {
     let polls = Arc::new(AtomicUsize::new(0));
@@ -558,7 +563,10 @@ async fn wait_polls_the_run_until_it_ends() {
     });
     let requested: VolumeRun =
         serde_json::from_value(run("requested", "sync", json!({ "full": false }))).unwrap();
-    let ended = settle(&token(&cloud), requested).await.unwrap();
+    let quick = Pacing {
+        poll: Duration::from_millis(10),
+    };
+    let ended = settle(&token(&cloud), requested, quick).await.unwrap();
     assert_eq!(ended.state, MaybeKnown::Known(VolumeRunState::Done));
     assert_eq!(polls.load(Ordering::SeqCst), 2);
 }

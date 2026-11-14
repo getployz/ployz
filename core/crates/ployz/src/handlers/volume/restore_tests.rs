@@ -4,7 +4,9 @@ use ployz_core::{
 };
 use ployz_store::VolumeName;
 
-use super::{Planned, Seen, Unseen, plan};
+use std::time::Duration;
+
+use super::{Pacing, Planned, Seen, Unseen, plan};
 
 fn volume() -> VolumeName {
     VolumeName::parse("data").unwrap()
@@ -254,4 +256,9 @@ fn a_snapshot_named_by_a_run_without_a_round_still_counts_its_epoch() {
         request.want,
         WantedCopy::Writer { epoch, .. } if epoch == WriterEpoch::new(10)
     ));
+}
+
+#[test]
+fn a_busy_machine_is_asked_again_every_five_seconds() {
+    assert_eq!(Pacing::default().busy_poll, Duration::from_secs(5));
 }

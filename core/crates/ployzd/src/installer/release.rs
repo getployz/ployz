@@ -27,10 +27,6 @@ use ployz_core::{
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(not(test))]
-const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(test)]
-const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Where releases come from. Production always uses [`ReleaseSource::Published`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -243,7 +239,7 @@ pub(super) async fn install_binaries(
     extract_archive(&archive_path, stage.path())?;
     let daemon = stage.path().join("ployzd");
     let uninstall = stage.path().join("ployz-uninstall");
-    verify_executable(&daemon, target).await?;
+    verify_executable(&daemon, target, paths.pacing.version_command_timeout).await?;
     verify_uninstall(&uninstall)?;
     sync_staged_files(&daemon, &uninstall, stage.path())?;
     progress(MachineUpgradeStage::Activating)?;
@@ -251,11 +247,19 @@ pub(super) async fn install_binaries(
     Ok(true)
 }
 
-pub(super) async fn installed_release(path: &Path) -> Result<Option<MachineVersion>, Error> {
+pub(super) async fn installed_release(
+    paths: &InstallPaths,
+) -> Result<Option<MachineVersion>, Error> {
+    let path = paths.daemon();
     if !path.is_file() {
         return Ok(None);
     }
-    let output = version_command(path, "inspect installed daemon").await?;
+    let output = version_command(
+        &path,
+        "inspect installed daemon",
+        paths.pacing.version_command_timeout,
+    )
+    .await?;
     if !output.status.success() {
         return Err(Error::Verification(format!(
             "installed daemon version check exited with {}",
@@ -335,12 +339,16 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-async fn verify_executable(path: &Path, target: &MachineVersion) -> Result<(), Error> {
+async fn verify_executable(
+    path: &Path,
+    target: &MachineVersion,
+    version_timeout: Duration,
+) -> Result<(), Error> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|source| Error::Io {
         stage: "mark staged daemon executable",
         source,
     })?;
-    let output = version_command(path, "preflight staged daemon").await?;
+    let output = version_command(path, "preflight staged daemon", version_timeout).await?;
     if !output.status.success() {
         return Err(Error::Verification(format!(
             "staged daemon version check exited with {}",
@@ -357,10 +365,14 @@ async fn verify_executable(path: &Path, target: &MachineVersion) -> Result<(), E
     }
 }
 
-async fn version_command(path: &Path, stage: &str) -> Result<std::process::Output, Error> {
+async fn version_command(
+    path: &Path,
+    stage: &str,
+    limit: Duration,
+) -> Result<std::process::Output, Error> {
     let mut command = Command::new(path);
     command.arg("version").kill_on_drop(true);
-    match timeout(VERSION_COMMAND_TIMEOUT, command.output()).await {
+    match timeout(limit, command.output()).await {
         Ok(Ok(output)) => Ok(output),
         Ok(Err(error)) => Err(Error::Command {
             stage: stage.into(),
@@ -368,7 +380,7 @@ async fn version_command(path: &Path, stage: &str) -> Result<std::process::Outpu
         }),
         Err(_) => Err(Error::Command {
             stage: stage.into(),
-            message: format!("timed out after {}ms", VERSION_COMMAND_TIMEOUT.as_millis()),
+            message: format!("timed out after {}ms", limit.as_millis()),
         }),
     }
 }

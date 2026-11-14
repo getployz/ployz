@@ -149,7 +149,7 @@ A daemon start that loses the lock needs a second rare event after the daemon's 
 | `reconcile_locked`'s `worker_state` (`installer/upgrade.rs:381`) | `reconcile_skips_worker_state`: `reconcile_locked_needs_its_worker_check`, and the second half of `settle_relies_on_the_worker_check_under_the_lock` | `INTERRUPTED_ONLY_STOPPED` | `retry-active`'s other-attempt request answering Busy (`installer/upgrade/tests.rs:277-292`); `interrupted` (`:312-328`) for the stopped branch |
 | daemon start's `reconcile` before serving (in `Daemon::start`) | `serves_before_reconcile`: `daemon_start_settles_before_serving` | `DAEMON_START_SETTLES_FIRST` | none |
 
-`launch-failed` (`installer/upgrade/tests.rs:341-351`) pins the clear after Failed{Launching}, and `upgrade_worker_contract` (`:592-596`) pins the clear after work. Neither stops a process between the write and the clear, so neither sees the finding.
+`launch-failed` (a case of `run_contract_case` in `installer/upgrade/tests.rs`) pins the clear after Failed{Launching}, and `upgrade_worker_contract` (the closing `active()` assertion of `run_worker_case`) pins the clear after work. Neither stops a process between the write and the clear, so neither sees the finding.
 
 Codex's reviews of PR #3845 reproduced these on the real code at the sync commit, in scratch `ployzd` tests that are not in the tree:
 - **The end state.** A terminal receipt, the naming marker and a free lock answer Busy. Inspect, `reconcile_locked`, `reconcile_for_install` and daemon start each clear the marker, after which mutation is admitted.
@@ -388,7 +388,7 @@ Out of scope:
 - the in-process admission lock that `finish_mutation` takes before `try_mutation` (`machine/local_machine.rs:342`);
 - `request_locked`'s already-installed path (`:216`) and release resolution;
 - Io from the receipt writes (`installer/upgrade.rs:227`, `:316`, `:343`, `:392`) and from `mark_active` (`:228`). A terminal write that fails at `:343` leaves Running and the marker: the dead-attempt state;
-- receipt read or decode errors, and `worker_state` errors (`WorkerEvidence`), which `inspection-unknown` pins (`installer/upgrade/tests.rs:329-340`);
+- receipt read or decode errors, and `worker_state` errors (`WorkerEvidence`), which `inspection-unknown` pins (a case of `run_contract_case` in `installer/upgrade/tests.rs`);
 - probes that do not hold the shared lock, and `lock_installation` waiting on shared holders;
 - a reader's `try_installation` failing with Io;
 - a reboot, which stops every process at once;

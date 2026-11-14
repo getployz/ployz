@@ -28,17 +28,25 @@ use super::{Error, LocalMachine};
 use crate::docker::{ContainerRuntime, same_creation};
 use crate::images::private_access_router;
 
-/// How long a placed router has to join the tailnet before the route stops watching
-/// it. Tailscale takes about 30 seconds to refuse a key, so a router that dies or is
-/// refused in this time is reported, and a joined router ends the wait at once.
-#[cfg(not(test))]
-const ROUTER_SETTLE: Duration = Duration::from_secs(45);
-#[cfg(test)]
-const ROUTER_SETTLE: Duration = Duration::from_millis(300);
-#[cfg(not(test))]
-const ROUTER_POLL: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const ROUTER_POLL: Duration = Duration::from_millis(200);
+/// The waits of the Private Access route. `Default` is production's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Pacing {
+    /// How long a placed router has to join the tailnet before the route stops watching
+    /// it. Tailscale takes about 30 seconds to refuse a key, so a router that dies or is
+    /// refused in this time is reported, and a joined router ends the wait at once.
+    pub(crate) router_settle: Duration,
+    /// How often a router that has not joined is looked at again.
+    pub(crate) router_poll: Duration,
+}
+
+impl Default for Pacing {
+    fn default() -> Self {
+        Self {
+            router_settle: Duration::from_secs(45),
+            router_poll: Duration::from_secs(1),
+        }
+    }
+}
 /// How far back the log of a router that already runs is read.
 const RUNNING_LOOKBACK_SECONDS: i32 = 120;
 /// What containerboot prints once the node is up.
@@ -411,7 +419,7 @@ impl LocalMachine {
         let settles = router.change != DoorChange::Unchanged;
         let lookback = if settles { 1 } else { RUNNING_LOOKBACK_SECONDS };
         let since = unix_seconds().saturating_sub(lookback);
-        let deadline = tokio::time::Instant::now() + ROUTER_SETTLE;
+        let deadline = tokio::time::Instant::now() + self.pacing.router_settle;
         loop {
             let runtime = containers
                 .inspect_managed(&id, &machine_id)
@@ -436,7 +444,7 @@ impl LocalMachine {
             {
                 return None;
             }
-            tokio::time::sleep(ROUTER_POLL).await;
+            tokio::time::sleep(self.pacing.router_poll).await;
         }
     }
 }
@@ -454,6 +462,13 @@ mod tests {
     use super::*;
     use ployz_core::{ContainerId, HealthObservation};
     use serde_json::json;
+
+    #[test]
+    fn the_router_gets_forty_five_seconds_to_join_and_is_looked_at_each_second() {
+        let pacing = Pacing::default();
+        assert_eq!(pacing.router_settle, Duration::from_secs(45));
+        assert_eq!(pacing.router_poll, Duration::from_secs(1));
+    }
 
     fn id(id: char) -> ContainerId {
         ContainerId::parse(id.to_string().repeat(64)).unwrap()

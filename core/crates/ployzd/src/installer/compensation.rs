@@ -6,7 +6,6 @@ use std::{
     io::{self, ErrorKind},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, error_chain::inline};
@@ -14,12 +13,6 @@ use thiserror::Error;
 
 use super::{Error as InstallError, InstallMode, InstallPaths, InstallRequest, ReleaseSource};
 use crate::{filesystem::atomic_write, mutation, units::Unit};
-
-/// How long a ready daemon must keep running before an Upgrade succeeds.
-#[cfg(not(test))]
-const SOAK: Duration = Duration::from_secs(30);
-#[cfg(test)]
-const SOAK: Duration = Duration::from_millis(100);
 
 /// Why an Upgrade failed, and whether the previous release went back into service. Its text is
 /// the attempt's recorded failure.
@@ -53,7 +46,7 @@ pub(super) async fn install_or_compensate(
 ) -> Result<(), UpgradeFailure> {
     let daemon = paths.daemon();
     let before = file_identity(&daemon);
-    let previous = super::release::installed_release(&daemon)
+    let previous = super::release::installed_release(paths)
         .await
         .map_err(UpgradeFailure::NotRestored)?;
     // A unit that crashes on the new release is no longer running, so `try-restart` would leave
@@ -91,10 +84,10 @@ pub(super) async fn install_or_compensate(
     )
 }
 
-/// Hold a ready daemon for [`SOAK`]: a crash restarts it under another main PID.
+/// Hold a ready daemon for [`super::Pacing::soak`]: a crash restarts it under another main PID.
 async fn soak(paths: &InstallPaths, target: &MachineVersion) -> Result<(), InstallError> {
     let started = super::host::daemon_main_pid()?;
-    tokio::time::sleep(SOAK).await;
+    tokio::time::sleep(paths.pacing.soak).await;
     let running = super::host::daemon_main_pid()?;
     if running != started {
         return Err(super::refuse(
