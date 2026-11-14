@@ -126,7 +126,8 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     assert_eq!(
         automatic_site_block(&caddyfile, "https://"),
         format!(
-            "import ployz_headers {local} import ployz_trace {local} \"\" \"\" NOT_DEPLOYED \
+            "import ployz_headers {local} import ployz_client_ip \
+             import ployz_trace {local} \"\" \"\" NOT_DEPLOYED \
              error NOT_DEPLOYED 404 import error_page {local} import ployz_log"
         )
     );
@@ -238,11 +239,14 @@ fn only_cloudflare_peers_may_set_the_client_address() {
     let proxy = automatic_site_block(&caddyfile, "(common_proxy)");
     assert!(
         proxy.contains(
-            "header_up X-Forwarded-For {client_ip} header_up CF-Connecting-IP {client_ip} \
-             header_up X-Real-IP {client_ip} \
+            "header_up X-Forwarded-For {client_ip} header_up X-Real-IP {client_ip} \
              header_up X-Forwarded-Host {hostport} header_up X-Forwarded-Proto {scheme}"
         ),
         "forwarded headers from a trusted peer never reach the app: {proxy}"
+    );
+    assert!(
+        !proxy.contains("CF-Connecting-IP"),
+        "an app behind Ployz may forward its headers to a site behind Cloudflare: {proxy}"
     );
 }
 

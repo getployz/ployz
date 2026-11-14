@@ -308,7 +308,6 @@ https:// {{\n\
 \t# A trusted Cloudflare peer would pass its incoming X-Forwarded-* through; the app gets only\n\
 \t# what Caddy vouches for, so trusting Cloudflare changes nothing but the client address.\n\
 \theader_up X-Forwarded-For {{client_ip}}\n\
-\theader_up CF-Connecting-IP {{client_ip}}\n\
 \theader_up X-Real-IP {{client_ip}}\n\
 \theader_up X-Forwarded-Host {{hostport}}\n\
 \theader_up X-Forwarded-Proto {{scheme}}\n\
@@ -328,6 +327,7 @@ https:// {{\n\
 (tunnel_site) {{\n\
 \tbind {}\n\
 \timport ployz_headers {{args[0]}}\n\
+\timport ployz_client_ip\n\
 \t@plain header X-Forwarded-Proto http\n\
 \tredir @plain https://{{host}}{{uri}} 308\n\
 \t@noproto header !X-Forwarded-Proto\n\
