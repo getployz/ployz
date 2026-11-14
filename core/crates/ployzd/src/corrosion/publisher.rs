@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay};
+use super::{
+    Error, MachineView, MachinesSnapshot, ReplicatedStore,
+    store::{RuntimeOverlay, publishable_machine},
+};
 use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
 use crate::sealing_key::KeyFile;
 
@@ -164,7 +167,7 @@ pub async fn run_machine_publisher(
             }
             let publication = replicated.machine_publication().await;
             let record = Arc::clone(&records.borrow_and_update());
-            let machine = publication.publishable_machine(&record, overlay);
+            let machine = publishable_machine(&record, overlay);
             if let Some(machine) = machine
                 && let Err(error) = publication.publish(&machine).await
             {
@@ -291,11 +294,9 @@ async fn row_is_stale(
         return false;
     };
     let record = Arc::clone(&records.borrow());
-    let Some(machine) = replicated
-        .machine_publication()
-        .await
-        .publishable_machine(&record, overlay)
-    else {
+    // Waits for a publication in flight, as this check always has.
+    let _publication = replicated.machine_publication().await;
+    let Some(machine) = publishable_machine(&record, overlay) else {
         return false;
     };
     !snapshot.observations.contains(&machine)

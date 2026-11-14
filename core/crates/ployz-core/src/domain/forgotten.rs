@@ -2,8 +2,6 @@
 //! forgot its Management Identity, so a Server removed while unreachable can fence
 //! itself once it is back (#2927).
 
-use crate::ManagementIdentity;
-
 /// ALPN of the forgotten question on the management transport. The asker dials
 /// with its own Management Identity as the transport key, opens no stream, and reads
 /// the answer from the close code. It needs no Management Client, so a forgotten
@@ -53,13 +51,6 @@ impl ForgottenAnswer {
             .find(|(_, candidate)| *candidate == code)
             .map(|(answer, _)| *answer)
     }
-}
-
-/// Tombstone key under which a forgotten Machine's Management Identity lives in the
-/// `cluster` table; its value is the forgotten Machine's id.
-#[must_use]
-pub fn forgotten_key(identity: &ManagementIdentity) -> String {
-    format!("forgotten:{}", identity.to_hex())
 }
 
 #[cfg(test)]
